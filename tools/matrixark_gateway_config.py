@@ -739,20 +739,20 @@ _KNOB_ENV_FROZEN_AT_IMPORT = {
 }
 
 
-def _build_constant(constant: str) -> Optional[str]:
-    """The value a retrieval constant holds, read from the module that decides it.
+def _build_constant(constant: str, module: str = "matrixark_mcp_runtime_config") -> Optional[str]:
+    """The value a build constant holds, read from the module that decides it.
 
     Never re-typed here. A table of numbers in this file would be the second copy the section above
     refuses to keep, and it would drift the moment a budget moved.
     """
     try:
         try:
-            from tools import matrixark_mcp_runtime_config as runtime  # type: ignore
+            source = __import__("tools." + module, fromlist=[module])
         except ImportError:
-            import matrixark_mcp_runtime_config as runtime  # type: ignore
+            source = __import__(module)
     except Exception:  # pragma: no cover - portal still works without the retrieval modules
         return None
-    value = getattr(runtime, constant, None)
+    value = getattr(source, constant, None)
     return None if value is None else str(value)
 
 
@@ -830,6 +830,13 @@ _EXPLICIT_BUILD_DEFAULT = {
     "retrieval.cross_session_max_sessions": "DEFAULT_CROSS_SESSION_MAX_SESSIONS",
     "skills.shared_resource_budget_ratio": "DEFAULT_SHARED_RESOURCE_BUDGET_RATIO",
     "ingestion.time_compression_window_events": "TIME_COMPRESSION_WINDOW_EVENTS",
+    # The extraction call has no guard: with nothing set it posts to
+    # http://127.0.0.1:8000/v1/chat/completions asking for qwen2.5:1.5b. The portal showed both
+    # fields empty and the connection test refused to run, so the one deployment shape most likely
+    # to be misconfigured -- a cloud provider selected, endpoint never filled in -- was described
+    # as having no endpoint at all rather than as pointed at a local port.
+    "extraction.base_url": ("EXTRACTION_LLM_BASE_URL", "matrixark_mcp_extraction_provider"),
+    "extraction.model": ("EXTRACTION_LLM_MODEL", "matrixark_mcp_extraction_provider"),
 }
 
 
@@ -844,7 +851,8 @@ def _apply_build_defaults(settings: List[Setting]) -> None:
         setting = by_key.get(key)
         if setting is None:  # pragma: no cover - a renamed setting fails its own test, not here
             continue
-        build = _build_constant(constant)
+        build = (_build_constant(*constant) if isinstance(constant, tuple)
+                 else _build_constant(constant))
         if build is None or build == setting.default:
             continue
         setting.default = build
@@ -1840,11 +1848,12 @@ def probe(targets: Optional[List[str]] = None, timeout: float = 10.0) -> Json:
                             "error": "provider_is_deterministic",
                             "detail": "No model is called on this setting, so there is nothing to "
                                       "probe. Set the extraction provider to openai_compatible."})
-        elif not base or not model:
-            results.append({"target": "extraction", "ok": False, "skipped": True,
-                            "error": "incomplete_config",
-                            "detail": "Set both the extraction base URL and model first."})
         else:
+            # No refusal for an unset endpoint. The extraction call has no such guard -- it posts to
+            # the build default -- so refusing here described a deployment that does not exist and
+            # withheld the one result that would have shown where the calls are really going.
+            base = base or str(SETTINGS_BY_KEY["extraction.base_url"].default).rstrip("/")
+            model = model or str(SETTINGS_BY_KEY["extraction.model"].default)
             headers = {"Authorization": f"Bearer {key}"} if key else {}
             results.append(_probe(
                 "extraction", f"{base}/chat/completions",
