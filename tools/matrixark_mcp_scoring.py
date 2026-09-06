@@ -24,7 +24,8 @@ def tokens(text: str) -> list[str]:
 
 # Near-duplicate detection lives here rather than beside one of the two packers that need it.
 # It was defined in matrixark_mcp_core_ref_selection, which imports matrixark_mcp_core, so the
-# other packer -- matrixark_mcp_budget_pack, which the gateway reaches -- could not use it without
+# other packer -- matrixark_mcp_budget_pack, which no production path reaches -- could not use
+# it without
 # taking that whole dependency at import time. It is built on `tokens`, which this module owns.
 def normalized_token_set(text: str) -> frozenset[str]:
     """Lower-cased, de-duplicated token set used for near-duplicate detection."""

@@ -61,8 +61,8 @@ __all__ = ['dropped_candidate_audit_ref', 'record_dropped_candidate', 'diversify
 
 
 # `normalized_token_set` and `near_duplicate_overlap_ratio` are not defined here any more. They
-# moved to matrixark_mcp_scoring so matrixark_mcp_budget_pack can use them too: the gateway reaches
-# that packer, and it had no near-duplicate suppression at all while the setting that governs it,
+# moved to matrixark_mcp_scoring so matrixark_mcp_budget_pack can use them too: no production
+# path reaches that packer, and it had no near-duplicate suppression at all while the setting that governs it,
 # MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD, is offered by matrixark_gateway_config and defaults
 # to 0.85 -- on. This module could not be the shared home because it imports matrixark_mcp_core.
 try:
@@ -128,7 +128,7 @@ def clamp_refs_to_token_budget(
 # Neither was the complete one, so the surviving pair takes the wider rule and the richer record.
 #
 # It lives there rather than here because that module does not import matrixark_mcp_core and this
-# one does; matrixark_mcp_budget_pack, which the gateway reaches, already resolved both names
+# one does; matrixark_mcp_budget_pack, which no production path reaches, already resolved both names
 # there.
 try:
     from tools.matrixark_mcp_recall_scoring import (
