@@ -2244,25 +2244,27 @@ def registry_access_scope(scope: Json, *, sharing_scope: str = "private_user") -
 # quota, the discarded bigrams still consumed their slots: measured on a CN/EN corpus, only
 # 42.9-51.1% of emitted keywords survived to become terms, so a cap of 12 bought 6 usable terms
 # and a cap of 200 bought 86.
-_INDEX_VALUE_CJK = (
-    "㐀-䶿"  # CJK extension A
-    "一-鿿"  # CJK unified ideographs
-    "豈-﫿"  # compatibility ideographs
-    "぀-ヿ"  # hiragana + katakana
-    "가-힯"  # hangul syllables
-)
-_INDEX_VALUE_STRIP_RE = re.compile(r"[^a-z0-9_.:/-" + _INDEX_VALUE_CJK + r"]+")
-
-
-def normalized_index_value(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    text = _INDEX_VALUE_STRIP_RE.sub("_", text)
-    return text.strip("_")
-
-
-def context_index_name(kind: str, value: Any) -> str:
-    normalized = normalized_index_value(value)
-    return f"{kind}:{normalized}" if normalized else ""
+# `normalized_index_value` and `context_index_name` are not defined here. They were, and this copy
+# was the one that kept CJK and other non-ASCII characters; matrixark_mcp_indexing had a plainer
+# copy that replaced everything outside [a-z0-9_.:/-] with "_". Because the result is then stripped
+# of "_", and `context_index_name` returns "" for an empty value, a term written only in Chinese,
+# Japanese or Korean normalised to the EMPTY STRING through that copy:
+#
+#     written here                keyword:内存
+#     normalised there            ''
+#
+# Both are live and they sit on opposite sides of the same lookup: matrixark_mcp_core_query_analysis
+# and matrixark_mcp_core_codex_outcome reach this module, while matrixark_mcp_query reaches
+# matrixark_mcp_indexing. A term indexed under one could not be found by a query normalised through
+# the other -- not ranked lower, not found at all. `café` lost its accent the same way.
+#
+# The character class moved to matrixark_mcp_indexing, which owns index naming and imports nothing
+# from here, and this module re-exports it, so there is one normaliser and a change to it cannot
+# reach the writer and miss the reader again.
+try:
+    from tools.matrixark_mcp_indexing import context_index_name, normalized_index_value
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import context_index_name, normalized_index_value
 
 
 def profile_memory_class_for_entity_type(entity_type: Any) -> str:

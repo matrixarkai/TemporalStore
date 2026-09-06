@@ -66,9 +66,23 @@ def _ordered_unique(values: list[str]) -> list[str]:
     return output
 
 
+#: Characters an index value may keep beyond ASCII. Without these the normaliser replaced every
+#: non-ASCII character with "_", and since the result is then stripped of "_" a term written only
+#: in one of these scripts normalised to the EMPTY string -- `context_index_name` returns "" for an
+#: empty value, so the term did not merely change, it disappeared.
+_INDEX_VALUE_CJK = (
+    "\u3400-\u4dbf"  # CJK extension A
+    "\u4e00-\u9fff"  # CJK unified ideographs
+    "\uf900-\ufaff"  # compatibility ideographs
+    "\u3040-\u30ff"  # hiragana + katakana
+    "\uac00-\ud7af"  # hangul syllables
+)
+_INDEX_VALUE_STRIP_RE = re.compile(r"[^a-z0-9_.:/-" + _INDEX_VALUE_CJK + r"]+")
+
+
 def normalized_index_value(value: Any) -> str:
     text = str(value or "").strip().lower()
-    text = re.sub(r"[^a-z0-9_.:/-]+", "_", text)
+    text = _INDEX_VALUE_STRIP_RE.sub("_", text)
     return text.strip("_")
 
 
