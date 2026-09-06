@@ -26,10 +26,15 @@ except ImportError:  # run from tools/
     from matrixark_mcp_temporal_append import slim_persisted_record
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# matrixark_mcp_temporal_append.py carries a SECOND copy of the append implementation -- the same
+# legacy-index and bundle branches as matrixark_temporal_direct_write. Leaving it off this list is
+# why five successive changes to what gets slimmed never reached it, and why context_summary was
+# still written fat after four of them.
 PERSIST_MODULES = (
     "matrixark_temporal_direct_write.py",
     "matrixark_temporal_direct_backend.py",
     "matrixark_mcp_raw_ingestion.py",
+    "matrixark_mcp_temporal_append.py",
 )
 
 

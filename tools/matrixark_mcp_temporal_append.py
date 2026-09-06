@@ -416,7 +416,8 @@ def append_many_materialized(target: Any, records: list[Json], *, allow_queue: b
                 target._index_cache = target._get_index()
             entries: list[Json] = []
             for record in records_to_append:
-                payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                payload = json.dumps(slim_persisted_record(record),
+                                     sort_keys=True, separators=(",", ":"))
                 record_id = (
                     f"{len(target._index_cache):020d}:"
                     f"{record.get('record_type', 'record')}:"
@@ -450,7 +451,7 @@ def append_many_materialized(target: Any, records: list[Json], *, allow_queue: b
         for bundle in target._record_bundles(records):
             record_key, record_id = target._record_location(sequence)
             payload_value: Json
-            slim = [slim_persisted_storage_route(record) for record in bundle]
+            slim = [slim_persisted_record(record) for record in bundle]
             payload_value = slim[0] if len(slim) == 1 else {"record_bundle": slim}
             payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
             entries.append(
