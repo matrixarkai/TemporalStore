@@ -191,6 +191,177 @@ fn what_the_read_cache_codec_costs() {
     }
 }
 
+/// Where a warm read's remaining allocations go.
+///
+/// Caching the answer packed rather than as text took a warm read from 15 allocations to 8. The
+/// convenient story about the rest is that it all lives inside the cache crate -- convenient
+/// because that crate is a pinned dependency. Worth splitting rather than assuming: anything on
+/// this side of the boundary is ours.
+///
+/// Decodes a stored answer directly, which is the same call a hit makes, and compares that against
+/// the whole read. What is left over is the plumbing around the codec.
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn where_a_warm_reads_allocations_go() {
+    for value_len in [64usize, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let keys = 200usize;
+        let names: Vec<String> =
+            (0..keys).map(|index| format!("tenant/7/object/{index:09}")).collect();
+        for name in &names {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet { key: name.clone(), value: vec![118u8; value_len] },
+            });
+        }
+        // Warm the cache, so what follows measures hits.
+        for name in &names {
+            let _ = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: name.clone() },
+            });
+        }
+
+        // What one stored answer costs to decode: the same shape the cache stores.
+        let stored = crate::engine::command_validation::encode_cached_response(
+            &crate::types::CommandResponse::Bytes { value: Some(vec![118u8; value_len]) },
+        )
+        .expect("encode");
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..keys {
+            std::hint::black_box(crate::engine::command_validation::decode_cached_response(
+                &stored,
+            ));
+        }
+        let decoding = probe.stop();
+
+        // The whole read, key building and cache lookup included.
+        let probe = crate::alloc_probe::Probe::start();
+        for name in &names {
+            std::hint::black_box(engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: name.clone() },
+            }));
+        }
+        let whole = probe.stop();
+
+        let split = |counts: &crate::alloc_probe::AllocCounts| {
+            (counts.allocs as f64 / keys as f64, counts.alloc_bytes as f64 / keys as f64)
+        };
+        let (da, db) = split(&decoding);
+        let (wa, wb) = split(&whole);
+        println!(
+            "  SPLITREAD value {value_len:>5}B | stored {:>6} B | decode {da:>5.1} allocs {db:>8.0} B | whole read {wa:>5.1} allocs {wb:>8.0} B | everything else {:>5.1} allocs {:>8.0} B ({:>4.0}% of allocs)",
+            stored.len(),
+            wa - da,
+            wb - db,
+            if wa > 0.0 { (wa - da) / wa * 100.0 } else { 0.0 },
+        );
+
+        assert!(whole.allocs > 0, "the probe must observe the reads at {value_len}B");
+    }
+}
+
+/// A cached answer reads back as itself, whichever shape it is.
+///
+/// The read cache writes the three payload-carrying shapes as their bytes and everything else
+/// through msgpack. Both halves are exercised here, along with the shapes that have an easy
+/// off-by-one in them -- an absent value, an empty payload, an empty collection, and a `Values`
+/// run that mixes present and absent -- because the framing is hand-written.
+#[test]
+fn a_cached_answer_reads_back_as_itself() {
+    use crate::engine::command_validation::{decode_cached_response, encode_cached_response};
+    use crate::types::CommandResponse;
+
+    let cases = vec![
+        ("bytes absent", CommandResponse::Bytes { value: None }),
+        ("bytes empty", CommandResponse::Bytes { value: Some(Vec::new()) }),
+        ("bytes small", CommandResponse::Bytes { value: Some(b"a value".to_vec()) }),
+        ("bytes large", CommandResponse::Bytes { value: Some(vec![118u8; 8192]) }),
+        ("bytes with a tag byte in it", CommandResponse::Bytes { value: Some(vec![0, 1, 2, 3, 4]) }),
+        ("members none", CommandResponse::Members { members: Vec::new() }),
+        (
+            "members several",
+            CommandResponse::Members {
+                members: vec![Vec::new(), b"one".to_vec(), vec![7u8; 4096]],
+            },
+        ),
+        ("values none", CommandResponse::Values { values: Vec::new() }),
+        (
+            "values mixed",
+            CommandResponse::Values {
+                values: vec![None, Some(Vec::new()), Some(b"three".to_vec()), None],
+            },
+        ),
+        ("empty", CommandResponse::Empty),
+        ("integer", CommandResponse::Integer { value: -9_007_199_254_740_993 }),
+        (
+            "hash entries, through the packed fallback",
+            CommandResponse::HashEntries {
+                entries: vec![("field".to_string(), vec![9u8; 32])],
+            },
+        ),
+    ];
+
+    for (label, response) in cases {
+        let encoded = encode_cached_response(&response).unwrap_or_else(|| {
+            panic!("{label} must encode");
+        });
+        let decoded = decode_cached_response(&encoded)
+            .unwrap_or_else(|| panic!("{label} must decode back"));
+        assert_eq!(
+            format!("{decoded:?}"),
+            format!("{response:?}"),
+            "{label} did not survive the cache codec"
+        );
+
+        // A truncated entry is a miss, not a panic and not a different answer. The cache drops
+        // whatever fails to decode and recomputes, so this is the path an interrupted entry takes.
+        for cut in [0usize, 1, encoded.len().saturating_sub(1)] {
+            if cut < encoded.len() {
+                let short = decode_cached_response(&encoded[..cut]);
+                if let Some(short) = short {
+                    assert_ne!(
+                        format!("{short:?}"),
+                        format!("{response:?}"),
+                        "{label} cut to {cut} bytes must not read back as the whole answer"
+                    );
+                }
+            }
+        }
+    }
+
+    // Bytes that are not a stored answer read as a miss rather than as a wrong answer.
+    assert!(decode_cached_response(&[]).is_none(), "an empty entry must not decode");
+    assert!(decode_cached_response(&[0xc1, 0xff, 0x00]).is_none(), "junk must not decode");
+
+    // What is STORED must not drift. The cache admits and evicts these entries by size, so an
+    // encoding change is a behaviour change: it decides which answers survive pressure, not just
+    // how they are written. Four tests around eviction and refill turn on exactly that.
+    let response = CommandResponse::Bytes { value: Some(b"a value".to_vec()) };
+    let packed_directly = {
+        let mut packed = Vec::new();
+        let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        serde::Serialize::serialize(&response, &mut serializer).expect("pack");
+        packed
+    };
+    assert_eq!(
+        encode_cached_response(&response).expect("encode"),
+        packed_directly,
+        "a stored answer must stay the bytes it has always been"
+    );
+}
+
 #[test]
 fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     let dir = tempfile::tempdir().unwrap();
