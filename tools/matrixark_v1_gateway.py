@@ -3641,6 +3641,15 @@ def _headers_map(scope: Json) -> dict[str, str]:
     return {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
 
 
+#: The most rows /v1/skills and /v1/resources will return, whatever is asked for.
+#:
+#: Named because the page held its own copy of the number and clamped to it before sending, so the
+#: two had to agree and nothing made them. The page now sends what was typed and reports what came
+#: back. Two other routes cap at 500 as well; those are different policies that happen to share a
+#: number, and folding them in here would couple them.
+CATALOG_LIST_LIMIT_MAX = 500
+
+
 def _ok_body(result: Any) -> Json:
     return result if isinstance(result, dict) else {"result": result}
 
@@ -5511,7 +5520,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             args: Json = {"scope": catalog_scope}
             limit = _qc("limit")
             if limit and limit.strip().isdigit():
-                args["limit"] = min(int(limit), 500)
+                args["limit"] = min(int(limit), CATALOG_LIST_LIMIT_MAX)
             if is_skills:
                 if str(_qc("include_disabled") or "").strip().lower() in ("1", "true", "yes"):
                     args["include_disabled"] = True
@@ -5533,7 +5542,14 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
                                    _failure(scope, "backend_error", exc))
-            return await _json(send, 200, _ok_body(result))
+            body = _ok_body(result)
+            # What was actually applied, not what was asked for. A caller asking for 5,000 gets 500
+            # rows and, without this, no way to tell that from a catalogue holding exactly 500 -- so
+            # a truncated list reads as the whole of one.
+            body["limit_max"] = CATALOG_LIST_LIMIT_MAX
+            if "limit" in args:
+                body["limit"] = args["limit"]
+            return await _json(send, 200, body)
 
         # ---- enable / disable a skill (auth + skill:manage) ----------------------------------
         # Listing skills without being able to retire one leaves a customer with a catalog that

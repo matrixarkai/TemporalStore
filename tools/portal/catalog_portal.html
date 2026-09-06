@@ -653,7 +653,10 @@
       if (v) { parts.push(f + "_id=" + encodeURIComponent(v)); }
     });
     var limit = parseInt($("limit").value, 10);
-    parts.push("limit=" + (limit > 0 ? Math.min(limit, 500) : 100));
+    /* Sent as typed. Clamping here meant the page held its own copy of the gateway's maximum,
+       which is a second place for that number to be wrong -- and it hid the clamp from the person
+       who typed the bigger one. The response says what was applied. */
+    parts.push("limit=" + (limit > 0 ? limit : 100));
     return parts;
   }
 
@@ -769,6 +772,27 @@
          clicking would show. */
       $("skillsCount").textContent = " " + skills.length;
       $("resourcesCount").textContent = " " + resources.length;
+      /* A list that stopped at its limit is not the catalogue. Read from what came back, per list,
+         because one can be cut while the other is not -- and the filter above runs in the browser,
+         so it narrows what was already cut rather than reaching past the cut.
+         Only written when there IS something to say: the auto-refresh sets its own message here
+         and a blank write would take it away. */
+      var cut = [];
+      [["Skills", bodies[0], (bodies[0].skills || []).length],
+       ["Resources", bodies[1], (bodies[1].resources || []).length]].forEach(function (pair) {
+        var applied = Number(pair[1].limit);
+        if (applied > 0 && pair[2] >= applied) { cut.push(pair[0] + " at " + applied); }
+      });
+      var most = Number(bodies[0].limit_max || bodies[1].limit_max) || 0;
+      var asked = parseInt($("limit").value, 10);
+      var note = cut.length
+        ? cut.join(" and ") + " \u2014 the list stopped at the limit, so there may be more."
+        : "";
+      if (most && asked > most) {
+        note += (note ? " " : "") + "The most this endpoint returns is " + most + "; "
+              + asked + " was asked for.";
+      }
+      if (note) { say($("listMsg"), note, "info"); }
       /* One filter covers both lists, and only one is visible. With Skills open, a query matching
          only Resources would empty the list and read as "nothing found" while the match sat one
          tab away -- so when the open tab has none and the other has some, say where they are. */
