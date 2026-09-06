@@ -42,6 +42,32 @@ SCAN_MODULES = (
 HOME = "matrixark_mcp_scoring"
 
 
+def _import(name: str):
+    """Import a tools module whichever way the suite is being run.
+
+    The suite runs both from tools/ (bare names) and from the repository root (as
+    `tools.<module>`), and every module in the tree carries the same try/except for this reason.
+    A guard that picks one path fails on the OTHER path, which reads as a defect in the code it
+    is guarding rather than in how it was invoked.
+    """
+    try:
+        return importlib.import_module("tools." + name)
+    except ImportError:
+        return importlib.import_module(name)
+
+
+def _module_name(obj) -> str:
+    """The defining module's name without its package prefix.
+
+    The suite runs both from tools/ and as `tools.<module>`, so the same function reports
+    `matrixark_mcp_scoring` in one and `tools.matrixark_mcp_scoring` in the other. Comparing whole
+    dotted names makes this file fail on the import path rather than on what it is checking.
+    """
+    module = inspect.getmodule(obj)
+    return getattr(module, "__name__", "").rsplit(".", 1)[-1]
+
+
+
 def _definitions_of_cosine() -> list[str]:
     listed = subprocess.run(
         ["git", "ls-files", "tools/*.py"], cwd=REPO, capture_output=True, text=True).stdout.split()
@@ -70,16 +96,16 @@ class ThereIsOneCosineTest(unittest.TestCase):
 
     def test_every_retrieval_scan_reaches_that_one(self) -> None:
         for name in SCAN_MODULES:
-            module = importlib.import_module(name)
-            reached = inspect.getmodule(module.cosine)
+            module = _import(name)
+            reached = _module_name(module.cosine)
             self.assertEqual(
-                HOME, getattr(reached, "__name__", None),
+                HOME, reached,
                 "%s scores candidates with a cosine from %s rather than %s"
-                % (name, getattr(reached, "__name__", "?"), HOME))
+                % (name, reached, HOME))
 
     def test_it_normalises_rather_than_returning_the_dot(self) -> None:
         """The discriminating case, and the control that shows why one alone proves nothing."""
-        core = importlib.import_module("matrixark_mcp_core")
+        core = _import("matrixark_mcp_core")
 
         self.assertEqual(
             1.0, core.cosine([0.6, 0.8], [0.6, 0.8]),
@@ -93,7 +119,7 @@ class ThereIsOneCosineTest(unittest.TestCase):
 
     def test_the_clamp_no_longer_swallows_the_ranking(self) -> None:
         """The consequence the scans actually suffer, asserted where they suffer it."""
-        core = importlib.import_module("matrixark_mcp_core")
+        core = _import("matrixark_mcp_core")
         near = core.normalized_dense_score(core.cosine([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]))
         far = core.normalized_dense_score(core.cosine([1.0, 2.0, 3.0], [6.0, 5.0, 4.0]))
         self.assertNotEqual(
