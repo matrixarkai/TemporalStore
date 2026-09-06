@@ -131,6 +131,26 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
+  /context/ingest:
+    post:
+      summary: Ingest conversation messages or pre-shaped records into the context store.
+      description: >-
+        Every field is optional and defaults, so a caller sends only what it has.
+      requestBody:
+        $ref: '#/components/requestBodies/ContextIngest'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /context/retrieve:
+    post:
+      summary: Retrieve an assembled context pack for a scope and query.
+      description: >-
+        Every field is optional and defaults, so a caller sends only what it has.
+      requestBody:
+        $ref: '#/components/requestBodies/ContextRetrieve'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
 components:
   responses:
     Envelope:
@@ -206,6 +226,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ControlStateCountRequest'
+    ContextIngest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ContextIngestRequest'
+    ContextRetrieve:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ContextRetrieveRequest'
   schemas:
     Envelope:
       type: object
@@ -381,3 +413,77 @@ components:
             end_ms:
               type: integer
               format: int64
+    ContextScope:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        account_id:
+          type: string
+        user_id:
+          type: string
+        session_id:
+          type: string
+    ContextMessage:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        timestamp_ms:
+          type: integer
+          format: int64
+        title:
+          type: string
+    ContextIngestRequest:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/ContextScope'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextMessage'
+        sources:
+          type: array
+          items:
+            type: object
+        records:
+          type: array
+          items:
+            type: object
+        query:
+          type: string
+        start_time_ms:
+          type: integer
+          format: int64
+        end_time_ms:
+          type: integer
+          format: int64
+        max_events:
+          type: integer
+        provider:
+          type: object
+    ContextRetrieveRequest:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/ContextScope'
+        query:
+          type: string
+        start_time_ms:
+          type: integer
+          format: int64
+        end_time_ms:
+          type: integer
+          format: int64
+        max_events:
+          type: integer
+        node_hashes:
+          type: array
+          items:
+            type: integer
+            format: int64
+        provider:
+          type: object
