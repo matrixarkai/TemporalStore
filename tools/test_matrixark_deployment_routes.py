@@ -18,6 +18,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import matrixark_deployment_plan as _plan  # noqa: E402
 import matrixark_v1_gateway as gw  # noqa: E402
 from test_matrixark_v1_gateway import (  # noqa: E402
     _FakeResponse, _FakeServer, _cfg, _factory_for, drive,
@@ -176,19 +177,26 @@ class _PageHarness:
             self.skipTest("node is not installed")
         self.app = _app()
 
-    def _routes(self, plan_payload) -> dict:
+    def _routes(self, plan_payload, plan_override=None) -> dict:
         _st, _h, config = drive(self.app, method="GET", path="/v1/admin/config", headers=ADMIN)
         _st, _h, deployment = drive(self.app, method="GET", path="/v1/admin/deployment",
                                     headers=ADMIN)
         _st, _h, plan = drive(self.app, method="POST", path="/v1/admin/deployment/plan",
                               body=plan_payload, headers=ADMIN)
+        planned = json.loads(plan)
+        # A build WITH MatrixObject compiled in cannot produce an unhonoured plan through this
+        # route -- the flag comes from the build, not the request. The page's contract is about
+        # what it does with the answer, so that case is handed to it directly rather than
+        # pretending the route produced it.
+        if plan_override:
+            planned.update(plan_override)
         return {
             "config": json.loads(config),
             "deployment": json.loads(deployment),
-            "plan": json.loads(plan),
+            "plan": planned,
         }
 
-    def _run(self, plan_payload) -> dict:
+    def _run(self, plan_payload, plan_override=None) -> dict:
         import subprocess
         import tempfile
         page = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -196,7 +204,7 @@ class _PageHarness:
         harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "portal", "deployment_chooser_harness.js")
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-            json.dump(self._routes(plan_payload), handle)
+            json.dump(self._routes(plan_payload, plan_override), handle)
             fixture = handle.name
         try:
             proc = subprocess.run(["node", harness, page, fixture],
@@ -319,6 +327,70 @@ class ThisFileDefinesEachClassOnceTest(unittest.TestCase):
         self.assertEqual([], repeated,
                          "these classes are defined more than once, so the earlier definitions are "
                          "dead code that can never fail: %s" % repeated)
+
+
+class TheStorageYouAskedForTest(unittest.TestCase):
+    """`resolve_backend` decides whether a storage request was honoured, and `plan` used to
+    consume that and drop it, leaving the page to infer a substitution by comparing the request
+    with the resolved backend.
+
+    Those are different vocabularies. An ordinary raft deployment on EBS has storage `ebs` and
+    backend `raft`, and nothing is wrong with it -- so the comparison the page would have had to
+    make warns about every healthy plan, which is the shape of warning nobody reads.
+    """
+
+    def test_an_ordinary_plan_is_honoured(self) -> None:
+        out = _plan.plan(shape="raft", storage="ebs", nodes=3, root="/var/lib/ts")
+        self.assertTrue(out["backend_honoured"])
+        # The floor for the whole flag: the request and the resolved backend DIFFER here, and it
+        # is still honoured. A comparison-based check would have called this a substitution.
+        self.assertNotEqual(out["storage"], out["resolved_backend"])
+
+    def test_a_request_the_build_cannot_serve_is_not(self) -> None:
+        out = _plan.plan(shape="shared", storage="matrixobject", nodes=3,
+                         matrixobject_available=False)
+        self.assertFalse(out["backend_honoured"])
+        self.assertEqual("matrixobject", out["storage"])
+        self.assertNotEqual("matrixobject", out["resolved_backend"])
+        # It still launches. That is why "ok" cannot carry this.
+        self.assertTrue(out["ok"])
+
+    def test_the_same_request_on_a_build_that_has_it_is_honoured(self) -> None:
+        out = _plan.plan(shape="shared", storage="matrixobject", nodes=3,
+                         matrixobject_available=True)
+        self.assertTrue(out["backend_honoured"])
+
+    def test_a_blocked_plan_describes_the_environment_it_emitted(self) -> None:
+        """Shared with no directory is refused rather than emitted, so the flag describes the
+        environment the plan actually produced and `ok` carries the refusal."""
+        out = _plan.plan(shape="shared", storage="path", nodes=3)
+        self.assertFalse(out["ok"])
+        self.assertTrue(out["blocking"])
+
+
+class ThePageSaysWhatYouAskedForTest(_PageHarness, unittest.TestCase):
+
+    PAYLOAD = {"shape": "raft", "storage": "ebs", "nodes": 3, "root": "/var/lib/temporalstore"}
+
+    def test_an_honoured_plan_says_launchable_and_nothing_more(self) -> None:
+        out = self._run(self.PAYLOAD)
+        self.assertIn("launchable", out["msg"])
+        self.assertNotIn("not as the storage you chose", out["msg"])
+        self.assertNotIn("You asked for", out["verdict"])
+
+    def test_an_unhonoured_plan_says_which_storage_it_is_not(self) -> None:
+        out = self._run(self.PAYLOAD, plan_override={"backend_honoured": False,
+                                                     "storage": "matrixobject"})
+        self.assertIn("You asked for", out["verdict"])
+        self.assertIn("matrixobject", out["verdict"])
+        self.assertIn("not as the storage you chose", out["msg"])
+        # Still launchable: it starts and serves, so calling it an error would be wrong.
+        self.assertIn("launchable", out["msg"])
+
+    def test_the_resolved_backend_is_still_shown_either_way(self) -> None:
+        for override in (None, {"backend_honoured": False, "storage": "matrixobject"}):
+            out = self._run(self.PAYLOAD, plan_override=override)
+            self.assertIn("Resolves to", out["verdict"], override)
 
 
 if __name__ == "__main__":

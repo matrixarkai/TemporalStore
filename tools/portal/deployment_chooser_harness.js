@@ -127,6 +127,9 @@ setTimeout(() => {
       verdictOnLoad,
       live: get("liveShape").textContent,
       verdict: get("depVerdict").innerHTML,
+      /* The sentence under the table. "Launchable" and "launchable, but not as the storage you
+         chose" are different answers and only this element carries the difference. */
+      msg: get("depMsg").innerHTML,
       envFile: get("depEnv").textContent,
       storageAfterShared,
       sharedFieldShownForPath,
