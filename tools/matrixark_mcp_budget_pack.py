@@ -180,7 +180,22 @@ def is_stale_or_superseded_candidate(candidate: Json) -> bool:
     return version_state in {"stale", "superseded", "historical_superseded"}
 
 
-def is_pending_async_candidate(candidate: Json) -> bool:
+def carries_pending_async_marker(candidate: Json) -> bool:
+    """Does this candidate carry a pending-async marker, whatever shape it is?
+
+    Named apart from `is_pending_async_candidate` on purpose. That one is the RETRIEVAL predicate
+    and returns False unless `ref_type == "event"`, because an event is the only shape it ranks --
+    `matrixark_local_adapter_dashboard._embedding_is_pending` already says so, and explains what
+    counting a backlog with it costs. This module defined a THIRD function under that same name,
+    without the event gate, so the tree had one name meaning two things and a comment elsewhere
+    explaining that it meant one.
+
+    Both call sites keep exactly the function they had. At the memory-layer call the surrounding
+    branch has already established `ref_type == "event"`, so the gate would change nothing there;
+    at `candidate_extraction_phase_name` the unguarded reading is the one wanted, because a
+    resource chunk or a skill section waiting on extraction is in that phase whether or not
+    retrieval would rank it.
+    """
     metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
     return (
         str(candidate.get("event_type") or metadata.get("event_type") or "").strip().lower() == "pending_async"
@@ -268,7 +283,7 @@ def candidate_memory_layer_name(candidate: Json) -> str:
             return "cross_session_segment"
         return "session_neutral_segment"
     if ref_type == "event":
-        if is_pending_async_candidate(candidate):
+        if carries_pending_async_marker(candidate):
             if is_memory_feature:
                 return "pending_async_memory_feature_event"
             if memory_scope == "user_profile" and session_continuity == "cross_session":
@@ -650,7 +665,7 @@ def select_token_budgeted_refs(
         phase = str(candidate.get("extraction_phase") or "").strip().lower()
         if not phase and isinstance(candidate.get("metadata"), dict):
             phase = str(candidate.get("metadata", {}).get("extraction_phase") or "").strip().lower()
-        if not phase and is_pending_async_candidate(candidate):
+        if not phase and carries_pending_async_marker(candidate):
             phase = "pending_async"
         return phase or "unknown"
 
