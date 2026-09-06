@@ -4959,7 +4959,16 @@ def fast_async_hook_ingest(
         }
         try:
             pre_ingest_idle_commit_result = session_commit(pre_idle_args, hook=pre_idle_hook)
-        except TypeError:
+        except TypeError as exc:
+            # Narrowed to the signature mismatch it is written for. It used to catch every
+            # TypeError, and every `session_commit` in this tree takes `hook` -- so it
+            # could not fire for the reason it exists, and anything it DID catch came from
+            # inside the commit. That was then retried without the hook, silently, and the
+            # structured error below never ran. Its three siblings --
+            # adapter_ensure_backend_ready, the native retriever and append_records -- all
+            # check the message and re-raise; this was the one that did not.
+            if "unexpected keyword argument" not in str(exc) or "hook" not in str(exc):
+                raise
             pre_ingest_idle_commit_result = session_commit(pre_idle_args)
         except Exception as exc:
             pre_ingest_idle_commit_result = {
@@ -5194,7 +5203,10 @@ def fast_async_hook_ingest(
             commit_args["max_messages"] = threshold
         try:
             session_commit_result = session_commit(commit_args, hook=commit_args["agent_hook"])
-        except TypeError:
+        except TypeError as exc:
+            # Same narrowing as the pre-ingest commit above, and for the same reason.
+            if "unexpected keyword argument" not in str(exc) or "hook" not in str(exc):
+                raise
             session_commit_result = session_commit(commit_args)
         except Exception as exc:
             session_commit_result = {
