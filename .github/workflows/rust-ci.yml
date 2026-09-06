@@ -17,7 +17,13 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/rust-ci.yml'
   pull_request:
-    branches: [main, rust-main]
+    # No `branches:` filter here, deliberately. This key filters on the BASE branch, and a
+    # stacked pull request is based on the branch below it, not on main -- so this job did not
+    # run on one at all. Worse, when the branch below it merged, GitHub retargeted the pull
+    # request to main and did NOT re-run anything: the stale checks from the feature-branch
+    # days stayed green and the pull request merged reporting success from a job that had
+    # never seen it. Running on every pull request costs a few Actions minutes and is the only
+    # way the gate covers the changes that actually reach main.
   schedule:
     - cron: '0 7 * * *'  # nightly full build + test on the default branch
   workflow_dispatch:
