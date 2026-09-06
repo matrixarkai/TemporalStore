@@ -3455,26 +3455,7 @@ def _worker_count(argv: Optional[list] = None, env: Optional[dict] = None) -> in
     configuration write has its own reason to care -- a live setting is applied to the environment
     of whichever worker served the request, and no other.
     """
-    argv = list(sys.argv if argv is None else argv)
-    env = dict(os.environ if env is None else env)
-    workers = 0
-    for index, token in enumerate(argv):
-        if token == "--workers" and index + 1 < len(argv):
-            try:
-                workers = int(argv[index + 1])
-            except ValueError:
-                workers = 0
-        elif token.startswith("--workers="):
-            try:
-                workers = int(token.split("=", 1)[1])
-            except ValueError:
-                workers = 0
-    if workers <= 0:
-        try:
-            workers = int(str(env.get("WEB_CONCURRENCY", "")).strip() or "0")
-        except ValueError:
-            workers = 0
-    return workers if workers > 0 else 1
+    return _gwmetrics.worker_count(argv, env)
 
 
 def _single_writer_warning(
@@ -4163,36 +4144,9 @@ def _engine_footprint(text: Optional[str]) -> Json:
 
 
 def _worker_resident() -> Json:
-    """This worker's resident memory, and where the number came from.
-
-    The source is reported because the two ways of asking do not agree about units:
-    `ru_maxrss` is kilobytes on Linux and BYTES on macOS, and a panel that picks wrong is out by a
-    factor of 1024 while looking entirely plausible. /proc is unambiguous, so it is preferred and
-    named.
-    """
-    try:
-        with open("/proc/self/status", encoding="utf-8") as handle:
-            fields: Json = {}
-            for line in handle:
-                if line.startswith(("VmRSS:", "VmHWM:")):
-                    key, value = line.split(":", 1)
-                    fields[key] = int(value.strip().split()[0]) * 1024
-        if fields.get("VmRSS"):
-            return {"resident_bytes": int(fields["VmRSS"]),
-                    "peak_bytes": int(fields.get("VmHWM") or fields["VmRSS"]),
-                    "source": "/proc/self/status"}
-    except (OSError, ValueError, IndexError):
-        pass
-    try:
-        import resource as _resource
-
-        raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
-        peak = int(raw) * (1 if sys.platform == "darwin" else 1024)
-        # Only the peak is available this way. Reporting it as "resident" would overstate a worker
-        # that has since given memory back.
-        return {"resident_bytes": None, "peak_bytes": peak, "source": "ru_maxrss"}
-    except Exception:  # pragma: no cover - a platform with neither
-        return {"resident_bytes": None, "peak_bytes": None, "source": "unavailable"}
+    """This worker's resident memory. The measurement lives with the other metrics now, so the
+    gauges built from it are rendered where `test_matrixark_dashboards` can see them."""
+    return _gwmetrics.worker_resident()
 
 
 def _footprint_summary(cfg: GatewayConfig, text: Optional[str] = None) -> Json:
@@ -5105,25 +5059,10 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 config_snapshot = _model_config_snapshot()
             except Exception:
                 config_snapshot = None
-            try:
-                resident = _worker_resident()
-                extra.append("# HELP matrixark_gateway_worker_resident_bytes Resident memory of "
-                             "the worker that served this scrape.")
-                extra.append("# TYPE matrixark_gateway_worker_resident_bytes gauge")
-                # Labelled by source so a scrape taken through the fallback is distinguishable
-                # from one taken through /proc, rather than silently comparable to it.
-                for field, series in (("resident_bytes", "matrixark_gateway_worker_resident_bytes"),
-                                      ("peak_bytes", "matrixark_gateway_worker_peak_bytes")):
-                    value = resident.get(field)
-                    if value is None:
-                        continue
-                    if series.endswith("peak_bytes"):
-                        extra.append("# TYPE matrixark_gateway_worker_peak_bytes gauge")
-                    extra.append('%s{source="%s"} %d'
-                                 % (series, resident.get("source", "unknown"), int(value)))
-                extra.append("matrixark_gateway_workers %d" % _worker_count())
-            except Exception:  # pragma: no cover - the scrape is worth more than this figure
-                pass
+            # The footprint gauges are rendered by `prometheus_text` itself now. Appending
+            # them here put them outside every renderer, and the rule that checks each emitted
+            # series has a panel collects what this build emits by RENDERING it -- so they went
+            # out uncharted and unalerted with nothing to notice.
             body = _gwmetrics.prometheus_text(config_snapshot, extra)
             return await _text(send, 200, body, content_type="text/plain; version=0.0.4")
 

@@ -25,6 +25,7 @@ Two deliberate constraints:
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from collections import deque
 import time
@@ -429,12 +430,107 @@ def config_change_lines() -> List[str]:
     ]
 
 
+def worker_resident() -> Json:
+    """This worker's resident memory, and where the number came from.
+
+    The source travels with the number because the two ways of asking do not agree about units:
+    `ru_maxrss` is kilobytes on Linux and BYTES on macOS, and a reader that picks wrong is out by a
+    factor of 1024 while looking entirely plausible. /proc is unambiguous, so it is preferred and
+    named.
+    """
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            fields: Json = {}
+            for line in handle:
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    key, value = line.split(":", 1)
+                    fields[key] = int(value.strip().split()[0]) * 1024
+        if fields.get("VmRSS"):
+            return {"resident_bytes": int(fields["VmRSS"]),
+                    "peak_bytes": int(fields.get("VmHWM") or fields["VmRSS"]),
+                    "source": "/proc/self/status"}
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import resource as _resource
+
+        raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+        peak = int(raw) * (1 if sys.platform == "darwin" else 1024)
+        # Only the peak is available this way. Reporting it as "resident" would overstate a worker
+        # that has since given memory back.
+        return {"resident_bytes": None, "peak_bytes": peak, "source": "ru_maxrss"}
+    except Exception:  # pragma: no cover - a platform with neither
+        return {"resident_bytes": None, "peak_bytes": None, "source": "unavailable"}
+
+
+def worker_count(argv: Optional[List[str]] = None,
+                 env: Optional[Json] = None) -> int:
+    """How many workers this deployment was started with; 1 when nothing says otherwise.
+
+    Read from the command line, then WEB_CONCURRENCY.
+    """
+    argv = list(sys.argv if argv is None else argv)
+    env = dict(os.environ if env is None else env)
+    workers = 0
+    for index, token in enumerate(argv):
+        if token == "--workers" and index + 1 < len(argv):
+            try:
+                workers = int(argv[index + 1])
+            except ValueError:
+                workers = 0
+        elif token.startswith("--workers="):
+            try:
+                workers = int(token.split("=", 1)[1])
+            except ValueError:
+                workers = 0
+    if workers <= 0:
+        try:
+            workers = int(str(env.get("WEB_CONCURRENCY", "")).strip() or "0")
+        except ValueError:
+            workers = 0
+    return workers if workers > 0 else 1
+
+
+def worker_lines() -> List[str]:
+    """The footprint gauges, rendered here rather than appended by the route.
+
+    They were appended to the scrape from `/v1/metrics` itself, which put them outside every
+    renderer -- and `test_matrixark_dashboards` collects what this build emits BY RENDERING it. So
+    three series went out with no panel and no alert, and the rule that exists to catch exactly
+    that could not see them. A series that lives with the others is covered by that rule for free.
+    """
+    resident = worker_resident()
+    lines = [
+        "# HELP matrixark_gateway_worker_resident_bytes Resident memory of the worker that "
+        "served this scrape.",
+        "# TYPE matrixark_gateway_worker_resident_bytes gauge",
+        "# HELP matrixark_gateway_worker_peak_bytes Peak resident memory of that worker.",
+        "# TYPE matrixark_gateway_worker_peak_bytes gauge",
+        "# HELP matrixark_gateway_workers Workers this deployment was started with.",
+        "# TYPE matrixark_gateway_workers gauge",
+    ]
+    source = str(resident.get("source") or "unknown")
+    for field, series in (("resident_bytes", "matrixark_gateway_worker_resident_bytes"),
+                          ("peak_bytes", "matrixark_gateway_worker_peak_bytes")):
+        value = resident.get(field)
+        if value is None:
+            # Absent, not zero: a worker whose resident size could not be read is not one holding
+            # nothing, and a zero here would average into a fleet figure as though it were.
+            continue
+        # Labelled by source so a scrape taken through the fallback is distinguishable from one
+        # taken through /proc rather than silently comparable to it.
+        lines.append('%s{source="%s"} %d' % (series, source, int(value)))
+    lines.append("matrixark_gateway_workers %d" % worker_count())
+    return lines
+
+
 def prometheus_text(config_snapshot: Optional[Json] = None,
                     extra_lines: Optional[List[str]] = None) -> str:
     """The gateway's own metrics, plus config health, plus whatever the caller appends."""
     lines = METRICS.prometheus_lines()
     lines += config_health_lines(config_snapshot)
     lines += config_change_lines()
+    lines += worker_lines()
     if extra_lines:
         lines += extra_lines
     return "\n".join(lines) + "\n"

@@ -221,11 +221,25 @@ class TheScrapeCarriesItTooTest(unittest.TestCase):
     """A figure that exists only on a page cannot be alerted on or watched over time, which is
     most of what a footprint is for."""
 
-    def test_the_metrics_route_exports_the_worker_gauge(self) -> None:
-        with open(os.path.join(TOOLS, "matrixark_v1_gateway.py"), encoding="utf-8") as handle:
-            source = handle.read()
-        self.assertIn("matrixark_gateway_worker_resident_bytes", source)
-        self.assertIn("matrixark_gateway_workers", source)
+    def test_the_scrape_carries_the_worker_gauges(self) -> None:
+        """Asked of the scrape, not of a file.
+
+        This used to grep `matrixark_v1_gateway.py` for the series names, because that is where
+        the route appended them. Appending them there is exactly what kept them out of every
+        renderer and therefore out of the rule that checks each emitted series has a panel -- so
+        the string moved, and a test pinned to the file it used to be in went red for the change
+        that fixed the problem. What the name claims is that the scrape carries them; that is what
+        it asks now, and it holds wherever they are rendered.
+        """
+        try:
+            from tools import matrixark_gateway_metrics as gwm  # type: ignore
+        except ImportError:
+            import matrixark_gateway_metrics as gwm  # type: ignore
+        text = gwm.prometheus_text(
+            {"extraction": {"provider": "deterministic"},
+             "embedding": {"provider": "deterministic"}, "warnings": []})
+        self.assertIn("matrixark_gateway_worker_resident_bytes", text)
+        self.assertIn("matrixark_gateway_workers", text)
 
 
 class ThePageDrawsItTest(unittest.TestCase):

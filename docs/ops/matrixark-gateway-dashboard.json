@@ -583,6 +583,82 @@
           "expr": "max(matrixark_gateway_datanode_probe_age_seconds{instance=~\"$instance\"})"
         }
       ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Worker resident memory",
+      "description": "Resident and peak memory of each gateway worker. Per worker, and deliberately not summed: resident sets share pages, so adding the workers together produces a figure larger than the machine is using. The `source` label says how the number was read -- /proc/self/status is exact, ru_maxrss is a peak only, and a series that switches between them is not comparable across the switch. Several gateway settings ask an operator to trade memory for speed -- the page and block index caches, the hot record cache, whether embeddings are stored at all -- and this is the half of that trade you can watch.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "matrixark_gateway_worker_resident_bytes",
+          "legendFormat": "resident {{source}} {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "matrixark_gateway_worker_peak_bytes",
+          "legendFormat": "peak {{source}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Workers",
+      "description": "How many workers this deployment was started with, as each one reports it. A live configuration write reaches the environment of whichever worker served the request and no other, so this is what says whether that matters here. More than one worker on a store that is not shared splits a tenant's memory across separate copies.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(matrixark_gateway_workers)",
+          "legendFormat": "workers"
+        }
+      ]
     }
   ]
 }
