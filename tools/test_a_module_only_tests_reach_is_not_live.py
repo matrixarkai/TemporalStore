@@ -139,6 +139,16 @@ UNREACHABLE = {
         "matrixark_mcp_direct_cache",
         "matrixark_mcp_direct_cache_state",
     ),
+    # Two packers, ~1,639 lines, and the reason the docstring rule exists: both were held OUT of
+    # this list by a sentence. `matrixark_mcp_budget_pack` defines `select_token_budgeted_refs`,
+    # which production does import -- from `matrixark_mcp_core_ref_selection`, by way of
+    # `matrixark_mcp_core`. `matrixark_mcp_dashboard` defines `latest_async_pipeline_rows`, which
+    # production imports from `matrixark_mcp_async_readiness`. Each is a second copy of a name the
+    # live tree serves elsewhere, which is what makes them worth listing rather than ignoring.
+    "packers": (
+        "matrixark_mcp_budget_pack",
+        "matrixark_mcp_dashboard",
+    ),
     # Singles, ~4,062 lines between them.
     "singles": (
         "matrixark_mcp_deadline_pack",
@@ -174,9 +184,32 @@ def _parse() -> Dict[str, Tuple[str, ast.Module]]:
     return found
 
 
+def _docstrings(tree: ast.Module) -> Set[int]:
+    """The string Constants that are DOCSTRINGS -- module, class, function, method.
+
+    A docstring is prose. It is never the argument to `import_module`, so it can never be the
+    only thing reaching a module -- but the word scan below cannot tell "mirrors
+    `summary_provider()` in matrixark_mcp_summaries" from an import site, and one sentence of
+    explanation in a reachable module marked THREE unreachable ones live. That is this check's
+    own failure mode running backwards: a module nothing calls, hidden by a mention of its name.
+    """
+    found: Set[int] = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(node, (ast.Module, ast.ClassDef,
+                                 ast.FunctionDef, ast.AsyncFunctionDef)) or not body:
+            continue
+        first = body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+                and isinstance(first.value.value, str):
+            found.add(id(first.value))
+    return found
+
+
 def _edges(modules) -> Dict[str, Set[str]]:
     graph: Dict[str, Set[str]] = collections.defaultdict(set)
     for stem, (_path, tree) in modules.items():
+        prose = _docstrings(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
                 target = node.module.rsplit(".", 1)[-1]
@@ -187,7 +220,8 @@ def _edges(modules) -> Dict[str, Set[str]]:
                     target = alias.name.rsplit(".", 1)[-1]
                     if target in modules:
                         graph[stem].add(target)
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in prose:
                 # importlib.import_module("tools.x") is an edge. Reading only import statements
                 # reports its target unreachable when a test or a launcher does reach it.
                 for word in _WORD.findall(node.value):
