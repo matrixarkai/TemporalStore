@@ -73,12 +73,13 @@ const COMPRESSION_LEVEL: i32 = 3;
 /// payload costs more to compress than it gives back. 256 is the floor that measurement chose.
 const COMPRESSION_MIN_BYTES: usize = 256;
 
-/// Whether new records are written compressed. DEFAULT OFF.
+/// Whether new records are written compressed. **DEFAULT ON.**
 ///
 /// Reading never consults this. A payload says what encoding it is in, so a log written across a
 /// change reads end to end and turning it off again is not a one-way door -- the same contract
 /// `TS_WAL_BINARY_RECORDS` keeps.
-/// **Default ON.** It was built off, which meant every deployment paid to store a log it had the
+///
+/// It was built off, which meant every deployment paid to store a log it had the
 /// code to shrink. Compression is applied only where it pays twice over: a payload under
 /// `COMPRESSION_MIN_BYTES` is left alone, and a payload whose compressed form is not actually
 /// smaller is written raw under its own marker.
