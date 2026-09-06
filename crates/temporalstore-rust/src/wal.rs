@@ -5662,7 +5662,7 @@ mod tests {
                     1,
                     Command::StringSet {
                         key: format!("k{index:06}"),
-                        value: vec![118u8; 256],
+                        value: incompressible(256),
                     },
                 )
                 .unwrap();
@@ -5694,7 +5694,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalWriteAheadLogStore::new(dir.path());
             let path = write_ahead_log_path(dir.path(), 1);
-            let value = vec![118u8; value_len];
+            let value = incompressible(value_len);
             let append = |index: usize| {
                 let key = format!("{:0width$}", index, width = key_len);
                 store
@@ -5949,6 +5949,20 @@ mod tests {
     /// envelope is amortised N ways. Written as N records ours is paid N times, and the three
     /// batch fields are added to every record on top.
     ///
+    /// Two different savings live in this number, and they are worth keeping apart.
+    ///
+    /// Batching amortises the ENVELOPE: one shard id, one sequence and one frame instead of N. On
+    /// this tree, with compression off, that is 16.9% at eight items and 19.0% at sixty-four.
+    ///
+    /// With compression on, a batch also lets the compressor work ACROSS records -- the keys and
+    /// the repeated record structure are near-identical from one to the next -- and the same probe
+    /// reports 80.0% and 93.8%. That saving is real, but it is compression finding redundancy that
+    /// batching exposed, not the envelope being amortised, and only the first figure bounds what a
+    /// record-format change could win on its own.
+    ///
+    /// The payload is incompressible so that at least the VALUE is not part of either figure. With
+    /// a repeated byte it was, and the probe reported 86.6% and 94.8% for what was mostly the
+    /// compressor eating the payload.
     /// This measures both, so the amortisation is a number rather than an argument.
     #[test]
     #[ignore]
@@ -5963,7 +5977,7 @@ mod tests {
                 let commands = (0..items)
                     .map(|index| Command::StringSet {
                         key: format!("batch-key-{index:09}"),
-                        value: vec![118u8; value_len],
+                        value: incompressible(value_len),
                     })
                     .collect::<Vec<_>>();
                 let (_, before) = last_wal_sequence_in(&path).unwrap_or((0, 0));
@@ -5984,7 +5998,7 @@ mod tests {
                         object_id: index as u64,
                         routing_bucket: index as u32,
                         address: None,
-                        value: Some(vec![118u8; value_len]),
+                        value: Some(incompressible(value_len)),
                         ttl: None,
                         deleted: false,
                         meta: false,
