@@ -397,23 +397,23 @@ SETTINGS: List[Setting] = [
     # offered here so the backstop is a decision rather than a surprise.
     Setting("skills.shared_skill_max_budget_tokens", "skills",
             "MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS",
-            "Skill budget ceiling (tokens)", "int", "65536", "restart",
+            "Skill budget ceiling (tokens)", "int", "65536", "live",
             "A hard ceiling on the skill section, whatever the percentage works out to. It exists "
             "for an unusually large request, not to size the section: leave it above what your "
             "percentage yields, or the percentage stops meaning anything."),
     Setting("skills.shared_resource_max_budget_tokens", "skills",
             "MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS",
-            "Resource budget ceiling (tokens)", "int", "131072", "restart",
+            "Resource budget ceiling (tokens)", "int", "131072", "live",
             "The same backstop for shared resource chunks. Above what the resource percentage "
             "yields at your context size, so the percentage is what decides."),
     Setting("retrieval.cross_session_max_budget_tokens", "retrieval",
             "MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS",
-            "Cross-session ceiling (tokens)", "int", "65536", "restart",
+            "Cross-session ceiling (tokens)", "int", "65536", "live",
             "A hard ceiling on what other sessions may contribute, whatever the cross-session "
             "percentage works out to."),
     Setting("retrieval.cross_session_profile_max_budget_tokens", "retrieval",
             "MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS",
-            "Profile ceiling (tokens)", "int", "196608", "restart",
+            "Profile ceiling (tokens)", "int", "196608", "live",
             "The same backstop for the durable profile -- the aggregation that carries memory into "
             "a fresh session, and the section most likely to want room."),
     Setting("skills.shared_skill_budget_ratio", "skills", "MATRIXARK_SHARED_SKILL_BUDGET_RATIO",

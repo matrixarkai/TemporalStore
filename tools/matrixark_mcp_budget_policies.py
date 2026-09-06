@@ -11,6 +11,7 @@ from typing import Any
 try:
     from tools.matrixark_mcp_errors import MatrixArkError
     from tools.matrixark_mcp_runtime_config import (
+        live_int,
         DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO,
         DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO,
         MODE_DEPENDENT_QUOTA_ENABLED,
@@ -47,6 +48,7 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_errors import MatrixArkError
     from matrixark_mcp_runtime_config import (
+        live_int,
         DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO,
         DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO,
         MODE_DEPENDENT_QUOTA_ENABLED,
@@ -193,8 +195,17 @@ def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_toke
         resource_budget_tokens = integer_arg(config, "resource_budget_tokens", resource_budget_tokens, minimum=0)
     if "skill_budget_tokens" in config:
         skill_budget_tokens = integer_arg(config, "skill_budget_tokens", skill_budget_tokens, minimum=0)
-    resource_max = integer_arg(config, "resource_max_budget_tokens", DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS, minimum=0)
-    skill_max = integer_arg(config, "skill_max_budget_tokens", DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS, minimum=0)
+    # Read per pack rather than per process: the constants above are the fallback, not the answer.
+    resource_max = integer_arg(
+        config, "resource_max_budget_tokens",
+        live_int("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS",
+                 DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS),
+        minimum=0)
+    skill_max = integer_arg(
+        config, "skill_max_budget_tokens",
+        live_int("MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS",
+                 DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS),
+        minimum=0)
     resource_ratio_cap = int(remote_budget_tokens * resource_max_budget_ratio) if resource_max_budget_ratio > 0 else 0
     skill_ratio_cap = int(remote_budget_tokens * skill_max_budget_ratio) if skill_max_budget_ratio > 0 else 0
     if resource_ratio_cap == 0 and remote_budget_tokens > 0 and resource_max_budget_ratio > 0:

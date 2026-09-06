@@ -161,7 +161,13 @@ def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
         #
         # A rule rather than another exclusion entry: the list would need a line per validator, and
         # would go stale the moment someone adds the next one.
-        if "os.environ" not in source and "getenv" not in source:
+        # `live_int(VARIABLE, fallback)` is a read too: the module names the variable here and
+        # the environment lookup happens inside the helper, per call. Without this the skip rule
+        # drops the whole file, the scan finds no site for those names, and a setting that IS read
+        # per call looks to this audit like one nothing reads -- which reads as "not live" and is
+        # the opposite of the truth.
+        if ("os.environ" not in source and "getenv" not in source
+                and "live_int(" not in source):
             continue
         try:
             tree = ast.parse(source, filename=entry)
@@ -190,6 +196,33 @@ SITES = _scan()
 # How many settings the scan found a site for when this floor was set. It guards the skip rule
 # above: if that rule ever excludes too much, every label test below passes by comparing nothing.
 SCAN_COVERAGE_FLOOR = 40
+
+# Modules that name a setting's variable and never write `os.environ` themselves: they hand the
+# read to a helper. If the admission above is removed, these fall out of the scan entirely and
+# every live label that rests on them silently stops being checked.
+DELEGATED_READERS = ("matrixark_mcp_budget_policies.py", "matrixark_mcp_core_scoring.py")
+
+
+class TheScanSeesADelegatedReadTest(unittest.TestCase):
+    """A module that reads through a helper is still reading. The skip rule above exists to drop
+    files that merely LIST variable names; a file that passes one to `live_int` is not one of
+    those, and dropping it turns a per-call read into no read at all."""
+
+    def test_the_delegating_modules_are_scanned(self) -> None:
+        scanned = {entry for sites in SITES.values() for _scope, entry, _line in sites}
+        for entry in DELEGATED_READERS:
+            with self.subTest(module=entry):
+                self.assertIn(entry, scanned)
+
+    def test_they_really_do_delegate(self) -> None:
+        """The floor: if one of them grew its own `os.environ` read, it would be scanned for the
+        ordinary reason and the admission would be untested."""
+        for entry in DELEGATED_READERS:
+            with self.subTest(module=entry):
+                with open(os.path.join(TOOLS, entry), encoding="utf-8") as handle:
+                    source = handle.read()
+                self.assertNotIn("os.environ", source)
+                self.assertIn("live_int(", source)
 
 
 class AppliesLabelTest(unittest.TestCase):

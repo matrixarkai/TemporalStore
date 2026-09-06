@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import os
 import unittest
 
 
@@ -88,14 +89,24 @@ class RuntimeConfigAgreesWithCore(unittest.TestCase):
         )
 
     def test_wrapped_definitions_are_covered(self) -> None:
-        # A constant written across several lines. Pinned by name because the
-        # line-based matcher this replaced skipped exactly this shape, and a
-        # regression to line matching must fail here rather than pass quietly.
-        self.assertIn(
-            "DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS",
-            self.core,
-            "multi-line constant definitions are not being parsed",
-        )
+        # A constant written across several lines: the line-based matcher this replaced skipped
+        # exactly that shape, and a regression to line matching must fail here rather than pass
+        # quietly.
+        #
+        # The example is FOUND rather than named. It used to name
+        # DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS, and when that definition was collapsed
+        # onto one line this floor failed for a reason that had nothing to do with the parser --
+        # a floor pinned to one example breaks whenever the example moves.
+        import re
+
+        with open(os.path.join(TOOLS, "matrixark_mcp_core.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        wrapped = re.findall(r"^([A-Z_][A-Z0-9_]*) = \w+\(\s*$", source, re.M)
+        self.assertTrue(wrapped, "no constant is written across lines any more; this floor is inert")
+        for name in wrapped:
+            with self.subTest(constant=name):
+                self.assertIn(name, self.core,
+                              "multi-line constant definitions are not being parsed")
 
     def test_shared_constants_have_identical_fallback_defaults(self) -> None:
         divergent = []
