@@ -727,8 +727,10 @@ impl TemporalEngine {
         }
         let append_records = publish_records
             .iter()
+            // `publish_records` owns these bytes and outlives the append, so the store can
+            // borrow them rather than take a copy of every page being published.
             .map(|(_, _, bytes, object_id, routing_bucket)| {
-                (bytes.clone(), *object_id, *routing_bucket)
+                (bytes.as_slice(), *object_id, *routing_bucket)
             })
             .collect::<Vec<BlockAppendRecord>>();
         let published_addresses = self

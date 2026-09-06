@@ -268,15 +268,19 @@ fn append_timestamped_kv_pages_inner(
     let mut refs = Vec::new();
     let chunks = chunk_timestamped_kv_points(points);
     if !async_storage {
-        let mut writes = Vec::with_capacity(chunks.len());
         let mut chunk_points = Vec::with_capacity(chunks.len());
         let mut encoded_pages = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            let packed = encode_feature_page(&chunk);
-            writes.push((packed.clone(), Some(object_id), Some(routing_bucket)));
-            encoded_pages.push(packed);
+            encoded_pages.push(encode_feature_page(&chunk));
             chunk_points.push(chunk);
         }
+        // Hand the store a slice of each page instead of a clone of it. The page is kept anyway,
+        // for the cache put below, so the clone was a second full copy of a JSON page -- and a
+        // page is several times its payload, because a value is written as decimal numbers.
+        let writes: Vec<crate::block_store::BlockAppendRecord<'_>> = encoded_pages
+            .iter()
+            .map(|packed| (packed.as_slice(), Some(object_id), Some(routing_bucket)))
+            .collect();
         let addresses = block_store.append_batch_with_page_metadata(writes)?;
         if addresses.len() != chunk_points.len() {
             return Err(BlockStoreError::Io(std::io::Error::new(

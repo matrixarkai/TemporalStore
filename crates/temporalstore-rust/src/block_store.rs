@@ -417,7 +417,10 @@ pub struct BlockStoreOptions {
     pub compression_level: i32,
 }
 
-pub type BlockAppendRecord = (Vec<u8>, Option<u64>, Option<u32>);
+/// The payload is BORROWED. A caller already holds the encoded page -- it keeps it for the
+/// cache put, or it holds the buffer it published from -- so owning it here forced every
+/// caller to hand over a clone of a page that is several times its own payload.
+pub type BlockAppendRecord<'a> = (&'a [u8], Option<u64>, Option<u32>);
 
 impl Default for BlockStoreOptions {
     fn default() -> Self {

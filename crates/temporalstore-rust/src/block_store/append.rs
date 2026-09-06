@@ -120,7 +120,7 @@ impl LocalBlockStore {
 
     pub fn append_batch_with_page_metadata(
         &self,
-        records: Vec<BlockAppendRecord>,
+        records: Vec<BlockAppendRecord<'_>>,
     ) -> Result<Vec<BlockAddress>, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         if records.is_empty() {
@@ -140,7 +140,7 @@ impl LocalBlockStore {
             let mut page_id = inner.next_page_id;
             let mut band_id = band_id_for_slab(inner.page_slab_id);
             let mut record = encode_page_record(
-                &bytes,
+                bytes,
                 page_id,
                 object_id,
                 routing_bucket,
