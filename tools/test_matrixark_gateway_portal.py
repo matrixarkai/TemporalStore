@@ -26,15 +26,25 @@ ADMIN = {"Authorization": "Bearer k-acme"}
 class _PortalTest(unittest.TestCase):
     def setUp(self) -> None:
         self.server = _FakeServer()
-        self.app = gw.make_v1_app(self.server, _cfg())
         self._saved_env = dict(os.environ)
         self._saved_boot = dict(cfgmod._BOOT_ENV)
+        # Derived from the registry rather than written down. The list here named four prefixes;
+        # the registry declares two, MATRIXARK_ for 98 settings and TS_ for 19, and TS_ was not
+        # one of the four. Those nineteen survived the isolation, so on a box that exports them --
+        # or one whose stored config seeds them through apply_boot -- this suite asserted against
+        # the machine it ran on. A written list drifts from the registry; a derived one cannot.
+        declared = {setting.env for setting in cfgmod.SETTINGS if setting.env}
         for name in list(os.environ):
-            if name.startswith(("MATRIXARK_", "DEEPSEEK_", "OPENAI_", "LOCAL_ENCODER_")):
+            if name in declared or name.startswith(("MATRIXARK_", "DEEPSEEK_", "OPENAI_",
+                                                    "LOCAL_ENCODER_")):
                 del os.environ[name]
         cfgmod._BOOT_ENV.clear()
         self._dir = tempfile.TemporaryDirectory()
         os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = os.path.join(self._dir.name, "runtime.json")
+        # After the isolation, not before. make_v1_app() calls apply_boot(), which seeds the
+        # stored document into the environment; building the app first meant seeding from
+        # whatever configuration the machine happened to have.
+        self.app = gw.make_v1_app(self.server, _cfg())
         # The metric registry is process-wide; start each test from zero so counts are assertable.
         metricsmod.METRICS.__init__()  # type: ignore[misc]
 

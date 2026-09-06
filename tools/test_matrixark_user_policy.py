@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,9 +33,22 @@ class _PolicyTest(unittest.TestCase):
         tp.clear_tenant_policy_cache()
         self._saved = {name: os.environ.pop(knob.env)
                        for name, knob in tp.KNOBS.items() if knob.env in os.environ}
+        # Pinned at a file that does not exist, so apply_boot() has nothing to seed.
+        # make_v1_app() calls it, and on a configured box the stored document carries
+        # real values -- which would land in the environment after this isolation ran
+        # and be read as though the test had set them.
+        self._config_dir = tempfile.TemporaryDirectory()
+        self._saved_config = os.environ.get("MATRIXARK_RUNTIME_CONFIG_FILE")
+        os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = os.path.join(
+            self._config_dir.name, "runtime.json")
 
     def tearDown(self) -> None:
         tp.clear_tenant_policy_cache()
+        if self._saved_config is None:
+            os.environ.pop("MATRIXARK_RUNTIME_CONFIG_FILE", None)
+        else:
+            os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = self._saved_config
+        self._config_dir.cleanup()
         for name, value in self._saved.items():
             os.environ[tp.KNOBS[name].env] = value
 

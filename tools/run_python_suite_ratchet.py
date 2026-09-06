@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
@@ -48,16 +50,28 @@ def suite_result() -> tuple[set[str], set[str]]:
     was a skip -- five on a module absent from the repo, six on a native proxy binary CI does not
     build.
     """
-    result = subprocess.run(
-        [sys.executable, "-m", "unittest", "discover", "-v", "-s", ".", "-p", "test_*.py"],
-        cwd=str(Path(__file__).parent),
-        capture_output=True,
-        text=True,
-    )
+    # The suite runs against a runtime config file that does not exist, never the deployment's.
+    # `matrixark_gateway_config.config_path()` falls back to ~/.matrixark/runtime_config.json, and
+    # a configured box has 115 real settings in there. `apply_boot()` seeds them into the process
+    # environment when the gateway app is constructed -- correctly, it only declines to overwrite
+    # what was already set at boot -- so a test that sets MATRIXARK_AUDIT_MODE after import has it
+    # replaced by the stored value and asserts against the machine instead of against the change.
+    # CI has no such file and was green; the same commit was red on any real deployment.
+    with tempfile.TemporaryDirectory() as isolated:
+        environment = dict(os.environ)
+        environment["MATRIXARK_RUNTIME_CONFIG_FILE"] = os.path.join(isolated, "runtime.json")
+        result = subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-v", "-s", ".", "-p", "test_*.py"],
+            cwd=str(Path(__file__).parent),
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        text = result.stderr + result.stdout
     failing: set[str] = set()
     skipped: set[str] = set()
     started = ""
-    for line in (result.stderr + result.stdout).splitlines():
+    for line in text.splitlines():
         stripped = line.strip()
         found = NAME.match(stripped)
         if found:
