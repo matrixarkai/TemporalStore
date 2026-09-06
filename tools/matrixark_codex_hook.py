@@ -1834,8 +1834,16 @@ def additional_context_from_retrieve(
                 header_bits.append(f"score={score}")
             if token_cost != "":
                 header_bits.append(f"tokens={token_cost}")
-            lines.append(" - " + " | ".join(header_bits))
             text = _ref_text(ref)
+            # A header carrying only "[n] type" says nothing the content line does not, so it does
+            # not earn a line of its own. 48 of 49 headers on one box were bare. Anything richer --
+            # a citation, a score, a token count -- still gets its own line, because then the header
+            # is information and running it together with the text would bury it.
+            if text and len(header_bits) == 1:
+                lines.append(" - " + header_bits[0] + "  "
+                             + _compact_one_line(text, max_chars=700))
+                continue
+            lines.append(" - " + " | ".join(header_bits))
             if text:
                 lines.append("   " + _compact_one_line(text, max_chars=700))
     else:
