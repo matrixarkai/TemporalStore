@@ -237,27 +237,44 @@ _OPTIONS_KEYS_DERIVED_FROM_THE_REST = (
 )
 
 
-def slim_persisted_storage_options(record: Json) -> Json:
-    """Persist the storage options a reader cannot recompute, not the ones it can.
-
-    A consumer that wants the derived half calls `canonical_storage_route` on what is left, exactly
-    as it already does for the derived half of `storage_route`.
-    """
-    if not isinstance(record, dict):
-        return record
-    options = record.get("storage_options")
+def _slim_options_block(holder: Json) -> Json | None:
+    """`holder` with its `storage_options` trimmed, or None when there is nothing to trim."""
+    if not isinstance(holder, dict):
+        return None
+    options = holder.get("storage_options")
     if not isinstance(options, dict) or not options:
-        return record
+        return None
     kept = {key: value for key, value in options.items()
             if key not in _OPTIONS_KEYS_DERIVED_FROM_THE_REST}
     if len(kept) == len(options):
-        return record
-    slim = dict(record)
+        return None
+    slim = dict(holder)
     if kept:
         slim["storage_options"] = kept
     else:
         slim.pop("storage_options", None)
     return slim
+
+
+def slim_persisted_storage_options(record: Json) -> Json:
+    """Persist the storage options a reader cannot recompute, not the ones it can.
+
+    A consumer that wants the derived half calls `canonical_storage_route` on what is left, exactly
+    as it already does for the derived half of `storage_route`.
+
+    A record carries the block in TWO places -- its own top level and inside its `envelope` -- and
+    trimming only the first left the second spelling out the same derived fields. That is the shape
+    that keeps recurring here: one routine reaches a nested copy and its sibling does not.
+    """
+    if not isinstance(record, dict):
+        return record
+    slim = _slim_options_block(record)
+    envelope = (slim or record).get("envelope")
+    trimmed_envelope = _slim_options_block(envelope)
+    if trimmed_envelope is not None:
+        slim = dict(slim if slim is not None else record)
+        slim["envelope"] = trimmed_envelope
+    return slim if slim is not None else record
 
 
 def materialize_appended_records_locked(

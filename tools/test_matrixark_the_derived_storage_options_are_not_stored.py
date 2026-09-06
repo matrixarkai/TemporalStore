@@ -135,5 +135,58 @@ class DerivedStorageOptionsTests(unittest.TestCase):
                         f"expected the block to shrink materially, got {before} -> {after}")
 
 
+class EnvelopeStorageOptionsTests(unittest.TestCase):
+    """The block lives in two places on a record; trimming one is not trimming it."""
+
+    def setUp(self):
+        self.options = _options(storage_mode="default", write_mode="async")
+        self.assertTrue(DERIVED & set(self.options), "fixture has no derived fields")
+
+    def test_the_envelopes_own_block_is_trimmed(self):
+        record = {"record_type": "context_event",
+                  "envelope": {"messages": [], "storage_options": dict(self.options)}}
+        slim = slim_persisted_storage_options(record)
+        self.assertEqual(set(), DERIVED & set(slim["envelope"]["storage_options"]))
+
+    def test_the_envelopes_dropped_fields_are_recoverable(self):
+        record = {"envelope": {"storage_options": dict(self.options)}}
+        kept = slim_persisted_storage_options(record)["envelope"]["storage_options"]
+        rebuilt = canonical_storage_route(kept)
+        for field in DERIVED & set(self.options):
+            self.assertEqual(self.options[field], rebuilt.get(field), field)
+
+    def test_both_copies_are_trimmed_together(self):
+        record = {"storage_options": dict(self.options),
+                  "envelope": {"storage_options": dict(self.options)}}
+        slim = slim_persisted_storage_options(record)
+        self.assertEqual(set(), DERIVED & set(slim["storage_options"]))
+        self.assertEqual(set(), DERIVED & set(slim["envelope"]["storage_options"]))
+
+    def test_the_input_record_is_not_mutated(self):
+        envelope = {"storage_options": dict(self.options)}
+        record = {"envelope": envelope}
+        slim_persisted_storage_options(record)
+        self.assertTrue(DERIVED & set(envelope["storage_options"]),
+                        "the caller's envelope was trimmed in place")
+        self.assertIs(envelope, record["envelope"])
+
+    def test_the_rest_of_the_envelope_survives(self):
+        record = {"envelope": {"messages": [{"role": "user"}], "metadata": {"a": 1},
+                               "storage_options": dict(self.options)}}
+        slim = slim_persisted_storage_options(record)
+        self.assertEqual([{"role": "user"}], slim["envelope"]["messages"])
+        self.assertEqual({"a": 1}, slim["envelope"]["metadata"])
+
+    def test_a_record_with_neither_block_is_returned_as_is(self):
+        record = {"record_type": "context_event", "envelope": {"messages": []}}
+        self.assertIs(record, slim_persisted_storage_options(record))
+
+    def test_a_non_dict_envelope_is_ignored(self):
+        record = {"storage_options": dict(self.options), "envelope": "not a dict"}
+        slim = slim_persisted_storage_options(record)
+        self.assertEqual("not a dict", slim["envelope"])
+        self.assertEqual(set(), DERIVED & set(slim["storage_options"]))
+
+
 if __name__ == "__main__":
     unittest.main()
