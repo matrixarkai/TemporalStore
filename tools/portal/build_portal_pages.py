@@ -1109,6 +1109,23 @@ SETUP_BODY = """
       would be wrong.</p>
     <div id="footprint"><div class="empty">Loading&hellip;</div></div>
   </section>
+
+  <section>
+    <h2>Pack budget</h2>
+    <p class="hint" style="margin-top:0">What each section of a context pack is allowed. The share
+      is a percentage of the context budget &mdash; and there are two of those, because the agent
+      hooks have never used the one an API caller gets. A percentage is the same on both; what it
+      comes to is not.</p>
+    <div id="budgets"><div class="empty">Loading&hellip;</div></div>
+  </section>
+
+  <section>
+    <h2>Retrieve timing</h2>
+    <p class="hint" style="margin-top:0">Two controls decide how long a retrieve takes and only one
+      of them can stop a slow call. The deadline is checked between stages, never around a call to
+      the store, so a single slow call runs to the transport timeout whatever the deadline says.</p>
+    <div id="latency"><div class="empty">Loading&hellip;</div></div>
+  </section>
   </section>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-deployment" id="pane-deployment" hidden>
@@ -2354,13 +2371,80 @@ SETUP_JS = r"""
     $("footprint").innerHTML = "<table><tbody>" + rows + "</tbody></table>";
   }
 
+  function num(v) {
+    if (v === null || v === undefined) { return "\u2014"; }
+    return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  function renderBudgets(budgets) {
+    if (!budgets || !budgets.available) {
+      $("budgets").innerHTML = '<div class="empty">Not available.</div>';
+      return;
+    }
+    var paths = budgets.paths || [];
+    var rows = "<tr><th>Caller</th><th>Context budget</th><th>Skills</th>"
+             + "<th>Resources</th></tr>";
+    paths.forEach(function (p) {
+      rows += "<tr><td>" + p.label + '</td><td class="num">' + num(p.context_budget_tokens)
+            + '</td><td class="num">' + num((p.sections || {}).skills)
+            + '</td><td class="num">' + num((p.sections || {}).resources) + "</td></tr>";
+    });
+    var note = "";
+    ["skills", "resources"].forEach(function (name) {
+      var s = budgets[name];
+      if (!s) { return; }
+      /* The share, and which of the three limits decided it. A percentage something else is
+         overriding is a control that does not control anything. */
+      note += "<p class=\"hint\">" + name + ": " + s.percent + "% asked "
+            + s.asked_percent + "%, guard " + s.guard_percent + "% &mdash; set by "
+            + s.bound_by.replace(/_/g, " ") + ".</p>";
+    });
+    if (budgets.paths_differ) {
+      note += '<p class="hint"><strong>The two callers run different budgets.</strong> '
+            + "A token figure is only true for the row it is on.</p>";
+    }
+    $("budgets").innerHTML = "<table><tbody>" + rows + "</tbody></table>" + note;
+  }
+
+  function renderLatency(lat) {
+    if (!lat || !lat.available) {
+      $("latency").innerHTML = '<div class="empty">Not available.</div>';
+      return;
+    }
+    var rows = "";
+    function row(label, value, aux) {
+      rows += "<tr><td>" + label + '</td><td class="num">' + value
+            + '</td><td class="aux">' + (aux || "") + "</td></tr>";
+    }
+    row("Retrieval deadline", lat.deadline_ms ? num(lat.deadline_ms) + " ms" : "none set",
+        lat.deadline_is_cooperative ? "cooperative &mdash; cannot stop a call in flight" : "");
+    row("Transport request timeout", num(lat.transport_request_timeout_ms) + " ms",
+        "what one slow call actually runs against");
+    row("Transport I/O timeout", num(lat.transport_io_timeout_ms) + " ms", "");
+    /* The number an operator is looking for when a retrieve came back late. */
+    row("A slow call can overrun the deadline by",
+        lat.deadline_can_be_overrun_by_ms
+          ? num(lat.deadline_can_be_overrun_by_ms) + " ms" : "\u2014",
+        lat.deadline_can_be_overrun_by_ms
+          ? "lower the transport timeout to close this" : "nothing to overrun");
+    $("latency").innerHTML = "<table><tbody>" + rows + "</tbody></table>";
+  }
+
   function loadFootprint() {
     fetch("/v1/admin/overview", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) { renderFootprint(d.footprint); })
+      .then(function (d) {
+        /* One response, three panels. The overview already carried all of this; asking three
+           times for it would be three times the probing for the same answer. */
+        renderFootprint(d.footprint);
+        renderBudgets((((d.config || {}).skills) || {}).budgets);
+        renderLatency(d.latency);
+      })
       .catch(function () {
         $("footprint").innerHTML =
           '<div class="msg err">Could not read the footprint.</div>';
+        $("budgets").innerHTML = '<div class="msg err">Could not read the budget.</div>';
+        $("latency").innerHTML = '<div class="msg err">Could not read the timing.</div>';
       });
   }
 
