@@ -813,6 +813,25 @@ pub(super) fn load_context_children(
 /// The same lookup as `load_context_node`, decoding only the vector.
 ///
 /// Used where a candidate is scored and discarded, which is most of them.
+/// Children dropped by the per-parent cut BEFORE any scoring.
+///
+/// The cut is by recency, which correlates with nothing a query asked for, so anything it drops is
+/// unreachable however well it matches. Retrieval still answers from what survived, so the limit
+/// reads as ordinary imperfect recall unless something counts it. Non-zero here means a parent is
+/// wide enough that retrieval cannot see all of it.
+pub static CONTEXT_CHILDREN_DROPPED_BEFORE_SCORING: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Children dropped before scoring since the last reset.
+pub fn context_children_dropped_before_scoring() -> u64 {
+    CONTEXT_CHILDREN_DROPPED_BEFORE_SCORING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the drop counter. For tests measuring one traversal.
+pub fn reset_context_children_dropped_before_scoring() {
+    CONTEXT_CHILDREN_DROPPED_BEFORE_SCORING.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(super) fn load_context_node_vector(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
@@ -1049,8 +1068,32 @@ pub(super) fn traverse_context_tree(
             let child_key = context_child_key(tenant_hash, parent.node_hash);
             let mut children =
                 load_context_children(cache, page_store, shard_id, shard, &child_key);
-            children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
+            // NEWEST first, not oldest. This cut happens BEFORE any scoring, so whatever it
+            // drops is unreachable by any query however well it matches -- and it used to sort
+            // ascending, which kept the oldest children and made the most recently ingested the
+            // first to disappear. That is the opposite of what a store keyed on time should do.
+            //
+            // This does NOT make the selection relevance-based, and it is worth being plain
+            // about that: scoring a child costs a page read (`load_context_node_vector` reads
+            // the node's page and decodes its vector), so scoring every child of a very wide
+            // parent is not affordable, and a cap has to stay. Recency is a better proxy than
+            // age, not a substitute for relevance. A parent wide enough for this cut to bind
+            // still hides children, which is what the node hierarchy in the issue addresses.
+            children.sort_by_key(|child_ref| {
+                (
+                    std::cmp::Reverse(child_ref.updated_at_ms),
+                    child_ref.child_hash,
+                )
+            });
+            let considered = children.len();
             children.truncate(child_limit);
+            if considered > child_limit {
+                // Say it, because the failure is otherwise invisible: retrieval still returns
+                // plausible results from whatever survived, so a structural limit reads as
+                // ordinary imperfect recall.
+                CONTEXT_CHILDREN_DROPPED_BEFORE_SCORING
+                    .fetch_add((considered - child_limit) as u64, std::sync::atomic::Ordering::Relaxed);
+            }
             for child in children {
                 // Score from the vector the node itself carries. The node is addressable by
                 // the child hash already in hand; the retired separate records were not -- they
