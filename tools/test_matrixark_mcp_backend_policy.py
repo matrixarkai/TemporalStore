@@ -207,24 +207,6 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertIn('"MATRIXARK_RUST_PROXY_PACK_LANES"', source)
 
 
-class _NativeAppendClient:
-    def __init__(self) -> None:
-        self.calls = []
-
-    def get_string(self, key: str) -> str:
-        return "0"
-
-    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None, append_options=None) -> None:
-        self.calls.append(
-            {
-                "entries": list(entries),
-                "count_key": count_key,
-                "count_value": count_value,
-                "append_options": dict(append_options or {}),
-            }
-        )
-
-
 class _CandidateCacheClient:
     def __init__(self, records: list[dict]) -> None:
         self.records = records
