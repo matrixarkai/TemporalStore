@@ -14,7 +14,7 @@ So the set is asserted exactly. A NEW orphan fails here rather than accumulating
 being an orphan -- because somebody wired it up or deleted it -- fails too, because a list allowed to
 go stale describes a tree that no longer exists.
 
-The entries below are NOT an endorsement. They are 15 modules that were already here, triaged by
+The entries below are NOT an endorsement. They are 11 modules that were already here, triaged by
 whether their definitions still match the live ones. Two of the original 34 are gone: both were
 copies whose every function was the live one word for word, so removing them could not lose
 anything.
@@ -28,6 +28,13 @@ anything.
     identical -- the copy wrapped its signature across four lines where the live one uses one. Redone
     through `ast.unparse`, which renders both from the tree and is blind to formatting, no entry
     below is a pure copy any more: the two that were are gone.
+  * The two schema modules went the same way and took two more with them.
+    `matrixark_mcp_admin_schemas` described 18 tools the live module describes among its 43,
+    and nothing extra about any of them. `matrixark_mcp_storage_schemas` became redundant once
+    the two storage options it alone declared were added to the live schema. Removing the
+    admin one then left `matrixark_mcp_auth_schemas` unreferenced, whose three schemas are
+    byte-identical to the live ones -- and removing THAT left matrixark_mcp_schema_common,
+    whose three schemas are identical too. A chain of four, found one link at a time.
   * The `matrixark_mcp_retrieve_*` modules went together: one family, 47 KB, left behind by a split
     of the retrieve path. Seven had every name confined to themselves -- abandoned rather than moved
     -- and three had their code taken into a live module under the same name (`record_identity` and
@@ -70,8 +77,6 @@ KNOWN_ORPHANS: Dict[str, str] = {
         "believe this one is live: matrixark_mcp_server_request_policy imports "
         "matrixark_mcp_native_pack_POLICY, and a substring search credits this module "
         "with that import. The word boundary is what tells them apart",
-    "matrixark_mcp_admin_schemas": "18 KB of schema data, no functions",
-    "matrixark_mcp_storage_schemas": "schema data, no functions",
     "matrixark_document_assembly": "six functions no live module defines",
     "matrixark_mcp_backend_metrics": "sixteen functions, eight of them unique here",
     "matrixark_mcp_hook_validation": "three functions, one unique here",
