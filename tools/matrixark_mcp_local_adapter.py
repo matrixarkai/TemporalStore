@@ -195,19 +195,17 @@ _SHARD_CODEC_ZLIB = b"\x01"
 #: ACTIVE log can take: a sealed shard is finished and compresses whole, but a log is appended to,
 #: and a stream of self-describing blocks is appendable where a single deflate stream is not.
 _SHARD_CODEC_BLOCKS = b"\x02"
-#: Off, and it stays off -- the hazard is demonstrated rather than argued. Turning it on breaks
-#: `test_a_writer_in_another_process_does_not_corrupt_the_view` and
-#: `test_both_append_paths_write_the_same_tail`: both append raw JSON lines to a log this module
-#: created, which is what a writer that is NOT this module does, and a plain append onto a
-#: block-framed log corrupts it. A store this build creates has to remain appendable by something
-#: that writes plain JSONL, and defaulting this on takes that away.
+#: ON. It was off for one demonstrated reason: a plain append onto a block-framed log made
+#: everything past it unreadable, and a store this build creates has to stay appendable by something
+#: that writes plain JSONL -- fixtures are built that way and out-of-process writers exist. The
+#: reader tolerates that now, resuming block parsing where the text stops, so the two tests that
+#: kept this off pass with it on.
 #:
-#: Everything else about it is safe and measured -- an existing plain log stays plain because the
-#: form is read from the FILE, and a store written with this on reads byte-identically with it off
-#: (144 records, 82 vectors, same digest). It is a per-deployment choice for anyone who knows their
-#: log has a single writer, not a default.
+#: Nothing already on disk is converted: the form is read from the FILE, so an existing plain log
+#: stays plain and only a fresh one adopts blocks. A store written with this on reads
+#: byte-identically with it off -- the flag chooses what to write, never what can be read.
 LOCAL_JSONL_BLOCK_LOG = os.environ.get(
-    "MATRIXARK_LOCAL_JSONL_BLOCK_LOG", "0"
+    "MATRIXARK_LOCAL_JSONL_BLOCK_LOG", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
 #: On, and reversible: the reader takes either form, so a store written with this on still reads
 #: with it off, and a shard sealed once never needs unsealing.
@@ -8217,12 +8215,23 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             survivors = apply_memory_tombstones(raw)
             bytes_before = sum(path.stat().st_size for path in paths if path.exists())
             tmp_path = self.event_log.with_name(f"{self.event_log.name}.purge.{os.getpid()}.{threading.get_ident()}.tmp")
-            lines = [json.dumps(self._sanitize_jsonl_record(record), separators=(",", ":")) + "\n" for record in survivors]
-            with tmp_path.open("w", encoding="utf-8") as handle:
-                for line in lines:
-                    handle.write(line)
-                handle.flush()
-                os.fsync(handle.fileno())
+            sanitized = [self._sanitize_jsonl_record(record) for record in survivors]
+            # In the form the log is already in. Writing plain lines here converted a block-framed
+            # log back to text and GREW it -- 12,954 bytes became 35,962 -- which is the opposite of
+            # what a purge is for, and left the log plain until the next rotation.
+            if self._log_append_form() == _SHARD_CODEC_BLOCKS:
+                with tmp_path.open("wb") as handle:
+                    handle.write(_SHARD_CONTAINER_MAGIC + _SHARD_CODEC_BLOCKS)
+                    for start in range(0, len(sanitized), 256):
+                        handle.write(_encode_log_block(sanitized[start:start + 256]))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            else:
+                with tmp_path.open("w", encoding="utf-8") as handle:
+                    for record in sanitized:
+                        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
             os.replace(tmp_path, self.event_log)  # atomic commit point
             # Fold rotated shards into the (now consolidated) primary: remove them post-commit.
             for path in paths:

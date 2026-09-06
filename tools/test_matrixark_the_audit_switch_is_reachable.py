@@ -38,6 +38,20 @@ A = {"account_id": "acct_a", "tenant_id": "tenant_a"}
 B = {"account_id": "acct_b", "tenant_id": "tenant_b"}
 
 
+def _log_lines(path):
+    """Every non-blank line of the durable log, whichever form it is written in.
+
+    `read_text` asserts the log is text. It is, until MATRIXARK_LOCAL_JSONL_BLOCK_LOG is on, and
+    then it is a stream of compressed blocks. The module's own reader takes either form, and a test
+    about durable RECORDS should not depend on the encoding they arrive in.
+    """
+    try:
+        from tools.matrixark_mcp_local_adapter import _iter_shard_lines
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_local_adapter import _iter_shard_lines
+    return [line for line in _iter_shard_lines(path) if line.strip()]
+
+
 class TheSwitchIsInTheRegistryTest(unittest.TestCase):
 
     def setUp(self) -> None:
@@ -129,7 +143,7 @@ class WritingItThroughThePortalTakesEffectTest(unittest.TestCase):
         finally:
             server.close(timeout_s=10.0)
         rows = []
-        for line in self.log.read_text(encoding="utf-8").splitlines():
+        for line in _log_lines(self.log):
             if '"matrixark_audit_log"' in line:
                 rows.append(line)
         return rows

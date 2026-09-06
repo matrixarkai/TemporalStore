@@ -34,6 +34,20 @@ def _rows(count):
     ]
 
 
+def _log_lines(path):
+    """Every non-blank line of the durable log, whichever form it is written in.
+
+    `read_text` asserts the log is text. It is, until MATRIXARK_LOCAL_JSONL_BLOCK_LOG is on, and
+    then it is a stream of compressed blocks. The module's own reader takes either form, and a test
+    about durable RECORDS should not depend on the encoding they arrive in.
+    """
+    try:
+        from tools.matrixark_mcp_local_adapter import _iter_shard_lines
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_local_adapter import _iter_shard_lines
+    return [line for line in _iter_shard_lines(path) if line.strip()]
+
+
 class TheTwoLargestConstantsAreInterned(unittest.TestCase):
     def _encode(self, rows):
         emitted = set()
@@ -88,7 +102,7 @@ class TheTwoLargestConstantsAreInterned(unittest.TestCase):
         adapter.close(timeout_s=120)
 
         raw = [json.loads(line) for line in
-               (store / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+               _log_lines(store / "events.jsonl") if line.strip()]
         data = [r for r in raw
                 if str(r.get("record_type") or "") != adapter_module.INTERN_DICT_RECORD_TYPE]
         self.assertTrue(data, "nothing was written, so the assertions below would pass emptily")

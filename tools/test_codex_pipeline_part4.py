@@ -62,6 +62,20 @@ except ImportError:
 )
 
 
+def _log_lines(path):
+    """Every non-blank line of the durable log, whichever form it is written in.
+
+    `read_text` asserts the log is text. It is, until MATRIXARK_LOCAL_JSONL_BLOCK_LOG is on, and
+    then it is a stream of compressed blocks. The module's own reader takes either form, and a test
+    about durable RECORDS should not depend on the encoding they arrive in.
+    """
+    try:
+        from tools.matrixark_mcp_local_adapter import _iter_shard_lines
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_local_adapter import _iter_shard_lines
+    return [line for line in _iter_shard_lines(path) if line.strip()]
+
+
 class _CodexPipelinePart4:
     def test_retrieve_recovers_hot_event_type_from_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1849,7 +1863,7 @@ class _CodexPipelinePart4:
             # with nothing interned.
             records = expand_interned_records([
                 json.loads(line)
-                for line in event_log.read_text(encoding="utf-8").splitlines()
+                for line in _log_lines(event_log)
                 if line.strip()
             ])
             assistant_events = [

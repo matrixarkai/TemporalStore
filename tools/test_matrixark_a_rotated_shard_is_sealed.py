@@ -55,9 +55,13 @@ class SealedShardTest(unittest.TestCase):
         self.addCleanup(_clear_process_read_cache)
         # Module globals read at call time, so they are set here and RESTORED -- a test that leaves
         # process-global state behind changes the tests after it.
-        for name in ("LOCAL_JSONL_COMPRESS_SEALED", "LOCAL_JSONL_MAX_BYTES"):
+        for name in ("LOCAL_JSONL_COMPRESS_SEALED", "LOCAL_JSONL_MAX_BYTES",
+                     "LOCAL_JSONL_BLOCK_LOG"):
             self.addCleanup(setattr, adapter_module, name, getattr(adapter_module, name))
-        adapter_module.LOCAL_JSONL_MAX_BYTES = 40_000
+        # Small enough to rotate whichever form the log is in. At 40,000 the block-framed log --
+        # roughly a tenth the size of the plain one -- never reached the threshold, and six tests
+        # here failed with "nothing rotated": their own guards catching a vacuous run.
+        adapter_module.LOCAL_JSONL_MAX_BYTES = 4_000
 
     def _fill(self, batches: int = 6, per_batch: int = 20) -> list[dict]:
         adapter = MatrixArkLocalAdapter(self.log)
@@ -66,11 +70,29 @@ class SealedShardTest(unittest.TestCase):
         _clear_process_read_cache()
         return MatrixArkLocalAdapter(self.log).read_all()
 
+    @staticmethod
+    def _is_sealed(path: Path) -> bool:
+        """Sealed is the CODEC, not the magic.
+
+        A block-stream shard carries the same magic and is a different thing: appendable, and
+        compressed per batch rather than whole-file.
+        """
+        head = path.read_bytes()[:len(_SHARD_CONTAINER_MAGIC) + 1]
+        return (head.startswith(_SHARD_CONTAINER_MAGIC)
+                and head[len(_SHARD_CONTAINER_MAGIC):] == _SHARD_CODEC_ZLIB)
+
     def _rotated(self) -> list[Path]:
         return [path for path in sorted(self.log.parent.iterdir())
                 if path.name.startswith("events.jsonl.") and path.suffix.lstrip(".").isdigit()]
 
-    def test_a_rotated_shard_is_stored_compressed(self):
+    def test_a_plain_rotated_shard_is_sealed(self):
+        """Sealing is a whole-file compress of a shard that is finished.
+
+        Pinned with the block log OFF, because that is the case sealing is for: a plain rotated
+        shard is 11.66x smaller sealed. A block-stream shard is already compressed and the sealer
+        leaves it alone -- see the test below.
+        """
+        adapter_module.LOCAL_JSONL_BLOCK_LOG = False
         adapter_module.LOCAL_JSONL_COMPRESS_SEALED = True
         self._fill()
         rotated = self._rotated()
@@ -86,15 +108,42 @@ class SealedShardTest(unittest.TestCase):
                             "%s is not materially smaller, so it is not earning its format"
                             % path.name)
 
-    def test_the_active_shard_stays_plain_text(self):
-        """Appends, crash recovery and anyone reading the log by hand all go to this file."""
+    def test_a_block_stream_shard_is_left_alone_because_it_is_already_compressed(self):
+        """The other half, and why the sealer is not changed to handle it.
+
+        A block-stream shard carries the container magic, so the sealer skips it. Measured, that
+        costs 1.09x -- against the 11.66x sealing a PLAIN shard is worth, because the block stream
+        is already compressed per batch and lands within 14% of the sealed plain shard. A second
+        whole-file pass over compressed bytes for nine percent is a poor trade.
+        """
+        adapter_module.LOCAL_JSONL_BLOCK_LOG = True
+        adapter_module.LOCAL_JSONL_COMPRESS_SEALED = True
+        self._fill()
+        rotated = self._rotated()
+        self.assertTrue(rotated, "nothing rotated, so this proves nothing")
+        for path in rotated:
+            head = path.read_bytes()[:len(_SHARD_CONTAINER_MAGIC) + 1]
+            self.assertTrue(head.startswith(_SHARD_CONTAINER_MAGIC))
+            self.assertFalse(self._is_sealed(path),
+                             "%s was re-compressed whole; it was already a block stream" % path.name)
+            self.assertTrue(list(adapter_module._iter_shard_lines(path)),
+                            "%s does not read back" % path.name)
+
+    def test_the_active_shard_is_never_sealed(self):
+        """Appends, crash recovery and anyone reading the log by hand all go to this file.
+
+        The invariant is that the SEALER never touches it -- a sealed shard is a whole-file
+        compress, and a file still being appended to must never carry one. It is NOT that the
+        active shard is plain text: with MATRIXARK_LOCAL_JSONL_BLOCK_LOG on it is a block stream,
+        which is appendable and is a different thing from sealed.
+        """
         adapter_module.LOCAL_JSONL_COMPRESS_SEALED = True
         self._fill()
         self.assertTrue(self._rotated(), "nothing rotated, so there was no seal to over-reach")
-        head = self.log.read_bytes()[:len(_SHARD_CONTAINER_MAGIC)]
-        self.assertFalse(head.startswith(_SHARD_CONTAINER_MAGIC),
+        self.assertFalse(self._is_sealed(self.log),
                          "the ACTIVE shard was sealed; appends land in this file")
-        self.assertTrue(self.log.read_text(encoding="utf-8").lstrip().startswith("{"))
+        self.assertTrue(list(adapter_module._iter_shard_lines(self.log)),
+                        "the active shard is unreadable, whichever form it is in")
 
     def test_sealing_does_not_change_the_view(self):
         adapter_module.LOCAL_JSONL_COMPRESS_SEALED = False
@@ -118,7 +167,8 @@ class SealedShardTest(unittest.TestCase):
         written = self._fill()
         rotated = self._rotated()
         self.assertTrue(rotated)
-        self.assertFalse(rotated[0].read_bytes().startswith(_SHARD_CONTAINER_MAGIC))
+        self.assertFalse(self._is_sealed(rotated[0]),
+                         "the shard was sealed with sealing turned off")
 
         adapter_module.LOCAL_JSONL_COMPRESS_SEALED = True
         _clear_process_read_cache()

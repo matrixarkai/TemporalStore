@@ -36,6 +36,20 @@ def _log(token="tok", n=3):
     return records, bundle
 
 
+def _log_lines(path):
+    """Every non-blank line of the durable log, whichever form it is written in.
+
+    `read_text` asserts the log is text. It is, until MATRIXARK_LOCAL_JSONL_BLOCK_LOG is on, and
+    then it is a stream of compressed blocks. The module's own reader takes either form, and a test
+    about durable RECORDS should not depend on the encoding they arrive in.
+    """
+    try:
+        from tools.matrixark_mcp_local_adapter import _iter_shard_lines
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_local_adapter import _iter_shard_lines
+    return [line for line in _iter_shard_lines(path) if line.strip()]
+
+
 class OneObjectPerInternedValue(unittest.TestCase):
     def test_every_record_holds_the_same_object(self):
         """The saving. A copy per record is what cost three times the serialised size."""
@@ -106,7 +120,7 @@ class OneObjectPerInternedValue(unittest.TestCase):
                     "scope": {"tenant_id": "acme", "user_id": "u", "session_id": "s%d" % (i // 4)},
                     "messages": [{"role": "user", "content": "a sentence to extract %d" % i}],
                 })
-            raw = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+            raw = [json.loads(line) for line in _log_lines(log)
                    if line.strip()]
             self.assertTrue(
                 any(adapter_module.INTERN_BUNDLE_TOKEN_KEY in r for r in raw if isinstance(r, dict)),
