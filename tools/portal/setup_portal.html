@@ -1337,7 +1337,16 @@ function liveStream(options) {
     ((d.discovered || {}).models || []).forEach(function (m) {
       push(m, "offered by the configured endpoint");
     });
+    /* What the provider serves itself. These carry no measurement and never will -- the numbers
+       in the table come from encoding a corpus on this machine -- so they are listed as choices
+       with their note, and stay out of the comparison. */
+    (d.provider_models || []).forEach(function (c) {
+      push(c.model, c.note || (c.dim ? c.dim + " dimensions" : ""));
+    });
     (d.catalogue || []).forEach(function (c) {
+      /* Shown in the table, not offered in the dropdown: a deployment on a hosted encoder cannot
+         serve a self-hosted one, and picking it would configure a model that is never reached. */
+      if (c.applicable === false) { return; }
       /* The width collision belongs in the option text, not in a footnote: it is the reason a
          switch that looks harmless is not. Two encoders of the same width raise no error. */
       var same = (c.same_width_as || []).length
