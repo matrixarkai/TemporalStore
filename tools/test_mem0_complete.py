@@ -47,6 +47,41 @@ def _scope_for(user: str, *, tenant: str = "tenant_mem", session: str = "s1") ->
 # Layer 1: backend (local adapter through a real server)
 # --------------------------------------------------------------------------- #
 class GetUpdateHistoryBackendCase(unittest.TestCase):
+    def test_a_limited_get_all_returns_the_newest_memories_not_the_oldest(self) -> None:
+        """`get_all(limit=N)` must answer with the N most recent memories.
+
+        It sorted ascending and took the head, so a subject's FIRST memories came back and
+        everything recent was invisible -- `get_all(limit=10)` against a thousand memories answered
+        with the ten oldest. The listing itself stays in chronological order, which is what an
+        unlimited call already returned.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
+            server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
+            self.addCleanup(server.close, timeout_s=1.0)
+            anchor = 1_780_000_000_000
+            for i in range(5):
+                server.call_tool("matrixark_ingest", {
+                    "messages": [{"role": "user", "content": f"FACT{i} recorded"}],
+                    "scope": _scope_for("limituser"),
+                    "ingestion_time_ms": anchor + i * 10_000,
+                })
+            everything = server.call_tool("matrixark_get_all", {"scope": _scope_for("limituser")})
+            self.assertEqual(5, everything["count"], "the fill must produce five memories")
+
+            limited = server.call_tool(
+                "matrixark_get_all", {"scope": _scope_for("limituser"), "limit": 2})
+            self.assertEqual(2, limited["count"])
+            texts = json.dumps(limited)
+            self.assertIn("FACT4", texts, "the newest memory must be in a limited listing")
+            self.assertIn("FACT3", texts)
+            self.assertNotIn("FACT0", texts, "the oldest must not crowd out the newest")
+
+            # Still chronological within the page, and an unlimited call is untouched.
+            stamps = [int(m["created_at_ms"]) for m in limited["memories"]]
+            self.assertEqual(sorted(stamps), stamps, "a page stays in chronological order")
+            self.assertEqual(5, len(everything["memories"]))
+
     def _ingest(self, server, user, text):
         return server.call_tool(
             "matrixark_ingest",

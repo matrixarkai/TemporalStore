@@ -7806,7 +7806,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             limit = int(args.get("limit") or 0)
         except (TypeError, ValueError):
             raise MatrixArkError("limit must be an integer")
-        memories: list[Json] = []
+        # Select first, project second. Building the projected memory for every record and then
+        # slicing threw most of that work away: a subject with thousands of memories paid for all
+        # of them to answer `limit=10`. Order the cheap (time, record) pairs, cut, and build only
+        # the memories actually returned.
+        selected: list[tuple[int, Json]] = []
         for record in self.records_for_get_all(scope):
             if str(record.get("record_type") or "") != "context_event":
                 continue
@@ -7815,17 +7819,26 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 continue
             if user_hash and rec_user != user_hash:
                 continue
-            memories.append({
+            created_at_ms = record.get("updated_at_ms") or record.get("timestamp_key_ms")
+            selected.append((int(created_at_ms or 0), record))
+        selected.sort(key=lambda pair: pair[0])
+        if limit > 0:
+            # The NEWEST `limit`, not the oldest. Sorting ascending and taking the head handed back
+            # a subject's first memories and hid everything recent -- `get_all(limit=10)` on a
+            # thousand memories answered with the ten oldest. The listing itself stays in
+            # chronological order, which is what an unlimited call already returned.
+            selected = selected[-limit:]
+        memories: list[Json] = [
+            {
                 "id": record.get("event_id_hash"),
                 "memory": record.get("summary_text") or record.get("text") or "",
                 "text": record.get("text") or "",
                 "user_id": scope.get("user_id"),
                 "scope_key": record.get("scope_key") or canonical_scope_key(scope),
-                "created_at_ms": record.get("updated_at_ms") or record.get("timestamp_key_ms"),
-            })
-        memories.sort(key=lambda item: int(item.get("created_at_ms") or 0))
-        if limit > 0:
-            memories = memories[:limit]
+                "created_at_ms": created_at_ms,
+            }
+            for created_at_ms, record in selected
+        ]
         return {"memories": memories, "count": len(memories)}
 
     def reset(self, args: Json, hook: Json | None = None) -> Json:
