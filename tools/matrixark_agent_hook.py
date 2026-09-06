@@ -1404,10 +1404,13 @@ def main() -> int:
                 "hookEventName": args.event,
                 "additionalContext": additional_context,
             }
-        else:
+        elif not _pack_cache.store_answered(retrieve):
             # The store could not answer. Emitting `{}` tells the agent it has NO history, which is
             # both wrong and silent; the previous pack is stale by a turn or two, which is a much
             # smaller error. Labelled in band so nothing is passed off as fresh.
+            #
+            # A turn the store DID answer is left alone even when it renders to nothing: that is a
+            # turn with no context on purpose, and a stale pack is not an improvement on none.
             previous, age_s = _pack_cache.recover_context_pack(
                 cache_path, max_age_s=_pack_cache.pack_cache_max_age_s()
             )
