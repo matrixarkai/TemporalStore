@@ -419,6 +419,49 @@ def literal_consts(bodies):
     return found
 
 
+#: A boolean read by a direct helper call rather than through an accessor:
+#:
+#:     if env_bool("TS_AUTO_REBALANCE_DATA_MOVE", false) {
+#:
+#: `default_of` wants a one-flag function returning bool and `default_of_statement` wants one of
+#: the shapes an inline `env::var` chain takes -- `matches!`, `.is_ok()`, `unwrap_or(true)`. A
+#: helper call has none of them: the default is simply its second argument, and 22 flags were
+#: reported as having no readable default because nothing looked there.
+#:
+#: The unit is the CALL, bounded by its own parentheses, so there is no window to size and no
+#: negation sitting outside it.
+#:
+#: A `true`/`false` LITERAL is required, and that is what keeps this honest twice over. The same
+#: helper is declared in two shapes -- `env_bool(name, default)` in three binaries and
+#: `env_bool(name)` in two others, which supplies no default at all -- and requiring the literal
+#: reads the first without ever guessing at the second. It also declines
+#: `env_bool(NAME, defaults.convict_enabled)`, where following the answer would mean evaluating
+#: Rust; those six stay blank, which is the honest report.
+_BOOL_HELPER = re.compile(r"\benv_bool\s*\(")
+
+
+def bool_helper_default(lines, read_line):
+    """"on", "off", or "" -- the literal second argument of the env_bool call around the read."""
+    text = NEWLINE.join(lines)
+    offset = sum(len(line) + 1 for line in lines[:read_line])
+    match = FLAG_READ.search(text, offset)
+    if not match:
+        return ""
+    helper = None
+    for found in _BOOL_HELPER.finditer(text, max(0, match.start() - 2000)):
+        if found.start() > match.start():
+            break
+        helper = found
+    if helper is None:
+        return ""
+    open_paren = helper.end() - 1
+    close = _balanced(text, open_paren)
+    if close < 0 or not open_paren < match.start() < close:
+        return ""
+    tail = _last_argument(text[open_paren + 1:close]).strip()
+    return {"true": "on", "false": "off"}.get(tail, "")
+
+
 def numeric_default_of_statement(lines, read_line, consts):
     r"""A number, as text, or "" -- the default of a flag whose read states one.
 
@@ -517,6 +560,8 @@ for rel, text in prod.items():
             entry["default"] = default_of(body, len(set(FLAG_READ.findall(body))))
         if not entry["default"]:
             entry["default"] = default_of_statement(lines, line_no)
+        if not entry["default"]:
+            entry["default"] = bool_helper_default(lines, line_no)
         if not entry["default"]:
             entry["default"] = numeric_default_of_statement(lines, line_no, CONSTS)
         if entry["doc"]:

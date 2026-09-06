@@ -14,6 +14,12 @@ written down; the set is asserted exactly, so a NEW one fails here until somebod
 and one that stops qualifying fails too rather than sitting in a list that has quietly become
 fiction.
 
+A flag defaulting ON that nothing sets is the shape worth looking hardest at -- the summary calls
+it a branch with one live side. Three of the entries below show why that is a question and not a
+verdict: they default ON and are read INSIDE a feature that is off, so their off side is reached by
+anyone who turns the parent on. Nesting is not visible in a default-and-setter pair, and reading the
+read site is what tells them apart.
+
 What the reasons have in common is the test that settled them: does the other arm let this build
 DO or READ something the live arm cannot? A diagnostic that surfaces suppressed fields does. A
 benchmark mode that the serving path never reaches does, for the harness. A branch that produces
@@ -45,6 +51,63 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
     # default, so the published field is always false. The branch is what gives those refusals
     # something to refuse, and it is the only way to measure the ceiling a real retrieval is
     # scored against, so it stays.
+    # --- surfaced when the inventory learned to read a helper's default ------------------------
+    # These fifteen were invisible while their default read as unknown. Every one is a real
+    # switch and none is a dead branch; the engine states the reason for each beside the read,
+    # and the short version is here so the list can be scanned.
+    #
+    # Three of them default ON and are read INSIDE a feature that is off:
+    "TS_META_AUTO_REBALANCE_BALANCE":
+        "a sub-option of auto-rebalance, read inside `if env_bool(TS_META_AUTO_REBALANCE, false)`. "
+        "Its off side is reached by anyone who turns the parent on, so ON-and-unset does not make "
+        "it one-sided",
+    "TS_META_REBALANCE_LOCATION_SCOPED":
+        "an AutoRebalanceOptions field on the same off-by-default path: honours each table's "
+        "preferred location when planning a move",
+    "TS_META_REBALANCE_PER_TABLE":
+        "the other AutoRebalanceOptions field, balancing per table rather than on total shard "
+        "counts; same parent, same argument",
+    # Two default ON and are documented OPT-OUTS:
+    "TS_MATRIXOBJECT_CHECKPOINT_ON_START":
+        "publishes this node's state as a checkpoint at start so a later recovery replays only "
+        "the tail; the engine calls it an opt-out, and turning it off is how an operator declines "
+        "that cost",
+    "TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START":
+        "the networked half of the same checkpoint, so a future owner can follow it lazily; the "
+        "same opt-out",
+    # The rest default OFF. Retiring one of those deletes a hatch rather than a dead arm, and each
+    # is a behaviour an operator asks for:
+    "TS_BLOB_PEER_FETCH":
+        "cross-peer blob availability -- a local miss fetches from a peer instead of failing. "
+        "Opt-in, and the engine says so at the read",
+    "TS_MATRIXOBJECT_SYNC_FLUSH":
+        "switches the durability writer from async batching to a synchronous flush, so an "
+        "acknowledgement waits on the matrixobject append. A durability posture, not a tidy-up",
+    "TS_META_ADAPTIVE_FAILURE_DETECTOR":
+        "judges each datanode against its own heartbeat cadence instead of one fixed threshold. "
+        "The engine explains what the fixed one costs -- it convicts the fleet when the metaserver "
+        "stalls, and freezes a rack when the rack faults -- so this arm exists to be turned on",
+    "TS_META_FORBID_SELF_CLEARING_CONVICTION":
+        "a conviction policy, and the read is deliberately duplicated on the raft path because "
+        "`from_env` returns before reaching the single-node one, where it used to do nothing",
+    "TS_META_FREEZE_AGING":
+        "drops a resource that has been frozen longer than its cooldown so retention can forget "
+        "it. Off because a frozen resource staying frozen is the safe end",
+    "TS_META_PLACEMENT_AWARE_REBALANCE":
+        "off because it changes which server a shard lands on, which the engine calls "
+        "behaviour-visible -- the reason is written at the read",
+    "TS_META_PROXY_CALIBRATION":
+        "keeps each proxy group at its target by attaching idle proxies and releasing surplus; "
+        "off because it reassigns which namespace a proxy serves",
+    "TS_META_RETENTION_GC":
+        "ages out the tombstones a dropped server, proxy or table leaves behind, which otherwise "
+        "grow for the lifetime of the cluster. Off because forgetting a resource is irreversible",
+    "TS_META_SHARD_DIVERGENCE_CHECK":
+        "compares the owner map against what each datanode reports serving and re-places the "
+        "difference. Off because it moves shards",
+    "TS_SERVER_RAFT":
+        "the gate on the whole per-shard raft path in the datanode; `start_server_raft_from_env` "
+        "returns None without it",
     "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING": "benchmark ceiling, refused when published",
 }
 
