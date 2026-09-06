@@ -17123,3 +17123,65 @@ fn which_children_a_limited_query_returns() {
     // The unlimited answer is untouched, and still oldest-first.
     assert_eq!(vec![100, 101, 102, 103, 104], all, "an unlimited query is unchanged");
 }
+
+/// Pruning keeps the manifests reclaim still needs, not just the newest.
+///
+/// Reclaim can only advance its durable frontier for a bucket whose CURRENT generation has a dump
+/// manifest. Keeping only the newest meant an ordinary cycle -- which dumps just the few DIRTY
+/// buckets -- deleted the manifest covering everything else. Seen on a live store: a round covering
+/// all 3,190 buckets let reclaim apply and the log fall 806 -> 478 MB, and within the hour an
+/// ordinary cycle left `covered_slot_count: 0` with a durable frontier of 0, so the log grew back
+/// and every cold start paid for it.
+#[test]
+fn pruning_keeps_the_manifests_reclaim_still_needs() {
+    use crate::engine::reports::BucketDumpManifest;
+
+    fn manifest(id: &str, index_log_sequence: u64, buckets: &[u32]) -> BucketDumpManifest {
+        BucketDumpManifest {
+            manifest_id: id.to_string(),
+            index_log_sequence,
+            created_unix_ms: index_log_sequence,
+            bucket_ids: buckets.to_vec(),
+            ..BucketDumpManifest::default()
+        }
+    }
+
+    // The live shape: a wide dump, then a small one covering only what was dirty.
+    let wide = manifest("wide", 1, &[1, 2, 3, 4]);
+    let narrow = manifest("narrow", 2, &[4]);
+    let retained = crate::engine::bucket_dump_io::retained_bucket_dump_manifest_ids(&[
+        wide.clone(),
+        narrow.clone(),
+    ]);
+    assert!(
+        retained.contains("narrow"),
+        "the newest manifest must always be kept"
+    );
+    assert!(
+        retained.contains("wide"),
+        "the wide dump is the only cover for buckets 1-3; pruning it blocks reclaim on them"
+    );
+
+    // The control: a manifest whose buckets are all covered by newer ones is still pruned, so
+    // "retain everything" does not pass this test.
+    let superseded = manifest("superseded", 1, &[4]);
+    let covers_all = manifest("covers_all", 2, &[1, 2, 3, 4]);
+    let retained = crate::engine::bucket_dump_io::retained_bucket_dump_manifest_ids(&[
+        superseded,
+        covers_all,
+    ]);
+    assert!(retained.contains("covers_all"));
+    assert!(
+        !retained.contains("superseded"),
+        "an older manifest adding no coverage must still be pruned"
+    );
+
+    // The other control: the newest is kept even when it adds nothing, so the guarantee that there
+    // is always a most recent dump to anchor on is unchanged.
+    let only = manifest("only", 7, &[]);
+    let retained = crate::engine::bucket_dump_io::retained_bucket_dump_manifest_ids(&[only]);
+    assert!(
+        retained.contains("only"),
+        "the newest manifest is kept even when it covers no buckets"
+    );
+}
