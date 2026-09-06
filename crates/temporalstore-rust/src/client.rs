@@ -1610,6 +1610,23 @@ impl TemporalStoreTable {
             sleep_before_retry(&table_options, attempt);
             attempt += 1;
         };
+        // One answer per command, or the caller cannot tell which answer belongs to which command.
+        // `batch_execute_grouped_by_shard` refuses a short answer; this path did not, so a table
+        // with a single shard went unguarded -- and that is the path the proxy's namespaced batch
+        // takes. Same wording as the grouped check, because it is the same fault.
+        if response.status.ok && response.responses.len() != request.commands.len() {
+            return Ok(BatchExecuteResponse {
+                status: Status::error(
+                    "bad_response",
+                    format!(
+                        "batch response length mismatch: {} command(s) sent, {} answer(s) returned",
+                        request.commands.len(),
+                        response.responses.len()
+                    ),
+                ),
+                responses: Vec::new(),
+            });
+        }
         Ok(response)
     }
 
