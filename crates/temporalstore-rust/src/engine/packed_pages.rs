@@ -25,14 +25,36 @@ pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<Featur
     by_timestamp.into_values().collect()
 }
 
+/// Borrows the points instead of owning them, so the page can be serialised without first
+/// copying every value. Mirrors `PackedFeaturePage` field for field -- same names, same order,
+/// same types -- and neither carries a serde attribute, so the two produce identical bytes.
+#[derive(serde::Serialize)]
+struct PackedFeaturePageRef<'a> {
+    version: u8,
+    points: &'a [FeaturePoint],
+}
+
 pub(super) fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
-    let page = PackedFeaturePage {
-        version: 1,
-        points: points.to_vec(),
-    };
-    let mut bytes = FEATURE_PAGE_MAGIC.to_vec();
-    if let Ok(mut payload) = serde_json::to_vec(&page) {
-        bytes.append(&mut payload);
+    // Build the page once, into one buffer.
+    //
+    // This used to build it three times: `points.to_vec()` copied every value, `to_vec` grew a
+    // second buffer by doubling, and `append` copied that into a third. A page is JSON and a
+    // value is a `Vec<u8>`, which JSON writes as an array of decimal numbers -- roughly four
+    // characters per byte -- so each of those copies is several times the payload it carries.
+    let page = PackedFeaturePageRef { version: 1, points };
+    // Enough for the numbers-as-text expansion plus each point's envelope, so the buffer is not
+    // grown by doubling on the way. An estimate that is short costs a realloc, never a wrong page.
+    let estimate = FEATURE_PAGE_MAGIC.len()
+        + 32
+        + points
+            .iter()
+            .map(|point| 48 + point.value.len() * 4)
+            .sum::<usize>();
+    let mut bytes = Vec::with_capacity(estimate);
+    bytes.extend_from_slice(FEATURE_PAGE_MAGIC);
+    if serde_json::to_writer(&mut bytes, &page).is_err() {
+        // Same as before: a page that cannot be serialised is the magic alone.
+        bytes.truncate(FEATURE_PAGE_MAGIC.len());
     }
     bytes
 }
@@ -450,6 +472,44 @@ pub(super) fn read_feature_point_cached(
         PackedFeaturePageDecode::Corrupt(_) => {
             packed_page_cache.insert(address.clone(), None);
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod page_encoding_tests {
+    use super::*;
+    use crate::types::FeaturePoint;
+
+    #[test]
+    fn the_borrowed_page_encodes_byte_identically_to_the_owned_one() {
+        // The encoder now borrows its points rather than copying them into a `PackedFeaturePage`.
+        // A page is a DURABLE record, so the only acceptable difference is none: this builds the
+        // page the previous way and demands the same bytes.
+        for points in [
+            vec![],
+            vec![FeaturePoint { timestamp_ms: 0, value: vec![] }],
+            vec![FeaturePoint { timestamp_ms: 7, value: vec![0, 1, 2, 254, 255] }],
+            vec![
+                FeaturePoint { timestamp_ms: 1, value: vec![b'a'; 300] },
+                FeaturePoint { timestamp_ms: 2, value: vec![0u8; 300] },
+            ],
+        ] {
+            let owned = PackedFeaturePage { version: 1, points: points.to_vec() };
+            let mut expected = FEATURE_PAGE_MAGIC.to_vec();
+            expected.append(&mut serde_json::to_vec(&owned).expect("owned page serialises"));
+            assert_eq!(
+                encode_feature_page(&points),
+                expected,
+                "the borrowed encoder changed the stored bytes for {} point(s)",
+                points.len()
+            );
+            // And it must still decode back to what went in.
+            assert_eq!(
+                decode_feature_page(&encode_feature_page(&points)).as_deref(),
+                Some(points.as_slice()),
+                "the page did not decode back"
+            );
         }
     }
 }
