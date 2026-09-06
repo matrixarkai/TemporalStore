@@ -33,8 +33,10 @@ sys.path.insert(0, TOOLS)
 import matrixark_gateway_config as cfg  # noqa: E402
 import matrixark_mcp_core as core  # noqa: E402
 
-# The controls that change which encoder makes a vector.
-ENCODER_CONTROLS = ("embedding.provider", "embedding.model", "embedding.model_path")
+# The controls that change which encoder makes a vector. There were three: `embedding.model_path`
+# was a second field for the same value, read only where it OVERRODE the model name, so it is gone
+# and the note it carried belongs to the field that absorbed it.
+ENCODER_CONTROLS = ("embedding.provider", "embedding.model")
 
 
 class TheControlsCarryTheNoteTest(unittest.TestCase):
@@ -72,8 +74,9 @@ class TheControlsCarryTheNoteTest(unittest.TestCase):
         self.assertIn("hash vectors", cfg.SETTINGS_BY_KEY["embedding.provider"].help)
         self.assertIn("co-located encoder server",
                       cfg.SETTINGS_BY_KEY["embedding.model"].help)
-        self.assertIn("wins over the model name",
-                      cfg.SETTINGS_BY_KEY["embedding.model_path"].help)
+        # What the retired path field used to say, now said by the field that took its place.
+        self.assertIn("or a path to one you have downloaded",
+                      cfg.SETTINGS_BY_KEY["embedding.model"].help)
 
     def test_settings_that_do_not_change_the_encoder_are_left_alone(self) -> None:
         """A note on every control is a note nobody reads."""

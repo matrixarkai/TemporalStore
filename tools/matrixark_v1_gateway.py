@@ -1768,6 +1768,20 @@ def _model_config_snapshot() -> Json:
                 "built as <base>/embeddings, so an OpenAI-compatible encoder serving "
                 "/v1/embeddings is never reached and every vector is a hash fallback."
             )
+        overriding_path = _env("MATRIXARK_EMBEDDING_MODEL_PATH")
+        if overriding_path:
+            if _gwconfig.embedding_provider_effect(embedding_provider) == "local_model":
+                warnings.append(
+                    "MATRIXARK_EMBEDDING_MODEL_PATH is set to " + overriding_path + ", and an "
+                    "in-process encoder loads it in preference to Embedding model: the model named "
+                    "above is not the one making vectors. Clear the variable, or put the path in "
+                    "Embedding model, which accepts one.")
+            else:
+                warnings.append(
+                    "MATRIXARK_EMBEDDING_MODEL_PATH is set to " + overriding_path + " and this "
+                    "provider never reads it -- a hosted encoder is sent the model NAME. It is "
+                    "doing nothing here, and would take over if the provider changed to an "
+                    "in-process encoder.")
         if not embedding["api_key_configured"]:
             warnings.append(
                 "Embedding API key is empty: the embedding call is skipped before it is "
