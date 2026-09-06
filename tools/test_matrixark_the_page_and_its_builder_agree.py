@@ -21,8 +21,33 @@ import re
 import unittest
 
 PORTAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal")
-PAGE = os.path.join(PORTAL, "setup_portal.html")
 BUILDER = os.path.join(PORTAL, "build_portal_pages.py")
+
+
+#: The builder writes some pages whole and only injects a nav into others. `emit(...)` generates;
+#: `inject(...)` edits a page it does not otherwise own.
+_EMITTED = re.compile(r'^emit\(\s*"([a-z_]+_portal\.html)"', re.M)
+
+
+def _pages() -> list:
+    """The pages the builder GENERATES, derived from the builder itself.
+
+    This file checked `setup_portal.html` alone, so a function on any other generated page was
+    unguarded exactly as if the file did not exist -- `loadBrowse` lives on the explore page and a
+    mutation of the builder's copy survived.
+
+    Widening it to every `*_portal.html` was wrong in the other direction. Two pages are only
+    nav-injected, and the builder holds no body for them: comparing them reported four
+    "differences" that were name collisions with the pages it does generate -- `renderSummary`
+    means something different on ingestion than on setup. Neither list is written here; both come
+    from which call the builder makes.
+    """
+    with io.open(BUILDER, encoding="utf-8") as handle:
+        names = _EMITTED.findall(handle.read())
+    return sorted(os.path.join(PORTAL, name) for name in set(names))
+
+
+PAGE = os.path.join(PORTAL, "setup_portal.html")
 
 _DEF = re.compile(r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\(")
 
@@ -64,11 +89,20 @@ def _read(path: str) -> dict:
         return _functions(handle.read())
 
 
-def _shared() -> dict:
-    """name -> (the page's single definition, every definition the builder holds of that name)."""
-    page, builder = _read(PAGE), _read(BUILDER)
+def _shared(page_path: str = PAGE) -> dict:
+    """name -> (the page's definitions, every definition the builder holds of that name)."""
+    page, builder = _read(page_path), _read(BUILDER)
     return {name: (page[name], builder[name])
             for name in sorted(set(page) & set(builder))}
+
+
+def _all_shared() -> dict:
+    """(page, name) -> (page bodies, builder bodies), across every shipped page."""
+    out = {}
+    for path in _pages():
+        for name, bodies in _shared(path).items():
+            out[(os.path.basename(path), name)] = bodies
+    return out
 
 
 class ThePageAndItsBuilderAgreeTest(unittest.TestCase):
@@ -80,6 +114,30 @@ class ThePageAndItsBuilderAgreeTest(unittest.TestCase):
         self.assertGreater(len(shared), 5, sorted(shared))
         for name in ("controlHtml", "fieldHtml", "renderSummary"):
             self.assertIn(name, shared)
+
+    def test_every_generated_page_is_checked_not_only_the_first(self) -> None:
+        """The gap this file had: one page was compared and the rest were not looked at."""
+        pages = _pages()
+        self.assertGreater(len(pages), 3, [os.path.basename(p) for p in pages])
+        covered = {page for page, _name in _all_shared()}
+        self.assertGreater(len(covered), 1,
+                           "only one page shares anything with the builder: %s" % covered)
+
+    def test_a_page_the_builder_only_injects_into_is_left_alone(self) -> None:
+        """The builder holds no body for those, so its same-named functions belong to other
+        pages. Comparing them reported four collisions as drift."""
+        generated = {os.path.basename(p) for p in _pages()}
+        shipped = {n for n in os.listdir(PORTAL) if n.endswith("_portal.html")}
+        injected = shipped - generated
+        self.assertTrue(injected, "every page is generated now; this exclusion is moot")
+        self.assertEqual(set(), injected & {page for page, _name in _all_shared()})
+
+    def test_every_shared_function_on_every_page_is_identical(self) -> None:
+        differing = sorted((page, name) for (page, name), (theirs, ours) in _all_shared().items()
+                           if not set(theirs) & set(ours))
+        self.assertEqual([], differing,
+                         "%d function(s) differ between a shipped page and the builder that "
+                         "writes it" % len(differing))
 
     def test_every_shared_function_is_identical(self) -> None:
         """The page's copy must be one of the builder's copies of that name.

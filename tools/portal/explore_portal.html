@@ -937,7 +937,18 @@
             }).join("")
           : '<div class="empty">No subjects hold memories in this scope yet.</div>';
       })
-      .catch(function () { $("users").innerHTML = ""; });
+      .catch(function (e) {
+        /* Blanking the panel made a failed request indistinguishable from an empty scope -- and
+           the empty scope has WORDS ("No subjects hold memories in this scope yet"), so a blank
+           panel was a third state saying nothing at all. With the sibling fetch below succeeding
+           the screen contradicted itself: memories listed, and no subject holding any.
+
+           Same wording and the same message line as that sibling, which already named the cause
+           on failure while this one was silent. */
+        $("users").innerHTML = '<div class="empty">Not loaded.</div>';
+        say($("browseMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+            "err");
+      });
 
     $("memories").innerHTML = '<div class="empty">Loading…</div>';
     fetch("/v1/memories?" + scopeQuery() + "&limit=50", { headers: auth() })
