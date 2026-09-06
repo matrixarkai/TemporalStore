@@ -50,7 +50,7 @@ Anything else is blank, and a blank means go and look.
 | booleans whose default this could read off the source | 49 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 5 |
-| offered on the portal | 27 |
+| offered on the portal | 28 |
 | **that nothing in this repository sets** | 156 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
@@ -312,7 +312,7 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_EMBED_BASE_URL` | — | config, script | 1 | — |
 | `MATRIXARK_EMBED_DRAINER` | off | config, launch, test, portal | 1 | — |
 | `MATRIXARK_EMBED_DRAINER_BATCH` | — | config, portal | 1 | — |
-| `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | 40000 | launch | 1 | — |
+| `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | 40000 | launch, portal | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` | off | config, test, portal | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_SUMMARIES` | off | config, portal | 1 | — |
 | `MATRIXARK_RETRIEVAL_TRAVERSAL_TOP_K` | — | nothing | 1 | — |
