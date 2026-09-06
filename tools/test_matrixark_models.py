@@ -219,6 +219,9 @@ class ModelsRouteTest(_ModelTest):
         self.assertIn("re-encode", warning)
 
     def test_it_reports_what_is_configured_now(self) -> None:
+        # Which variable holds "the extraction model" follows the provider, so the provider is named
+        # here rather than left to whatever a sibling test happened to set.
+        os.environ["MATRIXARK_UNDERSTANDING_PROVIDER"] = "openai_compatible"
         os.environ["MATRIXARK_EXTRACTION_MODEL"] = "deepseek-chat"
         status, body = self.get("/v1/admin/models?target=extraction&probe=0")
         self.assertEqual("deepseek-chat", body["current"])

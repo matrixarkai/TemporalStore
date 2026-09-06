@@ -38,7 +38,10 @@ SUMMARY_LLM_PROVIDER = os.environ.get(
 # said "qwen2.5:1.5b". Both modules send `model=SUMMARY_LLM_MODEL` to the endpoint, so a
 # deployment that chose a provider and named no model asked for a different model depending
 # on which of them did the summarising.
-SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_SUMMARY_MODEL", os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "qwen2.5:1.5b")))
+# The summary IS the extraction model; see the note beside the same constant in
+# matrixark_mcp_core. Spelled out rather than imported because these two modules deliberately do not
+# depend on each other, and a test pins that they still resolve to the same thing.
+SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "qwen2.5:1.5b"))
 SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
 
 

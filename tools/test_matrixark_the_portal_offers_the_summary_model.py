@@ -34,7 +34,11 @@ sys.path.insert(0, TOOLS)
 
 import matrixark_gateway_config as cfg  # noqa: E402
 
-SUMMARY_CONTROLS = ("summary.provider", "summary.model", "summary.max_tokens")
+# summary.model was here. A node summary is made by the extraction endpoint with the extraction
+# key, so a separate model was a second name for the same call -- and the pair could be set to models
+# one endpoint does not both serve, with no screen showing both. The summary uses the extraction
+# model; what is left are choices ABOUT the summary rather than a second model.
+SUMMARY_CONTROLS = ("summary.provider", "summary.max_tokens")
 
 PROBE = """
 import json, sys
@@ -65,7 +69,7 @@ def started_with(**overrides):
 
 class TheControlsExistTest(unittest.TestCase):
 
-    def test_all_three_are_offered(self) -> None:
+    def test_both_are_offered(self) -> None:
         for key in SUMMARY_CONTROLS:
             with self.subTest(setting=key):
                 self.assertIn(key, cfg.SETTINGS_BY_KEY)
@@ -102,7 +106,6 @@ class AddingThemChangesNothingTest(unittest.TestCase):
         """A blank is not seeded into the environment, so the reader's fallback chain is untouched
         for a deployment that never opens the page."""
         self.assertEqual("", cfg.SETTINGS_BY_KEY["summary.provider"].default)
-        self.assertEqual("", cfg.SETTINGS_BY_KEY["summary.model"].default)
 
     def test_the_budget_default_is_the_one_the_code_uses(self) -> None:
         self.assertEqual(900, started_with()["max_tokens"])
@@ -124,10 +127,10 @@ class AddingThemChangesNothingTest(unittest.TestCase):
         for name in CLEAR:
             os.environ.pop(name, None)
 
-        cfg.update({"summary.provider": "", "summary.model": ""}, actor="test")
+        cfg.update({"summary.provider": "", "summary.max_tokens": ""}, actor="test")
         cfg.apply_boot()
         self.assertIsNone(os.environ.get("MATRIXARK_SUMMARY_PROVIDER"))
-        self.assertIsNone(os.environ.get("MATRIXARK_SUMMARY_MODEL"))
+        self.assertIsNone(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS"))
 
 
 class TheHelpTextIsTrueTest(unittest.TestCase):
@@ -139,13 +142,17 @@ class TheHelpTextIsTrueTest(unittest.TestCase):
         self.assertEqual("openai_compatible", got["provider"])
         self.assertEqual("deepseek-chat", got["model"])
 
-    def test_a_named_summary_model_wins(self) -> None:
-        """The reason to offer the control: a smaller model for the call made most often."""
+    def test_a_named_summary_model_no_longer_wins(self) -> None:
+        """This used to be the reason to offer the control: a smaller model for the call made most
+        often. The call is made against the extraction endpoint with the extraction key, so the two
+        names could be models one endpoint does not both serve -- and no screen showed the pair. The
+        summary uses the extraction model; the token cap, which IS a property of the summary, still
+        applies."""
         got = started_with(MATRIXARK_UNDERSTANDING_PROVIDER="openai_compatible",
                            MATRIXARK_EXTRACTION_MODEL="deepseek-chat",
                            MATRIXARK_SUMMARY_MODEL="deepseek-chat-lite",
                            MATRIXARK_SUMMARY_MAX_TOKENS="400")
-        self.assertEqual("deepseek-chat-lite", got["model"])
+        self.assertEqual("deepseek-chat", got["model"])
         self.assertEqual(400, got["max_tokens"])
 
     def test_anthropic_extraction_leaves_summaries_deterministic(self) -> None:
@@ -165,9 +172,10 @@ class TheHelpTextIsTrueTest(unittest.TestCase):
         provider_help = cfg.SETTINGS_BY_KEY["summary.provider"].help
         self.assertIn("Blank follows the extraction provider", provider_help)
         self.assertIn("anthropic", provider_help)
-        model_help = cfg.SETTINGS_BY_KEY["summary.model"].help
-        self.assertIn("extraction endpoint above with the same key", model_help)
-        self.assertIn("Blank uses the extraction model", model_help)
+        # There is no summary model control to describe. What remains is a cap on a call whose
+        # model is the extraction model, and the cap says why it is separate.
+        tokens_help = cfg.SETTINGS_BY_KEY["summary.max_tokens"].help
+        self.assertIn("summary", tokens_help.lower())
 
 
 @unittest.skipUnless(__import__("shutil").which("node"),
