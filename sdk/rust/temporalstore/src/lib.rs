@@ -140,6 +140,9 @@ pub enum RiskFolType {
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 pub struct SequenceFeatureRow {
+    // The engine's row names this `timestamp_ms` and requires it. The Rust name stays as it was
+    // so callers do not change; only the wire name is corrected.
+    #[cfg_attr(feature = "proxy", serde(rename = "timestamp_ms"))]
     pub timestamp: u64,
     pub gid: u64,
     pub action_type: u32,
@@ -1351,8 +1354,9 @@ impl ProxyClient {
     }
 
     pub fn put_string(&self, key: &str, value: &str) -> Result<()> {
-        let body = self.key_body(key, &[("value", serde_json::json!(value))]);
-        self.post("/v1/string/put", body).map(|_| ())
+        // Delegates, as `put_string_with_ttl` already delegates to `set_ex`. This used to post to
+        // `/v1/string/put`, which the proxy does not serve.
+        self.set(key, value)
     }
 
     pub fn put_string_with_ttl(&self, key: &str, value: &str, ttl_ms: u64) -> Result<()> {
@@ -1360,21 +1364,17 @@ impl ProxyClient {
     }
 
     pub fn get_string(&self, key: &str) -> Result<String> {
-        let body = self.key_body(key, &[]);
-        let data = self.post("/v1/string/get", body)?;
-        Ok(data
-            .get("value")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_string())
+        // A missing key reads as empty, which is what the old `/v1/string/get` shape returned.
+        Ok(self.get(key)?.unwrap_or_default())
     }
 
     pub fn add_sequence_feature_rows(&self, key: &str, rows: &[SequenceFeatureRow]) -> Result<()> {
-        let body = self.key_body(
+        let body = self.proxy_service_body(
             key,
             &[("rows", serde_json::to_value(rows).map_err(json_error)?)],
         );
-        self.post("/v1/sequence/add", body).map(|_| ())
+        self.proxy_service_execute("/ProxyService/SequenceAdd", body)
+            .map(|_| ())
     }
 
     pub fn query_sequence_feature_rows(
@@ -1395,16 +1395,16 @@ impl ProxyClient {
                 })
             })
             .collect();
-        let body = self.key_body(
+        let body = self.proxy_service_body(
             key,
             &[
-                ("start_ts", serde_json::json!(start_ts)),
-                ("end_ts", serde_json::json!(end_ts)),
+                ("start_ms", serde_json::json!(start_ts)),
+                ("end_ms", serde_json::json!(end_ts)),
                 ("count", serde_json::json!(count)),
                 ("filters", serde_json::json!(encoded_filters)),
             ],
         );
-        let data = self.post("/v1/sequence/query", body)?;
+        let data = self.proxy_service_execute("/ProxyService/SequenceQuery", body)?;
         serde_json::from_value(
             data.get("rows")
                 .cloned()
@@ -1587,7 +1587,7 @@ impl ProxyClient {
                 ("amount", serde_json::json!(amount)),
             ],
         );
-        self.proxy_service_execute("/ProxyService/RiskHset", body)
+        self.proxy_service_execute("/ProxyService/ControlStateHset", body)
             .map(|_| ())
     }
 
@@ -1606,18 +1606,19 @@ impl ProxyClient {
                 ("occur_time_ms", serde_json::json!(occur_time_ms)),
                 ("ttl_ms", serde_json::json!(ttl_ms)),
                 (
-                    "fol_type",
+                    // The route parses this as `selection_type`; the argument keeps its name.
+                    "selection_type",
                     serde_json::to_value(fol_type).map_err(json_error)?,
                 ),
             ],
         );
-        self.proxy_service_execute("/ProxyService/RiskFolSet", body)
+        self.proxy_service_execute("/ProxyService/ControlStateFolSet", body)
             .map(|_| ())
     }
 
     pub fn risk_fol_query(&self, key: &str) -> Result<Option<String>> {
         let body = self.proxy_service_body(key, &[]);
-        let response = self.proxy_service_execute("/ProxyService/RiskFolQuery", body)?;
+        let response = self.proxy_service_execute("/ProxyService/ControlStateFolQuery", body)?;
         Ok(response
             .get("value")
             .cloned()
@@ -1627,7 +1628,7 @@ impl ProxyClient {
 
     pub fn risk_manager(&self, key: &str) -> Result<Vec<(String, String)>> {
         let body = self.proxy_service_body(key, &[]);
-        let response = self.proxy_service_execute("/ProxyService/RiskManager", body)?;
+        let response = self.proxy_service_execute("/ProxyService/ControlStateManager", body)?;
         Ok(response_hash_entries_to_strings(response))
     }
 
@@ -1790,19 +1791,6 @@ impl ProxyClient {
             != 0)
     }
 
-    fn key_body(&self, key: &str, extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
-        let mut body = serde_json::json!({
-            "namespace": self.options.namespace_name,
-            "table": self.options.table_name,
-            "key": key,
-        });
-        let object = body.as_object_mut().expect("object body");
-        for (name, value) in extra {
-            object.insert((*name).to_string(), value.clone());
-        }
-        body
-    }
-
     fn proxy_service_body(
         &self,
         key: &str,
@@ -1855,31 +1843,6 @@ impl ProxyClient {
             });
         }
         Ok(response)
-    }
-
-    fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
-        let envelope = self.post_raw(path, body)?;
-        if !envelope
-            .get("ok")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-        {
-            return Err(Error {
-                code: envelope
-                    .get("code")
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or(0) as i32,
-                message: envelope
-                    .get("message")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("proxy request failed")
-                    .to_string(),
-            });
-        }
-        Ok(envelope
-            .get("data")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})))
     }
 
     fn get_raw(&self, path: &str) -> Result<serde_json::Value> {
