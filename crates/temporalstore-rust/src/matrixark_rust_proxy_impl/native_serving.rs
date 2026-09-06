@@ -48,33 +48,19 @@ pub(crate) const SCORE_ONLY_FIELDS: [&str; 4] = [
     "cross_session_rerank_boost",
 ];
 
-fn context_pack_debug_lineage_enabled() -> bool {
-    env::var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE")
-        .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
-}
-
-fn context_pack_include_scores_enabled() -> bool {
-    env::var("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES")
-        .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
-}
-
+/// Shape a ref for serving: lineage and scores never leave the process.
+///
+/// This used to be selectable, by `MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE` and
+/// `MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES`. Nothing shipped selected either, so the deployed
+/// behaviour was always this one, and the second arm was a path the serving code carried without
+/// taking. It is gone: one shape, and the lists below say what a served ref does not carry.
 fn native_serving_ref(mut item: Value) -> Value {
-    let include_lineage = context_pack_debug_lineage_enabled();
-    let include_scores = context_pack_include_scores_enabled();
     if let Some(object) = item.as_object_mut() {
-        if !include_lineage {
-            for field in LINEAGE_ONLY_FIELDS {
-                object.remove(field);
-            }
+        for field in LINEAGE_ONLY_FIELDS {
+            object.remove(field);
         }
-        if !include_scores {
-            for field in SCORE_ONLY_FIELDS {
-                object.remove(field);
-            }
+        for field in SCORE_ONLY_FIELDS {
+            object.remove(field);
         }
     }
     item
@@ -243,9 +229,6 @@ fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Val
 }
 
 fn native_serving_memory_layer_budget(value: &Value) -> Value {
-    if context_pack_debug_lineage_enabled() {
-        return value.clone();
-    }
     let mut compact = value.clone();
     if let Some(object) = compact.as_object_mut() {
         for field in [
@@ -265,9 +248,6 @@ fn native_serving_memory_layer_budget(value: &Value) -> Value {
 }
 
 fn native_serving_memory_layer_pressure(value: &Value) -> Value {
-    if context_pack_debug_lineage_enabled() {
-        return value.clone();
-    }
     let mut compact = value.clone();
     let lineage_dimensions: BTreeSet<&str> = [
         "by_source_role",
@@ -315,9 +295,6 @@ fn native_serving_memory_layer_pressure(value: &Value) -> Value {
 }
 
 fn native_serving_dropped_refs(mut dropped_refs: Value) -> Value {
-    if context_pack_debug_lineage_enabled() {
-        return dropped_refs;
-    }
     if let Some(object) = dropped_refs.as_object_mut() {
         let dropped_ref_count = object
             .get("refs")

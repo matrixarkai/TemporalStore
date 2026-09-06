@@ -212,48 +212,6 @@ class _CodexHookOutputPart2:
         self.assertEqual(801, decision["profile_promotion_summary"][0]["profile_entity_hash"])
         self.assertNotIn("memory_lineage", item["result"])
 
-    def test_ingest_tool_call_trace_memory_lineage_requires_debug_lineage(self) -> None:
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            class Server:
-                def handle(self, request):
-                    return {
-                        "result": {
-                            "content": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "status": "accepted",
-                                            "event_id_hash": 11,
-                                            "node_hash": 22,
-                                            "hook_captured": True,
-                                            "auto_batch_extract_result": {
-                                                "status": "committed",
-                                                "trigger_policy": "threshold",
-                                                "source_roles": ["user", "assistant"],
-                                                "source_role_counts": {"user": 1, "assistant": 2},
-                                                "source_hook_type_counts": {"before_llm": 1, "after_llm": 1},
-                                                "source_codex_event_counts": {"UserPromptSubmit": 1, "Stop": 1},
-                                            },
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-
-            trace = {"tool_calls": []}
-            hook.trace_tool_call(Server(), "matrixark_ingest", {"text": "remember this"}, trace)
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-
-        lineage = trace["tool_calls"][0]["result"]["memory_lineage"]
-        self.assertTrue(lineage["user_prompt_captured"])
-        self.assertTrue(lineage["assistant_response_captured"])
-        self.assertEqual({"assistant": 2, "user": 1}, lineage["source_role_counts"])
-        self.assertEqual({"after_llm": 1, "before_llm": 1}, lineage["source_hook_type_counts"])
-        self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, lineage["source_codex_event_counts"])
 
     def test_ingest_tool_call_trace_records_auto_batch_deferred_decision(self) -> None:
         class Server:
@@ -327,29 +285,6 @@ class _CodexHookOutputPart2:
         )
         self.assertNotIn("memory_lineage", output)
 
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            debug_output = hook.codex_hook_output(
-                args=args,
-                status="ok",
-                event="UserPromptSubmit",
-                session_id_source="payload_field",
-                agent_context={"local_context": [], "workspace_root": "/repo"},
-                ingest=ingest,
-                retrieve={},
-                query="lineage debug",
-            )
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-
-        lineage = debug_output["memory_lineage"]
-        self.assertTrue(lineage["user_prompt_captured"])
-        self.assertTrue(lineage["assistant_response_captured"])
-        self.assertFalse(lineage["tool_evidence_captured"])
-        self.assertEqual({"assistant": 2, "user": 1}, lineage["source_role_counts"])
-        self.assertEqual({"after_llm": 1, "before_llm": 1}, lineage["source_hook_type_counts"])
-        self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, lineage["source_codex_event_counts"])
 
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
@@ -720,142 +655,7 @@ class _CodexHookOutputPart2:
         self.assertNotIn("source_role[assistant=1/22t]", additional)
         self.assertNotIn("hook_type[after_llm=1/22t]", additional)
 
-    def test_hook_output_memory_hierarchy_requires_debug_lineage(self) -> None:
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            output = hook.codex_hook_output(
-                args=Namespace(session_id="codex-session-debug-hierarchy"),
-                status="ok",
-                event="UserPromptSubmit",
-                session_id_source="payload_field",
-                agent_context={"local_context": [], "workspace_root": "/repo"},
-                retrieve={
-                    "context_pack_id": "pack-debug-hierarchy",
-                    "used_context_tokens": 18,
-                    "recall_policy": {
-                        "session_continuity": {"mode": "prefer"},
-                        "cross_session": {
-                            "enabled": True,
-                            "budget_tokens": 64,
-                            "budget_floor_status": "remote_budget_too_small_for_profile_floor",
-                        },
-                        "memory_layer_budget_policy": {
-                            "enabled": True,
-                            "mode": "auto",
-                            "budget_tokens": {"profile_entity": 40},
-                            "selected_tokens_by_layer": {"profile_entity": 18},
-                        },
-                    },
-                    "selected_refs": [
-                        {
-                            "ref_type": "entity",
-                            "memory_scope": "user_profile",
-                            "session_continuity": "cross_session",
-                            "text": "profile entity bridge",
-                            "token_estimate": 18,
-                        }
-                    ],
-                },
-                query="debug hierarchy",
-            )
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
 
-        hierarchy = output["retrieve"]["memory_hierarchy"]
-        self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])
-        self.assertEqual("prefer", hierarchy["session_scope_mode"])
-        self.assertTrue(hierarchy["cross_session_enabled"])
-        self.assertEqual(64, hierarchy["cross_session_budget_tokens"])
-        self.assertEqual("remote_budget_too_small_for_profile_floor", hierarchy["cross_session_budget_floor_status"])
-        self.assertTrue(hierarchy["memory_layer_budget_enabled"])
-        self.assertEqual("auto", hierarchy["memory_layer_budget_mode"])
-        self.assertEqual({"profile_entity": 40}, hierarchy["memory_layer_budget_tokens"])
-        self.assertEqual({"profile_entity": 18}, hierarchy["memory_layer_selected_tokens_by_layer"])
-
-    def test_additional_context_memory_hierarchy_details_require_debug_lineage(self) -> None:
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            additional = hook.additional_context_from_retrieve(
-                {
-                    "context_pack_id": "pack-debug-hierarchy",
-                    "used_context_tokens": 24,
-                    "recall_policy": {
-                        "cross_session": {
-                            "budget_tokens": 64,
-                            "computed_budget_tokens": 64,
-                            "budget_floor_tokens": 256,
-                            "budget_floor_applied": False,
-                            "budget_floor_status": "remote_budget_too_small_for_profile_floor",
-                        },
-                        "memory_layer_budget_policy": {
-                            "budget_tokens": {
-                                "summary": 30,
-                                "profile_summary": 35,
-                                "cross_session_summary": 25,
-                                "profile_entity": 40,
-                                "profile_compression": 22,
-                                "cross_session_compression": 18,
-                            },
-                            "selected_tokens_by_layer": {
-                                "profile_entity": 12,
-                            },
-                        },
-                        "memory_selection_policy_budget_policy": {
-                            "budget_tokens": {
-                                "selected_assistant_decision_outcome_only": 36,
-                                "selected_tool_evidence_only": 28,
-                            },
-                            "selected_tokens_by_policy": {
-                                "selected_assistant_decision_outcome_only": 12,
-                            },
-                        },
-                        "memory_layer_budget": {
-                            "by_memory_scope": {
-                                "user_profile": {"refs": 1, "tokens": 12},
-                            },
-                            "by_session_continuity": {
-                                "cross_session": {"refs": 1, "tokens": 12},
-                            },
-                        }
-                    },
-                    "selected_refs": [
-                        {
-                            "ref_type": "entity",
-                            "memory_scope": "user_profile",
-                            "session_continuity": "cross_session",
-                            "text": "profile entity bridge",
-                            "token_estimate": 12,
-                        }
-                    ],
-                },
-                query="debug profile hierarchy",
-                local_context_count=0,
-                session_id_source="payload_field",
-            )
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-
-        self.assertIn("Memory hierarchy:", additional)
-        self.assertIn("cross_session_budget_floor_status=remote_budget_too_small_for_profile_floor", additional)
-        self.assertIn("cross_session_budget=64", additional)
-        self.assertIn("computed=64", additional)
-        self.assertIn("floor=256", additional)
-        self.assertIn("floor_applied=false", additional)
-        self.assertIn(
-            "memory_layer_budget[summary=30,profile_summary=35,cross_session_summary=25,profile_compression=22,cross_session_compression=18,profile_entity=40]",
-            additional,
-        )
-        self.assertIn(
-            "memory_selection_policy_budget[selected_assistant_decision_outcome_only=36,selected_tool_evidence_only=28]",
-            additional,
-        )
-        self.assertIn(
-            "memory_selection_policy_selected_tokens[selected_assistant_decision_outcome_only=12]",
-            additional,
-        )
-        self.assertIn("memory_layer_selected_tokens[profile_entity=12]", additional)
 
     def test_additional_context_layer_summary_falls_back_to_serving_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
@@ -929,48 +729,6 @@ class _CodexHookOutputPart2:
         self.assertNotIn("codex_events[PostToolUse=2]", additional)
         self.assertNotIn("captured[user_prompt,assistant_response,tool_evidence]", additional)
 
-    def test_additional_context_lineage_uses_budget_roles_and_entity_type_fallback(self) -> None:
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            args = Namespace(session_id="codex-session-lineage-fallback")
-            output = hook.codex_hook_output(
-                args=args,
-                status="ok",
-                event="UserPromptSubmit",
-                session_id_source="explicit",
-                agent_context={"local_context": [], "workspace_root": "/repo"},
-                retrieve={
-                    "pack_id": "pack-lineage-fallback",
-                    "selected_refs": [
-                        {
-                            "ref_type": "entity",
-                            "entity_type": "assistant_decision",
-                            "text": "assistant decided to keep profile extraction enabled",
-                        },
-                        {
-                            "ref_type": "entity",
-                            "entity_type": "tool_evidence",
-                            "budget_source_role_counts": {"tool": 2},
-                            "text": "tests passed after hook extraction",
-                        },
-                        {
-                            "ref_type": "entity",
-                            "entity_type": "user_requirement",
-                            "budget_source_roles": ["user"],
-                            "text": "user requested threshold and idle extraction",
-                        },
-                    ],
-                },
-                query="which memory sources were retrieved?",
-            )
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-
-        additional = output["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Retrieved memory lineage:", additional)
-        self.assertIn("roles[assistant=1,tool=2,user=1]", additional)
-        self.assertIn("captured[user_prompt,assistant_response,tool_evidence]", additional)
 
     def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")

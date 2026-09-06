@@ -1152,39 +1152,6 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
                 [{"record_type": "context_event", "storage_route": {"storage_family": "raft"}}]
             )
 
-    def test_debug_lineage_serving_pack_can_include_source_count_maps(self) -> None:
-        with mock.patch.dict(os.environ, {"MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE": "1"}):
-            context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
-            reloaded = importlib.reload(context_pack_mod)
-            self.addCleanup(lambda: importlib.reload(context_pack_mod))
-            pack = reloaded.compact_context_pack_for_serving(
-                {
-                    "context_pack_id": "debug-lineage-pack",
-                    "selected_refs": [
-                        {
-                            "ref_type": "entity",
-                            "text": "debug profile decision",
-                            "token_estimate": 3,
-                            "memory_scope": "user_profile",
-                            "session_continuity": "cross_session",
-                            "source_roles": ["llm", "tool"],
-                            "source_role_counts": {"llm": 2, "tool": 1},
-                            "source_hook_type_counts": {"hook_boundary": 3},
-                            "source_codex_event_counts": {"Stop": 3},
-                            "source_session_ids": ["session-debug-1"],
-                            "source_entity_hashes": [101, 202],
-                        }
-                    ],
-                    "used_context_tokens": 3,
-                }
-            )
-        item = pack["groups"][0]["items"][0]
-        self.assertEqual(["assistant", "tool"], item["source_roles"])
-        self.assertEqual({"assistant": 2, "tool": 1}, item["source_role_counts"])
-        self.assertEqual({"hook_boundary": 3}, item["source_hook_type_counts"])
-        self.assertEqual({"Stop": 3}, item["source_codex_event_counts"])
-        self.assertEqual(["session-debug-1"], item["source_session_ids"])
-        self.assertEqual(2, item["source_entity_count"])
 
     def test_debug_lineage_serving_pack_still_omits_raw_candidate_fields(self) -> None:
         context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")

@@ -9,7 +9,6 @@ from typing import Any, Callable
 
 try:  # package path (tools.matrixark_mcp_core)
     from .matrixark_mcp_core import (
-        CONTEXT_PACK_DEBUG_LINEAGE,
         Json,
         compact_dropped_refs_for_context_pack,
         compact_recall_policy_for_audit,
@@ -22,7 +21,6 @@ try:  # package path (tools.matrixark_mcp_core)
     )
 except ImportError:  # top-level path (matrixark_mcp_core)
     from matrixark_mcp_core import (
-        CONTEXT_PACK_DEBUG_LINEAGE,
         Json,
         compact_dropped_refs_for_context_pack,
         compact_recall_policy_for_audit,
@@ -157,7 +155,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     memory_layer = memory_layer_for_serving_ref(ref)
     if memory_layer:
         item["memory_layer"] = memory_layer
-    if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
+    if include_debug:
         _attach_compact_profile_source_counts(item, ref)
         for field in ["extraction_phase", "final_session_boundary"]:
             value = ref.get(field)
@@ -220,7 +218,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             elif isinstance(value, str) and value.strip():
                 item[field] = value.strip()
 
-    if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
+    if include_debug:
         value = ref.get("source_session_ids")
         if isinstance(value, list) and value:
             item["source_session_ids"] = value[:8]
@@ -260,17 +258,6 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
-    if os.environ.get("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES", "0").strip().lower() in {"1", "true", "yes"}:
-        if "score" in ref:
-            try:
-                item["score"] = round(float(ref.get("score") or 0.0), 4)
-            except (TypeError, ValueError):
-                pass
-        if "token_estimate" in ref:
-            try:
-                item["token_estimate"] = int(ref.get("token_estimate") or 0)
-            except (TypeError, ValueError):
-                pass
     metadata = ref.get("metadata")
     if isinstance(metadata, dict):
         compact_metadata = {
@@ -380,19 +367,19 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
     if serving_recall:
         compact["recall"] = serving_recall
     memory_layer_budget = recall_summary.get("memory_layer_budget") if isinstance(recall_summary, dict) else {}
-    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(memory_layer_budget, dict) and memory_layer_budget:
+    if include_debug and isinstance(memory_layer_budget, dict) and memory_layer_budget:
         compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget, include_debug=include_debug)
     dropped_memory_layer_budget = recall_summary.get("dropped_memory_layer_budget") if isinstance(recall_summary, dict) else {}
-    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
+    if include_debug and isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
         compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget, include_debug=include_debug)
     memory_layer_pressure = recall_summary.get("memory_layer_pressure") if isinstance(recall_summary, dict) else {}
-    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
+    if include_debug and isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
         compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure, include_debug=include_debug)
     memory_selection_policy_budget = recall_summary.get("memory_selection_policy_budget") if isinstance(recall_summary, dict) else {}
     if isinstance(memory_selection_policy_budget, dict) and memory_selection_policy_budget:
         compact["memory_selection_policy_budget"] = memory_selection_policy_budget
     async_pipeline_readiness = recall_summary.get("async_pipeline_readiness") if isinstance(recall_summary, dict) else {}
-    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
+    if include_debug and isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = async_pipeline_readiness
     pre_retrieval_summary_refresh = compact.get("pre_retrieval_summary_refresh")
     if not isinstance(pre_retrieval_summary_refresh, dict):
@@ -401,7 +388,7 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
             if isinstance(compact.get("recall_policy"), dict)
             else {}
         )
-    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh.get("enabled"):
+    if include_debug and isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh.get("enabled"):
         compact["pre_retrieval_summary_refresh"] = {
             field: pre_retrieval_summary_refresh.get(field)
             for field in [
@@ -417,7 +404,7 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
             if pre_retrieval_summary_refresh.get(field) not in (None, "", [], {})
         }
     memory_hierarchy = memory_hierarchy_contract_from_recall_policy(compact.get("recall_policy", {}))
-    if memory_hierarchy and (include_debug or CONTEXT_PACK_DEBUG_LINEAGE):
+    if memory_hierarchy and include_debug:
         compact["memory_hierarchy"] = memory_hierarchy
     compact.pop("recall_policy", None)
 
@@ -453,7 +440,7 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
         "embedding_fallback_used",
     ]:
         compact.pop(field, None)
-    if include_debug or CONTEXT_PACK_DEBUG_LINEAGE or compact.get("include_retrieval_metrics"):
+    if include_debug or compact.get("include_retrieval_metrics"):
         metrics = compact.get("retrieval_metrics")
         if isinstance(metrics, dict):
             try:

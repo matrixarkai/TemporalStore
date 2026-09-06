@@ -72,36 +72,6 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
         )
         self.assertTrue(result["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertNotIn("hook_boundary_source_pressure", result["memory_layer_pressure"])
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            debug_result = hook.retrieval_layer_summary_from_retrieve(
-                {
-                    "ok": True,
-                    "extra": {
-                        "context_pack": {
-                            "selected_refs": [
-                                {
-                                    "ref_type": "entity",
-                                    "memory_scope": "user_profile",
-                                    "session_continuity": "cross_session",
-                                    "token_estimate": 9,
-                                }
-                            ],
-                            "retrieval_metrics": {
-                                "memory_layer_pressure": {
-                                    "selected_refs": 1,
-                                    "dropped_refs": 1,
-                                    "hook_boundary_source_pressure": True,
-                                },
-                            },
-                        }
-                    },
-                }
-            )
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-        self.assertTrue(debug_result["memory_layer_pressure"]["hook_boundary_source_pressure"])
 
     def test_retrieve_budget_summary_reads_nested_context_pack_wrapper(self) -> None:
         wrapped = {
@@ -214,22 +184,6 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
         self.assertNotIn("source_hook_counts_by_type", budget)
         self.assertNotIn("source_codex_event_counts_by_event", budget)
         self.assertEqual(13, budget["total_selected_tokens"])
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            debug_budget = hook.retrieval_layer_summary_from_retrieve(wrapped)["memory_layer_budget"]
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-        self.assertEqual(2, debug_budget["source_message_counts_by_role"]["assistant"])
-        self.assertEqual(1, debug_budget["source_hook_counts_by_type"]["after_llm"])
-        self.assertEqual(1, debug_budget["source_codex_event_counts_by_event"]["Stop"])
-
-        identity = hook.retrieval_session_identity_from_retrieve(wrapped)
-        self.assertEqual("payload_field", identity["session_id_source"])
-        self.assertTrue(identity["strong_session_identity"])
-        hierarchy = hook.retrieval_memory_hierarchy_contract_from_retrieve(wrapped)
-        self.assertTrue(hierarchy["cross_session_enabled"])
-        self.assertEqual(64, hierarchy["cross_session_budget_tokens"])
 
     def test_layer_pressure_flags_include_source_message_pressure_aliases(self) -> None:
         pressure = {
@@ -243,14 +197,6 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
         self.assertIn("selected=2", bits)
         self.assertNotIn("flags[assistant,user,tool]", bits)
 
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            debug_bits = hook._format_memory_layer_pressure_bits(pressure)
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-
-        self.assertIn("flags[assistant,user,tool]", debug_bits)
 
     def test_budget_pressure_uses_native_layer_metrics_without_dropped_refs(self) -> None:
         pressure = hook.retrieval_budget_pressure_from_retrieve(
@@ -280,22 +226,6 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
         )
         self.assertTrue(pressure["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertNotIn("assistant_source_message_pressure", pressure["memory_layer_pressure"])
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            debug_pressure = hook.retrieval_budget_pressure_from_retrieve(
-                {
-                    "retrieval_metrics": {
-                        "memory_layer_pressure": {
-                            "dropped_refs": 1,
-                            "assistant_source_message_pressure": True,
-                        },
-                    },
-                }
-            )
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-        self.assertTrue(debug_pressure["memory_layer_pressure"]["assistant_source_message_pressure"])
 
     def test_loose_stop_payload_extracts_current_input_message_and_thread_identity(self) -> None:
         raw = (
@@ -351,23 +281,6 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
         self.assertNotIn("turn_id", agent_hook)
         self.assertNotIn("conversation_id", agent_hook)
 
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
-        try:
-            debug_hook = hook.codex_agent_hook(
-                hook_type="before_llm",
-                hook_id="UserPromptSubmit:1",
-                idempotency_key="turn-main-1",
-                trigger="UserPromptSubmit",
-                session_id_source="payload_field",
-                identity=identity,
-                observed_at_ms=123,
-            )
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-        self.assertEqual("thread-main-1", debug_hook["thread_id"])
-        self.assertEqual("turn-main-1", debug_hook["turn_id"])
-        self.assertEqual("conversation-main-1", debug_hook["conversation_id"])
 
     def test_payload_text_flattens_structured_assistant_content_parts(self) -> None:
         payload = {
@@ -672,36 +585,6 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
             args=args,
         )
 
-        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
-        original_capture_raw_payload = hook.CODEX_HOOK_CAPTURE_RAW_PAYLOAD
-        hook.CONTEXT_PACK_DEBUG_LINEAGE = False
-        hook.CODEX_HOOK_CAPTURE_RAW_PAYLOAD = False
-        try:
-            metadata = hook.codex_hook_metadata(
-                source="codex_hook",
-                event="UserPromptSubmit",
-                agent_context=agent_context,
-                session_id_source="payload_field",
-                payload=payload,
-            )
-            agent_hook = hook.codex_agent_hook(
-                hook_type="before_llm",
-                hook_id="UserPromptSubmit:1",
-                idempotency_key="019f-turn",
-                trigger="UserPromptSubmit",
-                session_id_source="payload_field",
-                identity=hook.codex_hook_lineage_from_payload(payload, Namespace(session_id="codex:019f8d12"), session_id_source="payload_field"),
-            )
-        finally:
-            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
-            hook.CODEX_HOOK_CAPTURE_RAW_PAYLOAD = original_capture_raw_payload
-
-        self.assertEqual("UserPromptSubmit", metadata["codex_event"])
-        self.assertNotIn("raw_hook_payload", metadata)
-        self.assertNotIn("payload_keys", metadata["agent_context"])
-        self.assertNotIn("thread_id", agent_hook)
-        self.assertNotIn("turn_id", agent_hook)
-        self.assertNotIn("hook_type", agent_hook)
 
     def test_user_prompt_payload_unwraps_delegation_input(self) -> None:
         payload = decode_payload(

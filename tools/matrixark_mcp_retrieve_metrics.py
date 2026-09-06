@@ -16,19 +16,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_pack_builder import memory_layer_pressure_summary
 
 
-CONTEXT_PACK_DEBUG_LINEAGE = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
 
 
 def serving_memory_layer_budget(memory_layer_budget: Any) -> Json:
     if not isinstance(memory_layer_budget, dict):
         return {}
     compact = dict(memory_layer_budget)
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        return compact
     for field in [
         "by_source_role",
         "by_hook_type",
@@ -45,8 +38,6 @@ def serving_memory_layer_pressure(memory_layer_pressure: Any) -> Json:
     if not isinstance(memory_layer_pressure, dict):
         return {}
     compact = dict(memory_layer_pressure)
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        return compact
     lineage_dimensions = {
         "by_source_role",
         "by_hook_type",

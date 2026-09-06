@@ -81,11 +81,6 @@ except ModuleNotFoundError:
 
 Json = dict[str, Any]
 
-CONTEXT_PACK_DEBUG_LINEAGE = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
 CODEX_HOOK_CAPTURE_RAW_PAYLOAD = os.environ.get("MATRIXARK_CODEX_HOOK_CAPTURE_RAW_PAYLOAD", "0").strip().lower() in {
     "1",
     "true",
@@ -432,8 +427,6 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         "max_selected_refs",
         "deadline",
     ]
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        budget_reasons.append("source_role_budget")
     dropped_by_reason: Json = {}
     estimated_tokens: Json = {}
     raw_estimated = dropped.get("estimated_tokens") if isinstance(dropped.get("estimated_tokens"), dict) else {}
@@ -475,12 +468,12 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
     if dropped_memory_layer_budget:
         summary["dropped_memory_layer_budget"] = serving_memory_layer_budget(
             dropped_memory_layer_budget,
-            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+            include_debug=False,
         )
     if memory_layer_pressure:
         summary["memory_layer_pressure"] = serving_memory_layer_pressure(
             memory_layer_pressure,
-            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+            include_debug=False,
         )
     if dropped_by_reason:
         summary["budget_pressure_reason_count"] = sum(int(value) for value in dropped_by_reason.values())
@@ -626,7 +619,7 @@ def retrieval_layer_summary_from_retrieve(
         # user/assistant/tool coverage without exposing raw refs/text lineage.
         layer_summary["memory_layer_budget"] = serving_memory_layer_budget(
             memory_layer_budget,
-            include_debug=include_budget_lineage or CONTEXT_PACK_DEBUG_LINEAGE,
+            include_debug=include_budget_lineage,
         )
     memory_selection_policy_budget = (
         recall_policy.get("memory_selection_policy_budget_policy")
@@ -644,13 +637,13 @@ def retrieval_layer_summary_from_retrieve(
     if memory_layer_pressure:
         layer_summary["memory_layer_pressure"] = serving_memory_layer_pressure(
             memory_layer_pressure,
-            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+            include_debug=False,
         )
     async_readiness = retrieval_async_readiness_from_retrieve(pack)
     if async_readiness:
         layer_summary["async_pipeline_readiness"] = serving_async_pipeline_readiness(
             async_readiness,
-            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+            include_debug=False,
         )
     pre_summary_refresh = retrieval_pre_summary_refresh_from_retrieve(pack)
     if pre_summary_refresh:
@@ -697,14 +690,14 @@ def retrieval_async_readiness_from_retrieve(pack: Json | None) -> Json:
         if isinstance(source, dict) and isinstance(source.get("async_pipeline_readiness"), dict):
             return serving_async_pipeline_readiness(
                 normalize_async_readiness_roles(source["async_pipeline_readiness"]),
-                include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+                include_debug=False,
             )
     readiness = pack_view.get("async_pipeline_readiness")
     if not isinstance(readiness, dict):
         return {}
     return serving_async_pipeline_readiness(
         normalize_async_readiness_roles(readiness),
-        include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+        include_debug=False,
     )
 
 
@@ -1393,14 +1386,6 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
             ("pending_continuity", "pending_session_continuities"),
             ("pending_phases", "pending_extraction_phases"),
         ]
-        if CONTEXT_PACK_DEBUG_LINEAGE:
-            readiness_count_specs.extend(
-                [
-                    ("pending_roles", "pending_source_roles"),
-                    ("pending_hooks", "pending_source_hook_types"),
-                    ("pending_codex_events", "pending_source_codex_events"),
-                ]
-            )
         for label, field in readiness_count_specs:
             bucket = readiness.get(field)
             if not isinstance(bucket, dict) or not bucket:
@@ -1455,14 +1440,6 @@ def _format_memory_layer_budget_bits(memory_layer_budget: Json) -> list[str]:
         ("ref_type", "by_ref_type"),
         ("entity_type", "by_entity_type"),
     ]
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        bucket_specs.extend(
-            [
-                ("source_role", "by_source_role"),
-                ("hook_type", "by_hook_type"),
-                ("codex_event", "by_codex_event"),
-            ]
-        )
     for label, bucket_name in bucket_specs:
         buckets = memory_layer_budget.get(bucket_name)
         if not isinstance(buckets, dict):
@@ -1481,26 +1458,6 @@ def _format_memory_layer_budget_bits(memory_layer_budget: Json) -> list[str]:
                 bucket_bits.append(f"{bucket_key}={ref_count}/{token_count_estimate}t")
         if bucket_bits:
             budget_bits.append(f"{label}[" + ", ".join(bucket_bits) + "]")
-    if not CONTEXT_PACK_DEBUG_LINEAGE:
-        return budget_bits
-    for label, bucket_name in [
-        ("source_messages", "source_message_counts_by_role"),
-        ("source_hooks", "source_hook_counts_by_type"),
-        ("source_codex_events", "source_codex_event_counts_by_event"),
-    ]:
-        counts = memory_layer_budget.get(bucket_name)
-        if not isinstance(counts, dict):
-            continue
-        count_bits = []
-        for key in sorted(counts):
-            try:
-                count = int(counts[key] or 0)
-            except (TypeError, ValueError):
-                continue
-            if count > 0:
-                count_bits.append(f"{key}={count}")
-        if count_bits:
-            budget_bits.append(f"{label}[" + ", ".join(count_bits) + "]")
     return budget_bits
 
 
@@ -1566,19 +1523,6 @@ def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]
         ("final", ["final_memory_pressure"]),
         ("provisional", ["provisional_memory_pressure"]),
     ]
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        flag_specs.extend(
-            [
-                ("assistant", ["assistant_memory_pressure", "assistant_source_message_pressure"]),
-                ("user", ["user_memory_pressure", "user_source_message_pressure"]),
-                ("tool", ["tool_memory_pressure", "tool_source_message_pressure"]),
-                ("hook_boundary_source", ["hook_boundary_source_pressure"]),
-                ("after_llm_source", ["after_llm_source_pressure"]),
-                ("tool_result_source", ["tool_result_source_pressure"]),
-                ("stop_event_source", ["stop_event_source_pressure"]),
-                ("post_tool_use_source", ["post_tool_use_source_pressure"]),
-            ]
-        )
     for label, fields in flag_specs:
         if any(bool(memory_layer_pressure.get(field)) for field in fields):
             flag_bits.append(label)
@@ -1593,14 +1537,7 @@ def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]
             dimensions = []
             for value in values:
                 name = str(value)
-                if not CONTEXT_PACK_DEBUG_LINEAGE and name in {
-                    "by_source_role",
-                    "by_hook_type",
-                    "by_codex_event",
-                    "source_message_counts_by_role",
-                    "source_hook_counts_by_type",
-                    "source_codex_event_counts_by_event",
-                }:
+                if name in {'by_source_role', 'by_hook_type', 'by_codex_event', 'source_message_counts_by_role', 'source_hook_counts_by_type', 'source_codex_event_counts_by_event'}:
                     continue
                 dimensions.append(name)
             if dimensions:
@@ -1839,38 +1776,7 @@ def additional_context_from_retrieve(
             f"local_context_refs_seen={local_context_count}."
         ),
     ]
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        budget_bits = [
-            f"used_remote_tokens={budget.get('used_remote_context_tokens', 0)}",
-        ]
-        if budget.get("remote_context_budget_tokens"):
-            budget_bits.append(f"remote_budget={budget.get('remote_context_budget_tokens')}")
-            budget_bits.append(f"remote_remaining={budget.get('remote_budget_remaining_tokens', 0)}")
-        if budget.get("requested_max_context_tokens"):
-            budget_bits.append(f"requested_max={budget.get('requested_max_context_tokens')}")
-        if budget.get("budget_source"):
-            budget_bits.append(f"budget_source={budget.get('budget_source')}")
-        contract = budget.get("budget_contract") if isinstance(budget.get("budget_contract"), dict) else {}
-        if contract.get("mode"):
-            budget_bits.append(f"contract={contract.get('mode')}")
-            budget_bits.append(f"contract_holds={str(bool(contract.get('contract_holds'))).lower()}")
-        lines.append("Budget summary: " + ", ".join(budget_bits) + ".")
-    if CONTEXT_PACK_DEBUG_LINEAGE and session_identity:
-        identity_bits = [
-            f"source={session_identity.get('session_id_source', '')}",
-            f"strong={str(bool(session_identity.get('strong_session_identity'))).lower()}",
-            f"fallback={str(bool(session_identity.get('fallback_session_identity'))).lower()}",
-        ]
-        if session_identity.get("risk"):
-            identity_bits.append(f"risk={session_identity.get('risk')}")
-        lines.append("Session identity: " + ", ".join(identity_bits) + ".")
     formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
-    if CONTEXT_PACK_DEBUG_LINEAGE and formatted_layer_summary:
-        lines.append(formatted_layer_summary)
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        formatted_lineage = _format_memory_lineage_summary(memory_lineage_summary(*refs))
-        if formatted_lineage:
-            lines.append(formatted_lineage)
     try:
         has_profile_memory = int(layer_summary.get("profile_memory_refs") or 0) > 0
     except (TypeError, ValueError):
@@ -1879,128 +1785,6 @@ def additional_context_from_retrieve(
         has_cross_session_memory = int(layer_summary.get("cross_session_refs") or 0) > 0
     except (TypeError, ValueError):
         has_cross_session_memory = False
-    if CONTEXT_PACK_DEBUG_LINEAGE and (has_profile_memory or has_cross_session_memory):
-        hierarchy_bits = [
-            "session refs are turn/session-local",
-            "user_profile/cross_session refs are long-term state and may supersede older session-local entity copies",
-        ]
-        hierarchy = retrieval_memory_hierarchy_contract_from_retrieve(pack)
-        if isinstance(hierarchy, dict):
-            floor_status = hierarchy.get("cross_session_budget_floor_status")
-            if floor_status:
-                hierarchy_bits.append(f"cross_session_budget_floor_status={floor_status}")
-            for label, field in [
-                ("cross_session_budget", "cross_session_budget_tokens"),
-                ("computed", "cross_session_computed_budget_tokens"),
-                ("floor", "cross_session_budget_floor_tokens"),
-            ]:
-                try:
-                    value = int(hierarchy.get(field) or 0)
-                except (TypeError, ValueError):
-                    value = 0
-                if value > 0:
-                    hierarchy_bits.append(f"{label}={value}")
-            if "cross_session_budget_floor_applied" in hierarchy:
-                hierarchy_bits.append(
-                    "floor_applied="
-                    + str(bool(hierarchy.get("cross_session_budget_floor_applied"))).lower()
-                )
-            layer_budget_tokens = hierarchy.get("memory_layer_budget_tokens")
-            if isinstance(layer_budget_tokens, dict) and layer_budget_tokens:
-                layer_bits = []
-                for layer in [
-                    "summary",
-                    "profile_summary",
-                    "same_session_summary",
-                    "cross_session_summary",
-                    "compression",
-                    "profile_compression",
-                    "same_session_compression",
-                    "cross_session_compression",
-                    "profile_entity",
-                    "same_session_event",
-                    "cross_session_event",
-                    "same_session_segment",
-                    "cross_session_segment",
-                ]:
-                    try:
-                        amount = int(layer_budget_tokens.get(layer) or 0)
-                    except (TypeError, ValueError):
-                        amount = 0
-                    if amount > 0:
-                        layer_bits.append(f"{layer}={amount}")
-                if layer_bits:
-                    hierarchy_bits.append("memory_layer_budget[" + ",".join(layer_bits) + "]")
-            selected_by_layer = hierarchy.get("memory_layer_selected_tokens_by_layer")
-            if isinstance(selected_by_layer, dict) and selected_by_layer:
-                selected_bits = []
-                for layer, value in sorted(selected_by_layer.items()):
-                    try:
-                        amount = int(value or 0)
-                    except (TypeError, ValueError):
-                        amount = 0
-                    if amount > 0:
-                        selected_bits.append(f"{layer}={amount}")
-                if selected_bits:
-                    hierarchy_bits.append("memory_layer_selected_tokens[" + ",".join(selected_bits) + "]")
-            policy_budget_tokens = hierarchy.get("memory_selection_policy_budget_tokens")
-            if isinstance(policy_budget_tokens, dict) and policy_budget_tokens:
-                policy_bits = []
-                for policy, value in sorted(policy_budget_tokens.items()):
-                    try:
-                        amount = int(value or 0)
-                    except (TypeError, ValueError):
-                        amount = 0
-                    if amount > 0:
-                        policy_bits.append(f"{policy}={amount}")
-                if policy_bits:
-                    hierarchy_bits.append("memory_selection_policy_budget[" + ",".join(policy_bits) + "]")
-            selected_by_policy = hierarchy.get("memory_selection_policy_selected_tokens_by_policy")
-            if isinstance(selected_by_policy, dict) and selected_by_policy:
-                selected_policy_bits = []
-                for policy, value in sorted(selected_by_policy.items()):
-                    try:
-                        amount = int(value or 0)
-                    except (TypeError, ValueError):
-                        amount = 0
-                    if amount > 0:
-                        selected_policy_bits.append(f"{policy}={amount}")
-                if selected_policy_bits:
-                    hierarchy_bits.append("memory_selection_policy_selected_tokens[" + ",".join(selected_policy_bits) + "]")
-        lines.append("Memory hierarchy: " + "; ".join(hierarchy_bits) + ".")
-    if CONTEXT_PACK_DEBUG_LINEAGE and budget_pressure.get("budget_pressure"):
-        dropped_by_reason = budget_pressure.get("dropped_by_reason")
-        pressure_bits = []
-        if isinstance(dropped_by_reason, dict):
-            for reason in sorted(dropped_by_reason):
-                try:
-                    count = int(dropped_by_reason[reason])
-                except (TypeError, ValueError):
-                    continue
-                if count > 0:
-                    pressure_bits.append(f"{reason}={count}")
-        if budget_pressure.get("deadline_exceeded"):
-            pressure_bits.append("deadline_exceeded=true")
-        if budget_pressure.get("budget_fill_policy"):
-            pressure_bits.append(f"budget_fill_policy={budget_pressure.get('budget_fill_policy')}")
-        dropped_budget = budget_pressure.get("dropped_memory_layer_budget")
-        dropped_budget_bits = _format_memory_layer_budget_bits(dropped_budget if isinstance(dropped_budget, dict) else {})
-        if dropped_budget_bits:
-            pressure_bits.append("dropped_memory_layer_budget: " + "; ".join(dropped_budget_bits))
-        if pressure_bits:
-            lines.append("Budget pressure: " + ", ".join(pressure_bits) + ".")
-    if CONTEXT_PACK_DEBUG_LINEAGE and isinstance(quality_warnings, list) and quality_warnings:
-        warnings = []
-        for warning in quality_warnings[:4]:
-            if isinstance(warning, dict):
-                warnings.append(_compact_one_line(str(warning.get("message") or warning.get("code") or warning)))
-            else:
-                warnings.append(_compact_one_line(str(warning)))
-        lines.append("Quality warnings: " + " | ".join(warnings))
-    if CONTEXT_PACK_DEBUG_LINEAGE and isinstance(retrieval_metrics, dict):
-        fallback = retrieval_metrics.get("fallback_reason")
-        if fallback:
-            lines.append("Retrieval fallback: " + _compact_one_line(str(fallback), max_chars=400))
 
     if context_text:
         lines.append("")
@@ -2097,8 +1881,6 @@ def codex_hook_output(
     async_pipeline_readiness = retrieval_async_readiness_from_retrieve(retrieve)
     if async_pipeline_readiness:
         retrieve_summary["async_pipeline_readiness"] = async_pipeline_readiness
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        retrieve_summary["memory_hierarchy"] = retrieval_memory_hierarchy_contract_from_retrieve(retrieve)
     output: Json = {
         "status": status,
         "event": event,
@@ -2119,8 +1901,6 @@ def codex_hook_output(
         "retrieve": retrieve_summary,
         "session_commit": session_commit_summary(commit),
     }
-    if CONTEXT_PACK_DEBUG_LINEAGE and lineage:
-        output["memory_lineage"] = lineage
     if error:
         output["error"] = error
     if event == "UserPromptSubmit":
@@ -2278,11 +2058,6 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "auto_batch_extract": session_commit_summary(auto_batch_extract_result),
                 "auto_batch_extract_decision": auto_batch_decision_summary(result),
             }
-            if CONTEXT_PACK_DEBUG_LINEAGE:
-                ingest_result["memory_lineage"] = memory_lineage_summary(
-                    auto_batch_extract_result or auto_batch_decision_summary(result),
-                    idle_commit_result,
-                )
             item["result"] = ingest_result
         elif name == "matrixark_retrieve":
             emitted_refs = [
@@ -2307,8 +2082,6 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
             async_pipeline_readiness = retrieval_async_readiness_from_retrieve(result)
             if async_pipeline_readiness:
                 retrieve_result["async_pipeline_readiness"] = async_pipeline_readiness
-            if CONTEXT_PACK_DEBUG_LINEAGE:
-                retrieve_result["memory_hierarchy"] = retrieval_memory_hierarchy_contract_from_retrieve(result)
             item["result"] = retrieve_result
         elif name == "matrixark_session_commit":
             item["result"] = session_commit_summary(result)
@@ -2418,10 +2191,6 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             output_summary["pre_retrieval_summary_refresh"] = retrieve.get("pre_retrieval_summary_refresh")
         if retrieve.get("async_pipeline_readiness"):
             output_summary["async_pipeline_readiness"] = retrieve.get("async_pipeline_readiness")
-        if CONTEXT_PACK_DEBUG_LINEAGE and memory_lineage:
-            output_summary["memory_lineage"] = memory_lineage
-        if CONTEXT_PACK_DEBUG_LINEAGE and retrieve.get("memory_hierarchy"):
-            output_summary["memory_hierarchy"] = retrieve.get("memory_hierarchy")
         trace["output_summary"] = output_summary
     adapter = getattr(server, "adapter", None)
     append = getattr(adapter, "append", None)
@@ -2511,16 +2280,12 @@ def hook_idempotency_key(payload: Json, *, event: str, session_id: str | None, f
 
 
 def hook_lineage_fields(hook: Json | None) -> Json:
-    if not CONTEXT_PACK_DEBUG_LINEAGE:
-        return {}
-    if not isinstance(hook, dict):
-        return {}
-    lineage: Json = {}
-    for field in ("thread_id", "turn_id", "conversation_id"):
-        value = hook.get(field)
-        if value not in (None, ""):
-            lineage[field] = str(value)
-    return lineage
+    """Nothing. Hook lineage was only ever emitted under the debug-lineage flag, which is gone.
+
+    Kept as a function because its callers spread the result into a dict; returning an empty one
+    keeps every call site unchanged.
+    """
+    return {}
 
 
 def codex_agent_hook(

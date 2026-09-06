@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 298 of them, read by 95 functions.
+There are 296 of them, read by 93 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,12 +46,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 298 |
-| booleans whose default this could read off the source | 34 |
+| total | 296 |
+| booleans whose default this could read off the source | 32 |
 | numbers whose default this could read off the source | 35 |
 | **defaulting on, and set by nothing** | 2 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 176 |
+| **that nothing in this repository sets** | 175 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -290,7 +290,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_STORAGE_ZONE_SIZE` | 1073741824 | config, portal | 1 | — |
 | `TS_STREAM_MAX_BLOB_SIZE` | 10485760 | config, portal | 1 | — |
 
-## context (25)
+## context (24)
 
 The memory pipeline: what gets extracted, embedded, drained and packed. The surface a deployment tunes for recall rather than for throughput.
 
@@ -308,7 +308,6 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_CONTEXT_COMPRESSION_WINDOW` | — | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_QUERY_OVERFETCH` | 2 | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_SCAN_CAP` | 64 | nothing | 1 | — |
-| `MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES` | off | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_SECONDARY_INDEX` | off | test | 1 | — |
 | `MATRIXARK_EMBEDDING_MODEL` | — | config, script, test, portal | 1 | — |
 | `MATRIXARK_EMBED_API_KEY_ENV` | — | nothing | 1 | — |
@@ -335,13 +334,12 @@ Who the caller is, not what the engine does. Supplied per request or per process
 | `TEMPORALSTORE_AGENT_NAME` | — | launch | 2 | — |
 | `MATRIXARK_SESSION_ID` | — | nothing | 1 | — |
 
-## diagnostic (6)
+## diagnostic (5)
 
 Extra evidence for someone investigating. Off by default.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE` | off | test | 1 | — |
 | `MATRIXARK_CONTEXT_RETRIEVE_TRACE` | off | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG` | off | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY` | off | nothing | 1 | — |
