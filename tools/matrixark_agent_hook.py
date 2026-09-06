@@ -1128,8 +1128,21 @@ def additional_context_from_retrieve(retrieve: Json | None, *, max_chars: int = 
     if not lines:
         return ""
     header = "Relevant context from earlier turns (MatrixArk memory):"
-    body = "\n".join(f"- {line}" for line in lines)
-    return (header + "\n" + body)[:max_chars]
+    # Cut BETWEEN items. Slicing the joined string to max_chars ends wherever the budget runs out,
+    # which on a live pack was mid-word -- the model's last remembered turn arrived as
+    # "...upgrading still costs cold-load time, but tha". A fragment that stops mid-clause is worse
+    # than not sending the item: it reads as a complete thought that changes meaning at the cut.
+    out = header
+    for line in lines:
+        entry = "\n- " + line
+        if len(out) + len(entry) > max_chars:
+            break
+        out += entry
+    if out == header:
+        # A single item longer than the whole budget: send the head of it rather than nothing, since
+        # dropping it would return "" and the caller reads that as "nothing was retrieved".
+        return (header + "\n- " + lines[0])[:max_chars]
+    return out
 
 
 def call_write_tool(
