@@ -185,6 +185,39 @@ class ThereIsOnePackingSortKeyTest(unittest.TestCase):
             "agrees wherever the caller has already established ref_type == 'event', which is "
             "most call sites, so nothing routine catches the difference")
 
+    def test_only_one_module_defines_the_predicate_the_penalty_depends_on(self) -> None:
+        """The penalty is only consistent if the predicate behind it is.
+
+        `matrixark_mcp_budget_pack` defined a THIRD `is_pending_async_candidate`, without the
+        `ref_type == "event"` gate the canonical one applies -- so the tree had one name meaning
+        two things, while `matrixark_local_adapter_dashboard._embedding_is_pending` carried a
+        comment explaining that it meant one. It is now named for what it is,
+        `carries_pending_async_marker`, and both of its call sites keep exactly the function they
+        had: one is already inside a branch that established `ref_type == "event"`, so the gate
+        would change nothing there, and the other wants the unguarded reading.
+        """
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        listed = subprocess.run(["git", "ls-files", "tools/*.py"], cwd=repo,
+                                capture_output=True, text=True).stdout.split()
+        definers = []
+        for rel in listed:
+            if os.path.basename(rel).startswith("test_"):
+                continue
+            try:
+                with open(os.path.join(repo, rel), encoding="utf-8", errors="replace") as handle:
+                    tree = ast.parse(handle.read())
+            except (OSError, SyntaxError):
+                continue
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and node.name == "is_pending_async_candidate":
+                    definers.append(os.path.basename(rel)[:-len(".py")])
+        self.assertEqual(
+            ["matrixark_mcp_core_candidate_policy"], sorted(definers),
+            "is_pending_async_candidate is defined in more than one module again. A second copy "
+            "agrees wherever the caller has already established ref_type == 'event', which is "
+            "most call sites, so nothing routine catches the difference")
+
     def test_the_pending_async_penalty_is_applied(self) -> None:
         """The half of the divergence that needed no flag at all."""
         setattr(self.core, FLAG_ATTRIBUTE, False)
