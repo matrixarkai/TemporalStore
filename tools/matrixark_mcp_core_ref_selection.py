@@ -60,29 +60,21 @@ except ImportError:  # top-level path (matrixark_mcp_core)
 __all__ = ['dropped_candidate_audit_ref', 'record_dropped_candidate', 'diversify_for_question_type', 'entity_current_state_key', 'prefer_profile_entities_for_current_state', 'is_stale_or_superseded_candidate', 'suppress_profile_shadowed_session_entity_refs', 'normalized_token_set', 'near_duplicate_overlap_ratio', 'clamp_refs_to_token_budget', 'select_token_budgeted_refs']
 
 
-def normalized_token_set(text: str) -> frozenset[str]:
-    """Lower-cased, de-duplicated token set used for near-duplicate detection."""
-    return frozenset(token.lower() for token in tokens(str(text or "")) if token)
-
-
-def near_duplicate_overlap_ratio(candidate_tokens: frozenset[str], selected_tokens: frozenset[str]) -> float:
-    """Jaccard token-set similarity between two refs (|A ∩ B| / |A ∪ B|).
-
-    Jaccard is the near-duplicate metric here (rather than containment) so a
-    short ref whose few tokens merely happen to be a subset of a longer but
-    genuinely different ref is NOT collapsed: near-duplicate requires the two
-    texts to be substantially the same, in both content and size. Ranges 0.0
-    (disjoint) .. 1.0 (identical token sets).
-    """
-    if not candidate_tokens or not selected_tokens:
-        return 0.0
-    intersection = len(candidate_tokens & selected_tokens)
-    if intersection == 0:
-        return 0.0
-    union = len(candidate_tokens | selected_tokens)
-    if union <= 0:
-        return 0.0
-    return intersection / union
+# `normalized_token_set` and `near_duplicate_overlap_ratio` are not defined here any more. They
+# moved to matrixark_mcp_scoring so matrixark_mcp_budget_pack can use them too: the gateway reaches
+# that packer, and it had no near-duplicate suppression at all while the setting that governs it,
+# MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD, is offered by matrixark_gateway_config and defaults
+# to 0.85 -- on. This module could not be the shared home because it imports matrixark_mcp_core.
+try:
+    from tools.matrixark_mcp_scoring import (
+        near_duplicate_overlap_ratio,
+        normalized_token_set,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import (
+        near_duplicate_overlap_ratio,
+        normalized_token_set,
+    )
 
 
 def clamp_refs_to_token_budget(

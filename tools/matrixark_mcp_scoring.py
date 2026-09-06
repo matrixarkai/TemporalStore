@@ -22,6 +22,35 @@ def tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9_]+", text.lower())
 
 
+# Near-duplicate detection lives here rather than beside one of the two packers that need it.
+# It was defined in matrixark_mcp_core_ref_selection, which imports matrixark_mcp_core, so the
+# other packer -- matrixark_mcp_budget_pack, which the gateway reaches -- could not use it without
+# taking that whole dependency at import time. It is built on `tokens`, which this module owns.
+def normalized_token_set(text: str) -> frozenset[str]:
+    """Lower-cased, de-duplicated token set used for near-duplicate detection."""
+    return frozenset(token.lower() for token in tokens(str(text or "")) if token)
+
+
+def near_duplicate_overlap_ratio(candidate_tokens: frozenset[str], selected_tokens: frozenset[str]) -> float:
+    """Jaccard token-set similarity between two refs (|A ∩ B| / |A ∪ B|).
+
+    Jaccard is the near-duplicate metric here (rather than containment) so a
+    short ref whose few tokens merely happen to be a subset of a longer but
+    genuinely different ref is NOT collapsed: near-duplicate requires the two
+    texts to be substantially the same, in both content and size. Ranges 0.0
+    (disjoint) .. 1.0 (identical token sets).
+    """
+    if not candidate_tokens or not selected_tokens:
+        return 0.0
+    intersection = len(candidate_tokens & selected_tokens)
+    if intersection == 0:
+        return 0.0
+    union = len(candidate_tokens | selected_tokens)
+    if union <= 0:
+        return 0.0
+    return intersection / union
+
+
 def cosine(left: list[float], right: list[float]) -> float:
     """Cosine similarity, normalised on both sides.
 
