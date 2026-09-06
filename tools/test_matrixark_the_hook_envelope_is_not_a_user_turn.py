@@ -33,14 +33,16 @@ except ImportError:  # run from tools/
     )
     from matrixark_agent_hook import hook_messages_from_payload
 
-# Verbatim from a pack the hook injected on this machine.
+# The shape of a pack the hook injected, with the paths neutralised: this file is tracked in
+# a public repository and `validate_open_source_readiness` refuses a local one. Nothing here
+# reads them -- the assertions are about which KEYS the payload carries, not where it ran.
 SESSION_START = {
-    "cwd": "C:/Users/Deeproute/.claude",
+    "cwd": "/home/agent/.claude",
     "hook_event_name": "SessionStart",
     "session_id": "7face037-3318-4aac-bf5d-4f5121c92f61",
     "session_title": "TemporalStore Rust meta server parity",
     "source": "resume",
-    "transcript_path": "C:/Users/Deeproute/.claude/projects/x.jsonl",
+    "transcript_path": "/home/agent/.claude/projects/x.jsonl",
 }
 
 
