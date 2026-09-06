@@ -213,57 +213,44 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     return 0.0
 
 
-def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float]:
-    score = float(candidate.get("score", 0.0))
-    ref_type = str(candidate.get("ref_type") or "")
-    memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
-    session_continuity = str(candidate.get("session_continuity") or "").strip().lower()
-    profile_current = bool(candidate.get("profile_entity_current"))
-    try:
-        profile_revision = max(0, int(candidate.get("profile_revision") or 0))
-    except (TypeError, ValueError):
-        profile_revision = 0
-    profile_current_boost = 0.0
-    if ref_type == "entity" and memory_scope == "user_profile" and session_continuity == "cross_session":
-        if profile_current:
-            profile_current_boost = 0.10 if question_type in {"current_state", "latest", "profile_memory"} else 0.04
-        if profile_revision > 0:
-            profile_current_boost += min(0.04, 0.01 * profile_revision)
-    boosted = clamp01(
-        score
-        + question_type_ref_boost(candidate, question_type)
-        + session_continuity_boost(candidate, question_type)
-        + cross_session_rerank_adjustment(candidate, question_type)
-        + profile_current_boost
-    )
-    token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
-    if candidate.get("ref_type") == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
-        source_count = len(candidate.get("source_event_ids", []) or [])
-        if source_count >= 2:
-            token_efficiency *= 1.5
-    current_state_priority = 0.0
-    if question_type in {"current_state", "latest"} and ref_type == "entity":
-        entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
-        profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
-        if profile_memory_kind == "codex_outcome":
-            current_state_priority = 1.0
-        elif bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
-            current_state_priority = 1.0
-        elif profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
-            current_state_priority = 0.9
-        elif entity_type in {"assistant_decision", "tool_evidence"}:
-            current_state_priority = 0.75
-        elif memory_scope == "user_profile" and session_continuity == "cross_session":
-            current_state_priority = 0.5
-        if profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
-            current_state_priority += min(0.08, 0.02 + 0.01 * profile_revision)
-    elif question_type == "profile_memory" and ref_type == "entity":
-        if str(candidate.get("profile_memory_kind") or "").strip().lower() in {"durable_profile", "memory_feature"}:
-            current_state_priority = 0.98 if profile_current else 0.9
-        elif profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
-            current_state_priority = 0.86
-    return (boosted, current_state_priority, token_efficiency, score)
+_CORE_PACKING_SORT_KEY = None
 
+
+def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, ...]:
+    """Return the packing sort key. The one implementation lives in matrixark_mcp_core_packing.
+
+    Delegates deliberately, in the idiom this tree already uses for the same situation (see
+    `matrixark_mcp_core_compact.latest_context_state_key`): the target imports matrixark_mcp_core,
+    which is far more than this module needs at import time, so it is resolved on first call and
+    cached.
+
+    This module used to carry its own copy, and the two had drifted -- in one direction only, with
+    the other one gaining three things this never did:
+
+      * the `pending_async` penalty of 0.32. Without it a candidate whose extraction has not
+        finished sorted ABOVE settled content: 0.90 against the 0.58 the other packer gave the same
+        candidate. matrixark_mcp_budget_pack sorts with this copy and the retrieve path sorts with
+        the other, so the two put provisional content in opposite places, on every question type,
+        with no flag involved.
+      * `MATRIXARK_PACK_RAW_PRECISION`. The flag shifts events up and summaries down for precision
+        questions, and it existed in one packer only, so turning it on changed the retrieve
+        ordering and left this one alone -- the flag reached half the system.
+      * the feature-profile-memory component, which is why the key is five values there and was
+        four here. Every caller either sorts by the whole tuple or reads [0], so the extra value
+        changes no call site.
+
+    Nothing here says the omissions were meant, and the shape of the difference -- three separate
+    additions, all absent -- reads as a copy that stopped receiving them.
+    """
+    global _CORE_PACKING_SORT_KEY
+    delegate = _CORE_PACKING_SORT_KEY
+    if delegate is None:
+        try:
+            from tools.matrixark_mcp_core_packing import packing_sort_key as delegate
+        except ImportError:  # Direct script execution from tools/.
+            from matrixark_mcp_core_packing import packing_sort_key as delegate
+        _CORE_PACKING_SORT_KEY = delegate
+    return delegate(candidate, question_type)
 
 def is_resource_or_skill_candidate(candidate: Json) -> bool:
     ref_type = str(candidate.get("ref_type") or "")
