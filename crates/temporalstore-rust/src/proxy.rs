@@ -3765,14 +3765,14 @@ mod tests {
         let probe = crate::alloc_probe::Probe::start();
         for _ in 0..ITERS {
             let parsed =
-                crate::http::parse_json::<context::ProxyContextIngestRequest>(&ingest_body);
+                crate::http::parse_json_borrowed::<context::ProxyContextIngestRequest>(&ingest_body);
             std::hint::black_box(&parsed);
         }
         let counts = probe.stop();
         rows.push(("  of which: parse the body", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
         let parsed_once =
-            crate::http::parse_json::<context::ProxyContextIngestRequest>(&ingest_body)
+            crate::http::parse_json_borrowed::<context::ProxyContextIngestRequest>(&ingest_body)
                 .expect("body parses");
         let probe = crate::alloc_probe::Probe::start();
         for _ in 0..ITERS {
@@ -4062,6 +4062,44 @@ mod tests {
         ));
 
 
+        // SCRATCH: the INGEST path, and how it scales with messages. This is the hot path
+        // /v1/ingest uses, so its per-message slope is the one that matters most.
+        for msgs in [1usize, 8, 32] {
+            let ibody = serde_json::to_vec(&serde_json::json!({
+                "scope": {"tenant_id": "t", "account_id": "a", "user_id": "u", "session_id": "s"},
+                "messages": (0..msgs)
+                    .map(|i| serde_json::json!({
+                        "role": "user",
+                        "content": format!("message number {i} with some content"),
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+            .expect("ingest body");
+            let in_proxy = scoped_proxy(ProxyOptions::default());
+            in_proxy
+                .client()
+                .insert_cached_route_for_test(in_proxy.context_shard_id(0), quiet.clone());
+            let (code, _) = in_proxy.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body: ibody.clone(),
+            });
+            let probe = crate::alloc_probe::Probe::start();
+            for _ in 0..ITERS {
+                let out = in_proxy.handle(crate::proxy::HttpRequest {
+                    method: "POST".to_string(),
+                    path: "/context/ingest".to_string(),
+                    body: ibody.clone(),
+                });
+                std::hint::black_box(&out);
+            }
+            let c = probe.stop();
+            println!(
+                "    INGEST  msgs={msgs:<3} {:>7.3} allocs/call {:>9.1} bytes  [code {code}]",
+                c.allocs as f64 / ITERS as f64,
+                c.alloc_bytes as f64 / ITERS as f64
+            );
+        }
         // SCRATCH: the EXTRACT path, and how it scales with messages. Sources are borrowed
         // from the request, so the per-message slope is what to watch here.
         for msgs in [1usize, 8, 32] {
@@ -5268,8 +5306,11 @@ mod tests {
             "max_events": 3,
             "provider": {}
         });
+        // Parsed from BYTES, not from a `Value`: the request borrows from the body it was
+        // parsed out of, so it needs a buffer to point at.
+        let ingest_bytes = serde_json::to_vec(&ingest_body).expect("the ingest body serialises");
         let ingest: context::ProxyContextIngestRequest =
-            serde_json::from_value(ingest_body.clone()).expect("the known-good ingest body parses");
+            serde_json::from_slice(&ingest_bytes).expect("the known-good ingest body parses");
         // The values landed, so these names are the ones serde matches on.
         assert_eq!(ingest.query, "q");
         assert_eq!(ingest.start_time_ms, 11);
