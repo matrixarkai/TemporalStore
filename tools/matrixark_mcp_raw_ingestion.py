@@ -13,9 +13,11 @@ from typing import Any
 try:
     from tools.matrixark_mcp_errors import MatrixArkError
     from tools.matrixark_mcp_identity import stable_hash
+    from tools.matrixark_mcp_temporal_append import slim_persisted_record
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_errors import MatrixArkError
     from matrixark_mcp_identity import stable_hash
+    from matrixark_mcp_temporal_append import slim_persisted_record
 
 
 Json = dict[str, Any]
@@ -213,7 +215,8 @@ def append_raw_ingestion_records(target: Any, records: list[Json], *, allow_queu
         entries: list[Json] = []
         for record in records:
             record_key, record_id = raw_record_location(target._raw_record_hash_key, target._shard_size, sequence)
-            payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            payload = json.dumps(slim_persisted_record(record),
+                                 sort_keys=True, separators=(",", ":"))
             route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
             entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": route})
             entries.extend(
