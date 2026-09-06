@@ -5861,7 +5861,16 @@ def _build_server_from_env() -> Any:
 def create_v1_app() -> Callable[..., Awaitable[None]]:
     """Build the MatrixArk server from env and return the `/v1/*` gateway ASGI app.
 
-    Mirrors `matrixark_asgi.create_app` for `uvicorn matrixark_v1_gateway:application`.
+    The peer of `matrixark_asgi.create_app` for `uvicorn matrixark_v1_gateway:application`, and it
+    does NOT mirror it on the one default that decides who may call: this front resolves
+    MATRIXARK_ACCESS_MODE to "dev" and that one to "enforced". Both bind 0.0.0.0:8080 out of the
+    box, so an operator who sets nothing gets an anonymous dev_admin with every scope here, and a
+    401 there.
+
+    That is deliberate on this side and said in three places -- the DEV DEFAULT comment below, the
+    `require_auth` default, and the one-time `_NO_AUTH_WARNING` this front logs at startup when it
+    is open. What was not said is that the other front chose the opposite, which is why the word
+    "mirrors" is gone: the two are peers, not copies, and the difference is the security posture.
     """
     server = _build_server_from_env()
     app = make_v1_app(server, GatewayConfig.from_env())
