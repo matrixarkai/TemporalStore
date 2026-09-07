@@ -2983,7 +2983,7 @@ pub(crate) fn evict_sampler_config() -> eviction_sampler::EvictionSamplerConfig 
 /// Default-ON gate read: the fix is LIVE unless explicitly disabled with
 /// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
 /// fixed behavior by default; the env var remains only as an escape hatch.
-fn env_flag_default_on(name: &str) -> bool {
+pub(crate) fn env_flag_default_on(name: &str) -> bool {
     !matches!(
         std::env::var(name)
             .unwrap_or_default()
