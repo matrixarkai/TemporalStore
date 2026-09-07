@@ -896,6 +896,9 @@ fn render_prometheus_metrics(
          matrixark_backend_command_latency_max_ms{{backend=\"rust\"}} {}\n",
         latency_max_ms, latency_max_ms
     ));
+    // The engine's own series, which include the page-cache counters. Appended rather than
+    // re-rendered: see engine_prometheus_metrics.
+    output.push_str(&engine_prometheus_metrics());
     output
 }
 
@@ -4071,6 +4074,38 @@ fn record_log_proxy_addr() -> Option<String> {
 fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, RecordStore>> {
     static ENGINE_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, RecordStore>>> = OnceLock::new();
     ENGINE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// The engine's own Prometheus text, for the engine this process holds open.
+///
+/// `TemporalEngine::prometheus_metrics` already renders the page-cache counters and the engine
+/// binary serves them on its own `/metrics`. A onebox does not run that binary -- it runs this
+/// proxy -- so those counters existed and nothing published them here. Appending what the engine
+/// already renders keeps ONE set of names across both surfaces: a dashboard or alert written
+/// against the engine works unchanged against a proxy, which a proxy-specific family would not.
+///
+/// Emitted only when this process holds exactly one local engine. The engine labels its series by
+/// `shard_id`, and every engine here loads the same default shard, so two of them would emit two
+/// series with identical labels -- which is a malformed scrape rather than more information. One
+/// engine is the onebox case this exists for; a proxy fanned out over several record-log prefixes
+/// keeps the request counters it always had.
+fn engine_prometheus_metrics() -> String {
+    let cache = match engine_cache().lock() {
+        Ok(cache) => cache,
+        // A poisoned lock must not cost the rest of the response; the request counters above it
+        // are still true.
+        Err(_) => return String::new(),
+    };
+    let mut local = cache.values().filter_map(|store| match store {
+        RecordStore::Local(engine) => Some(engine),
+        // A remote table keeps no local page cache, so it has nothing to report.
+        RecordStore::Remote(_) => None,
+    });
+    let engine = match (local.next(), local.next()) {
+        (Some(engine), None) => engine,
+        _ => return String::new(),
+    };
+    engine.prometheus_metrics()
 }
 
 fn cached_engine_count() -> usize {
