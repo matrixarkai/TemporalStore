@@ -446,23 +446,44 @@ fn grafana_metrics_coverage_ready(root: &Path) -> bool {
 }
 
 fn rust_sources_contain(root: &Path, snippets: &[&str]) -> bool {
-    let relative_paths = [
-        "crates/temporalstore-rust/src/engine.rs",
-        "crates/temporalstore-rust/src/raft.rs",
-        "crates/temporalstore-rust/src/proxy.rs",
-        "crates/temporalstore-rust/src/ingestion.rs",
-        "crates/temporalstore-rust/src/bin/server.rs",
-        "crates/temporalstore-rust/src/bin/metaserver.rs",
-    ];
+    // Walked, not listed. This was six hardcoded paths, and it broke the moment `engine.rs` was
+    // split into submodules and `server.rs` into `server/metrics.rs`: six of the eleven metrics
+    // moved into `engine/prometheus_metrics.rs` and `bin/server/metrics.rs`, the list still named
+    // the old files, and the contract asserted that files contain metrics they no longer hold. It
+    // failed for a refactor that should not have concerned it, and said only `false`.
     let mut text = String::new();
-    for relative in relative_paths {
-        let Ok(part) = fs::read_to_string(root.join(relative)) else {
-            return false;
-        };
-        text.push_str(&part);
-        text.push('\n');
-    }
+    collect_rust_sources(&root.join("crates/temporalstore-rust/src"), &mut text);
     snippets.iter().all(|snippet| text.contains(snippet))
+}
+
+/// Every `.rs` under `dir`, minus two exclusions that are the whole point of the check.
+fn collect_rust_sources(dir: &Path, out: &mut String) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // A `tests` directory ASSERTS on these names; it does not emit them. Counting a test
+            // as an emitter would let this pass for a metric nothing produces, which is the one
+            // thing the contract is for.
+            if path.file_name().is_some_and(|name| name == "tests") {
+                continue;
+            }
+            collect_rust_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            // This harness carries the token list itself, so reading it makes the check vacuous.
+            if path
+                .file_name()
+                .is_some_and(|name| name == "ops_scale_readiness_harness.rs")
+            {
+                continue;
+            }
+            if let Ok(text) = fs::read_to_string(&path) {
+                out.push_str(&text);
+            }
+        }
+    }
 }
 
 fn push_missing(missing: &mut Vec<String>, ready: bool, capability: &str) {
