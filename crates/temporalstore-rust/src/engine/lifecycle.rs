@@ -831,6 +831,12 @@ impl TemporalEngine {
         // `TS_WAL_DATA_ONLY` is what makes it fatal rather than a miss: with results recorded the
         // command is dropped, so there is nothing left to re-run the removal.
         //
+        // The discriminator already exists and already survives replay: `meta` is false for a
+        // page upsert and true for both `stage_meta_outcome` and every typed removal, and it
+        // round-trips as `meta_log`. Its only readers in the crate are the three proto encoder
+        // sites that write it, plus one test assertion -- nothing branches on it. So the field
+        // saying "do not go looking for an address" is in the log, correct, and unread.
+        //
         // The fix is a deleted-branch per arm, removing the component from the model map and the
         // bucket index instead of demanding an address -- mirroring the write side. It is not
         // done here because each arm decodes its component differently (a hash field, a set
