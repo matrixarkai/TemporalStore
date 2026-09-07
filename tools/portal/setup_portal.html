@@ -854,6 +854,37 @@
    the alternative is the key in a query string, and a credential in a URL ends up in every access
    log and proxy trace between here and the gateway. Same wire format either way; only the
    reconnect is ours to write. */
+/* ---------- the deployment's clock ----------
+ *
+ * Every frame carries the SERVER's `ts` and nothing read it, so "14s ago" was the BROWSER's clock
+ * minus a server timestamp, clamped at zero. On a machine whose clock runs behind the gateway's,
+ * every failure read "0s ago" for ever -- on the one panel whose stated job is to say whether
+ * something happened a minute ago or last Tuesday.
+ *
+ * Extrapolated from the last frame rather than sampled per call: frames arrive every few seconds,
+ * so the elapsed part is small, and a page that has seen no frame yet falls back to the browser's
+ * clock, which is what it had before. */
+var liveServerMs = 0;   /* the server's clock at the last frame */
+var liveFrameAtMs = 0;  /* Date.now() when that frame arrived */
+
+function serverNowMs() {
+  if (!liveFrameAtMs) { return Date.now(); }
+  return liveServerMs + (Date.now() - liveFrameAtMs);
+}
+
+/* How far the browser's clock is from the gateway's, positive when the browser is BEHIND. Worth
+   reporting because every other timestamp on these pages is rendered with toLocaleString() from
+   that same clock, so one wrong clock makes all of them wrong together. */
+function clockSkewMs() {
+  return liveFrameAtMs ? (liveServerMs - liveFrameAtMs) : 0;
+}
+
+/* How long since state last arrived. A connection that is open but silent leaves the page showing
+   the last frame's numbers, and the strip still says "live". */
+function sinceLastFrameMs() {
+  return liveFrameAtMs ? (Date.now() - liveFrameAtMs) : 0;
+}
+
 function liveStream(options) {
   var onFrame = options.onFrame || function () {};
   var onState = options.onState || function () {};
@@ -886,7 +917,16 @@ function liveStream(options) {
        the fields blanks the traffic table, the failures panel and the strip, every ten minutes. */
     if (name === "bye") { planned = true; return; }
     if (name !== "status" || !payload) { return; }
-    try { onFrame(JSON.parse(payload)); } catch (e) { /* a partial frame; the next one is whole */ }
+    try {
+      var frame = JSON.parse(payload);
+      /* Recorded before the handler runs, so anything the handler renders reads the clock of the
+         frame it is rendering rather than the one before it. */
+      if (typeof frame.ts === "number" && isFinite(frame.ts)) {
+        liveServerMs = frame.ts * 1000;
+        liveFrameAtMs = Date.now();
+      }
+      onFrame(frame);
+    } catch (e) { /* a partial frame; the next one is whole */ }
   }
 
   /* A stream is closed on purpose once it reaches its maximum age, and the gateway says so before
@@ -2858,20 +2898,37 @@ function liveStream(options) {
   /* Seconds, not a clock time: "14s ago" is read at a glance, a timestamp has to be subtracted from
      now in your head first. */
   function agoText(at) {
-    var seconds = Math.max(0, Math.round(Date.now() / 1000 - Number(at || 0)));
+    /* The deployment's clock, not this browser's: `at` is a server timestamp and subtracting a
+       local clock from it measures the difference between two machines as well as the age. */
+    var seconds = Math.max(0, Math.round(serverNowMs() / 1000 - Number(at || 0)));
     if (seconds < 60) { return seconds + "s ago"; }
     if (seconds < 3600) { return Math.round(seconds / 60) + "m ago"; }
     return Math.round(seconds / 3600) + "h ago";
+  }
+
+  /* Five seconds: below that the difference cannot change how any of these ages read, and a
+     caveat on every deployment is a caveat nobody reads. */
+  var CLOCK_SKEW_NOTICE_MS = 5000;
+
+  function clockNoteHtml() {
+    var skew = clockSkewMs();
+    if (Math.abs(skew) < CLOCK_SKEW_NOTICE_MS) { return ""; }
+    var seconds = Math.round(Math.abs(skew) / 1000);
+    return '<div class="msg info">This browser\u2019s clock is ' + seconds + 's '
+      + (skew > 0 ? "behind" : "ahead of") + ' the gateway\u2019s. The ages below are measured '
+      + 'against the gateway, so they are right \u2014 but every absolute time on these pages is '
+      + 'rendered from this browser, so those are out by the same amount.</div>';
   }
 
   function renderFailures(list) {
     var rows = list || [];
     if (!rows.length) {
       /* Said plainly: an empty panel and one that never loaded look identical otherwise. */
-      $("failures").innerHTML = '<div class="empty">No failures recorded on this worker.</div>';
+      $("failures").innerHTML = clockNoteHtml()
+        + '<div class="empty">No failures recorded on this worker.</div>';
       return;
     }
-    $("failures").innerHTML =
+    $("failures").innerHTML = clockNoteHtml() +
       "<table><thead><tr><th>When</th><th>Status</th><th>Method</th><th>Route</th>" +
       "<th>Incident</th></tr></thead>" +
       "<tbody>" + rows.map(function (row) {
