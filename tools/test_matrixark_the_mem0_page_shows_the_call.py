@@ -135,7 +135,10 @@ class TheRunPathUsesThemTest(unittest.TestCase):
         """runOp's two endings, separately. Searching the whole function let the failure branch
         answer for the success branch -- a mutation that removed the success call survived."""
         run_op = js[js.index("function runOp()"):]
-        catch_at = run_op.index(".catch(function ()")
+        # `.catch(function (` -- the catch now takes the error, because it classifies the failure
+        # rather than assuming one. Anchoring on the empty argument list pinned a detail
+        # that had nothing to do with what this test is about.
+        catch_at = run_op.index(".catch(function (")
         return {"success": run_op[:catch_at], "failure": run_op[catch_at:catch_at + 800]}
 
     def test_a_completed_call_fills_both(self) -> None:

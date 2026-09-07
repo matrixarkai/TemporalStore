@@ -1212,8 +1212,11 @@
            against a box that still says the magic word. */
         if (res.ok && op.destructive && $("opConfirm")) { $("opConfirm").value = ""; }
       })
-      .catch(function () {
-        say($("opMsg"), "Could not reach the gateway.", "err");
+      .catch(function (e) {
+        /* The moved console answers a failure the way the rest of the portal does: a status is the
+           deployment saying no, a fetch that never left is unreachable, and anything else happened
+           here with the answer already in hand. */
+        say($("opMsg"), window.__matrixarkWhyFailed(e), "err");
         var answer = { status: 0, ms: Date.now() - started, headers: {},
                        text: "the request did not complete", body: null };
         renderWire(sent, answer);
