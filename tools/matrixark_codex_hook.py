@@ -2248,7 +2248,15 @@ def close_server_best_effort(server: Any, *, timeout_ms: int = HOOK_CLOSE_TIMEOU
     close_timeout_s = max(0.001, timeout_ms / 1000.0)
     result = _run_best_effort_with_timeout("close", timeout_ms, close, timeout_s=close_timeout_s)
     if result.get("status") != "ok":
-        _mcp_debug_log(f"matrixark hook close skipped after {timeout_ms}ms: {result}")
+        # Say HOW FAR it got. This line has been written 10,105 times in the live debug log, all
+        # of them at 750ms, and every one of them said only that the budget ran out -- never
+        # which stage was holding it. The close spends its budget in order (thread joins, adapter
+        # close, audit drain), so the stage reached is the difference between a poller that will
+        # not stop and a flush that never ran.
+        progress = getattr(server, "_close_progress", None)
+        _mcp_debug_log(
+            f"matrixark hook close skipped after {timeout_ms}ms: {result} reached={progress}"
+        )
 
 
 def is_resource_event(event: str) -> bool:

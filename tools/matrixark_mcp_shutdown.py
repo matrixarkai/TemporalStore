@@ -43,13 +43,33 @@ def close_server_within_budget(server: Any, timeout_s: float) -> None:
     Total, not per step: each stage asks what is LEFT rather than helping itself to the whole budget
     again. A caller that waits `timeout_s` gets a close that tried to finish in `timeout_s`.
     """
-    deadline = time.monotonic() + max(0.0, timeout_s)
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout_s)
 
     def remaining() -> float:
         return max(0.0, deadline - time.monotonic())
 
+    # Which stage the close reached, and when. A caller that abandons this on a timeout cannot
+    # see where the budget went -- the thread is left running and its return value never arrives
+    # -- so the progress is recorded ON THE SERVER as each stage completes, and whatever is there
+    # when the caller gives up is what actually got done.
+    #
+    # Worth having because the budget is spent IN ORDER and the last stage is the audit drain:
+    # joins, then the adapter close, then the drain. The joins are capped at
+    # CLOSE_JOIN_BUDGET_SHARE for exactly this reason, but the adapter close is handed
+    # `remaining()` uncapped, so it can still leave the drain with nothing. Whether that is what
+    # happens is a question about a running deployment, and this is what lets the log answer it.
+    def reached(stage: str) -> None:
+        server._close_progress = {
+            "stage": stage,
+            "elapsed_ms": round((time.monotonic() - started) * 1000.0, 1),
+            "budget_ms": round(max(0.0, timeout_s) * 1000.0, 1),
+        }
+
+    reached("start")
     server._summary_stop.set()
     server._stream_materialize_stop.set()
+    reached("stop_flags_set")
 
     # The joins share a slice; whatever they leave goes to the flushes below.
     join_deadline = time.monotonic() + remaining() * CLOSE_JOIN_BUDGET_SHARE
@@ -57,8 +77,11 @@ def close_server_within_budget(server: Any, timeout_s: float) -> None:
         if thread is None:
             continue
         thread.join(timeout=max(0.0, join_deadline - time.monotonic()))
+    reached("threads_joined")
 
     adapter_close = getattr(server.adapter, "close", None)
     if callable(adapter_close):
         adapter_close(timeout_s=remaining())
+    reached("adapter_closed")
     server._audit_queue.drain(remaining())
+    reached("audit_drained")
