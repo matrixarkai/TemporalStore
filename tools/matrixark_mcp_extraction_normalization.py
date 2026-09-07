@@ -740,8 +740,10 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
     return patches[:3]
 
 
-def clean_patch_value(value: str) -> str:
-    return summarize_text(" ".join(value.split()).strip(" ,;:-"), limit=180)
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import clean_patch_value
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import clean_patch_value
 
 
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it

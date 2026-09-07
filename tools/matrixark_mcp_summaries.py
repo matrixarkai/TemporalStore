@@ -57,21 +57,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import summarize_text
 
 
-def deterministic_time_compression_summary(
-    *,
-    node_path: list[str],
-    source_start_ms: int,
-    source_end_ms: int,
-    event_texts: list[str],
-    max_raw_events_per_node: int,
-) -> str:
-    snippets = [summarize_text(text, limit=180) for text in event_texts[:5]]
-    return (
-        f"Temporal compression window [{source_start_ms}, {source_end_ms}] under "
-        f"{' / '.join(node_path)} contains {len(event_texts)} source events. "
-        f"Normal retrieval should score this synthesis plus the newest {max_raw_events_per_node} raw events. "
-        + " | ".join(snippets)
-    )
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import deterministic_time_compression_summary
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import deterministic_time_compression_summary
 
 
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
