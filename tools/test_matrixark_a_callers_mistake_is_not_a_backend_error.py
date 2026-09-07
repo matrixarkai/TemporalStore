@@ -30,9 +30,19 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matrixark_v1_gateway as gw  # noqa: E402
+
+
+def _cfg():
+    """Imported inside the call, not at module import time.
+
+    A test module that imports another one at import time reorders `unittest discover`, and can
+    fail tests it has nothing to do with -- in CI, while passing locally.
+    """
+    from test_matrixark_v1_gateway import _cfg as build
+    return build()
 from matrixark_mcp_core_identity import MatrixArkInvalidRequestError  # noqa: E402
 from matrixark_mcp_errors import MatrixArkError  # noqa: E402
-from test_matrixark_v1_gateway import _cfg  # noqa: E402
+
 
 ADMIN = {"Authorization": "Bearer k-acme"}
 
