@@ -300,7 +300,7 @@ pub struct ZoneInfo {
 /// MetaItem's `start_WAL_id` role in the native WAL vocabulary.
 ///
 /// `zones` folds the band catalog into the anchor. It
-/// is populated ONLY at a threshold dump, and ONLY when the `TS_INDEX_CATALOG_FOLD` gate is on;
+/// is populated ONLY at a threshold dump;
 /// with the gate off it is always empty and (via `skip_serializing_if`) not serialized, so an
 /// anchor record is byte-identical to the pre-fold record. Legacy anchors without `zones`
 /// deserialize to an empty catalog and replay unchanged.
@@ -487,28 +487,19 @@ fn indexlog_wal_only_sync() -> bool {
     !crate::engine::wal_legacy_recovery()
 }
 
-/// MANIFEST-CONFORMANCE FOLD gate (default ON, opt-out). When on, the band/zone
-/// catalog is folded into the index-log anchor at a threshold dump
-/// and the per-write band-manifest file stops being the
-/// catalog's source of truth (it is reconstructed on load from the durable pages + the folded
-/// anchor). Off, none of that fold code runs: no `zones` are ever captured (so anchor records
-/// serialize identically), and recovery/persistence take the existing paths unchanged.
+/// MANIFEST-CONFORMANCE FOLD, always on: the band/zone catalog is folded into the index-log
+/// anchor at a threshold dump, and the per-write band-manifest file is no longer the catalog's
+/// source of truth (it is reconstructed on load from the durable pages plus the folded anchor).
+/// `TS_INDEX_CATALOG_FOLD` used to be able to skip all of it. It shipped dark (the flip once
+/// broke proxy tests), then defaulted on once the upsert-delta and single-barrier work landed,
+/// and nothing ever selected the off position again -- the five tests that exercise the fold
+/// pinned it ON rather than off. The threshold dump is also what lets the embedded (proxy)
+/// engine reclaim its index-log and WAL at all, so the off side disabled reclaim entirely.
 ///
-/// Shipped dark originally (the flip once broke proxy tests); the full lib + proxy suites are
-/// green with it on since the upsert-delta and single-barrier work landed, and the threshold
-/// dump is what lets the embedded (proxy) engine reclaim its index-log and WAL at all -- so it
-/// now defaults on. Set `TS_INDEX_CATALOG_FOLD=0` to restore the previous behaviour.
-pub fn index_catalog_fold_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_INDEX_CATALOG_FOLD")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
+/// The off side's compatibility claim still holds and is not conditional on anything: an anchor
+/// whose `zones` is empty serializes with no `zones` key, byte-identical to a pre-fold MetaItem.
+/// `meta_item_without_zones_serializes_byte_identically_to_pre_fold` asserts exactly that.
+///
 /// Threshold decision for the background catalog/index dump, mirroring this design
 /// index-meta dump gate (the dump-delay check compares the undumped
 /// WAL length against the 1 MiB gap). `undumped_bytes` is the served-index-log growth since
@@ -1777,9 +1768,10 @@ mod tests {
         );
     }
 
+    #[test]
     fn meta_item_without_zones_serializes_byte_identically_to_pre_fold() {
-        // Byte-identical-when-off invariant: an anchor whose `zones` is empty (the only state
-        // reachable with TS_INDEX_CATALOG_FOLD off) must serialize with NO `zones` key and NO
+        // Pre-fold compatibility invariant: an anchor whose `zones` is empty must serialize with
+        // NO `zones` key and NO
         // `zone_version` beyond what a pre-fold MetaItem produced. `zone_version` defaults to 0
         // and is not skipped, so it appears; assert the value carries only the legacy three
         // fields plus a zero zone_version and no zones array.

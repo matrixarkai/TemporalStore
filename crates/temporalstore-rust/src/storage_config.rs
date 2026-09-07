@@ -164,7 +164,7 @@ pub fn storage_zone_size_bytes() -> u64 {
 /// Undumped index-log-gap threshold (bytes) that triggers a background catalog/index dump under
 /// the MANIFEST-CONFORMANCE FOLD. Reads the `TS_INDEX_DUMP_WAL_GAP_BYTES` env override -- or the
 /// previous name for it, so existing deployments keep working -- falling back to the 1 MiB
-/// default. Only consulted when `index_catalog_fold_enabled()`.
+/// default. Only consulted by the catalog fold's threshold dump.
 pub fn index_dump_wal_gap_bytes() -> u64 {
     StorageTuningConfig::from_env().index_dump_wal_gap_bytes
 }

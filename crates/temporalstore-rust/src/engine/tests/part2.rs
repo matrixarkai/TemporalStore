@@ -2221,30 +2221,6 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     );
 }
 
-/// Sets an env gate for the duration of a test and removes it on drop (even on panic), so a
-/// gated-behavior test never leaks its flag into the rest of the suite.
-struct FoldEnvGuard {
-    names: Vec<&'static str>,
-}
-
-impl FoldEnvGuard {
-    fn set(pairs: &[(&'static str, &str)]) -> Self {
-        let names = pairs.iter().map(|(name, _)| *name).collect();
-        for (name, value) in pairs {
-            std::env::set_var(name, value);
-        }
-        Self { names }
-    }
-}
-
-impl Drop for FoldEnvGuard {
-    fn drop(&mut self) {
-        for name in &self.names {
-            std::env::remove_var(name);
-        }
-    }
-}
-
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -2276,7 +2252,6 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
     // undumped index-log has grown past it, folding the band/zone catalog into an index-log
     // MetaItem anchor; below the gap nothing is dumped. Matches
     // index-meta dump background cadence -- never a per-write dump.
-    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
@@ -2320,7 +2295,6 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     // index-log records the base reflects and the WAL prefix below the anchor are redundant --
     // reclaiming them must SHRINK both files on disk, keep the cadence alive (watermark
     // measured from the post-reclaim length), and leave a reload byte-exact.
-    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
@@ -2389,7 +2363,6 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_pages() {
     // An async write's page can live ONLY in its WAL record (served back through the
     // block-in-WAL registration). A post-dump WAL sweep must pin its floor at the lowest
     // registered sequence so that record survives, even when the dump anchor is far above it.
-    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
@@ -2444,7 +2417,6 @@ fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
     // MANIFEST-CONFORMANCE FOLD round-trip: write, dump (folds the catalog), delete the band-manifest
     // file, reload -- every acked key must survive AND the band lifecycle must reconstruct from
     // the folded index-log MetaItem, proving the fold is a lossless catalog source.
-    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
@@ -2497,7 +2469,6 @@ fn manifest_fold_on_does_not_resurrect_evicted_feature_points_on_reload() {
     // The #22 resurrection trap must still hold with the fold ON: the fold touches the band
     // catalog (M1), NOT the per-write served-index delta / key_states nor the WAL config-log, so
     // config-driven feature_max_size eviction stays durable and does not resurrect on reload.
-    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");

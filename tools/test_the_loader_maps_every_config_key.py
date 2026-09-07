@@ -15,7 +15,8 @@ Two were in that state and neither was visible:
     "`TS_WAL_COMMIT_DELAY_US` (config `[wal] commit_delay_us`)"), and both of its neighbours in
     the same section were mapped.
   * `[storage] index_catalog_fold`, commented out, naming a flag that defaults ON and is read in
-    eight places -- so uncommenting it would have done nothing.
+    eight places -- so uncommenting it would have done nothing. (That flag has since been retired:
+    the fold is unconditional, and the key and its mapping went with it.)
 
 Commented keys count. A commented line is an offer, and the only reason to write one is that
 somebody may uncomment it.

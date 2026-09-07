@@ -368,12 +368,9 @@ impl TemporalEngine {
         // reclaimed slabs with no live file. It never deletes a reconciled band and never lowers
         // physical bytes below the slab's real size, so it cannot lose durable state -- it is a
         // metadata refinement over the lossless disk-derived catalog, making the per-write
-        // band-manifest file unnecessary as the catalog's source of truth. Off, this is skipped
-        // entirely (byte-identical).
-        if crate::index_log::index_catalog_fold_enabled() {
-            if let Ok(Some(meta)) = self.index_log_store.latest_zone_catalog(request.shard_id) {
-                let _ = self.page_store.install_zone_catalog(&meta.zones);
-            }
+        // band-manifest file unnecessary as the catalog's source of truth.
+        if let Ok(Some(meta)) = self.index_log_store.latest_zone_catalog(request.shard_id) {
+            let _ = self.page_store.install_zone_catalog(&meta.zones);
         }
         let mut state = loaded.unwrap_or_default();
         promote_model_maps_to_bucket_index_authority(
