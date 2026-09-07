@@ -3724,6 +3724,26 @@ def _ok_body(result: Any) -> Json:
     return result if isinstance(result, dict) else {"result": result}
 
 
+def _failure_body(scope: Json, exc: Exception) -> Tuple[int, Json]:
+    """The status AND the body for a failed backend call, in the words that fit whose fault it was.
+
+    A request the caller can fix is not a backend error, and answering it with one throws away the
+    only sentence that would fix it. Measured before this existed: omitting a memory_id answered
+    500 "The backend could not complete this call." with an incident token -- for a mistake the
+    caller made and could have corrected from the message the backend had already written.
+
+    The message is echoed only for the statuses where it is ABOUT THE REQUEST. A 500 keeps the
+    deliberately incurious sentence and the token, because that one is about the inside of the
+    deployment and the reader is not told it.
+    """
+    status = _classify_backend_error(exc)
+    if status == 400:
+        return status, {"error": "invalid_request", "detail": str(exc)[:400]}
+    if status == 404:
+        return status, {"error": "not_found", "detail": str(exc)[:400]}
+    return status, _failure(scope, "backend_error", exc)
+
+
 def _classify_backend_error(exc: Exception) -> int:
     name = exc.__class__.__name__
     if name in _STORAGE_QUOTA_ERRORS:
@@ -4510,8 +4530,8 @@ async def _dispatch_direct(client: "DirectBackendClient", cfg: GatewayConfig, to
         return await _json(send, 504, {"error": "backend_timeout",
                            "detail": f"backend did not respond within {cfg.backend_timeout}s"}, rl_headers)
     except Exception as exc:
-        return await _json(send, _classify_backend_error(exc),
-                           _failure(scope, "backend_error", exc), rl_headers)
+        _status, _body = _failure_body(scope, exc)
+        return await _json(send, _status, _body, rl_headers)
 
     if status >= 400:
         return await _json(send, status if status in (429, 507) else 502,
@@ -5223,8 +5243,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             except Exception as exc:
                 # A backend that cannot answer this must not read as "nothing is pending" -- the
                 # honest answer is that the state is unknown.
-                return await _json(send, _classify_backend_error(exc),
-                                   _failure(scope, "backend_error", exc))
+                _status, _body = _failure_body(scope, exc)
+                return await _json(send, _status, _body)
             body = _ok_body(result)
             body["encoder"] = _encoder_summary()
             return await _json(send, 200, body)
@@ -5523,8 +5543,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 504, {"error": "backend_timeout",
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
-                return await _json(send, _classify_backend_error(exc),
-                                   _failure(scope, "backend_error", exc))
+                _status, _body = _failure_body(scope, exc)
+                return await _json(send, _status, _body)
             return await _json(send, 200, _ok_body(result))
 
         # ---- who holds memories: GET /v1/users (auth + context:retrieve) ---------------------
@@ -5559,8 +5579,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 504, {"error": "backend_timeout",
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
-                return await _json(send, _classify_backend_error(exc),
-                                   _failure(scope, "backend_error", exc))
+                _status, _body = _failure_body(scope, exc)
+                return await _json(send, _status, _body)
             return await _json(send, 200, _ok_body(result))
 
         # ---- skill / resource catalog (auth + resource:read / skill:read) --------------------
@@ -5610,8 +5630,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 504, {"error": "backend_timeout",
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
-                return await _json(send, _classify_backend_error(exc),
-                                   _failure(scope, "backend_error", exc))
+                _status, _body = _failure_body(scope, exc)
+                return await _json(send, _status, _body)
             body = _ok_body(result)
             # What was actually applied, not what was asked for. A caller asking for 5,000 gets 500
             # rows and, without this, no way to tell that from a catalogue holding exactly 500 -- so
@@ -5658,8 +5678,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 504, {"error": "backend_timeout",
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
-                return await _json(send, _classify_backend_error(exc),
-                                   _failure(scope, "backend_error", exc))
+                _status, _body = _failure_body(scope, exc)
+                return await _json(send, _status, _body)
             return await _json(send, 200, _ok_body(result))
 
         # ---- keyed recall via GET /v1/memory/by-key?identity_key=... (auth + context:retrieve) --
@@ -5698,8 +5718,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 504, {"error": "backend_timeout",
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
-                return await _json(send, _classify_backend_error(exc),
-                                   _failure(scope, "backend_error", exc))
+                _status, _body = _failure_body(scope, exc)
+                return await _json(send, _status, _body)
             if result.get("found") is False:
                 return await _json(send, 404, _ok_body(result))
             return await _json(send, 200, _ok_body(result))
@@ -5734,8 +5754,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 504, {"error": "backend_timeout",
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
-                return await _json(send, _classify_backend_error(exc),
-                                   _failure(scope, "backend_error", exc))
+                _status, _body = _failure_body(scope, exc)
+                return await _json(send, _status, _body)
             if tool == "matrixark_get_memory" and result.get("found") is False:
                 return await _json(send, 404, _ok_body(result))
             return await _json(send, 200, _ok_body(result))
@@ -5847,8 +5867,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 504, {"error": "backend_timeout",
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"}, rl_headers)
             except Exception as exc:
-                return await _json(send, _classify_backend_error(exc),
-                                   _failure(scope, "backend_error", exc), rl_headers)
+                _status, _body = _failure_body(scope, exc)
+                return await _json(send, _status, _body, rl_headers)
             return await _json(send, 200, resp, rl_headers)
 
         args = parsed.get("arguments") if isinstance(parsed.get("arguments"), dict) else parsed
@@ -5919,9 +5939,15 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                "detail": f"backend did not respond within {cfg.backend_timeout}s"}, rl_headers)
         except Exception as exc:
             status = _classify_backend_error(exc)
-            body = {"error": "rate_limited"} if status == 429 else (
-                _failure(scope, "storage_quota_exceeded", exc) if status == 507
-                else _failure(scope, "backend_error", exc))
+            if status == 429:
+                body = {"error": "rate_limited"}
+            elif status == 507:
+                body = _failure(scope, "storage_quota_exceeded", exc)
+            else:
+                # Every mem0 route is served from here, so this is where a caller's mistake was
+                # being answered as the deployment's. _failure_body re-reads the same
+                # classification and says whose fault it was in the words that fit.
+                status, body = _failure_body(scope, exc)
             headers = rl_headers + ([(b"retry-after", b"1")] if status == 429 else [])
             return await _json(send, status, body, headers)
 
