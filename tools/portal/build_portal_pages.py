@@ -3702,301 +3702,317 @@ MEM0_JS = r"""
   /* Generated from the gateway's own MEM0_OPERATIONS, so an operation that gains an argument gains
      a field here without anyone remembering to add one. */
   var MEM0_OPS = [
-  {
-    "id": "add",
-    "label": "add()",
-    "group": "Write",
-    "method": "POST",
-    "path": "/v1/ingest",
-    "scope": "context:ingest",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "Write a turn. Acknowledged at 202 with extraction running behind it, which is why a search issued immediately afterwards can legitimately not see it yet.",
-    "fields": [
-      {
-        "name": "content",
-        "in": "message",
-        "kind": "textarea",
-        "required": true,
-        "label": "Message",
-        "placeholder": "The team agreed to keep the coupon stacking rule for ACME until Q4.",
-        "help": "Sent as one user turn."
-      },
-      {
-        "name": "finalize",
-        "in": "body",
-        "kind": "bool",
-        "default": true,
-        "label": "Extract before answering",
-        "help": "Off is how production behaves: the write is acknowledged and extraction runs in the background."
-      },
-      {
-        "name": "metadata",
-        "in": "body",
-        "kind": "json",
-        "label": "Metadata",
-        "placeholder": "{\"source\": \"portal\"}",
-        "help": "Stored alongside the memory and returned with it."
-      }
-    ]
-  },
-  {
-    "id": "search",
-    "label": "search()",
-    "group": "Read",
-    "method": "POST",
-    "path": "/v1/retrieve",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "The retrieval path an agent uses: ranked, then packed to fit a token budget.",
-    "fields": [
-      {
-        "name": "query",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Query",
-        "placeholder": "when do we ship?"
-      },
-      {
-        "name": "max_budget_tokens",
-        "in": "body",
-        "kind": "number",
-        "default": 2048,
-        "label": "Token budget",
-        "help": "The pack is built to fit this. A budget far below what the answer needs is indistinguishable from poor retrieval."
-      }
-    ]
-  },
-  {
-    "id": "get_all",
-    "label": "get_all()",
-    "group": "Read",
-    "method": "POST",
-    "path": "/v1/memories",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "The memories in the scope, unranked -- the listing, not the search. A limit does not make it a sample of the whole scope: it takes the NEWEST that many.",
-    "fields": [
-      {
-        "name": "limit",
-        "in": "body",
-        "kind": "number",
-        "default": 50,
-        "label": "Limit",
-        "help": "The NEWEST this many, listed oldest first. 0 or blank for the whole scope."
-      }
-    ]
-  },
-  {
-    "id": "get",
-    "label": "get()",
-    "group": "Read",
-    "method": "GET",
-    "path": "/v1/memory/{id}",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "One memory's stored record, by id.",
-    "fields": [
-      {
-        "name": "id",
-        "in": "path",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      }
-    ]
-  },
-  {
-    "id": "history",
-    "label": "history()",
-    "group": "Read",
-    "method": "GET",
-    "path": "/v1/memory/{id}/history",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "How that memory changed: each supersede, with what it said before.",
-    "fields": [
-      {
-        "name": "id",
-        "in": "path",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      }
-    ]
-  },
-  {
-    "id": "get_by_key",
-    "label": "by identity key",
-    "group": "Read",
-    "method": "GET",
-    "path": "/v1/memory/by-key",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "The one live value for an identity key in a scope \u2014 the shape a profile field wants, where the answer is a value and not a ranked list.",
-    "fields": [
-      {
-        "name": "identity_key",
-        "in": "query",
-        "kind": "text",
-        "required": true,
-        "label": "Identity key",
-        "placeholder": "ship_date"
-      },
-      {
-        "name": "user_id",
-        "in": "query",
-        "kind": "text",
-        "label": "User",
-        "from_scope": "user"
-      }
-    ]
-  },
-  {
-    "id": "users",
-    "label": "users()",
-    "group": "Read",
-    "method": "POST",
-    "path": "/v1/users",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "Which users, agents and runs hold memories in this tenant.",
-    "fields": []
-  },
-  {
-    "id": "update",
-    "label": "update()",
-    "group": "Write",
-    "method": "POST",
-    "path": "/v1/update",
-    "scope": "context:ingest",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "Supersede a memory: the amended text is ingested and the old id tombstoned, so history keeps both.",
-    "fields": [
-      {
-        "name": "memory_id",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      },
-      {
-        "name": "text",
-        "in": "body",
-        "kind": "textarea",
-        "required": true,
-        "label": "New text",
-        "placeholder": "We ship on Friday."
-      }
-    ]
-  },
-  {
-    "id": "feedback",
-    "label": "feedback()",
-    "group": "Write",
-    "method": "POST",
-    "path": "/v1/memory/feedback",
-    "scope": "context:ingest",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
-    "fields": [
-      {
-        "name": "memory_id",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      },
-      {
-        "name": "rating",
-        "in": "body",
-        "kind": "number",
-        "default": 1,
-        "label": "Rating",
-        "help": "1 useful, -1 not."
-      }
-    ]
-  },
-  {
-    "id": "session_commit",
-    "label": "commit a session",
-    "group": "Write",
-    "method": "POST",
-    "path": "/v1/session/commit",
-    "scope": "context:ingest",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "Close a session and roll its turns into summaries. Until this runs the turns are stored but not summarised.",
-    "fields": []
-  },
-  {
-    "id": "forget",
-    "label": "forget()",
-    "group": "Forget",
-    "method": "POST",
-    "path": "/v1/forget",
-    "scope": "context:forget",
-    "destructive": true,
-    "needs_scope": false,
-    "summary": "Stop returning one memory. The record stays, so history still explains it.",
-    "fields": [
-      {
-        "name": "memory_id",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      }
-    ]
-  },
-  {
-    "id": "delete",
-    "label": "delete()",
-    "group": "Forget",
-    "method": "POST",
-    "path": "/v1/delete",
-    "scope": "context:forget",
-    "destructive": true,
-    "needs_scope": false,
-    "summary": "Delete one memory outright.",
-    "fields": [
-      {
-        "name": "memory_id",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      }
-    ]
-  },
-  {
-    "id": "delete_all",
-    "label": "delete_all()",
-    "group": "Forget",
-    "method": "POST",
-    "path": "/v1/reset",
-    "scope": "context:forget",
-    "destructive": true,
-    "needs_scope": true,
-    "summary": "Drop everything in the scope shown above. There is no undo, and an empty user field means the default scope, not none of them.",
-    "fields": []
-  }
-];
+    {
+      "id": "add",
+      "label": "add()",
+      "group": "Write",
+      "method": "POST",
+      "path": "/v1/ingest",
+      "scope": "context:ingest",
+      "destructive": false,
+      "needs_scope": true,
+      "summary": "Write a turn. Acknowledged at 202 with extraction running behind it, which is why a search issued immediately afterwards can legitimately not see it yet.",
+      "fields": [
+        {
+          "name": "content",
+          "in": "message",
+          "kind": "textarea",
+          "required": true,
+          "label": "Message",
+          "placeholder": "The team agreed to keep the coupon stacking rule for ACME until Q4.",
+          "help": "Sent as one user turn."
+        },
+        {
+          "name": "finalize",
+          "in": "body",
+          "kind": "bool",
+          "default": true,
+          "label": "Extract before answering",
+          "help": "Off is how production behaves: the write is acknowledged and extraction runs in the background."
+        },
+        {
+          "name": "metadata",
+          "in": "body",
+          "kind": "json",
+          "label": "Metadata",
+          "placeholder": "{\"source\": \"portal\"}",
+          "help": "Stored alongside the memory and returned with it."
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "label": "search()",
+      "group": "Read",
+      "method": "POST",
+      "path": "/v1/retrieve",
+      "scope": "context:retrieve",
+      "destructive": false,
+      "needs_scope": true,
+      "summary": "The retrieval path an agent uses: ranked, then packed to fit a token budget.",
+      "fields": [
+        {
+          "name": "query",
+          "in": "body",
+          "kind": "text",
+          "required": true,
+          "label": "Query",
+          "placeholder": "when do we ship?"
+        },
+        {
+          "name": "max_budget_tokens",
+          "in": "body",
+          "kind": "number",
+          "default": 2048,
+          "label": "Token budget",
+          "help": "The pack is built to fit this. A budget far below what the answer needs is indistinguishable from poor retrieval."
+        }
+      ]
+    },
+    {
+      "id": "get_all",
+      "label": "get_all()",
+      "group": "Read",
+      "method": "POST",
+      "path": "/v1/memories",
+      "scope": "context:retrieve",
+      "destructive": false,
+      "needs_scope": true,
+      "summary": "The memories in the scope, unranked -- the listing, not the search. A limit does not make it a sample of the whole scope: it takes the NEWEST that many.",
+      "fields": [
+        {
+          "name": "limit",
+          "in": "body",
+          "kind": "number",
+          "default": 50,
+          "label": "Limit",
+          "help": "The NEWEST this many, listed oldest first. 0 or blank for the whole scope."
+        }
+      ]
+    },
+    {
+      "id": "get",
+      "label": "get()",
+      "group": "Read",
+      "method": "GET",
+      "path": "/v1/memory/{id}",
+      "scope": "context:retrieve",
+      "destructive": false,
+      "needs_scope": false,
+      "summary": "One memory's stored record, by id.",
+      "fields": [
+        {
+          "name": "id",
+          "in": "path",
+          "kind": "text",
+          "required": true,
+          "label": "Memory id",
+          "placeholder": "mem_7f21"
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "label": "history()",
+      "group": "Read",
+      "method": "GET",
+      "path": "/v1/memory/{id}/history",
+      "scope": "context:retrieve",
+      "destructive": false,
+      "needs_scope": false,
+      "summary": "How that memory changed: each supersede, with what it said before.",
+      "fields": [
+        {
+          "name": "id",
+          "in": "path",
+          "kind": "text",
+          "required": true,
+          "label": "Memory id",
+          "placeholder": "mem_7f21"
+        }
+      ]
+    },
+    {
+      "id": "get_by_key",
+      "label": "by identity key",
+      "group": "Read",
+      "method": "GET",
+      "path": "/v1/memory/by-key",
+      "scope": "context:retrieve",
+      "destructive": false,
+      "needs_scope": false,
+      "summary": "The one live value for an identity key in a scope — the shape a profile field wants, where the answer is a value and not a ranked list.",
+      "fields": [
+        {
+          "name": "identity_key",
+          "in": "query",
+          "kind": "text",
+          "required": true,
+          "label": "Identity key",
+          "placeholder": "ship_date"
+        },
+        {
+          "name": "user_id",
+          "in": "query",
+          "kind": "text",
+          "label": "User",
+          "from_scope": "user"
+        }
+      ]
+    },
+    {
+      "id": "users",
+      "label": "users()",
+      "group": "Read",
+      "method": "POST",
+      "path": "/v1/users",
+      "scope": "context:retrieve",
+      "destructive": false,
+      "needs_scope": true,
+      "summary": "Which users, agents and runs hold memories in this tenant.",
+      "fields": []
+    },
+    {
+      "id": "update",
+      "label": "update()",
+      "group": "Write",
+      "method": "POST",
+      "path": "/v1/update",
+      "scope": "context:ingest",
+      "destructive": false,
+      "needs_scope": false,
+      "summary": "Supersede a memory: the amended text is ingested and the old id tombstoned, so history keeps both.",
+      "fields": [
+        {
+          "name": "memory_id",
+          "in": "body",
+          "kind": "text",
+          "required": true,
+          "label": "Memory id",
+          "placeholder": "mem_7f21"
+        },
+        {
+          "name": "text",
+          "in": "body",
+          "kind": "textarea",
+          "required": true,
+          "label": "New text",
+          "placeholder": "We ship on Friday."
+        }
+      ]
+    },
+    {
+      "id": "feedback",
+      "label": "feedback()",
+      "group": "Write",
+      "method": "POST",
+      "path": "/v1/memory/feedback",
+      "scope": "context:ingest",
+      "destructive": false,
+      "needs_scope": false,
+      "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
+      "fields": [
+        {
+          "name": "memory_id",
+          "in": "body",
+          "kind": "text",
+          "required": true,
+          "label": "Memory id",
+          "placeholder": "mem_7f21"
+        },
+        {
+          "name": "rating",
+          "in": "body",
+          "kind": "choice",
+          "choices": [
+            "POSITIVE",
+            "NEGATIVE",
+            "VERY_NEGATIVE"
+          ],
+          "default": "POSITIVE",
+          "label": "Rating",
+          "help": "The vocabulary is closed and the deployment refuses anything outside it. This field offered a number, and the sample value it carried -- 1 -- was refused on every call."
+        }
+      ]
+    },
+    {
+      "id": "session_commit",
+      "label": "commit a session",
+      "group": "Write",
+      "method": "POST",
+      "path": "/v1/session/commit",
+      "scope": "context:ingest",
+      "destructive": false,
+      "needs_scope": true,
+      "summary": "Close a session and roll its turns into summaries. Until this runs the turns are stored but not summarised.",
+      "fields": []
+    },
+    {
+      "id": "forget",
+      "label": "forget()",
+      "group": "Forget",
+      "method": "POST",
+      "path": "/v1/forget",
+      "scope": "context:forget",
+      "destructive": true,
+      "needs_scope": false,
+      "summary": "Delete EVERY memory for the subject in the scope above -- mem0's delete_all(user_id=...). Not one memory: the whole subject. A tombstone and an audit entry are kept; the memories are not.",
+      "fields": [
+        {
+          "name": "confirm",
+          "in": "body",
+          "kind": "text",
+          "required": true,
+          "label": "Confirm the subject",
+          "placeholder": "the user this key resolves to",
+          "help": "Must equal the RESOLVED scope user, which is not necessarily the user_id you send: a key resolving to root needs root here. Run users() to see it."
+        }
+      ]
+    },
+    {
+      "id": "delete",
+      "label": "delete()",
+      "group": "Forget",
+      "method": "POST",
+      "path": "/v1/delete",
+      "scope": "context:forget",
+      "destructive": true,
+      "needs_scope": false,
+      "summary": "Delete one memory outright.",
+      "fields": [
+        {
+          "name": "memory_id",
+          "in": "body",
+          "kind": "text",
+          "required": true,
+          "label": "Memory id",
+          "placeholder": "mem_7f21"
+        }
+      ]
+    },
+    {
+      "id": "delete_all",
+      "label": "delete_all()",
+      "group": "Forget",
+      "method": "POST",
+      "path": "/v1/reset",
+      "scope": "context:forget",
+      "destructive": true,
+      "needs_scope": true,
+      "summary": "Drop everything in the scope shown above. There is no undo, and an empty user field means the default scope, not none of them.",
+      "fields": [
+        {
+          "name": "confirm",
+          "in": "body",
+          "kind": "text",
+          "required": true,
+          "label": "Confirm",
+          "placeholder": "RESET",
+          "help": "The tenant id, or the literal word RESET. The call is refused without it."
+        }
+      ]
+    }
+  ];
 
   var currentOp = null;
 
@@ -4021,6 +4037,10 @@ MEM0_JS = r"""
     }).join("");
   }
 
+  function opHasConfirmField(op) {
+    return (op.fields || []).some(function (f) { return f.name === "confirm"; });
+  }
+
   function fieldControl(op, f) {
     var id = "op_" + op.id + "_" + f.name;
     var value = f["default"] == null ? "" : String(f["default"]);
@@ -4030,7 +4050,18 @@ MEM0_JS = r"""
         (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
     }
     var control;
-    if (f.kind === "textarea" || f.kind === "json") {
+    if (f.kind === "choice") {
+      /* A closed vocabulary is offered as a closed control. This one was a number box whose sample
+         value the deployment refuses -- "feedback must be one of POSITIVE, NEGATIVE, VERY_NEGATIVE
+         (got '1')" -- so the form asked for something that could never be accepted. */
+      control = '<select id="' + id + '" data-f="' + esc(f.name) + '">'
+        + (f.choices || []).map(function (choice) {
+            return '<option value="' + esc(choice) + '"'
+              + (String(f["default"]) === String(choice) ? " selected" : "") + ">"
+              + esc(choice) + "</option>";
+          }).join("")
+        + "</select>";
+    } else if (f.kind === "textarea" || f.kind === "json") {
       control = '<textarea id="' + id + '" data-f="' + esc(f.name) + '" spellcheck="false"' +
         (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" +
         esc(f.kind === "json" ? "" : value) + "</textarea>";
@@ -4058,11 +4089,17 @@ MEM0_JS = r"""
       '<span class="scope"> · needs ' + esc(op.scope) + esc(scopeLine) + "</span></div>" +
       '<p class="hint" style="margin-top:0">' + esc(op.summary) + "</p>" +
       op.fields.map(function (f) { return fieldControl(op, f); }).join("") +
-      (op.destructive
+      /* An operation whose own field IS a confirmation does not get a second box. Two controls
+         both labelled Confirm, one of which the request never carries, is how this came to look
+         guarded while sending a call the deployment always refused. */
+      (op.destructive && !opHasConfirmField(op)
         ? '<div class="mwarn"><b>This cannot be undone</b>Type <span class="mono">' + esc(op.id) +
           '</span> to confirm, then run.</div><label for="opConfirm">Confirm</label>' +
           '<input id="opConfirm" type="text" spellcheck="false" autocomplete="off">'
-        : "") +
+        : (op.destructive
+           ? '<div class="mwarn"><b>This cannot be undone</b>The confirm field above is the '
+             + 'guard, and the deployment checks it.</div>'
+           : "")) +
       '<div class="actions"><button id="opRun" type="button">Run</button>' +
       '<button id="opCurl" class="ghost" type="button">Copy as curl</button></div>' +
       '<pre id="opPreview"></pre></div>';
@@ -4175,7 +4212,7 @@ MEM0_JS = r"""
       say($("opMsg"), request.problems.join(" "), "warn");
       return;
     }
-    if (op.destructive) {
+    if (op.destructive && !opHasConfirmField(op)) {
       var confirmEl = $("opConfirm");
       if (!confirmEl || confirmEl.value.trim() !== op.id) {
         say($("opMsg"), "Type " + op.id + " in the confirm box to run this.", "warn");

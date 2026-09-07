@@ -2269,8 +2269,12 @@ MEM0_OPERATIONS: List[Json] = [
      "fields": [
          {"name": "memory_id", "in": "body", "kind": "text", "required": True,
           "label": "Memory id", "placeholder": "mem_7f21"},
-         {"name": "rating", "in": "body", "kind": "number", "default": 1, "label": "Rating",
-          "help": "1 useful, -1 not."},
+         {"name": "rating", "in": "body", "kind": "choice",
+          "choices": ["POSITIVE", "NEGATIVE", "VERY_NEGATIVE"], "default": "POSITIVE",
+          "label": "Rating",
+          "help": "The vocabulary is closed and the deployment refuses anything outside it. This "
+                  "field offered a number, and the sample value it carried -- 1 -- was refused on "
+                  "every call."},
      ]},
     {"id": "session_commit", "label": "commit a session", "group": "Write", "method": "POST",
      "path": "/v1/session/commit", "scope": "context:ingest", "destructive": False,
@@ -2280,10 +2284,15 @@ MEM0_OPERATIONS: List[Json] = [
      "fields": []},
     {"id": "forget", "label": "forget()", "group": "Forget", "method": "POST", "path": "/v1/forget",
      "scope": "context:forget", "destructive": True, "needs_scope": False,
-     "summary": "Stop returning one memory. The record stays, so history still explains it.",
+     "summary": "Delete EVERY memory for the subject in the scope above -- mem0's "
+                "delete_all(user_id=...). Not one memory: the whole subject. A tombstone and an "
+                "audit entry are kept; the memories are not.",
      "fields": [
-         {"name": "memory_id", "in": "body", "kind": "text", "required": True,
-          "label": "Memory id", "placeholder": "mem_7f21"},
+         {"name": "confirm", "in": "body", "kind": "text", "required": True,
+          "label": "Confirm the subject",
+          "placeholder": "the user this key resolves to",
+          "help": "Must equal the RESOLVED scope user, which is not necessarily the user_id you "
+                  "send: a key resolving to root needs root here. Run users() to see it."},
      ]},
     {"id": "delete", "label": "delete()", "group": "Forget", "method": "POST", "path": "/v1/delete",
      "scope": "context:forget", "destructive": True, "needs_scope": False,
@@ -2296,7 +2305,11 @@ MEM0_OPERATIONS: List[Json] = [
      "path": "/v1/reset", "scope": "context:forget", "destructive": True, "needs_scope": True,
      "summary": "Drop everything in the scope shown above. There is no undo, and an empty user "
                 "field means the default scope, not none of them.",
-     "fields": []},
+     "fields": [
+         {"name": "confirm", "in": "body", "kind": "text", "required": True, "label": "Confirm",
+          "placeholder": "RESET",
+          "help": "The tenant id, or the literal word RESET. The call is refused without it."},
+     ]},
 ]
 
 ROUTE_DOCS: List[Json] = [
