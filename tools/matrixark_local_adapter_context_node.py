@@ -19,32 +19,33 @@ except ImportError:
     compact_context_embedding_record,
 )
 
+# The three below are written out in matrixark_mcp_session_policy as well, and were repeated here
+# verbatim. Aliased because a method body resolves globals rather than class scope, so the bare
+# name would work and would read as though the method called itself.
+try:  # package path
+    from tools.matrixark_mcp_session_policy import (
+        default_session_node_path as _policy_default_session_node_path,
+        default_shared_context_node_path as _policy_default_shared_context_node_path,
+        resource_sharing_scope as _policy_resource_sharing_scope,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_session_policy import (
+        default_session_node_path as _policy_default_session_node_path,
+        default_shared_context_node_path as _policy_default_shared_context_node_path,
+        resource_sharing_scope as _policy_resource_sharing_scope,
+    )
+
 
 class _LocalAdapterContextNodeMixin:
     def default_session_node_path(self, scope: Json) -> list[str]:
-        tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
-        user_id = str(scope.get("user_id") or local_account_user_id())
-        session_id = str(scope.get("session_id") or user_id or "default_session")
-        return [f"tenant:{tenant_id}", f"user:{user_id}", f"session:{session_id}"]
+        return _policy_default_session_node_path(scope)
 
     def default_shared_context_node_path(self, scope: Json, *, kind: str, sharing_scope: str) -> list[str]:
-        collection = "skills" if kind == "skill" else "resources"
-        if sharing_scope == "global_shared":
-            return ["global", "shared", collection]
-        tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
-        return [f"tenant:{tenant_id}", "shared", collection]
+        return _policy_default_shared_context_node_path(
+            scope, kind=kind, sharing_scope=sharing_scope)
 
     def resource_sharing_scope(self, args: Json, envelope: Json, deployment_scope: str) -> str:
-        metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
-        explicit = str(args.get("sharing_scope") or metadata.get("sharing_scope") or "").strip().lower()
-        if explicit in {"tenant_shared", "global_shared", "private_user"}:
-            return explicit
-        if deployment_scope == "global":
-            return "global_shared"
-        scope = envelope.get("scope", {}) if isinstance(envelope.get("scope"), dict) else {}
-        if not scope.get("user_id") and not scope.get("session_id"):
-            return "tenant_shared" if scope.get("tenant_id") else "global_shared"
-        return "private_user"
+        return _policy_resource_sharing_scope(args, envelope, deployment_scope)
 
     def default_resource_node_path(self, args: Json, envelope: Json, *, deployment_scope: str, sharing_scope: str) -> list[str]:
         metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
