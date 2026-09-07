@@ -1094,6 +1094,27 @@ function liveStream(options) {
 
      `detail` still wins where there is one: it names the setting and the reason. The scope is
      appended to that rather than replacing it. */
+  /* One way to render an absolute time, and it names the clock.
+   *
+   * Four places showed a timestamp with toLocaleString() and none said which zone it was in, while
+   * the records they describe -- a configuration write, an audit entry, a stored memory -- carry
+   * the GATEWAY's time. Correlating a portal timestamp with a server log was guesswork, and on a
+   * browser whose clock is off (which the setup page can now measure and say) it was wrong as well
+   * as ambiguous.
+   *
+   * `timeZoneName: "short"` rather than the IANA name: "GMT+1" beside the time reads at a glance
+   * where "Europe/London" pushes the useful part off the end of a table cell. Falls back to the
+   * bare local string on a runtime without it, which is no worse than what was there before. */
+  window.__matrixarkWhen = function (ms) {
+    /* 0 is "no timestamp" here, not the epoch: the catalog site this replaces read
+       `ms ? ... : dash`, and a record with no time would otherwise date to 1970. */
+    if (!ms) { return "—"; }
+    var at = new Date(Number(ms));
+    if (isNaN(at.getTime())) { return "—"; }
+    try { return at.toLocaleString(undefined, { timeZoneName: "short" }); }
+    catch (e) { return at.toLocaleString(); }
+  };
+
   window.__matrixarkWhy = function (body, fallback) {
     body = body || {};
     var text = body.detail || body.error || fallback;
