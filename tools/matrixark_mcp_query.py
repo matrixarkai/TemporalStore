@@ -189,14 +189,10 @@ def path_candidates_from_query(query: str) -> list[str]:
     return _ordered_unique(values)[:6]
 
 
-def _re_for_cjk_runs():
-    """The same CJK class the resource parser indexes with, so query and ingest agree."""
-    import re as _re_mod
-    ranges = (
-        "㐀-䶿一-鿿豈-﫿"
-        "぀-ヿ가-힯"
-    )
-    return _re_mod.compile("[" + ranges + "]{2,}")
+try:  # the implementation lives in matrixark_mcp_core_query_analysis; this module re-exports it
+    from .matrixark_mcp_core_query_analysis import _re_for_cjk_runs
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_query_analysis import _re_for_cjk_runs
 
 
 # Chinese has no spaces to split on, so the ingest side indexes overlapping character
@@ -460,19 +456,10 @@ def secondary_filter_terms_to_fields(groups: list[set[str]]) -> Json:
     return fields
 
 
-def infer_temporal_window(query: str, question_type: str, *, reference_time_ms: int) -> Json:
-    lower = query.lower()
-    if re.search(r"\b(current|currently|latest|now|still|today|valid)\b", lower) or question_type == "current_state":
-        return {"mode": "latest", "valid_as_of": "now", "reference_time_ms": reference_time_ms}
-    if re.search(r"\b(before|prior to|earlier than)\b", lower):
-        return {"mode": "before", "valid_as_of": "query_inferred", "reference_time_ms": reference_time_ms}
-    if re.search(r"\b(after|since|later than)\b", lower):
-        return {"mode": "after", "valid_as_of": "query_inferred", "reference_time_ms": reference_time_ms}
-    if re.search(r"\b(as of|valid as of|on)\b", lower):
-        return {"mode": "valid_as_of", "valid_as_of": "query_inferred", "reference_time_ms": reference_time_ms}
-    if re.search(r"\b(yesterday|tomorrow|last week|next week|last month|next month|last year|next year)\b", lower):
-        return {"mode": "relative", "valid_as_of": "query_inferred", "reference_time_ms": reference_time_ms}
-    return {"mode": "unbounded", "valid_as_of": "not_applicable", "reference_time_ms": reference_time_ms}
+try:  # the implementation lives in matrixark_mcp_core_query_analysis; this module re-exports it
+    from .matrixark_mcp_core_query_analysis import infer_temporal_window
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_query_analysis import infer_temporal_window
 
 
 def build_structured_query_plan(

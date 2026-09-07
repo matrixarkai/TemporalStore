@@ -62,21 +62,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-def idle_commit_schedule(args: Json, envelope: Json, pending_event_count: int, pending_message_count: int) -> Json:
-    idle_timeout_ms = args.get("idle_commit_timeout_ms")
-    if idle_timeout_ms is None:
-        return {}
-    if not isinstance(idle_timeout_ms, int) or idle_timeout_ms < 0:
-        raise MatrixArkError("idle_commit_timeout_ms must be a non-negative integer")
-    deadline_ms = int(envelope.get("ingestion_time_ms") or 0) + idle_timeout_ms
-    return {
-        "idle_commit_timeout_ms": idle_timeout_ms,
-        "idle_commit_deadline_ms": deadline_ms,
-        "idle_commit_cutoff_ms": int(envelope.get("ingestion_time_ms") or 0),
-        "idle_commit_pending_event_count": pending_event_count,
-        "idle_commit_pending_message_count": pending_message_count,
-        "idle_commit_due": idle_timeout_ms == 0,
-    }
+try:  # the implementation lives in matrixark_mcp_async_ingest; this module re-exports it
+    from .matrixark_mcp_async_ingest import _idle_commit_schedule
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_async_ingest import _idle_commit_schedule
 
 
 def deferred_idle_auto_batch_result(

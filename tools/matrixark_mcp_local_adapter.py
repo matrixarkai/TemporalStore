@@ -2456,13 +2456,10 @@ FEATURE_MEMORY_BUDGET_QUERY_RE = re.compile(
 )
 
 
-def _explicit_cross_session_requested(args: Json, ranking: Json) -> bool:
-    raw = args.get("cross_session", ranking.get("cross_session"))
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, dict):
-        return bool(raw.get("enabled"))
-    return False
+try:  # the implementation lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it
+    from .matrixark_mcp_retrieve_pre_refresh import _explicit_cross_session_requested
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import _explicit_cross_session_requested
 
 
 def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
@@ -2516,25 +2513,10 @@ def codex_outcome_budget_query(args: Json, ranking: Json, *, question_type: str 
     ))
 
 
-def codex_user_goal_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
-    normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type not in {"profile_memory", "current_state", "latest", "multi_hop", "date"}:
-        return False
-    query = str(args.get("query") or ranking.get("query") or "").strip()
-    if not query:
-        return False
-    lower = query.lower()
-    return bool(
-        re.search(
-            r"\b(?:what|which|show|list|recall|remember|find)\b.{0,80}\b(?:goal|task|plan|requirement|request|asked|ask|instruction|directive)\b",
-            lower,
-        )
-        or re.search(
-            r"\b(?:goal|task|plan|requirement|request|instruction|directive)\b.{0,80}\b(?:codex|implement|fix|add|remove|replace|move|build|work)\b",
-            lower,
-        )
-        or re.search(r"\b(?:what did i ask|what have i asked|user asked|user request|current plan)\b", lower)
-    )
+try:  # the implementation lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it
+    from .matrixark_mcp_retrieve_pre_refresh import codex_user_goal_budget_query
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import codex_user_goal_budget_query
 
 
 def feature_scope_budget_query(args: Json, ranking: Json) -> bool:
@@ -2690,19 +2672,10 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     )
 
 
-def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:
-    value = (
-        args.get("pre_retrieval_summary_refresh")
-        if "pre_retrieval_summary_refresh" in args
-        else ranking.get("pre_retrieval_summary_refresh")
-        if "pre_retrieval_summary_refresh" in ranking
-        else PRE_RETRIEVAL_SUMMARY_REFRESH
-    )
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "auto", "bounded"}
-    return bool(value)
+try:  # the implementation lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it
+    from .matrixark_mcp_retrieve_pre_refresh import pre_retrieval_summary_refresh_enabled
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import pre_retrieval_summary_refresh_enabled
 
 
 def pre_retrieval_summary_refresh_explicitly_configured(args: Json, ranking: Json) -> bool:

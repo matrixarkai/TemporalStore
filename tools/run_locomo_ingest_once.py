@@ -1259,14 +1259,10 @@ def append_benchmark_jsonl(path: Path, row: dict[str, Any]) -> None:
         handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-def count_scoreable_questions(questions: list[dict[str, Any]]) -> int:
-    total = 0
-    for qa in questions:
-        question = str(qa.get("question") or "").strip()
-        answers = normalize_answers(qa.get("answer") or qa.get("answers"))
-        if question and answers:
-            total += 1
-    return total
+try:  # the implementation lives in convert_locomo_to_context_jsonl; this module re-exports it
+    from .convert_locomo_to_context_jsonl import count_scoreable_questions
+except ImportError:  # Direct script execution from tools/.
+    from convert_locomo_to_context_jsonl import count_scoreable_questions
 
 
 

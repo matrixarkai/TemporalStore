@@ -222,19 +222,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-def infer_event_type(text: str) -> str:
-    lower = text.lower()
-    if any(term in lower for term in ["correct", "correction", "wrong", "instead", "updated", "changed"]):
-        return "correction"
-    if any(term in lower for term in ["yes", "confirmed", "approved", "looks good"]):
-        return "confirmation"
-    if any(term in lower for term in ["prefer", "favorite", "like", "love"]):
-        return "preference_update"
-    if any(term in lower for term in ["plan", "going to", "will ", "schedule"]):
-        return "plan_update"
-    if any(term in lower for term in ["work", "job", "role", "status", "position"]):
-        return "status_update"
-    return "dialogue_batch"
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import infer_event_type
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import infer_event_type
 
 
 

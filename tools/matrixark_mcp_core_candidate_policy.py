@@ -53,18 +53,10 @@ except ImportError:  # top-level path (matrixark_mcp_core)
 __all__ = ['sharing_scope_from_candidate', 'is_shared_resource_candidate', 'is_shared_skill_candidate', 'is_pending_async_candidate', 'bounded_max_children_scored_per_parent', 'score_recall_candidate', 'numeric_field', 'apply_statistical_operator', 'latest_record', 'merge_ranked_paths', 'candidate_codex_outcome_terms', 'inferred_memory_selection_policies_for_candidate', 'candidate_memory_selection_policies', 'candidate_is_feature_profile_memory', 'memory_selection_policy_ref_boost', 'question_type_ref_boost']
 
 
-def sharing_scope_from_candidate(candidate: Json) -> str:
-    for source in [candidate, candidate.get("access_scope", {}), candidate.get("metadata", {}), candidate.get("scope", {})]:
-        if isinstance(source, dict):
-            value = str(source.get("sharing_scope") or "").strip().lower()
-            if value:
-                return value
-    node_path = [str(part).lower() for part in candidate.get("node_path", []) if str(part)]
-    if node_path[:2] == ["global", "shared"]:
-        return "global_shared"
-    if len(node_path) >= 2 and node_path[0].startswith("tenant:") and node_path[1] == "shared":
-        return "tenant_shared"
-    return "private_user"
+try:  # the implementation lives in matrixark_mcp_access_scope; this module re-exports it
+    from .matrixark_mcp_access_scope import sharing_scope_from_candidate
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_access_scope import sharing_scope_from_candidate
 
 
 def is_shared_resource_candidate(candidate: Json) -> bool:
@@ -146,15 +138,10 @@ def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms:
     }
 
 
-def numeric_field(record: Json, field: str = "value") -> float | None:
-    for source in [record, record.get("metadata", {}), record.get("envelope", {}).get("metadata", {})]:
-        if not isinstance(source, dict) or field not in source:
-            continue
-        try:
-            return float(source[field])
-        except (TypeError, ValueError):
-            return None
-    return None
+try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it
+    from .matrixark_mcp_scoring import numeric_field
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import numeric_field
 
 
 def apply_statistical_operator(operator: str, records: list[Json], *, field: str = "value") -> float | int | None:

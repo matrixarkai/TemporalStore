@@ -121,15 +121,10 @@ HOT_EMBEDDING_LINEAGE_FIELDS = {
 }
 
 
-def compact_hot_context_embedding_record(record: Json) -> Json:
-    compacted = dict(record)
-    for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
-        compacted.pop(field, None)
-    if str(compacted.get("record_type") or "") != "context_embedding":
-        return compacted
-    for field in HOT_EMBEDDING_LINEAGE_FIELDS:
-        compacted.pop(field, None)
-    return compacted
+try:  # the implementation lives in matrixark_mcp_serving_records; this module re-exports it
+    from .matrixark_mcp_serving_records import compact_hot_context_embedding_record
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_serving_records import compact_hot_context_embedding_record
 
 
 def legacy_hook_type_from_codex_event(event: Any) -> str:
@@ -193,19 +188,10 @@ def compact_record_scope(record: Json) -> Json:
     return compacted
 
 
-def _record_debug_ref(record: Json) -> tuple[str, Any]:
-    record_type = str(record.get("record_type") or "")
-    if record_type == "context_event":
-        return "event", record.get("event_id_hash")
-    if record_type == "context_entity":
-        return "entity", record.get("entity_hash")
-    if record_type == "context_segment":
-        return "segment", record.get("segment_hash")
-    if record_type == "resource_chunk":
-        return "resource_chunk", record.get("chunk_hash")
-    if record_type == "skill_section":
-        return "skill_section", record.get("section_hash")
-    return record_type, record.get("ref_hash")
+try:  # the implementation lives in matrixark_mcp_serving_records; this module re-exports it
+    from .matrixark_mcp_serving_records import _record_debug_ref
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_serving_records import _record_debug_ref
 
 
 def context_event_timestamp_ms(record: Json) -> int:
