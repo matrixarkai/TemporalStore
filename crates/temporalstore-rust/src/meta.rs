@@ -1901,11 +1901,21 @@ impl SingleNodeMeta {
             .map(|location| location.registered_at_ms)
             .filter(|first| *first != 0)
             .unwrap_or(request.registered_at_ms);
+        // Where an operator put this shard, kept for the same reason the join
+        // time above is: registering again is a datanode saying it still holds
+        // the shard, not an operator saying they no longer care where it lives.
+        // A node restarting re-registers everything it holds, so writing this
+        // away here meant a pin lasted until the next restart.
+        let preferred_location = state
+            .shards
+            .get(&request.shard_id)
+            .map(|location| location.preferred_location.clone())
+            .unwrap_or_default();
         state.shards.insert(
             request.shard_id,
             ShardLocation {
                 registered_at_ms,
-                preferred_location: String::new(),
+                preferred_location,
                 state: MetaEntityState::Normal,
                 shard_id: request.shard_id,
                 server_addr: request.server_addr.clone(),
@@ -8883,6 +8893,132 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                 "the only live server is where they must go"
             );
         }
+    }
+
+    #[test]
+    fn a_pin_survives_registering_again_and_finishing_a_load() {
+        fn pinned_shard() -> SingleNodeMeta {
+            let meta = SingleNodeMeta::default();
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: "node-a".to_string(),
+                    node_id: 1,
+                    location: "rack-0".to_string(),
+                    binary_version: "v1".to_string(),
+                    registered_at_ms: 0,
+                })
+                .status
+                .ok);
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "t".to_string(),
+                    first_shard_id: 1,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 1,
+                    serving_options: Default::default(),
+                })
+                .status
+                .ok);
+            assert!(meta
+                .register(RegisterShardRequest {
+                    shard_id: 1,
+                    server_addr: "node-a".to_string(),
+                    registered_at_ms: 0,
+                })
+                .status
+                .ok);
+            assert!(meta
+                .pin_shard(ShardPinRequest {
+                    shard_id: 1,
+                    location: "rack-9".to_string(),
+                })
+                .status
+                .ok);
+            meta
+        }
+
+        // A datanode that restarts re-registers everything it holds. Writing the
+        // pin away here meant it lasted until the next restart of any node
+        // holding it, with nothing said.
+        let again = pinned_shard();
+        let before = again.get(1).location.expect("registered");
+        assert!(again
+            .register(RegisterShardRequest {
+                shard_id: 1,
+                server_addr: "node-a".to_string(),
+                registered_at_ms: 0,
+            })
+            .status
+            .ok);
+        let after = again.get(1).location.expect("still registered");
+        assert_eq!(
+            after.preferred_location, "rack-9",
+            "registering the shard again threw away the location it was pinned to"
+        );
+        assert_eq!(
+            after.registered_at_ms, before.registered_at_ms,
+            "registering again restamped the join time"
+        );
+
+        // A load finishing says where the shard now is. It does not say the
+        // shard stopped preferring anywhere, nor that it has only just joined.
+        let loaded = pinned_shard();
+        let before = loaded.get(1).location.expect("registered");
+        assert!(loaded
+            .finish_load(LoadFinishRequest {
+                shard_id: 1,
+                server_addr: "node-a".to_string(),
+                load_version: 1,
+                status: Status::ok(),
+                scheduler_task_id: None,
+                scheduler_generation: None,
+            })
+            .status
+            .ok);
+        let after = loaded.get(1).location.expect("still registered");
+        assert_eq!(
+            after.preferred_location, "rack-9",
+            "finishing a load threw away the location the shard was pinned to"
+        );
+        assert_eq!(
+            after.registered_at_ms, before.registered_at_ms,
+            "finishing a load reset the time the shard joined"
+        );
+
+        // And an unpinned shard still reports no pin, so the two are not being
+        // confused for each other.
+        let plain = SingleNodeMeta::default();
+        assert!(plain
+            .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-0".to_string(),
+                binary_version: "v1".to_string(),
+                registered_at_ms: 0,
+            })
+            .status
+            .ok);
+        assert!(plain
+            .register(RegisterShardRequest {
+                shard_id: 7,
+                server_addr: "node-a".to_string(),
+                registered_at_ms: 0,
+            })
+            .status
+            .ok);
+        assert!(
+            plain
+                .get(7)
+                .location
+                .expect("registered")
+                .preferred_location
+                .is_empty(),
+            "a shard nobody pinned came back with a pin"
+        );
     }
 
     #[test]
