@@ -1535,34 +1535,40 @@ impl TemporalEngine {
             .wal_store
             .log_id_after_sequence(shard_id, watermark)
             .unwrap_or(0);
-        let records = match self.wal_store.scan(shard_id, start_at, u64::MAX, u64::MAX) {
+        // `scan_decoded`, not `scan`: the walk decodes every record to verify it, and asking
+        // for the bytes instead threw that away and decoded the whole window a second time here.
+        let records = match self
+            .wal_store
+            .scan_decoded(shard_id, start_at, u64::MAX, u64::MAX)
+            .map(|(records, _truncated)| records)
+        {
             Ok(records) => records,
             Err(err) => {
+                // A record that will not decode is corruption and says so; anything else is an
+                // ordinary scan failure. The decode moved into the walk, so this is where that
+                // distinction has to be drawn now -- losing it would report a bit-flip as an I/O
+                // problem, which sends an operator looking in the wrong place.
+                let code = match err {
+                    crate::wal::WriteAheadLogError::Corruption(_) => "wal_record_corruption",
+                    _ => "wal_scan_failed",
+                };
                 return Err(Status::error(
-                    "wal_scan_failed",
+                    code,
                     format!(
                         "WAL scan failed during recovery for shard {shard_id}; refusing load rather than serving a truncated prefix: {err}"
                     ),
                 ));
             }
         };
-        // Decode each record through the integrity-verifying framing decoder and PROPAGATE a
-        // failure (a value-preserving bit-flip surfaces as `Corruption`) instead of dropping
-        // the record via `.ok()`, which would silently truncate the replayed tail.
+        // The walk above decoded and integrity-checked every record and PROPAGATED a failure
+        // rather than dropping it via `.ok()`, which would silently truncate the replayed tail.
+        // What is left here is choosing which of those records to replay.
         let mut pending: Vec<WriteAheadLogRecord> = Vec::new();
         // Where each record physically lives. The scan hands this back and replay used to drop
         // it (`for (_, line)`), which is why the registration below could not be done at all.
         let mut log_id_by_sequence: std::collections::HashMap<u64, u64> =
             std::collections::HashMap::new();
-        for (log_id, line) in records {
-            let record = crate::wal::decode_wal_line(&line).map_err(|err| {
-                Status::error(
-                    "wal_record_corruption",
-                    format!(
-                        "WAL record integrity failure during recovery for shard {shard_id}; refusing load: {err}"
-                    ),
-                )
-            })?;
+        for (log_id, record) in records {
             if record.sequence > watermark {
                 log_id_by_sequence.insert(record.sequence, log_id);
                 pending.push(record);

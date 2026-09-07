@@ -1577,6 +1577,38 @@ impl LocalWriteAheadLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<(Vec<(u64, Vec<u8>)>, bool), WriteAheadLogError> {
+        self.scan_collect(shard_id, start_offset, end_offset, max_bytes, |log_id, line, _| {
+            Some((log_id, line))
+        })
+    }
+
+    /// The records in the window, decoded once.
+    ///
+    /// `scan_bounded` returns the bytes, and every caller that wants records then decodes them --
+    /// while this walk has already decoded each one to verify it. Recovery took that bill twice.
+    /// This hands back what the verification produced, so the second decode does not happen.
+    /// A blank line carries no record and is not returned.
+    pub fn scan_decoded(
+        &self,
+        shard_id: ShardId,
+        start_offset: u64,
+        end_offset: u64,
+        max_bytes: u64,
+    ) -> Result<(Vec<(u64, WriteAheadLogRecord)>, bool), WriteAheadLogError> {
+        self.scan_collect(shard_id, start_offset, end_offset, max_bytes, |log_id, _line, decoded| {
+            decoded.map(|record| (log_id, record))
+        })
+    }
+
+    /// The one walk both scans share, so they cannot drift about what a window contains.
+    fn scan_collect<T>(
+        &self,
+        shard_id: ShardId,
+        start_offset: u64,
+        end_offset: u64,
+        max_bytes: u64,
+        mut take: impl FnMut(u64, Vec<u8>, Option<WriteAheadLogRecord>) -> Option<T>,
+    ) -> Result<(Vec<T>, bool), WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let segments = wal_segment_paths(&inner.root, shard_id)
             .into_iter()
@@ -1592,7 +1624,7 @@ impl LocalWriteAheadLogStore {
         let _ = last_wal_sequence_at(&inner.root, shard_id)?;
         let mut total = 0;
         let mut truncated = false;
-        let mut records = Vec::new();
+        let mut records: Vec<T> = Vec::new();
         'segments: for path in segments {
             // Each piece says where in the log's history its contents begin, so a record's position
             // is that plus how far into the piece it sits. Positions are log ids: an offset into
@@ -1674,10 +1706,18 @@ impl LocalWriteAheadLogStore {
                 // a side effect of walking the whole file to find the log's end; that walk no longer
                 // reads everything, and a guarantee that depends on unrelated work is not a
                 // guarantee. A blank line carries nothing to verify and is passed through as before.
-                if !line.iter().all(|byte| byte.is_ascii_whitespace()) {
-                    decode_wal_line(&line)?;
+                // The decode that verifies the record is also the decode the caller needs. It
+                // used to be thrown away here and repeated by every caller -- replay decoded the
+                // whole window twice, once for nothing. A blank line carries no record and is
+                // passed through undecoded, as before.
+                let decoded = if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    None
+                } else {
+                    Some(decode_wal_line(&line)?)
+                };
+                if let Some(item) = take(log_id, line, decoded) {
+                    records.push(item);
                 }
-                records.push((log_id, line));
                 log_id = next_log_id;
                 total += read as u64;
             }
