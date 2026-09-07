@@ -954,9 +954,42 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
     true
 }
 
-/// Rebuild ONLY the model maps that are `skip_serializing` -- today just `hashes` -- from the
-/// durable bucket index. A freshly deserialized index never carries them, so anything deriving
-/// state from the model maps would see a shard with no hash objects at all.
+/// Rebuild ONLY the model maps that are `skip_serializing`, from the durable bucket index. A
+/// freshly deserialized index never carries them, so anything deriving state from the model maps
+/// would see a shard with no objects of those kinds at all.
+///
+/// THIS COVERS ONE OF THREE, and the sentence here used to say there was only one. Checked field
+/// by field against `collect_model_live_page_entries`, which is what the manifest cross-check
+/// reads: of the twelve maps it walks, three are `skip_serializing` --
+///
+///   * `hashes`            rebuilt below
+///   * `context_events`    NOT rebuilt
+///   * `context_indexes`   NOT rebuilt
+///
+/// so a slot dump whose buckets hold context-event or context-index pages decodes with those maps
+/// empty, the model-map derivation misses every one of those pages, the bucket-index derivation
+/// does not, and `install_bucket_dump_manifest` rejects a perfectly good manifest with
+/// `slot_dump_object_lifecycle_mismatch`. That is the live failure of
+/// `rust_executes_temporalstore_corpus` and
+/// `rust_storage_replays_migration_corpus_across_lifecycle_paths`, both on case
+/// `native_logical_storage_models_packed_timestamped_pages` -- timestamped being the shape of
+/// exactly these two maps, which are keyed by `u64`.
+///
+/// NOT fixed here, because the two obvious repairs are not equivalent and the choice is not a
+/// detail:
+///
+///   1. Rebuild them too. But these maps are keyed by TIMESTAMP and the bucket-index entries for
+///      them carry `component: None` (see the `context_event` arm of
+///      `collect_model_live_page_entries`), so the keys are not recoverable from the index.
+///      Synthesising keys would make the cross-check agree while putting invented timestamps into
+///      a time-keyed map, which is worse than the failure it cures.
+///   2. Have the cross-check compare only the maps that SURVIVE serialization. A map the manifest
+///      does not carry cannot disagree with the manifest, so it is outside what the check is for
+///      -- its stated purpose is a manifest whose serialized model maps contradict its bucket
+///      index. On this reading the `hashes` rebuild below is also unnecessary for the check.
+///
+/// The second looks right, but it narrows a durability check, so it wants the owner of the dump
+/// format rather than an inference from a failing test.
 ///
 /// Deliberately narrow: the serialized maps are left exactly as decoded. Rebuilding those from
 /// the bucket index too would overwrite whatever the index actually said, which is precisely
