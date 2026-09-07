@@ -876,6 +876,20 @@ lines = [
     "not consult the flag: if the decoder already accepts both shapes, retiring the writer strands",
     "nothing already written.",
     "",
+    "**`nothing` is not a removal list, and the row below is the trap.** This reads who sets the",
+    "VARIABLE. A flag can feed an options struct, and a test can then select the off position by",
+    "building that struct directly, never touching the variable -- the branch is live and covered",
+    "while the flag reads as chosen by no one. Checked on the three metaserver rebalance flags",
+    "(`TS_META_AUTO_REBALANCE_BALANCE`, `TS_META_REBALANCE_LOCATION_SCOPED`,",
+    "`TS_META_REBALANCE_PER_TABLE`): all three default on and nothing sets them, and all three off",
+    "positions are exercised in `placement_rebalance.rs` by tests that set",
+    "`AutoRebalanceOptions { location_scoped: false, .. }`. Deleting the branch would delete tested",
+    "behaviour; deleting only the variable would leave that behaviour with no way to be reached in",
+    "production, which is a product decision rather than a tidy-up.",
+    "",
+    "So before retiring a flag from this row, follow it to what it FEEDS and look for the off",
+    "position there. The variable is the handle, not the switch.",
+    "",
     "What the list gives an owner asking that is: how many files each flag reaches (the code its",
     "non-default path keeps alive), whether its own documentation calls that path legacy, and --",
     "the two columns that answer the question -- its **default**, where that can be read off the",
@@ -910,7 +924,9 @@ lines = [
     % sum(1 for r in rows if not r["set_by"]),
     "| documented as keeping an older path alive | %d |" % sum(1 for r in rows if r["legacy"]),
     "| reaching more than two files | %d |" % sum(1 for r in rows if r["sites"] > 2),
-    # Zero today, and measured rather than assumed: see doc_for_flag.
+    # Measured rather than assumed: see doc_for_flag, whose docstring records that this was
+    # zero when written and did not stay zero once the scan reached the startup functions
+    # that read a dozen knobs under one comment. This line still said "Zero today".
     "| whose doc comment is really about another flag | %d |"
     % sum(1 for r in rows if r["shared_with"]),
     "",
