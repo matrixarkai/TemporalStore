@@ -723,6 +723,27 @@ function sinceLastFrameMs() {
   return liveFrameAtMs ? (Date.now() - liveFrameAtMs) : 0;
 }
 
+/* Silence is not staleness. When nothing has changed the gateway sends a keepalive instead of a
+   frame, so a quiet stream on an idle deployment is healthy and a page that treated "no frame" as
+   "stale" would say so on every deployment that was working. What is NOT normal is nothing at all
+   -- no frame and no keepalive -- for several ticks. */
+var liveBlockAtMs = 0;  /* Date.now() at the last block of ANY kind, keepalives included */
+var liveTickMs = 0;     /* the gateway's own cadence, off its frames */
+
+function sinceLastBlockMs() {
+  return liveBlockAtMs ? (Date.now() - liveBlockAtMs) : 0;
+}
+
+/* Three ticks: one missed tick is scheduling, two is a slow one, three is not arriving. Derived
+   from the cadence the gateway sent rather than a number written here, because a page holding its
+   own copy of the server's interval is a second place for it to be wrong. Unknown cadence means an
+   older gateway that sends no hello, and then nothing is claimed. */
+function streamStalledFor() {
+  if (!liveTickMs || !liveBlockAtMs) { return 0; }
+  var quiet = sinceLastBlockMs();
+  return quiet > (liveTickMs * 3) ? quiet : 0;
+}
+
 function liveStream(options) {
   var onFrame = options.onFrame || function () {};
   var onState = options.onState || function () {};
@@ -732,6 +753,9 @@ function liveStream(options) {
      causes. Without it a planned recycle is indistinguishable from a gateway that
      fell over. */
   var planned = false;
+  /* Set when the watchdog has reported a stall, so the report is made once and withdrawn once. */
+  var stalledSince = 0;
+  var watchdog = null;
   /* When the current connection was established, so a goodbye can be sanity-checked against how
      long the stream actually lasted. */
   var openedAt = 0;
@@ -744,6 +768,10 @@ function liveStream(options) {
   }
 
   function handle(block) {
+    /* Every block, before anything is read out of it: a keepalive carries no event and no data and
+       is exactly the evidence that the stream is alive. */
+    liveBlockAtMs = Date.now();
+    if (stalledSince) { stalledSince = 0; onState("live"); }
     var name = "", payload = null;
     block.split("\n").forEach(function (line) {
       if (line.indexOf("event: ") === 0) { name = line.slice(7).trim(); }
@@ -762,6 +790,10 @@ function liveStream(options) {
       if (typeof frame.ts === "number" && isFinite(frame.ts)) {
         liveServerMs = frame.ts * 1000;
         liveFrameAtMs = Date.now();
+      }
+      /* An older gateway sends no cadence; then nothing is claimed about a quiet stream. */
+      if (typeof frame.tick_s === "number" && frame.tick_s > 0) {
+        liveTickMs = frame.tick_s * 1000;
       }
       onFrame(frame);
     } catch (e) { /* a partial frame; the next one is whole */ }
@@ -816,6 +848,18 @@ function liveStream(options) {
       });
   }
 
+  /* Nothing arrives to announce that nothing is arriving, so this is the one thing here that
+     needs a timer. It only reports while a connection is actually open: a dropped one is already
+     reported through `retrying`, and saying both would be two names for one fault. */
+  watchdog = setInterval(function () {
+    if (stopped || !controller) { return; }
+    var quiet = streamStalledFor();
+    if (quiet && !stalledSince) {
+      stalledSince = Date.now();
+      onState("stalled", Math.round(quiet / 1000));
+    }
+  }, 1000);
+
   open();
   /* A hidden tab holds a connection open for nobody. Drop it, reconnect on return -- the same
      rule the strip follows, and until now the two pages that run their own stream followed
@@ -831,6 +875,9 @@ function liveStream(options) {
   });
   window.addEventListener("pagehide", function () {
     stopped = true;
+    /* Dropped with the connection. It checks `stopped` and would do nothing, but a timer left
+       running on a page that is going away is a timer somebody has to reason about later. */
+    if (watchdog) { clearInterval(watchdog); watchdog = null; }
     if (controller) { controller.abort(); }
   });
   return {
@@ -840,7 +887,11 @@ function liveStream(options) {
       stopped = false;
       open();
     },
-    stop: function () { stopped = true; if (controller) { controller.abort(); } }
+    stop: function () {
+      stopped = true;
+      if (watchdog) { clearInterval(watchdog); watchdog = null; }
+      if (controller) { controller.abort(); }
+    }
   };
 }
 """
@@ -3121,6 +3172,9 @@ SETUP_JS = r"""
         if (state === "live") { conn("live", "live"); }
         else if (state === "denied") { conn("live", "connected"); }
         else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
+        /* Connected and receiving nothing. Not "down" -- the socket is open and a reconnect would
+           not help -- and not "live", which is what it said before. */
+        else if (state === "stalled") { conn("warn", "no update for " + seconds + "s"); }
         if (window.__matrixarkLiveState) {
           window.__matrixarkLiveState(state === "live" ? "live"
             : (state === "retrying" ? "down" : "stale"));
@@ -3970,6 +4024,9 @@ OVERVIEW_JS = r"""
         if (state === "live") { conn("live", "live"); }
         else if (state === "denied") { conn("live", "connected"); }
         else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
+        /* Connected and receiving nothing. Not "down" -- the socket is open and a reconnect would
+           not help -- and not "live", which is what it said before. */
+        else if (state === "stalled") { conn("warn", "no update for " + seconds + "s"); }
         if (window.__matrixarkLiveState) {
           window.__matrixarkLiveState(state === "live" ? "live"
             : (state === "retrying" ? "down" : "stale"));

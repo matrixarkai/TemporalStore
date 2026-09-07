@@ -62,6 +62,10 @@ const scope = {
   // A no-op: the shipped code reconnects when the reader finishes, and a real timer here turns
   // that into a hot loop. The reconnect is not what this harness is measuring.
   setTimeout: () => 0,
+  // The stream now registers a watchdog. Left to the real timer it keeps node alive for ever and
+  // this harness never prints -- which is how the whole suite hung the first time.
+  setInterval: () => 0,
+  clearInterval: () => {},
   esc: (s) => String(s == null ? "" : s),
 };
 

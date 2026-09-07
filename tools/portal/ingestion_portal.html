@@ -43,6 +43,9 @@
   .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);display:inline-block;
        margin-right:6px;vertical-align:middle}
   .dot.live{background:var(--ok)} .dot.down{background:var(--crit)}
+  /* Connected and receiving nothing: not down, which would say a reconnect is the answer,
+     and not live, which is what it used to say. */
+  .dot.warn{background:var(--warn)}
   .conn{font-size:13px;color:var(--muted)}
   .lede{color:var(--muted);margin:2px 0 22px;max-width:64ch}
 
