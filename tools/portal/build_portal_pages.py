@@ -734,6 +734,12 @@ function sinceLastBlockMs() {
   return liveBlockAtMs ? (Date.now() - liveBlockAtMs) : 0;
 }
 
+/* Whether a stream has ever delivered anything to this page. Read by code that runs on a button
+   press rather than on a frame, which has no other way to ask. */
+function streamConnected() {
+  return liveBlockAtMs > 0;
+}
+
 /* Three ticks: one missed tick is scheduling, two is a slow one, three is not arriving. Derived
    from the cadence the gateway sent rather than a number written here, because a page holding its
    own copy of the server's interval is a second place for it to be wrong. Unknown cadence means an
@@ -3948,9 +3954,25 @@ OVERVIEW_JS = r"""
       }).catch(function () { return null; })
     ]).then(function (parts) {
       var traffic = (lastFrame || {}).traffic || {};
+      var quiet = sinceLastBlockMs();
       return JSON.stringify({
         collected_at: new Date().toISOString(),
+        /* The same instant on the GATEWAY's clock, and how far apart the two are.
+           `recent_failures` below carries server timestamps, so a reader correlating them against
+           `collected_at` alone is comparing two machines -- and this file is read by somebody who
+           was not at the keyboard and cannot ask whose clock was wrong. Absent when no frame has
+           arrived to establish it, rather than repeating the browser's answer under another name. */
+        gateway_time: liveFrameAtMs ? new Date(serverNowMs()).toISOString() : null,
+        clock_skew_ms: liveFrameAtMs ? clockSkewMs() : null,
         origin: location.origin,
+        /* How fresh the live-frame parts below are. `recent_failures` and `datanode` come off the
+           stream, so on a stalled stream they are as old as this says and the rest of the bundle
+           is current -- one document, two ages, and nothing used to say so. */
+        stream: {
+          connected: streamConnected(),
+          since_last_block_ms: liveFrameAtMs ? quiet : null,
+          stalled: streamStalledFor() > 0
+        },
         overview: lastReport,
         config: compactConfig(parts[0]),
         metrics: parts[1],

@@ -909,6 +909,12 @@ function sinceLastBlockMs() {
   return liveBlockAtMs ? (Date.now() - liveBlockAtMs) : 0;
 }
 
+/* Whether a stream has ever delivered anything to this page. Read by code that runs on a button
+   press rather than on a frame, which has no other way to ask. */
+function streamConnected() {
+  return liveBlockAtMs > 0;
+}
+
 /* Three ticks: one missed tick is scheduling, two is a slow one, three is not arriving. Derived
    from the cadence the gateway sent rather than a number written here, because a page holding its
    own copy of the server's interval is a second place for it to be wrong. Unknown cadence means an
