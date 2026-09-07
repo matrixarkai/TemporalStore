@@ -6189,6 +6189,60 @@ mod tests {
         std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
     }
 
+    /// What the scan's read-time check costs, against the check that catches corruption.
+    ///
+    /// `scan_bounded` calls `decode_wal_line` on every record and throws the record away; the
+    /// caller then decodes the same bytes again. `decode_wal_line` starts by calling
+    /// `log_framing::decode_line`, which verifies the declared length and the checksum -- so
+    /// corruption, meaning bytes that changed on disk, is already caught there. What the rest of
+    /// the decode adds is a payload that checksums correctly and still will not parse.
+    ///
+    /// This prices the difference, because it is paid once per record on every recovery.
+    #[test]
+    #[ignore]
+    fn what_the_scan_time_check_costs() {
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 7,
+            command: Some(Command::StringSet {
+                key: "tenant/7/object/000000123".to_string(),
+                value: (0..4096u32).map(|index| (index % 7) as u8).collect(),
+            }),
+            metadata: None,
+            staged_pages: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let line = encode_wal_line_for_test(&record).expect("record frames");
+
+        let rounds = 200usize;
+        let mut full_best = f64::MAX;
+        let mut framed_best = f64::MAX;
+        for _ in 0..7 {
+            let start = std::time::Instant::now();
+            for _ in 0..rounds {
+                std::hint::black_box(decode_wal_line(std::hint::black_box(&line)).unwrap());
+            }
+            full_best = full_best.min(start.elapsed().as_secs_f64());
+
+            let start = std::time::Instant::now();
+            for _ in 0..rounds {
+                std::hint::black_box(
+                    crate::log_framing::decode_line(std::hint::black_box(&line)).unwrap(),
+                );
+            }
+            framed_best = framed_best.min(start.elapsed().as_secs_f64());
+        }
+
+        let us = |t: f64| t / rounds as f64 * 1e6;
+        println!(
+            "  SCANCHECK line {} B | full decode {:>7.3} us | length+checksum only {:>7.3} us | {:>5.1}x",
+            line.len(),
+            us(full_best),
+            us(framed_best),
+            full_best / framed_best,
+        );
+    }
+
     #[test]
     fn what_a_record_actually_costs_on_disk() {
         for value_len in [64usize, 1024, 4096] {
