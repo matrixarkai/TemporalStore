@@ -253,11 +253,15 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
     current_time_ms = now_ms()
     due_tasks: list[Json] = []
     resolved_task_hashes: set[int] = set()
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        if record.get("record_type") != "matrixark_async_pipeline_task":
-            continue
+    # Filter once. Both phases below want the same rows, and on the fallback path `records` is the
+    # whole live view rather than the task index, so the filter was walking every record twice to
+    # find rows that number in the hundreds.
+    task_records = [
+        record for record in records
+        if isinstance(record, dict)
+        and record.get("record_type") == "matrixark_async_pipeline_task"
+    ]
+    for record in task_records:
         status = str(record.get("status") or "")
         if status in IDLE_COMMIT_RESOLVED_STATUSES:
             try:
@@ -265,11 +269,7 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
             except (TypeError, ValueError):
                 pass
             continue
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        if record.get("record_type") != "matrixark_async_pipeline_task":
-            continue
+    for record in task_records:
         status = str(record.get("status") or "")
         if status != "idle_commit_scheduled":
             continue
