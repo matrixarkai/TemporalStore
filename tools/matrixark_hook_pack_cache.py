@@ -150,6 +150,28 @@ def store_answered(retrieve: object) -> bool:
                ("pack_id", "context_pack_id", "context", "refs", "selected_refs"))
 
 
+def retrieval_warnings(pack: object) -> list:
+    """The retrieval warnings on a pack, under either name it can arrive under.
+
+    `compact_context_pack_for_serving` renames `quality_warnings` to `warnings`, and what reaches a
+    hook is the COMPACT pack -- so a reader that knows only `quality_warnings` reports an empty
+    list on every live turn. That is how a `retrieval_deadline_exceeded` warning went unseen while
+    both agents served empty context: the signal was produced, compacted under another name, and
+    read for by nobody.
+
+    Both spellings are accepted rather than the compact one alone, because the full pack is what
+    comes back with `include_retrieval_debug`, and a diagnostic that only works in production is
+    the same trap in the other direction.
+    """
+    if not isinstance(pack, dict):
+        return []
+    for key in ("quality_warnings", "warnings"):
+        value = pack.get(key)
+        if isinstance(value, list) and value:
+            return list(value)
+    return []
+
+
 def label_previous_pack(previous: str, age_s: float) -> str:
     """Mark a served pack as prior context, in band, with its age.
 

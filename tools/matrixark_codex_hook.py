@@ -1770,7 +1770,7 @@ def additional_context_from_retrieve(
         return ""
     refs = [ref for ref in _selected_refs_from_retrieve(pack) if not _ref_is_codex_hook_heartbeat(ref)]
     context_text = sanitized_rendered_context_from_retrieve(pack)
-    quality_warnings = pack.get("quality_warnings")
+    quality_warnings = _pack_cache.retrieval_warnings(pack)
     retrieval_metrics = pack.get("retrieval_metrics")
     budget = retrieval_budget_summary_from_retrieve(pack)
     budget_pressure = retrieval_budget_pressure_from_retrieve(pack)

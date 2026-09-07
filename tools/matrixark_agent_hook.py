@@ -545,8 +545,7 @@ def retrieval_session_identity_from_retrieve(pack: Json | None, *, session_id_so
 def retrieval_quality_warnings_from_retrieve(pack: Json | None) -> list[Any]:
     if not isinstance(pack, dict):
         return []
-    warnings = pack.get("quality_warnings")
-    return warnings if isinstance(warnings, list) else []
+    return _pack_cache.retrieval_warnings(pack)
 
 
 HOOK_MESSAGE_ROLE_ALIASES = {

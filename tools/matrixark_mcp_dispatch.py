@@ -169,9 +169,18 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
         timeout = request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms
         if timeout and not (result.get("partial_context_pack") or result.get("partial")):
-            result = server._retrieve_timeout_fallback(args, deadline_ms=effective_retrieve_deadline_ms or request_deadline_ms, elapsed_ms=elapsed_ms, reason="request_deadline_after_retrieve")
+            # The retrieve COMPLETED -- the refs are computed and the full cost is already spent.
+            # A deadline bounds how long a caller WAITS, and that wait is over by the time we get
+            # here, so overrunning it makes the answer LATE, not wrong. Replacing it with
+            # `_retrieve_timeout_fallback` (which builds from `records = []` on a native backend)
+            # deletes every ref just computed and tells the agent it has no history: the silent
+            # recall collapse the deadline above this was raised to prevent, arriving instead by
+            # way of a store that outgrew the ceiling. Label it and serve it.
+            #
+            # The RAISING path above keeps the fallback: there, no pack exists to serve.
             result["quality_warnings"] = list(result.get("quality_warnings", [])) + ["request_deadline_after_retrieve"]
-            result["partial_context_pack"] = True
+            result["retrieval_deadline_exceeded"] = True
+            result["late_context_pack"] = True
         result["request_deadline_ms"] = request_deadline_ms
         result["request_elapsed_ms"] = round(elapsed_ms, 3)
         server.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=timeout)
