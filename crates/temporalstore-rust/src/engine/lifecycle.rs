@@ -831,6 +831,16 @@ impl TemporalEngine {
         // `TS_WAL_DATA_ONLY` is what makes it fatal rather than a miss: with results recorded the
         // command is dropped, so there is nothing left to re-run the removal.
         //
+        // MITIGATION, for anyone hitting this before the fix lands: `TS_WAL_OUTCOME_ITEMS=0`.
+        // `stage_outcome` returns early when it is off, so nothing is staged, `record_command`
+        // keeps the command because `outcomes.is_empty()`, and replay re-runs the removal --
+        // which works. `TS_WAL_DATA_ONLY=0` does NOT help: it keeps the command too, but the
+        // branch below is `if !record.outcomes.is_empty()`, so a present-and-uninstallable
+        // outcome still refuses and the command beside it is never reached.
+        //
+        // It prevents NEW occurrences only. A record already on disk carrying an uninstallable
+        // outcome still refuses, so this stops the bleeding and does not repair a store.
+        //
         // The discriminator already exists and already survives replay: `meta` is false for a
         // page upsert and true for both `stage_meta_outcome` and every typed removal, and it
         // round-trips as `meta_log`. Its only readers in the crate are the three proto encoder
