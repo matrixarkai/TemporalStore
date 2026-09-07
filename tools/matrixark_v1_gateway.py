@@ -2888,6 +2888,7 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
             if (time.time() - started) >= max_age:
                 # Say why before going, so a reconnect is not mistaken for a fault.
                 await emit(b"event: bye\ndata: {\"reason\": \"stream_max_age\"}\n\n")
+                _gwmetrics.METRICS.note_stream_end("stream_max_age")
                 break
             try:
                 await asyncio.wait_for(disconnected.wait(), timeout=EVENT_TICK_S)
@@ -2895,7 +2896,21 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
                 pass
     except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError, OSError):
         # The client went away mid-write. Nothing to report: this is how a stream normally ends.
-        pass
+        _gwmetrics.METRICS.note_stream_end("client_gone")
+    except Exception as exc:  # the reason has to reach the page, whatever it was
+        # This side broke. Told nothing, a browser sees only silence, reconnects on the `retry`
+        # above, and breaks again -- for as long as the fault lasts, with nothing to separate it
+        # from a network that died. The planned ending already says why it is going; so does this
+        # one, carrying the token that names the log entry rather than the fault itself.
+        _gwmetrics.METRICS.note_stream_end("server_error")
+        body = _failure(scope, "backend_error", exc)
+        try:
+            await emit(b"event: bye\ndata: " + json.dumps(
+                {"reason": "server_error", "incident": body.get("incident")}
+            ).encode("utf-8") + b"\n\n")
+        except Exception:
+            # The connection is gone as well. The incident is logged either way.
+            pass
     finally:
         watcher.cancel()
         try:
