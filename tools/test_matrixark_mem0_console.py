@@ -27,7 +27,7 @@ ADMIN = {"Authorization": "Bearer k-acme"}
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 FIELD_PLACES = {"body", "scope", "query", "path", "message"}
-FIELD_KINDS = {"text", "textarea", "number", "bool", "json"}
+FIELD_KINDS = {"text", "textarea", "number", "bool", "json", "choice"}
 
 
 def _read_text(path: str) -> str:
@@ -65,6 +65,22 @@ class OperationTableTest(unittest.TestCase):
     def test_operation_ids_are_unique(self) -> None:
         ids = [op["id"] for op in gw.MEM0_OPERATIONS]
         self.assertEqual(sorted(set(ids)), sorted(ids))
+
+    def test_a_choice_offers_choices_and_defaults_to_one_of_them(self) -> None:
+        """A closed vocabulary rendered as a closed control, and a default the deployment will
+        accept. The rating field was a number whose sample value -- 1 -- the deployment refuses:
+        `feedback must be one of POSITIVE, NEGATIVE, VERY_NEGATIVE (got '1')`. A choice whose
+        default is not among its own options would put the same call back, wearing a select.
+        """
+        for op in gw.MEM0_OPERATIONS:
+            for field in op.get("fields") or []:
+                if field.get("kind") != "choice":
+                    continue
+                with self.subTest(op=op["id"], field=field["name"]):
+                    choices = field.get("choices") or []
+                    self.assertTrue(choices, "a choice with nothing to choose from")
+                    if field.get("default") is not None:
+                        self.assertIn(field["default"], choices)
 
     def test_every_field_is_well_formed(self) -> None:
         for op in gw.MEM0_OPERATIONS:
