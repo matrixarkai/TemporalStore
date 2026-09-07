@@ -868,7 +868,21 @@
           tb.appendChild(tr);
         });
         $("usageTable").style.display = usage.length ? "" : "none";
-        if (!usage.length) showMsg("usageMsg", "ok", "No usage recorded yet (enforced mode only).");
+        /* The meter is per PROCESS. With more than one worker these totals are one worker's
+           share, and a key used only through another worker is absent -- which reads exactly like
+           a key nobody used. Said on both the empty and the populated case, because the empty one
+           is the more misleading of the two. */
+        var workers = Number(data && data.workers) || 1;
+        var share = workers > 1
+          ? " These are one worker's counters and this deployment runs " + workers
+            + ": a key used through another worker is not counted here."
+          : "";
+        if (!usage.length) {
+          showMsg("usageMsg", "ok",
+                  "No usage recorded yet (enforced mode only)." + share);
+        } else if (share) {
+          showMsg("usageMsg", "ok", share.replace(/^ /, ""));
+        }
       })
       .catch(function (e) { showMsg("usageMsg", "err", "Usage read failed: " + e.message); });
   }

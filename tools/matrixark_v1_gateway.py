@@ -4589,7 +4589,13 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             if denied is not None:
                 return await _json(send, 403, denied)
             usage = _usage_rows_visible_to(key_record, meter.snapshot(), tenant, account)
-            return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
+            # The meter is in-process. On a multi-worker deployment these are the counters of
+            # whichever worker answered this request and no other, so the totals are a share of
+            # the deployment's traffic rather than the whole of it -- and a key used only through
+            # another worker is missing entirely, which reads as "not used". The count is what
+            # the sibling reads already report; without it a caller cannot tell the difference.
+            return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage),
+                                           "workers": _worker_count()})
 
         # ---- the audit log (auth + admin:audit) ------------------------------------------------
         # The scope catalogue publishes admin:audit as "Read the audit log" and nothing served one.
