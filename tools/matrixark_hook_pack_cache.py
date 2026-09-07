@@ -146,6 +146,18 @@ def store_answered(retrieve: object) -> bool:
     """
     if not isinstance(retrieve, dict) or retrieve.get("_hook_tool_timeout"):
         return False
+    # A retrieve that RAISED is not an answer. The dispatcher replaces it with a deadline fallback
+    # pack, which carries a `context_pack_id` like any other -- so without this the checks below
+    # read a failure as an answer and suppress the previous-pack fallback exactly when it is needed.
+    # Seen live: a turn served 0 bytes while a 7,886-byte pack sat in the cache, 18.7 min old
+    # against a 1,440-min ceiling.
+    #
+    # Only the EXCEPTION path counts. `request_deadline_after_retrieve` means the retrieve finished
+    # and was merely late; those packs carry real refs, and serving a stale pack over a fresh one
+    # would be worse than the bug this fixes.
+    if any("request_deadline_exception" in str(warning)
+           for warning in retrieval_warnings(retrieve)):
+        return False
     return any(bool(retrieve.get(key)) for key in
                ("pack_id", "context_pack_id", "context", "refs", "selected_refs"))
 
