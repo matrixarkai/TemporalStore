@@ -160,6 +160,63 @@ fn compress_payload(encoded: &[u8]) -> Option<Vec<u8>> {
     (compressed.len() < encoded.len()).then_some(compressed)
 }
 
+/// The largest decompressed record the reused decompressor will size itself for.
+///
+/// The capacity comes from the frame header, which is bytes on disk. A corrupted header can
+/// declare any length it likes, and `Decompressor::decompress` allocates whatever capacity it is
+/// handed -- so without a bound a single bad byte becomes a huge allocation. Past this bound the
+/// allocating decoder takes the record instead: it grows to fit what the frame actually holds
+/// rather than what it claims to hold.
+const MAX_REUSED_INFLATE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Thread-local for the same reason the compressor is: `decompress` takes `&mut self`, and sharing
+/// one across threads would put a lock on the path that replays the log.
+thread_local! {
+    static RECORD_DECOMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Inflate a compressed payload, reusing one decompression context per thread where the frame
+/// allows it.
+///
+/// `zstd::stream::decode_all` builds a fresh decompression context per call and drops it again --
+/// a flat 128 KiB allocated and freed for every compressed record, whatever the record's size.
+/// Replay inflates every compressed record in the log, so that was paid once per record on every
+/// recovery. Holding the context makes it once per thread.
+///
+/// Reusing it needs a capacity up front, and the honest source for one is the frame itself:
+/// `ZSTD_getFrameContentSize` reports the length the compressor recorded in the header. Frames the
+/// append path writes carry it; frames written by the streaming encoder -- every record in a log
+/// older than this -- do not, and neither do frames declaring more than the bound above. Those
+/// fall through to the decoder that shipped, so no record inflates differently than it used to and
+/// none can fail to inflate that would have succeeded.
+fn decompress_payload(framed: &[u8]) -> Result<Vec<u8>, String> {
+    if let Some(capacity) = declared_inflated_len(framed) {
+        let reused = RECORD_DECOMPRESSOR.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                *slot = zstd::bulk::Decompressor::new().ok();
+            }
+            slot.as_mut()?.decompress(framed, capacity).ok()
+        });
+        if let Some(inflated) = reused {
+            return Ok(inflated);
+        }
+    }
+    zstd::stream::decode_all(framed)
+        .map_err(|err| format!("compressed wal payload did not inflate: {err}"))
+}
+
+/// The decompressed length this frame declares, when it declares one this will size for.
+fn declared_inflated_len(framed: &[u8]) -> Option<usize> {
+    capacity_within_bound(zstd::zstd_safe::get_frame_content_size(framed).ok()??)
+}
+
+fn capacity_within_bound(declared: u64) -> Option<usize> {
+    let capacity = usize::try_from(declared).ok()?;
+    (capacity <= MAX_REUSED_INFLATE_BYTES).then_some(capacity)
+}
+
 /// Escapes a newline out of an encoded payload.
 ///
 /// The log is read with `reader.lines()`. A JSON payload can never contain a raw newline, so that
@@ -666,8 +723,7 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     };
     let inflated;
     let bytes: &[u8] = if compressed {
-        inflated = zstd::stream::decode_all(framed)
-            .map_err(|err| format!("compressed wal payload did not inflate: {err}"))?;
+        inflated = decompress_payload(framed)?;
         inflated.as_slice()
     } else {
         framed
@@ -778,6 +834,61 @@ mod tests {
             out.extend_from_slice(&compressed);
         }
         out
+    }
+
+    /// The frames the append path writes declare their decompressed length.
+    ///
+    /// This is the positive control for the reused decompressor. `decompress_payload` falls back
+    /// to the allocating decoder whenever a frame declares nothing, and that fallback is silent by
+    /// design -- so if the append path ever stopped declaring a length, every read would quietly
+    /// take the slow path and no test would fail. This is the test that would fail instead.
+    #[test]
+    fn the_frames_the_append_path_writes_declare_their_length() {
+        let record = compressible_record();
+        let mut encoded = Vec::new();
+        record_parts(&record).unwrap().put(&record, &mut encoded).unwrap();
+
+        let written = compress_payload(&encoded).expect("a compressible record compresses");
+        assert_eq!(
+            declared_inflated_len(&written),
+            Some(encoded.len()),
+            "the frame must declare exactly the length the decompressor is sized for",
+        );
+
+        // The streaming encoder wrote every compressed record in a log older than this change, and
+        // it declares nothing. That is the case the fallback exists for, not a defect.
+        let streamed = zstd::stream::encode_all(encoded.as_slice(), COMPRESSION_LEVEL).unwrap();
+        assert_eq!(
+            declared_inflated_len(&streamed),
+            None,
+            "a streamed frame declares no length, so it must take the fallback",
+        );
+    }
+
+    /// Both shapes of frame inflate to the same bytes, whichever path they take.
+    #[test]
+    fn a_frame_inflates_the_same_whether_or_not_it_declares_a_length() {
+        let record = compressible_record();
+        let mut encoded = Vec::new();
+        record_parts(&record).unwrap().put(&record, &mut encoded).unwrap();
+
+        let declared = compress_payload(&encoded).expect("a compressible record compresses");
+        let streamed = zstd::stream::encode_all(encoded.as_slice(), COMPRESSION_LEVEL).unwrap();
+
+        assert_eq!(decompress_payload(&declared).unwrap(), encoded, "declared frame");
+        assert_eq!(decompress_payload(&streamed).unwrap(), encoded, "streamed frame");
+    }
+
+    /// A declared length past the bound is refused, because the length came off disk.
+    #[test]
+    fn a_declared_length_past_the_bound_is_refused() {
+        assert_eq!(capacity_within_bound(0), Some(0));
+        assert_eq!(
+            capacity_within_bound(MAX_REUSED_INFLATE_BYTES as u64),
+            Some(MAX_REUSED_INFLATE_BYTES),
+        );
+        assert_eq!(capacity_within_bound(MAX_REUSED_INFLATE_BYTES as u64 + 1), None);
+        assert_eq!(capacity_within_bound(u64::MAX), None);
     }
 
     #[test]
