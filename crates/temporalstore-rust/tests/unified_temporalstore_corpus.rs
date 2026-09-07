@@ -3804,7 +3804,18 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     let released_wal = released_cycle.wal_reclaim_report.as_ref().unwrap();
     assert!(released_wal.plan.safe_to_reclaim, "{released_wal:?}");
     assert!(released_wal.applied, "{released_wal:?}");
-    assert!(released_wal.wal_records_removed > 0, "{released_wal:?}");
+    // There may be nothing left to remove, because the clamped cycle above already released the
+    // span both cursors had consumed. That is the point of clamping: the work happens as the
+    // cursor advances rather than all at once when it finally reaches the frontier. What must
+    // hold is that the frontier itself has moved up to the final anchor.
+    //
+    // Copied from engine/tests/part4.rs, which covers this scenario and was corrected for the
+    // clamp already. mx#1228 fixed the blocked phase in this file and the failure moved here.
+    assert_eq!(
+        released_wal.plan.retain_from_wal_sequence,
+        released_anchor.wal_sequence.saturating_add(1),
+        "{released_wal:?}"
+    );
     let released_index_gc = released_cycle.index_gc_report.as_ref().unwrap();
     assert!(released_index_gc.safe_to_truncate, "{released_index_gc:?}");
     assert!(released_index_gc.applied, "{released_index_gc:?}");
