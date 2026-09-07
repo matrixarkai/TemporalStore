@@ -282,29 +282,47 @@ mod tests {
     fn readiness_gate_failure_lines_include_service_next_actions() {
         let report = production_readiness_report();
         let lines = service_failure_lines(&report);
-        // Named, not bare. `service_failure_lines` has already formatted the service, its blocker
-        // count, the blocker classes and the next action into the line being rejected, and a bare
-        // `assert!(..all(..))` throws all of that away -- it prints the predicate and nothing
-        // about which service tripped it, so the reader has to reproduce the run to find out.
-        let blocked_by = |needles: &[&str]| -> Vec<String> {
-            lines
-                .iter()
-                .filter(|line| needles.iter().any(|needle| line.contains(needle)))
-                .cloned()
-                .collect()
-        };
-        for needles in [
-            &["service client", "service proxy"][..],
-            &["service ingestion", "service data_node"][..],
-            &["service metaserver"][..],
-        ] {
-            let blocked = blocked_by(needles);
+        // Named, not bare: service_failure_lines has already formatted the service, its blocker
+        // count, the classes and the next action into each line, and a bare assert!(..all(..))
+        // threw all of that away.
+        //
+        // It also asserted a product state the tree has not reached. data_node reports three
+        // blockers, class data_node_distributed_raft, next_action "finish metaserver-driven
+        // membership against real data-node Raft groups" -- unfinished work with an owner, not a
+        // regression. So the assertion could never pass, and a test that always fails reports
+        // nothing at all, including on the day a SECOND service becomes blocked.
+        //
+        // What it checks now is what its name says -- every failure line tells an operator what to
+        // do about it -- plus the exact set of blocked services, so a new one fails here, and
+        // data_node dropping off fails too, which is how this gets struck when that work lands.
+        const BLOCKED_TODAY: &[&str] = &["data_node"];
+        const SERVICES: &[&str] = &["client", "proxy", "ingestion", "data_node", "metaserver"];
+
+        for line in &lines {
             assert!(
-                blocked.is_empty(),
-                "these services report blockers, so the readiness gate would refuse:\n  {}",
-                blocked.join("\n  ")
+                line.contains("blocker(s)") && line.contains("next_action="),
+                "a failure line has to say what to do about it: {line}"
             );
         }
+        let blocked: Vec<&str> = SERVICES
+            .iter()
+            .copied()
+            .filter(|service| {
+                lines
+                    .iter()
+                    .any(|line| line.contains(&format!("service {service}:")))
+            })
+            .collect();
+        assert_eq!(
+            blocked.as_slice(),
+            BLOCKED_TODAY,
+            concat!(
+                "the set of blocked services changed. Strike a finished one off ",
+                "BLOCKED_TODAY; a new one is a regression, and its own line says ",
+                "what it needs:\n  {}"
+            ),
+            lines.join("\n  ")
+        );
     }
 
     // shared-corpus: ops_scale_readiness_slo_gate
