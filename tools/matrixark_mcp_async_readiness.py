@@ -18,6 +18,13 @@ def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
         "idle_commit_failed": 1,
         "idle_commit_attempted": 1,
         "idle_commit_committed": 1,
+        # The drain's OTHER outcome, and the one it actually emits most: `session_commit` returning
+        # anything but accepted/committed is written as `idle_commit_skipped`
+        # (matrixark_local_adapter_retrieval). Leaving it out of this map did not make it rank
+        # low -- it made it rank -1, BELOW the `idle_commit_scheduled` it completes, so the
+        # completion lost to its own precursor and the task read as still scheduled forever.
+        # Terminal outcomes share a tier; only the ordering against `scheduled` matters here.
+        "idle_commit_skipped": 1,
         "extraction_committed": 2,
         "summary_completed": 3,
     }
