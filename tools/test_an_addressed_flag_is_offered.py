@@ -92,11 +92,12 @@ def _reads() -> Dict[str, Tuple[str, int, str]]:
     for rel in _tracked("*.py"):
         if os.path.basename(rel).startswith("test_"):
             continue
-        lines = _text(rel).splitlines()
-        for number, line in enumerate(lines, 1):
-            match = _READ.search(line)
-            if not match:
-                continue
+        text = _text(rel)
+        lines = text.splitlines()
+        # Whole file, not line by line: a read split across lines was invisible, and the flag it
+        # names was exempt from the rule below without anything saying so. 442 flags, not 419.
+        for match in _READ.finditer(text):
+            number = text.count("\n", 0, match.start()) + 1
             name = match.group(1) or match.group(2)
             if name in found:
                 continue

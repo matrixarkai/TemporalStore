@@ -108,13 +108,14 @@ def _readers() -> Dict[str, list]:
             continue
         try:
             with open(os.path.join(REPO, path), encoding="utf-8", errors="replace") as handle:
-                lines = handle.read().splitlines()
+                text = handle.read()
         except OSError:
             continue
-        for number, line in enumerate(lines, 1):
-            for match in _READ.finditer(line):
-                found[match.group("var")].append(
-                    (path, number, _unquote(match.group("default"))))
+        # Whole file, not line by line -- see the note in test_an_addressed_flag_is_offered.
+        for match in _READ.finditer(text):
+            number = text.count("\n", 0, match.start()) + 1
+            found[match.group("var")].append(
+                (path, number, _unquote(match.group("default"))))
     return found
 
 
