@@ -468,11 +468,20 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
     """Return the logical latest-state key for versionless context records.
 
     Delegates deliberately: the single definition lives in matrixark_mcp_serving_records. This
-    module used to carry its own copy, and the two drifted -- the other one learned to give
-    `matrixark_async_pipeline_task` an identity and this one did not. Because the write path
-    resolves THIS module (it does `import *`, and this module re-exports the name), tasks kept
-    their append-log rows and every status transition accumulated, which is the cost that
-    identity exists to remove.
+    module used to carry its own copy and the two drifted, which is the reason for delegating --
+    the write path resolves THIS module (it does `import *`, and this module re-exports the
+    name), so a copy that answered differently here was the answer that shipped.
+
+    What the delegate decides is worth reading there rather than inferring from here, because it
+    is not the obvious answer: `matrixark_async_pipeline_task` deliberately has NO latest-state
+    identity. Collapsing each task to one row looks free and is not -- the latest-state hash is
+    read WHOLESALE on every idle-commit check, so it is only cheap while its identity count stays
+    small, and tasks are per event. Measured on a 600-add store, giving them an identity cut the
+    per-call task count 545.8 -> 310.8 and made an add 143.2 -> 265.6 ms.
+
+    So task rows are NOT collapsed by compaction: every status transition stays in the append
+    log, and a reader that wants the latest status folds the rows itself. Do not read this
+    delegation as "tasks have an identity now".
     """
     global _SERVING_LATEST_CONTEXT_STATE_KEY
     delegate = _SERVING_LATEST_CONTEXT_STATE_KEY
