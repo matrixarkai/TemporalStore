@@ -25,6 +25,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+#: One list, because matrixark_mcp_recovery uses it to decide whether a recovered store still
+#: serves, and the serving path uses its own copy. A type missing from one of them means the
+#: check and the thing it checks disagree.
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -33,6 +36,7 @@ RETRIEVAL_HOT_RECORD_TYPES = {
     "context_index",
     "context_segment",
     "context_summary",
+    "matrixark_async_pipeline_task",
     "resource_chunk",
     "resource_manifest",
     "skill_registry_update",

@@ -104,20 +104,10 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_idempotency import build_idempotency_record as _build_idempotency_record
 
-RETRIEVAL_HOT_RECORD_TYPES = {
-    "context_compression_event",
-    "context_embedding",
-    "context_entity",
-    "context_event",
-    "context_index",
-    "context_segment",
-    "context_summary",
-    "matrixark_async_pipeline_task",
-    "resource_chunk",
-    "resource_manifest",
-    "skill_registry_update",
-    "skill_section",
-}
+try:  # the list lives with the retrieval records; this module re-exports it
+    from tools.matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES  # noqa: F401
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES  # noqa: F401
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
