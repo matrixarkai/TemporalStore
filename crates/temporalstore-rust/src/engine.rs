@@ -3346,10 +3346,26 @@ fn mark_bucket_index_page_deleted(
     key: &str,
     component: Option<&str>,
 ) -> bool {
+    mark_bucket_index_page_deleted_with(shard, shard_id, model_id, key, component, true)
+}
+
+/// The same, with a say over whether an outcome is staged for the record.
+///
+/// Replay INSTALLS a removal that was already recorded; staging another from inside the install
+/// would record the recovery as a write of its own. Same shape as
+/// `upsert_bucket_index_page_with`, and the same reason.
+fn mark_bucket_index_page_deleted_with(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    model_id: &str,
+    key: &str,
+    component: Option<&str>,
+    stage: bool,
+) -> bool {
     // Removing a member IS an outcome, and it is the one a command log states worst: replay has
     // to re-run the removal and hope the state it removes from matches. Saying "this component
     // is gone" needs no such hope. Recorded here because every typed removal comes through.
-    {
+    if stage {
         block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: model_id.to_string(),
             object_key: key.to_string(),
