@@ -57,13 +57,6 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
     # and the short version is here so the list can be scanned.
     #
     # Three of them default ON and are read INSIDE a feature that is off:
-    "TS_BLOCK_INDEX_CHECKSUMS":
-        "records a hex digest per page record while inspecting a slab. Nothing in the crate reads "
-        "the field -- it is there to be read by hand. Off because `inspect_slab` runs at every "
-        "engine open and this hashes every payload a second time, after `decode_page_record` has "
-        "already verified the stored checksum: slab verification measured 13.5 MB/s against "
-        "hundreds for sha256 alone. The on arm surfaces a field the live arm suppresses, which is "
-        "the diagnostic case, so it stays",
     "TS_META_AUTO_REBALANCE_BALANCE":
         "a sub-option of auto-rebalance, read inside `if env_bool(TS_META_AUTO_REBALANCE, false)`. "
         "Its off side is reached by anyone who turns the parent on, so ON-and-unset does not make "
@@ -277,6 +270,39 @@ class ATwoPathFlagSaysWhyTest(unittest.TestCase):
             "these are listed as having no shipped selector and now have one, or have gone "
             "entirely: %s. Strike them off -- a list of decisions that is allowed to go stale "
             "describes a tree that no longer exists." % stale)
+
+    def test_no_flag_is_listed_twice(self) -> None:
+        """Python keeps the LAST of two identical keys, so a duplicate is invisible here.
+
+        `TS_BLOCK_INDEX_CHECKSUMS` was listed twice: once under "default ON", once under "default
+        OFF", with two different reasons. Every test above passed, because they compare the SET of
+        names and the name was present either way -- what was lost was one of the two reasons, and
+        the one silently discarded was the one that contradicted the engine (the flag reads
+        `.unwrap_or(false)`). A list whose purpose is to record a decision cannot afford to hold
+        two and show one, so this reads the source rather than the dict.
+        """
+        import ast
+
+        with open(__file__, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        literal = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "KNOWN_TWO_PATH_FLAGS":
+                literal = node.value
+            elif isinstance(node, ast.Assign) and any(
+                    getattr(t, "id", None) == "KNOWN_TWO_PATH_FLAGS" for t in node.targets):
+                literal = node.value
+        self.assertIsNotNone(literal, "KNOWN_TWO_PATH_FLAGS is no longer a literal here; this "
+                                      "guard reads the source and cannot see it any other way")
+
+        names = [k.value for k in literal.keys
+                 if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+        self.assertGreaterEqual(len(names), 10, "the literal shrank; the check below is then weak")
+        duplicated = sorted({n for n in names if names.count(n) > 1})
+        self.assertEqual(
+            [], duplicated,
+            "listed more than once, so all but the last reason is discarded and nothing above "
+            "notices: %s" % duplicated)
 
     def test_every_decision_gives_a_reason(self) -> None:
         empty = sorted(name for name, why in KNOWN_TWO_PATH_FLAGS.items() if len(why.strip()) < 12)
