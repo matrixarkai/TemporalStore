@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 289 of them, read by 90 functions.
+There are 290 of them, read by 91 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,12 +46,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 289 |
-| booleans whose default this could read off the source | 49 |
+| total | 290 |
+| booleans whose default this could read off the source | 50 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 28 |
-| **that nothing in this repository sets** | 156 |
+| **that nothing in this repository sets** | 157 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -354,7 +354,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | script | 1 | — |
 
-## behaviour (61)
+## behaviour (62)
 
 Everything else that changes what the engine does.
 
@@ -379,6 +379,7 @@ Everything else that changes what the engine does.
 | `TEMPORALSTORE_RUST_CODEX_EVENT_LOG_ENABLE` | — | nothing | 1 | — |
 | `TS_BLOB_PEER_FETCH` | off | nothing | 1 | — |
 | `TS_BLOB_RUNTIME_THREADS` | 4 | nothing | 1 | — |
+| `TS_BLOCK_INDEX_CHECKSUMS` | off | nothing | 1 | — |
 | `TS_CACHE_DISK_TIER` | — | test | 1 | — |
 | `TS_COLD_SCAN_NO_CACHE_FILL` | on | config, test, portal | 1 | — |
 | `TS_DATA_RAFT_READ_MODE` | — | config | 1 | — |
