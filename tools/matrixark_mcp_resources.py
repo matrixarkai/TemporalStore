@@ -226,8 +226,10 @@ def resource_storage_mode_from_args(args: Json, envelope: Json, deployment_scope
     return value
 
 
-def is_s3_uri(value: str) -> bool:
-    return value.startswith("s3://")
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import is_s3_uri
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import is_s3_uri
 
 
 def parse_s3_uri(uri: str) -> tuple[str, str]:
@@ -350,11 +352,10 @@ def _resource_object_key(prefix: str, raw_uri: str, source_path: Path | None, re
     return f"{prefix}/{digest.hexdigest()[:16]}-{suffix}"
 
 
-def _archive_directory_for_upload(path: Path) -> Path:
-    temp_dir = Path(tempfile.mkdtemp(prefix="matrixark-resource-dir-"))
-    archive_base = temp_dir / safe_identifier(path.name or "resource-dir", default="resource-dir")
-    archive_path = shutil.make_archive(str(archive_base), "gztar", root_dir=str(path))
-    return Path(archive_path)
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import _archive_directory_for_upload
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import _archive_directory_for_upload
 
 
 def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, resource_type: str, deployment_scope: str, resource_text: str) -> Json:

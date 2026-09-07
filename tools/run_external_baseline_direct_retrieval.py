@@ -320,12 +320,16 @@ def terms(text: str) -> set[str]:
     return {m.group(0).lower() for m in WORD_RE.finditer(text) if m.group(0).lower() not in stop}
 
 
-def normalize(text: str) -> str:
-    return " ".join(WORD_RE.findall(str(text).lower()))
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import normalize
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import normalize
 
 
-def token_count(text: str) -> int:
-    return len(WORD_RE.findall(text))
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import token_count
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import token_count
 
 
 try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it

@@ -170,8 +170,10 @@ def answer_matches(answer: str, accepted: list[str]) -> bool:
     return any(normalize(item) in norm for item in accepted)
 
 
-def normalize(text: str) -> str:
-    return " ".join(WORD_RE.findall(str(text).lower()))
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import normalize
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import normalize
 
 
 def percentile(values: list[float], pct: float) -> float:

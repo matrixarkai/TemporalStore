@@ -77,9 +77,10 @@ def validate_case(case: dict, native_repo: Path | None) -> list[tuple[str, str]]
     return commands
 
 
-def run_command(command: str, cwd: Path) -> None:
-    print(f"+ {command}", flush=True)
-    subprocess.run(command, cwd=cwd, shell=True, check=True)
+try:  # the implementation lives in run_raft_shared_cases; this module re-exports it
+    from .run_raft_shared_cases import run_command
+except ImportError:  # Direct script execution from tools/.
+    from run_raft_shared_cases import run_command
 
 
 try:  # the implementation lives in run_raft_shared_cases; this module re-exports it

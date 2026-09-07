@@ -50,8 +50,10 @@ def normalized_node_path(envelope: Json, node_hint: list[Any]) -> list[str]:
     return [str(part) for part in node_hint if str(part)]
 
 
-def node_prefixes(node_path: list[str]) -> list[list[str]]:
-    return [node_path[: index + 1] for index in range(len(node_path))]
+try:  # the implementation lives in matrixark_mcp_tree; this module re-exports it
+    from .matrixark_mcp_tree import node_prefixes
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_tree import node_prefixes
 
 
 try:  # the implementation lives in matrixark_mcp_tree; this module re-exports it
@@ -60,8 +62,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_tree import node_path_tuple
 
 
-def starts_with_path(path: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
-    return len(path) >= len(prefix) and path[: len(prefix)] == prefix
+try:  # the implementation lives in matrixark_mcp_tree; this module re-exports it
+    from .matrixark_mcp_tree import starts_with_path
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_tree import starts_with_path
 
 
 try:  # the implementation lives in matrixark_mcp_tree; this module re-exports it

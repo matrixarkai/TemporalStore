@@ -2519,9 +2519,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_pre_refresh import codex_user_goal_budget_query
 
 
-def feature_scope_budget_query(args: Json, ranking: Json) -> bool:
-    query = str(args.get("query") or ranking.get("query") or ranking.get("question") or "")
-    return feature_scope_excludes_outcome_evidence(query)
+try:  # the implementation lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it
+    from .matrixark_mcp_retrieve_pre_refresh import feature_scope_budget_query
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import feature_scope_budget_query
 
 
 def auto_source_role_budget_tokens(
