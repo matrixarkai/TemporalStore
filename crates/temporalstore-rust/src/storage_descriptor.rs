@@ -9,7 +9,7 @@
 //!   * [`BlockHeader`] — the per-block descriptor. This is what the log-item-to-block
 //!     conversion fills in, and it is where [`BlockHeader::block_in_wal`] records that a
 //!     block's bytes are still in the WAL rather than in a band.
-//!   * [`SlabInfo`] / [`SlabHeader`] / [`BlockFooter`] — the segmented-stream layer. A stream
+//!   * [`SlabInfo`] / [`SlabHeader`] / [`BlockFooter`] — the slabbed-stream layer. A stream
 //!     is a chain of slabs; each slab carries a header naming the whole chain, and the
 //!     fixed-size blocks inside it end with a footer that makes a torn tail detectable on
 //!     reopen.

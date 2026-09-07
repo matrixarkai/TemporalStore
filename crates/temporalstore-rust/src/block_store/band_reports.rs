@@ -383,7 +383,7 @@ impl LocalBlockStore {
                 "block records are appended as self-describing stream envelopes".to_string(),
                 "logical stream reads span records while skipping envelopes and decompression"
                     .to_string(),
-                "segment roll seals the previous band and opens a new active band".to_string(),
+                "slab roll seals the previous band and opens a new active band".to_string(),
                 "band manifest persists active/sealed/delayed-destroy/purged lifecycle state"
                     .to_string(),
                 "stream runtime reports page-id continuity and logical read byte evidence"

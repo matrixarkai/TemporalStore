@@ -18,8 +18,9 @@ pub enum CompressionFormat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageSegmentManifest {
-    pub page_segment_id: String,
+pub struct PageSlabManifest {
+    #[serde(rename = "page_segment_id")]
+    pub page_slab_id: String,
     pub relative_path: String,
     pub byte_size: u64,
     pub sha256: String,
@@ -42,7 +43,8 @@ pub struct SnapshotManifest {
     pub last_applied_log_id: String,
     pub created_at: DateTime<Utc>,
     pub engine_version: String,
-    pub page_segments: Vec<PageSegmentManifest>,
+    #[serde(rename = "page_segments")]
+    pub page_slabs: Vec<PageSlabManifest>,
     pub object_count: u64,
     pub record_count: u64,
     pub checksums: Vec<ChecksumEntry>,
@@ -64,7 +66,7 @@ pub struct LocalSnapshot {
     pub root_dir: PathBuf,
     pub index_path: PathBuf,
     pub checksums_path: PathBuf,
-    pub page_segments: Vec<PathBuf>,
+    pub page_slabs: Vec<PathBuf>,
 }
 
 impl LocalSnapshot {
@@ -77,7 +79,7 @@ impl LocalSnapshot {
         root_dir: PathBuf,
         index_path: PathBuf,
         checksums_path: PathBuf,
-        page_segments: Vec<PathBuf>,
+        page_slabs: Vec<PathBuf>,
     ) -> Self {
         let snapshot_id = Uuid::new_v4().to_string();
         let manifest = SnapshotManifest {
@@ -89,7 +91,7 @@ impl LocalSnapshot {
             last_applied_log_id: last_applied_log_id.into(),
             created_at: Utc::now(),
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
-            page_segments: Vec::new(),
+            page_slabs: Vec::new(),
             object_count: 0,
             record_count: 0,
             checksums: Vec::new(),
@@ -101,7 +103,7 @@ impl LocalSnapshot {
             root_dir,
             index_path,
             checksums_path,
-            page_segments,
+            page_slabs,
         }
     }
 }

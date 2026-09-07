@@ -325,7 +325,7 @@ impl TemporalEngine {
     /// which skips per-record persistence). Also refreshes the index-log tail.
     pub fn flush_shard_index(&self, shard_id: ShardId) {
         // Make the chunk's deferred bulk writes durable before publishing the
-        // served index: fsync page segments + band manifest, then the WAL. If the
+        // served index: fsync page slabs + band manifest, then the WAL. If the
         // barrier FAILS, bail without pinning applied_wal_sequence or writing the index:
         // advancing the durable anchor past pages that never reached disk would suppress
         // their replay on reload -> silent data loss. advances the watermark only after

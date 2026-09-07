@@ -7,7 +7,7 @@ use super::record::sha256_bytes;
 
 impl LocalBlockStore {
     /// Force durability for writes made under relaxed (bulk) mode: fsync the
-    /// active segment's data and persist the extent manifest once. No-op when
+    /// active slab's data and persist the extent manifest once. No-op when
     /// nothing was deferred (e.g. the live per-append-fsync path).
     pub fn sync_durable(&self) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");

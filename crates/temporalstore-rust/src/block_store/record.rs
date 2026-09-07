@@ -757,7 +757,7 @@ const PAGE_RECORD_WIDEST_HEADER_LEN: usize = if PAGE_RECORD_HEADER_LEN > PAGE_RE
 ///
 /// Sized so a bufferful spans many records rather than one: at the ~300-byte records the live
 /// store holds, this is ~800 per fill, which is the difference between thousands of reads for a
-/// segment and millions.
+/// slab and millions.
 const PAGE_RECORD_SCAN_BUFFER_BYTES: usize = 256 * 1024;
 
 /// The largest page id recorded in one slab, read from record headers alone.
@@ -774,7 +774,7 @@ const PAGE_RECORD_SCAN_BUFFER_BYTES: usize = 256 * 1024;
 ///
 /// It reads through a `BufReader` rather than seeking per record. Records here are small -- the
 /// live store holds ~3.4M of them averaging ~300 bytes -- so a seek and a read for each is
-/// millions of syscalls, and measured SLOWER than reading the whole segment. `seek_relative`
+/// millions of syscalls, and measured SLOWER than reading the whole slab. `seek_relative`
 /// drops buffered bytes in place when the destination is already in the buffer, so a run of
 /// small records costs one read per bufferful while a large record still seeks.
 ///

@@ -294,7 +294,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "LocalBlockStore exposes stream-backed band runtime reports".to_string(),
         "logical stream reads span page records while skipping envelopes and decompression"
             .to_string(),
-        "segment roll seals previous bands and opens a new active stream band".to_string(),
+        "slab roll seals previous bands and opens a new active stream band".to_string(),
         "band manifests persist active/sealed/delayed-destroy/purged lifecycle states".to_string(),
         "stream envelopes carry checksum, page id, object id, routing slot, band id, and compression metadata"
             .to_string(),

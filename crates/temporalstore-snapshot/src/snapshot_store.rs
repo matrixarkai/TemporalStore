@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt;
 use crate::metrics::SnapshotMetrics;
 use crate::object_store::{ObjectStore, ObjectStoreError};
 use crate::types::{
-    ChecksumEntry, LocalSnapshot, PageSegmentManifest, ShardId, SnapshotManifest, SnapshotRef,
+    ChecksumEntry, LocalSnapshot, PageSlabManifest, ShardId, SnapshotManifest, SnapshotRef,
     SnapshotRetention, SnapshotStatus,
 };
 
@@ -191,7 +191,7 @@ where
             tokio::fs::write(&checksums_path, b"[]").await?;
         }
 
-        let page_segments = list_local_page_segments(&root.join("page_segments")).await?;
+        let page_slabs = list_local_page_slabs(&root.join("page_segments")).await?;
         let mut snapshot = LocalSnapshot::new(
             self.cluster_id.clone(),
             shard_id,
@@ -201,13 +201,13 @@ where
             root,
             index_path,
             checksums_path,
-            page_segments,
+            page_slabs,
         );
         snapshot.manifest.engine_version = self.engine_version.clone();
-        snapshot.manifest.page_segments = page_segment_manifests(&snapshot).await?;
+        snapshot.manifest.page_slabs = page_slab_manifests(&snapshot).await?;
         snapshot.manifest.checksums = checksum_entries(&snapshot).await?;
         snapshot.manifest.record_count = snapshot.manifest.checksums.len() as u64;
-        snapshot.manifest.object_count = snapshot.manifest.page_segments.len() as u64;
+        snapshot.manifest.object_count = snapshot.manifest.page_slabs.len() as u64;
 
         if let Some(metrics) = &self.metrics {
             metrics.observe_create(shard_id, SnapshotStatus::Success);
@@ -241,7 +241,7 @@ where
             tokio::fs::write(&checksums_path, b"[]").await?;
         }
 
-        let page_segments = list_local_page_segments(&root.join("page_segments")).await?;
+        let page_slabs = list_local_page_slabs(&root.join("page_segments")).await?;
         let mut snapshot = LocalSnapshot::new(
             self.cluster_id.clone(),
             shard_id,
@@ -251,10 +251,10 @@ where
             root,
             index_path,
             checksums_path,
-            page_segments,
+            page_slabs,
         );
         snapshot.manifest.engine_version = self.engine_version.clone();
-        snapshot.manifest.page_segments = page_segment_manifests(&snapshot).await?;
+        snapshot.manifest.page_slabs = page_slab_manifests(&snapshot).await?;
         snapshot.manifest.checksums = checksum_entries(&snapshot).await?;
 
         if let Some(metrics) = &self.metrics {
@@ -395,12 +395,12 @@ async fn upload_snapshot_inner<O: ObjectStore>(
         &snapshot.checksums_path,
     )
     .await?;
-    for page_segment in &snapshot.page_segments {
-        let name = page_segment.file_name().unwrap().to_string_lossy();
+    for page_slab in &snapshot.page_slabs {
+        let name = page_slab.file_name().unwrap().to_string_lossy();
         put_file(
             object_store,
             &format!("{temp_prefix}page_segments/{name}"),
-            page_segment,
+            page_slab,
         )
         .await?;
     }
@@ -445,17 +445,17 @@ async fn download_snapshot_inner<O: ObjectStore>(
     )
     .await?;
 
-    let mut page_segments = Vec::new();
-    for segment in &manifest.page_segments {
-        let path = destination.join(&segment.relative_path);
+    let mut page_slabs = Vec::new();
+    for slab in &manifest.page_slabs {
+        let path = destination.join(&slab.relative_path);
         write_file(
             &path,
             object_store
-                .get(&format!("{prefix}{}", segment.relative_path))
+                .get(&format!("{prefix}{}", slab.relative_path))
                 .await?,
         )
         .await?;
-        page_segments.push(path);
+        page_slabs.push(path);
     }
 
     let local = LocalSnapshot {
@@ -463,7 +463,7 @@ async fn download_snapshot_inner<O: ObjectStore>(
         root_dir: destination,
         index_path,
         checksums_path,
-        page_segments,
+        page_slabs,
     };
     verify_local_snapshot(&local).await?;
     Ok(local)
@@ -523,7 +523,7 @@ async fn delete_prefix<O: ObjectStore>(
     Ok(())
 }
 
-async fn list_local_page_segments(dir: &Path) -> Result<Vec<PathBuf>, SnapshotStoreError> {
+async fn list_local_page_slabs(dir: &Path) -> Result<Vec<PathBuf>, SnapshotStoreError> {
     let mut out = Vec::new();
     if !dir.exists() {
         return Ok(out);
@@ -539,15 +539,15 @@ async fn list_local_page_segments(dir: &Path) -> Result<Vec<PathBuf>, SnapshotSt
     Ok(out)
 }
 
-async fn page_segment_manifests(
+async fn page_slab_manifests(
     snapshot: &LocalSnapshot,
-) -> Result<Vec<PageSegmentManifest>, SnapshotStoreError> {
+) -> Result<Vec<PageSlabManifest>, SnapshotStoreError> {
     let mut out = Vec::new();
-    for path in &snapshot.page_segments {
+    for path in &snapshot.page_slabs {
         let bytes = tokio::fs::read(path).await?;
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-        out.push(PageSegmentManifest {
-            page_segment_id: file_name.trim_end_matches(".seg").to_string(),
+        out.push(PageSlabManifest {
+            page_slab_id: file_name.trim_end_matches(".seg").to_string(),
             relative_path: format!("page_segments/{file_name}"),
             byte_size: bytes.len() as u64,
             sha256: sha256_hex(&bytes),
@@ -571,11 +571,11 @@ async fn checksum_entries(
             byte_size: bytes.len() as u64,
         });
     }
-    for segment in &snapshot.manifest.page_segments {
+    for slab in &snapshot.manifest.page_slabs {
         entries.push(ChecksumEntry {
-            relative_path: segment.relative_path.clone(),
-            sha256: segment.sha256.clone(),
-            byte_size: segment.byte_size,
+            relative_path: slab.relative_path.clone(),
+            sha256: slab.sha256.clone(),
+            byte_size: slab.byte_size,
         });
     }
     Ok(entries)
@@ -647,10 +647,10 @@ mod tests {
             .unwrap();
         let index = shard_root.join(INDEX);
         let checksums = shard_root.join(CHECKSUMS);
-        let segment = shard_root.join("page_segments").join("0001.seg");
+        let slab = shard_root.join("page_segments").join("0001.seg");
         tokio::fs::write(&index, b"index-bytes").await.unwrap();
         tokio::fs::write(&checksums, b"[]").await.unwrap();
-        tokio::fs::write(&segment, b"page-segment-bytes")
+        tokio::fs::write(&slab, b"page-segment-bytes")
             .await
             .unwrap();
 
@@ -663,9 +663,9 @@ mod tests {
             shard_root,
             index,
             checksums,
-            vec![segment],
+            vec![slab],
         );
-        local.manifest.page_segments = page_segment_manifests(&local).await.unwrap();
+        local.manifest.page_slabs = page_slab_manifests(&local).await.unwrap();
         local.manifest.checksums = checksum_entries(&local).await.unwrap();
         local
     }

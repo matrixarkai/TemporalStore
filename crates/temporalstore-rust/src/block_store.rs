@@ -49,7 +49,7 @@ pub enum BlockStoreError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error(
-        "block checksum mismatch for segment {page_slab_id} offset {offset} length {length}: expected {expected}, got {actual}"
+        "block checksum mismatch for slab {page_slab_id} offset {offset} length {length}: expected {expected}, got {actual}"
     )]
     ChecksumMismatch {
         page_slab_id: u64,
@@ -58,7 +58,7 @@ pub enum BlockStoreError {
         expected: String,
         actual: String,
     },
-    #[error("corrupt block envelope for segment {page_slab_id} offset {offset}: {reason}")]
+    #[error("corrupt block envelope for slab {page_slab_id} offset {offset}: {reason}")]
     CorruptPageEnvelope {
         page_slab_id: u64,
         offset: u64,
