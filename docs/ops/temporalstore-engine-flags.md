@@ -314,7 +314,7 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_EMBED_DRAINER_BATCH` | — | config, portal | 1 | — |
 | `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | 40000 | launch, portal | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` | off | config, test, portal | 1 | — |
-| `MATRIXARK_REQUIRE_MODEL_SUMMARIES` | off | config, portal | 1 | — |
+| `MATRIXARK_REQUIRE_MODEL_SUMMARIES` | off | config, test, portal | 1 | — |
 | `MATRIXARK_RETRIEVAL_TRAVERSAL_TOP_K` | — | nothing | 1 | — |
 | `TS_PROXY_CONTEXT_FIRST_SHARD` | — | nothing | 1 | — |
 | `TS_PROXY_CONTEXT_SHARD_COUNT` | — | nothing | 1 | — |

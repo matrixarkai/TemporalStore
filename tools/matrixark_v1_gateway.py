@@ -3256,6 +3256,7 @@ _CHECK_SOURCE_LABELS: Json = {
 _CHECK_SOURCES: Json = {
     "extraction": "configuration",
     "extraction_key": "configuration",
+    "summaries": "configuration",
     "embedding": "configuration",
     "fail_closed": "configuration",
     "config_warnings": "configuration",
@@ -3292,6 +3293,7 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
     """
     extraction = config_snapshot.get("extraction") or {}
     embedding = config_snapshot.get("embedding") or {}
+    summary = config_snapshot.get("summary") or {}
     checks: List[Json] = []
 
     def plural(count: int, one: str, many: str = "") -> str:
@@ -3371,6 +3373,37 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
                 "It lands in the variable named just above it, which is the one the provider code "
                 "reads — so it is live on the next extraction, with no restart.",
                 "The key is stored owner-only and is never returned by any read.",
+            ])
+
+    # The third model role, and the one called most: extraction runs once per ingest, and every
+    # context node gets a summary that retrieval then walks. The other two roles had three rows
+    # between them and this had none, so a deployment writing its summaries with rules -- which an
+    # Anthropic extraction provider does, documented, without an error -- read as complete.
+    #
+    # Only when extraction reaches a model. Rules everywhere is one decision, and the extraction
+    # row above already states it; saying it twice is how a checklist teaches people to skim.
+    if model_on:
+        by_model = summary.get("writes") == "model"
+        required = bool(summary.get("require_model"))
+        add("summaries", "Summary model", "ok" if by_model else "warn",
+            ("Summaries are written by " + str(summary.get("model")
+                                               or extraction.get("provider")) + ".")
+            if by_model else
+            ("Summaries are written by rules while extraction calls a model. Every context node "
+             "gets one and retrieval walks them, so this is the model called most."
+             + (" “Fail instead of writing rule summaries” is on, and the engine refuses "
+                "the extraction outright where it writes them -- but nothing in this build reads "
+                "that switch, so where the local adapter writes them the fallback is silent."
+                if required else "")),
+            "/v1/admin/setup", "Set the provider",
+            how=[
+                "Setup → Summary provider → openai_compatible. Blank follows the "
+                "extraction provider, and only the openai-compatible family writes summaries with "
+                "a model.",
+                "An Anthropic extraction provider returns rule-written summaries and no error, "
+                "which is the case this row exists for.",
+                "The summary call uses the extraction endpoint and its model — there is no "
+                "separate summary model to set.",
             ])
 
     semantic = _gwconfig.embedding_provider_effect(
