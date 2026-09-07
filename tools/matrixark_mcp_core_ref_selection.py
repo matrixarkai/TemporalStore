@@ -361,6 +361,11 @@ def select_token_budgeted_refs(
     candidates = prefer_profile_entities_for_current_state(candidates, question_type)
     candidates.sort(key=lambda item: packing_sort_key(item, question_type), reverse=True)
     candidates = diversify_for_question_type(candidates, question_type, total_limit=candidate_pool_limit)
+    # `candidates` is final here -- nothing below reassigns it, and no candidate dict is written to
+    # -- so each one's memory layer is settled and worth deriving once. The three "remaining floor"
+    # closures below each re-scan the tail on every selection step and asked for it every time:
+    # 19,698 of a retrieve's 20,401 calls to candidate_memory_layer_name, 6,566 apiece.
+    candidate_layer_names = [candidate_memory_layer_name(candidate) for candidate in candidates]
     selected: list[Json] = []
     used_tokens = 0
     cross_session_policy = cross_session_policy or {"enabled": False, "budget_tokens": 0, "max_sessions": 0, "max_candidates": 0, "min_entity_bridge_refs": 0}
@@ -497,8 +502,9 @@ def select_token_budgeted_refs(
         )
 
     def remaining_profile_overview_floor_layer(start_index: int) -> str:
-        for remaining in candidates[start_index:]:
-            remaining_layer = candidate_memory_layer_name(remaining)
+        for index in range(start_index, len(candidates)):
+            remaining = candidates[index]
+            remaining_layer = candidate_layer_names[index]
             if remaining_layer not in high_level_profile_memory_layers:
                 continue
             try:
@@ -518,8 +524,9 @@ def select_token_budgeted_refs(
         return ""
 
     def remaining_profile_entity_floor_layer(start_index: int) -> str:
-        for remaining in candidates[start_index:]:
-            remaining_layer = candidate_memory_layer_name(remaining)
+        for index in range(start_index, len(candidates)):
+            remaining = candidates[index]
+            remaining_layer = candidate_layer_names[index]
             if remaining_layer not in profile_entity_bridge_layers:
                 continue
             try:
@@ -545,8 +552,9 @@ def select_token_budgeted_refs(
         )
 
     def remaining_codex_outcome_evidence_floor_layer(start_index: int) -> str:
-        for remaining in candidates[start_index:]:
-            remaining_layer = candidate_memory_layer_name(remaining)
+        for index in range(start_index, len(candidates)):
+            remaining = candidates[index]
+            remaining_layer = candidate_layer_names[index]
             if remaining_layer not in codex_outcome_evidence_layers:
                 continue
             try:
