@@ -997,9 +997,39 @@ mod tests {
             .any(|peer| peer.pipeline_state.peer_id == peer.status.node_id));
 
         let metrics = String::from_utf8(route(&runtime, "GET", "/metrics", Vec::new())).unwrap();
-        assert!(metrics.contains("matrixraft_ready"));
-        assert!(metrics.contains("matrixraft_capability_ready"));
-        assert!(metrics.contains("matrixraft_capability_field_present"));
+        // All three named something no emitter produces under that name. The first two passed
+        // anyway: temporalstore_raft_matrixraft_ready and
+        // temporalstore_raft_matrixraft_capability_ready CONTAIN those substrings, so they would
+        // have passed with no matrixraft-prefixed metric in the tree at all. The third is emitted
+        // by nothing in either repository -- MatrixRaft at the pinned rev spells its own
+        // rustraft_baseline_raft_capability_field_present, and this crate reports WHICH field was
+        // the evidence as a label on the capability gauge rather than as a metric of its own.
+        //
+        // So each now names what is actually emitted, including the label carrying the
+        // field-present information. This does not decide whether a capability_field_present
+        // metric OUGHT to exist; if it should, that is a product change, not an assertion.
+        assert!(
+            metrics.contains("temporalstore_raft_matrixraft_ready"),
+            "the cluster metrics carry no matrixraft readiness gauge"
+        );
+        assert!(
+            metrics.contains("temporalstore_raft_matrixraft_capability_ready"),
+            "the cluster metrics carry no matrixraft capability gauge"
+        );
+        // Per sample, not over the whole dump: the evidence_field label is only emitted inside
+        // the capability loop, so requiring it outright would assert that the matrix is populated
+        // in this fixture -- a different claim, and one not verified here. This says the thing the
+        // deleted assertion was reaching for: a capability that IS reported names the field that
+        // evidenced it.
+        for sample in metrics
+            .lines()
+            .filter(|line| line.contains("temporalstore_raft_matrixraft_capability_ready{"))
+        {
+            assert!(
+                sample.contains("evidence_field="),
+                "a capability sample must name the field that evidenced it: {sample}"
+            );
+        }
         assert!(metrics.contains("temporalstore_raft_matrixraft_ready"));
         assert!(metrics.contains("temporalstore_raft_matrixraft_capability_ready"));
         assert!(metrics.contains("capability=\"wal_segment_lifecycle\""));
