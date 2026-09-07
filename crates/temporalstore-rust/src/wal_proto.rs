@@ -152,6 +152,22 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The largest scratch buffer worth keeping between records.
+///
+/// The buffer grows to the largest record a thread has encoded, and would otherwise hold that
+/// capacity for the life of the thread. Past this it is dropped instead.
+const MAX_ENCODE_SCRATCH_BYTES: usize = 1024 * 1024;
+
+thread_local! {
+    /// The payload buffer the compressing arm of `encode` builds into, kept between records.
+    ///
+    /// Thread-local for the same reason the compressor beside it is: no lock on the append path.
+    /// Nothing borrows it across a call -- the borrow ends inside `encode`, before the compressed
+    /// payload is framed -- so a second record on the same thread always finds it free.
+    static ENCODE_SCRATCH: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn compress_payload(encoded: &[u8]) -> Option<Vec<u8>> {
     if encoded.len() < COMPRESSION_MIN_BYTES {
         return None;
@@ -673,9 +689,24 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
         // `payload_len()` before the payload exists, and how long a compressed payload will be is
         // not knowable until it has been compressed. So this arm builds the payload first and the
         // frame around it, which is what the escaping arm below has always done.
-        let mut encoded = Vec::with_capacity(parts.len);
-        parts.put(record, &mut encoded)?;
-        if let Some(compressed) = compress_payload(&encoded) {
+        //
+        // The buffer it builds into is kept between records rather than allocated per append. At a
+        // four-kilobyte record that allocation measured 4,682 B, nearly half of everything this
+        // path allocated, and none of it had to be new: the bytes are consumed before `encode`
+        // returns.
+        let compressed = ENCODE_SCRATCH.with(|cell| -> Result<Option<Vec<u8>>, String> {
+            let mut scratch = cell.borrow_mut();
+            scratch.clear();
+            scratch.reserve(parts.len);
+            parts.put(record, &mut scratch)?;
+            let compressed = compress_payload(&scratch);
+            if scratch.capacity() > MAX_ENCODE_SCRATCH_BYTES {
+                // One outsized record should not leave every thread that saw it holding the buffer.
+                *scratch = Vec::new();
+            }
+            Ok(compressed)
+        })?;
+        if let Some(compressed) = compressed {
             let escaping = !crate::log_framing::binary_frame_enabled();
             let mut out = Vec::with_capacity(compressed.len() + 8);
             out.push(if escaping {
@@ -895,6 +926,54 @@ mod tests {
         );
         assert_eq!(capacity_within_bound(MAX_REUSED_INFLATE_BYTES as u64 + 1), None);
         assert_eq!(capacity_within_bound(u64::MAX), None);
+    }
+
+    /// What `encode` allocates, compressed against raw.
+    ///
+    /// The compressed arm builds three buffers per record: the payload, the compressed copy of it,
+    /// and the output the compressed copy is then memcpy'd into. `compress_to_buffer` could put the
+    /// compressor straight into the output and remove the middle one. This measures what that is
+    /// worth before anyone writes it.
+    #[test]
+    #[ignore]
+    #[cfg(feature = "alloc-probe")]
+    fn what_encoding_a_record_allocates() {
+        let record = compressible_record();
+        let runs = 64usize;
+
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
+
+        std::env::set_var("TS_WAL_COMPRESS_RECORDS", "0");
+        let raw_len = encode(&record).unwrap().len();
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..runs {
+            std::hint::black_box(encode(std::hint::black_box(&record)).unwrap());
+        }
+        let raw = probe.stop();
+
+        std::env::set_var("TS_WAL_COMPRESS_RECORDS", "1");
+        let squeezed_len = encode(&record).unwrap().len();
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..runs {
+            std::hint::black_box(encode(std::hint::black_box(&record)).unwrap());
+        }
+        let squeezed = probe.stop();
+
+        println!(
+            "  ENCODE raw        {raw_len:>6} B out | {:>5.1} allocs {:>8.0} B per record",
+            raw.allocs as f64 / runs as f64,
+            raw.alloc_bytes as f64 / runs as f64,
+        );
+        println!(
+            "  ENCODE compressed {squeezed_len:>6} B out | {:>5.1} allocs {:>8.0} B per record | the compress arm adds {:>5.1} allocs and {:>8.0} B",
+            squeezed.allocs as f64 / runs as f64,
+            squeezed.alloc_bytes as f64 / runs as f64,
+            (squeezed.allocs as f64 - raw.allocs as f64) / runs as f64,
+            (squeezed.alloc_bytes as f64 - raw.alloc_bytes as f64) / runs as f64,
+        );
+
+        std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
     }
 
     #[test]
