@@ -3612,6 +3612,8 @@ ONEBOX_BODY = """
     <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
     <label for="key">Admin API key</label>
     <input id="key" type="password" spellcheck="false" autocomplete="off" placeholder="Key carrying an admin scope">
+    <p class="hint">No key yet? <a href="/v1/admin/portal#firstkey">Where the first one comes from</a>
+      &mdash; no page can mint it; it takes one command where the gateway runs.</p>
     <div class="hint">Reading this page needs a key with an admin scope; nothing here writes.</div>
     <div id="keyMsg" role="status" aria-live="polite"></div>
   </section>
