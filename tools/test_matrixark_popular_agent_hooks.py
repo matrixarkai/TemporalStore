@@ -33,7 +33,9 @@ def require_rust_proxy() -> str:
     them against a proxy kept elsewhere.
     """
     path = os.environ.get("MATRIXARK_TEST_RUST_PROXY", DEFAULT_RUST_PROXY)
-    if not os.path.exists(path):
+    # Executable, not merely present: a file that exists and cannot be run turns a clean skip into
+    # a failure further in, where the message is about the hook rather than about the binary.
+    if not os.access(path, os.X_OK):
         raise unittest.SkipTest(
             "no native proxy at %s, so an end-to-end agent hook cannot be driven; set "
             "MATRIXARK_TEST_RUST_PROXY to point at one" % path)
@@ -242,12 +244,10 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         The shared pipeline writes to MATRIXARK_TEMPORALSTORE_RUST_ROOT; the offline
         engine uses a different root, so that store's creation proves auto->shared."""
         repo = Path(__file__).resolve().parents[1]
-        proxy = os.environ.get(
-            "MATRIXARK_TEST_RUST_PROXY",
-            str(repo / "target" / "debug" / "matrixark_rust_proxy"),
-        )
-        if not os.access(proxy, os.X_OK):
-            self.skipTest("shared rust proxy not built")
+        # Was a second, different default for the same variable -- <repo>/target/debug against the
+        # helper's /opt/.../target/release -- so the two disagreed about where the proxy lives and
+        # which profile it was built with, and a machine with a normal build satisfied neither.
+        proxy = require_rust_proxy()
         hook = repo / "tools" / "matrixark_claude_hook.sh"
         with tempfile.TemporaryDirectory() as tmp_dir:
             shared_root = Path(tmp_dir) / "shared-store"
