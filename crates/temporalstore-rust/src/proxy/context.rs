@@ -21,6 +21,7 @@
 //! routing `/execute` uses (`crate::client::shard_id_for_key`) and looks up the
 //! owning datanode through the metaserver topology. The `/v1` gateway sends raw
 //! identifiers only -- the proxy owns all hashing.
+use std::fmt::Write as _;
 use super::*;
 
 use serde_json::{json, Value};
@@ -232,6 +233,28 @@ pub(super) struct ChatSource<'a> {
     tenant_hash: u64,
     timestamp_ms: u64,
     title: &'a str,
+}
+
+/// The prefix every chat source id in one request shares.
+///
+/// `format!` sizes its buffer from the literal parts and grows as it writes, so building each
+/// id with it costs about two allocations. The tenant hash and session are the same for every
+/// message, so the prefix is built once and each id reserves room for its index on top: one
+/// allocation per id. `the_chat_source_ids_are_what_format_produced` holds the result to the
+/// exact bytes `format!` produced, because these ids are stored and read back.
+fn chat_id_prefix(tenant_hash: u64, session: &str) -> String {
+    // "chat:" plus a u64 at its widest, plus the two separators.
+    let mut prefix = String::with_capacity(27 + session.len());
+    let _ = write!(prefix, "chat:{tenant_hash}:{session}:");
+    prefix
+}
+
+/// One chat source id: the shared prefix followed by the message index.
+fn chat_id_at(prefix: &str, idx: usize) -> String {
+    let mut id = String::with_capacity(prefix.len() + 8);
+    id.push_str(prefix);
+    let _ = write!(id, "{idx}");
+    id
 }
 
 /// Builds a borrowed chat source. Mirrors `source_from_fields`, which builds the owned form.
@@ -492,11 +515,9 @@ impl ProxyService {
 
         // Borrowed end to end: the request owns every string, so the only allocations left per
         // message are the source id and the source slot itself.
-        let ids: Vec<String> = request
-            .messages
-            .iter()
-            .enumerate()
-            .map(|(idx, _)| format!("chat:{tenant_hash}:{session}:{idx}"))
+        let prefix = chat_id_prefix(tenant_hash, session);
+        let ids: Vec<String> = (0..request.messages.len())
+            .map(|idx| chat_id_at(&prefix, idx))
             .collect();
         let titles: Vec<&str> = request
             .messages
@@ -887,6 +908,26 @@ mod ingest_key_tests {
             rawlog_key(7, scope_session(&named)),
             "two scopes must not share a buffer key"
         );
+    }
+
+    /// The chat source ids are the exact bytes `format!` produced.
+    ///
+    /// These ids are stored and read back, so a build that is merely equivalent is not enough --
+    /// it has to be identical. Covers an empty session, a long one, and the u64 extremes.
+    #[test]
+    fn the_chat_source_ids_are_what_format_produced() {
+        for tenant_hash in [0u64, 1, 42, 9_999_999, u64::MAX] {
+            for session in ["default", "", "s1", "a-longer-session-id"] {
+                let prefix = chat_id_prefix(tenant_hash, session);
+                for idx in [0usize, 5, 31, 999_999] {
+                    assert_eq!(
+                        chat_id_at(&prefix, idx),
+                        format!("chat:{tenant_hash}:{session}:{idx}"),
+                        "the chat source id changed for hash={tenant_hash} session={session:?} idx={idx}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
