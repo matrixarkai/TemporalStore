@@ -35,6 +35,14 @@ KNOWN_OVERRIDES: Dict[str, str] = {
         "the engine defaults ON; the shipped config, three binaries and the one-box all turn it "
         "off, because warming every record on load pays the whole cache cost before the first "
         "read is served",
+    "cold_scan_no_cache_fill":
+        "RECORDED, NOT BLESSED. The engine defaults ON -- DEFAULT_COLD_SCAN_NO_CACHE_FILL = true "
+        "in storage_config.rs -- so a cold scan bypasses cache fill and does not evict what the "
+        "serving path put there. The shipped config turns that bypass off, letting a cold scan "
+        "populate the cache, and no reason is written anywhere: not beside the line, not here. It "
+        "surfaced only when the extractor learned to read a default named by a const. Whether a "
+        "cold scan should fill the cache belongs to whoever owns the cache budget; this entry "
+        "makes the disagreement visible rather than settling it",
 }
 
 # The same, for keys whose value is a number. Empty today: all EIGHT comparable numeric keys
@@ -97,7 +105,43 @@ def _engine_defaults() -> Dict[str, str]:
                         value = default_of(body, 1)
                 if value:
                     defaults[flag] = value
+    defaults.update(_boolean_defaults_named_by_a_const(ns, source_root))
     return defaults
+
+
+def _boolean_defaults_named_by_a_const(ns, source_root) -> Dict[str, str]:
+    """flag -> on/off for a boolean the engine reads through a CONST, not a string literal.
+
+    The storage_config family reads `get(TS_COLD_SCAN_NO_CACHE_FILL)`; no scan of string literals
+    sees that, so the extractor above finds no default and this guard cannot compare the shipped
+    config against one. The numeric extractor below already pairs `TS_X` with `DEFAULT_X` for that
+    exact reason -- and then drops the pair when its value is a boolean:
+
+        if paired and paired not in ("on", "off"):
+
+    which says those pairs exist and belong here. They were reaching nowhere. One flag is affected
+    today, `TS_COLD_SCAN_NO_CACHE_FILL`, and the shipped config contradicts it -- so the single
+    thing this file exists to catch was invisible to it for that flag.
+    """
+    strip, literal_consts = ns["strip_test_modules"], ns["literal_consts"]
+    sources: Dict[str, str] = {}
+    for directory, _, names in os.walk(source_root):
+        if os.sep + "tests" in directory:
+            continue
+        for name in sorted(names):
+            if not name.endswith(".rs") or name.startswith("test"):
+                continue
+            path = os.path.join(directory, name)
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                sources[path] = strip(handle.read())
+    consts = literal_consts(sources)
+    found: Dict[str, str] = {}
+    for source in sources.values():
+        for ident, env in _NAME_CONST.findall(source):
+            paired = consts.get("DEFAULT_" + ident[len("TS_"):])
+            if paired in ("on", "off"):
+                found.setdefault(env, paired)
+    return found
 
 
 _NAME_CONST = re.compile(r'pub const (TS_[A-Z0-9_]+)\s*:\s*&str\s*=\s*"([A-Z0-9_]+)"\s*;')
@@ -182,6 +226,38 @@ def _annotated_boolean_keys():
 
 
 class TheShippedConfigSaysWhenItOverridesTest(unittest.TestCase):
+
+    def test_the_const_pairing_agrees_with_the_published_inventory(self) -> None:
+        """This file DERIVES a default the inventory also derives. Pin the two together.
+
+        `_builder` execs only the inventory prelude -- everything before `sources = {}` -- so its
+        computed entries are not reachable from here and the defaults have to be worked out again.
+        That is a second implementation of one question, which is exactly the shape that drifts:
+        the inventory pairs `TS_X` with `DEFAULT_X` at its own line and this file now does the
+        same, and nothing would notice if one learned an idiom the other did not.
+
+        The published document is the inventory answer, and it is itself checked against the
+        generator by `test_matrixark_engine_flag_inventory`. So every default this pairing produces
+        must be the one the document states. If they disagree, one of the two extractors moved.
+        """
+        ns = _builder()
+        source_root = os.path.join(REPO, "crates", "temporalstore-rust", "src")
+        paired = _boolean_defaults_named_by_a_const(ns, source_root)
+        self.assertTrue(paired, "the const pairing found nothing; the storage_config idiom moved")
+        with open(os.path.join(REPO, "docs", "ops", "temporalstore-engine-flags.md"),
+                  encoding="utf-8") as handle:
+            document = handle.read()
+        published = dict(re.findall(
+            r"\|\s*`((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)`\s*\|\s*([^|]*?)\s*\|",
+            document))
+        disagreeing = sorted(
+            "%s: here=%s document=%s" % (flag, value, published.get(flag, "<absent>"))
+            for flag, value in paired.items()
+            if published.get(flag, "").strip() != value)
+        self.assertEqual(
+            [], disagreeing,
+            "this file and the shipped inventory disagree about a default they both derive: %s"
+            % disagreeing)
 
     def test_the_config_still_annotates_its_keys(self) -> None:
         with open(CONFIG, encoding="utf-8") as handle:
