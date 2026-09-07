@@ -42,7 +42,10 @@ def _builder_prelude() -> dict:
     """
     with io.open(BUILDER, encoding="utf-8") as handle:
         head = handle.read().split("sources = {}")[0]
-    namespace: dict = {}
+    # The prelude reads `__file__` to find the repository it lives in, so the namespace has to
+    # carry one. Without it the exec raises NameError and every test through this helper ERRORS
+    # rather than failing, which reads as a broken test rather than a broken inventory.
+    namespace: dict = {"__file__": BUILDER}
     exec(compile(head, BUILDER, "exec"), namespace)  # noqa: S102 - the builder's own prelude
     return namespace
 

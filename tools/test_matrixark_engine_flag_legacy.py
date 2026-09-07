@@ -38,7 +38,10 @@ def predicates():
     """
     source = TOOL.read_text(encoding="utf-8")
     head = source.split("sources = {}")[0]
-    namespace: dict = {}
+    # The prelude reads `__file__` to find the repository it lives in, so the namespace has to
+    # carry one. Without it every test through this helper ERRORS instead of running. The same
+    # helper, with the same omission, sits in test_matrixark_engine_flag_inventory.py.
+    namespace: dict = {"__file__": str(TOOL)}
     exec(compile(head, str(TOOL), "exec"), namespace)  # noqa: S102 - the tool's own prelude
     return namespace
 

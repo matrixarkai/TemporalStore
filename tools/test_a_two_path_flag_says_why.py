@@ -57,6 +57,13 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
     # and the short version is here so the list can be scanned.
     #
     # Three of them default ON and are read INSIDE a feature that is off:
+    "TS_BLOCK_INDEX_CHECKSUMS":
+        "records a hex digest per page record while inspecting a slab. Nothing in the crate reads "
+        "the field -- it is there to be read by hand. Off because `inspect_slab` runs at every "
+        "engine open and this hashes every payload a second time, after `decode_page_record` has "
+        "already verified the stored checksum: slab verification measured 13.5 MB/s against "
+        "hundreds for sha256 alone. The on arm surfaces a field the live arm suppresses, which is "
+        "the diagnostic case, so it stays",
     "TS_META_AUTO_REBALANCE_BALANCE":
         "a sub-option of auto-rebalance, read inside `if env_bool(TS_META_AUTO_REBALANCE, false)`. "
         "Its off side is reached by anyone who turns the parent on, so ON-and-unset does not make "
