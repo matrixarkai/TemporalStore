@@ -181,71 +181,16 @@ def normalize_extracted_facts(raw_facts: Any, *, chunk: Any, chunk_metadata: Jso
     return facts
 
 
-def assistant_decision_memory_text(text: str) -> str:
-    """Keep durable assistant memory focused on decisions, results, and next actions."""
-    compact = " ".join(str(text or "").split())
-    if not compact:
-        return ""
-    selected: list[str] = []
-    primary_decision_line_pattern = re.compile(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|blocked|next|follow[- ]?up|will|use|keep|remove|updated|changed|validated|verified|promoted|indexed|budgeted|batched|flushed)\b",
-        re.IGNORECASE,
-    )
-    secondary_decision_line_pattern = re.compile(
-        r"\b(?:profile|cross[- ]session|memory|gap|risk|warning)\b",
-        re.IGNORECASE,
-    )
-    normalized_lines = [" ".join(raw_line.split()).strip(" -*") for raw_line in str(text).splitlines()]
-    for pattern in [primary_decision_line_pattern, secondary_decision_line_pattern]:
-        for line in normalized_lines:
-            if not line:
-                continue
-            if pattern.search(line):
-                selected.append(line)
-            if len(selected) >= 4:
-                break
-        if selected:
-            break
-    if not selected:
-        selected = [
-            match.group(0).strip()
-            for match in re.finditer(
-                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|blocked|next|will|updated|changed|validated|verified|promoted|indexed|budgeted|batched|flushed|profile|cross[- ]session|memory|gap|risk|warning)[^.!?\n]*[.!?]?",
-                str(text),
-                flags=re.IGNORECASE,
-            )
-        ][:4]
-    return summarize_text(" ".join(selected) if selected else compact, limit=260)
+try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
+    from .matrixark_mcp_core_codex_outcome import assistant_decision_memory_text
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import assistant_decision_memory_text
 
 
-def tool_evidence_memory_text(text: str) -> str:
-    """Keep durable tool memory to result evidence, not complete stdout/stderr blobs."""
-    compact = " ".join(str(text or "").split())
-    if not compact:
-        return ""
-    selected: list[str] = []
-    evidence_line_pattern = re.compile(
-        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|\d+\s+passed\b|tests?\s+(?:passed|failed)|test\s+result:\s+ok|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|published|deployed|released|merged|rebased|rebase|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|benchmark|validation|built|compiled)\b",
-        re.IGNORECASE,
-    )
-    for raw_line in str(text).splitlines():
-        line = " ".join(raw_line.split()).strip()
-        if not line:
-            continue
-        if evidence_line_pattern.search(line):
-            selected.append(line)
-        if len(selected) >= 6:
-            break
-    if not selected:
-        selected = [
-            match.group(0).strip()
-            for match in re.finditer(
-                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|published|deployed|released|merged|rebased|rebase|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|benchmark|validation|built|compiled)[^.!?\n]*[.!?]?",
-                str(text),
-                flags=re.IGNORECASE,
-            )
-        ][:6]
-    return summarize_text(" ".join(selected) if selected else compact, limit=260)
+try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
+    from .matrixark_mcp_core_codex_outcome import tool_evidence_memory_text
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import tool_evidence_memory_text
 
 
 def profile_entity_type_for_memory_text(text: str) -> str:
