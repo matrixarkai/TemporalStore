@@ -8782,6 +8782,110 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     }
 
     #[test]
+    fn balancing_leaves_a_pinned_shard_alone_but_never_strands_one() {
+        fn cluster() -> SingleNodeMeta {
+            let meta = SingleNodeMeta::default();
+            for n in 0..2u64 {
+                assert!(meta
+                    .register_server(RegisterServerRequest {
+                        numa_nodes: Vec::new(),
+                        server_addr: format!("node-{n}"),
+                        node_id: n + 1,
+                        location: format!("rack-{n}"),
+                        binary_version: "v1".to_string(),
+                        registered_at_ms: 0,
+                    })
+                    .status
+                    .ok);
+            }
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "t".to_string(),
+                    first_shard_id: 1,
+                    shard_count: 6,
+                    replica_count: 1,
+                    partition_version: 1,
+                    serving_options: Default::default(),
+                })
+                .status
+                .ok);
+            // Every shard on one node, so a round has real work to do.
+            for shard_id in 1..=6u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id,
+                        server_addr: "node-0".to_string(),
+                        registered_at_ms: 0,
+                    })
+                    .status
+                    .ok);
+            }
+            meta
+        }
+
+        // Unpinned, the balancer has work and does it. Without this the rest of
+        // the test could pass because nothing was ever going to move.
+        let plain = cluster();
+        let moves = plain.plan_auto_rebalance();
+        assert!(
+            !moves.is_empty(),
+            "the cluster is not unbalanced enough to test anything"
+        );
+
+        // Pinned where they sit, the balancer leaves them.
+        let pinned = cluster();
+        for shard_id in 1..=6u64 {
+            assert!(pinned
+                .pin_shard(ShardPinRequest {
+                    shard_id,
+                    location: "rack-0".to_string(),
+                })
+                .status
+                .ok);
+        }
+        let plans = pinned.plan_auto_rebalance();
+        assert!(
+            plans.is_empty(),
+            "balancing moved shards an operator pinned: {plans:?}"
+        );
+
+        // But a pin is a preference, not a cage. With the owner gone, the shard
+        // still moves -- a preference must never take a shard out of service,
+        // which is the rule a table preference already follows.
+        let stranded = cluster();
+        for shard_id in 1..=6u64 {
+            assert!(stranded
+                .pin_shard(ShardPinRequest {
+                    shard_id,
+                    location: "rack-0".to_string(),
+                })
+                .status
+                .ok);
+        }
+        assert!(stranded
+            .freeze_server(StateChangeRequest {
+                endpoint: "node-0".to_string(),
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Unresponsive,
+            })
+            .status
+            .ok);
+        let rescue = stranded.plan_auto_rebalance();
+        assert_eq!(
+            rescue.len(),
+            6,
+            "a pinned shard was left on an owner that is gone"
+        );
+        for plan in &rescue {
+            assert_eq!(
+                plan.to_server, "node-1",
+                "the only live server is where they must go"
+            );
+        }
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");

@@ -127,7 +127,9 @@ pub fn compute_auto_rebalance(
         .iter()
         .map(|(shard_id, owner)| (*shard_id, owner.as_str()))
         .collect::<BTreeMap<_, _>>();
-    compute_auto_rebalance_borrowed(&borrowed, live_servers, options)
+    // A caller holding its own owner map has no pins to give; the metaserver's
+    // own path reads them from the metadata and passes them.
+    compute_auto_rebalance_borrowed(&borrowed, live_servers, &BTreeSet::new(), options)
 }
 
 /// Plan without owning the owner names.
@@ -138,6 +140,7 @@ pub fn compute_auto_rebalance(
 pub fn compute_auto_rebalance_borrowed(
     shard_owners: &BTreeMap<ShardId, &str>,
     live_servers: &BTreeSet<String>,
+    pinned: &BTreeSet<ShardId>,
     options: AutoRebalanceOptions,
 ) -> Vec<ShardReassignment> {
     let mut plans = Vec::new();
@@ -199,9 +202,15 @@ pub fn compute_auto_rebalance_borrowed(
             }
             // Pick a shard currently on the busy server (highest id, for
             // determinism) to move to the idle server.
+            // A pinned shard is where an operator put it, so balancing does
+            // not take it away. Pass 1 above does not consult this: a pin is a
+            // preference, and a preference must never leave a shard stranded on
+            // an owner that is gone.
             let Some(shard_id) = owner_map(&mut owner, shard_owners, live_servers)
                 .iter()
-                .filter(|(_, owner_addr)| **owner_addr == Some(busy_addr))
+                .filter(|(shard_id, owner_addr)| {
+                    **owner_addr == Some(busy_addr) && !pinned.contains(shard_id)
+                })
                 .map(|(shard_id, _)| *shard_id)
                 .max()
             else {
@@ -287,7 +296,16 @@ impl SingleNodeMeta {
             .map(|server| server.server_addr.clone())
             .collect::<BTreeSet<_>>();
         let shard_owners = serving_shard_owners(&state);
-        compute_auto_rebalance_borrowed(&shard_owners, &live_servers, options)
+        // Which shards an operator has placed by hand. Read here rather than
+        // inside the planner so the planner stays a function of what it is
+        // given.
+        let pinned = state
+            .shards
+            .values()
+            .filter(|location| !location.preferred_location.is_empty())
+            .map(|location| location.shard_id)
+            .collect::<BTreeSet<_>>();
+        compute_auto_rebalance_borrowed(&shard_owners, &live_servers, &pinned, options)
     }
 
     /// Apply a single reassignment to the shard→owner map, preserving any
