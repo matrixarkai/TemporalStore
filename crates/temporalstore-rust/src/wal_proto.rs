@@ -121,27 +121,22 @@ pub(crate) fn compress_records_enabled() -> bool {
     )
 }
 
-/// Compress `encoded` if it is worth compressing, returning None when it is not.
-///
-/// None for a payload under the floor, and None when the compressed form is not actually smaller.
-/// The second check is the page store's: compression that does not pay is written uncompressed
-/// rather than trusted to pay on average.
-/// The compressor, kept for the life of the thread rather than built per record.
-///
-/// `zstd::stream::encode_all` builds a fresh compression context on every call, and a level-3
-/// context is tens of kilobytes. Measured per append, with an incompressible payload so the
-/// figures are the machinery and not the data: at a 1 KiB value compression added 6 allocations
-/// and 35,951 bytes, taking the append from 1,159 to 37,110 bytes -- 32x, for a record that is
-/// barely a kilobyte. At 4 KiB it added 45,167 bytes.
-///
-/// The context does not depend on the payload, so there is no reason to build one per record.
-/// `bulk::Compressor` holds it and reuses it. What remains per record is the output buffer, which
-/// is the compressed bytes themselves and cannot be avoided here.
-///
-/// Thread-local rather than shared: the compressor is `&mut` to use, so sharing it across threads
-/// would need a lock on the append path, and appends are the thing this is trying not to slow
-/// down.
 thread_local! {
+    /// The compressor, kept for the life of the thread rather than built per record.
+    ///
+    /// `zstd::stream::encode_all` builds a fresh compression context on every call, and a level-3
+    /// context is tens of kilobytes. Measured per append, with an incompressible payload so the
+    /// figures are the machinery and not the data: at a 1 KiB value compression added 6 allocations
+    /// and 35,951 bytes, taking the append from 1,159 to 37,110 bytes -- 32x, for a record that is
+    /// barely a kilobyte. At 4 KiB it added 45,167 bytes.
+    ///
+    /// The context does not depend on the payload, so there is no reason to build one per record.
+    /// `bulk::Compressor` holds it and reuses it. What remains per record is the output buffer, which
+    /// is the compressed bytes themselves and cannot be avoided here.
+    ///
+    /// Thread-local rather than shared: the compressor is `&mut` to use, so sharing it across threads
+    /// would need a lock on the append path, and appends are the thing this is trying not to slow
+    /// down.
     static RECORD_COMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Compressor<'static>>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -162,6 +157,11 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Compress `encoded` if it is worth compressing, returning None when it is not.
+///
+/// None for a payload under the floor, and None when the compressed form is not actually smaller.
+/// The second check is the page store's: compression that does not pay is written uncompressed
+/// rather than trusted to pay on average.
 fn compress_payload(encoded: &[u8]) -> Option<Vec<u8>> {
     if encoded.len() < COMPRESSION_MIN_BYTES {
         return None;
@@ -185,9 +185,9 @@ fn compress_payload(encoded: &[u8]) -> Option<Vec<u8>> {
 /// rather than what it claims to hold.
 const MAX_REUSED_INFLATE_BYTES: usize = 16 * 1024 * 1024;
 
-/// Thread-local for the same reason the compressor is: `decompress` takes `&mut self`, and sharing
-/// one across threads would put a lock on the path that replays the log.
 thread_local! {
+    /// Thread-local for the same reason the compressor is: `decompress` takes `&mut self`, and sharing
+    /// one across threads would put a lock on the path that replays the log.
     static RECORD_DECOMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> =
         const { std::cell::RefCell::new(None) };
 }
