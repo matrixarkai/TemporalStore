@@ -146,14 +146,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import source_locator_from_ref
 
 
-def source_ref_from_locator(raw_uri: str, source_locator: str) -> str:
-    raw_uri = str(raw_uri or "")
-    source_locator = str(source_locator or "")
-    if not source_locator:
-        return raw_uri
-    if source_locator.startswith(("file:", "s3://", "http://", "https://", "/")):
-        return source_locator
-    return f"{raw_uri}#{source_locator}" if raw_uri else source_locator
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import source_ref_from_locator
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import source_ref_from_locator
 
 
 def registry_access_scope(scope: Json, *, sharing_scope: str = "private_user") -> Json:
