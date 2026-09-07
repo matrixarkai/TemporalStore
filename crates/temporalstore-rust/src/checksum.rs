@@ -55,12 +55,59 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
 /// Seeding lets a caller checksum a header and a payload separately, or accumulate across a
 /// block, without building a combined buffer first.
 pub fn crc32c_update(seed: u32, bytes: &[u8]) -> u32 {
+    // CRC32C is the one checksum with an instruction behind it, and it is the checksum every
+    // record pays on the way to disk and again on the way back. The table below is the portable
+    // answer; where the processor has the instruction it takes eight bytes at a time instead of
+    // one, which is worth a branch to find out.
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            // SAFETY: reached only when the runtime check above says the instruction exists.
+            return unsafe { crc32c_update_sse42(seed, bytes) };
+        }
+    }
+    crc32c_update_table(seed, bytes)
+}
+
+/// The portable CRC32C, a byte at a time through the table.
+///
+/// Its own function rather than inlined into the dispatch, so the tests can hold it against the
+/// accelerated one on a machine that would otherwise only ever run the fast path.
+fn crc32c_update_table(seed: u32, bytes: &[u8]) -> u32 {
     // The reflected algorithm pre- and post-inverts; carrying the inverted form across calls
     // is what makes seeding compose exactly like one pass over the concatenation.
     let mut crc = !seed;
     for byte in bytes {
         let index = ((crc ^ u32::from(*byte)) & 0xff) as usize;
         crc = (crc >> 8) ^ CRC32C_TABLE[index];
+    }
+    !crc
+}
+
+/// The same CRC32C, spent through the SSE4.2 instruction.
+///
+/// `_mm_crc32_u64` computes the same reflected Castagnoli CRC the table does, which is why the
+/// pre- and post-inversion is identical here: this is a different way to spend the same
+/// arithmetic, not a different checksum. The differential test is what holds that claim up, since
+/// a checksum disagreeing by one bit would reject every record already on disk.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+unsafe fn crc32c_update_sse42(seed: u32, bytes: &[u8]) -> u32 {
+    use std::arch::x86_64::{_mm_crc32_u64, _mm_crc32_u8};
+
+    let mut crc = !seed;
+    let split = bytes.len() - bytes.len() % 8;
+    let (wide, tail) = bytes.split_at(split);
+
+    let mut wide_crc = u64::from(crc);
+    for chunk in wide.chunks_exact(8) {
+        let word = u64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) yields 8 bytes"));
+        wide_crc = _mm_crc32_u64(wide_crc, word);
+    }
+    crc = wide_crc as u32;
+
+    for byte in tail {
+        crc = _mm_crc32_u8(crc, *byte);
     }
     !crc
 }
@@ -73,6 +120,107 @@ pub fn crc32c_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The accelerated path and the table agree, byte for byte, at every length that matters.
+    ///
+    /// This is the test the change rests on. The instruction is only a faster way to spend the
+    /// same arithmetic if it produces the same number; if it did not, the engine would reject
+    /// every record already written. Lengths 0..=200 cover the tail handling on both sides of the
+    /// eight-byte step, and the seeded pass covers the composing form the block writer uses.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn the_accelerated_checksum_is_the_same_checksum() {
+        if !std::arch::is_x86_feature_detected!("sse4.2") {
+            // Nothing to compare on a machine without the instruction; the table is the only path.
+            return;
+        }
+        // Fixed rather than random, so a failure is reproducible, and varying with the index so
+        // the table is exercised rather than one entry repeated.
+        let payload: Vec<u8> = (0..4096u32).map(|i| (i * 31 + i / 7) as u8).collect();
+
+        for len in 0..=200usize {
+            let slice = &payload[..len];
+            // SAFETY: guarded by the feature check above.
+            let fast = unsafe { crc32c_update_sse42(0, slice) };
+            assert_eq!(fast, crc32c_update_table(0, slice), "unseeded, len {len}");
+
+            for seed in [1u32, 0xffff_ffff, 0x1234_5678] {
+                // SAFETY: guarded by the feature check above.
+                let fast = unsafe { crc32c_update_sse42(seed, slice) };
+                assert_eq!(fast, crc32c_update_table(seed, slice), "seed {seed:#x}, len {len}");
+            }
+        }
+
+        for len in [1024usize, 4096] {
+            let slice = &payload[..len];
+            // SAFETY: guarded by the feature check above.
+            let fast = unsafe { crc32c_update_sse42(0, slice) };
+            assert_eq!(fast, crc32c_update_table(0, slice), "len {len}");
+        }
+    }
+
+    /// The portable path still matches the published vector on its own.
+    ///
+    /// `matches_published_castagnoli_check_vectors` goes through the dispatch, so on a machine
+    /// with the instruction it now proves the accelerated path and says nothing about the table.
+    /// The fallback is what runs everywhere else, so it is held against the same vector directly.
+    #[test]
+    fn the_portable_checksum_still_matches_the_published_vector() {
+        assert_eq!(crc32c_update_table(0, b"123456789"), 0xe306_9283);
+        assert_eq!(crc32c_update_table(0, b""), 0);
+    }
+
+    /// What the instruction is worth, in bytes per second over a record-sized buffer.
+    ///
+    /// Minimum of several passes rather than a mean: this box is shared, so the fastest run is the
+    /// one least interrupted, and a mean would report the neighbours rather than the code.
+    #[test]
+    #[ignore]
+    #[cfg(target_arch = "x86_64")]
+    fn what_the_checksum_instruction_is_worth() {
+        if !std::arch::is_x86_feature_detected!("sse4.2") {
+            println!("  no sse4.2 on this machine; nothing to compare");
+            return;
+        }
+        for size in [512usize, 4096, 131_072] {
+            let payload: Vec<u8> = (0..size as u32).map(|i| (i * 31 + i / 7) as u8).collect();
+            let rounds = 64usize;
+
+            let mut table_best = f64::MAX;
+            let mut fast_best = f64::MAX;
+            for _ in 0..7 {
+                // Each round is seeded with the previous round's answer, and the buffer goes
+                // through `black_box` on the way in. Both are load-bearing: the checksum is a pure
+                // function of loop-invariant arguments, so without a dependency the optimiser
+                // hoists it out and computes it once. That first reported 443 GB/s -- past memory
+                // bandwidth, which is how it was caught.
+                let start = std::time::Instant::now();
+                let mut acc = 0u32;
+                for _ in 0..rounds {
+                    acc = crc32c_update_table(acc, std::hint::black_box(&payload));
+                }
+                std::hint::black_box(acc);
+                table_best = table_best.min(start.elapsed().as_secs_f64());
+
+                let start = std::time::Instant::now();
+                let mut acc = 0u32;
+                for _ in 0..rounds {
+                    // SAFETY: guarded by the feature check above.
+                    acc = unsafe { crc32c_update_sse42(acc, std::hint::black_box(&payload)) };
+                }
+                std::hint::black_box(acc);
+                fast_best = fast_best.min(start.elapsed().as_secs_f64());
+            }
+
+            let bytes = (size * rounds) as f64;
+            println!(
+                "  CRC {size:>7} B | table {:>7.2} MB/s | instruction {:>8.2} MB/s | {:>5.1}x",
+                bytes / table_best / 1e6,
+                bytes / fast_best / 1e6,
+                table_best / fast_best,
+            );
+        }
+    }
 
     #[test]
     fn matches_published_castagnoli_check_vectors() {
