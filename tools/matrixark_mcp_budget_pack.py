@@ -91,38 +91,16 @@ def context_text_hashes(text: str) -> set[int]:
     return {stable_hash(variant) for variant in variants if variant}
 
 
-def normalize_message_role(role: Any) -> str:
-    role_name = str(role or "").strip().lower()
-    role_aliases = {
-        "human": "user",
-        "prompt": "user",
-        "assistant_response": "assistant",
-        "agent": "assistant",
-        "ai": "assistant",
-        "bot": "assistant",
-        "llm": "assistant",
-        "model": "assistant",
-        "tool_result": "tool",
-        "tool-output": "tool",
-        "tooloutput": "tool",
-        "tool_output": "tool",
-        "function": "tool",
-        "function_call_output": "tool",
-        "custom_tool_call_output": "tool",
-        "tool_call_output": "tool",
-    }
-    return role_aliases.get(role_name, role_name)
+try:  # the implementation lives in matrixark_mcp_core_identity; this module re-exports it
+    from .matrixark_mcp_core_identity import normalize_message_role
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_identity import normalize_message_role
 
 
-def entity_current_state_key(candidate: Json) -> tuple[str, str] | None:
-    if str(candidate.get("ref_type") or "") != "entity":
-        return None
-    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
-    entity_type = str(candidate.get("entity_type") or metadata.get("entity_type") or "").strip().lower()
-    entity_name = str(candidate.get("entity_name") or metadata.get("entity_name") or "").strip().lower()
-    if not entity_type or not entity_name:
-        return None
-    return entity_type, entity_name
+try:  # the implementation lives in matrixark_mcp_core_ref_selection; this module re-exports it
+    from .matrixark_mcp_core_ref_selection import entity_current_state_key
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_ref_selection import entity_current_state_key
 
 
 def prefer_profile_entities_for_current_state(candidates: list[Json], question_type: str) -> list[Json]:
@@ -181,13 +159,10 @@ def prefer_profile_entities_for_current_state(candidates: list[Json], question_t
     return adjusted
 
 
-def is_stale_or_superseded_candidate(candidate: Json) -> bool:
-    if bool(candidate.get("stale_or_superseded") or candidate.get("stale")):
-        return True
-    if candidate.get("superseded_by_ref_hash") or candidate.get("superseded_by_entity_hash"):
-        return True
-    version_state = str(candidate.get("version_state") or candidate.get("current_state_policy") or "").strip().lower()
-    return version_state in {"stale", "superseded", "historical_superseded"}
+try:  # the implementation lives in matrixark_mcp_core_ref_selection; this module re-exports it
+    from .matrixark_mcp_core_ref_selection import is_stale_or_superseded_candidate
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_ref_selection import is_stale_or_superseded_candidate
 
 
 def carries_pending_async_marker(candidate: Json) -> bool:

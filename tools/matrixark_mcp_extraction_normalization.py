@@ -45,20 +45,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_text import text_from_messages
 
 
-def normalize_entity_operator(raw_operator: Any, entity_type: str) -> str:
-    """Return the operator actually used by runtime entity maintenance.
-
-    LLM_MERGE is a future/optional production operator because it implies a
-    separate LLM merge pass. The current online runtime applies field patches
-    deterministically, so serving records should say EUA_MERGE unless the LLM
-    merge feature is explicitly enabled.
-    """
-    if entity_type in {"confirmation", "correction"}:
-        return "LATEST"
-    operator = str(raw_operator or DEFAULT_ENTITY_MERGE_OPERATOR).strip().upper() or DEFAULT_ENTITY_MERGE_OPERATOR
-    if operator == "LLM_MERGE" and not ENABLE_LLM_MERGE_OPERATOR:
-        return DEFAULT_ENTITY_MERGE_OPERATOR
-    return operator
+try:  # the implementation lives in matrixark_mcp_core_extraction; this module re-exports it
+    from .matrixark_mcp_core_extraction import normalize_entity_operator
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_extraction import normalize_entity_operator
 
 
 def normalize_source_role(raw_role: Any) -> str:
@@ -316,39 +306,16 @@ CODEX_OUTCOME_BENCHMARK_RE = re.compile(
 )
 
 
-def codex_outcome_fact_kind(line: str) -> str:
-    normalized = " ".join(str(line or "").split()).strip().lower()
-    if not normalized:
-        return ""
-    has_real_blocker = bool(
-        re.search(r"\b(?:blocked|blocker|failure|error|missing|rejected|fatal)\b", normalized)
-        or re.search(r"\b[1-9]\d*\s+(?:failed|failures|errors)\b", normalized)
-        or (re.search(r"\bfailed\b", normalized) and not re.search(r"\b0\s+failed\b", normalized))
-    )
-    if normalized.startswith("next:") or re.search(r"\b(?:next|follow[- ]?up)\b", normalized):
-        return "next"
-    if normalized.startswith("blocker:") or has_real_blocker:
-        return "blocker"
-    if normalized.startswith("validation:") or CODEX_OUTCOME_VALIDATION_RE.search(normalized):
-        return "validation"
-    if normalized.startswith("outcome:") or CODEX_OUTCOME_PUBLISH_RE.search(normalized):
-        return "outcome"
-    if normalized.startswith("changed:") or CODEX_OUTCOME_CHANGE_RE.search(normalized):
-        return "changed"
-    if normalized.startswith("benchmark:") or CODEX_OUTCOME_BENCHMARK_RE.search(normalized):
-        return "benchmark"
-    return ""
+try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
+    from .matrixark_mcp_core_codex_outcome import codex_outcome_fact_kind
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import codex_outcome_fact_kind
 
 
-def codex_outcome_entity_type(kind: str) -> str:
-    return {
-        "next": "codex_next_action",
-        "blocker": "codex_blocker",
-        "validation": "codex_validation",
-        "outcome": "codex_publish_outcome",
-        "changed": "codex_code_change",
-        "benchmark": "codex_benchmark_result",
-    }.get(str(kind or "").strip().lower(), "codex_outcome_fact")
+try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
+    from .matrixark_mcp_core_codex_outcome import codex_outcome_entity_type
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import codex_outcome_entity_type
 
 
 CODEX_OUTCOME_ENTITY_TYPES = {

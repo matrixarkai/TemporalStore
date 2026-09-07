@@ -94,11 +94,10 @@ SLIMMED_FIELDS = (
 DEFAULT_DETAIL_RETAIN_PER_SCOPE = 50
 
 
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+try:  # the implementation lives in matrixark_index_growth_bound; this module re-exports it
+    from .matrixark_index_growth_bound import _env_flag
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_index_growth_bound import _env_flag
 
 
 def _env_int(name: str, default: int) -> int:

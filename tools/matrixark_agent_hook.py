@@ -464,29 +464,10 @@ def agent_context_from_payload(payload: Json, *, agent: str, event: str, session
     }
 
 
-def payload_resource_uri(payload: Json) -> str:
-    return first_string_at(
-        payload,
-        [
-            ["raw_uri"],
-            ["rawUri"],
-            ["uri"],
-            ["url"],
-            ["path"],
-            ["file_path"],
-            ["filePath"],
-            ["resource_path"],
-            ["resourcePath"],
-            ["document_path"],
-            ["documentPath"],
-            ["params", "raw_uri"],
-            ["params", "uri"],
-            ["params", "path"],
-            ["metadata", "raw_uri"],
-            ["metadata", "uri"],
-            ["metadata", "path"],
-        ],
-    )
+try:  # the implementation lives in matrixark_codex_hook; this module re-exports it
+    from .matrixark_codex_hook import payload_resource_uri
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_codex_hook import payload_resource_uri
 
 
 def payload_resource_type(payload: Json, raw_uri: str) -> str:

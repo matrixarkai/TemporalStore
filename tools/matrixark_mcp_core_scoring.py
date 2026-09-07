@@ -152,24 +152,10 @@ def hybrid_origin_score(query_terms: set[str], text: str, embedding_score: float
     return round(clamp01(0.55 * dense + 0.35 * sparse + 0.10 * node), 6)
 
 
-def time_decay_score(
-    record_time_ms: Any,
-    *,
-    reference_time_ms: int,
-    freshness_tolerance_ms: int,
-    half_life_ms: int,
-) -> float:
-    try:
-        event_time_ms = int(record_time_ms)
-    except (TypeError, ValueError):
-        return 0.5
-    age_ms = max(0, reference_time_ms - event_time_ms)
-    if age_ms <= freshness_tolerance_ms:
-        return 1.0
-    decay_age = age_ms - freshness_tolerance_ms
-    half_life_ms = max(1, half_life_ms)
-    # Fast initial decay, then slower long-tail decay for durable memories.
-    return round(math.exp(-math.sqrt(decay_age / half_life_ms)), 6)
+try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it
+    from .matrixark_mcp_scoring import time_decay_score
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import time_decay_score
 
 
 def business_instance_weight(*sources: Json) -> float | None:

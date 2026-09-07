@@ -51,11 +51,10 @@ SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get(
 SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
 
 
-def summarize_text(text: str, *, limit: int = 220) -> str:
-    compact = " ".join(text.split())
-    if len(compact) <= limit:
-        return compact
-    return compact[: limit - 3] + "..."
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import summarize_text
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import summarize_text
 
 
 def deterministic_time_compression_summary(
@@ -75,11 +74,10 @@ def deterministic_time_compression_summary(
     )
 
 
-def time_compression_summary_provider_name() -> str:
-    provider = TIME_COMPRESSION_SUMMARY_PROVIDER.replace("-", "_")
-    if provider in {"", "local", "rules"}:
-        return "deterministic"
-    return provider
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import time_compression_summary_provider_name
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import time_compression_summary_provider_name
 
 
 def generate_time_compression_summary(
@@ -175,12 +173,10 @@ def generate_time_compression_summary(
         }
 
 
-def estimated_context_tokens(text: str) -> int:
-    """Cheap token estimate used for summary policy decisions."""
-    compact = " ".join(str(text).split())
-    if not compact:
-        return 0
-    return max(1, (len(compact) + 3) // 4)
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import estimated_context_tokens
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import estimated_context_tokens
 
 
 def node_l1_generation_policy(

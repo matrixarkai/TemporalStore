@@ -107,29 +107,10 @@ class MatrixArkNotFoundError(MatrixArkError):
     """
 
 
-def is_retryable_temporalstore_error(error: Any) -> bool:
-    text = str(error).lower()
-    retryable_fragments = (
-        "slot not found",
-        "partition info not found",
-        "partition no primary",
-        "no primary",
-        "not ready",
-        "unavailable",
-        "timed out",
-        "timeout",
-        "connection refused",
-        "connection reset",
-        "temporarily unavailable",
-        "server is busy",
-        # The engine's load-window statuses: a shard that has not loaded yet, or is mid
-        # WAL-replay ("shard_not_loaded: shard is recovering"), answers again once the load
-        # completes. Treating these as terminal made callers give up -- or worse, serve the
-        # store as empty -- during exactly the window a retry would have covered.
-        "not loaded",
-        "recovering",
-    )
-    return any(fragment in text for fragment in retryable_fragments)
+try:  # the implementation lives in matrixark_mcp_errors; this module re-exports it
+    from .matrixark_mcp_errors import is_retryable_temporalstore_error
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_errors import is_retryable_temporalstore_error
 
 
 def parse_host_port(address: str) -> tuple[str, int] | None:
@@ -316,15 +297,10 @@ def identity_hashes(account_id: str, tenant_id: str, user_id: str = "", session_
     return hashes
 
 
-def scope_key_from_hashes(tenant_hash: int, user_hash: int = 0, session_hash: int = 0, agent_hash: int = 0) -> str:
-    parts = [f"t={int(tenant_hash)}"]
-    if user_hash:
-        parts.append(f"u={int(user_hash)}")
-    if session_hash:
-        parts.append(f"s={int(session_hash)}")
-    if agent_hash:
-        parts.append(f"a={int(agent_hash)}")
-    return "|".join(parts) + "|"
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import scope_key_from_hashes
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import scope_key_from_hashes
 
 
 def scope_key_prefix_for_query(query_scope: Json) -> str:
@@ -338,17 +314,10 @@ def scope_key_prefix_for_query(query_scope: Json) -> str:
     return scope_key_from_hashes(tenant_hash, user_hash, session_hash, agent_hash)
 
 
-def parse_scope_key(scope_key: str) -> dict[str, int]:
-    parsed: dict[str, int] = {}
-    for part in str(scope_key or "").split("|"):
-        if not part or "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        try:
-            parsed[key] = int(value)
-        except ValueError:
-            continue
-    return parsed
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import parse_scope_key
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import parse_scope_key
 
 
 def session_scope_mode(query_scope: Json) -> str:

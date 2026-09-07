@@ -486,26 +486,20 @@ MATRIXARK_ROLE_SCOPE_LIMITS: dict[str, set[str] | None] = {
 
 
 
-def scope_from_serving_record(record: Json) -> Json:
-    scope = record.get("scope")
-    if isinstance(scope, dict) and scope:
-        return scope
-    scope_key = str(record.get("scope_key") or "")
-    return {"scope_key": scope_key} if scope_key else {}
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import scope_from_serving_record
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import scope_from_serving_record
 
 
 def node_id_ref(node_hash: int) -> Json:
     return {"node_hash": node_hash, "node_id": node_hash}
 
 
-def compact_model_slug(model_name: str) -> str:
-    cleaned = str(model_name or "").replace("\\", "/").strip().strip("/")
-    if not cleaned:
-        return "model"
-    parts = [part for part in cleaned.split("/") if part]
-    tail = "/".join(parts[-2:]) if len(parts) >= 2 else parts[0]
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", tail).strip("_").lower()
-    return (slug or "model")[:40]
+try:  # the implementation lives in matrixark_mcp_models; this module re-exports it
+    from .matrixark_mcp_models import compact_model_slug
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_models import compact_model_slug
 
 
 def embedding_model_ref_for_name(model_name: str) -> str:
@@ -3628,12 +3622,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_scoring import cosine
 
 
-def clamp01(value: Any, default: float = 0.0) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        number = default
-    return max(0.0, min(1.0, number))
+try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it
+    from .matrixark_mcp_scoring import clamp01
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import clamp01
 
 
 def normalized_dense_score(value: float) -> float:

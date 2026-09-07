@@ -36,16 +36,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import detect_memory_segments
 
 
-def build_segment_prompt(messages: list[Json]) -> str:
-    indexed = "\n".join(f"{index}. {message.get('role', 'user')}: {message.get('content', '')}" for index, message in enumerate(messages))
-    return (
-        "You are MatrixArk's memory segmentation extractor. Identify high-saliency memory segments from the indexed conversation. "
-        "Prune greetings, acknowledgements, and filler. Merge semantically related non-contiguous messages into the same segment. "
-        "Return only valid JSON with this shape: "
-        '{"segments":[{"topic":"short_snake_case","coordinate_tuples":[[start,end]],"message_indexes":[0],"saliency_score":0.0,"summary_text":"short summary"}]} '
-        "Indexes are zero-based and coordinate end is inclusive. Do not include messages that are only filler.\n\n"
-        f"Conversation:\n{indexed}\n\nJSON:"
-    )
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import build_segment_prompt
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import build_segment_prompt
 
 
 def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: str = "", max_new_tokens: int = 512, local_only: bool = False) -> Json:
@@ -95,39 +89,16 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import normalize_model_segments
 
 
-def normalize_coordinate_tuples(value: Any, max_index: int) -> list[list[int]]:
-    ranges: list[list[int]] = []
-    if not isinstance(value, list):
-        return ranges
-    for item in value:
-        if not isinstance(item, list) or len(item) != 2:
-            continue
-        try:
-            start = int(item[0])
-            end = int(item[1])
-        except (TypeError, ValueError):
-            continue
-        start = max(0, min(max_index, start))
-        end = max(0, min(max_index, end))
-        if end < start:
-            start, end = end, start
-        ranges.append([start, end])
-    return ranges
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import normalize_coordinate_tuples
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import normalize_coordinate_tuples
 
 
-def normalize_message_indexes(value: Any, coordinate_tuples: list[list[int]], max_index: int) -> list[int]:
-    indexes: set[int] = set()
-    if isinstance(value, list):
-        for item in value:
-            try:
-                index = int(item)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= index <= max_index:
-                indexes.add(index)
-    for start, end in coordinate_tuples:
-        indexes.update(range(start, end + 1))
-    return sorted(indexes)
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import normalize_message_indexes
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import normalize_message_indexes
 
 def intelligent_memory_segments(messages: list[Json]) -> list[Json]:
     """Segment a batch into salient, event-centric memories.
@@ -227,17 +198,7 @@ def infer_segment_topic(text: str) -> str:
     return token_list[0] if token_list else "general"
 
 
-def contiguous_ranges(indexes: list[int]) -> list[list[int]]:
-    if not indexes:
-        return []
-    ordered = sorted(set(indexes))
-    ranges: list[list[int]] = []
-    start = previous = ordered[0]
-    for value in ordered[1:]:
-        if value == previous + 1:
-            previous = value
-            continue
-        ranges.append([start, previous])
-        start = previous = value
-    ranges.append([start, previous])
-    return ranges
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import contiguous_ranges
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import contiguous_ranges

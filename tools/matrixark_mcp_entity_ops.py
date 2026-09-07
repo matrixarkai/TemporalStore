@@ -16,45 +16,22 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_summaries import summarize_text
 
 
-def entity_patch(search: str, replace: str, *, field: str = "state") -> Json:
-    return {
-        "field": field,
-        "patch": f"<< SEARCH\n{search}\n====\n{replace}\n>> REPLACE",
-    }
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import entity_patch
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import entity_patch
 
 
-def parse_entity_patch(patch_text: str) -> tuple[str, str] | None:
-    match = re.search(
-        r"<<\s*SEARCH\s*\n(?P<search>.*?)\n====\s*\n(?P<replace>.*?)\n>>\s*REPLACE",
-        patch_text,
-        flags=re.DOTALL,
-    )
-    if not match:
-        return None
-    return match.group("search").strip(), match.group("replace").strip()
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import parse_entity_patch
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import parse_entity_patch
 
 
-def edit_distance(left: str, right: str) -> int:
-    if left == right:
-        return 0
-    if not left:
-        return len(right)
-    if not right:
-        return len(left)
-    previous = list(range(len(right) + 1))
-    for i, left_char in enumerate(left, start=1):
-        current = [i]
-        for j, right_char in enumerate(right, start=1):
-            cost = 0 if left_char == right_char else 1
-            current.append(
-                min(
-                    current[j - 1] + 1,
-                    previous[j] + 1,
-                    previous[j - 1] + cost,
-                )
-            )
-        previous = current
-    return previous[-1]
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import edit_distance
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import edit_distance
 
 
 def best_span_by_edit_distance(text: str, search: str) -> tuple[int, int, float]:
