@@ -114,6 +114,18 @@ class NoSurfaceClassifiesAProviderByHandTest(unittest.TestCase):
         self.assertEqual([], classifying_literals("matrixark_gateway_config.py",
                                                   allow_assigned_to=CLASSIFIER_SETS))
 
+    def test_every_allow_listed_name_is_a_real_set_in_the_registry(self) -> None:
+        """An allow-list nobody checks is a place to put things. A name that stops existing --
+        renamed, deleted, or mistyped -- silently exempts nothing and hides nothing, and the next
+        person adds one more rather than asking why it is there."""
+        import ast as _ast
+        with open(os.path.join(TOOLS, "matrixark_gateway_config.py"), encoding="utf-8") as handle:
+            tree = _ast.parse(handle.read())
+        defined = {target.id for node in _ast.walk(tree) if isinstance(node, _ast.Assign)
+                   for target in node.targets if isinstance(target, _ast.Name)}
+        self.assertEqual(set(), CLASSIFIER_SETS - defined,
+                         "allow-listed but not defined in the registry")
+
     def test_the_detector_would_notice_one(self) -> None:
         """The floor. If this stopped recognising a classification, both assertions above would pass
         on a file full of them."""
