@@ -62,9 +62,32 @@ pub(crate) const COMPRESSED_RAW_PAYLOAD_MARKER: u8 = 0xB9;
 /// change stops reading halfway through.
 pub(crate) const COMPRESSED_ESCAPED_PAYLOAD_MARKER: u8 = 0xBA;
 
-/// Compression level. The same level the index already compresses at, so the log and the index
-/// make the same trade rather than two unexplained ones.
-const COMPRESSION_LEVEL: i32 = 3;
+/// The zstd level records are compressed at.
+///
+/// Measured on this path rather than inherited. The comment this replaces said the level matched
+/// the page store's so the two would "make the same trade rather than two unexplained ones" --
+/// which is a good instinct, and was never checked against what a WAL record actually looks like.
+///
+/// Checked now, on an encoded record whose value is prose, which is what the serving log holds
+/// (its records compress about 8.6x, and this payload compresses 9.2x). Fastest of 400 runs, twice,
+/// on a quiet box:
+///
+/// | value | level 1 | level 3 | level 6 |
+/// |---|---|---|---|
+/// | 1 KiB | 40.4 us, 531 B | 51.3 us, 528 B | 119.0 us, 526 B |
+/// | 4 KiB | 47.1 us, 606 B | 60.9 us, 600 B | 168.4 us, 596 B |
+///
+/// Level 3 costs 27-29% more time than level 1 and returns under 1% in size. Level 6 costs two to
+/// three times level 1 for another fraction of a percent. On a payload of random bytes the three
+/// levels produce byte-IDENTICAL output, so the higher levels buy nothing there at all.
+///
+/// So: level 1. This is now a different level from the page store's, which the previous comment
+/// was right to want to avoid -- but the two differ in what they compress. A page is large and
+/// written once; a WAL record is small, written on the commit path, and its compressible part is
+/// the envelope around a value that is usually already dense. A number that was matched for
+/// tidiness is worth less than one that was measured, and if the page store's level is ever
+/// measured the same way it may well move too.
+const COMPRESSION_LEVEL: i32 = 1;
 
 /// Below this many bytes a payload is written uncompressed.
 ///
