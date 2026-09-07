@@ -2337,18 +2337,38 @@ fn drop_covered_wal_segments(
     // Whatever is left is dropped by the next pass: pieces go from the front in order, so stopping
     // early leaves the rest exactly where the next pass would have looked anyway.
     let limit = wal_reclaim_max_segments_per_pass();
-    for path in wal_segment_paths(root, shard_id) {
+    let paths = wal_segment_paths(root, shard_id);
+    for (index, path) in paths.iter().enumerate() {
+        let path = path.clone();
         if limit > 0 && dropped >= limit {
             break;
         }
         if path == active || !path.exists() {
             continue;
         }
-        let (last, _) = last_wal_sequence_in(&path)?;
-        if last == 0 {
-            // Holds no record at all; nothing to keep and nothing to lose.
-        } else if last >= retain_from_sequence {
-            break;
+        // Prove it from the NEXT piece's first record when that is possible. Records ascend
+        // strictly, so `last(N) < first(N+1)`, and `first(N+1) <= retain_from` therefore puts all
+        // of piece N below the floor. That is one record read instead of decoding the whole file:
+        // the walk below costs 20-27 ms on a real ~500 KB piece, which is what makes this pass
+        // expensive enough to need a cap, and the cap is what stops a backlog draining.
+        //
+        // Only ever used to say YES. Anything unclear -- no next piece, an unreadable head, a
+        // bound that does not clear the floor -- falls through to the authoritative walk, because
+        // unlinking a piece that still holds a needed record cannot be undone.
+        let covered_by_next = match paths.get(index + 1) {
+            Some(next) => first_wal_sequence_in(next)
+                .ok()
+                .flatten()
+                .is_some_and(|first_next| first_next <= retain_from_sequence),
+            None => false,
+        };
+        if !covered_by_next {
+            let (last, _) = last_wal_sequence_in(&path)?;
+            if last == 0 {
+                // Holds no record at all; nothing to keep and nothing to lose.
+            } else if last >= retain_from_sequence {
+                break;
+            }
         }
         freed = freed.saturating_add(path.metadata().map(|meta| meta.len()).unwrap_or(0));
         fs::remove_file(&path)?;
@@ -3572,6 +3592,39 @@ fn skip_block_footer_if_due<R: std::io::BufRead + std::io::Seek>(
     let next = header_len + (index + 1) * WAL_BLOCK_BYTES;
     reader.seek(SeekFrom::Start(next))?;
     Ok(next)
+}
+
+/// The sequence of the FIRST record in a piece, or None when there is not one to read.
+///
+/// One record, where `last_wal_sequence_in` decodes the whole file. Used only to prove that an
+/// EARLIER piece is entirely below a retain floor: records are appended in strictly ascending
+/// sequence, so `last(N) < first(N+1)`.
+///
+/// None on anything unusual -- no header, no first record, a head that will not decode -- because
+/// every caller treats None as "cannot tell, go and look properly". It must never guess.
+fn first_wal_sequence_in(path: &Path) -> Result<Option<u64>, WriteAheadLogError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let (_, header_len) = read_wal_base(path)?;
+    let file = File::open(path)?;
+    let len = file.metadata()?.len();
+    if len <= header_len {
+        return Ok(None);
+    }
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(header_len))?;
+    let record_end = skip_block_footer_if_due(&mut reader, header_len, header_len)?;
+    if record_end >= len {
+        return Ok(None);
+    }
+    let Some(raw) = read_raw_record(&mut reader)? else {
+        return Ok(None);
+    };
+    if raw.is_empty() || raw.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return Ok(None);
+    }
+    Ok(decode_wal_line(&raw).ok().map(|record| record.sequence))
 }
 
 fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
@@ -8473,6 +8526,144 @@ mod tests {
     }
 
     /// What reclaim costs with the log in one piece against many.
+    /// The cheap droppability test must drop exactly what the walk would, and nothing more.
+    #[test]
+    fn dropping_a_piece_from_the_next_ones_first_record_matches_the_walk() {
+        for retain_offset in [50u64, 500, 1200, 1900] {
+            set_wal_segment_bytes_for_test(Some(8 * 1024));
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let records = 2_000u64;
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: vec![118u8; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+
+            // What the AUTHORITY says about every piece, before anything is unlinked.
+            let before: Vec<(std::path::PathBuf, u64)> = wal_segment_paths(dir.path(), 1)
+                .into_iter()
+                .filter(|path| path.exists())
+                .map(|path| {
+                    let (last, _) = last_wal_sequence_in_for_test(&path).unwrap();
+                    (path, last)
+                })
+                .collect();
+
+            let retain_from = retain_offset;
+            let report = store.gc_before_sequence_unchecked(1, retain_from).unwrap();
+
+            let mut dropped_checked = 0usize;
+            for (path, last) in &before {
+                if path.exists() {
+                    continue;
+                }
+                dropped_checked += 1;
+                assert!(
+                    *last == 0 || *last < retain_from,
+                    "a piece was unlinked whose last sequence {last} is not below the retain floor \
+                     {retain_from}; the cheap test disagreed with the walk"
+                );
+            }
+            assert_eq!(
+                dropped_checked, report.dropped_segments,
+                "the pieces missing from disk should be exactly the ones reported dropped"
+            );
+            set_wal_segment_bytes_for_test(None);
+        }
+    }
+
+    /// The short circuit has to actually fire, or the equivalence above proves nothing.
+    #[test]
+    fn the_cheap_droppability_test_is_what_drops_the_pieces() {
+        set_wal_segment_bytes_for_test(Some(8 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..2_000u64 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 128],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        // Every piece below this floor is covered by the next piece's first record, so the cheap
+        // path is the one that decides them.
+        let report = store.gc_before_sequence_unchecked(1, 1_500).unwrap();
+        assert!(
+            report.dropped_segments > 0,
+            "no piece was dropped, so nothing here exercises the decision: {report:?}"
+        );
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// What each droppability probe costs, on segments from a real store.
+    ///
+    /// The pass holds the append lock while it probes, so this ratio is what decides how many
+    /// segments one pass may safely take.
+    #[test]
+    fn what_each_droppability_probe_costs_on_real_segments() {
+        let Ok(sample) = std::env::var("MATRIXARK_LIVE_WAL_SAMPLE") else {
+            println!("  set MATRIXARK_LIVE_WAL_SAMPLE to a directory of segments to measure");
+            return;
+        };
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&sample)
+            .expect("the sample directory")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.is_file())
+            .collect();
+        paths.sort();
+        if paths.is_empty() {
+            println!("  no segments in {sample}");
+            return;
+        }
+        let probed = paths.len();
+        let total_bytes: u64 = paths
+            .iter()
+            .map(|path| path.metadata().map(|meta| meta.len()).unwrap_or(0))
+            .sum();
+
+        let started = std::time::Instant::now();
+        for path in &paths {
+            let _ = last_wal_sequence_in_for_test(path);
+        }
+        let walk_us = started.elapsed().as_secs_f64() * 1e6;
+
+        let started = std::time::Instant::now();
+        for path in &paths {
+            let _ = first_wal_sequence_in(path);
+        }
+        let head_us = started.elapsed().as_secs_f64() * 1e6;
+
+        println!("  {probed} segment(s), {} MB total", total_bytes / 1_000_000);
+        println!(
+            "  walk  (last_wal_sequence_in) : {:>9.0} us -> {:>7.3} ms each -> {:>6.1} s for 721",
+            walk_us,
+            walk_us / 1000.0 / probed as f64,
+            walk_us / 1e6 / probed as f64 * 721.0
+        );
+        println!(
+            "  head (first_wal_sequence_in) : {:>9.0} us -> {:>7.3} ms each -> {:>6.1} s for 721",
+            head_us,
+            head_us / 1000.0 / probed as f64,
+            head_us / 1e6 / probed as f64 * 721.0
+        );
+        if head_us > 0.0 {
+            println!("  ratio: {:.0}x cheaper per segment", walk_us / head_us);
+        }
+    }
+
     #[test]
     fn what_reclaim_costs_in_one_piece_against_many() {
         for segment_bytes in [0u64, 8 * 1024] {
