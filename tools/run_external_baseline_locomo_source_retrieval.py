@@ -574,12 +574,10 @@ except ImportError:  # Direct script execution from tools/.
     from run_external_baseline_longmem_source_retrieval import reduction_percent
 
 
-def finish_with_contract_gate(report: dict[str, Any], path: str, started: float, require_contract: bool) -> int:
-    contract = report.get("benchmark_model_contract")
-    if require_contract and not (isinstance(contract, dict) and contract.get("shared_oss_model_contract_passed")):
-        report.setdefault("blockers", []).append("shared_oss_model_contract_mismatch")
-        return finish(report, path, started, 2)
-    return finish(report, path, started, 0)
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import finish_with_contract_gate
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import finish_with_contract_gate
 
 
 def finish(report: dict[str, Any], path: str, started: float, code: int) -> int:
