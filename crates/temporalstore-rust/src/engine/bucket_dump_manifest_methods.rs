@@ -679,9 +679,28 @@ impl TemporalEngine {
             if manifest.object_lifecycle != expected_object_lifecycle
                 || manifest.object_lifecycle != model_object_lifecycle
             {
+                // Say WHICH of the two derivations disagrees, and how. There are two comparisons
+                // here and the message named neither, so a refusal said only that a dump would
+                // not install -- and the two have different causes: the index-derived report
+                // disagreeing means the manifest metadata is stale or wrong, while the model-map
+                // one disagreeing means a map the manifest does not carry was compared against a
+                // populated index.
+                let which = if manifest.object_lifecycle != expected_object_lifecycle {
+                    "bucket-index derivation"
+                } else {
+                    "model-map derivation"
+                };
+                let other = if manifest.object_lifecycle != expected_object_lifecycle {
+                    &expected_object_lifecycle
+                } else {
+                    &model_object_lifecycle
+                };
                 return Err(Status::error(
                     "slot_dump_object_lifecycle_mismatch",
-                    "slot dump object lifecycle metadata does not match restored index",
+                    format!(
+                        "slot dump object lifecycle metadata does not match restored index; the {which} disagrees. manifest={:?} derived={:?}",
+                        manifest.object_lifecycle, other
+                    ),
                 ));
             }
         }
