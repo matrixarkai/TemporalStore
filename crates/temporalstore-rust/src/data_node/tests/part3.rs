@@ -2478,25 +2478,45 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         .iter()
         .find(|stage| stage.stage == "reclaim_wal")
         .expect("the cycle ran a reclaim_wal stage");
-    assert!(reclaim_wal.skipped, "{reclaim_wal:?}");
-    assert!(
-        reclaim_wal
-            .reason
-            .contains("follower_cursor_retains_logs:follower-lagging-runtime"),
-        "the refusal must name the follower holding the logs: {reclaim_wal:?}"
-    );
-    assert!(
-        reclaim_wal
-            .reason
-            .contains("raft_snapshot_retains_logs:raft-snapshot-runtime"),
-        "the refusal must name the snapshot holding the logs: {reclaim_wal:?}"
+    // The refusal this asserted was deliberately replaced by a CLAMP. A cursor at sequence 1
+    // means everything at or below 1 is behind every reader, so reclaim may take exactly that
+    // span and no more; refusing outright let one lagging follower pin the whole log for as long
+    // as it lagged, and the log grew without bound underneath it (storage_lifecycle_methods.rs).
+    // So the property worth asserting is the BOUND, not a refusal message -- and the bound is the
+    // one a retention cursor exists to impose.
+    //
+    // Both cursors sit at sequence 1, and the wait above already required a retention blocker,
+    // which needs 1 < durable_frontier. The floor over the cursors is therefore 1 and the plan
+    // must retain from exactly 2. The exact value is the point: >= would also pass if the clamp
+    // were dropped and reclaim ran all the way to the durable frontier, which is the regression
+    // being guarded here.
+    assert!(!reclaim_wal.skipped, "{reclaim_wal:?}");
+    assert_eq!(
+        reclaim_wal.retain_from_wal_sequence, 2,
+        "reclaim must not advance past the slowest cursor: {reclaim_wal:?}"
     );
     assert_eq!(
-        running.last_wal_floor_sequence, 0,
-        "logs held by a cursor have no floor to report: {:?}",
+        reclaim_wal.retain_from_index_log_sequence, 2,
+        "reclaim must not advance past the slowest cursor: {reclaim_wal:?}"
+    );
+    // Clamping instead of refusing did not stop the cursors being counted, nor the pressure
+    // signal naming what is holding the logs.
+    assert_eq!(reclaim_wal.retention_blockers, 2, "{reclaim_wal:?}");
+    assert!(
+        reclaim_wal
+            .pressure_signal
+            .contains("follower_snapshot_retention"),
+        "{reclaim_wal:?}"
+    );
+    assert_eq!(
+        running.last_wal_floor_sequence, reclaim_wal.wal_floor_sequence,
+        "the manager must report the floor the stage computed: {:?}",
         running.last_skipped_reasons
     );
-    assert_eq!(running.last_index_log_floor_sequence, 0);
+    assert_eq!(
+        running.last_index_log_floor_sequence,
+        reclaim_wal.index_log_floor_sequence
+    );
     assert!(running.last_retention_blockers >= 1);
     assert!(running
         .last_phase_blockers
