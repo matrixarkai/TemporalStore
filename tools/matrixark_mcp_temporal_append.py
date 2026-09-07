@@ -371,7 +371,12 @@ def materialize_appended_records_locked(
             target._records_cache.extend(records)
             target._put_direct_record_cache(len(target._records_cache), target._records_cache)
         except Exception:
-            pass
+            # The durable write already happened; only the process-local view of it failed. But
+            # `read_all` returns this list verbatim when the hot cache is on, so keeping a copy
+            # that is known to be missing these records serves reads that silently omit a write
+            # the store holds. Dropping it costs one reload and is what every other invalidation
+            # on this object does.
+            target._records_cache = None
     try:
         target._prune_retrieval_candidate_cache(
             getattr(target, "_entry_count_cache", None) or int(new_entry_count or 0)
