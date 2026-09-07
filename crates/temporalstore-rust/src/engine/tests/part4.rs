@@ -10011,7 +10011,6 @@ fn recording_results_still_coalesces_fsyncs() {
         dir.path().join("indexes"),
     ));
     engine.load_shard(1);
-    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "1");
     std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
 
     let syncs_before = engine.write_ahead_log_store().stats(1).syncs;
@@ -10085,7 +10084,6 @@ fn a_group_commit_write_keeps_the_block_it_staged() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "1");
 
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
