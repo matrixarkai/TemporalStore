@@ -75,20 +75,22 @@ def _default_on_switches() -> Dict[str, str]:
     for path in _production_sources():
         try:
             with open(os.path.join(REPO, path), encoding="utf-8") as handle:
-                lines = handle.read().splitlines()
+                text = handle.read()
         except OSError:
             continue
-        for number, line in enumerate(lines, 1):
-            for match in _READ.finditer(line):
-                name, default = match.group(1), match.group(2)
-                if name in found or not _ON_DEFAULT.match(default.strip()):
-                    continue
-                window = " ".join(lines[number - 1:number + 2])
-                if _NUMERIC.search(window):
-                    continue
-                if not (_TRUTH_SET.search(window) or _EQ.search(window)):
-                    continue
-                found[name] = "%s:%d" % (path, number)
+        lines = text.splitlines()
+        # Whole file, not line by line -- see the note in test_an_addressed_flag_is_offered.
+        for match in _READ.finditer(text):
+            number = text.count("\n", 0, match.start()) + 1
+            name, default = match.group(1), match.group(2)
+            if name in found or not _ON_DEFAULT.match(default.strip()):
+                continue
+            window = " ".join(lines[number - 1:number + 2])
+            if _NUMERIC.search(window):
+                continue
+            if not (_TRUTH_SET.search(window) or _EQ.search(window)):
+                continue
+            found[name] = "%s:%d" % (path, number)
     return found
 
 
