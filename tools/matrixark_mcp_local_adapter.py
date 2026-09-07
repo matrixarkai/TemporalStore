@@ -7115,11 +7115,17 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         for record in self.records_for_get_all(scope):
             if str(record.get("record_type") or "") != "context_event":
                 continue
-            rec_tenant, rec_user = _record_scope_hashes(record)
-            if tenant_hash and rec_tenant != tenant_hash:
-                continue
-            if user_hash and rec_user != user_hash:
-                continue
+            # Only resolve the record's scope if there is something to compare it against. The
+            # two lines below are the ONLY readers of the pair, so when the request scope carries
+            # neither hash -- which is any scope not identity-enriched upstream -- this resolved a
+            # scope per record and dropped it. 32,000 records: 16 ms when they carry their hashes,
+            # 57 ms when they do not, on a listing that returns ten rows.
+            if tenant_hash or user_hash:
+                rec_tenant, rec_user = _record_scope_hashes(record)
+                if tenant_hash and rec_tenant != tenant_hash:
+                    continue
+                if user_hash and rec_user != user_hash:
+                    continue
             created_at_ms = record.get("updated_at_ms") or record.get("timestamp_key_ms")
             selected.append((int(created_at_ms or 0), record))
         selected.sort(key=lambda pair: pair[0])
