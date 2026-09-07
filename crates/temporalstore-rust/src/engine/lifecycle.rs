@@ -1463,7 +1463,7 @@ impl TemporalEngine {
     ///
     /// The point of the map is that it is part of the index rather than process state, so a
     /// test needs to be able to look at it to say anything about that.
-    pub(super) fn wal_resident_page_count(&self, shard_id: ShardId) -> usize {
+    pub(crate) fn wal_resident_page_count(&self, shard_id: ShardId) -> usize {
         self.shards
             .read()
             .expect("engine lock poisoned")
