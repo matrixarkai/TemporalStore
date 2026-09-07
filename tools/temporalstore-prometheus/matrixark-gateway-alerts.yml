@@ -34,6 +34,18 @@ groups:
             Intended for a dev deployment; in production it means the memories being written are
             much thinner than the customer expects.
 
+      - alert: MatrixArkSummariesNotUsingAModel
+        expr: matrixark_gateway_summary_model_active == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node summaries are being written by rules ({{ $labels.instance }})"
+          description: >-
+            No extraction model is configured, so ingest stores only what the local rules extract.
+            Intended for a dev deployment; in production it means the memories being written are
+            much thinner than the customer expects.
+
       - alert: MatrixArkGatewayConfigWarnings
         expr: matrixark_gateway_config_warnings > 0
         for: 30m
