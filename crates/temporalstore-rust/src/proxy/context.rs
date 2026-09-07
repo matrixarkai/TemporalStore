@@ -440,7 +440,8 @@ impl ProxyService {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % 100_000_000;
 
-        let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+        // One entry per message, and the count is known before the loop starts.
+        let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(request.messages.len());
         for (idx, message) in request.messages.iter().enumerate() {
             let timestamp_ms = message.timestamp_ms.unwrap_or(now);
             // Borrowed in all three cases. The record this feeds takes `title: &str`, so the owned
@@ -469,15 +470,28 @@ impl ProxyService {
             // `Value::String` copy of role, title and body -- only to render it and drop it.
             // The field names and their order are the same, because these records are read
             // back by everything downstream.
-            let value = serde_json::to_string(&RawEventRecord {
-                body: message.content.as_ref(),
-                record_type: "raw_event",
-                role: message.role.as_ref(),
-                timestamp_ms,
-                title: &title,
-            })
-            .unwrap_or_default();
-            entries.push((field, value.into_bytes()));
+            // Written into a buffer sized for this record. `to_string` starts from serde_json's
+            // own 128 and grows, which a raw event clears often enough to cost a second
+            // allocation on a third of them; the field names and punctuation below are 88 bytes.
+            let mut value =
+                Vec::with_capacity(96 + message.content.len() + message.role.len() + title.len());
+            if serde_json::to_writer(
+                &mut value,
+                &RawEventRecord {
+                    body: message.content.as_ref(),
+                    record_type: "raw_event",
+                    role: message.role.as_ref(),
+                    timestamp_ms,
+                    title: &title,
+                },
+            )
+            .is_err()
+            {
+                // What `to_string(..).unwrap_or_default()` did: an unserialisable record becomes
+                // an empty value rather than a partial one.
+                value.clear();
+            }
+            entries.push((field, value));
         }
         if entries.is_empty() {
             // Nothing to buffer (e.g. pre-shaped records only) -- still a fast ack.
