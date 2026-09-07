@@ -730,33 +730,13 @@ def candidate_index_terms(
     return {term for term in terms if term}
 
 
-def passes_secondary_index_filters(candidate_terms: set[str], required_groups: list[set[str]], *, mode: str = "all_groups") -> bool:
-    if not required_groups:
-        return True
-    if mode == "any_group":
-        return any(bool(candidate_terms.intersection(group)) for group in required_groups)
-    return all(bool(candidate_terms.intersection(group)) for group in required_groups)
+try:  # the implementation lives in matrixark_mcp_core_scoring; this module re-exports it
+    from .matrixark_mcp_core_scoring import passes_secondary_index_filters
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_scoring import passes_secondary_index_filters
 
 
-def passes_applicable_secondary_index_filters(
-    candidate_terms: set[str],
-    required_groups: list[set[str]],
-    *,
-    mode: str = "all_groups",
-) -> bool:
-    """Apply only filter groups whose index prefix is present on this candidate."""
-    candidate_prefixes = {term.split(":", 1)[0] for term in candidate_terms if ":" in term}
-    candidate_is_context_asset = bool(
-        candidate_terms.intersection({"source_type:resource", "source_type:skill"})
-    )
-    applicable_groups = [
-        group
-        for group in required_groups
-        if candidate_prefixes.intersection({term.split(":", 1)[0] for term in group if ":" in term})
-        and not (
-            candidate_is_context_asset
-            and {term.split(":", 1)[0] for term in group if ":" in term} == {"source_type"}
-            and not candidate_terms.intersection(group)
-        )
-    ]
-    return passes_secondary_index_filters(candidate_terms, applicable_groups, mode=mode)
+try:  # the implementation lives in matrixark_mcp_core_scoring; this module re-exports it
+    from .matrixark_mcp_core_scoring import passes_applicable_secondary_index_filters
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_scoring import passes_applicable_secondary_index_filters

@@ -78,17 +78,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-def context_text_hashes(text: str) -> set[int]:
-    compact = " ".join(str(text).split())
-    variants = {compact[:512]}
-    without_role = re.sub(r"^(user|assistant|tool|system):\s*", "", compact, flags=re.IGNORECASE)
-    variants.add(without_role[:512])
-    tokenized = tokens(compact)
-    if tokenized:
-        variants.add(" ".join(tokenized)[:512])
-        if tokenized[0] in {"user", "assistant", "tool", "system"}:
-            variants.add(" ".join(tokenized[1:])[:512])
-    return {stable_hash(variant) for variant in variants if variant}
+try:  # the implementation lives in matrixark_mcp_core_packing; this module re-exports it
+    from .matrixark_mcp_core_packing import context_text_hashes
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_packing import context_text_hashes
 
 
 try:  # the implementation lives in matrixark_mcp_core_identity; this module re-exports it

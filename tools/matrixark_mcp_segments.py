@@ -177,25 +177,10 @@ def semantic_saliency_score(text: str) -> float:
     return min(score, 1.0)
 
 
-def infer_segment_topic(text: str) -> str:
-    lower = text.lower()
-    topic_keywords = [
-        ("recursion", ["recursion", "recursive", "base case", "merge sort", "call stack"]),
-        ("game_algorithm", ["game", "minimax", "alpha beta", "pathfinding", "npc"]),
-        ("preference", ["prefer", "favorite", "likes", "loves"]),
-        ("location", ["moved", "moving", "located", "location", "live", "lives", "staying"]),
-        ("approval_budget", ["approved", "approval", "budget", "cost", "purchase"]),
-        ("incident_runbook", ["incident", "runbook", "alert", "outage", "rollback", "postmortem"]),
-        ("task_decision", ["decision", "decided", "owner", "owns", "deadline", "checklist", "reviewer", "require", "requires", "required"]),
-        ("metric_sla", ["metric", "latency", "p95", "p99", "qps", "sla", "error rate"]),
-        ("plan_status", ["plan", "current", "status", "going to", "will"]),
-        ("correction", ["correction", "instead", "wrong", "changed", "updated"]),
-    ]
-    for topic, keywords in topic_keywords:
-        if any(keyword in lower for keyword in keywords):
-            return topic
-    token_list = [token for token in tokens(text) if len(token) > 4]
-    return token_list[0] if token_list else "general"
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import infer_segment_topic
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import infer_segment_topic
 
 
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
