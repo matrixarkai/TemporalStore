@@ -17180,3 +17180,67 @@ fn pruning_keeps_the_manifests_reclaim_still_needs() {
         "the newest manifest is kept even when it covers no buckets"
     );
 }
+
+#[test]
+fn a_reclaim_that_drops_whole_segments_reports_them() {
+    // Small pieces, so the log rolls and reclaim's work is unlinking files rather than rewriting
+    // the active one. That is the shape a live log takes, and the shape the old counters missed.
+    crate::wal::set_wal_segment_bytes_for_test(Some(8 * 1024));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    for index in 0..400 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("rolled-{index:04}"),
+                value: vec![118u8; 256],
+            },
+        });
+    }
+    engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("a dump to anchor the frontier on");
+
+    let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+    assert!(
+        plan.safe_to_reclaim,
+        "the dump should have made this reclaimable, or the test proves nothing: {plan:?}"
+    );
+
+    let report = engine.apply_storage_wal_reclaim(plan);
+    crate::wal::set_wal_segment_bytes_for_test(None);
+
+    assert!(report.applied, "{report:?}");
+    assert!(
+        report.wal_segments_dropped > 0,
+        "whole segments were unlinked and the report did not say so: {report:?}"
+    );
+    assert!(
+        report.wal_segment_bytes_dropped > 0,
+        "segments were dropped but their bytes went unreported: {report:?}"
+    );
+    // Segment bytes are ADDITIONAL to the active-file delta, not part of it: wal_bytes_before and
+    // wal_bytes_after describe only the segment being written. A reader adding those two together
+    // understates what the pass freed, by exactly this much.
+    //
+    // At production scale the understatement is total rather than partial: a live round dropped 64
+    // segments, about 28 MB, while reporting wal_records_removed 0 and wal_bytes_before 262144,
+    // because there was nothing left to rewrite in the active segment. This test runs small enough
+    // that the same pass also rewrites records, so it pins the additivity rather than that extreme.
+    let active_file_delta = report.wal_bytes_before.saturating_sub(report.wal_bytes_after);
+    assert!(
+        report.wal_segment_bytes_dropped > 0,
+        "segments were dropped but their bytes went unreported: {report:?}"
+    );
+    assert!(
+        active_file_delta + report.wal_segment_bytes_dropped > active_file_delta,
+        "the freed total must exceed the active-file delta once segments are counted: {report:?}"
+    );
+}
