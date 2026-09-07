@@ -917,6 +917,18 @@ impl TemporalEngine {
                             request.shard_id,
                             command,
                             std::mem::take(&mut staged_outcomes),
+                            if carried_pages.is_empty() {
+                                if self.page_store.block_in_wal() {
+                                    block_in_wal::take_staged()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                if self.page_store.block_in_wal() {
+                                    let _ = block_in_wal::take_staged();
+                                }
+                                std::mem::take(&mut carried_pages)
+                            },
                         )
                         .map(|record| Some(record.sequence))
                 } else {
