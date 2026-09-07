@@ -874,6 +874,17 @@ impl TemporalEngine {
             index_log_records_removed: 0,
             index_log_bytes_before: self.index_log_store.stats(plan.shard_id).bytes_written,
             index_log_bytes_after: self.index_log_store.stats(plan.shard_id).bytes_written,
+            // Whole segments dropped by this pass. The gc report has measured them all along;
+            // stopping here meant a pass that unlinked 64 files and freed 28 MB reported
+            // `wal_records_removed: 0` and byte counts covering only the active segment.
+            wal_segments_dropped: wal_gc
+                .as_ref()
+                .map(|report| report.dropped_segments)
+                .unwrap_or_default(),
+            wal_segment_bytes_dropped: wal_gc
+                .as_ref()
+                .map(|report| report.dropped_segment_bytes)
+                .unwrap_or_default(),
             plan,
         }
     }

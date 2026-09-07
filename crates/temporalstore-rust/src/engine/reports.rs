@@ -2792,6 +2792,19 @@ pub struct StorageWalReclaimReport {
     pub wal_bytes_after: u64,
     pub index_log_bytes_before: u64,
     pub index_log_bytes_after: u64,
+    /// Whole rolled segments unlinked by this pass.
+    ///
+    /// Separate from `wal_records_removed` because they are different work: that counts records
+    /// rewritten out of the ACTIVE segment, while these are files dropped entire, never read and
+    /// never copied. A pass that drops segments and rewrites nothing is the normal case once a log
+    /// has rolled, and reporting only the rewrite made such a pass indistinguishable from one that
+    /// did nothing at all.
+    #[serde(default)]
+    pub wal_segments_dropped: usize,
+    /// Bytes held by those segments. `wal_bytes_before`/`_after` describe only the active
+    /// segment, so without this the size a reclaim recovered cannot be read off the report.
+    #[serde(default)]
+    pub wal_segment_bytes_dropped: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
