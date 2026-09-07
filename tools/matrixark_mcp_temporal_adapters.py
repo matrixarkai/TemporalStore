@@ -3078,7 +3078,31 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
 
 
 
-class MatrixArkRustCdylibClient:
+class _AppendRecordsViaBatch:
+    """`matrixark_append_records` as the batch call it has always delegated to.
+
+    Both clients wrote this out identically: it forwards every argument to
+    `matrixark_batch_append_records` and adds nothing. Keeping one copy means the single-record
+    entry point cannot come to disagree with the batch one about what it forwards.
+    """
+
+    def matrixark_append_records(
+        self,
+        entries: list[Json],
+        *,
+        count_key: str | None = None,
+        count_value: str | None = None,
+        append_options: Json | None = None,
+    ) -> None:
+        self.matrixark_batch_append_records(
+            entries,
+            count_key=count_key,
+            count_value=count_value,
+            append_options=append_options,
+        )
+
+
+class MatrixArkRustCdylibClient(_AppendRecordsViaBatch):
     """In-process Rust direct SDK binding loaded through the Rust cdylib C ABI."""
 
     def __init__(
@@ -3261,20 +3285,6 @@ class MatrixArkRustCdylibClient:
             self._check(code, error)
         self._call("matrixark_batch_append_records", call, records_written=len(values) + (1 if count_key else 0))
 
-    def matrixark_append_records(
-        self,
-        entries: list[Json],
-        *,
-        count_key: str | None = None,
-        count_value: str | None = None,
-        append_options: Json | None = None,
-    ) -> None:
-        self.matrixark_batch_append_records(
-            entries,
-            count_key=count_key,
-            count_value=count_value,
-            append_options=append_options,
-        )
 
     def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], record_ids: list[str] | None = None, return_index_records: bool = False, newest_by_type: Json | None = None) -> Json:
         payload: Json = {"scope": scope, "record_types": record_types, "secondary_index_groups": secondary_index_groups, "selected_node_hashes": selected_node_hashes}
@@ -3439,7 +3449,7 @@ def _caller_deadline_ms(kwargs: Json) -> int:
     return 0
 
 
-class MatrixArkRustProxyClient:
+class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
     """Persistent Rust proxy boundary around the Rust TemporalStore SDK.
 
     The Rust binary owns SDK linkage and runs in JSON-lines ``--serve`` mode as
@@ -4358,20 +4368,6 @@ class MatrixArkRustProxyClient:
             append_options=append_options or {},
         )
 
-    def matrixark_append_records(
-        self,
-        entries: list[Json],
-        *,
-        count_key: str | None = None,
-        count_value: str | None = None,
-        append_options: Json | None = None,
-    ) -> None:
-        self.matrixark_batch_append_records(
-            entries,
-            count_key=count_key,
-            count_value=count_value,
-            append_options=append_options,
-        )
 
     def matrixark_retrieve_context_pack(
         self,
