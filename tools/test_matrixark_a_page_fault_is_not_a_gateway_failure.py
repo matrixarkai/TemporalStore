@@ -125,21 +125,27 @@ class NoPageSaysItItselfTest(unittest.TestCase):
             self.assertEqual(0, extra,
                              "%s writes the sentence itself %d times" % (name, extra))
 
-    def test_the_strip_only_calls_it_down_when_it_never_arrived(self) -> None:
-        """The live strip is the page's loudest claim. It must not make it about a render fault."""
+    def test_the_strip_never_calls_it_unreachable_without_asking(self) -> None:
+        """The live strip is the page's loudest claim, and it must not make it about a render
+        fault. Asserted as the absence of the unguarded phrase rather than by looking near each
+        `conn("down"` for a guard: the sites sit close together, so a window around one of them
+        catches the guard belonging to its neighbour. A mutation that unguarded a single site
+        survived that version of this test.
+
+        The only "down" left on any page is the strip client's own `reconnecting in Ns`, which is
+        reported when the socket is genuinely gone -- no request, and no answer to classify.
+        """
         for name in pages():
             text = read(name)
+            self.assertEqual(
+                0, text.count('conn("down", "gateway unreachable")'),
+                "%s tells the strip the gateway is unreachable without asking whether the "
+                "request ever arrived" % name)
             for match in re.finditer(r'conn\(\s*"down"', text):
-                before = text[max(0, match.start() - 260):match.start()]
-                # The stream's own retry state is the exception, and a real one: "reconnecting in
-                # 4s" is reported by the strip client when the socket is genuinely gone, with no
-                # request and no answer to classify.
-                if ".catch(" not in before:
-                    continue
-                self.assertIn(
-                    "__matrixarkNeverArrived", text[match.start() - 260:match.start() + 260],
-                    "%s sets the strip to down from a catch without asking whether the request "
-                    "ever arrived" % name)
+                after = text[match.start():match.start() + 120]
+                self.assertIn("reconnecting", after,
+                              "%s has a down state that is neither guarded nor the socket "
+                              "retry: %s" % (name, after[:70]))
 
     def test_the_pages_actually_use_the_classifier(self) -> None:
         """The positive control. Every assertion above passes on a portal that reports nothing at
