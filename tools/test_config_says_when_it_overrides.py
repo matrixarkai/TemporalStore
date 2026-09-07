@@ -227,6 +227,38 @@ def _annotated_boolean_keys():
 
 class TheShippedConfigSaysWhenItOverridesTest(unittest.TestCase):
 
+    def test_the_const_pairing_agrees_with_the_published_inventory(self) -> None:
+        """This file DERIVES a default the inventory also derives. Pin the two together.
+
+        `_builder` execs only the inventory prelude -- everything before `sources = {}` -- so its
+        computed entries are not reachable from here and the defaults have to be worked out again.
+        That is a second implementation of one question, which is exactly the shape that drifts:
+        the inventory pairs `TS_X` with `DEFAULT_X` at its own line and this file now does the
+        same, and nothing would notice if one learned an idiom the other did not.
+
+        The published document is the inventory answer, and it is itself checked against the
+        generator by `test_matrixark_engine_flag_inventory`. So every default this pairing produces
+        must be the one the document states. If they disagree, one of the two extractors moved.
+        """
+        ns = _builder()
+        source_root = os.path.join(REPO, "crates", "temporalstore-rust", "src")
+        paired = _boolean_defaults_named_by_a_const(ns, source_root)
+        self.assertTrue(paired, "the const pairing found nothing; the storage_config idiom moved")
+        with open(os.path.join(REPO, "docs", "ops", "temporalstore-engine-flags.md"),
+                  encoding="utf-8") as handle:
+            document = handle.read()
+        published = dict(re.findall(
+            r"\|\s*`((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)`\s*\|\s*([^|]*?)\s*\|",
+            document))
+        disagreeing = sorted(
+            "%s: here=%s document=%s" % (flag, value, published.get(flag, "<absent>"))
+            for flag, value in paired.items()
+            if published.get(flag, "").strip() != value)
+        self.assertEqual(
+            [], disagreeing,
+            "this file and the shipped inventory disagree about a default they both derive: %s"
+            % disagreeing)
+
     def test_the_config_still_annotates_its_keys(self) -> None:
         with open(CONFIG, encoding="utf-8") as handle:
             annotated = sum(1 for line in handle if _LINE.match(line))
