@@ -9649,6 +9649,7 @@ mod tests {
                         value: vec![118u8; 64],
                     },
                     Vec::new(),
+                    Vec::new(),
                 )
                 .unwrap()
                 .sequence;
