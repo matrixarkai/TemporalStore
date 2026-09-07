@@ -232,9 +232,19 @@ KNOBS: dict[str, Knob] = _registry(
              "clean over the same 12 runs -- is the part that ships. Turn this on per tenant only "
              "with the same background-write check."),
         Knob("return_all_candidates", "bool", "MATRIXARK_RETURN_ALL_CANDIDATES", False,
-             "Always return every eligible candidate: skip the secondary-index prefilter and skip "
-             "scoring entirely, letting the token budget be the only limit. For a tenant whose whole "
-             "memory fits the budget, ranking can only lose facts it did not need to lose."),
+             "Return every candidate the scan produced, by lifting `max_selected_refs` to however "
+             "many there are, so the token budget is the only limit. For a tenant whose whole "
+             "memory fits the budget, ranking can only lose facts it did not need to lose.\n\n"
+             "Measured: a store of 80 short facts, one question, an 8000-token budget -- 40 came "
+             "back. Eighty facts of that length is about a thousand tokens, so the budget was "
+             "never what cut it; `max_selected_refs`, 64 by default, was. With this on, 79 of the "
+             "80 came back.\n\n"
+             "It does NOT skip scoring, and it does not skip the secondary-index groups -- an "
+             "earlier version of this text promised both. Scoring still runs because with the cap "
+             "lifted the scores no longer decide what is INCLUDED, only the order things are "
+             "packed in, which is what decides what survives if the budget does bite. The groups "
+             "are left alone because on this path they are not a filter: they add 0.08 to a "
+             "node's score, so clearing them changed nothing on two fixtures."),
         Knob("return_all_candidate_threshold", "int", "MATRIXARK_RETURN_ALL_CANDIDATE_THRESHOLD", 0,
              "Return every candidate when a broad scan yields at most this many event/entity "
              "candidates; above it, fall back to the indexed + scored path. 0 = off. This is the "

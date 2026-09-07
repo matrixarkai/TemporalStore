@@ -36,20 +36,21 @@ GATES_MODULE = os.path.join(TOOLS, "matrixark_index_growth_bound.py")
 # name; the true figure was twelve. `extract_segments` and `generate_embeddings` are now wired, and
 # `index_compact_on_summary` with the rollup sweep, so nine remain. The wider surface is worse
 # still: of 42 functions in the policy module, 3 are reachable from production code.
+# `return_all_candidates` was here, with a note saying wiring it meant BUILDING the path rather
+# than attaching a gate. That turned out to be half right. The path did not need building: the knob
+# lifts `max_selected_refs`, which is what was cutting the answer, and the recall comparison this
+# file asked for is in test_matrixark_a_small_store_can_return_everything.
+#
+# What the note got wrong is worth keeping. It said the knob means "no prefilter and no scoring",
+# and both halves of that are wrong on this path: the secondary-index groups are a 0.08 scoring
+# hint rather than an admission filter, so clearing them changed nothing on two fixtures; and
+# scoring still has to run, because with the cap lifted the scores no longer decide what is
+# included, only the order things are packed in -- which is what decides what survives when the
+# budget does bite.
 KNOWN_UNWIRED: Set[str] = {
     "dedupe_index_postings_enabled",
     "embed_node_path_prefix_enabled",
     "generate_l1_summaries_enabled",
-    # `return_all_candidates` is NOT a wiring job, and calling it one would mislead whoever picks
-    # it up. It means "return every candidate, no prefilter and no scoring", and no such bypass
-    # exists in `retrieve()` -- nor does anything read its companion knob
-    # `return_all_candidate_threshold`. Connecting it therefore means BUILDING that path, which is
-    # a retrieval feature with quality consequences, not attaching a gate to an existing switch.
-    #
-    # Its default (False) is today's behaviour, so nothing regresses while it stays here. When it
-    # is built, the test has to be a recall comparison rather than a presence check: a knob that
-    # silently narrows or widens results looks like it works either way.
-    "return_all_candidates_enabled",
     "summarize_aggregation_only_nodes_enabled",
 }
 
