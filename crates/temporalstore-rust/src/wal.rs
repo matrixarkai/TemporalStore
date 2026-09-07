@@ -2933,31 +2933,6 @@ fn resolve_last_sequence_for_append(
     Ok((cached_last_sequence.max(disk_last_sequence), record_end))
 }
 
-fn wal_env_flag_on(name: &str) -> bool {
-    matches!(
-        std::env::var(name)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-/// Default-ON gate read: the fix is LIVE unless explicitly disabled with
-/// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
-/// fixed behavior by default; the env var remains only as an escape hatch.
-fn wal_env_flag_default_on(name: &str) -> bool {
-    !matches!(
-        std::env::var(name)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
 /// TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS: how many sealed pieces one reclaim pass may unlink.
 ///
 /// The unlinking happens while the log's lock is held, and every append takes that lock, so an
@@ -2983,7 +2958,7 @@ fn wal_reclaim_max_segments_per_pass() -> usize {
 /// written either way reads back under the other, since the tail scan treats a zeros run as
 /// room and a plain file simply ends at its records).
 fn wal_preallocate_enabled() -> bool {
-    wal_env_flag_default_on("TS_WAL_PREALLOCATE")
+    crate::engine::env_flag_default_on("TS_WAL_PREALLOCATE")
 }
 
 /// TS_WAL_PREALLOCATE_CHUNK: how far past the write the file is grown when it runs out of room.
