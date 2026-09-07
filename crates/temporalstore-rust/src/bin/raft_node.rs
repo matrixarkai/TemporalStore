@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use temporalstore_rust::env_flag::env_bool;
 use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
 use temporalstore_rust::meta::ShardSnapshotRef;
 use temporalstore_rust::raft::{
@@ -1120,9 +1121,3 @@ mod tests {
     }
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(default)
-}

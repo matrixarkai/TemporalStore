@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use temporalstore_rust::env_flag::env_bool;
 use temporalstore_rust::context_workflow::{
     context_pipeline_manage_report, context_workflow_state_report, default_context_model_providers,
     embed_drainer_config_from_env, embed_drainer_enabled, extract_context, ingest_extract_context,
@@ -2255,12 +2256,6 @@ fn env_i32(name: &str, default: i32) -> i32 {
         .unwrap_or(default)
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(default)
-}
 
 /// Build the datanode's `RaftConfig`, overlaying the write-path tuning knobs from env. Unset ->
 /// `RaftConfig::default()` verbatim (replication_deadline_ms 5000, max_inflights_replicate 128),

@@ -685,14 +685,7 @@ fn now_ms() -> u64 {
 }
 
 fn env_bool(name: &str) -> bool {
-    std::env::var(name)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    temporalstore_rust::env_flag::env_bool(name, false)
 }
 
 fn stable_hash64(value: &str) -> u64 {

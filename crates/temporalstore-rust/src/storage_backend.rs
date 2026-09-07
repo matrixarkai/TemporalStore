@@ -116,16 +116,11 @@ impl StorageBackend {
     /// So: shared storage caches to disk; one-box and raft run memory + their own disk.
     /// `TS_CACHE_DISK_TIER` overrides either way for an operator who knows better.
     pub fn wants_disk_cache_tier(&self) -> bool {
-        if let Ok(value) = std::env::var("TS_CACHE_DISK_TIER") {
-            let value = value.trim().to_ascii_lowercase();
-            if !value.is_empty() {
-                return !matches!(value.as_str(), "0" | "false" | "no" | "off");
-            }
-        }
-        match self {
+        let backend_default = match self {
             StorageBackend::MatrixObject { .. } | StorageBackend::SharedPath { .. } => true,
             StorageBackend::RaftReplication => false,
-        }
+        };
+        crate::env_flag::env_bool("TS_CACHE_DISK_TIER", backend_default)
     }
 
     /// The cluster-level replication mode implied by this backend.
@@ -945,13 +940,6 @@ pub const TS_DISTRIBUTED: &str = "TS_DISTRIBUTED";
 const META_ADDR_SENTINELS: [&str; 5] = ["", "local", "none", "standalone", "off"];
 
 /// Truthy exactly as the datanode has always read these flags.
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
-}
-
 /// Is this node running as a **single node** - no metaserver, no peers?
 ///
 /// This is the one implementation of that rule. The datanode decides whether to
@@ -974,7 +962,7 @@ pub fn single_node(meta_addr_raw: Option<&str>) -> bool {
     {
         Some("1") | Some("true") | Some("yes") | Some("on") => true,
         Some("0") | Some("false") | Some("no") | Some("off") => false,
-        _ => !(meta_addr_is_real || env_truthy(TS_DISTRIBUTED)),
+        _ => !(meta_addr_is_real || crate::env_flag::env_bool(TS_DISTRIBUTED, false)),
     }
 }
 

@@ -310,9 +310,10 @@ fn main() {
         root.join("indexes"),
     );
     engine.load_shard(1);
-    let external_only = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
+    let external_only = temporalstore_rust::env_flag::env_bool(
+        "TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY",
+        false,
+    );
     if external_only {
         let external_benchmark = run_external_context_benchmark(&engine);
         let state = context_workflow_state_report();
@@ -1200,22 +1201,25 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(32);
-    let all_source_replay = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
+    let all_source_replay = temporalstore_rust::env_flag::env_bool(
+        "TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY",
+        false,
+    );
     let selected_id_limit = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(128);
     let direct_source_scoring =
-        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false);
+        temporalstore_rust::env_flag::env_bool(
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING",
+            false,
+        );
     let source_order_ranking =
-        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false);
+        temporalstore_rust::env_flag::env_bool(
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING",
+            false,
+        );
     let mut ingested_source_sets = BTreeMap::<u64, Vec<u64>>::new();
     let mut retrieved_source_sets = BTreeMap::<u64, Vec<temporalstore_rust::ContextBlock>>::new();
     for (_index, case) in cases.iter().enumerate() {

@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use temporalstore_rust::env_flag::env_bool;
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json_with_options, serve,
     serve_with_stream_handler, HttpRequest, HttpRequestOptions, RequestHead, StreamAction,
@@ -2264,12 +2265,6 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(default)
-}
 
 fn runtime_options_from_env() -> ProductionMetaRaftRuntimeOptions {
     ProductionMetaRaftRuntimeOptions {

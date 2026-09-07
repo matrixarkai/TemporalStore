@@ -428,9 +428,7 @@ fn main() {
 
 fn single_shot_debug_enabled(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--debug-single-shot")
-        || env::var("MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false)
+        || temporalstore_rust::env_flag::env_bool("MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG", false)
 }
 
 fn response_from_result(
@@ -4443,12 +4441,7 @@ fn env_bool_any(names: &[&str], default: bool) -> bool {
     names
         .iter()
         .find_map(|name| env::var(name).ok())
-        .map(|value| {
-            matches!(
-                value.trim(),
-                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
-            )
-        })
+        .and_then(|value| temporalstore_rust::env_flag::parse_bool(&value))
         .unwrap_or(default)
 }
 

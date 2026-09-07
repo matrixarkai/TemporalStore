@@ -429,14 +429,7 @@ fn agent_profile(agent_name: &str) -> &'static str {
 }
 
 fn env_bool(name: &str) -> bool {
-    matches!(
-        std::env::var(name)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    temporalstore_rust::env_flag::env_bool(name, false)
 }
 
 fn additional_context_char_limit() -> usize {
