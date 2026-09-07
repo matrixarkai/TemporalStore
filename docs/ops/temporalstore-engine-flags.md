@@ -66,7 +66,7 @@ Anything else is blank, and a blank means go and look.
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 26 |
 | **that nothing in this repository sets** | 157 |
-| documented as keeping an older path alive | 4 |
+| documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
 
@@ -201,13 +201,12 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_RESIDENT_PAGES` | 4096 | test | 1 | — |
 | `TS_WAL_SEGMENT_BYTES` | 262144 | nothing | 1 | — |
 
-## format (6)
+## format (5)
 
 The shape of what is written. Readers generally accept both shapes, which is what makes these safe to flip and hard to retire.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `TS_INDEX_CATALOG_FOLD` | on | config | 1 | yes |
 | `TS_INDEX_CODEC` | — | test | 1 | — |
 | `TS_NODE_SUMMARY_VECTOR` | on | test, portal | 1 | — |
 | `TS_PROXY_BINARY_VERSION` | — | nothing | 1 | — |

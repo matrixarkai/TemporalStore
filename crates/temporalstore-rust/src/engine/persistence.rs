@@ -382,12 +382,8 @@ impl TemporalEngine {
 
     /// MANIFEST-CONFORMANCE FOLD threshold check: dump the index catalog when the undumped index-log
     /// gap has crossed `index_dump_wal_gap_bytes` (the index-meta dump gap
-    /// cadence). No-op with the `TS_INDEX_CATALOG_FOLD` gate off, so the background cycle is
-    /// byte-identical when the fold is not enabled. Returns whether a dump fired.
+    /// cadence). Returns whether a dump fired.
     pub fn maybe_dump_index_catalog(&self, shard_id: ShardId) -> bool {
-        if !crate::index_log::index_catalog_fold_enabled() {
-            return false;
-        }
         let gap = crate::storage_config::index_dump_wal_gap_bytes();
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog(undumped, gap) {
@@ -405,9 +401,6 @@ impl TemporalEngine {
         shard_id: ShardId,
         gap_bytes: u64,
     ) -> bool {
-        if !crate::index_log::index_catalog_fold_enabled() {
-            return false;
-        }
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog(undumped, gap_bytes) {
             return false;
@@ -433,9 +426,6 @@ impl TemporalEngine {
     /// below the anchor, index-log records whose own anchor is at or below it) is redundant,
     /// while the folded anchor record itself must survive.
     pub(super) fn dump_index_catalog_anchored(&self, shard_id: ShardId) -> Option<(u64, u64)> {
-        if !crate::index_log::index_catalog_fold_enabled() {
-            return None;
-        }
         // A dump for a shard this engine does not serve is a no-op; check BEFORE the durability
         // barrier so a background caller polling an unloaded shard does not pay (or issue) an
         // fsync for nothing.
@@ -514,9 +504,6 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
-        if !crate::index_log::index_catalog_fold_enabled() {
-            return None;
-        }
         let gap = crate::storage_config::index_dump_wal_gap_bytes();
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog(undumped, gap) {
@@ -616,9 +603,6 @@ impl TemporalEngine {
         shard_id: ShardId,
         gap_bytes: u64,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
-        if !crate::index_log::index_catalog_fold_enabled() {
-            return None;
-        }
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog(undumped, gap_bytes) {
             return None;

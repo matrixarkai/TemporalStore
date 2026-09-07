@@ -4298,12 +4298,12 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
     // `TS_INDEX_DUMP_WAL_GAP_BYTES`, dump the catalog and reclaim the log prefixes the dump
     // made redundant. The poll itself is one file-length stat per interval; the dump/reclaim
     // runs off the request path so no client write pays for the base-index materialization.
-    // No-op (thread not spawned) with the fold gate off or the interval set to 0.
+    // No-op (thread not spawned) with the interval set to 0.
     let reclaim_interval_ms = env::var("MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(1000);
-    if temporalstore_rust::index_log::index_catalog_fold_enabled() && reclaim_interval_ms > 0 {
+    if reclaim_interval_ms > 0 {
         let reclaim_engine = engine.clone();
         let reclaim_root = root.clone();
         std::thread::spawn(move || loop {
