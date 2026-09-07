@@ -44,4 +44,13 @@ const arrived = {
     new TypeError("window.__matrixarkWhen is not a function"))
 };
 
-console.log(JSON.stringify({ said: cases, neverArrived: arrived }, null, 1));
+/* What the connection strip is told. Three cases, not two: a status means the deployment
+   answered, so the strip stays "connected" and the sentence says what it said. */
+const strip = {
+  never_arrived: win.__matrixarkConnState(new TypeError("Failed to fetch")),
+  a_status_404: win.__matrixarkConnState(404),
+  a_status_500: win.__matrixarkConnState(500),
+  a_render_throw: win.__matrixarkConnState(new TypeError("window.__matrixarkWhen is not a function"))
+};
+
+console.log(JSON.stringify({ said: cases, neverArrived: arrived, strip: strip }, null, 1));

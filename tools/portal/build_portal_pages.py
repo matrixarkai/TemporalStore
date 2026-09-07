@@ -366,6 +366,18 @@ SHARED_JS = r'''<script>
       || /failed to fetch|networkerror|load failed|network request failed|the network connection was lost/i.test(text);
   };
 
+  window.__matrixarkConnState = function (e) {
+    /* What the connection strip should say about this failure, as [state, words].
+
+       Three cases, not two. A first version asked only whether the request arrived and called
+       everything that did a fault in the page -- so a 404 or a 500, which is the deployment
+       answering, turned the strip amber. It showed up the moment the page was opened with
+       nothing behind it: every fetch came back 404 and the strip blamed the page. */
+    if (window.__matrixarkNeverArrived(e)) { return ["down", "gateway unreachable"]; }
+    if (typeof e === "number") { return ["live", "connected"]; }
+    return ["warn", "this page could not show the answer"];
+  };
+
   window.__matrixarkWhyFailed = function (e, failure) {
     /* A rejection carrying a status is the deployment answering. A rejection from fetch itself is
        the request never leaving. A throw after the answer arrived is THIS PAGE failing to show
@@ -2479,9 +2491,8 @@ SETUP_JS = r"""
           $("presets").innerHTML = '<div class="empty">Enter an admin key to see the presets.</div>';
           $("models").innerHTML = '<div class="empty">Enter an admin key to choose models.</div>';
         } else {
-          conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
-               window.__matrixarkNeverArrived(e) ? "gateway unreachable"
-                                                : "this page could not show the answer");
+          var connState = window.__matrixarkConnState(e);
+          conn(connState[0], connState[1]);
           $("groups").innerHTML = '<section><div class="msg err">'
             + esc(window.__matrixarkWhyFailed(e)) + "</div></section>";
         }
@@ -3705,9 +3716,8 @@ CATALOG_JS = r"""
         say($("listMsg"), "This key cannot read the catalog. It needs skill:read and resource:read.",
             "err");
       } else {
-        conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
-             window.__matrixarkNeverArrived(e) ? "gateway unreachable"
-                                              : "this page could not show the answer");
+        var connState = window.__matrixarkConnState(e);
+        conn(connState[0], connState[1]);
         say($("listMsg"), window.__matrixarkWhyFailed(e), "err");
       }
     });
@@ -4124,9 +4134,8 @@ OVERVIEW_JS = r"""
           $("checks").innerHTML = '<div class="empty">Enter an admin-scoped key above to check ' +
             "this deployment.</div>";
         } else {
-          conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
-               window.__matrixarkNeverArrived(e) ? "gateway unreachable"
-                                                : "this page could not show the answer");
+          var connState = window.__matrixarkConnState(e);
+          conn(connState[0], connState[1]);
           $("checks").innerHTML = '<div class="msg err">' + esc(window.__matrixarkWhyFailed(e))
             + "</div>";
         }
@@ -5841,9 +5850,8 @@ API_JS = r"""
     .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
     .then(function (d) { conn("live", "connected"); ROUTES = d.routes || []; render(); })
     .catch(function (e) {
-      conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
-           window.__matrixarkNeverArrived(e) ? "gateway unreachable"
-                                             : "this page could not show the answer");
+      var connState = window.__matrixarkConnState(e);
+      conn(connState[0], connState[1]);
       $("routes").innerHTML = '<section><div class="msg err">'
         + esc(window.__matrixarkWhyFailed(e)) + "</div></section>";
     });

@@ -107,6 +107,41 @@ class TheClassifierAnswersTest(unittest.TestCase):
         self.assertTrue(arrived["nothing_at_all"])
 
 
+    def test_a_status_leaves_the_strip_connected(self) -> None:
+        """Found by opening the page rather than by reading it. With nothing behind the portal
+        every fetch comes back 404 -- a status, so the request plainly arrived -- and the strip
+        read "this page could not show the answer" in amber. The first version of this asked only
+        whether the request arrived and called everything that did a fault in the page.
+        """
+        for case in ("a_status_404", "a_status_500"):
+            with self.subTest(case=case):
+                state, words = self.result["strip"][case]
+                self.assertEqual("live", state, "a status is the deployment answering")
+                self.assertEqual("connected", words)
+
+    def test_a_request_that_never_left_takes_the_strip_down(self) -> None:
+        state, words = self.result["strip"]["never_arrived"]
+        self.assertEqual("down", state)
+        self.assertIn("unreachable", words)
+
+    def test_only_a_page_fault_turns_the_strip_amber(self) -> None:
+        state, words = self.result["strip"]["a_render_throw"]
+        self.assertEqual("warn", state)
+        self.assertIn("could not show", words)
+
+    def test_the_strip_and_the_sentence_never_disagree(self) -> None:
+        """The two are read by different people at the same moment -- the dot at a glance, the
+        sentence when they look. Saying the gateway is unreachable beside a sentence explaining
+        that it answered is worse than either alone."""
+        for case, said_key in (("never_arrived", "the_request_never_left"),
+                               ("a_render_throw", "the_page_threw_while_showing")):
+            with self.subTest(case=case):
+                state = self.result["strip"][case][0]
+                said = self.said(said_key)
+                self.assertEqual(state == "down", UNREACHABLE == said,
+                                 "the strip says %r while the sentence says %r" % (state, said))
+
+
 class NoPageSaysItItselfTest(unittest.TestCase):
 
     def test_the_sentence_is_written_in_one_place(self) -> None:
