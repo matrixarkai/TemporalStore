@@ -1680,6 +1680,13 @@ impl TemporalEngine {
             .iter()
             .map(|slab| slab.block_index_count)
             .sum::<u64>();
+        // The checksum is asked for only when checksum recording is on. It is an opt-in
+        // diagnostic (TS_BLOCK_INDEX_CHECKSUMS, default off, because recomputing it at every
+        // engine open dominated slab verification), and the integrity it would attest to is
+        // already verified by decode_page_record on the way in. Requiring it unconditionally
+        // made this report ready: false on every default deployment. The addressing fields are
+        // what a complete block address API means; the digest is a hand-inspection aid.
+        let checksums_recorded = crate::block_store::block_index_checksums_enabled();
         let block_address_api_ready = slab_reports.iter().any(|slab| {
             slab.block_index_entries.iter().any(|entry| {
                 entry.compact_slab_address.is_some()
@@ -1688,7 +1695,7 @@ impl TemporalEngine {
                     && entry.block_id.is_some()
                     && entry.object_id.is_some()
                     && entry.routing_bucket.is_some()
-                    && entry.checksum.is_some()
+                    && (!checksums_recorded || entry.checksum.is_some())
             })
         });
         let band_report = self.page_store.stream_backed_band_runtime_report().ok();
@@ -1810,7 +1817,7 @@ impl TemporalEngine {
             evidence: vec![
                 "slot/object/page authority is reported from the first-class slot index"
                     .to_string(),
-                "block addresses expose segment, offset, length, block id, object id, routing slot, band id, and checksum"
+                "block addresses expose segment, offset, length, block id, object id, routing slot and band id, plus a payload checksum when checksum recording is enabled"
                     .to_string(),
                 "stream-backed storage exposes active/sealed/delayed-destroy/purged band lifecycle while accepting legacy zone aliases"
                     .to_string(),

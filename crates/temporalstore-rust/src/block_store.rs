@@ -22,6 +22,8 @@ mod gc;
 mod slab_ids;
 mod record;
 
+pub(crate) use record::block_index_checksums_enabled;
+
 use paths::{
     delayed_destroy_dir, delayed_destroy_path, band_manifest_path, file_created_unix_ms,
     file_modified_unix_ms, legacy_zone_manifest_path, now_unix_ms, slab_path, sync_dir,
