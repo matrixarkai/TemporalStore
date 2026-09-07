@@ -207,13 +207,28 @@ pub mod pairs {
         }
     }
 
+    /// One value's base64, written straight into the output.
+    ///
+    /// `STANDARD.encode` allocates a fresh `String` for every entry only to hand it to the
+    /// serializer and drop it -- one allocation per pair, sized 1.33x the value. `collect_str`
+    /// lets the format write the encoding out as it is produced. The bytes on the wire are
+    /// identical, same alphabet and same padding, which
+    /// `the_pairs_encoding_is_what_encode_produced` holds for every remainder class.
+    struct Base64Value<'a>(&'a [u8]);
+
+    impl serde::Serialize for Base64Value<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(&base64::display::Base64Display::new(self.0, &STANDARD))
+        }
+    }
+
     pub fn serialize<S: Serializer>(
         pairs: &[(String, Vec<u8>)],
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(pairs.len()))?;
         for (name, bytes) in pairs {
-            seq.serialize_element(&(name, STANDARD.encode(bytes)))?;
+            seq.serialize_element(&(name, Base64Value(bytes)))?;
         }
         seq.end()
     }
@@ -287,4 +302,64 @@ mod tests {
             assert_eq!(decoded, command, "payload changed across the round trip");
         }
     }
+}
+
+#[cfg(test)]
+mod pairs_encoding_tests {
+    use super::pairs;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    /// The encoding is byte for byte what `STANDARD.encode` produced.
+    ///
+    /// Values stream through `collect_str` now instead of being encoded into a `String` first.
+    /// Base64 pads by remainder, so every remainder class is covered -- 0, 1 and 2 bytes over a
+    /// multiple of three -- plus the empty value and the full byte range.
+    #[test]
+    fn the_pairs_encoding_is_what_encode_produced() {
+        let cases: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            b"a".to_vec(),
+            b"ab".to_vec(),
+            b"abc".to_vec(),
+            b"abcd".to_vec(),
+            (0u8..=255).collect(),
+            br#"{"body":"a message","record_type":"raw_event"}"#.to_vec(),
+        ];
+        for value in cases {
+            let input = vec![("field".to_string(), value.clone())];
+            let mut out = Vec::new();
+            {
+                let mut ser = serde_json::Serializer::new(&mut out);
+                pairs::serialize(&input, &mut ser).expect("the pairs serialise");
+            }
+            let expected = serde_json::to_vec(&vec![("field", STANDARD.encode(&value))])
+                .expect("the reference form serialises");
+            assert_eq!(
+                String::from_utf8_lossy(&out),
+                String::from_utf8_lossy(&expected),
+                "the encoding moved for a {}-byte value",
+                value.len()
+            );
+        }
+    }
+
+    /// And a value still survives the round trip.
+    #[test]
+    fn the_pairs_encoding_round_trips() {
+        let input: Vec<(String, Vec<u8>)> = vec![
+            ("a".to_string(), Vec::new()),
+            ("b".to_string(), (0u8..=255).collect()),
+            ("c".to_string(), b"abcd".to_vec()),
+        ];
+        let mut out = Vec::new();
+        {
+            let mut ser = serde_json::Serializer::new(&mut out);
+            pairs::serialize(&input, &mut ser).expect("serialises");
+        }
+        let mut de = serde_json::Deserializer::from_slice(&out);
+        let back = pairs::deserialize(&mut de).expect("deserialises");
+        assert_eq!(back, input, "a value did not survive the round trip");
+    }
+
 }
