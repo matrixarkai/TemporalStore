@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 287 of them, read by 88 functions.
+There are 286 of them, read by 87 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,8 +60,8 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 287 |
-| booleans whose default this could read off the source | 47 |
+| total | 286 |
+| booleans whose default this could read off the source | 46 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 26 |
