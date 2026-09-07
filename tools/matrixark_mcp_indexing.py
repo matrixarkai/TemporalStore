@@ -502,7 +502,9 @@ def _identity_values(record: Json, singular: str, plural: str) -> list:
     return values
 
 
-def compact_context_index_postings(records: list[Json]) -> list[Json]:
+def compact_context_index_postings(
+    records: list[Json], *, allow_adopt: bool = True
+) -> list[Json]:
     """Group ContextIndex writes into Feature-style timestamped posting rows."""
     unchanged = _already_folded_postings(records)
     if unchanged is not None:
@@ -553,7 +555,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             str(record.get("ref_type") or ""),
             bucket_ms,
         )
-        if key not in grouped and is_fold_output(
+        if allow_adopt and key not in grouped and is_fold_output(
             record, POSTING_POLICY_BUCKETED,
             ("index_hash", "storage_record_kind", "storage_part")
         ):
@@ -613,7 +615,11 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 if value not in (None, "", [], {}):
                     grouped_scalar_values[key][field].add(str(value))
                 elif record.get(field) not in (None, "", [], {}):
-                    return None
+                    # Give up on adoption and let the full pass run, which is what this branch
+                    # always meant to do. It returned None, and the caller
+                    # (compact_latest_context_state_records) iterates the result -- so every read
+                    # reaching this condition raised TypeError instead of falling back.
+                    return compact_context_index_postings(records, allow_adopt=False)
             for field in list_lineage_fields:
                 values = source.get(field)
                 if isinstance(values, list):
