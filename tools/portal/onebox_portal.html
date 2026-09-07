@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MatrixArk — mem0 API</title>
+<title>MatrixArk — One-box</title>
 <style>
   /* --faint carries the help text under every field, so it is body copy rather than
      decoration: it is set to clear 4.5:1 against --panel in both schemes (measured 4.95
@@ -425,17 +425,13 @@
 <body>
 <main class="wrap">
 
-  <header>
-    <h1>mem0 API</h1>
-    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
-  </header>
   <nav class="portalnav">
     <a href="/v1/admin">Overview</a>
-    <a href="/v1/admin/onebox">One-box</a>
+    <a href="/v1/admin/onebox" aria-current="page">One-box</a>
     <a href="/v1/admin/setup">Setup &amp; metrics</a>
     <a href="/v1/admin/catalog">Skills &amp; resources</a>
     <a href="/v1/admin/explore">Explore</a>
-    <a href="/v1/admin/mem0" aria-current="page">mem0 API</a>
+    <a href="/v1/admin/mem0">mem0 API</a>
     <a href="/v1/admin/ingestion">Ingestion</a>
     <a href="/v1/admin/portal">API keys</a>
     <a href="/v1/admin/api">API</a>
@@ -453,59 +449,44 @@
     <table class="inv"><thead><tr><th>When</th><th>Call</th><th>Answered</th><th>Took</th></tr>
       </thead><tbody id="callLogRows"></tbody></table>
   </div>
-  <p class="lede">Every method of the mem0 API, by the name you call it by rather than the URL that
-    serves it &mdash; run against this deployment, with the whole exchange shown. It is the worked
-    example for writing the call yourself, and the first place to look when one of them answers
-    something you did not expect.</p>
+  <header>
+    <h1>One-box</h1>
+    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  </header>
+  <p class="lede">What this deployment does when it answers a question, and what each choice
+    costs. Every control here is edited where it lives -- this page gathers them, because the
+    three that decide recall sit on three different surfaces.</p>
 
   <section>
-    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
-    <label for="key">API key</label>
-    <input id="key" type="password" placeholder="Key carrying context:ingest / context:retrieve" autocomplete="off" spellcheck="false">
-    <div class="hint">An ordinary scoped key, not an admin one: these are the same routes an
-      application calls. The tenant is pinned from the key, so a key can never address another
-      tenant&rsquo;s memories.</div>
+    <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
+    <label for="key">Admin API key</label>
+    <input id="key" type="password" spellcheck="false" autocomplete="off" placeholder="Key carrying an admin scope">
+    <div class="hint">Reading this page needs a key with an admin scope; nothing here writes.</div>
+    <div id="keyMsg" role="status" aria-live="polite"></div>
   </section>
 
   <section>
-    <h2>Scope</h2>
-    <div class="grid2">
-      <div>
-        <label for="user">User</label>
-        <input id="user" type="text" placeholder="leave blank for the whole tenant" spellcheck="false">
-        <label for="agent">Agent</label>
-        <input id="agent" type="text" placeholder="optional" spellcheck="false">
-      </div>
-      <div>
-        <label for="session">Session</label>
-        <input id="session" type="text" placeholder="optional" spellcheck="false">
-      </div>
-    </div>
-    <div class="hint">These fill the scope of every operation that takes one. An operation that
-      addresses a single memory by id says so on its own form and ignores these.</div>
+    <h2>The profile</h2>
+    <p class="hint" style="margin-top:0">How a candidate is scored. This is the switch that decides
+      what "close to the question" means on this deployment, and it is on by default.</p>
+    <div id="profile"><div class="empty">Enter an admin key to read the configuration.</div></div>
   </section>
 
   <section>
-    <h2>Operation</h2>
-    <div id="ops"></div>
-    <div id="opForm"><div class="empty">Choose an operation.</div></div>
-    <div id="opMsg" role="status" aria-live="polite"></div>
+    <h2>Returning everything</h2>
+    <p class="hint" style="margin-top:0">A store small enough to fit the answer's budget does not
+      need ranking to choose for it. Measured on this build: eighty short facts, one question, an
+      8000-token budget — <b>forty came back</b>. Eighty facts of that length is about a thousand
+      tokens, so the budget was never what cut it. With <span class="mono">return_all_candidates</span>
+      on, <b>seventy-nine</b> came back.</p>
+    <div id="returnall"><div class="empty">Enter an admin key to read the policy.</div></div>
   </section>
 
   <section>
-    <h2>The exchange</h2>
-    <p class="hint" style="margin-top:0">What went out and what came back, headers included. The
-      key is never shown: it is the one header worth redacting and the one people paste into
-      tickets by accident.</p>
-    <div id="opWire"><div class="empty">Nothing sent yet.</div></div>
-  </section>
-
-  <section>
-    <h2>This session&rsquo;s calls</h2>
-    <p class="hint" style="margin-top:0">Every call this page has made, newest first. Kept in the
-      page and nowhere else &mdash; it is gone when the tab is. Two runs side by side is how you
-      tell a request that changed from a deployment that did.</p>
-    <div id="opLog"><div class="empty">None yet.</div></div>
+    <h2>What decides recall</h2>
+    <p class="hint" style="margin-top:0">The three caps that bound a retrieve, and which of them was
+      doing the cutting. Raising the others changed nothing in that measurement.</p>
+    <div id="caps"><div class="empty">Enter an admin key to read the limits.</div></div>
   </section>
 
 </main>
@@ -653,666 +634,136 @@
 </script>
 <script>
 (function () {
-  "use strict";
   function $(id) { return document.getElementById(id); }
   function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
     });
-  }
-  function say(el, text, cls) {
-    el.innerHTML = text ? '<div class="msg ' + (cls || "info") + '">' + esc(text) + "</div>" : "";
-  }
-  function auth() {
-    var k = $("key").value.trim();
-    return k ? { Authorization: "Bearer " + k } : {};
-  }
-  function failure(status) { return window.__matrixarkFailure(status); }
-  function reason(body, status) {
-    return (body && body.detail) || failure(status) || (body && body.error) || "";
   }
   function conn(state, text) {
     $("dot").className = "dot " + state;
     $("conn").textContent = text;
   }
-  conn("live", "ready");
+  function say(el, text, kind) {
+    el.className = "msg " + (kind || "info");
+    el.textContent = text || "";
+    el.hidden = !text;
+  }
+  function auth() {
+    var key = $("key").value.trim();
+    return key ? { Authorization: "Bearer " + key } : {};
+  }
 
-  try {
-    var saved = sessionStorage.getItem("matrixark_admin_key");
-    if (saved) { $("key").value = saved; $("remember").checked = true; }
-  } catch (e) { /* ignore */ }
-  $("remember").addEventListener("change", function () {
-    try {
-      if ($("remember").checked) { sessionStorage.setItem("matrixark_admin_key", $("key").value); }
-      else { sessionStorage.removeItem("matrixark_admin_key"); }
-    } catch (e) { /* ignore */ }
-  });
-
-/* ---------- mem0 console ---------- */
-  /* Generated from the gateway's own MEM0_OPERATIONS, so an operation that gains an argument gains
-     a field here without anyone remembering to add one. */
-  var MEM0_OPS = [
-    {
-      "id": "add",
-      "label": "add()",
-      "group": "Write",
-      "method": "POST",
-      "path": "/v1/ingest",
-      "scope": "context:ingest",
-      "destructive": false,
-      "needs_scope": true,
-      "summary": "Write a turn. Acknowledged at 202 with extraction running behind it, which is why a search issued immediately afterwards can legitimately not see it yet.",
-      "fields": [
-        {
-          "name": "content",
-          "in": "message",
-          "kind": "textarea",
-          "required": true,
-          "label": "Message",
-          "placeholder": "The team agreed to keep the coupon stacking rule for ACME until Q4.",
-          "help": "Sent as one user turn."
-        },
-        {
-          "name": "finalize",
-          "in": "body",
-          "kind": "bool",
-          "default": true,
-          "label": "Extract before answering",
-          "help": "Off is how production behaves: the write is acknowledged and extraction runs in the background."
-        },
-        {
-          "name": "metadata",
-          "in": "body",
-          "kind": "json",
-          "label": "Metadata",
-          "placeholder": "{\"source\": \"portal\"}",
-          "help": "Stored alongside the memory and returned with it."
-        }
-      ]
-    },
-    {
-      "id": "search",
-      "label": "search()",
-      "group": "Read",
-      "method": "POST",
-      "path": "/v1/retrieve",
-      "scope": "context:retrieve",
-      "destructive": false,
-      "needs_scope": true,
-      "summary": "The retrieval path an agent uses: ranked, then packed to fit a token budget.",
-      "fields": [
-        {
-          "name": "query",
-          "in": "body",
-          "kind": "text",
-          "required": true,
-          "label": "Query",
-          "placeholder": "when do we ship?"
-        },
-        {
-          "name": "max_budget_tokens",
-          "in": "body",
-          "kind": "number",
-          "default": 2048,
-          "label": "Token budget",
-          "help": "The pack is built to fit this. A budget far below what the answer needs is indistinguishable from poor retrieval."
-        }
-      ]
-    },
-    {
-      "id": "get_all",
-      "label": "get_all()",
-      "group": "Read",
-      "method": "POST",
-      "path": "/v1/memories",
-      "scope": "context:retrieve",
-      "destructive": false,
-      "needs_scope": true,
-      "summary": "The memories in the scope, unranked -- the listing, not the search. A limit does not make it a sample of the whole scope: it takes the NEWEST that many.",
-      "fields": [
-        {
-          "name": "limit",
-          "in": "body",
-          "kind": "number",
-          "default": 50,
-          "label": "Limit",
-          "help": "The NEWEST this many, listed oldest first. 0 or blank for the whole scope."
-        }
-      ]
-    },
-    {
-      "id": "get",
-      "label": "get()",
-      "group": "Read",
-      "method": "GET",
-      "path": "/v1/memory/{id}",
-      "scope": "context:retrieve",
-      "destructive": false,
-      "needs_scope": false,
-      "summary": "One memory's stored record, by id.",
-      "fields": [
-        {
-          "name": "id",
-          "in": "path",
-          "kind": "text",
-          "required": true,
-          "label": "Memory id",
-          "placeholder": "mem_7f21"
-        }
-      ]
-    },
-    {
-      "id": "history",
-      "label": "history()",
-      "group": "Read",
-      "method": "GET",
-      "path": "/v1/memory/{id}/history",
-      "scope": "context:retrieve",
-      "destructive": false,
-      "needs_scope": false,
-      "summary": "How that memory changed: each supersede, with what it said before.",
-      "fields": [
-        {
-          "name": "id",
-          "in": "path",
-          "kind": "text",
-          "required": true,
-          "label": "Memory id",
-          "placeholder": "mem_7f21"
-        }
-      ]
-    },
-    {
-      "id": "get_by_key",
-      "label": "by identity key",
-      "group": "Read",
-      "method": "GET",
-      "path": "/v1/memory/by-key",
-      "scope": "context:retrieve",
-      "destructive": false,
-      "needs_scope": false,
-      "summary": "The one live value for an identity key in a scope — the shape a profile field wants, where the answer is a value and not a ranked list.",
-      "fields": [
-        {
-          "name": "identity_key",
-          "in": "query",
-          "kind": "text",
-          "required": true,
-          "label": "Identity key",
-          "placeholder": "ship_date"
-        },
-        {
-          "name": "user_id",
-          "in": "query",
-          "kind": "text",
-          "label": "User",
-          "from_scope": "user"
-        }
-      ]
-    },
-    {
-      "id": "users",
-      "label": "users()",
-      "group": "Read",
-      "method": "POST",
-      "path": "/v1/users",
-      "scope": "context:retrieve",
-      "destructive": false,
-      "needs_scope": true,
-      "summary": "Which users, agents and runs hold memories in this tenant.",
-      "fields": []
-    },
-    {
-      "id": "update",
-      "label": "update()",
-      "group": "Write",
-      "method": "POST",
-      "path": "/v1/update",
-      "scope": "context:ingest",
-      "destructive": false,
-      "needs_scope": false,
-      "summary": "Supersede a memory: the amended text is ingested and the old id tombstoned, so history keeps both.",
-      "fields": [
-        {
-          "name": "memory_id",
-          "in": "body",
-          "kind": "text",
-          "required": true,
-          "label": "Memory id",
-          "placeholder": "mem_7f21"
-        },
-        {
-          "name": "text",
-          "in": "body",
-          "kind": "textarea",
-          "required": true,
-          "label": "New text",
-          "placeholder": "We ship on Friday."
-        }
-      ]
-    },
-    {
-      "id": "feedback",
-      "label": "feedback()",
-      "group": "Write",
-      "method": "POST",
-      "path": "/v1/memory/feedback",
-      "scope": "context:ingest",
-      "destructive": false,
-      "needs_scope": false,
-      "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
-      "fields": [
-        {
-          "name": "memory_id",
-          "in": "body",
-          "kind": "text",
-          "required": true,
-          "label": "Memory id",
-          "placeholder": "mem_7f21"
-        },
-        {
-          "name": "rating",
-          "in": "body",
-          "kind": "choice",
-          "choices": [
-            "POSITIVE",
-            "NEGATIVE",
-            "VERY_NEGATIVE"
-          ],
-          "default": "POSITIVE",
-          "label": "Rating",
-          "help": "The vocabulary is closed and the deployment refuses anything outside it. This field offered a number, and the sample value it carried -- 1 -- was refused on every call."
-        }
-      ]
-    },
-    {
-      "id": "session_commit",
-      "label": "commit a session",
-      "group": "Write",
-      "method": "POST",
-      "path": "/v1/session/commit",
-      "scope": "context:ingest",
-      "destructive": false,
-      "needs_scope": true,
-      "summary": "Close a session and roll its turns into summaries. Until this runs the turns are stored but not summarised.",
-      "fields": []
-    },
-    {
-      "id": "forget",
-      "label": "forget()",
-      "group": "Forget",
-      "method": "POST",
-      "path": "/v1/forget",
-      "scope": "context:forget",
-      "destructive": true,
-      "needs_scope": false,
-      "summary": "Delete EVERY memory for the subject in the scope above -- mem0's delete_all(user_id=...). Not one memory: the whole subject. A tombstone and an audit entry are kept; the memories are not.",
-      "fields": [
-        {
-          "name": "confirm",
-          "in": "body",
-          "kind": "text",
-          "required": true,
-          "label": "Confirm the subject",
-          "placeholder": "the user this key resolves to",
-          "help": "Must equal the RESOLVED scope user, which is not necessarily the user_id you send: a key resolving to root needs root here. Run users() to see it."
-        }
-      ]
-    },
-    {
-      "id": "delete",
-      "label": "delete()",
-      "group": "Forget",
-      "method": "POST",
-      "path": "/v1/delete",
-      "scope": "context:forget",
-      "destructive": true,
-      "needs_scope": false,
-      "summary": "Delete one memory outright.",
-      "fields": [
-        {
-          "name": "memory_id",
-          "in": "body",
-          "kind": "text",
-          "required": true,
-          "label": "Memory id",
-          "placeholder": "mem_7f21"
-        }
-      ]
-    },
-    {
-      "id": "delete_all",
-      "label": "delete_all()",
-      "group": "Forget",
-      "method": "POST",
-      "path": "/v1/reset",
-      "scope": "context:forget",
-      "destructive": true,
-      "needs_scope": true,
-      "summary": "Drop everything in the scope shown above. There is no undo, and an empty user field means the default scope, not none of them.",
-      "fields": [
-        {
-          "name": "confirm",
-          "in": "body",
-          "kind": "text",
-          "required": true,
-          "label": "Confirm",
-          "placeholder": "RESET",
-          "help": "The tenant id, or the literal word RESET. The call is refused without it."
-        }
-      ]
-    }
+  /* The settings this page is about, in the order somebody reads them: what scoring does, then
+     what the scan carries. Named rather than pattern-matched -- a page that guessed which
+     settings were "the one-box ones" would quietly change what it showed when a name changed. */
+  var PROFILE_KEYS = [
+    "retrieval.onebox_embedding_first",
+    "retrieval.project_scan_fields",
+    "retrieval.scan_visits_path"
   ];
+  var CAP_KEYS = [
+    "retrieval.max_selected_refs",
+    "retrieval.max_global_candidates",
+    "retrieval.top_k_per_layer"
+  ];
+  /* The cap the measurement blamed, so the page can say so beside it rather than in prose
+     somebody has to connect to the row themselves. */
+  var THE_ONE_THAT_CUT = "retrieval.max_selected_refs";
 
-  var currentOp = null;
-
-  function opGroups() {
-    var order = [], byGroup = {};
-    MEM0_OPS.forEach(function (op) {
-      if (!byGroup[op.group]) { byGroup[op.group] = []; order.push(op.group); }
-      byGroup[op.group].push(op);
-    });
-    return order.map(function (name) { return { name: name, ops: byGroup[name] }; });
-  }
-
-  function renderOps() {
-    $("ops").innerHTML = opGroups().map(function (group) {
-      return '<div class="opgroup">' + esc(group.name) + '</div><div class="opgrid">' +
-        group.ops.map(function (op) {
-          return '<button type="button" class="opbtn' + (op.destructive ? " danger" : "") +
-            '" data-op="' + esc(op.id) + '" aria-pressed="' +
-            (currentOp && currentOp.id === op.id ? "true" : "false") + '">' +
-            esc(op.label) + "</button>";
-        }).join("") + "</div>";
+  function settingRows(fields, keys, note) {
+    var rows = keys.map(function (key) {
+      var f = fields[key];
+      if (!f) { return ""; }
+      var badge = f.applies === "restart"
+        ? '<span class="badge restart">needs restart</span>' : "";
+      var flag = (note && key === THE_ONE_THAT_CUT)
+        ? '<span class="badge essential">this is the one that cut it</span>' : "";
+      return "<tr><th>" + esc(f.label || key) + badge + flag + "</th><td class='mono'>"
+        + esc(f.value === "" || f.value == null ? f["default"] : f.value)
+        + "</td><td class='mono'>" + esc(f.env || "") + "</td></tr>"
+        + (f.help ? "<tr><td colspan='3' class='hint'>" + esc(String(f.help).split("\n")[0])
+                    + "</td></tr>" : "");
     }).join("");
+    return rows
+      ? "<table class='inv'><thead><tr><th>Setting</th><th>Value</th><th>Variable</th></tr></thead>"
+        + "<tbody>" + rows + "</tbody></table>"
+      : '<div class="empty">This build offers none of them.</div>';
   }
 
-  function opHasConfirmField(op) {
-    return (op.fields || []).some(function (f) { return f.name === "confirm"; });
+  function renderPolicy(knobs) {
+    var names = ["return_all_candidates", "return_all_candidate_threshold"];
+    var rows = names.map(function (name) {
+      var k = knobs[name];
+      if (!k) { return ""; }
+      var inert = k.read_by_nothing
+        ? '<span class="badge restart">not read by this build</span>' : "";
+      return "<tr><th>" + esc(name) + inert + "</th><td class='mono'>"
+        + esc(k.value == null ? k["default"] : k.value) + "</td><td class='hint'>"
+        + esc(String(k.description || "").split("\n")[0]) + "</td></tr>";
+    }).join("");
+    return rows
+      ? "<table class='inv'><thead><tr><th>Knob</th><th>Value</th><th>What it does</th></tr>"
+        + "</thead><tbody>" + rows + "</tbody></table>"
+        + '<div class="hint">Set these under Retrieval settings on the Setup page — per tenant, or '
+        + 'per user.</div>'
+      : '<div class="empty">This build does not offer them.</div>';
   }
 
-  function fieldControl(op, f) {
-    var id = "op_" + op.id + "_" + f.name;
-    var value = f["default"] == null ? "" : String(f["default"]);
-    if (f.kind === "bool") {
-      return '<label class="check"><input type="checkbox" id="' + id + '" data-f="' +
-        esc(f.name) + '"' + (f["default"] ? " checked" : "") + "> " + esc(f.label) + "</label>" +
-        (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
-    }
-    var control;
-    if (f.kind === "choice") {
-      /* A closed vocabulary is offered as a closed control. This one was a number box whose sample
-         value the deployment refuses -- "feedback must be one of POSITIVE, NEGATIVE, VERY_NEGATIVE
-         (got '1')" -- so the form asked for something that could never be accepted. */
-      control = '<select id="' + id + '" data-f="' + esc(f.name) + '">'
-        + (f.choices || []).map(function (choice) {
-            return '<option value="' + esc(choice) + '"'
-              + (String(f["default"]) === String(choice) ? " selected" : "") + ">"
-              + esc(choice) + "</option>";
-          }).join("")
-        + "</select>";
-    } else if (f.kind === "textarea" || f.kind === "json") {
-      control = '<textarea id="' + id + '" data-f="' + esc(f.name) + '" spellcheck="false"' +
-        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" +
-        esc(f.kind === "json" ? "" : value) + "</textarea>";
-    } else {
-      control = '<input type="text" id="' + id + '" data-f="' + esc(f.name) +
-        '" spellcheck="false" value="' + esc(value) + '"' +
-        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">";
-    }
-    return '<label for="' + id + '">' + esc(f.label) + (f.required ? " *" : "") + "</label>" +
-      control + (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
-  }
-
-  function renderOpForm() {
-    var op = currentOp;
-    if (!op) {
-      $("opForm").innerHTML = '<div class="empty">Choose an operation.</div>';
-      renderOps();
-      return;
-    }
-    var scopeLine = op.needs_scope
-      ? " · scope from the fields above"
-      : " · not scoped — it addresses one memory by id";
-    $("opForm").innerHTML = '<div class="opform"><h3>' + esc(op.label) + "</h3>" +
-      '<div class="route">' + esc(op.method) + " " + esc(op.path) +
-      '<span class="scope"> · needs ' + esc(op.scope) + esc(scopeLine) + "</span></div>" +
-      '<p class="hint" style="margin-top:0">' + esc(op.summary) + "</p>" +
-      op.fields.map(function (f) { return fieldControl(op, f); }).join("") +
-      /* An operation whose own field IS a confirmation does not get a second box. Two controls
-         both labelled Confirm, one of which the request never carries, is how this came to look
-         guarded while sending a call the deployment always refused. */
-      (op.destructive && !opHasConfirmField(op)
-        ? '<div class="mwarn"><b>This cannot be undone</b>Type <span class="mono">' + esc(op.id) +
-          '</span> to confirm, then run.</div><label for="opConfirm">Confirm</label>' +
-          '<input id="opConfirm" type="text" spellcheck="false" autocomplete="off">'
-        : (op.destructive
-           ? '<div class="mwarn"><b>This cannot be undone</b>The confirm field above is the '
-             + 'guard, and the deployment checks it.</div>'
-           : "")) +
-      '<div class="actions"><button id="opRun" type="button">Run</button>' +
-      '<button id="opCurl" class="ghost" type="button">Copy as curl</button></div>' +
-      '<pre id="opPreview"></pre></div>';
-    renderOps();
-    updatePreview();
-  }
-
-  function opFieldValue(op, f) {
-    var el = document.getElementById("op_" + op.id + "_" + f.name);
-    if (!el) { return null; }
-    if (f.kind === "bool") { return el.checked; }
-    var raw = el.value.trim();
-    if (!raw) { return null; }
-    if (f.kind === "number") {
-      var n = Number(raw);
-      return isNaN(n) ? null : n;
-    }
-    if (f.kind === "json") {
-      try { return JSON.parse(raw); } catch (e) { return { __bad__: raw }; }
-    }
-    return raw;
-  }
-
-  /* One builder for the preview, the curl and the send. Three code paths would let the preview
-     drift from what is actually sent -- and the preview is the thing a customer copies into their
-     own client, so a preview that lies is worse than none. */
-  function buildRequest(op) {
-    var body = {}, query = [], path = op.path, messages = [], problems = [];
-    if (op.needs_scope) { body.scope = scope(); }
-    op.fields.forEach(function (f) {
-      var value = opFieldValue(op, f);
-      if (value && value.__bad__ !== undefined) {
-        problems.push(f.label + " is not valid JSON.");
-        return;
-      }
-      if (f.required && (value === null || value === "")) {
-        problems.push(f.label + " is required.");
-        return;
-      }
-      if (value === null) { return; }
-      if (f["in"] === "message") { messages.push({ role: "user", content: value }); }
-      else if (f["in"] === "body") { body[f.name] = value; }
-      else if (f["in"] === "scope") { (body.scope = body.scope || {})[f.name] = value; }
-      else if (f["in"] === "query") {
-        query.push(encodeURIComponent(f.name) + "=" + encodeURIComponent(value));
-      } else if (f["in"] === "path") {
-        path = path.replace("{" + f.name + "}", encodeURIComponent(value));
-      }
-    });
-    if (messages.length) { body.messages = messages; }
-    if (path.indexOf("{") >= 0) { problems.push("The id is required."); }
-    return {
-      method: op.method,
-      url: path + (query.length ? "?" + query.join("&") : ""),
-      problems: problems,
-      body: op.method === "GET" ? null : body
-    };
-  }
-
-  function updatePreview() {
-    if (!currentOp) { return; }
-    var pre = $("opPreview");
-    if (!pre) { return; }
-    var request = buildRequest(currentOp);
-    pre.textContent = request.method + " " + request.url +
-      (request.body ? "\n\n" + JSON.stringify(request.body, null, 2) : "");
-  }
-
-  $("ops").addEventListener("click", function (ev) {
-    var button = ev.target.closest ? ev.target.closest("[data-op]") : null;
-    if (!button) { return; }
-    currentOp = MEM0_OPS.filter(function (o) { return o.id === button.dataset.op; })[0] || null;
-    $("opResult").innerHTML = "";
-    say($("opMsg"), "");
-    renderOpForm();
-  });
-
-  $("opForm").addEventListener("input", updatePreview);
-  $("opForm").addEventListener("change", updatePreview);
-
-  $("opForm").addEventListener("click", function (ev) {
-    if (!currentOp) { return; }
-    if (ev.target.id === "opCurl") {
-      var request = buildRequest(currentOp);
-      var lines = ["curl -X " + request.method + " " + location.origin + request.url,
-                   "  -H 'Authorization: Bearer $MATRIXARK_API_KEY'"];
-      if (request.body) {
-        lines.push("  -H 'Content-Type: application/json'");
-        lines.push("  -d '" + JSON.stringify(request.body) + "'");
-      }
-      /* The key is named, never pasted: this goes on a clipboard and often into a ticket. */
-      var text = lines.join(" \\\n");
-      window.__matrixarkCopyText(text).then(function (ok) {
-        say($("opMsg"),
-            ok ? "Copied. It reads $MATRIXARK_API_KEY from your environment rather than "
-                 + "carrying your key."
-               : "Could not copy. The command is shown above; select it and copy it by hand.",
-            ok ? "ok" : "err");
-      });
-      return;
-    }
-    if (ev.target.id === "opRun") { runOp(); }
-  });
-
-  function runOp() {
-    var op = currentOp;
-    if (!$("key").value.trim()) { say($("opMsg"), "Enter an API key first.", "info"); return; }
-    var request = buildRequest(op);
-    if (request.problems.length) {
-      say($("opMsg"), request.problems.join(" "), "warn");
-      return;
-    }
-    if (op.destructive && !opHasConfirmField(op)) {
-      var confirmEl = $("opConfirm");
-      if (!confirmEl || confirmEl.value.trim() !== op.id) {
-        say($("opMsg"), "Type " + op.id + " in the confirm box to run this.", "warn");
-        return;
-      }
-    }
-    say($("opMsg"), "Running " + op.label + "…", "info");
-    var started = Date.now();
-    var init = { method: request.method, headers: auth() };
-    if (request.body) {
-      init.headers = Object.assign({ "Content-Type": "application/json" }, init.headers);
-      init.body = JSON.stringify(request.body);
-    }
-    /* Rebuilt rather than read back off `init`: this is what the exchange panel shows, and the
-       real Authorization value must never reach the DOM. */
-    var sent = {
-      method: request.method,
-      url: request.url,
-      headers: Object.assign({}, init.headers),
-      body: request.body || null
-    };
-    fetch(request.url, init)
-      .then(function (r) {
-        var headers = {};
-        try { r.headers.forEach(function (v, k) { headers[k] = v; }); }
-        catch (e) { /* a runtime without an iterable Headers; the rest still reports */ }
-        return r.text().then(function (text) {
-          return { status: r.status, ok: r.ok, text: text, headers: headers };
+  function load() {
+    if (!$("key").value.trim()) { return; }
+    fetch("/v1/admin/config", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        conn("live", "connected");
+        var fields = {};
+        (d.groups || []).forEach(function (g) {
+          (g.fields || []).forEach(function (f) { fields[f.key] = f; });
         });
-      })
-      .then(function (res) {
-        var ms = Date.now() - started;
-        var pretty = res.text, parsed = null;
-        try { parsed = JSON.parse(res.text); pretty = JSON.stringify(parsed, null, 2); }
-        catch (e) { /* leave it raw */ }
-        say($("opMsg"), res.ok
-          ? op.label + " answered " + res.status + " in " + ms + " ms."
-          : op.label + " answered " + res.status + " — " + reason(parsed, res.status),
-          res.ok ? "ok" : "err");
-        var answer = { status: res.status, ms: ms, headers: res.headers,
-                       text: pretty, body: parsed };
-        renderWire(sent, answer);
-        recordCall(op, sent, answer);
-        /* Clear the confirmation after a destructive op succeeds, or the next click runs it again
-           against a box that still says the magic word. */
-        if (res.ok && op.destructive && $("opConfirm")) { $("opConfirm").value = ""; }
+        if (!Object.keys(fields).length && d.fields) { fields = d.fields; }
+        $("profile").innerHTML = settingRows(fields, PROFILE_KEYS, false);
+        $("caps").innerHTML = settingRows(fields, CAP_KEYS, true);
       })
       .catch(function (e) {
-        /* The moved console answers a failure the way the rest of the portal does: a status is the
-           deployment saying no, a fetch that never left is unreachable, and anything else happened
-           here with the answer already in hand. */
-        say($("opMsg"), window.__matrixarkWhyFailed(e), "err");
-        var answer = { status: 0, ms: Date.now() - started, headers: {},
-                       text: "the request did not complete", body: null };
-        renderWire(sent, answer);
-        recordCall(op, sent, answer);
+        var s = window.__matrixarkConnState(e);
+        conn(s[0], s[1]);
+        /* Both panels are drawn from this one call, so both have to say it failed. A panel left
+           on "enter a key" after a load that failed is telling the reader to do something they
+           have already done. */
+        var said = '<div class="msg err">' + esc(window.__matrixarkWhyFailed(e)) + "</div>";
+        $("profile").innerHTML = said;
+        $("caps").innerHTML = said;
+      });
+
+    fetch("/v1/admin/policy", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { $("returnall").innerHTML = renderPolicy(d.knobs || {}); })
+      .catch(function (e) {
+        $("returnall").innerHTML = '<div class="msg err">'
+          + esc(window.__matrixarkWhyFailed(e)) + "</div>";
       });
   }
 
-  renderOps();
-
-  /* ---------- the exchange ---------- */
-  /* The Authorization header is rebuilt as a redaction rather than filtered out of the real one:
-     showing the header names that went out matters ("did it send Content-Type?"), and a value that
-     is never in the DOM cannot be copied into a ticket. */
-  function headerRows(headers) {
-    var names = Object.keys(headers || {});
-    if (!names.length) { return "<div class='empty'>none</div>"; }
-    return "<table class='inv'>" + names.sort().map(function (name) {
-      var value = /^authorization$/i.test(name) ? "Bearer \u2026 (not shown)" : headers[name];
-      return "<tr><th>" + esc(name) + "</th><td class='mono'>" + esc(value) + "</td></tr>";
-    }).join("") + "</table>";
-  }
-
-  function renderWire(sent, answer) {
-    var incident = answer.body && answer.body.incident;
-    $("opWire").innerHTML =
-      "<h3 style='font-size:13px;margin:0 0 6px;font-weight:650'>Sent</h3>" +
-      "<div class='route'>" + esc(sent.method) + " " + esc(sent.url) + "</div>" +
-      headerRows(sent.headers) +
-      (sent.body ? "<pre>" + esc(JSON.stringify(sent.body, null, 2)) + "</pre>" : "") +
-      "<h3 style='font-size:13px;margin:14px 0 6px;font-weight:650'>Answered</h3>" +
-      "<div class='route'>" + esc(String(answer.status)) + " in " + esc(String(answer.ms)) +
-      " ms</div>" +
-      (incident
-        ? "<div class='msg warn'>Incident <span class='mono'>" + esc(incident) +
-          "</span> &mdash; the gateway logged the detail it did not return. Grep this id in the " +
-          "worker&rsquo;s log, at ERROR level under <code>matrixark.gateway</code>.</div>"
-        : "") +
-      headerRows(answer.headers) +
-      "<pre>" + esc(answer.text) + "</pre>";
-  }
-
-  var calls = [];
-  function recordCall(op, sent, answer) {
-    calls.unshift({
-      at: Date.now(), op: op.label, method: sent.method, url: sent.url,
-      status: answer.status, ms: answer.ms,
-      incident: (answer.body && answer.body.incident) || ""
-    });
-    $("opLog").innerHTML = "<table><thead><tr><th>When</th><th>Operation</th><th>Status</th>" +
-      "<th>Took</th><th>Route</th><th>Incident</th></tr></thead><tbody>" +
-      calls.map(function (c) {
-        return "<tr><td>" + esc(window.__matrixarkWhen(c.at)) + "</td><td>" + esc(c.op) +
-          "</td><td><span class='status-chip" + (c.status >= 400 ? " bad" : "") + "'>" +
-          esc(String(c.status)) + "</span></td><td class='num'>" + esc(String(c.ms)) +
-          " ms</td><td class='mono'>" + esc(c.method + " " + c.url) + "</td><td class='mono'>" +
-          (c.incident ? esc(c.incident) : "\u2014") + "</td></tr>";
-      }).join("") + "</tbody></table>";
-  }
+  var stored = null;
+  try { stored = window.sessionStorage.getItem("matrixark_admin_key"); } catch (e) { stored = null; }
+  if (stored) { $("key").value = stored; $("remember").checked = true; }
+  $("key").addEventListener("change", function () {
+    if ($("remember").checked) {
+      try { window.sessionStorage.setItem("matrixark_admin_key", $("key").value.trim()); }
+      catch (e) { /* a tab that refuses storage still works, it just forgets */ }
+    }
+    load();
+  });
+  $("remember").addEventListener("change", function () {
+    try {
+      if ($("remember").checked) {
+        window.sessionStorage.setItem("matrixark_admin_key", $("key").value.trim());
+      } else {
+        window.sessionStorage.removeItem("matrixark_admin_key");
+      }
+    } catch (e) { /* nothing to do */ }
+  });
+  load();
 }());
 </script>
 <script>

@@ -453,6 +453,31 @@ SETTINGS: List[Setting] = [
             "share above is set."),
 
     # ---- retrieval and context budget ----------------------------------------------------------
+    Setting("retrieval.onebox_embedding_first", "retrieval",
+            "MATRIXARK_ONEBOX_EMBEDDING_FIRST",
+            "One-box profile: score on the vector alone", "bool", "1", "live",
+            "ON by default, and it decides how every result on this deployment is ranked. With it "
+            "on, a candidate's score is its vector similarity and nothing else; with it off, the "
+            "score is a blend -- 0.72 of the vector plus 0.28 of a lexical match on the node's "
+            "text.\n\n"
+            "Turning it off gives a query that shares WORDS with a memory a way to find it when "
+            "the encoder does not think the two are close. Leaving it on is what a one-box "
+            "deployment wants when the encoder is good and the scan should not pay to read text "
+            "it will not otherwise use."),
+    Setting("retrieval.project_scan_fields", "retrieval",
+            "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS",
+            "Carry only the fields the scan reads", "bool", "0", "live",
+            "Narrows each scanned row to the fields retrieval actually uses. OFF, and gated on the "
+            "one-box profile above -- it is only safe once the lexical term that reads the text is "
+            "gone.\n\n"
+            "It has been wrong once in a way worth remembering: the row the scan carries is the "
+            "row the pack is built from, so every field it drops is a field the answer cannot "
+            "print. Shipped once dropping the text, and retrieval returned an empty string for "
+            "every hit."),
+    Setting("retrieval.scan_visits_path", "retrieval", "MATRIXARK_SCAN_VISITS_PATH",
+            "Scan visits the node path", "bool", "0", "live",
+            "Read by the retrieve path and offered nowhere until now. Off is the shipped "
+            "behaviour."),
     Setting("retrieval.timeout_ms", "retrieval", "MATRIXARK_RETRIEVAL_TIMEOUT_MS",
             "Retrieval deadline (ms)", "int", "0", "live",
             "How long a retrieve may keep working before it returns what it has. 0 means no "
