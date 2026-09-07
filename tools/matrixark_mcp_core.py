@@ -2499,6 +2499,25 @@ def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:
 _CORE_POSTING_POLICY = "bucketed_by_scope_data_model_index_time"
 _ALREADY_FOLDED_POSTINGS = None
 
+#: The same shape as _ALREADY_FOLDED_POSTINGS below, for the same reason and the same helper: three
+#: functions import `strip_default_debug_lineage_fields` in their bodies, the dotted form raises
+#: ModuleNotFoundError when there is no `tools` package on the path, and Python does not cache that.
+#: Six attempts per retrieve at 238.49 us each, for one resolution that never changes.
+_STRIP_DEFAULT_DEBUG_LINEAGE_FIELDS = None
+
+
+def _strip_default_debug_lineage_fields(value: Any) -> Any:
+    """Resolved once. See _STRIP_DEFAULT_DEBUG_LINEAGE_FIELDS above."""
+    global _STRIP_DEFAULT_DEBUG_LINEAGE_FIELDS
+    helper = _STRIP_DEFAULT_DEBUG_LINEAGE_FIELDS
+    if helper is None:
+        try:
+            from tools.matrixark_mcp_context_pack import strip_default_debug_lineage_fields as helper
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_context_pack import strip_default_debug_lineage_fields as helper
+        _STRIP_DEFAULT_DEBUG_LINEAGE_FIELDS = helper
+    return helper(value)
+
 
 def _core_posting_bucket_key(record: Json):
     index_name = str(record.get("index_name") or "")
@@ -3959,11 +3978,7 @@ def serving_memory_layer_budget(memory_layer_budget: Any, *, include_debug: bool
         "source_codex_event_counts_by_event",
     ]:
         normalized.pop(field, None)
-    try:
-        from tools.matrixark_mcp_context_pack import strip_default_debug_lineage_fields
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_context_pack import strip_default_debug_lineage_fields
-    normalized = strip_default_debug_lineage_fields(normalized)
+    normalized = _strip_default_debug_lineage_fields(normalized)
     for field in list(normalized):
         if isinstance(normalized.get(field), dict) and not normalized[field]:
             normalized.pop(field, None)
@@ -4008,11 +4023,7 @@ def serving_memory_layer_pressure(memory_layer_pressure: Any, *, include_debug: 
         "post_tool_use_source_pressure",
     ]:
         compact.pop(field, None)
-    try:
-        from tools.matrixark_mcp_context_pack import strip_default_debug_lineage_fields
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_context_pack import strip_default_debug_lineage_fields
-    compact = strip_default_debug_lineage_fields(compact)
+    compact = _strip_default_debug_lineage_fields(compact)
     by_dimension = compact.get("by_dimension")
     if isinstance(by_dimension, dict):
         compact["by_dimension"] = {
@@ -4432,11 +4443,7 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
             if compact_pushdown:
                 compact["backend_retrieval_pushdown"] = compact_pushdown
     compact = {key: value for key, value in compact.items() if value not in (None, "", [], {})}
-    try:
-        from tools.matrixark_mcp_context_pack import strip_default_debug_lineage_fields
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_context_pack import strip_default_debug_lineage_fields
-    return strip_default_debug_lineage_fields(compact)
+    return _strip_default_debug_lineage_fields(compact)
 
 
 def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> list[Json]:
