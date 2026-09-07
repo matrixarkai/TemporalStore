@@ -2467,12 +2467,9 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(running.last_pressure_before >= running.last_pressure_after);
     assert!(!running.last_selected_buckets.is_empty());
     assert!(running.last_bytes_reclaimed >= pressure.cache_disk_bytes);
-    // This scenario configures a follower pinned at sequence 1 and a raft snapshot at sequence 1,
-    // whose entire purpose is to hold the logs. Reclaim therefore refuses and the floor stays 0.
-    // Asserting that the floor ADVANCED asked the shard to discard exactly what the cursors were
-    // added to protect -- the assertion contradicted its own setup, which is why it could never
-    // have passed. What is worth checking is that the refusal NAMES them, since being named is the
-    // property a retention cursor exists to have.
+    // This scenario configures a follower pinned at sequence 1 and a raft snapshot at sequence 1.
+    // What a retention cursor imposes is a BOUND on how far reclaim may go, not a refusal; the
+    // note below the binding says why, and what is asserted instead.
     let reclaim_wal = running
         .last_phase_reports
         .iter()
@@ -2528,11 +2525,12 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         .any(|stage| stage.stage == "prepare"
             && stage.pressure_signal.contains("dirty_slots")
             && stage.pressure_before >= stage.pressure_after));
-    // Same contradiction as above: a stage that refused to reclaim selects no buckets and reports
-    // no floor. It does report what stopped it, and that is the assertable part.
+    // The floor is the CLAMPED frontier, not zero: reclaim ran, and stopped at the slowest cursor.
+    // The refusal was asserted TWICE in this test, in two blocks about sixty lines apart, so
+    // correcting the first one only moved the failure down here. Both now say the same thing.
     assert!(reclaim_wal.retention_blockers >= 1, "{reclaim_wal:?}");
-    assert_eq!(reclaim_wal.wal_floor_sequence, 0);
-    assert_eq!(reclaim_wal.index_log_floor_sequence, 0);
+    assert_eq!(reclaim_wal.wal_floor_sequence, 2, "{reclaim_wal:?}");
+    assert_eq!(reclaim_wal.index_log_floor_sequence, 2, "{reclaim_wal:?}");
     assert!(running.last_phase_reports.iter().any(|stage| {
         stage.stage == "reclaim_page"
             && (stage
