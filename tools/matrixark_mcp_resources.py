@@ -89,16 +89,10 @@ DEBUG_RESOURCE_METADATA_FIELDS = {
 }
 
 
-def sanitize_resource_metadata(metadata: Json) -> Json:
-    sanitized = {
-        key: value
-        for key, value in metadata.items()
-        if key not in RAW_BYTE_METADATA_FIELDS
-    }
-    sanitized["parse_warnings"] = normalize_parse_warnings(sanitized)
-    sanitized["raw_storage_policy"] = str(sanitized.get("raw_storage_policy") or "raw_uri_only")
-    sanitized["raw_bytes_stored"] = False
-    return sanitized
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import sanitize_resource_metadata
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import sanitize_resource_metadata
 
 
 def serving_resource_metadata(metadata: Json) -> Json:
@@ -232,14 +226,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_resource_io import is_s3_uri
 
 
-def parse_s3_uri(uri: str) -> tuple[str, str]:
-    if not is_s3_uri(uri):
-        raise MatrixArkError(f"not an s3 uri: {uri}")
-    rest = uri[len("s3://") :]
-    bucket, sep, key = rest.partition("/")
-    if not bucket or not sep or not key:
-        raise MatrixArkError(f"invalid s3 uri: {uri}")
-    return bucket, key
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import parse_s3_uri
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import parse_s3_uri
 
 
 def _cloud_resource_bucket(args: Json, envelope: Json) -> str:
@@ -335,21 +325,10 @@ def download_s3_to_file(uri: str, target: Path) -> Path:
     return target
 
 
-def _resource_object_key(prefix: str, raw_uri: str, source_path: Path | None, resource_type: str) -> str:
-    suffix = Path(raw_uri).name if raw_uri and raw_uri != "inline-resource" else ""
-    if source_path is not None:
-        suffix = source_path.name
-    suffix = safe_identifier(suffix or f"resource.{resource_type or 'txt'}", default="resource")
-    digest = hashlib.sha256()
-    digest.update(raw_uri.encode("utf-8", errors="ignore"))
-    if source_path is not None and source_path.exists() and source_path.is_file():
-        try:
-            with source_path.open("rb") as fh:
-                for block in iter(lambda: fh.read(1024 * 1024), b""):
-                    digest.update(block)
-        except OSError:
-            pass
-    return f"{prefix}/{digest.hexdigest()[:16]}-{suffix}"
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import _resource_object_key
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import _resource_object_key
 
 
 try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it

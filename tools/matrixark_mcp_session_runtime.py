@@ -45,11 +45,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-def attach_memory_layer(record: Json) -> Json:
-    layer = candidate_memory_layer_name(record)
-    if not layer or layer == "unknown":
-        return record
-    return {**record, "memory_layer": layer}
+try:  # the implementation lives in matrixark_codex_hook; this module re-exports it
+    from .matrixark_codex_hook import attach_memory_layer
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_codex_hook import attach_memory_layer
 
 
 def add_codex_selection_policies(bucket: Json, selection: Json, add_count_fn: object) -> None:
