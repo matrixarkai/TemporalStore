@@ -2896,6 +2896,19 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
     except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError, OSError):
         # The client went away mid-write. Nothing to report: this is how a stream normally ends.
         pass
+    except Exception as exc:  # the reason has to reach the page, whatever it was
+        # This side broke. Told nothing, a browser sees only silence, reconnects on the `retry`
+        # above, and breaks again -- for as long as the fault lasts, with nothing to separate it
+        # from a network that died. The planned ending already says why it is going; so does this
+        # one, carrying the token that names the log entry rather than the fault itself.
+        body = _failure(scope, "backend_error", exc)
+        try:
+            await emit(b"event: bye\ndata: " + json.dumps(
+                {"reason": "server_error", "incident": body.get("incident")}
+            ).encode("utf-8") + b"\n\n")
+        except Exception:
+            # The connection is gone as well. The incident is logged either way.
+            pass
     finally:
         watcher.cancel()
         try:
