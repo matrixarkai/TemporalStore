@@ -32,10 +32,9 @@ TS_PROFILE_WAIT_S="${TS_PROFILE_WAIT_S:-20}"
 
 # --- performance flags: live on every profile --------------------------------
 ts_profile_perf_flags() {
-  # WAL: binary framing and binary records. The WAL carries outcomes, not
-  # commands, and encodes them as protobuf rather than JSON.
+  # WAL: binary framing. Records are protobuf unconditionally now, so there is no
+  # longer a variable for that half of it.
   export TS_WAL_BINARY_FRAME="${TS_WAL_BINARY_FRAME:-1}"
-  export TS_WAL_BINARY_RECORDS="${TS_WAL_BINARY_RECORDS:-1}"
   export TS_WAL_OUTCOME_ITEMS="${TS_WAL_OUTCOME_ITEMS:-1}"
   export TS_WAL_DATA_ONLY="${TS_WAL_DATA_ONLY:-1}"
   # One fsync barrier per commit instead of the historical three.

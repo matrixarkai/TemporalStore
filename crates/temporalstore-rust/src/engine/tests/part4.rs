@@ -9692,7 +9692,6 @@ fn what_each_command_recorded_describes_everything_it_changed() {
 #[test]
 fn a_record_carrying_results_is_smaller_than_one_carrying_the_operation() {
     fn wal_bytes(binary: &str, record_results: &str, data_only: &str, writes: usize) -> (u64, u64) {
-        std::env::set_var("TS_WAL_BINARY_RECORDS", binary);
         std::env::set_var("TS_WAL_OUTCOME_ITEMS", record_results);
         std::env::set_var("TS_WAL_DATA_ONLY", data_only);
         let dir = tempfile::tempdir().unwrap();
@@ -9719,7 +9718,6 @@ fn a_record_carrying_results_is_smaller_than_one_carrying_the_operation() {
             .unwrap();
         let total: u64 = records.iter().map(|(_, line)| line.len() as u64).sum();
         let count = records.len() as u64;
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
         std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
         std::env::remove_var("TS_WAL_DATA_ONLY");
         (total, count)
@@ -9862,16 +9860,17 @@ fn a_record_encoded_as_protobuf_reads_back_identical() {
     let mut text_bytes = 0usize;
     let mut binary_bytes = 0usize;
     for record in &records {
-        // Both branches set the flag explicitly. Leaving the text branch to inherit the ambient
-        // environment meant that under a suite run with the binary flag on, the "text" encoding
-        // was binary and the comparison silently tested one encoding against itself.
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
-        let framed = crate::wal::encode_wal_line_for_test(record).expect("text encodes");
+        // The text side is built HERE rather than asked of the writer, because there is no text
+        // writer any more: records are protobuf unconditionally. The warning the previous version
+        // of this comment carried still applies and is the reason for building it by hand -- when
+        // both sides came from the writer, the "text" encoding was whatever the writer was
+        // producing, and the comparison tested one encoding against itself. It does not any more.
+        let framed = crate::log_framing::encode_line(
+            &serde_json::to_vec(record).expect("the text encoding of a record"),
+        );
         text_bytes += framed.len();
 
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
         let framed_binary = crate::wal::encode_wal_line_for_test(record).expect("binary encodes");
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
         binary_bytes += framed_binary.len();
 
         let round_tripped =
@@ -9934,7 +9933,6 @@ fn binary_records_survive_a_reload_through_a_real_log_file() {
             indexes.clone(),
         );
         engine.load_shard(1);
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
         std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
         for index in 0..WRITES {
             let response = engine.execute(ExecuteRequest {
@@ -9947,7 +9945,6 @@ fn binary_records_survive_a_reload_through_a_real_log_file() {
             assert!(response.status.ok, "write {index} failed: {response:?}");
         }
         std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
         // dropped WITHOUT unloading, so the tail has to be replayed off the file.
     }
 
@@ -10218,9 +10215,7 @@ fn a_numeric_component_travels_as_a_number_and_returns_intact() {
     let mut numeric = 0usize;
     let mut textual = 0usize;
     for record in &records {
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
         let framed = crate::wal::encode_wal_line_for_test(record).expect("binary encodes");
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
         let back = crate::wal::decode_wal_line(&framed).expect("binary decodes");
         assert_eq!(
             &back, record,
