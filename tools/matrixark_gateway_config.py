@@ -815,11 +815,6 @@ SETTINGS: List[Setting] = [
             "On, the engine asks the allocator to hand back memory it is no longer using. What is "
             "returned is memory the process was not using, so the trade is one-sided -- the escape "
             "hatch exists because a trim costs a walk of the allocator's free lists."),
-    Setting("storage_engine.scratch_sweep", "storage_engine",
-            "TS_SCRATCH_SWEEP",
-            "Reclaim scratch directories from dead processes", "bool", "1", "live",
-            "On, scratch directories whose owning process is gone are reclaimed. Turn it off only "
-            "to keep an abandoned directory for inspection."),
     Setting("storage_engine.max_retained_finished_jobs", "storage_engine",
             "TS_MAX_RETAINED_FINISHED_JOBS",
             "Completed job statuses kept queryable", "int", "64", "live",

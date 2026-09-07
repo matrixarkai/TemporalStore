@@ -73,24 +73,13 @@ pub(crate) fn owned_scratch_dir(kind: &str) -> Arc<ScratchDirGuard> {
     })
 }
 
-/// TS_SCRATCH_SWEEP: reclaim scratch directories whose owning process is gone. Default ON;
-/// set to a falsey value to leave abandoned directories in place.
-fn sweep_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_SCRATCH_SWEEP")
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
 fn arm_background_sweep() {
+    // Always armed. `TS_SCRATCH_SWEEP` used to be able to skip it. Nothing selected the off
+    // position, and what it bought was a directory belonging to an exited process left on
+    // disk -- which the sweep already reports before removing, and which only a live process
+    // is ever kept for.
     static ARMED: std::sync::Once = std::sync::Once::new();
     ARMED.call_once(|| {
-        if !sweep_enabled() {
-            return;
-        }
         std::thread::spawn(|| {
             let report = sweep_dead_scratch_dirs(&std::env::temp_dir());
             if report.removed > 0 || report.failed > 0 {
