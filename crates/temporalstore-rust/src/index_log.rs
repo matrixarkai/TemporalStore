@@ -1485,6 +1485,7 @@ mod tests {
         assert_eq!(back.applied_wal_sequence, Some(2));
     }
 
+    #[test]
     fn append_delta_grows_log_by_only_the_changed_items() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
