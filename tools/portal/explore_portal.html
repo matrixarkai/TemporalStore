@@ -1058,14 +1058,15 @@
     "scope": "context:retrieve",
     "destructive": false,
     "needs_scope": true,
-    "summary": "Every live memory in the scope, unranked. This is the listing, not the search.",
+    "summary": "The memories in the scope, unranked -- the listing, not the search. A limit does not make it a sample of the whole scope: it takes the NEWEST that many.",
     "fields": [
       {
         "name": "limit",
         "in": "body",
         "kind": "number",
         "default": 50,
-        "label": "Limit"
+        "label": "Limit",
+        "help": "The NEWEST this many, listed oldest first. 0 or blank for the whole scope."
       }
     ]
   },
