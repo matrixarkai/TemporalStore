@@ -4737,47 +4737,10 @@ def synthesize_context_node_summary(
     provider_meta["execution_mode"] = "deterministic_fallback"
     return fallback_summary, provider_meta
 
-def scope_matches(record_scope: Json, query_scope: Json) -> bool:
-    if not query_scope:
-        return True
-    sharing_scope = str(record_scope.get("sharing_scope") or "").strip().lower()
-    if sharing_scope == "global_shared":
-        return True
-    if sharing_scope == "tenant_shared":
-        for field in ["account_id", "account_hash", "tenant_id", "tenant_hash"]:
-            query_value = query_scope.get(field)
-            record_value = record_scope.get(field)
-            if query_value and record_value and query_value != record_value:
-                return False
-        return True
-    explicit_keys = set(query_scope.get("_explicit_scope_keys", []))
-    record_scope_key = str(record_scope.get("scope_key") or "")
-    if record_scope_key:
-        if not scope_key_matches_query(record_scope_key, query_scope, explicit_keys):
-            return False
-        if set(record_scope.keys()).issubset({"scope_key"}):
-            return True
-    for key, value in query_scope.items():
-        if str(key).startswith("_"):
-            continue
-        if key == "scope_key":
-            continue
-        if key == "agent_name" and key not in record_scope:
-            continue
-        if key in {"team", "project"} and key not in record_scope and record_scope_key:
-            continue
-        if key in {"agent_name", "team", "project"} and key not in explicit_keys:
-            continue
-        if key in {"account_id", "tenant_id", "account_hash", "tenant_hash"} and record_scope_key and key not in record_scope:
-            continue
-        if key in {"user_id", "user_hash"} and "user_id" not in explicit_keys:
-            continue
-        if key in {"session_id", "session_hash"}:
-            if "session_id" not in explicit_keys or session_scope_mode(query_scope) == "prefer":
-                continue
-        if record_scope.get(key) != value:
-            return False
-    return True
+try:  # the implementation lives in matrixark_mcp_access_scope; this module re-exports it
+    from tools.matrixark_mcp_access_scope import scope_matches
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_access_scope import scope_matches
 
 
 def candidate_access_scope(record: Json) -> Json:

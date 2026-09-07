@@ -73,59 +73,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_text import text_from_messages
 
 
-def openai_compatible_one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
-    messages = envelope["messages"]
-    indexed = "\n".join(f"{index}. {message.get('role', 'user')}: {message.get('content', '')}" for index, message in enumerate(messages))
-    source_event_ids = envelope.get("source_event_ids", [])
-    source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
-    system = "Return only JSON. You are a one-pass memory extractor for MatrixArk."
-    user = (
-        "Extract memory from this logical conversation batch in one pass. "
-        "Return JSON with keys classification, event_type, batch_summary, entities, segments, indexes. "
-        "Entities must use a stable concise entity_name and a separate state sentence; do not copy the same phrase into both. "
-        "Each entity shape: {entity_type, entity_name, state, confidence, field_patches}; operator is optional and MatrixArk will coerce it to the actual runtime operator. "
-        "Segments shape: {topic, coordinate_tuples, message_indexes, saliency_score, summary_text}. "
-        "Use event_type values like approval_state, budget_update, deadline, procedure, correction, status_update.\n\n"
-        f"Conversation:\n{indexed}\n\nJSON:"
-    )
-    raw = openai_compatible_json_call(system=system, user=user)
-    batch_text = text_from_messages(messages)
-    entities = normalize_extracted_entities(raw.get("entities"), fallback_text=batch_text, source_refs=source_refs, extracted_by="openai_compatible")
-    if not entities:
-        if require_oss_understanding():
-            raise MatrixArkError("OpenAI-compatible extraction returned no entities")
-        entities = extract_batch_entities(messages, envelope)
-        for entity in entities:
-            entity["extracted_by"] = "deterministic_fallback"
-    segments = normalize_extracted_segments(raw.get("segments"), messages)
-    if not segments:
-        if require_oss_understanding():
-            raise MatrixArkError("OpenAI-compatible extraction returned no segments")
-        segments, _segment_meta = detect_memory_segments(messages, {**envelope, "segment_provider": "deterministic"})
-    event_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("event_type") or infer_event_type(batch_text)).lower()).strip("_") or "session"
-    classification = re.sub(r"[^A-Z0-9_]+", "_", str(raw.get("classification") or "BATCH_MEMORY").upper()).strip("_") or "BATCH_MEMORY"
-    indexes = raw.get("indexes") if isinstance(raw.get("indexes"), list) else []
-    normalized_indexes = [str(item) for item in indexes if isinstance(item, str)]
-    normalized_indexes = ordered_unique(normalized_indexes + [context_index_name("event_type", event_type), context_index_name("classification", classification)])
-    return {
-        "mode": "matrixark_one_pass_schema_openai_compatible",
-        "understanding_provider": "openai_compatible",
-        "schema": ONE_PASS_MEMORY_SCHEMA,
-        "classification": classification,
-        "status": str(raw.get("status") or "observed"),
-        "event_type": event_type,
-        "entities": entities,
-        "segments": segments,
-        "segment_provider": {"provider": "openai_compatible", "execution_mode": "llm_json", "model": EXTRACTION_LLM_MODEL, "fallback_used": False, "segment_count": len(segments)},
-        "indexes": normalized_indexes[:8],
-        "batch_summary": summarize_text(str(raw.get("batch_summary") or raw.get("summary") or batch_text), limit=700),
-        "message_count": len(messages),
-        "token_count_estimate": len(tokens(batch_text)),
-        "prior_context": prior_context.get("level", ""),
-        "prior_refs": prior_context.get("refs", []),
-        "prior_message_count": len(prior_context.get("messages", [])),
-        "prior_summary_count": len(prior_context.get("summaries", [])),
-    }
+try:  # the implementation lives in matrixark_mcp_core_extraction; this module re-exports it
+    from tools.matrixark_mcp_core_extraction import openai_compatible_one_pass_memory_extraction
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_extraction import openai_compatible_one_pass_memory_extraction
 
 
 def openai_compatible_resource_facts(chunk: Any, *, chunk_metadata: Json, envelope: Json, raw_uri: str, resource_version: str) -> list[Json]:
@@ -141,75 +92,10 @@ def openai_compatible_resource_facts(chunk: Any, *, chunk_metadata: Json, envelo
     return normalize_extracted_facts(raw.get("facts"), chunk=chunk, chunk_metadata=chunk_metadata, raw_uri=raw_uri, resource_version=resource_version, provider="openai_compatible")
 
 
-def compact_internal_extraction(envelope: Json, *, prior_context: Json) -> Json:
-    """Rules-first internal extraction used by the local MCP MVP.
-
-    Production MatrixArk can replace this with OSS/OpenAI/provider extraction,
-    but callers still see the same Mem0-style envelope contract.
-    """
-
-    provider = understanding_provider(envelope)
-    if provider == "oss_encoder":
-        return oss_encoder_compact_extraction(envelope, prior_context=prior_context)
-
-    text = text_from_messages(envelope["messages"]).lower()
-    if envelope["kind"] == "feedback":
-        positive = any(term in text for term in ["yes", "confirmed", "approved", "correct", "looks good"])
-        negative = any(term in text for term in ["no", "wrong", "incorrect", "reject", "not correct"])
-        prior_level = prior_context.get("level", "")
-        if not prior_level:
-            return {
-                "mode": "matrixark_internal",
-                "classification": "AMBIGUOUS",
-                "quality_warning": "short feedback lacks prior context",
-                "prior_refs": [],
-            }
-        warning = ""
-        if prior_level == "user":
-            warning = "session_id missing; used user_id fallback for prior context"
-        prior_refs = prior_context.get("refs", [])
-        if positive:
-            return {
-                "mode": "matrixark_internal",
-                "classification": "CONFIRMATION",
-                "status": "accepted",
-                "prior_context": prior_level,
-                "prior_refs": prior_refs,
-                "prior_message_count": len(prior_context.get("messages", [])),
-                "prior_summary_count": len(prior_context.get("summaries", [])),
-                "quality_warning": warning,
-            }
-        if negative:
-            return {
-                "mode": "matrixark_internal",
-                "classification": "CORRECTION",
-                "status": "rejected",
-                "prior_context": prior_level,
-                "prior_refs": prior_refs,
-                "prior_message_count": len(prior_context.get("messages", [])),
-                "prior_summary_count": len(prior_context.get("summaries", [])),
-                "quality_warning": warning,
-            }
-        return {
-            "mode": "matrixark_internal",
-            "classification": "FEEDBACK",
-            "status": "observed",
-            "prior_context": prior_level,
-            "prior_refs": prior_refs,
-            "prior_message_count": len(prior_context.get("messages", [])),
-            "prior_summary_count": len(prior_context.get("summaries", [])),
-            "quality_warning": warning,
-        }
-    return {
-        "mode": "matrixark_internal",
-        "classification": "NEW_EVENT",
-        "status": "observed",
-        "prior_context": prior_context.get("level", ""),
-        "prior_refs": prior_context.get("refs", []),
-        "prior_message_count": len(prior_context.get("messages", [])),
-        "prior_summary_count": len(prior_context.get("summaries", [])),
-        "quality_warning": "",
-    }
+try:  # the implementation lives in matrixark_mcp_core_extraction; this module re-exports it
+    from tools.matrixark_mcp_core_extraction import compact_internal_extraction
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_extraction import compact_internal_extraction
 
 
 ONE_PASS_MEMORY_SCHEMA: Json = {
@@ -361,48 +247,7 @@ def resource_extraction_mode(envelope: Json) -> str:
     return "matrixark_resource_schema"
 
 
-def extract_resource_facts(chunk: Any, *, chunk_metadata: Json, envelope: Json, raw_uri: str, resource_version: str) -> list[Json]:
-    """Extract cited resource facts through the same provider-shaped contract as messages.
-
-    The local implementation is deterministic for CI. OSS/OpenAI-compatible
-    providers should emit the same fields so storage, indexes, and replay stay
-    unchanged.
-    """
-    mode = resource_extraction_mode(envelope)
-    provider = understanding_provider(envelope)
-    if provider in {"openai", "openai_compatible", "openai_compatible_llm"}:
-        try:
-            model_facts = openai_compatible_resource_facts(
-                chunk,
-                chunk_metadata=chunk_metadata,
-                envelope=envelope,
-                raw_uri=raw_uri,
-                resource_version=resource_version,
-            )
-            if model_facts or require_oss_understanding():
-                return model_facts
-        except MatrixArkError:
-            if require_oss_understanding():
-                raise
-    facts: list[Json] = []
-    for fact_schema in matched_resource_fact_schemas(chunk.text, chunk.metadata):
-        fact_event_type = str(fact_schema["fact_type"])
-        fact_entity_type = str(fact_schema["entity_type"])
-        fact_value = extract_resource_fact_value(chunk.text, fact_event_type)
-        facts.append(
-            {
-                "mode": mode,
-                "classification": "RESOURCE_FACT",
-                "event_type": fact_event_type,
-                "entity_type": fact_entity_type,
-                "status": "observed",
-                "value": fact_value,
-                "entity_name": resource_fact_entity_name(fact_schema, fact_value, chunk_metadata, raw_uri),
-                "confidence": 0.82 if fact_event_type != "resource_fact" else 0.68,
-                "source_chunk_hash": chunk.chunk_hash,
-                "source_ref": chunk.source_ref,
-                "resource_version": resource_version,
-                "extraction_provider": understanding_provider(envelope),
-            }
-        )
-    return facts
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from tools.matrixark_mcp_core import extract_resource_facts
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import extract_resource_facts
