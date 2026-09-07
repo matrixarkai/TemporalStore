@@ -493,6 +493,63 @@
 
 </main>
 <script>
+/* Helpers every page may call, placed before the page's own script.
+
+   This one lived in the nav block, which is emitted AFTER the page script. Three pages
+   called it from their own script and read as working, because a browser runs both blocks
+   before anyone clicks anything. The cost only showed when something ran a page's script on
+   its own: the call threw, the browse path caught it along with everything else, and the
+   screen said "Could not reach the gateway" about a gateway it had never asked. A helper
+   that is shared is defined where every caller can already see it. */
+  window.__matrixarkCopyText = function (text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(
+          function () { return true; }, function () { return false; });
+      }
+    } catch (e) { /* falls through to the failure below */ }
+    return Promise.resolve(false);
+  };
+
+  window.__matrixarkWhy = function (body, fallback) {
+    body = body || {};
+    var text = body.detail || body.error || fallback;
+    if (body.required && body.required.length) {
+      text += " — this needs " + [].concat(body.required).join(" or ");
+    }
+    /* A backend failure now answers with a sentence that deliberately says nothing about the
+       inside of the deployment, and a token naming the log entry that does. Showing the token is
+       the whole point of it: without it the reader has a polite sentence and no way to get any
+       further, and an operator has a log they cannot tie to the report. */
+    if (body.incident) {
+      text += " — incident " + body.incident;
+    }
+    return text;
+  };
+
+  window.__matrixarkFailure = function (status, overrides) {
+    if (overrides && overrides[status]) { return overrides[status]; }
+    if (status === 401) { return "This key was not accepted."; }
+    if (status === 403) { return "This key lacks the scope for that call."; }
+    if (status === 413) { return "That request is larger than this deployment accepts."; }
+    if (status === 429) { return "Rate limited — the edge is throttling this key."; }
+    if (status === 502) { return "The gateway could not reach the storage behind it."; }
+    if (status === 503) { return "The gateway is not ready to serve this yet."; }
+    if (status === 504) { return "The backend did not answer in time."; }
+    return "The gateway answered " + status + ".";
+  };
+
+  window.__matrixarkWhen = function (ms) {
+    /* 0 is "no timestamp" here, not the epoch: the catalog site this replaces read
+       `ms ? ... : dash`, and a record with no time would otherwise date to 1970. */
+    if (!ms) { return "—"; }
+    var at = new Date(Number(ms));
+    if (isNaN(at.getTime())) { return "—"; }
+    try { return at.toLocaleString(undefined, { timeZoneName: "short" }); }
+    catch (e) { return at.toLocaleString(); }
+  };
+</script>
+<script>
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
@@ -1105,31 +1162,7 @@ function liveStream(options) {
    * `timeZoneName: "short"` rather than the IANA name: "GMT+1" beside the time reads at a glance
    * where "Europe/London" pushes the useful part off the end of a table cell. Falls back to the
    * bare local string on a runtime without it, which is no worse than what was there before. */
-  window.__matrixarkWhen = function (ms) {
-    /* 0 is "no timestamp" here, not the epoch: the catalog site this replaces read
-       `ms ? ... : dash`, and a record with no time would otherwise date to 1970. */
-    if (!ms) { return "—"; }
-    var at = new Date(Number(ms));
-    if (isNaN(at.getTime())) { return "—"; }
-    try { return at.toLocaleString(undefined, { timeZoneName: "short" }); }
-    catch (e) { return at.toLocaleString(); }
-  };
 
-  window.__matrixarkWhy = function (body, fallback) {
-    body = body || {};
-    var text = body.detail || body.error || fallback;
-    if (body.required && body.required.length) {
-      text += " — this needs " + [].concat(body.required).join(" or ");
-    }
-    /* A backend failure now answers with a sentence that deliberately says nothing about the
-       inside of the deployment, and a token naming the log entry that does. Showing the token is
-       the whole point of it: without it the reader has a polite sentence and no way to get any
-       further, and an operator has a log they cannot tie to the report. */
-    if (body.incident) {
-      text += " — incident " + body.incident;
-    }
-    return text;
-  };
 
   /* One sentence per gateway status, for every page.
    *
@@ -1145,27 +1178,7 @@ function liveStream(options) {
    * This is the FALLBACK. A refusal that carries a body is explained by __matrixarkWhy from what
    * the gateway said; this is what the reader gets when there is nothing but a number.
    */
-  window.__matrixarkFailure = function (status, overrides) {
-    if (overrides && overrides[status]) { return overrides[status]; }
-    if (status === 401) { return "This key was not accepted."; }
-    if (status === 403) { return "This key lacks the scope for that call."; }
-    if (status === 413) { return "That request is larger than this deployment accepts."; }
-    if (status === 429) { return "Rate limited — the edge is throttling this key."; }
-    if (status === 502) { return "The gateway could not reach the storage behind it."; }
-    if (status === 503) { return "The gateway is not ready to serve this yet."; }
-    if (status === 504) { return "The backend did not answer in time."; }
-    return "The gateway answered " + status + ".";
-  };
 
-  window.__matrixarkCopyText = function (text) {
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        return navigator.clipboard.writeText(text).then(
-          function () { return true; }, function () { return false; });
-      }
-    } catch (e) { /* falls through to the failure below */ }
-    return Promise.resolve(false);
-  };
 }());
 
 /* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims

@@ -321,6 +321,65 @@ EXTRA_CSS = """
 # The shared live strip's script, placed on every page: the generated ones through TAIL, the two
 # hand-maintained ones through `_with_nav_js`. It is deliberately self-contained -- no helper from
 # any page's own script -- because it has to run identically on pages that share nothing else.
+SHARED_JS = r'''<script>
+/* Helpers every page may call, placed before the page's own script.
+
+   This one lived in the nav block, which is emitted AFTER the page script. Three pages
+   called it from their own script and read as working, because a browser runs both blocks
+   before anyone clicks anything. The cost only showed when something ran a page's script on
+   its own: the call threw, the browse path caught it along with everything else, and the
+   screen said "Could not reach the gateway" about a gateway it had never asked. A helper
+   that is shared is defined where every caller can already see it. */
+  window.__matrixarkCopyText = function (text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(
+          function () { return true; }, function () { return false; });
+      }
+    } catch (e) { /* falls through to the failure below */ }
+    return Promise.resolve(false);
+  };
+
+  window.__matrixarkWhy = function (body, fallback) {
+    body = body || {};
+    var text = body.detail || body.error || fallback;
+    if (body.required && body.required.length) {
+      text += " — this needs " + [].concat(body.required).join(" or ");
+    }
+    /* A backend failure now answers with a sentence that deliberately says nothing about the
+       inside of the deployment, and a token naming the log entry that does. Showing the token is
+       the whole point of it: without it the reader has a polite sentence and no way to get any
+       further, and an operator has a log they cannot tie to the report. */
+    if (body.incident) {
+      text += " — incident " + body.incident;
+    }
+    return text;
+  };
+
+  window.__matrixarkFailure = function (status, overrides) {
+    if (overrides && overrides[status]) { return overrides[status]; }
+    if (status === 401) { return "This key was not accepted."; }
+    if (status === 403) { return "This key lacks the scope for that call."; }
+    if (status === 413) { return "That request is larger than this deployment accepts."; }
+    if (status === 429) { return "Rate limited — the edge is throttling this key."; }
+    if (status === 502) { return "The gateway could not reach the storage behind it."; }
+    if (status === 503) { return "The gateway is not ready to serve this yet."; }
+    if (status === 504) { return "The backend did not answer in time."; }
+    return "The gateway answered " + status + ".";
+  };
+
+  window.__matrixarkWhen = function (ms) {
+    /* 0 is "no timestamp" here, not the epoch: the catalog site this replaces read
+       `ms ? ... : dash`, and a record with no time would otherwise date to 1970. */
+    if (!ms) { return "—"; }
+    var at = new Date(Number(ms));
+    if (isNaN(at.getTime())) { return "—"; }
+    try { return at.toLocaleString(undefined, { timeZoneName: "short" }); }
+    catch (e) { return at.toLocaleString(); }
+  };
+</script>'''
+
+
 NAV_JS = r'''<script>
 /* One copy helper for every page. It resolves true when the text reached the clipboard and false
    when it did not: no clipboard API at all (an http:// origin, which a self-hosted portal often
@@ -352,31 +411,7 @@ NAV_JS = r'''<script>
    * `timeZoneName: "short"` rather than the IANA name: "GMT+1" beside the time reads at a glance
    * where "Europe/London" pushes the useful part off the end of a table cell. Falls back to the
    * bare local string on a runtime without it, which is no worse than what was there before. */
-  window.__matrixarkWhen = function (ms) {
-    /* 0 is "no timestamp" here, not the epoch: the catalog site this replaces read
-       `ms ? ... : dash`, and a record with no time would otherwise date to 1970. */
-    if (!ms) { return "—"; }
-    var at = new Date(Number(ms));
-    if (isNaN(at.getTime())) { return "—"; }
-    try { return at.toLocaleString(undefined, { timeZoneName: "short" }); }
-    catch (e) { return at.toLocaleString(); }
-  };
 
-  window.__matrixarkWhy = function (body, fallback) {
-    body = body || {};
-    var text = body.detail || body.error || fallback;
-    if (body.required && body.required.length) {
-      text += " — this needs " + [].concat(body.required).join(" or ");
-    }
-    /* A backend failure now answers with a sentence that deliberately says nothing about the
-       inside of the deployment, and a token naming the log entry that does. Showing the token is
-       the whole point of it: without it the reader has a polite sentence and no way to get any
-       further, and an operator has a log they cannot tie to the report. */
-    if (body.incident) {
-      text += " — incident " + body.incident;
-    }
-    return text;
-  };
 
   /* One sentence per gateway status, for every page.
    *
@@ -392,27 +427,7 @@ NAV_JS = r'''<script>
    * This is the FALLBACK. A refusal that carries a body is explained by __matrixarkWhy from what
    * the gateway said; this is what the reader gets when there is nothing but a number.
    */
-  window.__matrixarkFailure = function (status, overrides) {
-    if (overrides && overrides[status]) { return overrides[status]; }
-    if (status === 401) { return "This key was not accepted."; }
-    if (status === 403) { return "This key lacks the scope for that call."; }
-    if (status === 413) { return "That request is larger than this deployment accepts."; }
-    if (status === 429) { return "Rate limited — the edge is throttling this key."; }
-    if (status === 502) { return "The gateway could not reach the storage behind it."; }
-    if (status === 503) { return "The gateway is not ready to serve this yet."; }
-    if (status === 504) { return "The backend did not answer in time."; }
-    return "The gateway answered " + status + ".";
-  };
 
-  window.__matrixarkCopyText = function (text) {
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        return navigator.clipboard.writeText(text).then(
-          function () { return true; }, function () { return false; });
-      }
-    } catch (e) { /* falls through to the failure below */ }
-    return Promise.resolve(false);
-  };
 }());
 
 /* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims
@@ -5799,6 +5814,7 @@ API_JS = r"""
 
 TAIL = """
 </main>
+%(sharedjs)s
 %(js)s
 %(navjs)s
 </body>
@@ -5816,7 +5832,8 @@ def emit(filename, title, body, js, active):
         page_js = TABS_JS.strip() + "\n" + page_js
     html = (HEAD % {"title": title, "css": css}
             + rendered
-            + (TAIL % {"js": page_js, "navjs": NAV_JS.strip()}))
+            + (TAIL % {"sharedjs": SHARED_JS.strip(), "js": page_js,
+                       "navjs": NAV_JS.strip()}))
     path = os.path.join(PORTAL, filename)
     io.open(path, "w", encoding="utf-8", newline="\n").write(html)
     print("wrote %s (%d bytes)" % (path, len(html)))
@@ -5831,8 +5848,40 @@ emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CA
 
 
 # ---- add the nav to the two existing pages ------------------------------------------------------
+SHARED_JS_MARKER = "/* Helpers every page may call"
 TABS_JS_MARKER = "/* Tabs, for every portal page whose body declares a tablist."
 NAV_JS_MARKER = "/* The shared live strip."
+
+
+def _without_shared_js(text):
+    """Take out every copy of the shared helper block.
+
+    Every copy, not the first: the block was once prepended to a write that replaced only the nav
+    block beneath it, so a page could accumulate one per build. Taking them all out means a page
+    that collected some heals on the next run instead of carrying them forward.
+    """
+    while SHARED_JS_MARKER in text:
+        marker = text.index(SHARED_JS_MARKER)
+        start = text.rindex("<script>", 0, marker)
+        end = text.index("</script>", start) + len("</script>")
+        text = text[:start] + text[end:].lstrip(chr(10))
+    return text
+
+
+def _with_shared_js(text):
+    """Put the shared helpers in, before the page's own script.
+
+    Taken out and put back rather than replaced where they sit. These two pages are edited by
+    hand and rebuilt repeatedly, and the block was once written next to the nav -- at the END of
+    the body, after the script that calls it. Replacing in place would carry that position
+    forward for ever; removing and re-placing means the current rule always wins.
+    """
+    text = _without_shared_js(text)
+    if "<script>" not in text:
+        print("no <script> to place the shared helpers before")
+        sys.exit(1)
+    at = text.index("<script>")
+    return text[:at] + SHARED_JS.strip() + chr(10) + text[at:]
 
 
 def _with_nav_js(text):
@@ -5915,7 +5964,7 @@ def inject(filename, anchor, active):
         # The CSS is refreshed here too. It used to be written only on the first injection,
         # so these two pages kept a stylesheet that stopped matching the nav they were being
         # given -- the strip was styled on five pages and bare on two.
-        rendered = _with_tabs_js(_with_nav_js(_with_nav_css(replaced)))
+        rendered = _with_shared_js(_with_tabs_js(_with_nav_js(_with_nav_css(replaced))))
         io.open(path, "w", encoding="utf-8", newline="\n").write(rendered)
         print("nav refreshed in %s" % filename)
         return
@@ -5924,7 +5973,7 @@ def inject(filename, anchor, active):
         sys.exit(1)
     text = _with_nav_css(text)
     text = text.replace(anchor, anchor + "\n" + nav(active), 1)
-    text = _with_tabs_js(_with_nav_js(text))
+    text = _with_shared_js(_with_tabs_js(_with_nav_js(text)))
     io.open(path, "w", encoding="utf-8", newline="\n").write(text)
     print("nav added to %s" % filename)
 
