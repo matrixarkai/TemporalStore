@@ -33,6 +33,29 @@ except ImportError:
 )
 
 
+#: How many record locations to ask for in one `batch_hget`.
+#:
+#: Measured against the live 16,717-record store: 100/1000/4000 complete in under a second; 8000
+#: came back with 5,146 of 8,000 and no error; the whole store raised. 1000 sits an order of
+#: magnitude under where truncation began.
+#:
+#: Deliberately a constant and not an environment variable. The failure this guards against is a
+#: silent one, and a knob with a second default is its own silent failure.
+BATCH_HGET_CHUNK = 1000
+
+
+def _batch_hget_degraded_log(chunks: int, chunk_size: int) -> None:
+    """Report that a batched read fell back to per-record reads, and roughly what it cost."""
+    try:  # package path
+        from tools.matrixark_mcp_core import _mcp_debug_log
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_core import _mcp_debug_log
+    _mcp_debug_log(
+        f"matrixark batch_hget degraded to per-record reads for {chunks} "
+        f"chunk(s) of {chunk_size}: about {chunks * chunk_size} records read one at a time"
+    )
+
+
 class _TemporalDirectRetrieveMixin:
     def retrieve(self, args: Json) -> Json:
         self._ensure_backend_metric_fields()
@@ -391,23 +414,47 @@ class _TemporalDirectRetrieveMixin:
             for sequence in range(count):
                 record_key, record_id = self._record_location(sequence)
                 entries.append({"key": record_key, "field": record_id})
-            try:
-                read_records = batch_hget(entries)
-            except Exception as exc:
-                if is_retryable_temporalstore_error(exc):
-                    raise
-                read_records = []
-            for item in read_records:
-                if not isinstance(item, dict):
-                    continue
-                payload = item.get("value", "")
-                if not payload:
-                    continue
-                decoded = json.loads(str(payload))
-                if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
-                    records.extend(item for item in decoded["record_bundle"] if isinstance(item, dict))
-                elif isinstance(decoded, dict):
-                    records.append(decoded)
+            degraded_chunks = 0
+            for start in range(0, len(entries), BATCH_HGET_CHUNK):
+                block = entries[start:start + BATCH_HGET_CHUNK]
+                try:
+                    read_records = batch_hget(block)
+                except Exception as exc:
+                    if is_retryable_temporalstore_error(exc):
+                        raise
+                    # Degrade THIS chunk, not the store. One unreadable value used to cost every
+                    # record: the batch covered all of them, so a single non-UTF-8 payload made the
+                    # call raise, the raise became an empty list, and an empty list is
+                    # indistinguishable from an empty store -- so every record was refetched one at
+                    # a time, twice per retrieve.
+                    degraded_chunks += 1
+                    read_records = []
+                    for entry in block:
+                        try:
+                            value = self._client.hget(entry["key"], entry["field"])
+                        except Exception as inner_exc:
+                            if is_retryable_temporalstore_error(inner_exc):
+                                raise
+                            continue
+                        if value:
+                            read_records.append(
+                                {"key": entry["key"], "field": entry["field"], "value": value}
+                            )
+                for item in read_records:
+                    if not isinstance(item, dict):
+                        continue
+                    payload = item.get("value", "")
+                    if not payload:
+                        continue
+                    decoded = json.loads(str(payload))
+                    if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
+                        records.extend(item for item in decoded["record_bundle"] if isinstance(item, dict))
+                    elif isinstance(decoded, dict):
+                        records.append(decoded)
+            if degraded_chunks:
+                # Said out loud: the old whole-store fallback was silent, which is why a 20x
+                # slowdown ran unnoticed for as long as one bad value sat in the store.
+                _batch_hget_degraded_log(degraded_chunks, BATCH_HGET_CHUNK)
             if records or count == 0:
                 return records
         for sequence in range(count):
