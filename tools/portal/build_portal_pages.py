@@ -356,6 +356,36 @@ SHARED_JS = r'''<script>
     return text;
   };
 
+  window.__matrixarkNeverArrived = function (e) {
+    /* True when the request never left. A status means it did leave and was answered, and any
+       other throw happened here, with the answer already in hand. The messages fetch itself
+       produces are a short known set; anything else is this page's own. */
+    if (typeof e === "number") { return false; }
+    var text = e && e.message ? String(e.message) : (e == null ? "" : String(e));
+    return !text
+      || /failed to fetch|networkerror|load failed|network request failed|the network connection was lost/i.test(text);
+  };
+
+  window.__matrixarkWhyFailed = function (e, failure) {
+    /* A rejection carrying a status is the deployment answering. A rejection from fetch itself is
+       the request never leaving. A throw after the answer arrived is THIS PAGE failing to show
+       what it was given -- and that used to read "Could not reach the gateway", about a gateway
+       that had just answered.
+
+       The last two are told apart by the message fetch produces, which is one of a short known
+       set. Where it is not recognised the page repeats what it caught rather than guessing: an
+       unfamiliar message shown as it came is still more than a sentence about the network. */
+    if (typeof e === "number") {
+      return (failure || window.__matrixarkFailure)(e);
+    }
+    if (window.__matrixarkNeverArrived(e)) {
+      return "Could not reach the gateway.";
+    }
+    var text = e && e.message ? String(e.message) : String(e);
+    return "The gateway answered, but this page could not show it \u2014 " + text
+      + ". That is a fault in this page, not in the deployment.";
+  };
+
   window.__matrixarkFailure = function (status, overrides) {
     if (overrides && overrides[status]) { return overrides[status]; }
     if (status === 401) { return "This key was not accepted."; }
@@ -1852,7 +1882,7 @@ SETUP_JS = r"""
       .catch(function (e) {
         /* A backend that cannot answer must not read as "nothing is pending". */
         $("encoding").innerHTML = '<div class="msg err">' +
-          esc(typeof e === "number" ? failure(e) : "Could not reach the gateway.") +
+          esc(window.__matrixarkWhyFailed(e, failure)) +
           " The encoding state is unknown, not empty.</div>";
         $("encodeAux").textContent = "unknown";
         encodePace(false);
@@ -2177,7 +2207,7 @@ SETUP_JS = r"""
       .catch(function (e) {
         policyView = null;
         $("policy").innerHTML = '<div class="empty">' +
-          esc(typeof e === "number" ? failure(e) : "Could not reach the gateway.") + "</div>";
+          esc(window.__matrixarkWhyFailed(e, failure)) + "</div>";
       });
   }
 
@@ -2298,7 +2328,7 @@ SETUP_JS = r"""
         if (!res.body.persisted && res.body.persist_note) { note += " " + res.body.persist_note; }
         say($("polMsg"), note, refused.length || !res.body.persisted ? "warn" : "ok");
       })
-      .catch(function () { say($("polMsg"), "Could not reach the gateway.", "err"); });
+      .catch(function (e) { say($("polMsg"), window.__matrixarkWhyFailed(e), "err"); });
   }
 
   function polLevelHint() {
@@ -2449,8 +2479,11 @@ SETUP_JS = r"""
           $("presets").innerHTML = '<div class="empty">Enter an admin key to see the presets.</div>';
           $("models").innerHTML = '<div class="empty">Enter an admin key to choose models.</div>';
         } else {
-          conn("down", "gateway unreachable");
-          $("groups").innerHTML = '<section><div class="msg err">Could not reach the gateway.</div></section>';
+          conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
+               window.__matrixarkNeverArrived(e) ? "gateway unreachable"
+                                                : "this page could not show the answer");
+          $("groups").innerHTML = '<section><div class="msg err">'
+            + esc(window.__matrixarkWhyFailed(e)) + "</div></section>";
         }
       });
   }
@@ -2491,9 +2524,9 @@ SETUP_JS = r"""
           : "Saved and live now." + elsewhere, restart.length || workers > 1 ? "info" : "ok");
         load();
       })
-      .catch(function () {
+      .catch(function (e) {
         $("save").disabled = false;
-        say($("saveMsg"), "Could not reach the gateway.", "err");
+        say($("saveMsg"), window.__matrixarkWhyFailed(e), "err");
       });
   }
 
@@ -2549,7 +2582,7 @@ SETUP_JS = r"""
       .catch(function (e) {
         $("test").disabled = false;
         $("probe").innerHTML = '<div class="msg err">' +
-          esc(typeof e === "number" ? failure(e) : "Could not reach the gateway.") + "</div>";
+          esc(window.__matrixarkWhyFailed(e, failure)) + "</div>";
       });
   }
 
@@ -2923,7 +2956,7 @@ SETUP_JS = r"""
           plan.ok ? (honoured ? "ok" : "info") : "err");
       })
       .catch(function (e) {
-        say($("depMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+        say($("depMsg"), window.__matrixarkWhyFailed(e, failure),
             "err");
       });
   }
@@ -3091,7 +3124,7 @@ SETUP_JS = r"""
         ? "Exported. " + d.secrets_omitted.join(", ") + " left out — set the key on the target."
         : "Exported.", "ok");
     }).catch(function (e) {
-      say($("importMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+      say($("importMsg"), window.__matrixarkWhyFailed(e, failure),
           "err");
     });
   });
@@ -3107,7 +3140,7 @@ SETUP_JS = r"""
         setTimeout(function () { $("copyCfgCurl").textContent = "copy as curl"; }, 1400);
       });
     }).catch(function (e) {
-      say($("importMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+      say($("importMsg"), window.__matrixarkWhyFailed(e, failure),
           "err");
     });
   });
@@ -3157,9 +3190,9 @@ SETUP_JS = r"""
             "deployment: " + missing.join(", ") + ". An export never carries them.", "info");
         });
       })
-      .catch(function () {
+      .catch(function (e) {
         $("importCfg").disabled = false;
-        say($("importMsg"), "Could not reach the gateway.", "err");
+        say($("importMsg"), window.__matrixarkWhyFailed(e), "err");
       });
   });
 
@@ -3205,7 +3238,7 @@ SETUP_JS = r"""
       .catch(function (e) {
         say($("grafanaMsg"), e === 404
           ? "This deployment does not bundle the monitoring assets."
-          : (typeof e === "number" ? failure(e) : "Could not reach the gateway."), "err");
+          : (window.__matrixarkWhyFailed(e, failure)), "err");
       });
   }
 
@@ -3580,7 +3613,7 @@ CATALOG_JS = r"""
         load(true);
         say($("listMsg"), "Skill " + (to === "disabled" ? "disabled" : "enabled") + ".", "ok");
       })
-      .catch(function () { say($("listMsg"), "Could not reach the gateway.", "err"); });
+      .catch(function (e) { say($("listMsg"), window.__matrixarkWhyFailed(e), "err"); });
   }
 
   function resourcesHtml(rows) {
@@ -3672,8 +3705,10 @@ CATALOG_JS = r"""
         say($("listMsg"), "This key cannot read the catalog. It needs skill:read and resource:read.",
             "err");
       } else {
-        conn("down", "gateway unreachable");
-        say($("listMsg"), "Could not reach the gateway.", "err");
+        conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
+             window.__matrixarkNeverArrived(e) ? "gateway unreachable"
+                                              : "this page could not show the answer");
+        say($("listMsg"), window.__matrixarkWhyFailed(e), "err");
       }
     });
   }
@@ -4089,8 +4124,11 @@ OVERVIEW_JS = r"""
           $("checks").innerHTML = '<div class="empty">Enter an admin-scoped key above to check ' +
             "this deployment.</div>";
         } else {
-          conn("down", "gateway unreachable");
-          $("checks").innerHTML = '<div class="msg err">Could not reach the gateway.</div>';
+          conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
+               window.__matrixarkNeverArrived(e) ? "gateway unreachable"
+                                                : "this page could not show the answer");
+          $("checks").innerHTML = '<div class="msg err">' + esc(window.__matrixarkWhyFailed(e))
+            + "</div>";
         }
       });
   }
@@ -4573,7 +4611,7 @@ EXPLORE_JS = r"""
       .catch(function (e) {
         $("ask").disabled = false;
         $("pack").innerHTML = '<div class="empty">Nothing retrieved.</div>';
-        say($("askMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.", "err");
+        say($("askMsg"), window.__matrixarkWhyFailed(e, failure), "err");
       });
   }
 
@@ -4602,9 +4640,9 @@ EXPLORE_JS = r"""
             + "see it yet.", "ok");
         $("note").value = "";
       })
-      .catch(function () {
+      .catch(function (e) {
         $("add").disabled = false;
-        say($("addMsg"), "Could not reach the gateway.", "err");
+        say($("addMsg"), window.__matrixarkWhyFailed(e), "err");
       });
   }
 
@@ -4632,7 +4670,7 @@ EXPLORE_JS = r"""
            Same wording and the same message line as that sibling, which already named the cause
            on failure while this one was silent. */
         $("users").innerHTML = '<div class="empty">Not loaded.</div>';
-        say($("browseMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+        say($("browseMsg"), window.__matrixarkWhyFailed(e, failure),
             "err");
       });
 
@@ -4658,7 +4696,7 @@ EXPLORE_JS = r"""
       })
       .catch(function (e) {
         $("memories").innerHTML = '<div class="empty">Not loaded.</div>';
-        say($("browseMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+        say($("browseMsg"), window.__matrixarkWhyFailed(e, failure),
             "err");
       });
   }
@@ -5175,7 +5213,7 @@ EXPLORE_JS = r"""
            against a box that still says the magic word. */
         if (res.ok && op.destructive && $("opConfirm")) { $("opConfirm").value = ""; }
       })
-      .catch(function () { say($("opMsg"), "Could not reach the gateway.", "err"); });
+      .catch(function (e) { say($("opMsg"), window.__matrixarkWhyFailed(e), "err"); });
   }
 
   renderOps();
@@ -5272,7 +5310,7 @@ EXPLORE_JS = r"""
           " records. It runs on the server — this tab can be closed.", "ok");
         watchBatch(res.body.job_id, res.body.total);
       })
-      .catch(function () { say($("batchMsg"), "Could not reach the gateway.", "err"); });
+      .catch(function (e) { say($("batchMsg"), window.__matrixarkWhyFailed(e), "err"); });
   }
 
   /* Watched from the shared stream rather than a timer of its own: the job's progress is already

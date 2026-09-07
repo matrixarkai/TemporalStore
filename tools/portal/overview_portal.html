@@ -527,6 +527,36 @@
     return text;
   };
 
+  window.__matrixarkNeverArrived = function (e) {
+    /* True when the request never left. A status means it did leave and was answered, and any
+       other throw happened here, with the answer already in hand. The messages fetch itself
+       produces are a short known set; anything else is this page's own. */
+    if (typeof e === "number") { return false; }
+    var text = e && e.message ? String(e.message) : (e == null ? "" : String(e));
+    return !text
+      || /failed to fetch|networkerror|load failed|network request failed|the network connection was lost/i.test(text);
+  };
+
+  window.__matrixarkWhyFailed = function (e, failure) {
+    /* A rejection carrying a status is the deployment answering. A rejection from fetch itself is
+       the request never leaving. A throw after the answer arrived is THIS PAGE failing to show
+       what it was given -- and that used to read "Could not reach the gateway", about a gateway
+       that had just answered.
+
+       The last two are told apart by the message fetch produces, which is one of a short known
+       set. Where it is not recognised the page repeats what it caught rather than guessing: an
+       unfamiliar message shown as it came is still more than a sentence about the network. */
+    if (typeof e === "number") {
+      return (failure || window.__matrixarkFailure)(e);
+    }
+    if (window.__matrixarkNeverArrived(e)) {
+      return "Could not reach the gateway.";
+    }
+    var text = e && e.message ? String(e.message) : String(e);
+    return "The gateway answered, but this page could not show it \u2014 " + text
+      + ". That is a fault in this page, not in the deployment.";
+  };
+
   window.__matrixarkFailure = function (status, overrides) {
     if (overrides && overrides[status]) { return overrides[status]; }
     if (status === 401) { return "This key was not accepted."; }
@@ -1005,8 +1035,11 @@ function liveStream(options) {
           $("checks").innerHTML = '<div class="empty">Enter an admin-scoped key above to check ' +
             "this deployment.</div>";
         } else {
-          conn("down", "gateway unreachable");
-          $("checks").innerHTML = '<div class="msg err">Could not reach the gateway.</div>';
+          conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
+               window.__matrixarkNeverArrived(e) ? "gateway unreachable"
+                                                : "this page could not show the answer");
+          $("checks").innerHTML = '<div class="msg err">' + esc(window.__matrixarkWhyFailed(e))
+            + "</div>";
         }
       });
   }
