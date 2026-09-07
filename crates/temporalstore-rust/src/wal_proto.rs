@@ -473,6 +473,151 @@ pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
     }
 }
 
+/// Bytes an outcome item occupies as an `EngineWalItem` body.
+///
+/// Paired with `put_wal_item` below, which must write exactly this many. The pair exists so the
+/// item's `value` reaches the frame without being copied into a proto message first -- the same
+/// reason `staged_blocks` has a hand-written encoder.
+///
+/// The presence rules are the fiddly part and are the reason this is checked byte for byte against
+/// `item_to_proto`. Fields 3, 5, 7, 11, 13, 14, 15, 16, 17 and 19 are proto3 `optional`, which means
+/// explicit presence: `Some(0)` and `Some("")` are WRITTEN. Fields 8, 9 and 18 are plain `bool`,
+/// which means a false is omitted. The helpers in `raft::wal_proto` implement the plain rule, so
+/// they are deliberately not used for the optional fields.
+fn wal_item_body_len(item: &WalOutcomeItem, derived: &DerivedItem<'_>) -> usize {
+    let mut len = optional_bytes_len(3, Some(item.object_key.len()))
+        + optional_varint_len(5, Some(item.object_id))
+        + optional_varint_len(7, item.ttl)
+        + plain_bool_len(8, item.deleted)
+        + plain_bool_len(9, item.meta)
+        + optional_bytes_len(11, derived.component.map(str::len));
+    if let Some(block) = derived.block.as_ref() {
+        len += crate::raft::wal_proto::len_delimited_len(12, block.encoded_len());
+    }
+    len += optional_bytes_len(13, item.value.as_ref().map(Vec::len))
+        + optional_bytes_len(14, derived.kind_name.map(str::len))
+        + optional_varint_len(15, Some(u64::from(item.routing_bucket)))
+        + optional_varint_len(16, derived.timestamp_ms)
+        + optional_varint_len(17, derived.entry_id)
+        + plain_bool_len(18, derived.object_deleted)
+        + optional_varint_len(19, derived.kind_code.map(u64::from));
+    len
+}
+
+/// Write an outcome item as field `tag`, its key, component, value and kind name borrowed.
+fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out: &mut Vec<u8>) {
+    let body = wal_item_body_len(item, derived);
+    prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
+    prost::encoding::encode_varint(body as u64, out);
+
+    // Ascending field order, because that is the order prost writes them in.
+    put_optional_bytes(3, Some(item.object_key.as_bytes()), out);
+    put_optional_varint(5, Some(item.object_id), out);
+    put_optional_varint(7, item.ttl, out);
+    put_plain_bool(8, item.deleted, out);
+    put_plain_bool(9, item.meta, out);
+    put_optional_bytes(11, derived.component.map(str::as_bytes), out);
+    if let Some(block) = derived.block.as_ref() {
+        prost::encoding::encode_key(12, prost::encoding::WireType::LengthDelimited, out);
+        prost::encoding::encode_varint(block.encoded_len() as u64, out);
+        block.encode_raw(out);
+    }
+    put_optional_bytes(13, item.value.as_deref(), out);
+    put_optional_bytes(14, derived.kind_name.map(str::as_bytes), out);
+    put_optional_varint(15, Some(u64::from(item.routing_bucket)), out);
+    put_optional_varint(16, derived.timestamp_ms, out);
+    put_optional_varint(17, derived.entry_id, out);
+    put_plain_bool(18, derived.object_deleted, out);
+    put_optional_varint(19, derived.kind_code.map(u64::from), out);
+}
+
+/// What `item_to_proto` derives, computed once instead of three times.
+struct DerivedItem<'a> {
+    component: Option<&'a str>,
+    kind_name: Option<&'a str>,
+    kind_code: Option<u32>,
+    timestamp_ms: Option<u64>,
+    entry_id: Option<u64>,
+    object_deleted: bool,
+    block: Option<v1::WalBlockAddress>,
+}
+
+fn derive_item(item: &WalOutcomeItem) -> DerivedItem<'_> {
+    // `item_to_proto` calls this three times for three fields; it is one answer.
+    let numeric = numeric_component(&item.kind, item.component.as_deref());
+    let code = kind_code(&item.kind);
+    DerivedItem {
+        component: match numeric {
+            Some(_) => None,
+            None => item.component.as_deref(),
+        },
+        kind_name: match code {
+            Some(_) => None,
+            None => Some(item.kind.as_str()),
+        },
+        kind_code: code,
+        timestamp_ms: numeric.map(|(key, _)| key),
+        entry_id: numeric.and_then(|(_, id)| id),
+        object_deleted: item.deleted && item.component.is_none(),
+        block: item.address.as_ref().map(|address| {
+            let mut encoded = address_to_proto(address);
+            if encoded.object_id == Some(item.object_id) {
+                encoded.object_id = None;
+            }
+            encoded
+        }),
+    }
+}
+
+// Presence-aware field helpers. `optional` in proto3 means Some(0) and Some("") are written; the
+// helpers in `raft::wal_proto` implement the PLAIN rule, where a default is omitted, and using them
+// here would silently drop those values.
+fn optional_varint_len(tag: u32, value: Option<u64>) -> usize {
+    match value {
+        Some(value) => {
+            prost::encoding::key_len(tag) + prost::encoding::encoded_len_varint(value)
+        }
+        None => 0,
+    }
+}
+
+fn put_optional_varint(tag: u32, value: Option<u64>, out: &mut Vec<u8>) {
+    if let Some(value) = value {
+        prost::encoding::encode_key(tag, prost::encoding::WireType::Varint, out);
+        prost::encoding::encode_varint(value, out);
+    }
+}
+
+fn optional_bytes_len(tag: u32, len: Option<usize>) -> usize {
+    match len {
+        Some(len) => crate::raft::wal_proto::len_delimited_len(tag, len),
+        None => 0,
+    }
+}
+
+fn put_optional_bytes(tag: u32, payload: Option<&[u8]>, out: &mut Vec<u8>) {
+    if let Some(payload) = payload {
+        prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
+        prost::encoding::encode_varint(payload.len() as u64, out);
+        out.extend_from_slice(payload);
+    }
+}
+
+fn plain_bool_len(tag: u32, value: bool) -> usize {
+    if value {
+        prost::encoding::key_len(tag) + 1
+    } else {
+        0
+    }
+}
+
+fn put_plain_bool(tag: u32, value: bool, out: &mut Vec<u8>) {
+    if value {
+        prost::encoding::encode_key(tag, prost::encoding::WireType::Varint, out);
+        prost::encoding::encode_varint(1, out);
+    }
+}
+
 pub(crate) fn item_from_proto(item: v1::EngineWalItem) -> WalOutcomeItem {
     WalOutcomeItem {
         kind: item
@@ -573,6 +718,8 @@ fn metadata_from_proto(
 /// the one field the generated encoder cannot be handed a borrow of.
 struct RecordParts<'a> {
     command: Option<crate::raft::wal_proto::CommandEncoding<'a>>,
+    /// The outcome items, derived from the record but not copied out of it.
+    items: Vec<DerivedItem<'a>>,
     /// Fields four to six only. proto3 omits a scalar holding its default and `command` is None,
     /// so encoding this writes the tail and nothing else -- which is why the bytes come out in
     /// tag order and identical to encoding the whole record at once.
@@ -596,15 +743,30 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
             .as_ref()
             .map(metadata_to_proto)
             .transpose()?,
-        items: record.outcomes.iter().map(item_to_proto).collect(),
+        // Written by hand below, from the outcomes themselves, for the reason the staged blocks
+        // are: filling this copied every outcome's `value` into a proto message before the encoder
+        // copied it again into the frame, and the bytes allocated per append tracked the outcome
+        // value one for one. `the_hand_written_item_is_the_same_item` holds the hand-written form
+        // against this one -- which the test helper `owned_bytes` still builds -- byte for byte.
+        items: Vec::new(),
         // Written by hand below, from the pages themselves. A staged page is a whole page, and
         // filling this field copied every one of them before the encoder copied them again.
         staged_blocks: Vec::new(),
     };
+    let items = record.outcomes.iter().map(derive_item).collect::<Vec<_>>();
+    let items_len = record
+        .outcomes
+        .iter()
+        .zip(items.iter())
+        .map(|(item, derived)| {
+            crate::raft::wal_proto::len_delimited_len(5, wal_item_body_len(item, derived))
+        })
+        .sum::<usize>();
     let len = crate::raft::wal_proto::varint_field_len(1, record.shard_id)
         + crate::raft::wal_proto::varint_field_len(2, record.sequence)
         + command.as_ref().map_or(0, |command| command.encoded_len_at(3))
         + tail.encoded_len()
+        + items_len
         + record
             .staged_pages
             .iter()
@@ -612,6 +774,7 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
             .sum::<usize>();
     Ok(RecordParts {
         command,
+        items,
         tail,
         len,
     })
@@ -624,7 +787,12 @@ impl RecordParts<'_> {
         if let Some(command) = self.command.as_ref() {
             command.put_at(3, out);
         }
+        // Ascending field order, the order prost would have written them: the tail carries field
+        // four, the outcomes are field five, the staged blocks are field six.
         self.tail.encode(out).map_err(|err| err.to_string())?;
+        for (item, derived) in record.outcomes.iter().zip(self.items.iter()) {
+            put_wal_item(5, item, derived, out);
+        }
         for page in &record.staged_pages {
             crate::raft::wal_proto::put_staged_block(6, page, out);
         }
@@ -816,15 +984,6 @@ mod tests {
                 .map(metadata_to_proto)
                 .transpose()
                 .unwrap(),
-            // `items` is still filled the ordinary way, and it has the shape `staged_blocks`
-            // below was taken out of this struct for: every outcome carries an owned
-            // `value: Option<Vec<u8>>`, and `item_to_proto` copies it here before the encoder
-            // copies it again into the frame. Measured by `does_the_outcome_value_get_copied`, the
-            // bytes allocated per append track the outcome value one for one -- 4,489 B for a
-            // 4,096 B value and 16,777 B for a 16,384 B one, a fixed 393 B either side of a whole
-            // extra copy. Fixing it means what fixing `staged_blocks` meant: a hand-written encoder
-            // and a hand-written length for this field, which is a larger job here because an item
-            // has ten fields and a nested message rather than two scalars.
             items: record.outcomes.iter().map(item_to_proto).collect(),
             staged_blocks: record
                 .staged_pages
@@ -1036,6 +1195,101 @@ mod tests {
             );
         }
         println!("  (if the bytes rise with the value, the outcome payload is being copied)");
+    }
+
+    /// The hand-written item encoder writes exactly what `item_to_proto` writes, for every shape.
+    ///
+    /// This is the whole basis for the hand-written encoder existing. It is not enough that the
+    /// bytes decode -- they have to be the SAME bytes, because a log holds records written by both
+    /// and a length that disagrees with what was written corrupts every record after it.
+    ///
+    /// The cross product below is chosen for presence rather than for variety. proto3 `optional`
+    /// means explicit presence, so `Some(0)` and `Some("")` are written where a plain field holding
+    /// its default is omitted, and that distinction is the one a hand-written encoder gets wrong.
+    /// So the axes are: an empty and a non-empty string, a zero and a non-zero integer, absent and
+    /// present optionals, both booleans, a kind with a code and a kind without one, a component
+    /// that parses as a number and one that does not, and an address whose object id repeats the
+    /// item's (which is dropped) against one that does not.
+    #[test]
+    fn the_hand_written_item_is_the_same_item() {
+        use prost::Message;
+
+        let addresses = [
+            None,
+            // object_id repeats the item's, so `item_to_proto` drops it from the address.
+            Some(crate::block_store::BlockAddress::from_parts(
+                42, 1_048_576, 4096, Some(7), Some(9), Some(8539), Some(3), Some(9),
+            )),
+            // and one that does not repeat it, so it stays.
+            Some(crate::block_store::BlockAddress::from_parts(
+                42, 0, 0, None, Some(4_242), None, None, None,
+            )),
+        ];
+
+        let mut checked = 0usize;
+        for kind in ["page", "feature", "context_index", "an_unmapped_kind_name"] {
+            for object_key in ["", "tenant/1/object/9"] {
+                for object_id in [0u64, 9] {
+                    for component in [None, Some(""), Some("body"), Some("1788748713578")] {
+                        for value in [None, Some(Vec::new()), Some(vec![7u8; 5])] {
+                            for ttl in [None, Some(0u64), Some(60_000)] {
+                                for (deleted, meta) in
+                                    [(false, false), (true, false), (false, true), (true, true)]
+                                {
+                                    for routing_bucket in [0u32, 8539] {
+                                        for address in addresses.iter() {
+                                            let item = crate::wal::WalOutcomeItem {
+                                                kind: kind.to_string(),
+                                                object_key: object_key.to_string(),
+                                                component: component.map(str::to_string),
+                                                object_id,
+                                                routing_bucket,
+                                                address: address.clone(),
+                                                value: value.clone(),
+                                                ttl,
+                                                deleted,
+                                                meta,
+                                            };
+
+                                            let expected_body =
+                                                item_to_proto(&item).encode_to_vec();
+                                            let derived = derive_item(&item);
+
+                                            assert_eq!(
+                                                wal_item_body_len(&item, &derived),
+                                                expected_body.len(),
+                                                "length disagrees for {item:?}",
+                                            );
+
+                                            let mut mine = Vec::new();
+                                            put_wal_item(5, &item, &derived, &mut mine);
+
+                                            let mut theirs = Vec::new();
+                                            prost::encoding::encode_key(
+                                                5,
+                                                prost::encoding::WireType::LengthDelimited,
+                                                &mut theirs,
+                                            );
+                                            prost::encoding::encode_varint(
+                                                expected_body.len() as u64,
+                                                &mut theirs,
+                                            );
+                                            theirs.extend_from_slice(&expected_body);
+
+                                            assert_eq!(mine, theirs, "bytes differ for {item:?}");
+                                            checked += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // A positive control: an assertion loop that ran zero times would pass just as quietly.
+        assert!(checked > 3_000, "only {checked} shapes checked");
+        println!("  ITEMENC {checked} shapes, byte-identical");
     }
 
     #[test]
