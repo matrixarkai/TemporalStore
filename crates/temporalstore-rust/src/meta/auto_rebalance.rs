@@ -318,15 +318,27 @@ impl SingleNodeMeta {
             server_addr: to_server.to_string(),
         }));
         let mut state = self.inner.write().expect("meta lock poisoned");
-        let latest_snapshot = state
+        // What the shard knows about itself does not change because it changed
+        // owner: it still prefers the location it was pinned to, and it has not
+        // newly joined the cluster. Rebuilding the record around the new owner
+        // used to write both away -- so a pin did not survive the move it
+        // exists to constrain, and a moved shard reported that it never joined.
+        let (latest_snapshot, preferred_location, registered_at_ms) = state
             .shards
             .get(&shard_id)
-            .and_then(|location| location.latest_snapshot.clone());
+            .map(|location| {
+                (
+                    location.latest_snapshot.clone(),
+                    location.preferred_location.clone(),
+                    location.registered_at_ms,
+                )
+            })
+            .unwrap_or_default();
         state.shards.insert(
             shard_id,
             ShardLocation {
-                registered_at_ms: 0,
-                preferred_location: String::new(),
+                registered_at_ms,
+                preferred_location,
                 state: MetaEntityState::Normal,
                 shard_id,
                 server_addr: to_server.to_string(),

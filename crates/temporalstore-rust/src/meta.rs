@@ -8698,6 +8698,90 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     }
 
     #[test]
+    fn moving_a_shard_keeps_its_pin_and_the_time_it_joined() {
+        let meta = SingleNodeMeta::default();
+        for n in 0..2u64 {
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: format!("node-{n}"),
+                    node_id: n + 1,
+                    location: format!("rack-{n}"),
+                    binary_version: "v1".to_string(),
+                    registered_at_ms: 0,
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+                first_shard_id: 1,
+                shard_count: 1,
+                replica_count: 1,
+                partition_version: 1,
+                serving_options: Default::default(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register(RegisterShardRequest {
+                shard_id: 1,
+                server_addr: "node-0".to_string(),
+                registered_at_ms: 0,
+            })
+            .status
+            .ok);
+        assert!(meta
+            .pin_shard(ShardPinRequest {
+                shard_id: 1,
+                location: "rack-9".to_string(),
+            })
+            .status
+            .ok);
+
+        let before = meta.get(1).location.expect("registered");
+        assert_eq!(before.preferred_location, "rack-9");
+        assert!(before.registered_at_ms > 0, "the join time was never stamped");
+
+        // A rebalance round moves it, or an operator does.
+        assert!(meta.reassign_shard(1, "node-1").status.ok);
+
+        let after = meta.get(1).location.expect("still registered");
+        assert_eq!(after.server_addr, "node-1", "the move did not happen");
+        // The pin exists to say where this shard should live. A move is exactly
+        // when that matters, so losing it here loses it when it counts.
+        assert_eq!(
+            after.preferred_location, "rack-9",
+            "moving the shard threw away the location it was pinned to"
+        );
+        // And it has not newly joined the cluster by changing owner.
+        assert_eq!(
+            after.registered_at_ms, before.registered_at_ms,
+            "moving the shard reset the time it joined"
+        );
+
+        // The snapshot is still carried too, which it already was -- kept here
+        // so a later rewrite of this record cannot drop one and keep the others.
+        assert_eq!(after.latest_snapshot, before.latest_snapshot);
+
+        // And the listing agrees, since that is where an operator would look.
+        let listed = meta.list_shards(ListShardsRequest {
+            server_addr: String::new(),
+            after_shard_id: 0,
+            limit: 0,
+        });
+        let entry = listed
+            .shards
+            .iter()
+            .find(|entry| entry.shard_id == 1)
+            .expect("listed");
+        assert_eq!(entry.preferred_location, "rack-9");
+        assert_eq!(entry.registered_at_ms, before.registered_at_ms);
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
