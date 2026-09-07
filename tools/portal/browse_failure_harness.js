@@ -24,6 +24,17 @@ for (let i = page.indexOf("{", start); i < page.length; i++) {
   else if (page[i] === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
 }
 
+/* The page's shared helpers are a script block of their own, emitted before the page's own
+ * script. The sandbox below models what the browse region can see, so it needs them too --
+ * and it RUNS the shipped block rather than stubbing it, because a stub would let the helper
+ * change without a single test noticing. */
+const sharedAt = page.indexOf("Helpers every page may call");
+if (sharedAt < 0) { console.log("FAIL the shared helper block is not on this page"); process.exit(2); }
+const sharedFrom = page.lastIndexOf("<script>", sharedAt) + "<script>".length;
+const sharedTo = page.indexOf("</script>", sharedFrom);
+const win = {};
+new Function("window", page.slice(sharedFrom, sharedTo))(win);
+
 let failures = 0;
 function ok(what, condition, detail) {
   if (condition) { console.log("ok   " + what); }
@@ -55,6 +66,7 @@ const scope = {
   scopeQuery: () => "user_id=alice",
   failure: (status) => "The gateway answered " + status + ".",
   Date, JSON, String, Number, Promise,
+  window: win,
   fetch: (url) => {
     const key = String(url);
     if (key.indexOf("/v1/users") === 0) {
