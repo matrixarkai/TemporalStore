@@ -88,6 +88,13 @@ NAV_CSS = """
   .live-seg.warn b{color:var(--warn)}
   .live-seg.busy b{color:var(--accent)}
   .live-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .calllog{margin:0 0 18px;max-height:340px;overflow:auto;border:1px solid var(--line);
+           border-radius:8px}
+  .calllog table{width:100%;border-collapse:collapse;font-size:12.5px;
+                 font-variant-numeric:tabular-nums}
+  .calllog th,.calllog td{text-align:left;padding:5px 9px;border-bottom:1px solid var(--line)}
+  .calllog td.mono{font-family:"IBM Plex Mono",monospace;font-size:11.5px}
+  .calllog tr.bad td{color:var(--crit)}
   .live-dot.stale{background:var(--warn)}
   .live-dot.down{background:var(--crit)}
   @media (max-width:820px){ .livestrip{margin-left:0;width:100%;padding-top:6px} }
@@ -410,6 +417,49 @@ SHARED_JS = r'''<script>
     return "The gateway answered " + status + ".";
   };
 
+  window.__matrixarkTrace = (function () {
+    /* The last calls this page made, newest last. Bounded: a portal tab is left open for days and
+       an unbounded list of every request is a leak that only shows on the busiest deployment. */
+    var calls = [], LIMIT = 60;
+    var listeners = [];
+
+    function note(entry) {
+      calls.push(entry);
+      if (calls.length > LIMIT) { calls.shift(); }
+      for (var i = 0; i < listeners.length; i++) {
+        try { listeners[i](calls.length); } catch (e) { /* a listener must not break a request */ }
+      }
+    }
+
+    var original = typeof window.fetch === "function" ? window.fetch : null;
+    if (original) {
+      window.fetch = function (input, init) {
+        var at = Date.now();
+        var method = String((init && init.method) || (input && input.method) || "GET").toUpperCase();
+        var url = String((input && input.url) || input || "");
+        return original.apply(this, arguments).then(function (response) {
+          /* Untouched. Reading the body here to pull out an incident token would consume it and
+             hand the caller an empty one -- breaking the panels this exists to help diagnose. */
+          note({ at: at, ms: Date.now() - at, method: method, url: url, status: response.status });
+          return response;
+        }, function (err) {
+          /* Status 0 is "never answered", which is a different row from a 500 and has to read as
+             one. The message is the browser's own; it is what tells a blocked request from a
+             refused one. */
+          note({ at: at, ms: Date.now() - at, method: method, url: url, status: 0,
+                 detail: (err && err.message) ? String(err.message) : String(err) });
+          throw err;
+        });
+      };
+    }
+
+    return {
+      calls: function () { return calls.slice(); },
+      onChange: function (fn) { if (typeof fn === "function") { listeners.push(fn); } },
+      note: note
+    };
+  }());
+
   window.__matrixarkWhen = function (ms) {
     /* 0 is "no timestamp" here, not the epoch: the catalog site this replaces read
        `ms ? ... : dash`, and a record with no time would otherwise date to 1970. */
@@ -695,7 +745,21 @@ NAV_JS = r'''<script>
               if (line.indexOf("event:") === 0) { name = line.slice(6).trim(); }
               else if (line.indexOf("data:") === 0) { payload = line.slice(5).trim(); }
             });
-            if (name === "bye") { planned = true; return; }
+            if (name === "bye") {
+              planned = true;
+              /* The strip has no message line, so the reason goes where a reader can still get at
+                 it: the dot's own title. A goodbye that is a fault leaves the dot down rather than
+                 letting the next keepalive clear it back to live. */
+              try {
+                var why = JSON.parse(payload || "{}");
+                if (why.reason && why.reason !== "stream_max_age") {
+                  dot.className = "live-dot down";
+                  dot.title = "the stream failed on the gateway"
+                    + (why.incident ? " \u2014 incident " + why.incident : "");
+                }
+              } catch (e) { /* an older gateway says goodbye with no body */ }
+              return;
+            }
             if (name !== "status" || !payload) { return; }
             try {
               var frame = JSON.parse(payload);
@@ -768,6 +832,76 @@ NAV_JS = r'''<script>
   reveal();
   if (window.addEventListener) { window.addEventListener("hashchange", reveal); }
 }());
+
+/* ---------- what this page asked, and what came back ----------
+ *
+ * Every panel here is drawn from a call, and the only evidence one was made was whether the panel
+ * filled in. When something is wrong the first question is which request failed and what it
+ * answered -- and the only way to find out was the browser's own developer tools, which is a fine
+ * answer for whoever wrote the page and no answer at all for an operator looking at a deployment
+ * they did not build.
+ *
+ * Folded away until asked for: this is a debugging surface, not part of the page's job. */
+(function () {
+  var button = document.getElementById("liveCalls");
+  var panel = document.getElementById("callLog");
+  var rows = document.getElementById("callLogRows");
+  if (!button || !panel || !rows || !window.__matrixarkTrace) { return; }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  /* The path, not the whole URL. Every one of these is this deployment, so the origin is the same
+     on every row and spends the width that the query -- which is what differs -- needs. */
+  function shorten(url) {
+    try {
+      var parsed = new URL(String(url), location.href);
+      return parsed.pathname + (parsed.search || "");
+    } catch (e) { return String(url); }
+  }
+
+  function label(n) {
+    button.hidden = !n;
+    button.textContent = n === 1 ? "1 call" : n + " calls";
+  }
+
+  function render() {
+    var calls = window.__matrixarkTrace.calls();
+    if (!calls.length) {
+      rows.innerHTML = '<tr><td colspan="4">Nothing asked yet.</td></tr>';
+      return;
+    }
+    /* Newest first: the call somebody is trying to explain is the one they just made. */
+    rows.innerHTML = calls.slice().reverse().map(function (c) {
+      /* A status of 0 is "never answered", which is a different row from a 500 and reads as one.
+         The browser's own message is what separates a blocked request from a refused one. */
+      var answered = c.status ? String(c.status) : (c.detail || "never answered");
+      return '<tr class="' + (!c.status || c.status >= 400 ? "bad" : "") + '"><td>'
+        + esc(window.__matrixarkWhen ? window.__matrixarkWhen(c.at) : c.at)
+        + '</td><td class="mono">' + esc(c.method + " " + shorten(c.url))
+        + "</td><td>" + esc(answered)
+        + "</td><td>" + esc(c.ms + " ms") + "</td></tr>";
+    }).join("");
+  }
+
+  button.addEventListener("click", function () {
+    var show = panel.hidden;
+    panel.hidden = !show;
+    button.setAttribute("aria-expanded", show ? "true" : "false");
+    if (show) { render(); }
+  });
+
+  window.__matrixarkTrace.onChange(function (n) {
+    label(n);
+    /* Only while it is open. Rebuilding a hidden table on every request is work nobody asked for
+       on a page that is left open for days. */
+    if (!panel.hidden) { render(); }
+  });
+  label(window.__matrixarkTrace.calls().length);
+}());
 </script>
 '''
 
@@ -791,8 +925,19 @@ LIVE_STRIP = """
       <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
       <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
       <a class="live-seg warn" href="/v1/admin/setup#warnings" id="liveWarn" hidden></a><span class="live-seg" id="liveNode" hidden></span><a class="live-seg warn" href="/v1/admin/setup#awaitingRestart" id="liveWaiting" hidden></a>
+      <button class="live-seg" id="liveCalls" type="button" aria-expanded="false"
+              aria-controls="callLog" title="What this page has asked the gateway, and what came back"></button>
       <span class="live-dot" id="liveDot" title="live"></span>
     </div>"""
+
+# Shown under the nav rather than inside the strip: the strip is a row of single words and this is
+# a table. Present on every page, including the two the builder only injects a nav into, because
+# the question it answers -- which call failed -- is asked on whichever page went wrong.
+CALL_LOG = """
+  <div class="calllog" id="callLog" hidden>
+    <table class="inv"><thead><tr><th>When</th><th>Call</th><th>Answered</th><th>Took</th></tr>
+      </thead><tbody id="callLogRows"></tbody></table>
+  </div>"""
 
 
 def nav(active):
@@ -800,7 +945,7 @@ def nav(active):
     for href, label in NAV_LINKS:
         current = ' aria-current="page"' if href == active else ""
         parts.append('    <a href="%s"%s>%s</a>' % (href, current, label))
-    return ('  <nav class="portalnav">\n' + "\n".join(parts) + LIVE_STRIP + "\n  </nav>")
+    return ('  <nav class="portalnav">\n' + "\n".join(parts) + LIVE_STRIP + "\n  </nav>" + CALL_LOG)
 
 
 LIVE_STREAM_JS = r"""
@@ -904,7 +1049,20 @@ function liveStream(options) {
        that looks only for `data:` hands {"reason": "stream_max_age"} to the frame handler as
        though it were the deployment's state -- and a page rendering from an object with none of
        the fields blanks the traffic table, the failures panel and the strip, every ten minutes. */
-    if (name === "bye") { planned = true; return; }
+    if (name === "bye") {
+      /* A rotation and a fault are both a bye. Treating every bye as planned reconnected at once
+         into a gateway that had just said it was failing -- and `planned` is exactly what makes
+         that reconnect immediate, so a fault has to clear it and take the backoff instead. */
+      var why = null;
+      try { why = JSON.parse(payload || "{}"); } catch (e) { why = null; }
+      if (why && why.reason && why.reason !== "stream_max_age") {
+        planned = false;
+        onState("failed", 0, why.incident || "");
+        return;
+      }
+      planned = true;
+      return;
+    }
     if (name !== "status" || !payload) { return; }
     try {
       var frame = JSON.parse(payload);
@@ -3292,7 +3450,7 @@ SETUP_JS = r"""
     if (live) { live.restart(); return; }
     live = liveStream({
       headers: auth,
-      onState: function (state, seconds) {
+      onState: function (state, seconds, incident) {
         streamLive = (state === "live");
         if (state === "live") { conn("live", "live"); }
         else if (state === "denied") { conn("live", "connected"); }
@@ -3300,6 +3458,12 @@ SETUP_JS = r"""
         /* Connected and receiving nothing. Not "down" -- the socket is open and a reconnect would
            not help -- and not "live", which is what it said before. */
         else if (state === "stalled") { conn("warn", "no update for " + seconds + "s"); }
+        /* The gateway said it was going, and why. Distinct from "stalled", which is a stream that
+           is still open and quiet, and from "retrying", which claims nothing about the cause. */
+        else if (state === "failed") {
+          conn("warn", "the stream failed on the gateway"
+               + (incident ? " \u2014 incident " + incident : ""));
+        }
         if (window.__matrixarkLiveState) {
           window.__matrixarkLiveState(state === "live" ? "live"
             : (state === "retrying" ? "down" : "stale"));
@@ -4164,13 +4328,19 @@ OVERVIEW_JS = r"""
     if (live) { live.restart(); return; }
     live = liveStream({
       headers: auth,
-      onState: function (state, seconds) {
+      onState: function (state, seconds, incident) {
         if (state === "live") { conn("live", "live"); }
         else if (state === "denied") { conn("live", "connected"); }
         else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
         /* Connected and receiving nothing. Not "down" -- the socket is open and a reconnect would
            not help -- and not "live", which is what it said before. */
         else if (state === "stalled") { conn("warn", "no update for " + seconds + "s"); }
+        /* The gateway said it was going, and why. Distinct from "stalled", which is a stream that
+           is still open and quiet, and from "retrying", which claims nothing about the cause. */
+        else if (state === "failed") {
+          conn("warn", "the stream failed on the gateway"
+               + (incident ? " \u2014 incident " + incident : ""));
+        }
         if (window.__matrixarkLiveState) {
           window.__matrixarkLiveState(state === "live" ? "live"
             : (state === "retrying" ? "down" : "stale"));
@@ -5896,6 +6066,7 @@ emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CA
 
 
 # ---- add the nav to the two existing pages ------------------------------------------------------
+CALL_LOG_MARKER = '<div class="calllog" id="callLog"'
 SHARED_JS_MARKER = "/* Helpers every page may call"
 TABS_JS_MARKER = "/* Tabs, for every portal page whose body declares a tablist."
 NAV_JS_MARKER = "/* The shared live strip."
@@ -5930,6 +6101,20 @@ def _with_shared_js(text):
         sys.exit(1)
     at = text.index("<script>")
     return text[:at] + SHARED_JS.strip() + chr(10) + text[at:]
+
+
+def _without_call_log(text):
+    """Take out every copy of the call log.
+
+    Every copy, not the first: it is emitted after the closing </nav>, and the nav substitution
+    replaces only up to that tag -- so a page could collect one per build. Taking them all out
+    means a page that collected some heals on the next run rather than carrying them forward.
+    """
+    while CALL_LOG_MARKER in text:
+        start = text.index(CALL_LOG_MARKER)
+        end = text.index("</div>", text.index("</table>", start)) + len("</div>")
+        text = text[:start].rstrip() + text[end:]
+    return text
 
 
 def _with_nav_js(text):
@@ -6003,6 +6188,7 @@ def inject(filename, anchor, active):
     """
     path = os.path.join(PORTAL, filename)
     text = io.open(path, encoding="utf-8").read()
+    text = _without_call_log(text)
     if "portalnav" in text:
         replaced, count = re.subn(r'  <nav class="portalnav">.*?</nav>', lambda _m: nav(active),
                                   text, count=1, flags=re.S)
