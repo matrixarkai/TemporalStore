@@ -49,6 +49,72 @@ pub struct ProxyContextScope {
     pub session_id: String,
 }
 
+/// Deserialises `Option<String>`-shaped JSON while still pointing at the body.
+///
+/// `#[serde(borrow)]` borrows a bare `Cow<'a, str>`, but NOT one inside an `Option`: serde's own
+/// `Deserialize` for `Option<T>` delegates to `T`, and that path always allocates. A titled
+/// message therefore copied its title out of the body even though every other field pointed at
+/// it. `a_message_borrows_the_body_unless_it_needs_unescaping` asserts both arms of this too.
+///
+/// `null` and an absent field both stay `None`, which is what `Option` accepted before.
+fn optional_borrowed_str<'de: 'a, 'a, D>(deserializer: D) -> Result<Option<Cow<'a, str>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Inner<'a>(std::marker::PhantomData<&'a ()>);
+
+    impl<'de: 'a, 'a> serde::de::Visitor<'de> for Inner<'a> {
+        type Value = Cow<'a, str>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a string")
+        }
+
+        /// The whole point: the body outlives the request, so this hands back a pointer into it.
+        fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E> {
+            Ok(Cow::Borrowed(value))
+        }
+
+        /// Reached when the string needed unescaping, so there is nothing in the body to point at.
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+            Ok(Cow::Owned(value.to_string()))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+            Ok(Cow::Owned(value))
+        }
+    }
+
+    struct Outer<'a>(std::marker::PhantomData<&'a ()>);
+
+    impl<'de: 'a, 'a> serde::de::Visitor<'de> for Outer<'a> {
+        type Value = Option<Cow<'a, str>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a string or null")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer
+                .deserialize_str(Inner(std::marker::PhantomData))
+                .map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(Outer(std::marker::PhantomData))
+}
+
 /// One inbound message, borrowed from the request body.
 ///
 /// `Cow` rather than `String`: serde hands back a borrow of the body whenever the JSON string
@@ -63,7 +129,7 @@ pub struct ProxyContextMessage<'a> {
     pub content: Cow<'a, str>,
     #[serde(default)]
     pub timestamp_ms: Option<u64>,
-    #[serde(default, borrow)]
+    #[serde(default, borrow, deserialize_with = "optional_borrowed_str")]
     pub title: Option<Cow<'a, str>>,
 }
 
@@ -882,6 +948,45 @@ mod ingest_key_tests {
         assert!(
             matches!(parsed.messages[0].content, Cow::Owned(_)),
             "an escaped message cannot be a borrow of the body it was unescaped from"
+        );
+        // `title` is the awkward one: Option<Cow<'a, str>> with both `default` and `borrow`, so
+        // it has to borrow through the Option, own through it when unescaping is needed, and
+        // still be None when the field is absent.
+        let titled = br#"{"messages":[{"role":"user","content":"c","title":"a plain title"}]}"#;
+        let parsed: ProxyContextIngestRequest =
+            serde_json::from_slice(titled).expect("the titled body parses");
+        let title = parsed.messages[0].title.as_ref().expect("the title parsed");
+        assert_eq!(title, "a plain title");
+        assert!(
+            matches!(title, Cow::Borrowed(_)),
+            "a title needing no unescaping was still copied out of the body"
+        );
+
+        let titled = br#"{"messages":[{"role":"user","content":"c","title":"a \"quoted\" title"}]}"#;
+        let parsed: ProxyContextIngestRequest =
+            serde_json::from_slice(titled).expect("the escaped-title body parses");
+        let title = parsed.messages[0].title.as_ref().expect("the title parsed");
+        assert_eq!(title, r#"a "quoted" title"#);
+        assert!(
+            matches!(title, Cow::Owned(_)),
+            "an escaped title cannot be a borrow of the body"
+        );
+
+        let untitled = br#"{"messages":[{"role":"user","content":"c"}]}"#;
+        let parsed: ProxyContextIngestRequest =
+            serde_json::from_slice(untitled).expect("the untitled body parses");
+        assert!(
+            parsed.messages[0].title.is_none(),
+            "an absent title must stay absent, not become an empty string"
+        );
+
+        // An explicit null, which `Option` accepted before the borrowing visitor replaced it.
+        let nulled = br#"{"messages":[{"role":"user","content":"c","title":null}]}"#;
+        let parsed: ProxyContextIngestRequest =
+            serde_json::from_slice(nulled).expect("a null title parses");
+        assert!(
+            parsed.messages[0].title.is_none(),
+            "an explicit null title must still read as absent"
         );
     }
     /// A chat source is byte-identical however it is built.
