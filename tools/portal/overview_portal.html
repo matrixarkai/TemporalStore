@@ -503,6 +503,37 @@
    the alternative is the key in a query string, and a credential in a URL ends up in every access
    log and proxy trace between here and the gateway. Same wire format either way; only the
    reconnect is ours to write. */
+/* ---------- the deployment's clock ----------
+ *
+ * Every frame carries the SERVER's `ts` and nothing read it, so "14s ago" was the BROWSER's clock
+ * minus a server timestamp, clamped at zero. On a machine whose clock runs behind the gateway's,
+ * every failure read "0s ago" for ever -- on the one panel whose stated job is to say whether
+ * something happened a minute ago or last Tuesday.
+ *
+ * Extrapolated from the last frame rather than sampled per call: frames arrive every few seconds,
+ * so the elapsed part is small, and a page that has seen no frame yet falls back to the browser's
+ * clock, which is what it had before. */
+var liveServerMs = 0;   /* the server's clock at the last frame */
+var liveFrameAtMs = 0;  /* Date.now() when that frame arrived */
+
+function serverNowMs() {
+  if (!liveFrameAtMs) { return Date.now(); }
+  return liveServerMs + (Date.now() - liveFrameAtMs);
+}
+
+/* How far the browser's clock is from the gateway's, positive when the browser is BEHIND. Worth
+   reporting because every other timestamp on these pages is rendered with toLocaleString() from
+   that same clock, so one wrong clock makes all of them wrong together. */
+function clockSkewMs() {
+  return liveFrameAtMs ? (liveServerMs - liveFrameAtMs) : 0;
+}
+
+/* How long since state last arrived. A connection that is open but silent leaves the page showing
+   the last frame's numbers, and the strip still says "live". */
+function sinceLastFrameMs() {
+  return liveFrameAtMs ? (Date.now() - liveFrameAtMs) : 0;
+}
+
 function liveStream(options) {
   var onFrame = options.onFrame || function () {};
   var onState = options.onState || function () {};
@@ -535,7 +566,16 @@ function liveStream(options) {
        the fields blanks the traffic table, the failures panel and the strip, every ten minutes. */
     if (name === "bye") { planned = true; return; }
     if (name !== "status" || !payload) { return; }
-    try { onFrame(JSON.parse(payload)); } catch (e) { /* a partial frame; the next one is whole */ }
+    try {
+      var frame = JSON.parse(payload);
+      /* Recorded before the handler runs, so anything the handler renders reads the clock of the
+         frame it is rendering rather than the one before it. */
+      if (typeof frame.ts === "number" && isFinite(frame.ts)) {
+        liveServerMs = frame.ts * 1000;
+        liveFrameAtMs = Date.now();
+      }
+      onFrame(frame);
+    } catch (e) { /* a partial frame; the next one is whole */ }
   }
 
   /* A stream is closed on purpose once it reaches its maximum age, and the gateway says so before
