@@ -1903,8 +1903,6 @@ KNOBS_READ_BY_NOTHING = frozenset({
     "max_event_text_chars",
     "max_summary_text_chars",
     "recall_reinforcement",
-    "return_all_candidate_threshold",
-    "return_all_candidates",
     "skill_description_always",
     "summarize_aggregation_only_nodes",
     "summary_levels",
