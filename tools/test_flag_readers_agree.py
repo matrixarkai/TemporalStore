@@ -45,9 +45,21 @@ _ENV_BOOL = re.compile(
     r'env_bool\(\s*["\']([A-Z][A-Z0-9_]{3,})["\']\s*,\s*(True|False)\s*\)')
 ONE_VOCABULARY = ("<env_bool>",)
 
-# Twenty-one when this was written. Asserted so a scan that stops matching fails rather than
-# reporting that every reader agrees.
-EXPECTED_SHARED_FLOOR = 15
+# Twenty-one when this was written, fifteen a while later, fourteen now. Asserted so a scan that
+# stops matching fails rather than reporting that every reader agrees.
+#
+# This counts flags read from MORE THAN ONE production site, so it falls whenever a duplicate reader
+# is consolidated away -- which is work being done deliberately, not damage. The last two both came
+# off that: #1171 removed a time-index builder nothing called, which held the second read of
+# MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD, and #1182 removed a function written out twice,
+# which held the second read of MATRIXARK_SEGMENT_PROVIDER_FALLBACK. Both flags are still read; each
+# is now read once.
+#
+# So a change that removes a duplicate reader is expected to lower this number, and should lower it
+# in the same change. Leaving it stale does not fail that change -- it fails every other branch in
+# the repository, because this runs against a recorded baseline and a floor nobody moved reads as a
+# new failure on work that never touched it.
+EXPECTED_SHARED_FLOOR = 14
 
 
 def _production_sources() -> List[str]:
