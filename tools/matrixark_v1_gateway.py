@@ -2182,9 +2182,15 @@ MEM0_OPERATIONS: List[Json] = [
     {"id": "get_all", "label": "get_all()", "group": "Read", "method": "POST",
      "path": "/v1/memories", "scope": "context:retrieve", "destructive": False,
      "needs_scope": True,
-     "summary": "Every live memory in the scope, unranked. This is the listing, not the search.",
+     "summary": "The memories in the scope, unranked -- the listing, not the search. A limit does "
+                "not make it a sample of the whole scope: it takes the NEWEST that many.",
+     # The one field in this console that carried no help, on the one operation whose summary said
+     # "every". Taking the newest was itself a fix -- sorting ascending and taking the head answered
+     # get_all(limit=10) on a thousand memories with the ten OLDEST -- and a decision that has been
+     # wrong once is worth writing down where the caller reads it.
      "fields": [
-         {"name": "limit", "in": "body", "kind": "number", "default": 50, "label": "Limit"},
+         {"name": "limit", "in": "body", "kind": "number", "default": 50, "label": "Limit",
+          "help": "The NEWEST this many, listed oldest first. 0 or blank for the whole scope."},
      ]},
     {"id": "get", "label": "get()", "group": "Read", "method": "GET", "path": "/v1/memory/{id}",
      "scope": "context:retrieve", "destructive": False, "needs_scope": False,
