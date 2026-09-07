@@ -111,14 +111,7 @@ const COMPRESSION_MIN_BYTES: usize = 256;
 /// property of the payload, not of this flag.
 ///
 pub(crate) fn compress_records_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_WAL_COMPRESS_RECORDS")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::env_bool("TS_WAL_COMPRESS_RECORDS", true)
 }
 
 thread_local! {

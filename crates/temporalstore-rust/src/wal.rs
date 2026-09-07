@@ -363,14 +363,7 @@ pub fn wal_outcome_items_enabled() -> bool {
     // Default ON. Recording stopped costing the group-commit coalescing once results travelled
     // through the reserve-only append, and recovery prefers installing them over re-running an
     // operation wherever it has them. The variable now opts OUT.
-    !matches!(
-        std::env::var("TS_WAL_OUTCOME_ITEMS")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::env_bool("TS_WAL_OUTCOME_ITEMS", true)
 }
 
 fn outcome_not_deleted(deleted: &bool) -> bool {

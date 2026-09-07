@@ -95,14 +95,7 @@ pub(crate) const FRAME_MAGIC_V3: u8 = 0xB3;
 /// be thrown over an existing binary-framed log and it never was; what was wrong is the sentence
 /// that said it could be.
 pub(crate) fn binary_frame_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_WAL_BINARY_FRAME")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::env_bool("TS_WAL_BINARY_FRAME", true)
 }
 
 fn write_varint(value: u64, out: &mut Vec<u8>) {

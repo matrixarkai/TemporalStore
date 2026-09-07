@@ -2095,14 +2095,7 @@ fn pack_f32_vector(vector: &[f32]) -> Vec<u8> {
 /// Whether new writes store the quantized form. Default OFF; reading understands both regardless,
 /// so this can be turned on and off without stranding anything already written.
 fn vector_int8_enabled() -> bool {
-    matches!(
-        std::env::var("TS_VECTOR_INT8")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::env_flag::env_bool("TS_VECTOR_INT8", false)
 }
 
 /// A vector as it will read back once it has been through a page.
@@ -2135,14 +2128,7 @@ pub(crate) fn context_vector_as_stored(vector: &[f32]) -> Vec<f32> {
 /// strands nothing already written, and turning it back on needs no backfill -- the copy reappears
 /// as each node's summary is next written.
 pub(crate) fn context_node_summary_vector_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_NODE_SUMMARY_VECTOR")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::env_bool("TS_NODE_SUMMARY_VECTOR", true)
 }
 
 /// Symmetric per-vector int8, scale first: `scale = max|v| / 127`, then `round(v / scale)`.
@@ -2208,14 +2194,7 @@ fn unpack_f32_vector(bytes: &[u8]) -> Vec<f32> {
 /// Reading never consults this -- a vector is decoded by the field carrying it -- so turning it
 /// off again strands nothing. `TS_VECTOR_SCALED` opts OUT.
 fn vector_scaled_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_VECTOR_SCALED")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::env_bool("TS_VECTOR_SCALED", true)
 }
 
 /// f32 vector -> zigzag varints of `round(v * VECTOR_SCALE)`.

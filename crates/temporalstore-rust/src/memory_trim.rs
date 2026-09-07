@@ -33,14 +33,7 @@ pub fn release_free_heap_to_os() -> bool {
 /// not using. The escape hatch exists because a trim costs a walk of the free lists, and an
 /// operator who measures that as expensive on their heap should not need a build to stop it.
 fn trim_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_MALLOC_TRIM")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::env_bool("TS_MALLOC_TRIM", true)
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]

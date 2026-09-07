@@ -1873,14 +1873,7 @@ pub(crate) fn timestamp_range_bounds(
 /// themselves and gate their own half of the same decision; a copy that drifted would leave one
 /// subsystem in bulk mode and the rest on the live path.
 pub(crate) fn bulk_ingest_mode() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_BULK_INGEST")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::env_flag::env_bool("MATRIXARK_BULK_INGEST", false)
 }
 
 /// Whether the per-command model-map -> bucket-index promotion and first-index
@@ -1900,14 +1893,7 @@ fn defer_bucket_index_reconstruct() -> bool {
 /// store after reconstructing the index (disk->memory promotion on restart).
 /// Defaults ON; set MATRIXARK_EAGER_CACHE_WARM_ON_LOAD to 0/false/off/no to disable.
 pub(crate) fn eager_cache_warm_on_load() -> bool {
-    !matches!(
-        std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::env_bool("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", true)
 }
 
 /// Current on-disk shape of a shard index.
