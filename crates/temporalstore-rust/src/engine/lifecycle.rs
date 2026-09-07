@@ -812,6 +812,31 @@ impl TemporalEngine {
         let Some(shard) = shards.get_mut(&shard_id) else {
             return false;
         };
+        // ROOT CAUSE of `wal_replay_outcome_refused`, traced 2026-09-07 and NOT fixed here.
+        //
+        // This matches on KIND alone. `item.deleted` is read by exactly two arms below (`object`
+        // and, partly, `feature`) and `item.meta` by none at all -- yet
+        // `mark_bucket_index_page_deleted` stages every typed removal as
+        //
+        //     kind: "hash" | "list" | "set" | "zset",  component: Some(..),
+        //     address: None,  deleted: true,  meta: true
+        //
+        // and the `hash`, `list`, `set` and `zset` arms all open by demanding
+        // `resolved_address()`. A removal therefore returns false, the caller refuses the load,
+        // and the whole shard is lost over a member that is supposed to be gone. That is
+        // `list_order_survives_restart_and_pops_stay_popped` (a pop) and
+        // `scores_and_order_survive_restart_including_a_rescore` (a rescore removes the old score
+        // entry); mx#1238 printed the shape -- "address UNRESOLVED, component present, 16 chars".
+        //
+        // `TS_WAL_DATA_ONLY` is what makes it fatal rather than a miss: with results recorded the
+        // command is dropped, so there is nothing left to re-run the removal.
+        //
+        // The fix is a deleted-branch per arm, removing the component from the model map and the
+        // bucket index instead of demanding an address -- mirroring the write side. It is not
+        // done here because each arm decodes its component differently (a hash field, a set
+        // member, sixteen hex digits of a biased list sequence, a zset score plus member), and a
+        // removal that takes the wrong entry corrupts a recovered shard SILENTLY, which is worse
+        // than the loud refusal happening now. It wants someone who can run the recovery suite.
         match item.kind.as_str() {
             // The object is gone, everywhere it appeared.
             "object" if item.deleted => {
