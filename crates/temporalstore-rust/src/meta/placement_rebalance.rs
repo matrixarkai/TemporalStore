@@ -531,9 +531,15 @@ impl SingleNodeMeta {
     ) -> Vec<ShardReassignment> {
         let live_servers = self.placement_targets();
         let shard_placement = self.shard_placements();
+        // This planner drops the lock before planning, so it needs names of
+        // its own. Copied here, while the lock is still held and the names are
+        // still there to copy.
         let shard_owners = {
             let state = self.inner.read().expect("meta lock poisoned");
             serving_shard_owners(&state)
+                .into_iter()
+                .map(|(shard_id, owner)| (shard_id, owner.to_string()))
+                .collect::<BTreeMap<_, _>>()
         };
         compute_placement_aware_rebalance(&shard_owners, &shard_placement, &live_servers, options)
     }
