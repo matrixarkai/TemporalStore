@@ -907,6 +907,7 @@ NAV_JS = r'''<script>
 
 NAV_LINKS = [
     ("/v1/admin", "Overview"),
+    ("/v1/admin/onebox", "One-box"),
     ("/v1/admin/setup", "Setup &amp; metrics"),
     ("/v1/admin/catalog", "Skills &amp; resources"),
     ("/v1/admin/explore", "Explore"),
@@ -3597,6 +3598,188 @@ SETUP_JS = r"""
 """
 
 # ================================================================================================
+ONEBOX_BODY = """
+%(nav)s
+  <header>
+    <h1>One-box</h1>
+    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  </header>
+  <p class="lede">What this deployment does when it answers a question, and what each choice
+    costs. Every control here is edited where it lives -- this page gathers them, because the
+    three that decide recall sit on three different surfaces.</p>
+
+  <section>
+    <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
+    <label for="key">Admin API key</label>
+    <input id="key" type="password" spellcheck="false" autocomplete="off" placeholder="Key carrying an admin scope">
+    <p class="hint">No key yet? <a href="/v1/admin/portal#firstkey">Where the first one comes from</a>
+      &mdash; no page can mint it; it takes one command where the gateway runs.</p>
+    <div class="hint">Reading this page needs a key with an admin scope; nothing here writes.</div>
+    <div id="keyMsg" role="status" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>The profile</h2>
+    <p class="hint" style="margin-top:0">How a candidate is scored. This is the switch that decides
+      what "close to the question" means on this deployment, and it is on by default.</p>
+    <div id="profile"><div class="empty">Enter an admin key to read the configuration.</div></div>
+  </section>
+
+  <section>
+    <h2>Returning everything</h2>
+    <p class="hint" style="margin-top:0">A store small enough to fit the answer's budget does not
+      need ranking to choose for it. Measured on this build: eighty short facts, one question, an
+      8000-token budget — <b>forty came back</b>. Eighty facts of that length is about a thousand
+      tokens, so the budget was never what cut it. With <span class="mono">return_all_candidates</span>
+      on, <b>seventy-nine</b> came back.</p>
+    <div id="returnall"><div class="empty">Enter an admin key to read the policy.</div></div>
+  </section>
+
+  <section>
+    <h2>What decides recall</h2>
+    <p class="hint" style="margin-top:0">The three caps that bound a retrieve, and which of them was
+      doing the cutting. Raising the others changed nothing in that measurement.</p>
+    <div id="caps"><div class="empty">Enter an admin key to read the limits.</div></div>
+  </section>
+"""
+
+
+ONEBOX_JS = r"""<script>
+(function () {
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function conn(state, text) {
+    $("dot").className = "dot " + state;
+    $("conn").textContent = text;
+  }
+  function say(el, text, kind) {
+    el.className = "msg " + (kind || "info");
+    el.textContent = text || "";
+    el.hidden = !text;
+  }
+  function auth() {
+    var key = $("key").value.trim();
+    return key ? { Authorization: "Bearer " + key } : {};
+  }
+
+  /* The settings this page is about, in the order somebody reads them: what scoring does, then
+     what the scan carries. Named rather than pattern-matched -- a page that guessed which
+     settings were "the one-box ones" would quietly change what it showed when a name changed. */
+  var PROFILE_KEYS = [
+    "retrieval.onebox_embedding_first",
+    "retrieval.project_scan_fields",
+    "retrieval.scan_visits_path"
+  ];
+  var CAP_KEYS = [
+    "retrieval.max_selected_refs",
+    "retrieval.max_global_candidates",
+    "retrieval.top_k_per_layer"
+  ];
+  /* The cap the measurement blamed, so the page can say so beside it rather than in prose
+     somebody has to connect to the row themselves. */
+  var THE_ONE_THAT_CUT = "retrieval.max_selected_refs";
+
+  function settingRows(fields, keys, note) {
+    var rows = keys.map(function (key) {
+      var f = fields[key];
+      if (!f) { return ""; }
+      var badge = f.applies === "restart"
+        ? '<span class="badge restart">needs restart</span>' : "";
+      var flag = (note && key === THE_ONE_THAT_CUT)
+        ? '<span class="badge essential">this is the one that cut it</span>' : "";
+      return "<tr><th>" + esc(f.label || key) + badge + flag + "</th><td class='mono'>"
+        + esc(f.value === "" || f.value == null ? f["default"] : f.value)
+        + "</td><td class='mono'>" + esc(f.env || "") + "</td></tr>"
+        + (f.help ? "<tr><td colspan='3' class='hint'>" + esc(String(f.help).split("\n")[0])
+                    + "</td></tr>" : "");
+    }).join("");
+    return rows
+      ? "<table class='inv'><thead><tr><th>Setting</th><th>Value</th><th>Variable</th></tr></thead>"
+        + "<tbody>" + rows + "</tbody></table>"
+      : '<div class="empty">This build offers none of them.</div>';
+  }
+
+  function renderPolicy(knobs) {
+    var names = ["return_all_candidates", "return_all_candidate_threshold"];
+    var rows = names.map(function (name) {
+      var k = knobs[name];
+      if (!k) { return ""; }
+      var inert = k.read_by_nothing
+        ? '<span class="badge restart">not read by this build</span>' : "";
+      return "<tr><th>" + esc(name) + inert + "</th><td class='mono'>"
+        + esc(k.value == null ? k["default"] : k.value) + "</td><td class='hint'>"
+        + esc(String(k.description || "").split("\n")[0]) + "</td></tr>";
+    }).join("");
+    return rows
+      ? "<table class='inv'><thead><tr><th>Knob</th><th>Value</th><th>What it does</th></tr>"
+        + "</thead><tbody>" + rows + "</tbody></table>"
+        + '<div class="hint">Set these under Retrieval settings on the Setup page — per tenant, or '
+        + 'per user.</div>'
+      : '<div class="empty">This build does not offer them.</div>';
+  }
+
+  function load() {
+    if (!$("key").value.trim()) { return; }
+    fetch("/v1/admin/config", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        conn("live", "connected");
+        var fields = {};
+        (d.groups || []).forEach(function (g) {
+          (g.fields || []).forEach(function (f) { fields[f.key] = f; });
+        });
+        if (!Object.keys(fields).length && d.fields) { fields = d.fields; }
+        $("profile").innerHTML = settingRows(fields, PROFILE_KEYS, false);
+        $("caps").innerHTML = settingRows(fields, CAP_KEYS, true);
+      })
+      .catch(function (e) {
+        var s = window.__matrixarkConnState(e);
+        conn(s[0], s[1]);
+        /* Both panels are drawn from this one call, so both have to say it failed. A panel left
+           on "enter a key" after a load that failed is telling the reader to do something they
+           have already done. */
+        var said = '<div class="msg err">' + esc(window.__matrixarkWhyFailed(e)) + "</div>";
+        $("profile").innerHTML = said;
+        $("caps").innerHTML = said;
+      });
+
+    fetch("/v1/admin/policy", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { $("returnall").innerHTML = renderPolicy(d.knobs || {}); })
+      .catch(function (e) {
+        $("returnall").innerHTML = '<div class="msg err">'
+          + esc(window.__matrixarkWhyFailed(e)) + "</div>";
+      });
+  }
+
+  var stored = null;
+  try { stored = window.sessionStorage.getItem("matrixark_admin_key"); } catch (e) { stored = null; }
+  if (stored) { $("key").value = stored; $("remember").checked = true; }
+  $("key").addEventListener("change", function () {
+    if ($("remember").checked) {
+      try { window.sessionStorage.setItem("matrixark_admin_key", $("key").value.trim()); }
+      catch (e) { /* a tab that refuses storage still works, it just forgets */ }
+    }
+    load();
+  });
+  $("remember").addEventListener("change", function () {
+    try {
+      if ($("remember").checked) {
+        window.sessionStorage.setItem("matrixark_admin_key", $("key").value.trim());
+      } else {
+        window.sessionStorage.removeItem("matrixark_admin_key");
+      }
+    } catch (e) { /* nothing to do */ }
+  });
+  load();
+}());
+</script>"""
+
+
 MEM0_BODY = """
   <header>
     <h1>mem0 API</h1>
@@ -6264,6 +6447,8 @@ emit("overview_portal.html", "MatrixArk", OVERVIEW_BODY, OVERVIEW_JS, "/v1/admin
 emit("api_portal.html", "MatrixArk — API", API_BODY, API_JS, "/v1/admin/api")
 emit("explore_portal.html", "MatrixArk — Explore", EXPLORE_BODY, EXPLORE_JS, "/v1/admin/explore")
 emit("setup_portal.html", "MatrixArk — Setup & Metrics", SETUP_BODY, SETUP_JS, "/v1/admin/setup")
+emit("onebox_portal.html", "MatrixArk — One-box", ONEBOX_BODY, ONEBOX_JS,
+     "/v1/admin/onebox")
 emit("mem0_portal.html", "MatrixArk — mem0 API", MEM0_BODY, MEM0_JS,
      "/v1/admin/mem0")
 emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CATALOG_JS,
