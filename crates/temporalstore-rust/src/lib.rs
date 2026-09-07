@@ -32,6 +32,7 @@ pub mod durability_metrics;
 pub mod flush_gate;
 pub mod memory_trim;
 pub mod engine;
+pub mod env_flag;
 pub mod http;
 pub mod index_log;
 pub mod ingestion;

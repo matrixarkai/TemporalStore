@@ -985,14 +985,10 @@ fn percentile(sorted: &[u128], pct: usize) -> u128 {
 }
 
 fn parse_bool(value: &str, key: &str) -> bool {
-    match value {
-        "1" | "true" | "TRUE" | "yes" | "YES" => true,
-        "0" | "false" | "FALSE" | "no" | "NO" => false,
-        _ => {
-            eprintln!("invalid {key} boolean value {value:?}");
-            std::process::exit(2);
-        }
-    }
+    temporalstore_rust::env_flag::parse_bool(value).unwrap_or_else(|| {
+        eprintln!("invalid {key} boolean value {value:?}");
+        std::process::exit(2);
+    })
 }
 
 fn now_ms() -> u128 {

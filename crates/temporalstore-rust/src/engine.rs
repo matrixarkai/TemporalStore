@@ -2952,14 +2952,7 @@ pub(super) fn wal_single_barrier() -> bool {
 // at once; it is read by nothing now, so setting it does nothing.
 
 fn env_flag_on(name: &str) -> bool {
-    matches!(
-        std::env::var(name)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::env_flag::env_bool(name, false)
 }
 
 /// Tuning for sampled eviction, read from the environment with defaults that mirror the
@@ -2984,14 +2977,7 @@ pub(crate) fn evict_sampler_config() -> eviction_sampler::EvictionSamplerConfig 
 /// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
 /// fixed behavior by default; the env var remains only as an escape hatch.
 pub(crate) fn env_flag_default_on(name: &str) -> bool {
-    !matches!(
-        std::env::var(name)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::env_bool(name, true)
 }
 
 /// One durable config-log entry: the shard config `config`, effective for every WAL write with

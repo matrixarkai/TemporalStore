@@ -184,11 +184,10 @@ fn parse_usize(value: Option<String>, default: usize) -> usize {
 }
 
 fn parse_bool(value: Option<String>, default: bool) -> bool {
-    match value.as_deref().map(str::trim).map(str::to_ascii_lowercase) {
-        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on") => true,
-        Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off") => false,
-        _ => default,
-    }
+    value
+        .as_deref()
+        .and_then(crate::env_flag::parse_bool)
+        .unwrap_or(default)
 }
 
 #[cfg(test)]

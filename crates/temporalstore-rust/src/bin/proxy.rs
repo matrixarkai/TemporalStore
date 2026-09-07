@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use temporalstore_rust::env_flag::env_bool;
 use temporalstore_rust::http::serve;
 use temporalstore_rust::{ProxyOptions, ProxyService, ProxyServingMode};
 use tracing::info;
@@ -90,16 +91,6 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| match value.to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Some(true),
-            "0" | "false" | "no" | "off" => Some(false),
-            _ => None,
-        })
-        .unwrap_or(default)
-}
 
 fn env_u8(name: &str, default: u8) -> u8 {
     std::env::var(name)
