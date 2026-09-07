@@ -90,6 +90,9 @@ ENV_MAP: Dict[str, str] = {
     "storage.page_store_compression_level": "TS_PAGE_STORE_COMPRESSION_LEVEL",
     "storage.page_store_compression_min_bytes": "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
     "storage.cross_shard_reclaim_guard": "TS_CROSS_SHARD_RECLAIM_GUARD",
+    # Offered by the config file, commented out, and mapped by nothing -- so uncommenting the line
+    # would have set nothing. The flag is live: default ON, read in eight places.
+    "storage.index_catalog_fold": "TS_INDEX_CATALOG_FOLD",
     # The engine reads TS_INDEX_DUMP_WAL_GAP_BYTES first and falls back to
     # TS_INDEX_DUMP_OPLOG_GAP_BYTES only when it is unset, so exporting the older name put
     # every value from this file behind anything that set the current one -- including a
@@ -99,6 +102,12 @@ ENV_MAP: Dict[str, str] = {
     # TS_BLOCK_SLAB_TARGET_BYTES.)
     "storage.index_dump_oplog_gap_bytes": "TS_INDEX_DUMP_WAL_GAP_BYTES",
     # ---- [wal] --------------------------------------------------------------
+    # The engine documents the config key as the way to set this -- the doc comment on
+    # group_commit_delay reads "`TS_WAL_COMMIT_DELAY_US` (config `[wal] commit_delay_us`)" -- and
+    # the config file offers it with a paragraph explaining what widening the batch window does.
+    # It was mapped by nothing, so an operator following that documentation set a value which
+    # never reached the engine, while both of its neighbours below worked.
+    "wal.commit_delay_us": "TS_WAL_COMMIT_DELAY_US",
     "wal.wal_legacy_recovery": "TS_WAL_LEGACY_RECOVERY",
     "wal.wal_compress_records": "TS_WAL_COMPRESS_RECORDS",
     "wal.raft_wal_dir": "TS_RAFT_WAL_DIR",
