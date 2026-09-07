@@ -12,14 +12,14 @@ from typing import Any
 try:
     from tools.matrixark_mcp_core import (
         Json,
-        canonical_scope_key,
+        cache_scope_key,
         compact_context_pack_for_serving_flat as compact_context_pack_for_serving,
         python_hot_cache_allowed,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
-        canonical_scope_key,
+        cache_scope_key,
         compact_context_pack_for_serving_flat as compact_context_pack_for_serving,
         python_hot_cache_allowed,
     )
@@ -47,7 +47,7 @@ def context_pack_cache_key(
 ) -> tuple[Any, ...]:
     return (
         target._retrieval_records_cache_generation,
-        canonical_scope_key(scope),
+        cache_scope_key(scope),
         query,
         question_type,
         retrieval_session_scope,

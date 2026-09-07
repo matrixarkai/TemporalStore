@@ -10,7 +10,7 @@ try:
         Json,
         access_scope_matches_before_scoring,
         candidate_access_scope,
-        canonical_scope_key,
+        cache_scope_key,
         scope_matches,
         session_scope_mode,
     )
@@ -19,7 +19,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         access_scope_matches_before_scoring,
         candidate_access_scope,
-        canonical_scope_key,
+        cache_scope_key,
         scope_matches,
         session_scope_mode,
     )
@@ -60,7 +60,7 @@ def retrieval_records_cache_key(
     selected_key = tuple(sorted(int(item) for item in (selected_node_hashes or set())))
     return (
         generation,
-        canonical_scope_key(scope),
+        cache_scope_key(scope),
         session_scope_mode(scope),
         tuple(sorted(allowed_types)),
         secondary_key,
