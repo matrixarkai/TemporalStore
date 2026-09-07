@@ -816,6 +816,15 @@ mod tests {
                 .map(metadata_to_proto)
                 .transpose()
                 .unwrap(),
+            // `items` is still filled the ordinary way, and it has the shape `staged_blocks`
+            // below was taken out of this struct for: every outcome carries an owned
+            // `value: Option<Vec<u8>>`, and `item_to_proto` copies it here before the encoder
+            // copies it again into the frame. Measured by `does_the_outcome_value_get_copied`, the
+            // bytes allocated per append track the outcome value one for one -- 4,489 B for a
+            // 4,096 B value and 16,777 B for a 16,384 B one, a fixed 393 B either side of a whole
+            // extra copy. Fixing it means what fixing `staged_blocks` meant: a hand-written encoder
+            // and a hand-written length for this field, which is a larger job here because an item
+            // has ten fields and a nested message rather than two scalars.
             items: record.outcomes.iter().map(item_to_proto).collect(),
             staged_blocks: record
                 .staged_pages
@@ -974,6 +983,59 @@ mod tests {
 
         std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
         std::env::remove_var("TS_WAL_BINARY_RECORDS");
+    }
+
+    /// Whether building the proto tail copies each outcome value before the encoder copies it.
+    ///
+    /// `staged_blocks` was taken out of the proto struct for exactly this reason -- the comment in
+    /// `record_parts` says filling it copied every page before the encoder copied them again. The
+    /// `items` field is still filled the ordinary way, and every outcome carries an owned value.
+    /// If that value is copied, the bytes allocated per append rise with it, one for one.
+    #[test]
+    #[ignore]
+    #[cfg(feature = "alloc-probe")]
+    fn does_the_outcome_value_get_copied() {
+        for value_len in [512usize, 4096, 16384] {
+            let mut record = record_with(Some(Command::StringSet {
+                key: "k".to_string(),
+                value: vec![1u8; 16],
+            }));
+            record.outcomes = vec![crate::wal::WalOutcomeItem {
+                kind: "page".to_string(),
+                object_key: "tenant/1/object/9".to_string(),
+                component: Some("body".to_string()),
+                object_id: 9,
+                routing_bucket: 8539,
+                address: None,
+                value: Some(vec![7u8; value_len]),
+                ttl: Some(60_000),
+                deleted: false,
+                meta: false,
+            }];
+
+            let mut out = Vec::with_capacity(1024 * 1024);
+            let prepared = prepare(&record).unwrap();
+            out.clear();
+            prepared.put(&record, &mut out).unwrap();
+            let payload_len = out.len();
+
+            let runs = 32usize;
+            let probe = crate::alloc_probe::Probe::start();
+            for _ in 0..runs {
+                let prepared = prepare(std::hint::black_box(&record)).unwrap();
+                out.clear();
+                prepared.put(&record, &mut out).unwrap();
+                std::hint::black_box(out.len());
+            }
+            let counts = probe.stop();
+
+            println!(
+                "  ITEMS outcome value {value_len:>6} B | payload {payload_len:>6} B | {:>5.1} allocs {:>8.0} B per append",
+                counts.allocs as f64 / runs as f64,
+                counts.alloc_bytes as f64 / runs as f64,
+            );
+        }
+        println!("  (if the bytes rise with the value, the outcome payload is being copied)");
     }
 
     #[test]
