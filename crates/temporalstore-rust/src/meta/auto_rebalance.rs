@@ -124,18 +124,23 @@ pub fn compute_auto_rebalance(
         return plans;
     }
 
-    // Working owner map + per-live-server load, seeded from the current state.
-    let mut owner: BTreeMap<ShardId, Option<String>> = BTreeMap::new();
-    let mut load: BTreeMap<String, usize> =
-        live_servers.iter().map(|addr| (addr.clone(), 0)).collect();
-    for (shard_id, current) in shard_owners {
-        if live_servers.contains(current) {
-            *load.get_mut(current).expect("seeded") += 1;
-            owner.insert(*shard_id, Some(current.clone()));
-        } else {
-            owner.insert(*shard_id, None);
+    // Per-live-server load, counted from the current state. Counting borrows
+    // the owner names rather than copying them.
+    let mut load: BTreeMap<&str, usize> =
+        live_servers.iter().map(|addr| (addr.as_str(), 0)).collect();
+    for current in shard_owners.values() {
+        if let Some(count) = load.get_mut(current.as_str()) {
+            *count += 1;
         }
     }
+
+    // The working owner map is what records where a shard went and what pass 2
+    // reads to find one on the busiest server. Both are needed only once
+    // something moves, and a cluster with every owner alive and its load even
+    // moves nothing -- so this is built when the first move needs it rather
+    // than for every round. Building it costs a walk of every shard in the
+    // cluster, which is the whole cost of a round that decides to do nothing.
+    let mut owner: Option<BTreeMap<ShardId, Option<&str>>> = None;
 
     // Pass 1 — evacuate every shard whose owner is unavailable onto the
     // least-loaded live server (ties: lowest address).
@@ -147,12 +152,12 @@ pub fn compute_auto_rebalance(
             continue;
         }
         let target = least_loaded_server(&load);
-        *load.get_mut(&target).expect("target is live") += 1;
-        owner.insert(*shard_id, Some(target.clone()));
+        *load.get_mut(target).expect("target is live") += 1;
+        owner_map(&mut owner, shard_owners, live_servers).insert(*shard_id, Some(target));
         plans.push(ShardReassignment {
             shard_id: *shard_id,
             from_server: Some(current.clone()),
-            to_server: target,
+            to_server: target.to_string(),
             reason: ShardReassignmentReason::OwnerUnavailable,
         });
     }
@@ -172,22 +177,21 @@ pub fn compute_auto_rebalance(
             }
             // Pick a shard currently on the busy server (highest id, for
             // determinism) to move to the idle server.
-            let Some(shard_id) = owner
+            let Some(shard_id) = owner_map(&mut owner, shard_owners, live_servers)
                 .iter()
-                .filter(|(_, owner_addr)| owner_addr.as_deref() == Some(busy_addr.as_str()))
+                .filter(|(_, owner_addr)| **owner_addr == Some(busy_addr))
                 .map(|(shard_id, _)| *shard_id)
                 .max()
             else {
                 break;
             };
-            let from = busy_addr.clone();
-            owner.insert(shard_id, Some(idle_addr.clone()));
-            *load.get_mut(&from).expect("busy is live") -= 1;
-            *load.get_mut(&idle_addr).expect("idle is live") += 1;
+            owner_map(&mut owner, shard_owners, live_servers).insert(shard_id, Some(idle_addr));
+            *load.get_mut(busy_addr).expect("busy is live") -= 1;
+            *load.get_mut(idle_addr).expect("idle is live") += 1;
             plans.push(ShardReassignment {
                 shard_id,
-                from_server: Some(from),
-                to_server: idle_addr,
+                from_server: Some(busy_addr.to_string()),
+                to_server: idle_addr.to_string(),
                 reason: ShardReassignmentReason::Rebalance,
             });
         }
@@ -196,21 +200,44 @@ pub fn compute_auto_rebalance(
     plans
 }
 
-fn least_loaded_server(load: &BTreeMap<String, usize>) -> String {
+/// The working owner map, built the first time a move needs it.
+///
+/// A round that moves nothing never calls this, which is the point: building it
+/// walks every shard in the cluster, and that walk was the whole cost of
+/// deciding to do nothing.
+fn owner_map<'slot, 'data>(
+    slot: &'slot mut Option<BTreeMap<ShardId, Option<&'data str>>>,
+    shard_owners: &'data BTreeMap<ShardId, String>,
+    live_servers: &'data BTreeSet<String>,
+) -> &'slot mut BTreeMap<ShardId, Option<&'data str>> {
+    slot.get_or_insert_with(|| {
+        shard_owners
+            .iter()
+            .map(|(shard_id, current)| {
+                let held = live_servers
+                    .get(current.as_str())
+                    .map(|addr| addr.as_str());
+                (*shard_id, held)
+            })
+            .collect()
+    })
+}
+
+fn least_loaded_server<'a>(load: &BTreeMap<&'a str, usize>) -> &'a str {
     load.iter()
         .min_by(|(addr_a, load_a), (addr_b, load_b)| {
             load_a.cmp(load_b).then_with(|| addr_a.cmp(addr_b))
         })
-        .map(|(addr, _)| addr.clone())
+        .map(|(addr, _)| *addr)
         .expect("load map is non-empty when live servers exist")
 }
 
-fn most_loaded_server(load: &BTreeMap<String, usize>) -> Option<(String, usize)> {
+fn most_loaded_server<'a>(load: &BTreeMap<&'a str, usize>) -> Option<(&'a str, usize)> {
     load.iter()
         .max_by(|(addr_a, load_a), (addr_b, load_b)| {
             load_a.cmp(load_b).then_with(|| addr_b.cmp(addr_a))
         })
-        .map(|(addr, count)| (addr.clone(), *count))
+        .map(|(addr, count)| (*addr, *count))
 }
 
 impl SingleNodeMeta {
