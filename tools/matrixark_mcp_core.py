@@ -2300,11 +2300,24 @@ def non_default_classification(value: Any) -> str:
     return "" if classification in {"", "NEW_EVENT"} else classification
 
 
+#: Resolved on first use and remembered. The import below is deferred on purpose -- doing it at
+#: module scope closes a cycle -- but the DOTTED form raises ModuleNotFoundError whenever there is no
+#: `tools` package on the path, which is how the adapter runs, and Python does not cache the fact
+#: that a module could not be found. So the whole finder ran on every call: sys.path walk, directory
+#: stats, the exception, then the fallback. Sampling a post-write retrieve put 65.2% of it here, with
+#: 66.8% of all samples inside importlib.
+_shared_benchmark_quality_index_terms: Any = None
+
+
 def benchmark_quality_index_terms(*values: Any) -> list[str]:
-    try:
-        from tools.matrixark_mcp_indexing import benchmark_quality_index_terms as shared_benchmark_quality_index_terms
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_indexing import benchmark_quality_index_terms as shared_benchmark_quality_index_terms
+    global _shared_benchmark_quality_index_terms
+    shared_benchmark_quality_index_terms = _shared_benchmark_quality_index_terms
+    if shared_benchmark_quality_index_terms is None:
+        try:
+            from tools.matrixark_mcp_indexing import benchmark_quality_index_terms as shared_benchmark_quality_index_terms
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_indexing import benchmark_quality_index_terms as shared_benchmark_quality_index_terms
+        _shared_benchmark_quality_index_terms = shared_benchmark_quality_index_terms
     return shared_benchmark_quality_index_terms(*values)
 
 
