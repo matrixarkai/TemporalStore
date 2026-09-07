@@ -1422,15 +1422,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 return full
 
             def project(records: list[Json]) -> list[tuple]:
+                # Resolved once, not once per record: the name cannot change between iterations, and
+                # an import inside the loop runs the machinery for every context_event the backend
+                # returns. This seam is on the live serving path.
+                try:
+                    from tools.matrixark_mcp_local_adapter import _record_scope_hashes
+                except ModuleNotFoundError:
+                    from matrixark_mcp_local_adapter import _record_scope_hashes
                 out = []
                 for record in records:
                     if str(record.get("record_type") or "") != "context_event":
                         continue
-                    rec_tenant, rec_user = 0, 0
-                    try:
-                        from tools.matrixark_mcp_local_adapter import _record_scope_hashes
-                    except ModuleNotFoundError:
-                        from matrixark_mcp_local_adapter import _record_scope_hashes
                     rec_tenant, rec_user = _record_scope_hashes(record)
                     if rec_tenant != tenant_hash or rec_user != user_hash:
                         continue
