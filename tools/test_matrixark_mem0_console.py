@@ -111,15 +111,27 @@ class ConsolePageTest(unittest.TestCase):
     def setUp(self) -> None:
         self.app = gw.make_v1_app(_FakeServer(), _cfg())
 
-    def test_the_explore_page_carries_the_console_and_every_operation(self) -> None:
-        _st, _h, body = drive(self.app, method="GET", path="/v1/admin/explore")
+    def test_the_mem0_page_carries_the_console_and_every_operation(self) -> None:
+        """It was a tab on Explore, beside four panels about memories rather than about the API."""
+        _st, _h, body = drive(self.app, method="GET", path="/v1/admin/mem0")
         text = body.decode("utf-8")
         self.assertIn('id="ops"', text)
-        self.assertIn('data-pane="api"', text)
-        self.assertIn('data-pane="batch"', text)
         for op in gw.MEM0_OPERATIONS:
             with self.subTest(op=op["id"]):
                 self.assertIn('"id": "%s"' % op["id"], text)
+
+    def test_explore_keeps_its_own_panels_and_loses_the_console(self) -> None:
+        """Moved, not copied: two consoles would be two things to keep in step."""
+        _st, _h, body = drive(self.app, method="GET", path="/v1/admin/explore")
+        text = body.decode("utf-8")
+        self.assertIn('data-pane="batch"', text)
+        self.assertNotIn("MEM0_OPS", text)
+        self.assertNotIn('data-pane="api"', text)
+
+    def test_the_route_that_serves_it_exists(self) -> None:
+        """A page nothing serves is a file in a directory."""
+        status, _h, _b = drive(self.app, method="GET", path="/v1/admin/mem0")
+        self.assertEqual(200, status)
 
     def test_the_copyable_curl_names_the_key_rather_than_carrying_it(self) -> None:
         # This lands on a clipboard and often in a ticket.

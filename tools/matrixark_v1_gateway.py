@@ -1433,6 +1433,19 @@ def _explore_portal_html_bytes() -> bytes:
         "<code>GET /v1/users</code>, and <code>POST /v1/ingest</code>.</p>")
 
 
+_MEM0_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+
+
+def _mem0_portal_html_bytes() -> bytes:
+    return _portal_page(
+        _MEM0_PORTAL_CACHE, "mem0_portal.html",
+        "<!doctype html><meta charset='utf-8'><title>MatrixArk mem0 API</title>"
+        "<h1>MatrixArk mem0 API</h1><p>The bundled page "
+        "(<code>tools/portal/mem0_portal.html</code>) was not found. The routes it drives still "
+        "work: <code>POST /v1/ingest</code>, <code>POST /v1/retrieve</code>, "
+        "<code>GET /v1/memories</code>, <code>GET /v1/memory/&lt;id&gt;</code>.</p>")
+
+
 _API_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
 
 
@@ -2484,6 +2497,8 @@ ROUTE_DOCS: List[Json] = [
      "summary": "Skills and resources."},
     {"group": "Portal pages", "method": "GET", "path": "/v1/admin/explore", "scope": None,
      "summary": "Ask, add, upload, browse."},
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin/mem0", "scope": None,
+     "summary": "The mem0 API, with the exchange it made."},
     {"group": "Portal pages", "method": "GET", "path": "/v1/admin/ingestion", "scope": None,
      "summary": "Bulk import."},
     {"group": "Portal pages", "method": "GET", "path": "/v1/admin/portal", "scope": None,
@@ -4643,6 +4658,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             return await _page(send, scope, _overview_portal_html_bytes())
         if method == "GET" and path == "/v1/admin/explore":
             return await _page(send, scope, _explore_portal_html_bytes())
+        # The mem0 console, which was a tab on Explore beside four panels about memories rather
+        # than about the API. Same posture as the others: the page is inert without a key, because
+        # every operation on it calls a route that enforces its own scope.
+        if method == "GET" and path == "/v1/admin/mem0":
+            return await _page(send, scope, _mem0_portal_html_bytes())
         if method == "GET" and path == "/v1/admin/api":
             return await _page(send, scope, _api_portal_html_bytes())
 

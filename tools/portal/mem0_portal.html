@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MatrixArk — Explore</title>
+<title>MatrixArk — mem0 API</title>
 <style>
   /* --faint carries the help text under every field, so it is body copy rather than
      decoration: it is set to clear 4.5:1 against --panel in both schemes (measured 4.95
@@ -426,15 +426,15 @@
 <main class="wrap">
 
   <header>
-    <h1>Explore</h1>
+    <h1>mem0 API</h1>
     <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   </header>
   <nav class="portalnav">
     <a href="/v1/admin">Overview</a>
     <a href="/v1/admin/setup">Setup &amp; metrics</a>
     <a href="/v1/admin/catalog">Skills &amp; resources</a>
-    <a href="/v1/admin/explore" aria-current="page">Explore</a>
-    <a href="/v1/admin/mem0">mem0 API</a>
+    <a href="/v1/admin/explore">Explore</a>
+    <a href="/v1/admin/mem0" aria-current="page">mem0 API</a>
     <a href="/v1/admin/ingestion">Ingestion</a>
     <a href="/v1/admin/portal">API keys</a>
     <a href="/v1/admin/api">API</a>
@@ -452,24 +452,26 @@
     <table class="inv"><thead><tr><th>When</th><th>Call</th><th>Answered</th><th>Took</th></tr>
       </thead><tbody id="callLogRows"></tbody></table>
   </div>
-  <p class="lede">Run the pipeline against your own data: ingest a note, ask a question, read what
-    comes back. A retrieve that returns the right thing is the only check that covers ingestion,
-    extraction, encoding and ranking at once.</p>
+  <p class="lede">Every method of the mem0 API, by the name you call it by rather than the URL that
+    serves it &mdash; run against this deployment, with the whole exchange shown. It is the worked
+    example for writing the call yourself, and the first place to look when one of them answers
+    something you did not expect.</p>
 
   <section>
-    <h2>Access</h2>
+    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <label for="key">API key</label>
+    <input id="key" type="password" placeholder="Key carrying context:ingest / context:retrieve" autocomplete="off" spellcheck="false">
+    <div class="hint">An ordinary scoped key, not an admin one: these are the same routes an
+      application calls. The tenant is pinned from the key, so a key can never address another
+      tenant&rsquo;s memories.</div>
+  </section>
+
+  <section>
+    <h2>Scope</h2>
     <div class="grid2">
-      <div>
-        <label for="key">API key</label>
-        <input id="key" type="password" placeholder="Key with context:ingest and context:retrieve" autocomplete="off" spellcheck="false">
-      </div>
       <div>
         <label for="user">User</label>
-        <input id="user" type="text" value="default" spellcheck="false">
-      </div>
-    </div>
-    <div class="grid2">
-      <div>
+        <input id="user" type="text" placeholder="leave blank for the whole tenant" spellcheck="false">
         <label for="agent">Agent</label>
         <input id="agent" type="text" placeholder="optional" spellcheck="false">
       </div>
@@ -478,125 +480,31 @@
         <input id="session" type="text" placeholder="optional" spellcheck="false">
       </div>
     </div>
-    <div class="hint">The tenant is pinned from the key. These fields choose the scope WITHIN it.</div>
+    <div class="hint">These fill the scope of every operation that takes one. An operation that
+      addresses a single memory by id says so on its own form and ignores these.</div>
   </section>
 
-  <div class="tabs" role="tablist">
-    <button type="button" role="tab" id="tab-ask" aria-controls="pane-ask" data-pane="ask" aria-selected="true">Ask</button>
-    <button type="button" role="tab" id="tab-add" aria-controls="pane-add" data-pane="add" aria-selected="false">Add a memory</button>
-    <button type="button" role="tab" id="tab-browse" aria-controls="pane-browse" data-pane="browse" aria-selected="false">Browse</button>
-    <button type="button" role="tab" id="tab-batch" aria-controls="pane-batch" data-pane="batch" aria-selected="false">Batch ingest</button>
-  </div>
-
-  <section class="pane" role="tabpanel" aria-labelledby="tab-ask" id="pane-ask">
-    <h2>Ask <span class="aux" id="askStats"></span></h2>
-    <label for="query">Question</label>
-    <input id="query" type="text" placeholder="What did we decide about the checkout coupon?" spellcheck="false">
-    <div class="grid2">
-      <div>
-        <label for="budget">Token budget</label>
-        <input id="budget" type="text" value="2048" spellcheck="false">
-      </div>
-      <div>
-        <label for="topk">Max items</label>
-        <input id="topk" type="text" value="10" spellcheck="false">
-      </div>
-    </div>
-    <div class="actions"><button id="ask" type="button">Retrieve</button>
-      <span class="hint" style="margin:0">Calls <span class="mono">POST /v1/retrieve</span> exactly as an agent would.</span></div>
-    <div id="askMsg" role="status" aria-live="polite"></div>
-    <div id="askServed" class="hint" hidden></div>
-    <div id="askWarnings"></div>
-    <div id="pack"><div class="empty">Nothing retrieved yet.</div></div>
+  <section>
+    <h2>Operation</h2>
+    <div id="ops"></div>
+    <div id="opForm"><div class="empty">Choose an operation.</div></div>
+    <div id="opMsg" role="status" aria-live="polite"></div>
   </section>
 
-  <section class="pane" role="tabpanel" aria-labelledby="tab-add" id="pane-add" hidden>
-    <h2>Add a memory</h2>
-    <p class="hint" style="margin-top:0">Writes one turn through <span class="mono">POST /v1/ingest</span>,
-      the same path an agent hook uses. Useful for checking that extraction and encoding are
-      working before you point a real workload at the deployment.</p>
-    <label for="note">Text</label>
-    <textarea id="note" placeholder="The team agreed to keep the coupon stacking rule for ACME until Q4."></textarea>
-    <div class="actions"><button id="add" type="button">Ingest</button>
-      <label class="check"><input type="checkbox" id="finalize" checked> extract immediately</label></div>
-    <div id="addMsg" role="status" aria-live="polite"></div>
-    <div class="hint">Without “extract immediately” the write is acknowledged and extraction runs in
-      the background, which is how a production ingest behaves — it just means a retrieve issued a
-      moment later may not see it yet.</div>
-
-    <div class="panel-head compact section-gap"><h2 style="margin-top:22px">Upload a document</h2></div>
-    <p class="hint" style="margin-top:0">Streams the file through
-      <span class="mono">POST /v1/ingest_file</span> to the blob tier and ingests it in one call —
-      the same path the SDK uses. For a whole directory, use
-      <a href="/v1/admin/ingestion">Ingestion</a> instead.</p>
-    <div class="grid2">
-      <div>
-        <label for="file">Files</label>
-        <input id="file" type="file" multiple>
-        <div class="hint">Uploaded one at a time so a failure stops at the file it failed on.</div>
-      </div>
-      <div>
-        <label for="kind">Store as</label>
-        <select id="kind"><option value="skill">Skill</option><option value="resource">Resource</option></select>
-        <label for="sharing">Visibility</label>
-        <select id="sharing">
-          <option value="">server default</option>
-          <option value="private_user">private to this user</option>
-          <option value="tenant_shared">shared across the tenant</option>
-          <option value="global_shared">shared globally</option>
-        </select>
-      </div>
-    </div>
-    <div class="actions"><button id="upload" type="button">Upload</button>
-      <label class="check"><input type="checkbox" id="wait" checked> wait for extraction</label>
-      <button id="clearDone" class="link" type="button">clear finished</button></div>
-    <div id="uploadMsg" role="status" aria-live="polite"></div>
-    <div id="uploadQueue"></div>
-    <div class="hint" id="retryNote" hidden>Retry re-sends the file from this browser, so it works
-      only while this tab stays open — the bytes never existed on the server. A bulk import from a
-      server directory is retryable after a restart; see <a href="/v1/admin/ingestion">Ingestion</a>.</div>
+  <section>
+    <h2>The exchange</h2>
+    <p class="hint" style="margin-top:0">What went out and what came back, headers included. The
+      key is never shown: it is the one header worth redacting and the one people paste into
+      tickets by accident.</p>
+    <div id="opWire"><div class="empty">Nothing sent yet.</div></div>
   </section>
 
-  <section class="pane" role="tabpanel" aria-labelledby="tab-batch" id="pane-batch" hidden>
-    <h2>Batch ingest</h2>
-    <p class="hint" style="margin-top:0">Many memories in one submission. Each line is one memory:
-      plain text, or a JSON object to set a per-line user, agent, session or metadata. The batch
-      runs on the SERVER as a tracked job — closing this tab does not stop it, and its failures are
-      retryable from <a href="/v1/admin/ingestion">Ingestion</a> exactly like a directory import.</p>
-    <label for="batchText">Records</label>
-    <textarea id="batchText" style="min-height:170px" spellcheck="false"
-      placeholder='The team agreed to keep the coupon stacking rule for ACME until Q4.
-{"text": "Renewal moved to March.", "user_id": "alice", "metadata": {"source": "crm"}}'></textarea>
-    <div class="grid2">
-      <div>
-        <label for="batchFile">…or load a file</label>
-        <input id="batchFile" type="file" accept=".txt,.jsonl,.ndjson,.json">
-        <div class="hint">Read in this browser and put in the box above, so what will be sent is
-          in front of you before you send it.</div>
-      </div>
-      <div>
-        <label for="batchKeyEnv">Server-side key variable</label>
-        <input id="batchKeyEnv" type="text" value="MATRIXARK_API_KEY" spellcheck="false">
-        <div class="hint">The job runs on the server and authenticates with the key in this
-          environment variable. The key in your browser is not handed to the worker.</div>
-      </div>
-    </div>
-    <div class="actions">
-      <button id="batchPreview" class="ghost" type="button">Check what would be sent</button>
-      <button id="batchRun" type="button">Start batch</button>
-      <span class="hint" style="margin:0" id="batchCount">Nothing entered yet.</span>
-    </div>
-    <div id="batchMsg" role="status" aria-live="polite"></div>
-    <div id="batchResult"></div>
-  </section>
-
-  <section class="pane" role="tabpanel" aria-labelledby="tab-browse" id="pane-browse" hidden>
-    <h2>Browse <span class="aux"><button class="link" id="refresh" type="button">refresh</button></span></h2>
-    <div id="users" class="metric-list"></div>
-    <div id="browseMsg" role="status" aria-live="polite"></div>
-    <div id="memories"><div class="empty">Not loaded.</div></div>
-    <div class="panel-head compact"><h2 style="margin-top:18px">Memory detail</h2></div>
-    <pre id="detail">Select a memory to see its stored record and change history.</pre>
+  <section>
+    <h2>This session&rsquo;s calls</h2>
+    <p class="hint" style="margin-top:0">Every call this page has made, newest first. Kept in the
+      page and nowhere else &mdash; it is gone when the tab is. Two runs side by side is how you
+      tell a request that changed from a deployment that did.</p>
+    <div id="opLog"><div class="empty">None yet.</div></div>
   </section>
 
 </main>
@@ -743,120 +651,9 @@
   };
 </script>
 <script>
-/* Tabs, for every portal page whose body declares a tablist.
- *
- * Shared rather than per page. The explore page had the only copy and this is the second caller;
- * two copies of a behaviour that looks identical is how they stop being identical.
- *
- * Click alone is not enough for role="tablist". Someone arriving on the selected tab expects the
- * arrow keys to move between them -- that is what the role announces -- and roving tabindex is
- * what makes those arrows the way through rather than one more thing to tab past.
- */
 (function () {
   "use strict";
-
-  window.wireTabs = function (onShow) {
-    var tabs = Array.prototype.slice.call(document.querySelectorAll(".tabs button"));
-    if (!tabs.length) { return; }
-
-    function show(button) {
-      tabs.forEach(function (b) {
-        var selected = b === button;
-        b.setAttribute("aria-selected", String(selected));
-        b.tabIndex = selected ? 0 : -1;
-      });
-      Array.prototype.forEach.call(document.querySelectorAll(".pane"), function (pane) {
-        pane.hidden = pane.id !== "pane-" + button.dataset.pane;
-      });
-      if (typeof onShow === "function") { onShow(button.dataset.pane); }
-    }
-
-    tabs.forEach(function (button, index) {
-      button.addEventListener("click", function () { show(button); });
-      button.addEventListener("keydown", function (event) {
-        var next = null;
-        if (event.key === "ArrowRight") { next = tabs[(index + 1) % tabs.length]; }
-        else if (event.key === "ArrowLeft") { next = tabs[(index - 1 + tabs.length) % tabs.length]; }
-        else if (event.key === "Home") { next = tabs[0]; }
-        else if (event.key === "End") { next = tabs[tabs.length - 1]; }
-        if (!next) { return; }
-        event.preventDefault();
-        show(next);
-        next.focus();
-      });
-    });
-
-    /* A fragment can name something inside a pane that is not showing.
-     *
-     * The live strip does exactly that from every page: "/v1/admin/setup#encoding" is a div inside
-     * the Settings pane, "#traffic" one inside Checks, and both panes load hidden. The browser
-     * scrolls to a fragment once, at load, and a hidden element is nowhere to scroll to -- so the
-     * badge arrived at the page, the default tab came up, and the state it was reporting on was not
-     * on screen. Nothing said so; the link worked in the only sense a link can be said to work.
-     *
-     * Which pane holds the target is the page's business, not this helper's, so it is read off the
-     * element rather than listed here: any fragment naming anything inside any pane opens it. */
-    function fromHash(hash) {
-      var name;
-      try { name = decodeURIComponent((hash || "").replace(/^#/, "")); }
-      catch (error) { name = (hash || "").replace(/^#/, ""); }
-      if (!name) { return false; }
-      var target = document.getElementById(name);
-      var pane = target && target.closest ? target.closest(".pane") : null;
-      if (!pane) { return false; }
-      var button = document.getElementById("tab-" + pane.id.replace(/^pane-/, ""));
-      if (!button) { return false; }
-      show(button);
-      /* The pane was hidden when the browser did its own scrolling, so it did not scroll. */
-      if (target.scrollIntoView) { target.scrollIntoView(); }
-      return true;
-    }
-
-    /* Clicking "#traffic" while already on this page changes no document, so nothing reloads and
-       the only signal is this event. That is the strip's own page -- the case most likely to be
-       reached and the one where doing nothing looks most like a dead control. */
-    if (window.addEventListener) {
-      window.addEventListener("hashchange", function () {
-        fromHash(window.location && window.location.hash);
-      });
-    }
-
-    var already = tabs.filter(function (b) {
-      return b.getAttribute("aria-selected") === "true";
-    });
-    if (!fromHash(window.location && window.location.hash)) {
-      show(already[0] || tabs[0]);
-    }
-  };
-
-  /* Show a pane from code. Needed whenever one pane's control writes into another's: without
-     it the change lands somewhere the person cannot see, and any instruction about what to do
-     next refers to a part of the page that is not on screen. */
-  window.showTab = function (pane) {
-    var button = document.getElementById("tab-" + pane);
-    if (button) { button.click(); }
-  };
-
-  /* Put a count on a tab. A pane that is hidden cannot report anything itself, and the case that
-     matters is a form with unsaved changes in it. */
-  window.markTab = function (pane, badge) {
-    var button = document.getElementById("tab-" + pane);
-    if (!button) { return; }
-    button.setAttribute("data-badge", badge ? String(badge) : "");
-  };
-}());
-</script>
-<script>
-(function () {
-  "use strict";
-  var $ = function (id) { return document.getElementById(id); };
-  function auth() {
-    var k = $("key").value.trim();
-    return k ? { Authorization: "Bearer " + k } : {};
-  }
-  function jsonAuth() {
-    return Object.assign({ "Content-Type": "application/json" }, auth());
-  }
+  function $(id) { return document.getElementById(id); }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -865,638 +662,616 @@
   function say(el, text, cls) {
     el.innerHTML = text ? '<div class="msg ' + (cls || "info") + '">' + esc(text) + "</div>" : "";
   }
+  function auth() {
+    var k = $("key").value.trim();
+    return k ? { Authorization: "Bearer " + k } : {};
+  }
+  function failure(status) { return window.__matrixarkFailure(status); }
+  function reason(body, status) {
+    return (body && body.detail) || failure(status) || (body && body.error) || "";
+  }
   function conn(state, text) {
     $("dot").className = "dot " + state;
     $("conn").textContent = text;
   }
-  function scope() {
-    var s = {};
-    ["user", "agent", "session"].forEach(function (f) {
-      var v = $(f).value.trim();
-      if (v) { s[f + "_id"] = v; }
-    });
-    return s;
-  }
-  function scopeQuery() {
-    return Object.keys(scope()).map(function (k) {
-      return k + "=" + encodeURIComponent(scope()[k]);
-    }).join("&");
-  }
-  function failure(status) {
-    /* A file, not a request: this page is sending one, and saying so is the difference between
-       a reader checking their upload and checking their gateway. */
-    return window.__matrixarkFailure(status, {
-      413: "That file is larger than this deployment accepts."
-    });
-  }
-  /* `detail` is a sentence when the server has something specific to say; `error` is a code word
-     like "unauthorized", which is the machine's word for it and answers nothing. Prefer the
-     sentence, then our own phrasing, and fall back to the code word only when neither exists. */
-  function reason(body, status) {
-    return (body && body.detail) || failure(status) || (body && body.error) || "";
-  }
+  conn("live", "ready");
 
-  /* ---------- tabs ---------- */
-  window.wireTabs(function (pane) { if (pane === "browse") { loadBrowse(); } });
-
-  /* ---------- ask ---------- */
-  /* The response shape differs between backends and versions; pick the first list of items that
-     looks like a pack rather than insisting on one field name, so this keeps working. */
-  function packItems(d) {
-    var candidates = [d.pack, d.context_pack, d.items, d.results, d.memories, d.refs];
-    for (var i = 0; i < candidates.length; i++) {
-      if (Array.isArray(candidates[i])) { return candidates[i]; }
-    }
-    if (d.context_pack && Array.isArray(d.context_pack.items)) { return d.context_pack.items; }
-    return [];
-  }
-  function itemText(it) {
-    if (typeof it === "string") { return it; }
-    return it.text || it.content || it.memory || it.summary || it.value || JSON.stringify(it);
-  }
-  function itemMeta(it) {
-    if (typeof it === "string") { return ""; }
-    var bits = [];
-    ["layer", "kind", "record_type", "source", "session_id"].forEach(function (k) {
-      if (it[k]) { bits.push(k + "=" + it[k]); }
-    });
-    if (typeof it.score === "number") { bits.push("score=" + it.score.toFixed(3)); }
-    if (it.id || it.memory_id) { bits.push(String(it.id || it.memory_id)); }
-    return bits.join(" · ");
-  }
-
-  /* The backend explains a thin answer; this is where a person sees it. Without this the pack
-     arrives shorter than it should be with nothing saying why, which reads as bad retrieval -- and
-     the fix for bad retrieval is not the fix for a changed encoder. */
-  var ASSEMBLY_LABELS = {
-    python_local_adapter: "the Python adapter",
-    native_rust_proxy: "the native Rust pack",
-    native_backend: "the native backend",
-    rust_proxy_native_context_pack: "the native Rust pack"
-  };
-
-  function renderAskWarnings(d) {
-    var conflicts = d.embedding_conflicts || {};
-    var blocks = [];
-
-    /* Which implementation answered, and whether it consulted the encoder. Two implementations rank
-       this same store differently, and the results alone do not say which one ran. */
-    var served = d.served_by || {};
-    if (served.assembly) {
-      var who = ASSEMBLY_LABELS[served.assembly] || served.assembly;
-      var how = served.ranking
-        ? " · ranked by " + esc(String(served.ranking).replace(/_/g, " "))
-        : "";
-      $("askServed").innerHTML = "Answered by " + esc(who) + how;
-      $("askServed").hidden = false;
-    } else {
-      $("askServed").hidden = true;
-    }
-    if (served.ranking_uses_vectors === false) {
-      /* The sentence that matters: an encoder is configured, the encoding panel shows vectors
-         stored, and this answer was ordered without reading one of them. */
-      /* Kept as one literal. Split across a concatenation the sentence stops being greppable in
-         the built page, which is how a test asserting the customer can read it passed on a page
-         where they could not. */
-      blocks.push('<div class="note"><b>These results were ranked without using the embedding model.</b> ' +
-        esc(ASSEMBLY_LABELS[served.assembly] || served.assembly) +
-        " orders candidates by how many of your query's words appear in the text, not by meaning. " +
-        "Stored vectors are not consulted on this path, so a paraphrase that shares no words with " +
-        "the original will not match however well the encoder is configured.</div>");
-    }
-    if (conflicts.encoder_change) {
-      blocks.push('<div class="mwarn"><b>' + esc(conflicts.encoder_change) + " stored memor" +
-        (conflicts.encoder_change === 1 ? "y was" : "ies were") + " not searched</b>" +
-        "Their vectors were made by a different embedding model than the one in use now" +
-        (conflicts.active_embedding_model
-          ? " (" + esc(conflicts.active_embedding_model) + ")" : "") +
-        ". Vectors from two models cannot be compared, so those memories cannot match any query " +
-        "until the store is re-embedded — or until you switch back to the model that wrote them. " +
-        'Nothing else reports this: the two are often the same width, so no error is raised.</div>');
-    }
-    if (conflicts.vector_width) {
-      blocks.push('<div class="note"><b>' + esc(conflicts.vector_width) + " stored memor" +
-        (conflicts.vector_width === 1 ? "y was" : "ies were") + " not searched.</b> Their vectors " +
-        "are a different width from this query's, which is what happens when the encoder was " +
-        "unavailable and fallback vectors were written in its place.</div>");
-    }
-    (d.warnings || []).forEach(function (w) {
-      /* The two above say the same thing with more room; do not say it twice. */
-      if (/embedded by a different model|different width from this query/.test(String(w))) {
-        return;
-      }
-      blocks.push('<div class="note">' + esc(w) + "</div>");
-    });
-    $("askWarnings").innerHTML = blocks.join("");
-  }
-
-  function ask() {
-    var q = $("query").value.trim();
-    if (!q) { say($("askMsg"), "Type a question first.", "info"); return; }
-    var body = { query: q, scope: scope() };
-    var budget = parseInt($("budget").value, 10);
-    if (budget > 0) { body.max_budget_tokens = budget; }
-    var topk = parseInt($("topk").value, 10);
-    if (topk > 0) { body.limit = topk; }
-    $("ask").disabled = true;
-    say($("askMsg"), "");
-    $("pack").innerHTML = '<div class="empty">Retrieving…</div>';
-    var started = Date.now();
-    fetch("/v1/retrieve", { method: "POST", headers: jsonAuth(), body: JSON.stringify(body) })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) {
-        $("ask").disabled = false;
-        conn("live", "connected");
-        var items = packItems(d);
-        var ms = Date.now() - started;
-        $("askStats").textContent = items.length + " item" + (items.length === 1 ? "" : "s") +
-          (d.tokens ? " · " + d.tokens + " tokens" : "") + " · " + ms + " ms";
-        renderAskWarnings(d);
-        if (!items.length) {
-          /* Two causes look identical from here, and naming only one sends the reader to check a
-             setting that is already right. The backend says which it was when it knows. */
-          var conflicts = d.embedding_conflicts || {};
-          $("pack").innerHTML = '<div class="empty">Nothing matched. ' + (conflicts.encoder_change
-            ? "The stored vectors were made by a different embedding model than the one in use " +
-              "now, so they cannot be compared with this query — see above."
-            : "If the store is not empty, the usual cause is an embedding provider that is still " +
-              "deterministic — hash vectors do not match on meaning.") + "</div>";
-          return;
-        }
-        $("pack").innerHTML = items.map(function (it) {
-          var meta = itemMeta(it);
-          return '<div class="packitem">' +
-            (meta ? '<div class="meta">' + esc(meta) + "</div>" : "") +
-            "<p>" + esc(itemText(it)) + "</p></div>";
-        }).join("");
-      })
-      .catch(function (e) {
-        $("ask").disabled = false;
-        $("pack").innerHTML = '<div class="empty">Nothing retrieved.</div>';
-        say($("askMsg"), window.__matrixarkWhyFailed(e, failure), "err");
-      });
-  }
-
-  /* ---------- add ---------- */
-  function add() {
-    var text = $("note").value.trim();
-    if (!text) { say($("addMsg"), "Type something to ingest.", "info"); return; }
-    var body = {
-      scope: scope(),
-      messages: [{ role: "user", content: text }],
-      finalize: $("finalize").checked
-    };
-    $("add").disabled = true;
-    fetch("/v1/ingest", { method: "POST", headers: jsonAuth(), body: JSON.stringify(body) })
-      .then(function (r) {
-        return r.json().catch(function () { return {}; }).then(function (b) {
-          return { ok: r.ok, status: r.status, body: b };
-        });
-      })
-      .then(function (res) {
-        $("add").disabled = false;
-        if (!res.ok) { say($("addMsg"), reason(res.body, res.status), "err"); return; }
-        say($("addMsg"), $("finalize").checked
-          ? "Ingested and extracted. Ask a question about it on the Ask tab."
-          : "Accepted. Extraction runs in the background, so a retrieve issued right now may not "
-            + "see it yet.", "ok");
-        $("note").value = "";
-      })
-      .catch(function (e) {
-        $("add").disabled = false;
-        say($("addMsg"), window.__matrixarkWhyFailed(e), "err");
-      });
-  }
-
-  /* ---------- browse ---------- */
-  function loadBrowse() {
-    say($("browseMsg"), "");
-    fetch("/v1/users?" + scopeQuery(), { headers: auth() })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) {
-        var rows = d.users || d.results || [];
-        $("users").innerHTML = rows.length
-          ? rows.map(function (u) {
-              var name = typeof u === "string" ? u : (u.user_id || u.agent_id || u.run_id || u.id);
-              var n = typeof u === "object" && u.count != null ? u.count : "";
-              return "<div><span>" + esc(name) + "</span><b>" + esc(n) + "</b></div>";
-            }).join("")
-          : '<div class="empty">No subjects hold memories in this scope yet.</div>';
-      })
-      .catch(function (e) {
-        /* Blanking the panel made a failed request indistinguishable from an empty scope -- and
-           the empty scope has WORDS ("No subjects hold memories in this scope yet"), so a blank
-           panel was a third state saying nothing at all. With the sibling fetch below succeeding
-           the screen contradicted itself: memories listed, and no subject holding any.
-
-           Same wording and the same message line as that sibling, which already named the cause
-           on failure while this one was silent. */
-        $("users").innerHTML = '<div class="empty">Not loaded.</div>';
-        say($("browseMsg"), window.__matrixarkWhyFailed(e, failure),
-            "err");
-      });
-
-    $("memories").innerHTML = '<div class="empty">Loading…</div>';
-    fetch("/v1/memories?" + scopeQuery() + "&limit=50", { headers: auth() })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) {
-        conn("live", "connected");
-        var rows = d.memories || d.results || d.records || [];
-        if (!rows.length) {
-          $("memories").innerHTML = '<div class="empty">No memories in this scope.</div>';
-          return;
-        }
-        $("memories").innerHTML = "<table><thead><tr><th>Memory</th><th>Kind</th><th>Updated</th>" +
-          "</tr></thead><tbody>" + rows.map(function (m) {
-            var id = m.id || m.memory_id || "";
-            var when = m.updated_at_ms || m.created_at_ms;
-            return '<tr class="rowlink" data-id="' + esc(id) + '"><td>' +
-              esc(String(m.memory || m.text || m.content || "").slice(0, 160)) + "</td><td>" +
-              esc(m.record_type || m.kind || "—") + "</td><td>" +
-              esc(window.__matrixarkWhen(when)) + "</td></tr>";
-          }).join("") + "</tbody></table>";
-      })
-      .catch(function (e) {
-        $("memories").innerHTML = '<div class="empty">Not loaded.</div>';
-        say($("browseMsg"), window.__matrixarkWhyFailed(e, failure),
-            "err");
-      });
-  }
-
-
-  /* ---------- batch ingest ---------- */
-  /* Parsed here so the count and the unusable lines are visible before anything is submitted, and
-     parsed AGAIN on the server, which is the copy that decides. This one is a courtesy. */
-  function parseBatch(text) {
-    var records = [], problems = [];
-    text.split(/\r?\n/).forEach(function (line, index) {
-      var trimmed = line.trim();
-      if (!trimmed) { return; }
-      if (trimmed.charAt(0) === "{") {
-        try {
-          var parsed = JSON.parse(trimmed);
-          if (!parsed.text && !parsed.content) {
-            problems.push("Line " + (index + 1) + " is JSON with no text in it.");
-            return;
-          }
-          records.push(parsed);
-        } catch (e) {
-          problems.push("Line " + (index + 1) + " starts like JSON but does not parse.");
-        }
-        return;
-      }
-      records.push({ text: trimmed });
-    });
-    return { records: records, problems: problems };
-  }
-
-  function batchCount() {
-    var parsed = parseBatch($("batchText").value);
-    $("batchCount").textContent = parsed.records.length
-      ? parsed.records.length + " record" + (parsed.records.length === 1 ? "" : "s") +
-        (parsed.problems.length
-          ? ", " + parsed.problems.length + " line(s) unusable and skipped" : "")
-      : "Nothing entered yet.";
-    return parsed;
-  }
-
-  $("batchText").addEventListener("input", batchCount);
-
-  $("batchFile").addEventListener("change", function () {
-    var file = $("batchFile").files && $("batchFile").files[0];
-    if (!file) { return; }
-    var reader = new FileReader();
-    reader.onload = function () {
-      $("batchText").value = String(reader.result || "");
-      batchCount();
-      say($("batchMsg"), "Loaded " + file.name + ". Nothing has been sent yet.", "info");
-    };
-    reader.onerror = function () { say($("batchMsg"), "Could not read that file.", "err"); };
-    reader.readAsText(file);
+  try {
+    var saved = sessionStorage.getItem("matrixark_admin_key");
+    if (saved) { $("key").value = saved; $("remember").checked = true; }
+  } catch (e) { /* ignore */ }
+  $("remember").addEventListener("change", function () {
+    try {
+      if ($("remember").checked) { sessionStorage.setItem("matrixark_admin_key", $("key").value); }
+      else { sessionStorage.removeItem("matrixark_admin_key"); }
+    } catch (e) { /* ignore */ }
   });
 
-  function submitBatch(preview) {
-    if (!$("key").value.trim()) { say($("batchMsg"), "Enter an API key first.", "info"); return; }
-    var parsed = batchCount();
-    if (!parsed.records.length) {
-      say($("batchMsg"), "There is nothing to send." +
-        (parsed.problems.length ? " " + parsed.problems[0] : ""), "warn");
-      return;
-    }
-    var sc = scope();
-    fetch("/v1/admin/ingestion/records", {
-      method: "POST",
-      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
-      body: JSON.stringify({
-        records: parsed.records,
-        preview: !!preview,
-        user_id: sc.user_id || "default",
-        agent_id: sc.agent_id || "",
-        session_id: sc.session_id || "",
-        api_key_env: $("batchKeyEnv").value.trim() || "MATRIXARK_API_KEY"
-      })
-    })
-      .then(function (r) {
-        return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; });
-      })
-      .then(function (res) {
-        if (!res.ok) {
-          say($("batchMsg"), reason(res.body, res.status), "err");
-          return;
-        }
-        if (preview) {
-          say($("batchMsg"), "Nothing was sent. " + res.body.total + " record" +
-            (res.body.total === 1 ? "" : "s") + " would be ingested as " +
-            (res.body.user_id || "default") + ".", "info");
-          $("batchResult").innerHTML = "<pre>" +
-            esc(JSON.stringify(res.body.sample || [], null, 2)) + "</pre>";
-          return;
-        }
-        say($("batchMsg"), "Started job " + res.body.job_id + " over " + res.body.total +
-          " records. It runs on the server — this tab can be closed.", "ok");
-        watchBatch(res.body.job_id, res.body.total);
-      })
-      .catch(function (e) { say($("batchMsg"), window.__matrixarkWhyFailed(e), "err"); });
+/* ---------- mem0 console ---------- */
+  /* Generated from the gateway's own MEM0_OPERATIONS, so an operation that gains an argument gains
+     a field here without anyone remembering to add one. */
+  var MEM0_OPS = [
+  {
+    "id": "add",
+    "label": "add()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/ingest",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Write a turn. Acknowledged at 202 with extraction running behind it, which is why a search issued immediately afterwards can legitimately not see it yet.",
+    "fields": [
+      {
+        "name": "content",
+        "in": "message",
+        "kind": "textarea",
+        "required": true,
+        "label": "Message",
+        "placeholder": "The team agreed to keep the coupon stacking rule for ACME until Q4.",
+        "help": "Sent as one user turn."
+      },
+      {
+        "name": "finalize",
+        "in": "body",
+        "kind": "bool",
+        "default": true,
+        "label": "Extract before answering",
+        "help": "Off is how production behaves: the write is acknowledged and extraction runs in the background."
+      },
+      {
+        "name": "metadata",
+        "in": "body",
+        "kind": "json",
+        "label": "Metadata",
+        "placeholder": "{\"source\": \"portal\"}",
+        "help": "Stored alongside the memory and returned with it."
+      }
+    ]
+  },
+  {
+    "id": "search",
+    "label": "search()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/retrieve",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "The retrieval path an agent uses: ranked, then packed to fit a token budget.",
+    "fields": [
+      {
+        "name": "query",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Query",
+        "placeholder": "when do we ship?"
+      },
+      {
+        "name": "max_budget_tokens",
+        "in": "body",
+        "kind": "number",
+        "default": 2048,
+        "label": "Token budget",
+        "help": "The pack is built to fit this. A budget far below what the answer needs is indistinguishable from poor retrieval."
+      }
+    ]
+  },
+  {
+    "id": "get_all",
+    "label": "get_all()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/memories",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "The memories in the scope, unranked -- the listing, not the search. A limit does not make it a sample of the whole scope: it takes the NEWEST that many.",
+    "fields": [
+      {
+        "name": "limit",
+        "in": "body",
+        "kind": "number",
+        "default": 50,
+        "label": "Limit",
+        "help": "The NEWEST this many, listed oldest first. 0 or blank for the whole scope."
+      }
+    ]
+  },
+  {
+    "id": "get",
+    "label": "get()",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/{id}",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "One memory's stored record, by id.",
+    "fields": [
+      {
+        "name": "id",
+        "in": "path",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "history",
+    "label": "history()",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/{id}/history",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "How that memory changed: each supersede, with what it said before.",
+    "fields": [
+      {
+        "name": "id",
+        "in": "path",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "get_by_key",
+    "label": "by identity key",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/by-key",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "The one live value for an identity key in a scope \u2014 the shape a profile field wants, where the answer is a value and not a ranked list.",
+    "fields": [
+      {
+        "name": "identity_key",
+        "in": "query",
+        "kind": "text",
+        "required": true,
+        "label": "Identity key",
+        "placeholder": "ship_date"
+      },
+      {
+        "name": "user_id",
+        "in": "query",
+        "kind": "text",
+        "label": "User",
+        "from_scope": "user"
+      }
+    ]
+  },
+  {
+    "id": "users",
+    "label": "users()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/users",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Which users, agents and runs hold memories in this tenant.",
+    "fields": []
+  },
+  {
+    "id": "update",
+    "label": "update()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/update",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "Supersede a memory: the amended text is ingested and the old id tombstoned, so history keeps both.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      },
+      {
+        "name": "text",
+        "in": "body",
+        "kind": "textarea",
+        "required": true,
+        "label": "New text",
+        "placeholder": "We ship on Friday."
+      }
+    ]
+  },
+  {
+    "id": "feedback",
+    "label": "feedback()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/memory/feedback",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      },
+      {
+        "name": "rating",
+        "in": "body",
+        "kind": "number",
+        "default": 1,
+        "label": "Rating",
+        "help": "1 useful, -1 not."
+      }
+    ]
+  },
+  {
+    "id": "session_commit",
+    "label": "commit a session",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/session/commit",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Close a session and roll its turns into summaries. Until this runs the turns are stored but not summarised.",
+    "fields": []
+  },
+  {
+    "id": "forget",
+    "label": "forget()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/forget",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": false,
+    "summary": "Stop returning one memory. The record stays, so history still explains it.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "delete",
+    "label": "delete()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/delete",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": false,
+    "summary": "Delete one memory outright.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "delete_all",
+    "label": "delete_all()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/reset",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": true,
+    "summary": "Drop everything in the scope shown above. There is no undo, and an empty user field means the default scope, not none of them.",
+    "fields": []
   }
+];
 
-  /* Watched from the shared stream rather than a timer of its own: the job's progress is already
-     being pushed to this page for the strip. */
-  var watchedJob = null;
+  var currentOp = null;
 
-  function watchBatch(jobId, total) {
-    watchedJob = { id: jobId, total: total, seen: false };
-    renderBatchJob({ job_id: jobId, total: total, done: 0, failed: 0, state: "queued" });
-  }
-
-  function renderBatchJob(job) {
-    var done = (job.done || 0) + (job.failed || 0);
-    var total = job.total || 0;
-    var pct = total ? Math.round((done / total) * 1000) / 10 : 0;
-    var eta = job.eta_s ? " · about " + Math.round(job.eta_s) + "s left" : "";
-    $("batchResult").innerHTML =
-      '<div class="upl"><div class="upl-head"><span class="upl-name">job ' + esc(job.job_id) +
-      '</span><span class="upl-size">' + esc(job.state || "running") + eta + "</span></div>" +
-      '<div class="upl-bar"><i style="width:' + pct + '%"></i></div>' +
-      '<div class="hint" style="margin-top:6px">' + done + " of " + total + " records" +
-      (job.failed ? " · <b>" + job.failed + "</b> failed" : "") +
-      (job.current ? " · " + esc(String(job.current).slice(0, 80)) : "") + "</div></div>";
-  }
-
-  function finishBatchJob() {
-    /* One request when it leaves the running set, rather than polling to find out how it ended.
-       The frame says a job is no longer active; it does not say whether it succeeded. */
-    fetch("/v1/admin/ingestion/jobs", { headers: auth() })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) {
-        var job = (d.jobs || []).filter(function (j) {
-          return j.job_id === (watchedJob || {}).id;
-        })[0];
-        watchedJob = null;
-        if (!job) { return; }
-        renderBatchJob(job);
-        var failed = job.failed || 0;
-        say($("batchMsg"), failed
-          ? job.done + " stored, " + failed + " failed" +
-            (job.retryable_failures
-              ? " — " + job.retryable_failures + " worth retrying on Ingestion." : ".")
-          : "All " + job.done + " records stored.", failed ? "warn" : "ok");
-        if (failed) {
-          $("batchResult").innerHTML += '<p class="hint">Retry the failures on ' +
-            '<a href="/v1/admin/ingestion">Ingestion</a>.</p>';
-        }
-      })
-      .catch(function () { watchedJob = null; });
-  }
-
-  /* Through the queue. This script runs before the nav block defines the register function,
-     so calling it directly registered nothing at all -- the watcher below never ran. */
-  (window.__matrixarkFrameQueue = window.__matrixarkFrameQueue || []).push(
-    function (frame) {
-      if (!watchedJob) { return; }
-      var active = ((frame.imports || {}).active || []).filter(function (j) {
-        return j.job_id === watchedJob.id;
-      })[0];
-      if (active) { watchedJob.seen = true; renderBatchJob(active); return; }
-      /* Absent from one frame is not proof it finished: a job can be submitted and not yet appear.
-         Only conclude it ended once it has actually been seen running. */
-      if (watchedJob.seen) { finishBatchJob(); }
+  function opGroups() {
+    var order = [], byGroup = {};
+    MEM0_OPS.forEach(function (op) {
+      if (!byGroup[op.group]) { byGroup[op.group] = []; order.push(op.group); }
+      byGroup[op.group].push(op);
     });
-
-  $("batchPreview").addEventListener("click", function () { submitBatch(true); });
-  $("batchRun").addEventListener("click", function () { submitBatch(false); });
-
-  $("memories").addEventListener("click", function (ev) {
-    var row = ev.target.closest ? ev.target.closest("tr.rowlink") : null;
-    if (!row || !row.dataset.id) { return; }
-    $("detail").textContent = "Loading…";
-    var id = encodeURIComponent(row.dataset.id);
-    Promise.all([
-      fetch("/v1/memory/" + id, { headers: auth() }).then(function (r) { return r.ok ? r.json() : null; }),
-      fetch("/v1/memory/" + id + "/history", { headers: auth() }).then(function (r) { return r.ok ? r.json() : null; })
-    ]).then(function (parts) {
-      $("detail").textContent = JSON.stringify({ memory: parts[0], history: parts[1] }, null, 2);
-    }).catch(function () {
-      $("detail").textContent = "Could not read that memory.";
-    });
-  });
-
-  /* ---------- upload ---------- */
-  /* A queue of {file, state, sent, detail}. The File object is kept so a failure can be retried
-     without asking for the file again -- the bytes came from this browser and were never on the
-     server, so nothing else could resend them. */
-  var queue = [], uploading = false, nextId = 1;
-
-  function fmtBytes(n) {
-    if (!n) { return "0 B"; }
-    var units = ["B", "KB", "MB", "GB"], i = Math.floor(Math.log(n) / Math.log(1024));
-    return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + units[i];
+    return order.map(function (name) { return { name: name, ops: byGroup[name] }; });
   }
 
-  function renderQueue() {
-    $("retryNote").hidden = !queue.some(function (item) { return item.state === "failed"; });
-    $("uploadQueue").innerHTML = queue.map(function (item) {
-      var pct = item.file.size ? Math.round((item.sent / item.file.size) * 100) : 0;
-      if (item.state === "done") { pct = 100; }
-      var label = { queued: "waiting", uploading: pct + "%", extracting: "extracting",
-                    done: "stored", failed: "failed" }[item.state] || item.state;
-      return '<div class="upl ' + item.state + '" data-item="' + item.id + '">' +
-        '<div class="upl-head"><span class="upl-name">' + esc(item.file.name) + "</span>" +
-        '<span class="upl-size">' + fmtBytes(item.file.size) + " · " + esc(label) + "</span></div>" +
-        '<div class="upl-bar"><i style="width:' + pct + '%"></i></div>' +
-        (item.detail ? '<div class="upl-detail">' + esc(item.detail) + "</div>" : "") +
-        (item.state === "failed"
-          ? '<div class="upl-actions"><button type="button" class="ghost" data-retry="' +
-            item.id + '">Retry</button></div>'
-          : "") +
-        /* A large upload with no way out is a page you have to reload to escape. Cancelling
-           leaves the item as a failure with a Retry, which is what it is. */
-        (item.state === "uploading" || item.state === "extracting"
-          ? '<div class="upl-actions"><button type="button" class="danger" data-cancel="' +
-            item.id + '">Cancel</button></div>'
-          : "") +
-        (item.state === "queued"
-          ? '<div class="upl-actions"><button type="button" class="link" data-drop="' +
-            item.id + '">remove from queue</button></div>'
-          : "") + "</div>";
+  function renderOps() {
+    $("ops").innerHTML = opGroups().map(function (group) {
+      return '<div class="opgroup">' + esc(group.name) + '</div><div class="opgrid">' +
+        group.ops.map(function (op) {
+          return '<button type="button" class="opbtn' + (op.destructive ? " danger" : "") +
+            '" data-op="' + esc(op.id) + '" aria-pressed="' +
+            (currentOp && currentOp.id === op.id ? "true" : "false") + '">' +
+            esc(op.label) + "</button>";
+        }).join("") + "</div>";
     }).join("");
   }
 
-  function sendOne(item) {
-    return new Promise(function (resolve) {
-      var request = new XMLHttpRequest();
-      item.request = request;
-      request.open("POST", "/v1/ingest_file", true);
-      var headers = Object.assign({
-        "Content-Type": item.file.type || "application/octet-stream",
-        "X-Filename": item.file.name,
-        "X-Resource-Kind": item.kind,
-        /* X-Scope is a JSON scope OBJECT, not a label -- the gateway parses it. */
-        "X-Scope": JSON.stringify(item.scope)
-      }, auth());
-      if (item.wait) { headers["X-Wait"] = "1"; }
-      if (item.sharing) { headers["X-Sharing-Scope"] = item.sharing; }
-      Object.keys(headers).forEach(function (name) {
-        request.setRequestHeader(name, headers[name]);
-      });
-
-      /* fetch() reports nothing until the request finishes, so a large upload was a disabled
-         button and a sentence. This is the only upload-progress event the platform has. */
-      request.upload.onprogress = function (ev) {
-        if (!ev.lengthComputable) { return; }
-        item.sent = ev.loaded;
-        /* Bytes are on the wire; what happens after the last byte is the server extracting, and
-           saying so is the difference between "stuck at 100%" and "nearly there". */
-        item.state = ev.loaded >= ev.total ? "extracting" : "uploading";
-        renderQueue();
-      };
-      request.onload = function () {
-        var body = {};
-        try { body = JSON.parse(request.responseText || "{}"); } catch (e) { body = {}; }
-        if (request.status >= 200 && request.status < 300) {
-          item.state = "done";
-          item.sent = item.file.size;
-          item.detail = "Stored as a " + item.kind +
-            (item.wait ? "." : ". Extraction is running in the background.");
-        } else {
-          item.state = "failed";
-          item.detail = reason(body, request.status);
-        }
-        renderQueue();
-        resolve();
-      };
-      request.onerror = function () {
-        item.state = "failed";
-        item.detail = "Could not reach the gateway.";
-        renderQueue();
-        resolve();
-      };
-      request.onabort = function () {
-        item.state = "failed";
-        item.detail = "Cancelled before it finished.";
-        renderQueue();
-        resolve();
-      };
-      item.state = "uploading";
-      item.sent = 0;
-      renderQueue();
-      request.send(item.file);
-    });
+  function fieldControl(op, f) {
+    var id = "op_" + op.id + "_" + f.name;
+    var value = f["default"] == null ? "" : String(f["default"]);
+    if (f.kind === "bool") {
+      return '<label class="check"><input type="checkbox" id="' + id + '" data-f="' +
+        esc(f.name) + '"' + (f["default"] ? " checked" : "") + "> " + esc(f.label) + "</label>" +
+        (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
+    }
+    var control;
+    if (f.kind === "textarea" || f.kind === "json") {
+      control = '<textarea id="' + id + '" data-f="' + esc(f.name) + '" spellcheck="false"' +
+        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" +
+        esc(f.kind === "json" ? "" : value) + "</textarea>";
+    } else {
+      control = '<input type="text" id="' + id + '" data-f="' + esc(f.name) +
+        '" spellcheck="false" value="' + esc(value) + '"' +
+        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">";
+    }
+    return '<label for="' + id + '">' + esc(f.label) + (f.required ? " *" : "") + "</label>" +
+      control + (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
   }
 
-  /* One at a time: a failure then stops at the file it failed on rather than being one line in a
-     pile of parallel errors, and the progress bar means something. */
-  function drain() {
-    if (uploading) { return; }
-    var next = queue.filter(function (item) { return item.state === "queued"; })[0];
-    if (!next) {
-      uploading = false;
-      $("upload").disabled = false;
-      var failed = queue.filter(function (i) { return i.state === "failed"; }).length;
-      var done = queue.filter(function (i) { return i.state === "done"; }).length;
-      if (done || failed) {
-        say($("uploadMsg"), done + " stored" + (failed ? ", " + failed + " failed" : "") +
-          (done ? ". They should appear on the catalog page." : ""), failed ? "err" : "ok");
+  function renderOpForm() {
+    var op = currentOp;
+    if (!op) {
+      $("opForm").innerHTML = '<div class="empty">Choose an operation.</div>';
+      renderOps();
+      return;
+    }
+    var scopeLine = op.needs_scope
+      ? " · scope from the fields above"
+      : " · not scoped — it addresses one memory by id";
+    $("opForm").innerHTML = '<div class="opform"><h3>' + esc(op.label) + "</h3>" +
+      '<div class="route">' + esc(op.method) + " " + esc(op.path) +
+      '<span class="scope"> · needs ' + esc(op.scope) + esc(scopeLine) + "</span></div>" +
+      '<p class="hint" style="margin-top:0">' + esc(op.summary) + "</p>" +
+      op.fields.map(function (f) { return fieldControl(op, f); }).join("") +
+      (op.destructive
+        ? '<div class="mwarn"><b>This cannot be undone</b>Type <span class="mono">' + esc(op.id) +
+          '</span> to confirm, then run.</div><label for="opConfirm">Confirm</label>' +
+          '<input id="opConfirm" type="text" spellcheck="false" autocomplete="off">'
+        : "") +
+      '<div class="actions"><button id="opRun" type="button">Run</button>' +
+      '<button id="opCurl" class="ghost" type="button">Copy as curl</button></div>' +
+      '<pre id="opPreview"></pre></div>';
+    renderOps();
+    updatePreview();
+  }
+
+  function opFieldValue(op, f) {
+    var el = document.getElementById("op_" + op.id + "_" + f.name);
+    if (!el) { return null; }
+    if (f.kind === "bool") { return el.checked; }
+    var raw = el.value.trim();
+    if (!raw) { return null; }
+    if (f.kind === "number") {
+      var n = Number(raw);
+      return isNaN(n) ? null : n;
+    }
+    if (f.kind === "json") {
+      try { return JSON.parse(raw); } catch (e) { return { __bad__: raw }; }
+    }
+    return raw;
+  }
+
+  /* One builder for the preview, the curl and the send. Three code paths would let the preview
+     drift from what is actually sent -- and the preview is the thing a customer copies into their
+     own client, so a preview that lies is worse than none. */
+  function buildRequest(op) {
+    var body = {}, query = [], path = op.path, messages = [], problems = [];
+    if (op.needs_scope) { body.scope = scope(); }
+    op.fields.forEach(function (f) {
+      var value = opFieldValue(op, f);
+      if (value && value.__bad__ !== undefined) {
+        problems.push(f.label + " is not valid JSON.");
+        return;
       }
-      return;
-    }
-    uploading = true;
-    $("upload").disabled = true;
-    sendOne(next).then(function () { uploading = false; drain(); });
-  }
-
-  function enqueue(files) {
-    Array.prototype.forEach.call(files, function (file) {
-      queue.push({
-        id: nextId++, file: file, state: "queued", sent: 0, detail: "",
-        kind: $("kind").value, sharing: $("sharing").value, wait: $("wait").checked,
-        scope: scope()
-      });
+      if (f.required && (value === null || value === "")) {
+        problems.push(f.label + " is required.");
+        return;
+      }
+      if (value === null) { return; }
+      if (f["in"] === "message") { messages.push({ role: "user", content: value }); }
+      else if (f["in"] === "body") { body[f.name] = value; }
+      else if (f["in"] === "scope") { (body.scope = body.scope || {})[f.name] = value; }
+      else if (f["in"] === "query") {
+        query.push(encodeURIComponent(f.name) + "=" + encodeURIComponent(value));
+      } else if (f["in"] === "path") {
+        path = path.replace("{" + f.name + "}", encodeURIComponent(value));
+      }
     });
-    renderQueue();
-    drain();
+    if (messages.length) { body.messages = messages; }
+    if (path.indexOf("{") >= 0) { problems.push("The id is required."); }
+    return {
+      method: op.method,
+      url: path + (query.length ? "?" + query.join("&") : ""),
+      problems: problems,
+      body: op.method === "GET" ? null : body
+    };
   }
 
-  function upload() {
-    var input = $("file");
-    if (!input.files || !input.files.length) {
-      say($("uploadMsg"), "Choose a file first.", "info");
-      return;
-    }
-    say($("uploadMsg"), "");
-    enqueue(input.files);
-    input.value = "";
+  function updatePreview() {
+    if (!currentOp) { return; }
+    var pre = $("opPreview");
+    if (!pre) { return; }
+    var request = buildRequest(currentOp);
+    pre.textContent = request.method + " " + request.url +
+      (request.body ? "\n\n" + JSON.stringify(request.body, null, 2) : "");
   }
 
-  function itemById(id) {
-    return queue.filter(function (i) { return String(i.id) === String(id); })[0];
+  $("ops").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-op]") : null;
+    if (!button) { return; }
+    currentOp = MEM0_OPS.filter(function (o) { return o.id === button.dataset.op; })[0] || null;
+    $("opResult").innerHTML = "";
+    say($("opMsg"), "");
+    renderOpForm();
+  });
+
+  $("opForm").addEventListener("input", updatePreview);
+  $("opForm").addEventListener("change", updatePreview);
+
+  $("opForm").addEventListener("click", function (ev) {
+    if (!currentOp) { return; }
+    if (ev.target.id === "opCurl") {
+      var request = buildRequest(currentOp);
+      var lines = ["curl -X " + request.method + " " + location.origin + request.url,
+                   "  -H 'Authorization: Bearer $MATRIXARK_API_KEY'"];
+      if (request.body) {
+        lines.push("  -H 'Content-Type: application/json'");
+        lines.push("  -d '" + JSON.stringify(request.body) + "'");
+      }
+      /* The key is named, never pasted: this goes on a clipboard and often into a ticket. */
+      var text = lines.join(" \\\n");
+      window.__matrixarkCopyText(text).then(function (ok) {
+        say($("opMsg"),
+            ok ? "Copied. It reads $MATRIXARK_API_KEY from your environment rather than "
+                 + "carrying your key."
+               : "Could not copy. The command is shown above; select it and copy it by hand.",
+            ok ? "ok" : "err");
+      });
+      return;
+    }
+    if (ev.target.id === "opRun") { runOp(); }
+  });
+
+  function runOp() {
+    var op = currentOp;
+    if (!$("key").value.trim()) { say($("opMsg"), "Enter an API key first.", "info"); return; }
+    var request = buildRequest(op);
+    if (request.problems.length) {
+      say($("opMsg"), request.problems.join(" "), "warn");
+      return;
+    }
+    if (op.destructive) {
+      var confirmEl = $("opConfirm");
+      if (!confirmEl || confirmEl.value.trim() !== op.id) {
+        say($("opMsg"), "Type " + op.id + " in the confirm box to run this.", "warn");
+        return;
+      }
+    }
+    say($("opMsg"), "Running " + op.label + "…", "info");
+    var started = Date.now();
+    var init = { method: request.method, headers: auth() };
+    if (request.body) {
+      init.headers = Object.assign({ "Content-Type": "application/json" }, init.headers);
+      init.body = JSON.stringify(request.body);
+    }
+    /* Rebuilt rather than read back off `init`: this is what the exchange panel shows, and the
+       real Authorization value must never reach the DOM. */
+    var sent = {
+      method: request.method,
+      url: request.url,
+      headers: Object.assign({}, init.headers),
+      body: request.body || null
+    };
+    fetch(request.url, init)
+      .then(function (r) {
+        var headers = {};
+        try { r.headers.forEach(function (v, k) { headers[k] = v; }); }
+        catch (e) { /* a runtime without an iterable Headers; the rest still reports */ }
+        return r.text().then(function (text) {
+          return { status: r.status, ok: r.ok, text: text, headers: headers };
+        });
+      })
+      .then(function (res) {
+        var ms = Date.now() - started;
+        var pretty = res.text, parsed = null;
+        try { parsed = JSON.parse(res.text); pretty = JSON.stringify(parsed, null, 2); }
+        catch (e) { /* leave it raw */ }
+        say($("opMsg"), res.ok
+          ? op.label + " answered " + res.status + " in " + ms + " ms."
+          : op.label + " answered " + res.status + " — " + reason(parsed, res.status),
+          res.ok ? "ok" : "err");
+        var answer = { status: res.status, ms: ms, headers: res.headers,
+                       text: pretty, body: parsed };
+        renderWire(sent, answer);
+        recordCall(op, sent, answer);
+        /* Clear the confirmation after a destructive op succeeds, or the next click runs it again
+           against a box that still says the magic word. */
+        if (res.ok && op.destructive && $("opConfirm")) { $("opConfirm").value = ""; }
+      })
+      .catch(function () {
+        say($("opMsg"), "Could not reach the gateway.", "err");
+        var answer = { status: 0, ms: Date.now() - started, headers: {},
+                       text: "the request did not complete", body: null };
+        renderWire(sent, answer);
+        recordCall(op, sent, answer);
+      });
   }
 
-  $("uploadQueue").addEventListener("click", function (ev) {
-    var target = ev.target.closest ? ev.target : null;
-    if (!target) { return; }
+  renderOps();
 
-    var retry = target.closest("[data-retry]");
-    if (retry) {
-      var item = itemById(retry.dataset.retry);
-      if (!item) { return; }
-      item.state = "queued";
-      item.detail = "";
-      item.sent = 0;
-      renderQueue();
-      drain();
-      return;
-    }
+  /* ---------- the exchange ---------- */
+  /* The Authorization header is rebuilt as a redaction rather than filtered out of the real one:
+     showing the header names that went out matters ("did it send Content-Type?"), and a value that
+     is never in the DOM cannot be copied into a ticket. */
+  function headerRows(headers) {
+    var names = Object.keys(headers || {});
+    if (!names.length) { return "<div class='empty'>none</div>"; }
+    return "<table class='inv'>" + names.sort().map(function (name) {
+      var value = /^authorization$/i.test(name) ? "Bearer \u2026 (not shown)" : headers[name];
+      return "<tr><th>" + esc(name) + "</th><td class='mono'>" + esc(value) + "</td></tr>";
+    }).join("") + "</table>";
+  }
 
-    var cancel = target.closest("[data-cancel]");
-    if (cancel) {
-      var running = itemById(cancel.dataset.cancel);
-      if (running && running.request) { running.request.abort(); }
-      return;
-    }
+  function renderWire(sent, answer) {
+    var incident = answer.body && answer.body.incident;
+    $("opWire").innerHTML =
+      "<h3 style='font-size:13px;margin:0 0 6px;font-weight:650'>Sent</h3>" +
+      "<div class='route'>" + esc(sent.method) + " " + esc(sent.url) + "</div>" +
+      headerRows(sent.headers) +
+      (sent.body ? "<pre>" + esc(JSON.stringify(sent.body, null, 2)) + "</pre>" : "") +
+      "<h3 style='font-size:13px;margin:14px 0 6px;font-weight:650'>Answered</h3>" +
+      "<div class='route'>" + esc(String(answer.status)) + " in " + esc(String(answer.ms)) +
+      " ms</div>" +
+      (incident
+        ? "<div class='msg warn'>Incident <span class='mono'>" + esc(incident) +
+          "</span> &mdash; the gateway logged the detail it did not return. Grep this id in the " +
+          "worker&rsquo;s log, at ERROR level under <code>matrixark.gateway</code>.</div>"
+        : "") +
+      headerRows(answer.headers) +
+      "<pre>" + esc(answer.text) + "</pre>";
+  }
 
-    var drop = target.closest("[data-drop]");
-    if (drop) {
-      queue = queue.filter(function (i) { return String(i.id) !== drop.dataset.drop; });
-      renderQueue();
-    }
-  });
-  $("clearDone").addEventListener("click", function () {
-    queue = queue.filter(function (i) { return i.state !== "done"; });
-    renderQueue();
-  });
-  $("upload").addEventListener("click", upload);
-  $("ask").addEventListener("click", ask);
-  $("query").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ask(); } });
-  $("add").addEventListener("click", add);
-  $("refresh").addEventListener("click", loadBrowse);
-  $("key").addEventListener("change", function () {
-    try { sessionStorage.setItem("matrixark_admin_key", $("key").value); } catch (e) { /* ignore */ }
-  });
-  try {
-    var saved = sessionStorage.getItem("matrixark_admin_key");
-    if (saved) { $("key").value = saved; }
-  } catch (e) { /* ignore */ }
-  conn("live", "ready");
+  var calls = [];
+  function recordCall(op, sent, answer) {
+    calls.unshift({
+      at: Date.now(), op: op.label, method: sent.method, url: sent.url,
+      status: answer.status, ms: answer.ms,
+      incident: (answer.body && answer.body.incident) || ""
+    });
+    $("opLog").innerHTML = "<table><thead><tr><th>When</th><th>Operation</th><th>Status</th>" +
+      "<th>Took</th><th>Route</th><th>Incident</th></tr></thead><tbody>" +
+      calls.map(function (c) {
+        return "<tr><td>" + esc(window.__matrixarkWhen(c.at)) + "</td><td>" + esc(c.op) +
+          "</td><td><span class='status-chip" + (c.status >= 400 ? " bad" : "") + "'>" +
+          esc(String(c.status)) + "</span></td><td class='num'>" + esc(String(c.ms)) +
+          " ms</td><td class='mono'>" + esc(c.method + " " + c.url) + "</td><td class='mono'>" +
+          (c.incident ? esc(c.incident) : "\u2014") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
 }());
 </script>
 <script>
