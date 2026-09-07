@@ -45,9 +45,18 @@ _ENV_BOOL = re.compile(
     r'env_bool\(\s*["\']([A-Z][A-Z0-9_]{3,})["\']\s*,\s*(True|False)\s*\)')
 ONE_VOCABULARY = ("<env_bool>",)
 
-# Twenty-one when this was written. Asserted so a scan that stops matching fails rather than
-# reporting that every reader agrees.
-EXPECTED_SHARED_FLOOR = 15
+# Twenty-one when this was written, 15 until mx#1171, 14 now. Asserted so a scan that stops
+# matching fails rather than reporting that every reader agrees.
+#
+# Each step down needs a named cause, or this control quietly becomes a rubber stamp. The last one:
+# mx#1171 removed `matrixark_mcp_event_keys.context_event_time_index_entries`, a builder nothing
+# called, and it was the SECOND production reader of
+# MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD. That flag now has one reader
+# (`matrixark_temporal_direct_backend.py:1568`) and so is no longer shared.
+#
+# A flag leaving this set is not a loss -- one reader cannot disagree with itself. What the floor
+# guards against is the scan matching NOTHING, which looks the same as universal agreement.
+EXPECTED_SHARED_FLOOR = 14
 
 
 def _production_sources() -> List[str]:
