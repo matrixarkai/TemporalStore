@@ -7477,13 +7477,32 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         raw: list[Json] = []
         if not self._local_jsonl_enabled:
             return raw
+        # Served from memory while the shards are unchanged.
+        #
+        # Every call re-read and re-parsed every line of every retained shard, then expanded the
+        # interned metadata over the result -- two full passes over the durable log to answer, for
+        # instance, one memory's history. Measured at 761 ms against a 150-message store, which is
+        # the whole of that call. The compacted view beside this one has been cached on the shard
+        # signature all along; the raw view had no cache at all.
+        #
+        # The log is append-only, so (total size, newest mtime) is the same validity key
+        # `_read_all_compacted` already trusts for itself: any write moves it, and a write is the
+        # only thing that changes what this returns.
         with self._event_log_lock:
-            for path in self._retained_jsonl_paths():
+            paths = self._retained_jsonl_paths()
+            signature = self._jsonl_cache_signature_detail(paths)
+            key = (int(signature.get("total_size", -1)), int(signature.get("max_mtime_ns", -1)))
+            cached = getattr(self, "_raw_records_cache", None)
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            for path in paths:
                 for line in _iter_shard_lines(path):
                     line = line.strip()
                     if line:
                         raw.append(loads_with_interned_keys(line))
-        return expand_interned_records(raw)
+            expanded = expand_interned_records(raw)
+            self._raw_records_cache = (key, expanded)
+        return expanded
 
     def _count_raw_tombstones(self) -> int:
         return sum(
