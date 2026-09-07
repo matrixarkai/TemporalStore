@@ -28,8 +28,12 @@
 //!
 //! An outcome states "this object's page is at this address". With the page write deferred and then
 //! lost, the address names nothing and the command that could have re-derived the value is gone.
-//! Staged pages (`TS_BLOCK_IN_WAL`) would carry the bytes, but staging happens on the ASYNC storage
-//! path; a synchronous write stages nothing.
+//! Staged pages would carry the bytes, but staging happens on the ASYNC storage path; a
+//! synchronous write stages nothing. (This said `TS_BLOCK_IN_WAL` gated it. That flag is gone --
+//! two mentions survive in the whole tree and neither is code, `block_in_wal::stage` is
+//! unconditional, and the inventory does not list it. Anyone deciding the question below by
+//! looking for that switch would find nothing and conclude the analysis was stale, when only the
+//! name was: the async/sync split IS the whole of it.)
 //!
 //! Measured on the store these tests leave behind, with `examples/wal_scan_probe.rs`:
 //!

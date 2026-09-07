@@ -62,6 +62,12 @@ pub(super) fn begin_write() {
 }
 
 /// Put a page aside for the record this write is about to append.
+///
+/// Unconditional. `TS_BLOCK_IN_WAL` used to gate it and is gone -- said the way
+/// `hot_page_spill` says the same thing about `TS_HOT_PAGE_SPILL`, because a retired flag that
+/// leaves no note behind gets cited later as though it still decided something. It was, in the
+/// durability analysis at the top of `tests/wal_single_barrier_recovery.rs`, which is the file
+/// somebody reads to decide what an ack promises.
 pub(super) fn stage(object_id: u64, bytes: &[u8]) {
     STAGED.with(|staged| {
         staged.borrow_mut().push(StagedPage {
