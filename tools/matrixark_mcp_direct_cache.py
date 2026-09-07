@@ -101,8 +101,51 @@ def get_direct_record_cache(target: Any, count: int) -> list[Json] | None:
         return list(records)
 
 
+#: Reported once per process. The point is to tell an operator the ceiling is now binding, not to
+#: print a line on every read once the store has outgrown it.
+_RECORD_CACHE_DECLINE_REPORTED = False
+
+
+def _log_record_cache_declined(record_count: int, limit: int) -> None:
+    global _RECORD_CACHE_DECLINE_REPORTED
+    if _RECORD_CACHE_DECLINE_REPORTED:
+        return
+    _RECORD_CACHE_DECLINE_REPORTED = True
+    try:  # package path
+        from tools.matrixark_mcp_core import _mcp_debug_log
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_core import _mcp_debug_log
+    _mcp_debug_log(
+        f"matrixark record cache disabled: {record_count} records exceeds "
+        f"MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS={limit}; reads will reload the store "
+        f"each time until the limit is raised"
+    )
+
+
+def direct_record_cache_max_records() -> int:
+    """The documented ceiling on how many records one cache entry may hold.
+
+    Read at call time, not captured at import, so raising the limit does not require restarting
+    every hook process to take effect. 0 or a negative value means no ceiling.
+    """
+    try:
+        return int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "20000"))
+    except (TypeError, ValueError):
+        return 20000
+
+
 def put_direct_record_cache(target: Any, count: int, records: list[Json]) -> None:
     if not target.python_hot_cache_enabled():
+        return
+    # Honour the limit the portal offers. It was carried through config and presented as a live
+    # setting while nothing read it, so a deployment that set it to bound memory got no bound and
+    # the entry held the whole decoded store however large it grew.
+    limit = direct_record_cache_max_records()
+    if limit > 0 and len(records) > limit:
+        # Said out loud. A cache that stops serving looks exactly like one that is working, only
+        # slower, and that is how a 20x read regression hides.
+        _log_record_cache_declined(len(records), limit)
+        drop_direct_record_cache(target)
         return
     with _DIRECT_RECORD_CACHE_LOCK:
         if len(_DIRECT_RECORD_CACHE) >= _DIRECT_RECORD_CACHE_MAX_PREFIXES and direct_cache_scope(target) not in _DIRECT_RECORD_CACHE:
