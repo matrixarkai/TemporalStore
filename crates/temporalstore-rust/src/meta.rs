@@ -9022,6 +9022,97 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     }
 
     #[test]
+    fn a_proxy_that_comes_back_still_belongs_to_its_group() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "g-1".to_string(),
+                namespace: "served".to_string(),
+                location: String::new(),
+                instance_num: 1,
+                drop_percent: 0,
+            })
+            .status
+            .ok);
+        // The proxy declares a different namespace for itself, so what it ends
+        // up serving shows which of the two is in force.
+        let register = || RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "declared".to_string(),
+            location: "rack-0".to_string(),
+            binary_version: "v1".to_string(),
+            config_version: 0,
+            registered_at_ms: 0,
+        };
+        assert!(meta.register_proxy(register()).status.ok);
+        assert!(meta
+            .set_proxy_group(ProxyAttachment {
+                proxy_addr: "proxy-a".to_string(),
+                group: "g-1".to_string(),
+            })
+            .status
+            .ok);
+
+        let group_of = |meta: &SingleNodeMeta| {
+            meta.list_proxies()
+                .proxies
+                .into_iter()
+                .find(|proxy| proxy.proxy_addr == "proxy-a")
+                .map(|proxy| proxy.group)
+                .unwrap_or_default()
+        };
+        assert_eq!(group_of(&meta), "g-1", "the operator's attachment did not take");
+
+        // It restarts and registers again.
+        assert!(meta.register_proxy(register()).status.ok);
+        assert_eq!(
+            group_of(&meta),
+            "g-1",
+            "registering again threw away the group an operator put it in"
+        );
+
+        // And it is really in force, not merely recorded: the group decides the
+        // namespace, so the heartbeat answers with the group's, not the one the
+        // proxy declared for itself.
+        let beat = meta.proxy_heartbeat(ProxyHeartbeatRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "declared".to_string(),
+            config_version: 0,
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+        });
+        assert!(beat.status.ok);
+        assert_eq!(
+            beat.namespace, "served",
+            "the proxy came back serving what it declared instead of what its group says"
+        );
+
+        // A proxy nobody attached still comes back unattached, so keeping the
+        // group cannot be confused with inventing one.
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-b".to_string(),
+                namespace: "declared".to_string(),
+                location: "rack-0".to_string(),
+                binary_version: "v1".to_string(),
+                config_version: 0,
+                registered_at_ms: 0,
+            })
+            .status
+            .ok);
+        assert!(
+            meta.list_proxies()
+                .proxies
+                .into_iter()
+                .find(|proxy| proxy.proxy_addr == "proxy-b")
+                .map(|proxy| proxy.group)
+                .unwrap_or_default()
+                .is_empty(),
+            "a proxy nobody attached came back in a group"
+        );
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
