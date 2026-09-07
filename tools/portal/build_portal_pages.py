@@ -5840,10 +5840,12 @@ API_JS = r"""
   fetch("/v1/admin/routes")
     .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
     .then(function (d) { conn("live", "connected"); ROUTES = d.routes || []; render(); })
-    .catch(function () {
-      conn("down", "gateway unreachable");
-      $("routes").innerHTML = '<section><div class="msg err">Could not read the route list.' +
-        "</div></section>";
+    .catch(function (e) {
+      conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
+           window.__matrixarkNeverArrived(e) ? "gateway unreachable"
+                                             : "this page could not show the answer");
+      $("routes").innerHTML = '<section><div class="msg err">'
+        + esc(window.__matrixarkWhyFailed(e)) + "</div></section>";
     });
 }());
 </script>

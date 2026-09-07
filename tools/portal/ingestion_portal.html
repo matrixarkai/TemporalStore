@@ -502,8 +502,11 @@
           $("config").innerHTML = '<div class="empty">Enter an admin key above to see how this ' +
             "deployment is configured.</div>";
         } else {
-          conn("down", "gateway unreachable");
-          $("config").innerHTML = '<div class="msg err">Could not reach the gateway.</div>';
+          conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
+               window.__matrixarkNeverArrived(e) ? "gateway unreachable"
+                                                : "this page could not show the answer");
+          $("config").innerHTML = '<div class="msg err">'
+            + esc(window.__matrixarkWhyFailed(e)) + "</div>";
         }
       });
   }
@@ -530,7 +533,7 @@
           (res.body.total === 1 ? "" : "s") + " as " + res.body.job_id + ".", "ok");
         loadJobs();
       })
-      .catch(function () { say($("startMsg"), "Could not reach the gateway.", "err"); });
+      .catch(function (e) { say($("startMsg"), window.__matrixarkWhyFailed(e), "err"); });
   }
 
   function jobHtml(j) {
@@ -671,7 +674,11 @@
         if (e === 401 || e === 403) {
           $("jobs").innerHTML = '<div class="empty">Enter an admin key to list imports.</div>';
           renderSummary([]);
-        } else { conn("down", "gateway unreachable"); }
+        } else {
+          conn(window.__matrixarkNeverArrived(e) ? "down" : "warn",
+               window.__matrixarkNeverArrived(e) ? "gateway unreachable"
+                                                : "this page could not show the answer");
+        }
       });
   }
 
@@ -767,8 +774,8 @@
         " match, " + bytes(res.d.bytes) + " of source. Ready to import.</div>" +
         "<pre style='margin-top:10px'>" + esc(sample) +
         (res.d.truncated ? "\n… and " + (res.d.total - res.d.sample.length) + " more" : "") + "</pre>";
-    }).catch(function () {
-      say($("startMsg"), "Could not reach the gateway.", "err");
+    }).catch(function (e) {
+      say($("startMsg"), window.__matrixarkWhyFailed(e), "err");
     }).then(function () { $("preview").disabled = false; });
   });
 
@@ -786,8 +793,8 @@
         say($("startMsg"), explain(res), "err");
         $("start").disabled = false;
       }
-    }).catch(function () {
-      say($("startMsg"), "Could not reach the gateway.", "err");
+    }).catch(function (e) {
+      say($("startMsg"), window.__matrixarkWhyFailed(e), "err");
       $("start").disabled = false;
     });
   });
