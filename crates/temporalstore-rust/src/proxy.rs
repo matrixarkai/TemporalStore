@@ -3765,14 +3765,14 @@ mod tests {
         let probe = crate::alloc_probe::Probe::start();
         for _ in 0..ITERS {
             let parsed =
-                crate::http::parse_json::<context::ProxyContextIngestRequest>(&ingest_body);
+                crate::http::parse_json_borrowed::<context::ProxyContextIngestRequest>(&ingest_body);
             std::hint::black_box(&parsed);
         }
         let counts = probe.stop();
         rows.push(("  of which: parse the body", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
         let parsed_once =
-            crate::http::parse_json::<context::ProxyContextIngestRequest>(&ingest_body)
+            crate::http::parse_json_borrowed::<context::ProxyContextIngestRequest>(&ingest_body)
                 .expect("body parses");
         let probe = crate::alloc_probe::Probe::start();
         for _ in 0..ITERS {
@@ -4062,6 +4062,44 @@ mod tests {
         ));
 
 
+        // SCRATCH: the INGEST path, and how it scales with messages. This is the hot path
+        // /v1/ingest uses, so its per-message slope is the one that matters most.
+        for msgs in [1usize, 8, 32] {
+            let ibody = serde_json::to_vec(&serde_json::json!({
+                "scope": {"tenant_id": "t", "account_id": "a", "user_id": "u", "session_id": "s"},
+                "messages": (0..msgs)
+                    .map(|i| serde_json::json!({
+                        "role": "user",
+                        "content": format!("message number {i} with some content"),
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+            .expect("ingest body");
+            let in_proxy = scoped_proxy(ProxyOptions::default());
+            in_proxy
+                .client()
+                .insert_cached_route_for_test(in_proxy.context_shard_id(0), quiet.clone());
+            let (code, _) = in_proxy.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body: ibody.clone(),
+            });
+            let probe = crate::alloc_probe::Probe::start();
+            for _ in 0..ITERS {
+                let out = in_proxy.handle(crate::proxy::HttpRequest {
+                    method: "POST".to_string(),
+                    path: "/context/ingest".to_string(),
+                    body: ibody.clone(),
+                });
+                std::hint::black_box(&out);
+            }
+            let c = probe.stop();
+            println!(
+                "    INGEST  msgs={msgs:<3} {:>7.3} allocs/call {:>9.1} bytes  [code {code}]",
+                c.allocs as f64 / ITERS as f64,
+                c.alloc_bytes as f64 / ITERS as f64
+            );
+        }
         // SCRATCH: the EXTRACT path, and how it scales with messages. Sources are borrowed
         // from the request, so the per-message slope is what to watch here.
         for msgs in [1usize, 8, 32] {
@@ -5268,8 +5306,11 @@ mod tests {
             "max_events": 3,
             "provider": {}
         });
+        // Parsed from BYTES, not from a `Value`: the request borrows from the body it was
+        // parsed out of, so it needs a buffer to point at.
+        let ingest_bytes = serde_json::to_vec(&ingest_body).expect("the ingest body serialises");
         let ingest: context::ProxyContextIngestRequest =
-            serde_json::from_value(ingest_body.clone()).expect("the known-good ingest body parses");
+            serde_json::from_slice(&ingest_bytes).expect("the known-good ingest body parses");
         // The values landed, so these names are the ones serde matches on.
         assert_eq!(ingest.query, "q");
         assert_eq!(ingest.start_time_ms, 11);
@@ -5609,6 +5650,120 @@ mod tests {
         );
     }
 
+    /// Extract forwards its sources in one order: the messages, then `sources`, then `records`.
+    ///
+    /// The array is assembled from three origins and is heterogeneous -- built chat sources next
+    /// to values the caller shaped itself -- so it is exactly the kind of thing a rewrite
+    /// reorders without failing anything. Nothing held the order before this. Read off the
+    /// payload the proxy actually forwards, because that is what the datanode sees.
+    #[test]
+    fn extract_forwards_its_sources_in_one_order() {
+        let captured: std::sync::Arc<std::sync::Mutex<Vec<u8>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&captured);
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => listener,
+                Err(_) => return,
+            };
+            let bound = match listener.local_addr() {
+                Ok(addr) => addr.to_string(),
+                Err(_) => return,
+            };
+            if addr_tx.send(bound).is_err() {
+                return;
+            }
+            let body = br#"{"status":{"ok":true,"code":"ok","message":""},"responses":[]}"#;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                body.len()
+            );
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut scratch = [0u8; 8192];
+                loop {
+                    use std::io::{Read as _, Write as _};
+                    match stream.read(&mut scratch) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            sink.lock()
+                                .expect("capture lock")
+                                .extend_from_slice(&scratch[..read]);
+                            if stream.write_all(head.as_bytes()).is_err()
+                                || stream.write_all(body).is_err()
+                            {
+                                break;
+                            }
+                            let _ = stream.flush();
+                        }
+                    }
+                }
+            }
+        });
+        let backend = addr_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the capturing backend must report its address");
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        proxy
+            .client()
+            .insert_cached_route_for_test(proxy.context_shard_id(0), backend.clone());
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "t", "account_id": "a", "user_id": "u", "session_id": "s"},
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "second"}
+            ],
+            "sources": [{"source_kind": "resource", "mark": "from sources"}],
+            "records": [{"source_kind": "resource", "mark": "from records"}],
+            "query": "q"
+        }))
+        .expect("body");
+
+        let (code, answered) = proxy.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/extract".to_string(),
+            body,
+        });
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&answered));
+
+        let forwarded =
+            String::from_utf8_lossy(&captured.lock().expect("capture lock")).to_string();
+        let body_at = forwarded
+            .find("\r\n\r\n")
+            .map(|at| at + 4)
+            .expect("the forwarded request has a header terminator");
+        let request: serde_json::Value = serde_json::from_str(forwarded[body_at..].trim_end())
+            .expect("the forwarded body is JSON");
+        let sources = request["sources"]
+            .as_array()
+            .expect("the forwarded body carries sources");
+
+        assert_eq!(sources.len(), 4, "sources: {sources:?}");
+        // The two built from messages come first, in message order.
+        for (idx, expected_body) in [(0usize, "first"), (1, "second")] {
+            assert_eq!(sources[idx]["source_kind"], "chat");
+            assert_eq!(sources[idx]["body"], expected_body);
+            let id = sources[idx]["source_id"]
+                .as_str()
+                .expect("a chat source carries an id");
+            assert!(
+                id.starts_with("chat:") && id.ends_with(&format!(":s:{idx}")),
+                "the chat source id lost its shape or its index: {id}"
+            );
+        }
+        // Then what the caller supplied, sources before records, each exactly as it arrived.
+        assert_eq!(
+            sources[2]["mark"], "from sources",
+            "a caller-supplied source moved or was rewritten"
+        );
+        assert_eq!(
+            sources[3]["mark"], "from records",
+            "records must follow sources, unchanged"
+        );
+    }
     /// A raw event's title falls back the way it always did: its own, then the role, then
     /// "message".
     ///

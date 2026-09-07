@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! ProxyService::handle request dispatcher, split from proxy.rs.
+use crate::http::parse_json_borrowed;
 use super::*;
 
 impl ProxyService {
@@ -685,7 +686,7 @@ impl ProxyService {
                 }
             }
             ("POST", "/context/ingest") | ("POST", "/ProxyService/ContextIngest") => {
-                match parse_json::<context::ProxyContextIngestRequest>(&request.body) {
+                match parse_json_borrowed::<context::ProxyContextIngestRequest>(&request.body) {
                     Ok(req) => self.context_ingest(req),
                     Err(err) => {
                         self.inc_bad_request();
@@ -696,7 +697,7 @@ impl ProxyService {
             ("POST", "/context/extract")
             | ("POST", "/context/ingest_extract")
             | ("POST", "/ProxyService/ContextExtract") => {
-                match parse_json::<context::ProxyContextIngestRequest>(&request.body) {
+                match parse_json_borrowed::<context::ProxyContextIngestRequest>(&request.body) {
                     Ok(req) => self.context_extract(req),
                     Err(err) => {
                         self.inc_bad_request();

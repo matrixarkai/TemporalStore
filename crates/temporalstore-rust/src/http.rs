@@ -326,6 +326,14 @@ pub fn parse_json<T: DeserializeOwned>(body: &[u8]) -> Result<T, HttpError> {
     Ok(serde_json::from_slice(body)?)
 }
 
+/// Like `parse_json`, but for a request type that BORROWS from the body.
+///
+/// The caller keeps the body alive for as long as the parsed value, so serde can point at it
+/// instead of copying every string out of it.
+pub fn parse_json_borrowed<'a, T: serde::Deserialize<'a>>(body: &'a [u8]) -> Result<T, HttpError> {
+    Ok(serde_json::from_slice(body)?)
+}
+
 pub fn post_json<Req: Serialize, Res: DeserializeOwned>(
     addr: &str,
     path: &str,
