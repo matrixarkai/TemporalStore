@@ -229,13 +229,10 @@ except ImportError:  # Direct script execution from tools/.
 
 
 
-def resource_extraction_mode(envelope: Json) -> str:
-    provider = understanding_provider(envelope)
-    if provider == "oss_encoder":
-        return "matrixark_resource_schema_oss_encoder"
-    if provider in {"openai", "openai_compatible", "openai-compatible"}:
-        return "matrixark_resource_schema_openai_compatible"
-    return "matrixark_resource_schema"
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import resource_extraction_mode
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import resource_extraction_mode
 
 
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it

@@ -470,11 +470,10 @@ RESOURCE_FACT_SCHEMAS: list[Json] = [
 ]
 
 
-def should_extract_resource_fact(text: str, metadata: Json) -> bool:
-    if RESOURCE_FACT_KEYWORDS.search(text):
-        return True
-    unit_kind = str(metadata.get("unit_kind", ""))
-    return unit_kind in {"table_row", "table_row_group", "xlsx_row", "xlsx_row_group", "json_document", "json_record", "json_record_group"}
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import should_extract_resource_fact
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import should_extract_resource_fact
 
 
 def matched_resource_fact_schemas(text: str, metadata: Json) -> list[Json]:
