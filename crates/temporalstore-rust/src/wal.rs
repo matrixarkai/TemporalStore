@@ -1124,26 +1124,7 @@ impl LocalWriteAheadLogStore {
                 // What still cannot: an ASYNCHRONOUS write with nothing carried. Its result names
                 // an address in the block store that a crash may leave unwritten, and no amount
                 // of registering helps a block that was never stored.
-                command: record_command(
-                    command,
-                    &outcomes,
-                    // A record may drop the operation and keep only its results when the blocks
-                    // those results name can still be found after a crash. Carrying the blocks
-                    // qualifies -- they are IN this record. A synchronous write used to qualify
-                    // too, on the grounds that its blocks were already in the block store.
-                    //
-                    // That second clause was written for the barrier that fsynced the blocks
-                    // before acking. The single barrier acks on the WAL fsync and DEFERS the block
-                    // fsync, so at the moment this record is written a synchronous write's blocks
-                    // are in the block store's buffers and nowhere durable. A power cut then
-                    // leaves a record that names an address whose bytes were never stored, which
-                    // is the same hole the asynchronous case below was already excluded for.
-                    //
-                    // So the clause holds only where the block fsync still precedes the ack, which
-                    // is the legacy barrier. Under the single barrier a synchronous write keeps
-                    // its operation, and the log can rebuild what it acked from itself alone.
-                    (sync && !crate::engine::wal_single_barrier()) || !staged_pages.is_empty(),
-                ),
+                command: record_command(command, &outcomes, sync || !staged_pages.is_empty()),
                 staged_pages,
                 outcomes,
             };
