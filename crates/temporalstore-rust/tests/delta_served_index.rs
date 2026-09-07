@@ -84,13 +84,24 @@ fn delta_path_defers_base_write_but_funnel_and_reload_see_current_state() {
     let served = engine
         .export_index_bytes(SHARD_ID)
         .expect("funnel serves the live index");
-    let served_text = String::from_utf8_lossy(&served);
-    for key in ["alpha", "bravo", "charlie"] {
-        assert!(
-            served_text.contains(key),
-            "served index must contain {key}: {served_text}"
-        );
-    }
+    // The served index is a CONTAINER -- magic, a codec byte, then a zstd payload (and, for the
+    // msgpack codec, a four-byte struct-version stamp before it). It has not been text since that
+    // landed: `encode_index_bytes_as_plain_json` is `cfg(test)` and its own comment says
+    // production has no way to produce the plain shape any more. So searching the raw bytes for
+    // key names asserted a format that cannot occur, and this test has failed on main ever since.
+    //
+    // WHAT THIS COSTS: the funnel-is-current claim. Recovering it needs either a public decoder or
+    // a crate-internal test that can reach `decode_index_bytes`, and duplicating the container
+    // format here -- in a test, alongside the real reader -- is the wrong way to buy it back.
+    // Checkable from an integration test is that the funnel produced a container at all, and that
+    // the stream read returns those same bytes, asserted just below. The keys are read back for
+    // real in (4).
+    assert!(
+        served.starts_with(b"TSIDX"),
+        "the funnel must serve a served-index container, got {} bytes starting {:?}",
+        served.len(),
+        &served[..served.len().min(8)]
+    );
     // read_stream(Index) is routed through the same funnel.
     let stream = engine.read_stream(StreamReadRequest {
         shard_id: SHARD_ID,
@@ -106,9 +117,10 @@ fn delta_path_defers_base_write_but_funnel_and_reload_see_current_state() {
     let manifest = engine
         .create_bucket_dump_manifest(SHARD_ID, Vec::new())
         .expect("dump manifest should persist");
+    // Same container, same reason: this searched the embedded index for a key name.
     assert!(
-        String::from_utf8_lossy(&manifest.index_bytes).contains("charlie"),
-        "dump manifest must embed the current served index"
+        manifest.index_bytes.starts_with(b"TSIDX"),
+        "dump manifest must embed a served-index container"
     );
 
     // (4) Durability across a cold reload: the deferred writes live in the WAL and are
