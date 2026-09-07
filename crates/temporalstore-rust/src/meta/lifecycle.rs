@@ -279,6 +279,8 @@ impl SingleNodeMeta {
                 latest_snapshot: location.latest_snapshot.clone(),
                 state: location.state,
                 owner_reports_loaded,
+                preferred_location: location.preferred_location.clone(),
+                registered_at_ms: location.registered_at_ms,
             });
         }
 

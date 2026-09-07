@@ -7156,6 +7156,9 @@ mod tests {
                                     // This stub does not model a datanode
                                     // reporting what it holds.
                                     owner_reports_loaded: None,
+                                    // Nor a pin, nor when the shard joined.
+                                    preferred_location: String::new(),
+                                    registered_at_ms: 0,
                                 })
                                 .collect(),
                             next_after_shard_id: None,
@@ -7245,6 +7248,9 @@ mod tests {
                                 // This stub does not model a datanode reporting
                                 // what it holds.
                                 owner_reports_loaded: None,
+                                // Nor a pin, nor when the shard joined.
+                                preferred_location: String::new(),
+                                registered_at_ms: 0,
                             })
                             .collect(),
                         next_after_shard_id: None,
