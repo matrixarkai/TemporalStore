@@ -1146,6 +1146,21 @@ pub struct ShardListEntry {
     /// divergence check makes before it is willing to judge a server.
     #[serde(default)]
     pub owner_reports_loaded: Option<bool>,
+    /// Where this shard in particular was pinned, empty when it follows
+    /// whatever its table prefers.
+    ///
+    /// A pin that can only be read one shard at a time cannot answer the
+    /// question it exists for -- which shards are pinned, and where -- without a
+    /// request for every shard in the cluster.
+    #[serde(default)]
+    pub preferred_location: String,
+    /// When this shard first joined.
+    ///
+    /// Recorded so a shard that has been here for a week can be told from one
+    /// that arrived during the incident, which is a comparison across shards,
+    /// so it belongs where shards are listed.
+    #[serde(default)]
+    pub registered_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -8575,6 +8590,111 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             peer.is_meta_change_muted(),
             "a peer inheriting a muted leader resumed making changes"
         );
+    }
+
+    #[test]
+    fn listing_shards_says_which_are_pinned_and_when_they_joined() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+                registered_at_ms: 0,
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+                first_shard_id: 1,
+                shard_count: 3,
+                replica_count: 1,
+                partition_version: 1,
+                serving_options: Default::default(),
+            })
+            .status
+            .ok);
+        for shard_id in 1..=3u64 {
+            assert!(meta
+                .register(RegisterShardRequest {
+                    shard_id,
+                    server_addr: "node-a".to_string(),
+                    registered_at_ms: 0,
+                })
+                .status
+                .ok);
+        }
+        // One of the three wants its own hardware.
+        assert!(meta
+            .pin_shard(ShardPinRequest {
+                shard_id: 2,
+                location: "rack-9".to_string(),
+            })
+            .status
+            .ok);
+
+        let listed = meta.list_shards(ListShardsRequest {
+            server_addr: String::new(),
+            after_shard_id: 0,
+            limit: 0,
+        });
+        assert!(listed.status.ok);
+        assert_eq!(listed.shards.len(), 3);
+
+        // The question the pin exists for -- which shards are pinned, and where
+        // -- answered from the listing rather than a request per shard.
+        let pinned = listed
+            .shards
+            .iter()
+            .filter(|entry| !entry.preferred_location.is_empty())
+            .map(|entry| (entry.shard_id, entry.preferred_location.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pinned,
+            vec![(2, "rack-9".to_string())],
+            "the listing does not say which shard is pinned"
+        );
+
+        // And the unpinned ones say so rather than saying nothing.
+        for entry in &listed.shards {
+            if entry.shard_id != 2 {
+                assert!(
+                    entry.preferred_location.is_empty(),
+                    "shard {} is not pinned but the listing gives it a location",
+                    entry.shard_id
+                );
+            }
+        }
+
+        // The join time is carried too, and it is a real time rather than the
+        // zero the caller sent -- the metaserver stamps it on the way in.
+        for entry in &listed.shards {
+            assert!(
+                entry.registered_at_ms > 0,
+                "shard {} was listed without the time it joined",
+                entry.shard_id
+            );
+        }
+
+        // What the listing says matches what asking about that one shard says,
+        // so the two read paths cannot drift.
+        for entry in &listed.shards {
+            let one = meta.get(entry.shard_id).location.expect("registered");
+            assert_eq!(
+                one.preferred_location, entry.preferred_location,
+                "shard {}: the listing and the single read disagree on the pin",
+                entry.shard_id
+            );
+            assert_eq!(
+                one.registered_at_ms, entry.registered_at_ms,
+                "shard {}: the listing and the single read disagree on the join time",
+                entry.shard_id
+            );
+        }
     }
 
     #[test]
