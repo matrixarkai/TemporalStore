@@ -190,6 +190,31 @@ class SkillAndResourceGateIdenticallyTest(unittest.TestCase):
             self.assertTrue(self._skill_ok(under))
             self.assertTrue(self._resource_ok(under))
 
+    def test_the_backcompat_constant_is_resolved_when_read_not_at_import(self):
+        """DEFAULT_MAX_SKILL_TEXT_CHARS used to be a module-level assignment.
+
+        That froze the environment as it stood at IMPORT, which is the opposite of what the note
+        beside it says is intended: env is read at call time so an override set by the host process
+        takes effect without re-importing. Nothing in this repository referenced the constant -- one
+        occurrence, its own assignment -- so the staleness was invisible here, and would have been
+        carried only by an outside importer, who would then disagree with both live readers.
+        """
+        with _defaults_cleared():
+            self.assertEqual(
+                DEFAULT_MAX_SKILL_BYTES, skill_parser.DEFAULT_MAX_SKILL_TEXT_CHARS)
+            with _EnvGuard(MATRIXARK_MAX_SKILL_BYTES=str(_TWO_MIB)):
+                self.assertEqual(
+                    _TWO_MIB, skill_parser.DEFAULT_MAX_SKILL_TEXT_CHARS,
+                    "an override applied after import must be visible through the constant")
+                self.assertEqual(
+                    resolve_max_skill_bytes(), skill_parser.DEFAULT_MAX_SKILL_TEXT_CHARS,
+                    "the back-compat name must agree with the resolver it stands in for")
+
+    def test_an_unknown_module_attribute_still_raises(self):
+        """The back-compat hook answers one name. A typo must not come back as a cap."""
+        with self.assertRaises(AttributeError):
+            getattr(skill_parser, "NO_SUCH_SETTING")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

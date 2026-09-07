@@ -61,12 +61,7 @@ MAX_BUNDLE_FILES = 200
 # Env is read at call time (via ``resolve_max_skill_bytes``) so an override set by the
 # host process takes effect without re-importing.
 DEFAULT_MAX_SKILL_BYTES = DEFAULT_MAX_INLINE_TEXT_CHARS  # skills share the resource cap
-# Back-compat module constant (import-time snapshot). Prefer resolve_max_skill_bytes().
-DEFAULT_MAX_SKILL_TEXT_CHARS = int(
-    os.environ.get("MATRIXARK_MAX_SKILL_BYTES")
-    or os.environ.get("MATRIXARK_SKILL_MAX_TEXT_CHARS")
-    or DEFAULT_MAX_SKILL_BYTES
-)
+# `DEFAULT_MAX_SKILL_TEXT_CHARS` is resolved on access; see __getattr__ at the end of this file.
 
 
 def resolve_max_skill_bytes(override: int | None = None) -> int:
@@ -409,3 +404,21 @@ def _first_paragraph(text: str) -> str:
         if part:
             return part[:240]
     return ""
+
+
+def __getattr__(name: str) -> int:
+    """Back-compat for `DEFAULT_MAX_SKILL_TEXT_CHARS`, resolved WHEN READ.
+
+    It used to be a module-level assignment, and so an import-time snapshot of the environment --
+    which contradicts the note beside it: env is read at call time so an override set by the host
+    process takes effect without re-importing. A snapshot does the opposite. Whoever imported the
+    constant got whatever the environment held at import, and an override applied afterwards was
+    invisible to them alone, because both live readers go through `resolve_max_skill_bytes`.
+
+    Nothing in this repository referenced it -- one occurrence, its own assignment -- so the name is
+    kept for an outside importer rather than for a caller here. Resolving on access keeps that name
+    working and makes it agree with the documented precedence instead of freezing one arm of it.
+    """
+    if name == "DEFAULT_MAX_SKILL_TEXT_CHARS":
+        return resolve_max_skill_bytes()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
