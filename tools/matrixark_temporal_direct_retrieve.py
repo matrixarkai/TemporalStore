@@ -44,15 +44,32 @@ except ImportError:
 BATCH_HGET_CHUNK = 1000
 
 
-def _batch_hget_degraded_log(chunks: int, chunk_size: int) -> None:
-    """Report that a batched read fell back to per-record reads, and roughly what it cost."""
+def _batch_hget_degraded_log(chunks: int, chunk_size: int, reasons=()) -> None:
+    """Report that a batched read fell back to per-record reads, what it cost, and WHY.
+
+    The count says a degradation happened. It does not say which value caused it -- and the
+    exception that would have said is in hand at the call site, where it was being dropped. The
+    live debug log carries sixty of these, every one of them 1 chunk of 1000, so every one cost a
+    thousand round trips, and not one names the payload that raised.
+
+    That is the same half-measure the comment at the call site warns about: the whole-store
+    fallback used to be silent, and saying it out loud without saying why leaves the operator
+    knowing a chunk is poisoned but not which one.
+    """
     try:  # package path
         from tools.matrixark_mcp_core import _mcp_debug_log
     except ImportError:  # Direct script execution from tools/.
         from matrixark_mcp_core import _mcp_debug_log
+    detail = ""
+    if reasons:
+        unique = sorted(set(reasons))
+        detail = " causes: " + "; ".join(unique[:3])
+        if len(unique) > 3:
+            detail += " (and %d more)" % (len(unique) - 3)
     _mcp_debug_log(
         f"matrixark batch_hget degraded to per-record reads for {chunks} "
         f"chunk(s) of {chunk_size}: about {chunks * chunk_size} records read one at a time"
+        f"{detail}"
     )
 
 
@@ -415,6 +432,7 @@ class _TemporalDirectRetrieveMixin:
                 record_key, record_id = self._record_location(sequence)
                 entries.append({"key": record_key, "field": record_id})
             degraded_chunks = 0
+            degraded_reasons = []
             for start in range(0, len(entries), BATCH_HGET_CHUNK):
                 block = entries[start:start + BATCH_HGET_CHUNK]
                 try:
@@ -428,6 +446,12 @@ class _TemporalDirectRetrieveMixin:
                     # indistinguishable from an empty store -- so every record was refetched one at
                     # a time, twice per retrieve.
                     degraded_chunks += 1
+                    # Keep WHICH failure, not just that there was one. Truncated because this is a
+                    # debug line, deduplicated by the logger because one poisoned value raises the
+                    # same way on every retrieve.
+                    degraded_reasons.append(
+                        "%s: %s" % (type(exc).__name__, str(exc)[:120])
+                    )
                     read_records = []
                     for entry in block:
                         try:
@@ -454,7 +478,7 @@ class _TemporalDirectRetrieveMixin:
             if degraded_chunks:
                 # Said out loud: the old whole-store fallback was silent, which is why a 20x
                 # slowdown ran unnoticed for as long as one bad value sat in the store.
-                _batch_hget_degraded_log(degraded_chunks, BATCH_HGET_CHUNK)
+                _batch_hget_degraded_log(degraded_chunks, BATCH_HGET_CHUNK, degraded_reasons)
             if records or count == 0:
                 return records
         for sequence in range(count):
