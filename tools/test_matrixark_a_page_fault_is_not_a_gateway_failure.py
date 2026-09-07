@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+"""A fault in the page is not reported as a fault in the deployment.
+
+Twenty-one places answered a failed call with "Could not reach the gateway." Three different
+things arrive at those lines:
+
+* a rejection carrying a **status** -- the deployment answered, and said no;
+* a rejection from **fetch itself** -- the request never left;
+* a **throw after the answer arrived** -- this page failing to show what it was given.
+
+Ten sites told the first apart. None told the third apart from the second, and the third is the
+one that cost two sessions an hour: a helper defined in the wrong script block raised a
+ReferenceError inside a render, and the screen reported a gateway that had just answered as
+unreachable. Seven more sites were written ``.catch(function () {``, discarding the error, so even
+a status they held was reported as unreachable.
+
+Three were worse again. They handle 401 and 403 by name and treat everything else as unreachable,
+so a render throw did not merely print the wrong sentence -- it turned the **live strip** to
+"gateway unreachable" about a deployment that was answering. The strip is what a reader glances at
+to decide whether the deployment is alive.
+
+The classifier is RUN here, not read. What it answers is the whole change; a copy of its rules in
+this file could drift from the page without a word.
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import re
+import subprocess
+import unittest
+
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+PORTAL = os.path.join(TOOLS, "portal")
+HARNESS = os.path.join(PORTAL, "why_failed_harness.js")
+UNREACHABLE = "Could not reach the gateway."
+
+
+def pages() -> list:
+    return sorted(f for f in os.listdir(PORTAL) if f.endswith("_portal.html"))
+
+
+def read(name: str) -> str:
+    with io.open(os.path.join(PORTAL, name), encoding="utf-8") as handle:
+        return handle.read()
+
+
+class TheClassifierAnswersTest(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if subprocess.run(["node", "--version"], capture_output=True).returncode != 0:
+            raise unittest.SkipTest("node is not available")
+        out = subprocess.run(["node", HARNESS, os.path.join(PORTAL, "overview_portal.html")],
+                             capture_output=True, text=True, timeout=300)
+        if out.returncode != 0:
+            raise AssertionError(out.stderr[-900:])
+        cls.result = json.loads(out.stdout)
+
+    def said(self, case: str) -> str:
+        return self.result["said"][case]
+
+    def test_a_status_is_the_deployment_answering(self) -> None:
+        """A mapped status is answered with its sentence, which carries no digits -- a first
+        draft looked for "503" in it and failed on a classifier that was working."""
+        said = self.said("a_status_the_deployment_answered")
+        self.assertNotIn(UNREACHABLE, said)
+        self.assertIn("not ready to serve", said)
+        self.assertNotIn("could not show it", said, "a status is not this page's fault")
+
+    def test_a_page_may_still_word_a_status_its_own_way(self) -> None:
+        """The upload panel says "that file is larger" rather than "that request is larger". The
+        classifier must not take that away from it."""
+        self.assertIn("file", self.said("a_status_with_an_override"))
+
+    def test_a_request_that_never_left_says_so(self) -> None:
+        """All three browsers word it differently, and none of them is this page's fault."""
+        for case in ("the_request_never_left", "the_request_never_left_firefox",
+                     "the_request_never_left_safari", "nothing_at_all"):
+            with self.subTest(case=case):
+                self.assertEqual(UNREACHABLE, self.said(case))
+
+    def test_a_throw_while_showing_the_answer_does_not_blame_the_gateway(self) -> None:
+        """The one that was indistinguishable, and the exact throw that made it matter."""
+        said = self.said("the_page_threw_while_showing")
+        self.assertNotIn(UNREACHABLE, said)
+        self.assertIn("could not show it", said)
+        self.assertIn("__matrixarkWhen", said, "the message it caught is not repeated")
+        self.assertIn("not in the deployment", said)
+
+    def test_an_unreadable_answer_is_not_an_unreachable_one(self) -> None:
+        said = self.said("a_bad_body")
+        self.assertNotIn(UNREACHABLE, said)
+        self.assertIn("JSON", said)
+
+    def test_the_predicate_and_the_sentence_agree(self) -> None:
+        """They are asked separately -- by the message and by the live strip -- so they have to
+        come from one rule, or the page can say the gateway is down while explaining that it is
+        not."""
+        arrived = self.result["neverArrived"]
+        self.assertFalse(arrived["a_status"])
+        self.assertFalse(arrived["a_render_throw"])
+        self.assertTrue(arrived["fetch_failure"])
+        self.assertTrue(arrived["nothing_at_all"])
+
+
+    def test_a_status_leaves_the_strip_connected(self) -> None:
+        """Found by opening the page rather than by reading it. With nothing behind the portal
+        every fetch comes back 404 -- a status, so the request plainly arrived -- and the strip
+        read "this page could not show the answer" in amber. The first version of this asked only
+        whether the request arrived and called everything that did a fault in the page.
+        """
+        for case in ("a_status_404", "a_status_500"):
+            with self.subTest(case=case):
+                state, words = self.result["strip"][case]
+                self.assertEqual("live", state, "a status is the deployment answering")
+                self.assertEqual("connected", words)
+
+    def test_a_request_that_never_left_takes_the_strip_down(self) -> None:
+        state, words = self.result["strip"]["never_arrived"]
+        self.assertEqual("down", state)
+        self.assertIn("unreachable", words)
+
+    def test_only_a_page_fault_turns_the_strip_amber(self) -> None:
+        state, words = self.result["strip"]["a_render_throw"]
+        self.assertEqual("warn", state)
+        self.assertIn("could not show", words)
+
+    def test_the_strip_and_the_sentence_never_disagree(self) -> None:
+        """The two are read by different people at the same moment -- the dot at a glance, the
+        sentence when they look. Saying the gateway is unreachable beside a sentence explaining
+        that it answered is worse than either alone."""
+        for case, said_key in (("never_arrived", "the_request_never_left"),
+                               ("a_render_throw", "the_page_threw_while_showing")):
+            with self.subTest(case=case):
+                state = self.result["strip"][case][0]
+                said = self.said(said_key)
+                self.assertEqual(state == "down", UNREACHABLE == said,
+                                 "the strip says %r while the sentence says %r" % (state, said))
+
+
+class NoPageSaysItItselfTest(unittest.TestCase):
+
+    def test_the_sentence_is_written_in_one_place(self) -> None:
+        """Every page carries the shared block, so the sentence appears once per page for that.
+
+        A second copy on a page is a catch answering for itself, which is how the wording got out
+        of step with what actually happened in the first place.
+        """
+        for name in pages():
+            text = read(name)
+            extra = text.count(UNREACHABLE) - text.count("return \"" + UNREACHABLE + "\"")
+            # An XHR's onerror IS a network failure and says so correctly; it is the one caller
+            # that already knows which of the three it has.
+            extra -= len(re.findall(r"onerror = function[^}]*?" + re.escape(UNREACHABLE),
+                                    text, re.S))
+            self.assertEqual(0, extra,
+                             "%s writes the sentence itself %d times" % (name, extra))
+
+    def test_the_strip_never_calls_it_unreachable_without_asking(self) -> None:
+        """The live strip is the page's loudest claim, and it must not make it about a render
+        fault. Asserted as the absence of the unguarded phrase rather than by looking near each
+        `conn("down"` for a guard: the sites sit close together, so a window around one of them
+        catches the guard belonging to its neighbour. A mutation that unguarded a single site
+        survived that version of this test.
+
+        The only "down" left on any page is the strip client's own `reconnecting in Ns`, which is
+        reported when the socket is genuinely gone -- no request, and no answer to classify.
+        """
+        for name in pages():
+            text = read(name)
+            self.assertEqual(
+                0, text.count('conn("down", "gateway unreachable")'),
+                "%s tells the strip the gateway is unreachable without asking whether the "
+                "request ever arrived" % name)
+            for match in re.finditer(r'conn\(\s*"down"', text):
+                after = text[match.start():match.start() + 120]
+                self.assertIn("reconnecting", after,
+                              "%s has a down state that is neither guarded nor the socket "
+                              "retry: %s" % (name, after[:70]))
+
+    def test_the_pages_actually_use_the_classifier(self) -> None:
+        """The positive control. Every assertion above passes on a portal that reports nothing at
+        all, which is exactly what deleting the catches would leave behind."""
+        used = sum(read(name).count("__matrixarkWhyFailed(") for name in pages())
+        self.assertGreaterEqual(used, 20, "the classifier is called %d times" % used)
+
+
+if __name__ == "__main__":
+    unittest.main()
