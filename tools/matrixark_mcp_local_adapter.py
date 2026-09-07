@@ -7464,8 +7464,52 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         target or created it, and its feedback ratings -- in append order. A backend that can
         fetch that subset cheaply overrides this; the contract is that history's OUTPUT for any
         memory id is unchanged.
+
+        This one does fetch it cheaply, from an index over the raw log. Every branch of history's
+        loop reaches a record through ``event_id_hash``, ``target_memory_id`` or ``superseded_by``,
+        so a record naming none of them cannot contribute to any id's history. The index is a
+        SUPERSET keyed on all three: history still decides what each record contributes, so a key
+        that turns out to be irrelevant costs a comparison and cannot change an answer, and a
+        record reachable two ways is listed once.
+
+        Walking the whole log cost 17.9 ms per 32,000 records to answer one id, and 17.6 of that
+        was the bare iteration -- there was nothing to make faster inside the loop, only fewer
+        records to run it over.
         """
-        return self._read_raw_records()
+        records = self._read_raw_records()
+        if not memory_id:
+            return records
+        return self._raw_history_index(records).get(str(memory_id), [])
+
+    def _raw_history_index(self, records: list[Json]) -> dict[str, list[Json]]:
+        """memory id -> the raw records that can appear in its history, in append order.
+
+        Built once per raw-log generation and remembered on the same key ``_read_raw_records``
+        trusts for its own cache: the log is append-only, so any write moves that key, and a write
+        is the only thing that changes what either returns. When that cache has not been populated
+        -- the JSONL-disabled adapters, which have no raw log at all -- nothing is remembered and
+        the index is rebuilt, which is correct and costs nothing on an empty list.
+        """
+        cached = getattr(self, "_raw_records_cache", None)
+        key = cached[0] if cached is not None else None
+        memo = getattr(self, "_raw_history_index_memo", None)
+        if key is not None and memo is not None and memo[0] == key:
+            return memo[1]
+        index: dict[str, list[Json]] = {}
+        for record in records:
+            seen: set[str] = set()
+            for field in ("event_id_hash", "target_memory_id", "superseded_by"):
+                value = record.get(field)
+                if value in (None, ""):
+                    continue
+                text_value = str(value)
+                if text_value in seen:
+                    continue
+                seen.add(text_value)
+                index.setdefault(text_value, []).append(record)
+        if key is not None:
+            self._raw_history_index_memo = (key, index)
+        return index
 
     def history(self, args: Json) -> Json:
         """Return the ordered change history for a memory id (mem0 ``history``). Because the store is
