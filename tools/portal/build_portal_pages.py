@@ -341,6 +341,27 @@ NAV_JS = r'''<script>
 
      `detail` still wins where there is one: it names the setting and the reason. The scope is
      appended to that rather than replacing it. */
+  /* One way to render an absolute time, and it names the clock.
+   *
+   * Four places showed a timestamp with toLocaleString() and none said which zone it was in, while
+   * the records they describe -- a configuration write, an audit entry, a stored memory -- carry
+   * the GATEWAY's time. Correlating a portal timestamp with a server log was guesswork, and on a
+   * browser whose clock is off (which the setup page can now measure and say) it was wrong as well
+   * as ambiguous.
+   *
+   * `timeZoneName: "short"` rather than the IANA name: "GMT+1" beside the time reads at a glance
+   * where "Europe/London" pushes the useful part off the end of a table cell. Falls back to the
+   * bare local string on a runtime without it, which is no worse than what was there before. */
+  window.__matrixarkWhen = function (ms) {
+    /* 0 is "no timestamp" here, not the epoch: the catalog site this replaces read
+       `ms ? ... : dash`, and a record with no time would otherwise date to 1970. */
+    if (!ms) { return "—"; }
+    var at = new Date(Number(ms));
+    if (isNaN(at.getTime())) { return "—"; }
+    try { return at.toLocaleString(undefined, { timeZoneName: "short" }); }
+    catch (e) { return at.toLocaleString(); }
+  };
+
   window.__matrixarkWhy = function (body, fallback) {
     body = body || {};
     var text = body.detail || body.error || fallback;
@@ -1659,7 +1680,7 @@ SETUP_JS = r"""
     renderAwaiting((settings || {}).pending_restart);
     $("cfgTime").textContent = settings && settings.updated_at
       ? "Stored in " + (settings.config_file || "the runtime config") + " · last saved " +
-        new Date(settings.updated_at * 1000).toLocaleString()
+        window.__matrixarkWhen(settings.updated_at * 1000)
       : "Stored in " + ((settings || {}).config_file || "the runtime config") +
         " · nothing saved from the portal yet";
     applyFilter();
@@ -1685,7 +1706,7 @@ SETUP_JS = r"""
         var restart = (e.restart_required || []).length
           ? '<div class="hint" style="margin:4px 0 0">needed a restart: ' +
             esc(e.restart_required.join(", ")) + "</div>" : "";
-        return "<tr><td>" + esc(new Date(e.at * 1000).toLocaleString()) + "</td><td>" +
+        return "<tr><td>" + esc(window.__matrixarkWhen(e.at * 1000)) + "</td><td>" +
           esc(e.by) + "</td><td>" + what + restart + "</td></tr>";
       }).join("") + "</tbody></table>";
   }
@@ -3419,7 +3440,7 @@ CATALOG_JS = r"""
     $("dot").className = "dot " + state;
     $("conn").textContent = text;
   }
-  function when(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
+  function when(ms) { return window.__matrixarkWhen(ms); }
 
   function query() {
     var parts = [];
@@ -4556,7 +4577,7 @@ EXPLORE_JS = r"""
             return '<tr class="rowlink" data-id="' + esc(id) + '"><td>' +
               esc(String(m.memory || m.text || m.content || "").slice(0, 160)) + "</td><td>" +
               esc(m.record_type || m.kind || "—") + "</td><td>" +
-              esc(when ? new Date(when).toLocaleString() : "—") + "</td></tr>";
+              esc(window.__matrixarkWhen(when)) + "</td></tr>";
           }).join("") + "</tbody></table>";
       })
       .catch(function (e) {
