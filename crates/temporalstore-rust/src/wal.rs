@@ -292,9 +292,22 @@ pub struct WriteAheadLogRecord {
 }
 /// TS_WAL_DATA_ONLY: stop writing the operation into a record that already states its results.
 ///
-/// Default ON. Carrying both is strictly bigger for no benefit -- the results are what replay
-/// installs, and the operation is consulted only when there are none. Set to a falsey value to
-/// keep writing both, which is what a consumer reading records directly would want.
+/// Default ON. Carrying both is bigger, and for a record whose page survives the crash it buys
+/// nothing -- the results are what replay installs, and the operation is consulted only when there
+/// are none. Set to a falsey value to keep writing both, which is what a consumer reading records
+/// directly would want.
+///
+/// THE BENEFIT IS NOT ZERO, and the sentence above used to say it was. An outcome can be installed
+/// only if the page it names is DURABLE. Under single-barrier -- the default -- the data-page
+/// fdatasync is deferred by design, so a power cut after the ack leaves the outcome naming a page
+/// that was never written, and this flag has removed the operation that could have re-derived the
+/// value. `tests/wal_single_barrier_recovery.rs` recovers 0 of 300 acked keys for exactly that
+/// reason, and its probe output is unambiguous: 300 records, all decoding, 0 carrying a command,
+/// 0 whose outcome items carry a value.
+///
+/// Turning this off is one of the four ways out that file lists. Which one is right is a decision
+/// about what an ack promises, not a tuning change -- but a comment claiming the flag costs
+/// nothing is how it gets treated as one.
 pub fn wal_data_only_enabled() -> bool {
     std::env::var("TS_WAL_DATA_ONLY")
         .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
@@ -347,7 +360,10 @@ pub(crate) fn record_command(
 /// clock. Both are scar tissue from logging operations rather than results.
 ///
 /// An outcome states the result instead: this object's page now lives at this address, or this
-/// object is gone. Replay can install that without running anything.
+/// object is gone. Replay can install that without running anything -- PROVIDED the page it
+/// names is durable. Under single-barrier, the default, that fdatasync is deferred; see the
+/// durability note on `TS_WAL_DATA_ONLY` above, because with both defaults on a crash between
+/// the ack and the page write leaves nothing any replay can rebuild the value from.
 ///
 /// DEFAULT ON. The comment here used to say "default OFF while both are carried", and described a
 /// state that no longer exists: records no longer carry both. A mixed workload was walked across
