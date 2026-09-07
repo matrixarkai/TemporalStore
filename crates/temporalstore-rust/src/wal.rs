@@ -6121,6 +6121,74 @@ mod tests {
     ///
     /// Measured as the DELTA between records rather than the file size: the log preallocates in
     /// large steps, so file size answers a different question.
+    /// Compression is unreachable while records are written as JSON, whatever its own flag says.
+    ///
+    /// `encode_wal_payload` chooses the protobuf writer or the JSON one on TS_WAL_BINARY_RECORDS,
+    /// and only the protobuf writer compresses. So with binary records OFF, TS_WAL_COMPRESS_RECORDS
+    /// still reads as on -- it defaults on, and unset means on -- while changing nothing that
+    /// reaches disk.
+    ///
+    /// Pinned rather than left to be rediscovered, because a live box runs exactly that pair:
+    /// TS_WAL_BINARY_RECORDS=0 with TS_WAL_COMPRESS_RECORDS unset. Its log is written uncompressed
+    /// while the setting that would compress it reads as enabled, and nothing in either flag's own
+    /// description says the one depends on the other.
+    #[test]
+    #[ignore]
+    fn compression_does_nothing_while_records_are_json() {
+        // Ignored by default: this writes process environment, which the suite shares.
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 1,
+            command: Some(Command::StringSet {
+                key: "compressible".to_string(),
+                // Repetitive on purpose: the question is whether compression runs at all, so the
+                // payload has to be one that compression would obviously shrink.
+                value: (0..8192u32).map(|index| (index % 7) as u8).collect(),
+            }),
+            metadata: None,
+            staged_pages: Vec::new(),
+            outcomes: Vec::new(),
+        };
+
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
+        std::env::set_var("TS_WAL_COMPRESS_RECORDS", "1");
+        assert!(
+            crate::wal_proto::compress_records_enabled(),
+            "the compression flag must read as on, or this test says nothing",
+        );
+
+        let json = encode_wal_payload(&record).expect("json record encodes");
+        assert_eq!(
+            json.first().copied(),
+            Some(b'{'),
+            "with binary records off the payload is bare json, carrying no marker at all",
+        );
+
+        // Same record, same compression flag, protobuf writer: now it compresses.
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
+        let binary = encode_wal_payload(&record).expect("binary record encodes");
+        assert_eq!(
+            binary.first().copied(),
+            Some(crate::wal_proto::COMPRESSED_RAW_PAYLOAD_MARKER),
+            "the only writer that honours the compression flag is the protobuf one",
+        );
+        assert!(
+            binary.len() < json.len(),
+            "compressed {} should be smaller than the json {} it replaces",
+            binary.len(),
+            json.len(),
+        );
+        println!(
+            "  COUPLING json {} B vs compressed protobuf {} B ({:.2}x), unavailable while records are json",
+            json.len(),
+            binary.len(),
+            json.len() as f64 / binary.len() as f64,
+        );
+
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
+        std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
+    }
+
     #[test]
     fn what_a_record_actually_costs_on_disk() {
         for value_len in [64usize, 1024, 4096] {
