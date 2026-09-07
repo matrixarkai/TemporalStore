@@ -813,6 +813,77 @@ impl TemporalEngine {
             return false;
         };
         match item.kind.as_str() {
+            // A TYPED REMOVAL. `mark_bucket_index_page_deleted` records one with no address --
+            // nothing was written, so there is none to name -- and `stage_meta_outcome` does the
+            // same for a string delete. Every arm below opens by demanding an address, so before
+            // this branch existed a removal could not be installed, `apply_outcome_item` answered
+            // false, and the caller refused the whole shard load over a member that is meant to be
+            // gone. `list_recovery` and `zset_recovery` fail on main for exactly that, and the
+            // string, hash and set equivalents were untested.
+            //
+            // `meta` is what says this is not a page upsert. It is written on every such outcome
+            // and it round-trips as `meta_log`; nothing read it until now.
+            //
+            // Each removal mirrors the write path it undoes: the same component decoding as the
+            // insert arm below, and the bucket index cleared through the same helper, asked not
+            // to stage -- replay installs a removal that was already recorded, and staging another
+            // would record the recovery as a write of its own.
+            "string" | "hash" | "set" | "list" | "zset" if item.deleted => {
+                let component = item.component.clone();
+                match (item.kind.as_str(), component.as_deref()) {
+                    ("string", _) => {
+                        super::mark_bucket_index_object_deleted(shard, &item.object_key);
+                        shard.strings.remove(&item.object_key);
+                    }
+                    ("hash", Some(field)) => {
+                        if let Some(fields) = shard.hashes.get_mut(&item.object_key) {
+                            fields.remove(field);
+                        }
+                    }
+                    ("set", Some(encoded)) => {
+                        let Ok(member) = hex::decode(encoded) else {
+                            return false;
+                        };
+                        if let Some(members) = shard.sets.get_mut(&item.object_key) {
+                            members.remove(&member);
+                        }
+                    }
+                    ("list", Some(encoded)) => {
+                        let Ok(biased) = u64::from_str_radix(encoded, 16) else {
+                            return false;
+                        };
+                        let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
+                        if let Some(elements) = shard.lists.get_mut(&item.object_key) {
+                            elements.remove(&sequence);
+                        }
+                    }
+                    ("zset", Some(encoded)) => {
+                        if encoded.len() < 16 {
+                            return false;
+                        }
+                        let (_score_hex, member_hex) = encoded.split_at(16);
+                        let Ok(member) = hex::decode(member_hex) else {
+                            return false;
+                        };
+                        if let Some(members) = shard.zsets.get_mut(&item.object_key) {
+                            members.remove(&member);
+                        }
+                    }
+                    // A component-keyed kind with no component names nothing to remove.
+                    _ => return false,
+                }
+                if item.kind != "string" {
+                    super::mark_bucket_index_page_deleted_with(
+                        shard,
+                        shard_id,
+                        &item.kind,
+                        &item.object_key,
+                        component.as_deref(),
+                        false,
+                    );
+                }
+                true
+            }
             // The object is gone, everywhere it appeared.
             "object" if item.deleted => {
                 super::delete_record(shard, &item.object_key);
