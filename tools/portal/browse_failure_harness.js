@@ -16,13 +16,30 @@ const fs = require("fs");
 const page = fs.readFileSync(process.argv[2], "utf8");
 const failing = process.argv[3] || "users";
 
+/* The balanced-brace slice, now needed twice. */
+function sliceBlock(from) {
+  let depth = 0;
+  for (let i = page.indexOf("{", from); i < page.length; i++) {
+    if (page[i] === "{") depth++;
+    else if (page[i] === "}") { depth--; if (depth === 0) { return page.slice(from, i + 1); } }
+  }
+  return null;
+}
+
 const start = page.indexOf("function loadBrowse() {");
 if (start < 0) { console.log("FAIL loadBrowse is not on this page"); process.exit(2); }
-let depth = 0, end = -1;
-for (let i = page.indexOf("{", start); i < page.length; i++) {
-  if (page[i] === "{") depth++;
-  else if (page[i] === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
-}
+const loadBrowseSrc = sliceBlock(start);
+
+/* loadBrowse formats each row's timestamp through `window.__matrixarkWhen`. Take the page's OWN
+   formatter rather than stubbing one: a stub would let a change to the shipped formatter pass here
+   unseen, and this harness exists to run what ships. `when_harness.js` slices it the same way.
+   Without it `window` is simply absent from the sandbox, the call raises, and the page's own catch
+   reports "Could not reach the gateway." -- a failure message on the mode that asserts there is
+   none. */
+const whenStart = page.indexOf("window.__matrixarkWhen = function (ms)");
+if (whenStart < 0) { console.log("FAIL __matrixarkWhen is not on this page"); process.exit(2); }
+const whenSrc = sliceBlock(whenStart).replace("window.__matrixarkWhen = ", "");
+const win = { __matrixarkWhen: new Function("return (" + whenSrc + ");")() };
 
 let failures = 0;
 function ok(what, condition, detail) {
@@ -55,6 +72,7 @@ const scope = {
   scopeQuery: () => "user_id=alice",
   failure: (status) => "The gateway answered " + status + ".",
   Date, JSON, String, Number, Promise,
+  window: win,
   fetch: (url) => {
     const key = String(url);
     if (key.indexOf("/v1/users") === 0) {
@@ -74,7 +92,7 @@ const scope = {
 
 const names = Object.keys(scope);
 const loadBrowse = new Function(...names,
-  page.slice(start, end) + "; return loadBrowse;")(...names.map((k) => scope[k]));
+  loadBrowseSrc + "; return loadBrowse;")(...names.map((k) => scope[k]));
 
 loadBrowse();
 
