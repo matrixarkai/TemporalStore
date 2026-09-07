@@ -113,24 +113,59 @@ pub(super) fn reconcile_band_manifest_with_disk(
         .copied()
         .unwrap_or_default();
 
-    for page_slab_id in &live_slab_ids {
-        let path = slab_path(root, *page_slab_id);
-        let bytes = fs::read(&path)?;
-        let report = inspect_slab(&bytes, *page_slab_id);
-        let desired_state = if *page_slab_id == latest {
+    // Read and hash the slabs in parallel, then apply the band updates in the original order.
+    //
+    // Inspecting a slab re-verifies the sha256 of every page record in it, and this runs at EVERY
+    // engine open. Measured on a live store: ~950 MB of slabs took about 70 s of a cold start
+    // (13.5 MB/s, against hundreds of MB/s for sha256) with the process pinned at 99% of one core.
+    // Only the reads and hashing are shared out; the update loop below is unchanged and still walks
+    // `live_slab_ids` in order, so it makes the same decisions in the same sequence.
+    let ordered_slab_ids = live_slab_ids.iter().copied().collect::<Vec<_>>();
+    let workers = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .clamp(1, 8)
+        .min(ordered_slab_ids.len().max(1));
+    type InspectedSlab = (u64, BlockStoreSlabReport, Option<u64>, Option<u64>);
+    // A BATCH at a time. Fanning out over the whole list first was the same 2x, but held every
+    // slab's report until the update loop ran and took peak RSS from 385 MB to ~960 MB. Worker
+    // count made no difference to that, which is the tell: it is the retained reports, not the slab
+    // buffers. One batch in flight keeps the speed and the memory.
+    for batch in ordered_slab_ids.chunks(workers.max(1)) {
+        let mut inspected: Vec<Option<Result<InspectedSlab, std::io::Error>>> =
+            (0..batch.len()).map(|_| None).collect();
+        std::thread::scope(|scope| {
+            for (slot, page_slab_id) in inspected.iter_mut().zip(batch.iter()) {
+                scope.spawn(move || {
+                    let path = slab_path(root, *page_slab_id);
+                    *slot = Some(fs::read(&path).map(|bytes| {
+                        let report = inspect_slab(&bytes, *page_slab_id);
+                        let created =
+                            file_created_unix_ms(&path).or_else(|| file_modified_unix_ms(&path));
+                        let updated =
+                            file_modified_unix_ms(&path).or_else(|| file_created_unix_ms(&path));
+                        (bytes.len() as u64, report, created, updated)
+                    }));
+                });
+            }
+        });
+
+        for (slot, page_slab_id) in inspected.iter_mut().zip(batch.iter()) {
+            let (physical_bytes, report, created_unix_ms, updated_unix_ms) = slot
+                .take()
+                .expect("every slab in the batch is inspected exactly once")?;
+            let desired_state = if *page_slab_id == latest {
             BlockStoreBandState::Active
         } else {
             BlockStoreBandState::Sealed
         };
-        let created_unix_ms = file_created_unix_ms(&path).or_else(|| file_modified_unix_ms(&path));
-        let updated_unix_ms = file_modified_unix_ms(&path).or_else(|| file_created_unix_ms(&path));
         match bands.get_mut(page_slab_id) {
             Some(band) => {
                 let old = band.clone();
                 let content_changed = band.band_id != band_id_for_slab(*page_slab_id)
                     || band.page_slab_id != *page_slab_id
                     || band.state != desired_state
-                    || band.physical_bytes != bytes.len() as u64
+                    || band.physical_bytes != physical_bytes
                     || band.logical_bytes != report.logical_bytes
                     || band.first_page_id != report.first_page_id
                     || band.last_page_id != report.last_page_id
@@ -142,7 +177,7 @@ pub(super) fn reconcile_band_manifest_with_disk(
                 band.band_id = band_id_for_slab(*page_slab_id);
                 band.page_slab_id = *page_slab_id;
                 band.state = desired_state;
-                band.physical_bytes = bytes.len() as u64;
+                band.physical_bytes = physical_bytes;
                 band.logical_bytes = report.logical_bytes;
                 band.created_unix_ms = band.created_unix_ms.or(created_unix_ms);
                 if content_changed {
@@ -163,7 +198,7 @@ pub(super) fn reconcile_band_manifest_with_disk(
                         band_id: band_id_for_slab(*page_slab_id),
                         page_slab_id: *page_slab_id,
                         state: desired_state,
-                        physical_bytes: bytes.len() as u64,
+                        physical_bytes,
                         logical_bytes: report.logical_bytes,
                         created_unix_ms,
                         updated_unix_ms,
@@ -176,6 +211,7 @@ pub(super) fn reconcile_band_manifest_with_disk(
                     },
                 );
                 changed = true;
+            }
             }
         }
     }
