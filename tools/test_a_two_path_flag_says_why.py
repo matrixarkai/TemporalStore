@@ -77,6 +77,13 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
         "same opt-out",
     # The rest default OFF. Retiring one of those deletes a hatch rather than a dead arm, and each
     # is a behaviour an operator asks for:
+    "TS_BLOCK_INDEX_CHECKSUMS":
+        "records a sha256 per page record while inspecting a slab. Default OFF because "
+        "`inspect_slab` runs at EVERY engine open and this hashes each payload a second time -- "
+        "`decode_page_record` has already verified the stored checksum -- to fill a field no "
+        "caller reads: measured at 13.5 MB/s against hundreds of MB/s for sha256 alone. The ON "
+        "arm is the only way to get a per-record digest when hand-inspecting a slab, which is "
+        "something the OFF arm cannot give, so it is a hatch and not a dead branch",
     "TS_BLOB_PEER_FETCH":
         "cross-peer blob availability -- a local miss fetches from a peer instead of failing. "
         "Opt-in, and the engine says so at the read",
