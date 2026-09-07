@@ -89,7 +89,6 @@ ENV_MAP: Dict[str, str] = {
     "storage.page_store_compression_enabled": "TS_PAGE_STORE_COMPRESSION_ENABLED",
     "storage.page_store_compression_level": "TS_PAGE_STORE_COMPRESSION_LEVEL",
     "storage.page_store_compression_min_bytes": "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
-    "storage.cross_shard_reclaim_guard": "TS_CROSS_SHARD_RECLAIM_GUARD",
     # Offered by the config file, commented out, and mapped by nothing -- so uncommenting the line
     # would have set nothing. The flag is live: default ON, read in eight places.
     "storage.index_catalog_fold": "TS_INDEX_CATALOG_FOLD",

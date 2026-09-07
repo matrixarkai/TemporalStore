@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 290 of them, read by 91 functions.
+There are 288 of them, read by 89 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,13 +60,13 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 290 |
-| booleans whose default this could read off the source | 50 |
+| total | 288 |
+| booleans whose default this could read off the source | 48 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 5 |
-| offered on the portal | 28 |
+| offered on the portal | 27 |
 | **that nothing in this repository sets** | 157 |
-| documented as keeping an older path alive | 5 |
+| documented as keeping an older path alive | 4 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
 
@@ -173,7 +173,7 @@ Secrets. Never a form field, never in a launch artifact.
 | `TS_API_AUTH_TOKEN` | — | nothing | 1 | — |
 | `TS_META_ADMIN_TOKEN` | — | nothing | 1 | — |
 
-## durability (23)
+## durability (22)
 
 What is written, when it is flushed, and what is reclaimed. The escape hatches here trade throughput for a more conservative barrier.
 
@@ -183,7 +183,6 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | 30000 | nothing | 2 | — |
 | `MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS` | 1000 | nothing | 1 | — |
 | `TS_BARRIER_PROFILE_WRITES` | 50 | nothing | 1 | — |
-| `TS_CROSS_SHARD_RECLAIM_GUARD` | on | config | 1 | yes |
 | `TS_DATA_NODE_LIFECYCLE_SNAPSHOT` | — | nothing | 1 | — |
 | `TS_INDEX_DUMP_WAL_GAP_BYTES` | 1048576 | config, portal | 1 | — |
 | `TS_META_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | 30000 | nothing | 1 | — |
@@ -368,7 +367,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | script | 1 | — |
 
-## behaviour (62)
+## behaviour (61)
 
 Everything else that changes what the engine does.
 
@@ -421,7 +420,6 @@ Everything else that changes what the engine does.
 | `TS_RAFT_REPLICATION_DEADLINE_MS` | — | test | 1 | — |
 | `TS_RAFT_SECURITY_MODE` | — | nothing | 1 | — |
 | `TS_RAFT_TRANSPORT_SECURITY` | — | nothing | 1 | — |
-| `TS_SCRATCH_SWEEP` | on | portal | 1 | — |
 | `TS_SERVER_JOIN_EMPTY` | off | script | 1 | — |
 | `TS_SERVER_RAFT` | off | nothing | 1 | — |
 | `TS_SERVER_RAFT_READ_MODE` | — | nothing | 1 | — |

@@ -2,25 +2,17 @@
 // Copyright 2026 MatrixArkAI
 
 //! Storage-manager cycle + merged-dump policy report for TemporalEngine, split from engine.rs.
-use super::*;
+//!
+//! CROSS-SHARD RECLAIM, always on. Page-slab reclaim retains any slab referenced by ANY shard
+//! loaded into this engine, not only the shard whose cycle is running: one engine shares a single
+//! page_store across all its shards with a global slab cursor, so a slab can hold committed pages
+//! from multiple shards, and driving GC off a single shard's live set deletes another shard's live
+//! pages (silent data loss). `TS_CROSS_SHARD_RECLAIM_GUARD` used to be able to restore the legacy
+//! per-shard live set; nothing selected that position, and it was unsafe under multi-shard hosting
+//! by construction. For a single loaded shard the union equals that shard's live set, so
+//! single-shard behavior was byte-identical either way.
 
-/// TS_CROSS_SHARD_RECLAIM_GUARD (default ON): page-slab reclaim retains any slab referenced by
-/// ANY shard loaded into this engine, not only the shard whose cycle is running. One engine
-/// shares a single page_store across all its shards with a global slab cursor, so a slab can hold
-/// committed pages from multiple shards; driving GC off a single shard's live set deletes another
-/// shard's live pages (silent data loss). Set to "0"/"false"/"no"/"off" to restore the legacy
-/// per-shard live set (a kill-switch only; unsafe under multi-shard hosting). For a single loaded
-/// shard the union equals that shard's live set, so single-shard behavior is byte-identical.
-pub(crate) fn cross_shard_reclaim_guard_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_CROSS_SHARD_RECLAIM_GUARD")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
+use super::*;
 
 impl TemporalEngine {
     pub fn run_storage_manager_cycle(
@@ -310,13 +302,9 @@ impl TemporalEngine {
                 .unwrap_or_default()
                 .saturating_add(1);
             // Retain slabs live in ANY shard sharing this engine's page_store, not just the
-            // shard being cycled (see cross_shard_reclaim_guard_enabled): otherwise a slab whose
-            // pages belong to another shard is absent from this shard's live set and gets deleted.
-            let reclaim_live_refs = if cross_shard_reclaim_guard_enabled() {
-                self.live_page_slab_ids_all_shards()
-            } else {
-                plan.live_page_slab_ids.clone()
-            };
+            // shard being cycled (see the module header): otherwise a slab whose pages belong to
+            // another shard is absent from this shard's live set and gets deleted.
+            let reclaim_live_refs = self.live_page_slab_ids_all_shards();
             match self.page_store.gc_slabs_before_with_live_refs_policy(
                 retain_from_page_slab_id,
                 reclaim_live_refs,
