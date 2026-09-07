@@ -6660,9 +6660,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         user_id = str(scope.get("user_id") or "").strip()
         confirm = str(args.get("confirm") or "").strip()
         if not user_id:
-            raise MatrixArkError("forget requires scope.user_id (the subject to forget)")
+            raise MatrixArkInvalidRequestError("forget requires scope.user_id (the subject to forget)")
         if confirm != user_id:
-            raise MatrixArkError("forget requires confirm to equal scope.user_id (exact match, no wildcard)")
+            raise MatrixArkInvalidRequestError("forget requires confirm to equal scope.user_id (exact match, no wildcard)")
         tenant_hash, user_hash = self._resolve_subject_hashes(scope)
         if not tenant_hash or not user_hash:
             raise MatrixArkError("forget could not resolve the subject scope (tenant_hash/user_hash)")
@@ -6732,7 +6732,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         backward compatible with the pre-closure behavior."""
         memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
         if not memory_id:
-            raise MatrixArkError("delete requires a memory_id")
+            raise MatrixArkInvalidRequestError("delete requires a memory_id")
         records = self.records_for_delete(memory_id)
         try:
             memory_id_int: int | None = int(memory_id)
@@ -7061,7 +7061,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         through the live view so superseded / expired / forgotten keyed records never surface."""
         identity_key = str(args.get("identity_key") or "").strip()
         if not identity_key:
-            raise MatrixArkError("get by key requires identity_key")
+            raise MatrixArkInvalidRequestError("get by key requires identity_key")
         scope = optional_object(args, "scope")
         tenant_hash, user_hash = self._resolve_subject_hashes(scope)
         candidates: list[Json] = []
@@ -7139,7 +7139,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         try:
             limit = int(args.get("limit") or 0)
         except (TypeError, ValueError):
-            raise MatrixArkError("limit must be an integer")
+            raise MatrixArkInvalidRequestError("limit must be an integer")
         # Select first, project second. Building the projected memory for every record and then
         # slicing threw most of that work away: a subject with thousands of memories paid for all
         # of them to answer `limit=10`. Order the cheap (time, record) pairs, cut, and build only
@@ -7188,9 +7188,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         tenant_id = str(scope.get("tenant_id") or "").strip()
         confirm = str(args.get("confirm") or "").strip()
         if not confirm:
-            raise MatrixArkError("reset requires an explicit confirm (the tenant_id or 'RESET')")
+            raise MatrixArkInvalidRequestError("reset requires an explicit confirm (the tenant_id or 'RESET')")
         if confirm != "RESET" and (not tenant_id or confirm != tenant_id):
-            raise MatrixArkError("reset requires confirm to equal the tenant_id or the literal 'RESET'")
+            raise MatrixArkInvalidRequestError("reset requires confirm to equal the tenant_id or the literal 'RESET'")
         tenant_hash, _ = self._resolve_subject_hashes(scope)
         if not tenant_hash:
             raise MatrixArkError("reset could not resolve the caller's tenant scope")
@@ -7297,7 +7297,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         forgotten/deleted memory returns ``{found: false}``."""
         memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
         if not memory_id:
-            raise MatrixArkError("get requires a memory_id")
+            raise MatrixArkInvalidRequestError("get requires a memory_id")
         memory_id_int = _safe_int(memory_id)
         event: Json | None = None
         derived: list[Json] = []
@@ -7351,14 +7351,14 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         (cross-tenant update is refused)."""
         memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
         if not memory_id:
-            raise MatrixArkError("update requires a memory_id")
+            raise MatrixArkInvalidRequestError("update requires a memory_id")
         new_text = args.get("data")
         if new_text in (None, ""):
             new_text = args.get("text")
         if new_text in (None, ""):
             new_text = args.get("content")
         if not isinstance(new_text, str) or not new_text.strip():
-            raise MatrixArkError("update requires new content (data / text)")
+            raise MatrixArkInvalidRequestError("update requires new content (data / text)")
         # The id's own records, not the store's. An update reasons over exactly what a delete
         # does -- the addressed event plus everything pointing at it -- and the same subset serves
         # both the lookup here and the supersede closure below, so one id-scoped fetch replaces
@@ -7632,7 +7632,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         when the id is the NEW version produced by an update. Ordered oldest-first by log position."""
         memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
         if not memory_id:
-            raise MatrixArkError("history requires a memory_id")
+            raise MatrixArkInvalidRequestError("history requires a memory_id")
         events: list[Json] = []
         seen_ingested = False
         for record in self.raw_records_for_history(memory_id):
