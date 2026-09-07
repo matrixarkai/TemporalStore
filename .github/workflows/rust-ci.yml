@@ -112,10 +112,19 @@ jobs:
       # for visibility but is NOT yet a required gate: the tree carries a small
       # number of known, pre-existing baseline failures. Flip continue-on-error
       # off once the baseline is fully green.
+      #
+      # `--no-fail-fast` is what makes "for visibility" true of more than the lib.
+      # cargo stops at the first failing TARGET, not the first failing test, and the
+      # two known lib failures were stopping it before it reached any of the fourteen
+      # binaries under `tests/` -- the whole integration suite, including
+      # `wal_single_barrier_recovery`, never ran. `continue-on-error` does not help:
+      # it stops the step failing the job, which is why this reported success, and has
+      # no effect on cargo's own stopping. The run for mx#1180 printed two
+      # `test result:` lines for a command asked to run fifteen targets.
       - name: cargo test (lib + integration, single-threaded, release)
         timeout-minutes: 45
         continue-on-error: true
-        run: cargo test --release -p temporalstore-rust --lib --tests -- --test-threads=1
+        run: cargo test --release -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1
 
       # Bin unit tests are not covered by --lib/--tests, so a failing test in a
       # service binary can sit on main unnoticed. Run the proxy bin's suite as a
