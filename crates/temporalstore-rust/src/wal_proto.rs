@@ -1227,10 +1227,20 @@ mod tests {
         ];
 
         let mut checked = 0usize;
-        for kind in ["page", "feature", "context_index", "an_unmapped_kind_name"] {
+        // `list` and `zset` were missing, and kind drives both `kind_code` and
+        // `numeric_component`, so the matrix skipped exactly the two kinds whose outcomes replay
+        // refuses in list_recovery and zset_recovery.
+        for kind in [
+            "page", "feature", "context_index", "an_unmapped_kind_name", "list", "zset",
+        ] {
             for object_key in ["", "tenant/1/object/9"] {
                 for object_id in [0u64, 9] {
-                    for component in [None, Some(""), Some("body"), Some("1788748713578")] {
+                    // The last is the shape a list outcome actually carries: sixteen hex
+                    // digits of the biased sequence.
+                    for component in [
+                        None, Some(""), Some("body"), Some("1788748713578"),
+                        Some("8000000000000005"),
+                    ] {
                         for value in [None, Some(Vec::new()), Some(vec![7u8; 5])] {
                             for ttl in [None, Some(0u64), Some(60_000)] {
                                 for (deleted, meta) in
@@ -1277,6 +1287,22 @@ mod tests {
                                             theirs.extend_from_slice(&expected_body);
 
                                             assert_eq!(mine, theirs, "bytes differ for {item:?}");
+
+                                            // The two assertions above compare ENCODERS. Neither
+                                            // decodes, so a field the decoder drops is invisible
+                                            // to both -- and an outcome whose address comes back
+                                            // absent is exactly what `wal_replay_outcome_refused`
+                                            // reports, with the component intact beside it.
+                                            let decoded = item_from_proto(item_to_proto(&item));
+                                            assert_eq!(
+                                                decoded.address.is_some(),
+                                                item.address.is_some(),
+                                                "the address vanished in the round trip: {item:?}",
+                                            );
+                                            assert_eq!(
+                                                decoded.kind, item.kind,
+                                                "kind changed in the round trip for {item:?}",
+                                            );
                                             checked += 1;
                                         }
                                     }
