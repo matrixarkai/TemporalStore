@@ -1596,11 +1596,28 @@ impl TemporalEngine {
             if !record.outcomes.is_empty() {
                 for item in &record.outcomes {
                     if !self.apply_outcome_item(shard_id, item) {
+                        // Say which precondition was unmet. `apply_outcome_item` answers with a
+                        // bool from eighteen different places, so the caller was reporting that
+                        // an outcome would not install and never which part of it was missing --
+                        // and this refusal FAILS THE LOAD, so it is the last thing anyone sees.
+                        // Nearly every arm needs a resolved address and, for the keyed kinds, a
+                        // component; those two are what the caller can check for itself.
+                        //
+                        // The component VALUE is deliberately not printed: for a zset it is the
+                        // member, which is caller data. Present-or-missing and its length localise
+                        // the failure without putting a record key into an error string.
+                        let component = match item.component.as_deref() {
+                            None => "missing".to_string(),
+                            Some(value) => format!("present, {} chars", value.len()),
+                        };
                         return Err(Status::error(
                             "wal_replay_outcome_refused",
                             format!(
-                                "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it",
-                                item.kind, record.sequence
+                                "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it (address {}, component {})",
+                                item.kind,
+                                record.sequence,
+                                if item.resolved_address().is_some() { "resolved" } else { "UNRESOLVED" },
+                                component
                             ),
                         ));
                     }
