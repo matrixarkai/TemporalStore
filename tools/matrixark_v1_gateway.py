@@ -412,10 +412,8 @@ class GatewayConfig:
         # Enforced-mode hashed keystore: {api_key_hash -> {tenant_id, account_id}}.
         self.hashed_keys: dict[str, Json] = fields.get("hashed_keys", {})
         # Datanode blob target, parsed for the http.client proxy.
-        parsed = urlparse(str(self.datanode_url))
-        self.blob_scheme = parsed.scheme or "http"
-        self.blob_host = parsed.hostname or "127.0.0.1"
-        self.blob_port = parsed.port or (443 if self.blob_scheme == "https" else 17102)
+        self.blob_scheme, self.blob_host, self.blob_port, self.datanode_url_usable = \
+            datanode_target(self.datanode_url)
         # Injectable so tests can proxy without a network; production builds an http.client conn.
         self.blob_connection_factory: Callable[["GatewayConfig"], Any] = fields.get(
             "blob_connection_factory", _default_blob_connection
@@ -2034,10 +2032,30 @@ def _model_config_snapshot() -> Json:
             "switch off so the configuration says what the deployment does."
         )
 
+    # Which address the datanode calls actually go to, beside the string that was configured.
+    # They differ silently whenever the URL cannot be parsed, and that is the one case where the
+    # configured value tells a reader nothing about where the traffic went.
+    _datanode_configured = _env("MATRIXARK_DATANODE_URL") or ""
+    _dn_scheme, _dn_host, _dn_port, _dn_usable = datanode_target(
+        _datanode_configured or "http://127.0.0.1:17102")
+    datanode_address = {
+        "configured": _datanode_configured,
+        "effective": "%s://%s:%s" % (_dn_scheme, _dn_host, _dn_port),
+        "usable": bool(_dn_usable),
+    }
+    if _datanode_configured and not _dn_usable:
+        warnings.append(
+            "Datanode URL (" + _datanode_configured + ") has no scheme, so no host could be read "
+            "from it and neither the host nor the port is being used. Calls are going to "
+            + datanode_address["effective"] + " instead. Write it as "
+            "http://" + _datanode_configured + "."
+        )
+
     return {
         "status": "ok",
         "extraction": extraction,
         "embedding": embedding,
+        "datanode_address": datanode_address,
         # The third model role, and the one called most: extraction runs once per ingest, and every
         # context node gets a summary. It had no block here at all, so a deployment writing its
         # summaries with rules looked exactly like one writing them with a model.
@@ -3660,6 +3678,31 @@ def _headers_map(scope: Json) -> dict[str, str]:
 #: back. Two other routes cap at 500 as well; those are different policies that happen to share a
 #: number, and folding them in here would couple them.
 CATALOG_LIST_LIMIT_MAX = 500
+
+
+def datanode_target(url: Any) -> Tuple[str, str, int, bool]:
+    """The address the gateway will really use for the datanode, and whether the URL gave it.
+
+    `urlparse` reads `datanode:9000` as scheme `datanode` with no netloc, so BOTH the hostname and
+    the port come back empty and the defaults win: a deployment configured for `datanode:9000`
+    talks to `127.0.0.1:17102`, which is a working-looking address that is not the one anybody
+    asked for. The fourth value says whether the URL produced a host at all, so a caller can say
+    so instead of reporting the fallback as if it had been chosen.
+
+    The fallback itself is unchanged. Pointing the connection at the host the operator wrote would
+    move live traffic on the strength of a string that has never been parsed successfully; saying
+    what is happening is the part that is unambiguously right.
+    """
+    parsed = urlparse(str(url or ""))
+    scheme = parsed.scheme or "http"
+    # `parsed.port` raises on a malformed port rather than returning None.
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    host = parsed.hostname
+    return (scheme, host or "127.0.0.1",
+            port or (443 if scheme == "https" else 17102), bool(host))
 
 
 def _ok_body(result: Any) -> Json:
