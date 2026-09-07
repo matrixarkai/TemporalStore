@@ -33,7 +33,9 @@ const loadBrowseSrc = sliceBlock(start);
 /* The page's shared helpers are a script block of their own, emitted before the page's own
  * script. The sandbox below models what the browse region can see, so it needs them too --
  * and it RUNS the shipped block rather than stubbing it, because a stub would let the helper
- * change without a single test noticing. */
+ * change without a single test noticing. That block is where `__matrixarkWhen` is defined, which
+ * is what loadBrowse formats each row's timestamp through -- so running it covers the formatter
+ * and the three helpers beside it, and there is exactly one `win` for all of them. */
 const sharedAt = page.indexOf("Helpers every page may call");
 if (sharedAt < 0) { console.log("FAIL the shared helper block is not on this page"); process.exit(2); }
 const sharedFrom = page.lastIndexOf("<script>", sharedAt) + "<script>".length;
