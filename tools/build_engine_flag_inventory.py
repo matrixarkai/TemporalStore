@@ -924,7 +924,9 @@ lines = [
     % sum(1 for r in rows if not r["set_by"]),
     "| documented as keeping an older path alive | %d |" % sum(1 for r in rows if r["legacy"]),
     "| reaching more than two files | %d |" % sum(1 for r in rows if r["sites"] > 2),
-    # Zero today, and measured rather than assumed: see doc_for_flag.
+    # Measured rather than assumed: see doc_for_flag, whose docstring records that this was
+    # zero when written and did not stay zero once the scan reached the startup functions
+    # that read a dozen knobs under one comment. This line still said "Zero today".
     "| whose doc comment is really about another flag | %d |"
     % sum(1 for r in rows if r["shared_with"]),
     "",
