@@ -3703,7 +3703,12 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         vec![lagging_cursor.clone()],
         vec![lagging_snapshot.clone()],
     );
-    assert!(!blocked.safe_to_reclaim, "{blocked:?}");
+    // Both cursors sit at the parent manifest, so the frontier CLAMPS down to the parent instead
+    // of refusing at the child. They are still counted and named as retaining the logs above them.
+    // Refusing outright let one lagging follower pin the whole log for as long as it lagged. This
+    // is a third copy of the contract corrected in mx#1213 and mx#1220; the engine-side test for
+    // the same scenario, engine/tests/part4.rs, already asserts it this way.
+    assert!(blocked.safe_to_reclaim, "{blocked:?}");
     assert_eq!(blocked.follower_cursor_block_count, 1);
     assert_eq!(blocked.raft_snapshot_block_count, 1);
     assert_eq!(
@@ -3714,8 +3719,16 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         blocked.durable_bucket_generation_frontier_index_log_sequence,
         child.index_log_sequence
     );
-    assert_eq!(blocked.retain_from_wal_sequence, 0);
-    assert_eq!(blocked.retain_from_index_log_sequence, 0);
+    assert_eq!(
+        blocked.retain_from_wal_sequence,
+        parent.wal_sequence.saturating_add(1),
+        "clamped to the slowest cursor, not refused at the frontier: {blocked:?}"
+    );
+    assert_eq!(
+        blocked.retain_from_index_log_sequence,
+        parent.index_log_sequence.saturating_add(1),
+        "{blocked:?}"
+    );
     assert!(blocked
         .blocker_reasons
         .contains(&"follower_cursor_retains_logs:unified-lagging-follower".to_string()));
@@ -3734,13 +3747,31 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         ..StorageManagerCycleRequest::default()
     });
     let blocked_wal = blocked_cycle.wal_reclaim_report.as_ref().unwrap();
-    assert!(!blocked_wal.applied, "{blocked_wal:?}");
-    assert_eq!(blocked_wal.wal_records_removed, 0);
-    let blocked_index_gc = blocked_cycle.index_gc_report.as_ref().unwrap();
-    assert!(!blocked_index_gc.applied, "{blocked_index_gc:?}");
+    // The cycle carries the same clamp: it reclaims the span the cursors have already consumed
+    // and keeps everything above them. Asserting that nothing was reclaimed was asserting the
+    // refusal itself.
+    assert!(blocked_wal.applied, "{blocked_wal:?}");
+    assert!(
+        blocked_wal.wal_records_removed > 0,
+        "the span below the slowest cursor should go: {blocked_wal:?}"
+    );
     assert_eq!(
-        blocked_index_gc.skipped_reason,
-        "durable WAL/index frontier not safe"
+        blocked_wal.plan.retain_from_wal_sequence,
+        parent.wal_sequence.saturating_add(1),
+        "and nothing above it: {blocked_wal:?}"
+    );
+    assert_eq!(
+        blocked_wal.plan.retain_from_index_log_sequence,
+        parent.index_log_sequence.saturating_add(1),
+        "{blocked_wal:?}"
+    );
+    // Index GC follows the same frontier, so its verdict must agree with the plan rather than be
+    // asserted independently -- the two disagreeing is the defect worth catching here.
+    let blocked_index_gc = blocked_cycle.index_gc_report.as_ref().unwrap();
+    assert_eq!(
+        blocked_index_gc.applied,
+        blocked_wal.plan.safe_to_reclaim,
+        "index GC and WAL reclaim must reach the same verdict on one frontier: {blocked_index_gc:?}"
     );
 
     let released_anchor = engine
