@@ -11,7 +11,9 @@
 
 use std::path::PathBuf;
 
-use temporalstore_rust::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
+use temporalstore_rust::{
+    Command, CommandResponse, ExecuteRequest, LoadShardRequest, TemporalEngine,
+};
 
 const SHARD_ID: u64 = 1;
 const CACHE_BYTES: usize = 4096;
@@ -33,7 +35,24 @@ fn new_engine(root: &PathBuf) -> TemporalEngine {
         root.join("pages"),
         root.join("indexes"),
     );
-    engine.load_shard(SHARD_ID);
+    // `load_shard` builds this request and then drops the answer on the floor:
+    //
+    //     let _ = self.load_shard_with(request);
+    //
+    // So a load that fails is invisible until the first command comes back shard_not_loaded, and
+    // that status says only that the shard is absent, never why. Both of these tests fail exactly
+    // that way on main. Asking through load_shard_with makes the load report for itself.
+    let loaded = engine.load_shard_with(LoadShardRequest {
+        shard_id: SHARD_ID,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(loaded.status.ok, "the shard did not load: {:?}", loaded.status);
     engine
 }
 
