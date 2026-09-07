@@ -409,11 +409,13 @@ class LocalJsonKV:
         return dict(self.data['hashes'].get(key, {}))
 
 
-class MatrixKVRecordLog:
-    def __init__(self, kv: Any, *, prefix: str, shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE) -> None:
-        self.kv = kv
-        self.prefix = prefix.rstrip(':')
-        self.shard_size = shard_size
+class _RecordCountFromKV:
+    """The record count, read from the key both a log and a backfill target keep it under.
+
+    Written out once in each class before this. The two bodies were byte-identical, and both
+    classes set `kv` and `prefix`, so the read has only ever had one definition's worth of
+    meaning -- a second copy could only ever drift from the first.
+    """
 
     def count(self) -> int:
         raw = self.kv.get_string(f'{self.prefix}:record_count')
@@ -421,6 +423,14 @@ class MatrixKVRecordLog:
             return max(0, int(raw)) if raw else 0
         except ValueError:
             return 0
+
+
+class MatrixKVRecordLog(_RecordCountFromKV):
+    def __init__(self, kv: Any, *, prefix: str, shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE) -> None:
+        self.kv = kv
+        self.prefix = prefix.rstrip(':')
+        self.shard_size = shard_size
+
 
     def legacy_index(self) -> list[str]:
         raw = self.kv.get_string(f'{self.prefix}:record_index')
@@ -770,7 +780,7 @@ def run_read_raw_event(args: argparse.Namespace) -> Json:
     return event
 
 
-class MatrixKVBackfillTarget:
+class MatrixKVBackfillTarget(_RecordCountFromKV):
     def __init__(
         self,
         kv: Any,
@@ -785,12 +795,6 @@ class MatrixKVBackfillTarget:
         self.shard_size = shard_size
         self._next_sequence: int | None = None
 
-    def count(self) -> int:
-        raw = self.kv.get_string(f'{self.prefix}:record_count')
-        try:
-            return max(0, int(raw)) if raw else 0
-        except ValueError:
-            return 0
 
     def _idempotency_key(self, record: Json) -> str:
         key = str(record.get('idempotency_key') or '')
