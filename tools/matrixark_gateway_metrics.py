@@ -472,6 +472,12 @@ def config_health_lines(snapshot: Optional[Json] = None) -> List[str]:
         embedding_provider = str((snapshot.get("embedding") or {}).get("provider")
                                  or embedding_provider)
     deterministic = {"", "deterministic", "rules", "local"}
+    # `writes` is what the model-config snapshot already decided, through the one classifier that
+    # mirrors the summariser. Absent -- an older snapshot, or none passed -- reports 0 rather than
+    # guessing: a metric that invents a healthy answer is worse than one that is missing.
+    summary_by_model = 0
+    if isinstance(snapshot, dict):
+        summary_by_model = 1 if (snapshot.get("summary") or {}).get("writes") == "model" else 0
     return [
         "# HELP matrixark_gateway_config_warnings Model-configuration warnings currently raised.",
         "# TYPE matrixark_gateway_config_warnings gauge",
@@ -486,6 +492,19 @@ def config_health_lines(snapshot: Optional[Json] = None) -> List[str]:
         "# TYPE matrixark_gateway_embedding_semantic gauge",
         "matrixark_gateway_embedding_semantic %d"
         % (0 if embedding_provider.strip().lower() in deterministic else 1),
+        # The third role, and the one called most: extraction runs once per ingest and every
+        # context node gets a summary. Two of the three roles were alertable and this was not, so a
+        # deployment whose summaries quietly stopped coming from a model looked exactly like one
+        # whose summaries never did.
+        #
+        # Taken from the snapshot's own answer rather than re-derived from the provider name. The
+        # set above cannot decide this one: an ANTHROPIC extraction provider is a real model for
+        # extraction and returns rule-written summaries, so the same name means 1 on one line and
+        # 0 on this one.
+        "# HELP matrixark_gateway_summary_model_active 1 when node summaries are written by a "
+        "model, 0 when they are written by rules.",
+        "# TYPE matrixark_gateway_summary_model_active gauge",
+        "matrixark_gateway_summary_model_active %d" % summary_by_model,
     ]
 
 

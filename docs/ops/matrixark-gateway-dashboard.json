@@ -239,6 +239,56 @@
       ]
     },
     {
+      "id": 18,
+      "type": "stat",
+      "title": "Summaries",
+      "description": "Whether node summaries come from a model. Separate from Extraction because they can differ: an Anthropic extraction provider returns rule-written summaries.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "rules only",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "model",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(matrixark_gateway_summary_model_active{instance=~\"$instance\"})",
+          "legendFormat": "summaries"
+        }
+      ]
+    },
+    {
       "id": 3,
       "type": "stat",
       "title": "Config warnings",
@@ -250,7 +300,7 @@
       "gridPos": {
         "h": 4,
         "w": 6,
-        "x": 12,
+        "x": 18,
         "y": 4
       },
       "fieldConfig": {
@@ -276,29 +326,6 @@
           "refId": "A",
           "expr": "max(matrixark_gateway_config_warnings{instance=~\"$instance\"})",
           "legendFormat": "warnings"
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "Requests in flight",
-      "description": "Requests being served right now. A number that climbs and does not come back down is the edge queueing behind a slow backend.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 4
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(matrixark_gateway_requests_in_flight{instance=~\"$instance\"})",
-          "legendFormat": "in flight"
         }
       ]
     },
@@ -585,44 +612,6 @@
       ]
     },
     {
-      "id": 16,
-      "type": "timeseries",
-      "title": "Worker resident memory",
-      "description": "Resident and peak memory of each gateway worker. Per worker, and deliberately not summed: resident sets share pages, so adding the workers together produces a figure larger than the machine is using. The `source` label says how the number was read -- /proc/self/status is exact, ru_maxrss is a peak only, and a series that switches between them is not comparable across the switch. Several gateway settings ask an operator to trade memory for speed -- the page and block index caches, the hot record cache, whether embeddings are stored at all -- and this is the half of that trade you can watch.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 36
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 8
-          }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "matrixark_gateway_worker_resident_bytes",
-          "legendFormat": "resident {{source}} {{instance}}"
-        },
-        {
-          "refId": "B",
-          "expr": "matrixark_gateway_worker_peak_bytes",
-          "legendFormat": "peak {{source}} {{instance}}"
-        }
-      ]
-    },
-    {
       "id": 17,
       "type": "stat",
       "title": "Workers",
@@ -657,6 +646,67 @@
           "refId": "A",
           "expr": "max(matrixark_gateway_workers)",
           "legendFormat": "workers"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Requests in flight",
+      "description": "Requests being served right now. A number that climbs and does not come back down is the edge queueing behind a slow backend.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(matrixark_gateway_requests_in_flight{instance=~\"$instance\"})",
+          "legendFormat": "in flight"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Worker resident memory",
+      "description": "Resident and peak memory of each gateway worker. Per worker, and deliberately not summed: resident sets share pages, so adding the workers together produces a figure larger than the machine is using. The `source` label says how the number was read -- /proc/self/status is exact, ru_maxrss is a peak only, and a series that switches between them is not comparable across the switch. Several gateway settings ask an operator to trade memory for speed -- the page and block index caches, the hot record cache, whether embeddings are stored at all -- and this is the half of that trade you can watch.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "matrixark_gateway_worker_resident_bytes",
+          "legendFormat": "resident {{source}} {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "matrixark_gateway_worker_peak_bytes",
+          "legendFormat": "peak {{source}} {{instance}}"
         }
       ]
     }
