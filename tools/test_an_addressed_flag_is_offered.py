@@ -42,7 +42,16 @@ REPO = os.path.dirname(TOOLS)
 
 _READ = re.compile(
     r'os\.(?:environ\.get|getenv)\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']'
-    r'|os\.environ\[\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']')
+    r'|os\.environ\[\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']'
+    r'|\b\w*[Ee][Nn][Vv]\w*\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']')
+
+# The third alternative is any call whose NAME contains env, taking a flag name as its first
+# argument -- env_bool, _env_int, positive_int_env, _matrixark_env_truthy and eight more. Those
+# reads were invisible here: the scan knew two spellings of a read, and a flag reached through a
+# helper was outside the rule below without anything saying so. 82 flags, among them
+# MATRIXARK_HOOK_CLOSE_TIMEOUT_MS, the budget every hook close in the live log runs out of.
+# None of the 82 gives advice it cannot honour, so this changes no verdict -- it stops the
+# verdict depending on which idiom a read happens to use.
 
 _NAME = re.compile(r"(?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+")
 
@@ -98,7 +107,7 @@ def _reads() -> Dict[str, Tuple[str, int, str]]:
         # names was exempt from the rule below without anything saying so. 442 flags, not 419.
         for match in _READ.finditer(text):
             number = text.count("\n", 0, match.start()) + 1
-            name = match.group(1) or match.group(2)
+            name = match.group(1) or match.group(2) or match.group(3)
             if name in found:
                 continue
             block = []
