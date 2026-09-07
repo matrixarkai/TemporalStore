@@ -308,6 +308,17 @@ impl SingleNodeMeta {
             .map(|proxy| proxy.registered_at_ms)
             .filter(|first| *first != 0)
             .unwrap_or(request.registered_at_ms);
+        // Which group this proxy belongs to, kept for the reason the join time
+        // above is kept: registering again is a proxy saying it is here, not an
+        // operator saying to forget where it belongs. The group decides which
+        // namespace it serves, and the loop that could reassign it is off
+        // unless asked for -- so clearing it here left a restarted proxy
+        // unattached with nothing to put it back.
+        let group = state
+            .proxies
+            .get(&request.proxy_addr)
+            .map(|proxy| proxy.group.clone())
+            .unwrap_or_default();
         if let Some(existing) = state.proxies.get(&request.proxy_addr) {
             let now = now_ms();
             if existing.state == MetaEntityState::Frozen && existing.freeze_cooldown_until_ms > now
@@ -336,7 +347,7 @@ impl SingleNodeMeta {
             ProxyMetaInfo {
                 heartbeats_total: 0,
                 freeze_reason: FreezeReason::Unspecified,
-                group: String::new(),
+                group,
                 proxy_addr: request.proxy_addr,
                 namespace: request.namespace,
                 location: request.location,
