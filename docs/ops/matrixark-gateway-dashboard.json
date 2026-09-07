@@ -738,6 +738,46 @@
           "legendFormat": "{{reason}}"
         }
       ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "One-box retrieval profile",
+      "description": "How this deployment ranks. onebox_embedding_first is 1 when a candidate's score is its vector similarity alone and 0 when it is blended with a lexical match (0.72/0.28) -- it is on by default, and it decides every result. return_all_candidates is 1 when ranking is not allowed to drop anything and the token budget is the only limit; the threshold is the candidate count at or below which that applies on its own, 0 meaning off. Read together they answer 'why did the answers change', which no series could answer before.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 52
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "matrixark_gateway_onebox_embedding_first{instance=~\"$instance\"}",
+          "legendFormat": "vector-only scoring"
+        },
+        {
+          "refId": "B",
+          "expr": "matrixark_gateway_return_all_candidates{instance=~\"$instance\"}",
+          "legendFormat": "return every candidate"
+        },
+        {
+          "refId": "C",
+          "expr": "matrixark_gateway_return_all_candidate_threshold{instance=~\"$instance\"}",
+          "legendFormat": "return-all threshold"
+        }
+      ]
     }
   ]
 }

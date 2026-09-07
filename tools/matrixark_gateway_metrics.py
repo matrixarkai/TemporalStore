@@ -627,6 +627,62 @@ def worker_count(argv: Optional[List[str]] = None,
     return workers if workers > 0 else 1
 
 
+# The retrieval module's own default for the one-box profile. Duplicated here on purpose -- reading
+# it from that module means importing it, which is circular -- and held to the original by a test
+# rather than by hope.
+ONEBOX_PROFILE_DEFAULT = "1"
+
+
+def onebox_lines() -> List[str]:
+    """The retrieval profile this deployment is serving on, and whether it returns everything.
+
+    Three gauges, because the three answer different questions. The profile says how a score is
+    computed; return-all says whether ranking is allowed to drop anything; the threshold says at
+    what size the second stops applying. A dashboard that shows the first without the others
+    explains half of a changed answer.
+
+    Every value is read here rather than captured at import, and every one is emitted even when it
+    is at its default -- a gauge that appears only once somebody changes something cannot be
+    alerted on before they do.
+    """
+    # Read from the environment, not by importing the retrieval module. Importing it here is a
+    # circular import -- the adapter imports the retrieval mixin and the mixin imports the adapter
+    # -- and the first version of this caught that in an `except` and published 0. A gauge that
+    # says "blended scoring" about a deployment running the profile ON is worse than no gauge:
+    # every dashboard reading it would be describing the opposite of what happened.
+    #
+    # ONEBOX_PROFILE_DEFAULT is the same string the retrieval module defaults to, and
+    # test_matrixark_the_onebox_profile_is_visible asserts the two have not drifted apart.
+    raw = os.environ.get("MATRIXARK_ONEBOX_EMBEDDING_FIRST", ONEBOX_PROFILE_DEFAULT)
+    profile = 1 if str(raw).strip().lower() in ("1", "true", "yes", "on") else 0
+
+    return_all, threshold = 0, 0
+    try:
+        from matrixark_index_growth_bound import (
+            return_all_candidate_threshold,
+            return_all_candidates_enabled,
+        )
+        return_all = 1 if return_all_candidates_enabled(None) else 0
+        threshold = int(return_all_candidate_threshold(None) or 0)
+    except Exception:  # pragma: no cover - policy module absent
+        return_all, threshold = 0, 0
+
+    return [
+        "# HELP matrixark_gateway_onebox_embedding_first 1 when a candidate's score is its vector "
+        "similarity alone, 0 when it is blended with a lexical match.",
+        "# TYPE matrixark_gateway_onebox_embedding_first gauge",
+        "matrixark_gateway_onebox_embedding_first %d" % profile,
+        "# HELP matrixark_gateway_return_all_candidates 1 when retrieval returns every candidate "
+        "and lets the token budget be the only limit.",
+        "# TYPE matrixark_gateway_return_all_candidates gauge",
+        "matrixark_gateway_return_all_candidates %d" % return_all,
+        "# HELP matrixark_gateway_return_all_candidate_threshold Candidate count at or below which "
+        "retrieval returns everything. 0 means the rule is off.",
+        "# TYPE matrixark_gateway_return_all_candidate_threshold gauge",
+        "matrixark_gateway_return_all_candidate_threshold %d" % threshold,
+    ]
+
+
 def stream_lines() -> List[str]:
     """How the live streams ended, by reason.
 
@@ -685,6 +741,7 @@ def prometheus_text(config_snapshot: Optional[Json] = None,
     lines += config_change_lines()
     lines += worker_lines()
     lines += stream_lines()
+    lines += onebox_lines()
     if extra_lines:
         lines += extra_lines
     return "\n".join(lines) + "\n"
