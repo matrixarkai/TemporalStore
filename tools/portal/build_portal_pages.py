@@ -910,6 +910,7 @@ NAV_LINKS = [
     ("/v1/admin/setup", "Setup &amp; metrics"),
     ("/v1/admin/catalog", "Skills &amp; resources"),
     ("/v1/admin/explore", "Explore"),
+    ("/v1/admin/mem0", "mem0 API"),
     ("/v1/admin/ingestion", "Ingestion"),
     ("/v1/admin/portal", "API keys"),
     ("/v1/admin/api", "API"),
@@ -3596,6 +3597,700 @@ SETUP_JS = r"""
 """
 
 # ================================================================================================
+MEM0_BODY = """
+  <header>
+    <h1>mem0 API</h1>
+    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  </header>
+%(nav)s
+  <p class="lede">Every method of the mem0 API, by the name you call it by rather than the URL that
+    serves it &mdash; run against this deployment, with the whole exchange shown. It is the worked
+    example for writing the call yourself, and the first place to look when one of them answers
+    something you did not expect.</p>
+
+  <section>
+    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <label for="key">API key</label>
+    <input id="key" type="password" placeholder="Key carrying context:ingest / context:retrieve" autocomplete="off" spellcheck="false">
+    <div class="hint">An ordinary scoped key, not an admin one: these are the same routes an
+      application calls. The tenant is pinned from the key, so a key can never address another
+      tenant&rsquo;s memories.</div>
+  </section>
+
+  <section>
+    <h2>Scope</h2>
+    <div class="grid2">
+      <div>
+        <label for="user">User</label>
+        <input id="user" type="text" placeholder="leave blank for the whole tenant" spellcheck="false">
+        <label for="agent">Agent</label>
+        <input id="agent" type="text" placeholder="optional" spellcheck="false">
+      </div>
+      <div>
+        <label for="session">Session</label>
+        <input id="session" type="text" placeholder="optional" spellcheck="false">
+      </div>
+    </div>
+    <div class="hint">These fill the scope of every operation that takes one. An operation that
+      addresses a single memory by id says so on its own form and ignores these.</div>
+  </section>
+
+  <section>
+    <h2>Operation</h2>
+    <div id="ops"></div>
+    <div id="opForm"><div class="empty">Choose an operation.</div></div>
+    <div id="opMsg" role="status" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>The exchange</h2>
+    <p class="hint" style="margin-top:0">What went out and what came back, headers included. The
+      key is never shown: it is the one header worth redacting and the one people paste into
+      tickets by accident.</p>
+    <div id="opWire"><div class="empty">Nothing sent yet.</div></div>
+  </section>
+
+  <section>
+    <h2>This session&rsquo;s calls</h2>
+    <p class="hint" style="margin-top:0">Every call this page has made, newest first. Kept in the
+      page and nowhere else &mdash; it is gone when the tab is. Two runs side by side is how you
+      tell a request that changed from a deployment that did.</p>
+    <div id="opLog"><div class="empty">None yet.</div></div>
+  </section>
+"""
+
+
+MEM0_JS = r"""
+<script>
+(function () {
+  "use strict";
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function say(el, text, cls) {
+    el.innerHTML = text ? '<div class="msg ' + (cls || "info") + '">' + esc(text) + "</div>" : "";
+  }
+  function auth() {
+    var k = $("key").value.trim();
+    return k ? { Authorization: "Bearer " + k } : {};
+  }
+  function failure(status) { return window.__matrixarkFailure(status); }
+  function reason(body, status) {
+    return (body && body.detail) || failure(status) || (body && body.error) || "";
+  }
+  function conn(state, text) {
+    $("dot").className = "dot " + state;
+    $("conn").textContent = text;
+  }
+  conn("live", "ready");
+
+  try {
+    var saved = sessionStorage.getItem("matrixark_admin_key");
+    if (saved) { $("key").value = saved; $("remember").checked = true; }
+  } catch (e) { /* ignore */ }
+  $("remember").addEventListener("change", function () {
+    try {
+      if ($("remember").checked) { sessionStorage.setItem("matrixark_admin_key", $("key").value); }
+      else { sessionStorage.removeItem("matrixark_admin_key"); }
+    } catch (e) { /* ignore */ }
+  });
+
+/* ---------- mem0 console ---------- */
+  /* Generated from the gateway's own MEM0_OPERATIONS, so an operation that gains an argument gains
+     a field here without anyone remembering to add one. */
+  var MEM0_OPS = [
+  {
+    "id": "add",
+    "label": "add()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/ingest",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Write a turn. Acknowledged at 202 with extraction running behind it, which is why a search issued immediately afterwards can legitimately not see it yet.",
+    "fields": [
+      {
+        "name": "content",
+        "in": "message",
+        "kind": "textarea",
+        "required": true,
+        "label": "Message",
+        "placeholder": "The team agreed to keep the coupon stacking rule for ACME until Q4.",
+        "help": "Sent as one user turn."
+      },
+      {
+        "name": "finalize",
+        "in": "body",
+        "kind": "bool",
+        "default": true,
+        "label": "Extract before answering",
+        "help": "Off is how production behaves: the write is acknowledged and extraction runs in the background."
+      },
+      {
+        "name": "metadata",
+        "in": "body",
+        "kind": "json",
+        "label": "Metadata",
+        "placeholder": "{\"source\": \"portal\"}",
+        "help": "Stored alongside the memory and returned with it."
+      }
+    ]
+  },
+  {
+    "id": "search",
+    "label": "search()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/retrieve",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "The retrieval path an agent uses: ranked, then packed to fit a token budget.",
+    "fields": [
+      {
+        "name": "query",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Query",
+        "placeholder": "when do we ship?"
+      },
+      {
+        "name": "max_budget_tokens",
+        "in": "body",
+        "kind": "number",
+        "default": 2048,
+        "label": "Token budget",
+        "help": "The pack is built to fit this. A budget far below what the answer needs is indistinguishable from poor retrieval."
+      }
+    ]
+  },
+  {
+    "id": "get_all",
+    "label": "get_all()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/memories",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "The memories in the scope, unranked -- the listing, not the search. A limit does not make it a sample of the whole scope: it takes the NEWEST that many.",
+    "fields": [
+      {
+        "name": "limit",
+        "in": "body",
+        "kind": "number",
+        "default": 50,
+        "label": "Limit",
+        "help": "The NEWEST this many, listed oldest first. 0 or blank for the whole scope."
+      }
+    ]
+  },
+  {
+    "id": "get",
+    "label": "get()",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/{id}",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "One memory's stored record, by id.",
+    "fields": [
+      {
+        "name": "id",
+        "in": "path",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "history",
+    "label": "history()",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/{id}/history",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "How that memory changed: each supersede, with what it said before.",
+    "fields": [
+      {
+        "name": "id",
+        "in": "path",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "get_by_key",
+    "label": "by identity key",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/by-key",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "The one live value for an identity key in a scope \u2014 the shape a profile field wants, where the answer is a value and not a ranked list.",
+    "fields": [
+      {
+        "name": "identity_key",
+        "in": "query",
+        "kind": "text",
+        "required": true,
+        "label": "Identity key",
+        "placeholder": "ship_date"
+      },
+      {
+        "name": "user_id",
+        "in": "query",
+        "kind": "text",
+        "label": "User",
+        "from_scope": "user"
+      }
+    ]
+  },
+  {
+    "id": "users",
+    "label": "users()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/users",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Which users, agents and runs hold memories in this tenant.",
+    "fields": []
+  },
+  {
+    "id": "update",
+    "label": "update()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/update",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "Supersede a memory: the amended text is ingested and the old id tombstoned, so history keeps both.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      },
+      {
+        "name": "text",
+        "in": "body",
+        "kind": "textarea",
+        "required": true,
+        "label": "New text",
+        "placeholder": "We ship on Friday."
+      }
+    ]
+  },
+  {
+    "id": "feedback",
+    "label": "feedback()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/memory/feedback",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      },
+      {
+        "name": "rating",
+        "in": "body",
+        "kind": "number",
+        "default": 1,
+        "label": "Rating",
+        "help": "1 useful, -1 not."
+      }
+    ]
+  },
+  {
+    "id": "session_commit",
+    "label": "commit a session",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/session/commit",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Close a session and roll its turns into summaries. Until this runs the turns are stored but not summarised.",
+    "fields": []
+  },
+  {
+    "id": "forget",
+    "label": "forget()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/forget",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": false,
+    "summary": "Stop returning one memory. The record stays, so history still explains it.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "delete",
+    "label": "delete()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/delete",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": false,
+    "summary": "Delete one memory outright.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "delete_all",
+    "label": "delete_all()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/reset",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": true,
+    "summary": "Drop everything in the scope shown above. There is no undo, and an empty user field means the default scope, not none of them.",
+    "fields": []
+  }
+];
+
+  var currentOp = null;
+
+  function opGroups() {
+    var order = [], byGroup = {};
+    MEM0_OPS.forEach(function (op) {
+      if (!byGroup[op.group]) { byGroup[op.group] = []; order.push(op.group); }
+      byGroup[op.group].push(op);
+    });
+    return order.map(function (name) { return { name: name, ops: byGroup[name] }; });
+  }
+
+  function renderOps() {
+    $("ops").innerHTML = opGroups().map(function (group) {
+      return '<div class="opgroup">' + esc(group.name) + '</div><div class="opgrid">' +
+        group.ops.map(function (op) {
+          return '<button type="button" class="opbtn' + (op.destructive ? " danger" : "") +
+            '" data-op="' + esc(op.id) + '" aria-pressed="' +
+            (currentOp && currentOp.id === op.id ? "true" : "false") + '">' +
+            esc(op.label) + "</button>";
+        }).join("") + "</div>";
+    }).join("");
+  }
+
+  function fieldControl(op, f) {
+    var id = "op_" + op.id + "_" + f.name;
+    var value = f["default"] == null ? "" : String(f["default"]);
+    if (f.kind === "bool") {
+      return '<label class="check"><input type="checkbox" id="' + id + '" data-f="' +
+        esc(f.name) + '"' + (f["default"] ? " checked" : "") + "> " + esc(f.label) + "</label>" +
+        (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
+    }
+    var control;
+    if (f.kind === "textarea" || f.kind === "json") {
+      control = '<textarea id="' + id + '" data-f="' + esc(f.name) + '" spellcheck="false"' +
+        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" +
+        esc(f.kind === "json" ? "" : value) + "</textarea>";
+    } else {
+      control = '<input type="text" id="' + id + '" data-f="' + esc(f.name) +
+        '" spellcheck="false" value="' + esc(value) + '"' +
+        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">";
+    }
+    return '<label for="' + id + '">' + esc(f.label) + (f.required ? " *" : "") + "</label>" +
+      control + (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
+  }
+
+  function renderOpForm() {
+    var op = currentOp;
+    if (!op) {
+      $("opForm").innerHTML = '<div class="empty">Choose an operation.</div>';
+      renderOps();
+      return;
+    }
+    var scopeLine = op.needs_scope
+      ? " · scope from the fields above"
+      : " · not scoped — it addresses one memory by id";
+    $("opForm").innerHTML = '<div class="opform"><h3>' + esc(op.label) + "</h3>" +
+      '<div class="route">' + esc(op.method) + " " + esc(op.path) +
+      '<span class="scope"> · needs ' + esc(op.scope) + esc(scopeLine) + "</span></div>" +
+      '<p class="hint" style="margin-top:0">' + esc(op.summary) + "</p>" +
+      op.fields.map(function (f) { return fieldControl(op, f); }).join("") +
+      (op.destructive
+        ? '<div class="mwarn"><b>This cannot be undone</b>Type <span class="mono">' + esc(op.id) +
+          '</span> to confirm, then run.</div><label for="opConfirm">Confirm</label>' +
+          '<input id="opConfirm" type="text" spellcheck="false" autocomplete="off">'
+        : "") +
+      '<div class="actions"><button id="opRun" type="button">Run</button>' +
+      '<button id="opCurl" class="ghost" type="button">Copy as curl</button></div>' +
+      '<pre id="opPreview"></pre></div>';
+    renderOps();
+    updatePreview();
+  }
+
+  function opFieldValue(op, f) {
+    var el = document.getElementById("op_" + op.id + "_" + f.name);
+    if (!el) { return null; }
+    if (f.kind === "bool") { return el.checked; }
+    var raw = el.value.trim();
+    if (!raw) { return null; }
+    if (f.kind === "number") {
+      var n = Number(raw);
+      return isNaN(n) ? null : n;
+    }
+    if (f.kind === "json") {
+      try { return JSON.parse(raw); } catch (e) { return { __bad__: raw }; }
+    }
+    return raw;
+  }
+
+  /* One builder for the preview, the curl and the send. Three code paths would let the preview
+     drift from what is actually sent -- and the preview is the thing a customer copies into their
+     own client, so a preview that lies is worse than none. */
+  function buildRequest(op) {
+    var body = {}, query = [], path = op.path, messages = [], problems = [];
+    if (op.needs_scope) { body.scope = scope(); }
+    op.fields.forEach(function (f) {
+      var value = opFieldValue(op, f);
+      if (value && value.__bad__ !== undefined) {
+        problems.push(f.label + " is not valid JSON.");
+        return;
+      }
+      if (f.required && (value === null || value === "")) {
+        problems.push(f.label + " is required.");
+        return;
+      }
+      if (value === null) { return; }
+      if (f["in"] === "message") { messages.push({ role: "user", content: value }); }
+      else if (f["in"] === "body") { body[f.name] = value; }
+      else if (f["in"] === "scope") { (body.scope = body.scope || {})[f.name] = value; }
+      else if (f["in"] === "query") {
+        query.push(encodeURIComponent(f.name) + "=" + encodeURIComponent(value));
+      } else if (f["in"] === "path") {
+        path = path.replace("{" + f.name + "}", encodeURIComponent(value));
+      }
+    });
+    if (messages.length) { body.messages = messages; }
+    if (path.indexOf("{") >= 0) { problems.push("The id is required."); }
+    return {
+      method: op.method,
+      url: path + (query.length ? "?" + query.join("&") : ""),
+      problems: problems,
+      body: op.method === "GET" ? null : body
+    };
+  }
+
+  function updatePreview() {
+    if (!currentOp) { return; }
+    var pre = $("opPreview");
+    if (!pre) { return; }
+    var request = buildRequest(currentOp);
+    pre.textContent = request.method + " " + request.url +
+      (request.body ? "\n\n" + JSON.stringify(request.body, null, 2) : "");
+  }
+
+  $("ops").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-op]") : null;
+    if (!button) { return; }
+    currentOp = MEM0_OPS.filter(function (o) { return o.id === button.dataset.op; })[0] || null;
+    $("opResult").innerHTML = "";
+    say($("opMsg"), "");
+    renderOpForm();
+  });
+
+  $("opForm").addEventListener("input", updatePreview);
+  $("opForm").addEventListener("change", updatePreview);
+
+  $("opForm").addEventListener("click", function (ev) {
+    if (!currentOp) { return; }
+    if (ev.target.id === "opCurl") {
+      var request = buildRequest(currentOp);
+      var lines = ["curl -X " + request.method + " " + location.origin + request.url,
+                   "  -H 'Authorization: Bearer $MATRIXARK_API_KEY'"];
+      if (request.body) {
+        lines.push("  -H 'Content-Type: application/json'");
+        lines.push("  -d '" + JSON.stringify(request.body) + "'");
+      }
+      /* The key is named, never pasted: this goes on a clipboard and often into a ticket. */
+      var text = lines.join(" \\\n");
+      window.__matrixarkCopyText(text).then(function (ok) {
+        say($("opMsg"),
+            ok ? "Copied. It reads $MATRIXARK_API_KEY from your environment rather than "
+                 + "carrying your key."
+               : "Could not copy. The command is shown above; select it and copy it by hand.",
+            ok ? "ok" : "err");
+      });
+      return;
+    }
+    if (ev.target.id === "opRun") { runOp(); }
+  });
+
+  function runOp() {
+    var op = currentOp;
+    if (!$("key").value.trim()) { say($("opMsg"), "Enter an API key first.", "info"); return; }
+    var request = buildRequest(op);
+    if (request.problems.length) {
+      say($("opMsg"), request.problems.join(" "), "warn");
+      return;
+    }
+    if (op.destructive) {
+      var confirmEl = $("opConfirm");
+      if (!confirmEl || confirmEl.value.trim() !== op.id) {
+        say($("opMsg"), "Type " + op.id + " in the confirm box to run this.", "warn");
+        return;
+      }
+    }
+    say($("opMsg"), "Running " + op.label + "…", "info");
+    var started = Date.now();
+    var init = { method: request.method, headers: auth() };
+    if (request.body) {
+      init.headers = Object.assign({ "Content-Type": "application/json" }, init.headers);
+      init.body = JSON.stringify(request.body);
+    }
+    /* Rebuilt rather than read back off `init`: this is what the exchange panel shows, and the
+       real Authorization value must never reach the DOM. */
+    var sent = {
+      method: request.method,
+      url: request.url,
+      headers: Object.assign({}, init.headers),
+      body: request.body || null
+    };
+    fetch(request.url, init)
+      .then(function (r) {
+        var headers = {};
+        try { r.headers.forEach(function (v, k) { headers[k] = v; }); }
+        catch (e) { /* a runtime without an iterable Headers; the rest still reports */ }
+        return r.text().then(function (text) {
+          return { status: r.status, ok: r.ok, text: text, headers: headers };
+        });
+      })
+      .then(function (res) {
+        var ms = Date.now() - started;
+        var pretty = res.text, parsed = null;
+        try { parsed = JSON.parse(res.text); pretty = JSON.stringify(parsed, null, 2); }
+        catch (e) { /* leave it raw */ }
+        say($("opMsg"), res.ok
+          ? op.label + " answered " + res.status + " in " + ms + " ms."
+          : op.label + " answered " + res.status + " — " + reason(parsed, res.status),
+          res.ok ? "ok" : "err");
+        var answer = { status: res.status, ms: ms, headers: res.headers,
+                       text: pretty, body: parsed };
+        renderWire(sent, answer);
+        recordCall(op, sent, answer);
+        /* Clear the confirmation after a destructive op succeeds, or the next click runs it again
+           against a box that still says the magic word. */
+        if (res.ok && op.destructive && $("opConfirm")) { $("opConfirm").value = ""; }
+      })
+      .catch(function (e) {
+        /* The moved console answers a failure the way the rest of the portal does: a status is the
+           deployment saying no, a fetch that never left is unreachable, and anything else happened
+           here with the answer already in hand. */
+        say($("opMsg"), window.__matrixarkWhyFailed(e), "err");
+        var answer = { status: 0, ms: Date.now() - started, headers: {},
+                       text: "the request did not complete", body: null };
+        renderWire(sent, answer);
+        recordCall(op, sent, answer);
+      });
+  }
+
+  renderOps();
+
+  /* ---------- the exchange ---------- */
+  /* The Authorization header is rebuilt as a redaction rather than filtered out of the real one:
+     showing the header names that went out matters ("did it send Content-Type?"), and a value that
+     is never in the DOM cannot be copied into a ticket. */
+  function headerRows(headers) {
+    var names = Object.keys(headers || {});
+    if (!names.length) { return "<div class='empty'>none</div>"; }
+    return "<table class='inv'>" + names.sort().map(function (name) {
+      var value = /^authorization$/i.test(name) ? "Bearer \u2026 (not shown)" : headers[name];
+      return "<tr><th>" + esc(name) + "</th><td class='mono'>" + esc(value) + "</td></tr>";
+    }).join("") + "</table>";
+  }
+
+  function renderWire(sent, answer) {
+    var incident = answer.body && answer.body.incident;
+    $("opWire").innerHTML =
+      "<h3 style='font-size:13px;margin:0 0 6px;font-weight:650'>Sent</h3>" +
+      "<div class='route'>" + esc(sent.method) + " " + esc(sent.url) + "</div>" +
+      headerRows(sent.headers) +
+      (sent.body ? "<pre>" + esc(JSON.stringify(sent.body, null, 2)) + "</pre>" : "") +
+      "<h3 style='font-size:13px;margin:14px 0 6px;font-weight:650'>Answered</h3>" +
+      "<div class='route'>" + esc(String(answer.status)) + " in " + esc(String(answer.ms)) +
+      " ms</div>" +
+      (incident
+        ? "<div class='msg warn'>Incident <span class='mono'>" + esc(incident) +
+          "</span> &mdash; the gateway logged the detail it did not return. Grep this id in the " +
+          "worker&rsquo;s log, at ERROR level under <code>matrixark.gateway</code>.</div>"
+        : "") +
+      headerRows(answer.headers) +
+      "<pre>" + esc(answer.text) + "</pre>";
+  }
+
+  var calls = [];
+  function recordCall(op, sent, answer) {
+    calls.unshift({
+      at: Date.now(), op: op.label, method: sent.method, url: sent.url,
+      status: answer.status, ms: answer.ms,
+      incident: (answer.body && answer.body.incident) || ""
+    });
+    $("opLog").innerHTML = "<table><thead><tr><th>When</th><th>Operation</th><th>Status</th>" +
+      "<th>Took</th><th>Route</th><th>Incident</th></tr></thead><tbody>" +
+      calls.map(function (c) {
+        return "<tr><td>" + esc(window.__matrixarkWhen(c.at)) + "</td><td>" + esc(c.op) +
+          "</td><td><span class='status-chip" + (c.status >= 400 ? " bad" : "") + "'>" +
+          esc(String(c.status)) + "</span></td><td class='num'>" + esc(String(c.ms)) +
+          " ms</td><td class='mono'>" + esc(c.method + " " + c.url) + "</td><td class='mono'>" +
+          (c.incident ? esc(c.incident) : "\u2014") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+}());
+</script>
+"""
+
+
 CATALOG_BODY = """
   <header>
     <h1>Skills &amp; resources</h1>
@@ -4474,7 +5169,6 @@ EXPLORE_BODY = """
     <button type="button" role="tab" id="tab-ask" aria-controls="pane-ask" data-pane="ask" aria-selected="true">Ask</button>
     <button type="button" role="tab" id="tab-add" aria-controls="pane-add" data-pane="add" aria-selected="false">Add a memory</button>
     <button type="button" role="tab" id="tab-browse" aria-controls="pane-browse" data-pane="browse" aria-selected="false">Browse</button>
-    <button type="button" role="tab" id="tab-api" aria-controls="pane-api" data-pane="api" aria-selected="false">mem0 API</button>
     <button type="button" role="tab" id="tab-batch" aria-controls="pane-batch" data-pane="batch" aria-selected="false">Batch ingest</button>
   </div>
 
@@ -4545,18 +5239,6 @@ EXPLORE_BODY = """
     <div class="hint" id="retryNote" hidden>Retry re-sends the file from this browser, so it works
       only while this tab stays open — the bytes never existed on the server. A bulk import from a
       server directory is retryable after a restart; see <a href="/v1/admin/ingestion">Ingestion</a>.</div>
-  </section>
-
-  <section class="pane" role="tabpanel" aria-labelledby="tab-api" id="pane-api" hidden>
-    <h2>Run a mem0 operation</h2>
-    <p class="hint" style="margin-top:0">Every method of the mem0 API, listed by the name you call
-      it by rather than by the URL that serves it. The request is shown before it is sent and the
-      raw answer after, so this doubles as the worked example for writing the call yourself. The
-      scope comes from the fields above.</p>
-    <div id="ops"></div>
-    <div id="opForm"><div class="empty">Choose an operation.</div></div>
-    <div id="opMsg" role="status" aria-live="polite"></div>
-    <div id="opResult"></div>
   </section>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-batch" id="pane-batch" hidden>
@@ -4880,522 +5562,6 @@ EXPLORE_JS = r"""
       });
   }
 
-
-  /* ---------- mem0 console ---------- */
-  /* Generated from the gateway's own MEM0_OPERATIONS, so an operation that gains an argument gains
-     a field here without anyone remembering to add one. */
-  var MEM0_OPS = [
-  {
-    "id": "add",
-    "label": "add()",
-    "group": "Write",
-    "method": "POST",
-    "path": "/v1/ingest",
-    "scope": "context:ingest",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "Write a turn. Acknowledged at 202 with extraction running behind it, which is why a search issued immediately afterwards can legitimately not see it yet.",
-    "fields": [
-      {
-        "name": "content",
-        "in": "message",
-        "kind": "textarea",
-        "required": true,
-        "label": "Message",
-        "placeholder": "The team agreed to keep the coupon stacking rule for ACME until Q4.",
-        "help": "Sent as one user turn."
-      },
-      {
-        "name": "finalize",
-        "in": "body",
-        "kind": "bool",
-        "default": true,
-        "label": "Extract before answering",
-        "help": "Off is how production behaves: the write is acknowledged and extraction runs in the background."
-      },
-      {
-        "name": "metadata",
-        "in": "body",
-        "kind": "json",
-        "label": "Metadata",
-        "placeholder": "{\"source\": \"portal\"}",
-        "help": "Stored alongside the memory and returned with it."
-      }
-    ]
-  },
-  {
-    "id": "search",
-    "label": "search()",
-    "group": "Read",
-    "method": "POST",
-    "path": "/v1/retrieve",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "The retrieval path an agent uses: ranked, then packed to fit a token budget.",
-    "fields": [
-      {
-        "name": "query",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Query",
-        "placeholder": "when do we ship?"
-      },
-      {
-        "name": "max_budget_tokens",
-        "in": "body",
-        "kind": "number",
-        "default": 2048,
-        "label": "Token budget",
-        "help": "The pack is built to fit this. A budget far below what the answer needs is indistinguishable from poor retrieval."
-      }
-    ]
-  },
-  {
-    "id": "get_all",
-    "label": "get_all()",
-    "group": "Read",
-    "method": "POST",
-    "path": "/v1/memories",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "The memories in the scope, unranked -- the listing, not the search. A limit does not make it a sample of the whole scope: it takes the NEWEST that many.",
-    "fields": [
-      {
-        "name": "limit",
-        "in": "body",
-        "kind": "number",
-        "default": 50,
-        "label": "Limit",
-        "help": "The NEWEST this many, listed oldest first. 0 or blank for the whole scope."
-      }
-    ]
-  },
-  {
-    "id": "get",
-    "label": "get()",
-    "group": "Read",
-    "method": "GET",
-    "path": "/v1/memory/{id}",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "One memory's stored record, by id.",
-    "fields": [
-      {
-        "name": "id",
-        "in": "path",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      }
-    ]
-  },
-  {
-    "id": "history",
-    "label": "history()",
-    "group": "Read",
-    "method": "GET",
-    "path": "/v1/memory/{id}/history",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "How that memory changed: each supersede, with what it said before.",
-    "fields": [
-      {
-        "name": "id",
-        "in": "path",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      }
-    ]
-  },
-  {
-    "id": "get_by_key",
-    "label": "by identity key",
-    "group": "Read",
-    "method": "GET",
-    "path": "/v1/memory/by-key",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "The one live value for an identity key in a scope \u2014 the shape a profile field wants, where the answer is a value and not a ranked list.",
-    "fields": [
-      {
-        "name": "identity_key",
-        "in": "query",
-        "kind": "text",
-        "required": true,
-        "label": "Identity key",
-        "placeholder": "ship_date"
-      },
-      {
-        "name": "user_id",
-        "in": "query",
-        "kind": "text",
-        "label": "User",
-        "from_scope": "user"
-      }
-    ]
-  },
-  {
-    "id": "users",
-    "label": "users()",
-    "group": "Read",
-    "method": "POST",
-    "path": "/v1/users",
-    "scope": "context:retrieve",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "Which users, agents and runs hold memories in this tenant.",
-    "fields": []
-  },
-  {
-    "id": "update",
-    "label": "update()",
-    "group": "Write",
-    "method": "POST",
-    "path": "/v1/update",
-    "scope": "context:ingest",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "Supersede a memory: the amended text is ingested and the old id tombstoned, so history keeps both.",
-    "fields": [
-      {
-        "name": "memory_id",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      },
-      {
-        "name": "text",
-        "in": "body",
-        "kind": "textarea",
-        "required": true,
-        "label": "New text",
-        "placeholder": "We ship on Friday."
-      }
-    ]
-  },
-  {
-    "id": "feedback",
-    "label": "feedback()",
-    "group": "Write",
-    "method": "POST",
-    "path": "/v1/memory/feedback",
-    "scope": "context:ingest",
-    "destructive": false,
-    "needs_scope": false,
-    "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
-    "fields": [
-      {
-        "name": "memory_id",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      },
-      {
-        "name": "rating",
-        "in": "body",
-        "kind": "number",
-        "default": 1,
-        "label": "Rating",
-        "help": "1 useful, -1 not."
-      }
-    ]
-  },
-  {
-    "id": "session_commit",
-    "label": "commit a session",
-    "group": "Write",
-    "method": "POST",
-    "path": "/v1/session/commit",
-    "scope": "context:ingest",
-    "destructive": false,
-    "needs_scope": true,
-    "summary": "Close a session and roll its turns into summaries. Until this runs the turns are stored but not summarised.",
-    "fields": []
-  },
-  {
-    "id": "forget",
-    "label": "forget()",
-    "group": "Forget",
-    "method": "POST",
-    "path": "/v1/forget",
-    "scope": "context:forget",
-    "destructive": true,
-    "needs_scope": false,
-    "summary": "Stop returning one memory. The record stays, so history still explains it.",
-    "fields": [
-      {
-        "name": "memory_id",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      }
-    ]
-  },
-  {
-    "id": "delete",
-    "label": "delete()",
-    "group": "Forget",
-    "method": "POST",
-    "path": "/v1/delete",
-    "scope": "context:forget",
-    "destructive": true,
-    "needs_scope": false,
-    "summary": "Delete one memory outright.",
-    "fields": [
-      {
-        "name": "memory_id",
-        "in": "body",
-        "kind": "text",
-        "required": true,
-        "label": "Memory id",
-        "placeholder": "mem_7f21"
-      }
-    ]
-  },
-  {
-    "id": "delete_all",
-    "label": "delete_all()",
-    "group": "Forget",
-    "method": "POST",
-    "path": "/v1/reset",
-    "scope": "context:forget",
-    "destructive": true,
-    "needs_scope": true,
-    "summary": "Drop everything in the scope shown above. There is no undo, and an empty user field means the default scope, not none of them.",
-    "fields": []
-  }
-];
-
-  var currentOp = null;
-
-  function opGroups() {
-    var order = [], byGroup = {};
-    MEM0_OPS.forEach(function (op) {
-      if (!byGroup[op.group]) { byGroup[op.group] = []; order.push(op.group); }
-      byGroup[op.group].push(op);
-    });
-    return order.map(function (name) { return { name: name, ops: byGroup[name] }; });
-  }
-
-  function renderOps() {
-    $("ops").innerHTML = opGroups().map(function (group) {
-      return '<div class="opgroup">' + esc(group.name) + '</div><div class="opgrid">' +
-        group.ops.map(function (op) {
-          return '<button type="button" class="opbtn' + (op.destructive ? " danger" : "") +
-            '" data-op="' + esc(op.id) + '" aria-pressed="' +
-            (currentOp && currentOp.id === op.id ? "true" : "false") + '">' +
-            esc(op.label) + "</button>";
-        }).join("") + "</div>";
-    }).join("");
-  }
-
-  function fieldControl(op, f) {
-    var id = "op_" + op.id + "_" + f.name;
-    var value = f["default"] == null ? "" : String(f["default"]);
-    if (f.kind === "bool") {
-      return '<label class="check"><input type="checkbox" id="' + id + '" data-f="' +
-        esc(f.name) + '"' + (f["default"] ? " checked" : "") + "> " + esc(f.label) + "</label>" +
-        (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
-    }
-    var control;
-    if (f.kind === "textarea" || f.kind === "json") {
-      control = '<textarea id="' + id + '" data-f="' + esc(f.name) + '" spellcheck="false"' +
-        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" +
-        esc(f.kind === "json" ? "" : value) + "</textarea>";
-    } else {
-      control = '<input type="text" id="' + id + '" data-f="' + esc(f.name) +
-        '" spellcheck="false" value="' + esc(value) + '"' +
-        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">";
-    }
-    return '<label for="' + id + '">' + esc(f.label) + (f.required ? " *" : "") + "</label>" +
-      control + (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
-  }
-
-  function renderOpForm() {
-    var op = currentOp;
-    if (!op) {
-      $("opForm").innerHTML = '<div class="empty">Choose an operation.</div>';
-      renderOps();
-      return;
-    }
-    var scopeLine = op.needs_scope
-      ? " · scope from the fields above"
-      : " · not scoped — it addresses one memory by id";
-    $("opForm").innerHTML = '<div class="opform"><h3>' + esc(op.label) + "</h3>" +
-      '<div class="route">' + esc(op.method) + " " + esc(op.path) +
-      '<span class="scope"> · needs ' + esc(op.scope) + esc(scopeLine) + "</span></div>" +
-      '<p class="hint" style="margin-top:0">' + esc(op.summary) + "</p>" +
-      op.fields.map(function (f) { return fieldControl(op, f); }).join("") +
-      (op.destructive
-        ? '<div class="mwarn"><b>This cannot be undone</b>Type <span class="mono">' + esc(op.id) +
-          '</span> to confirm, then run.</div><label for="opConfirm">Confirm</label>' +
-          '<input id="opConfirm" type="text" spellcheck="false" autocomplete="off">'
-        : "") +
-      '<div class="actions"><button id="opRun" type="button">Run</button>' +
-      '<button id="opCurl" class="ghost" type="button">Copy as curl</button></div>' +
-      '<pre id="opPreview"></pre></div>';
-    renderOps();
-    updatePreview();
-  }
-
-  function opFieldValue(op, f) {
-    var el = document.getElementById("op_" + op.id + "_" + f.name);
-    if (!el) { return null; }
-    if (f.kind === "bool") { return el.checked; }
-    var raw = el.value.trim();
-    if (!raw) { return null; }
-    if (f.kind === "number") {
-      var n = Number(raw);
-      return isNaN(n) ? null : n;
-    }
-    if (f.kind === "json") {
-      try { return JSON.parse(raw); } catch (e) { return { __bad__: raw }; }
-    }
-    return raw;
-  }
-
-  /* One builder for the preview, the curl and the send. Three code paths would let the preview
-     drift from what is actually sent -- and the preview is the thing a customer copies into their
-     own client, so a preview that lies is worse than none. */
-  function buildRequest(op) {
-    var body = {}, query = [], path = op.path, messages = [], problems = [];
-    if (op.needs_scope) { body.scope = scope(); }
-    op.fields.forEach(function (f) {
-      var value = opFieldValue(op, f);
-      if (value && value.__bad__ !== undefined) {
-        problems.push(f.label + " is not valid JSON.");
-        return;
-      }
-      if (f.required && (value === null || value === "")) {
-        problems.push(f.label + " is required.");
-        return;
-      }
-      if (value === null) { return; }
-      if (f["in"] === "message") { messages.push({ role: "user", content: value }); }
-      else if (f["in"] === "body") { body[f.name] = value; }
-      else if (f["in"] === "scope") { (body.scope = body.scope || {})[f.name] = value; }
-      else if (f["in"] === "query") {
-        query.push(encodeURIComponent(f.name) + "=" + encodeURIComponent(value));
-      } else if (f["in"] === "path") {
-        path = path.replace("{" + f.name + "}", encodeURIComponent(value));
-      }
-    });
-    if (messages.length) { body.messages = messages; }
-    if (path.indexOf("{") >= 0) { problems.push("The id is required."); }
-    return {
-      method: op.method,
-      url: path + (query.length ? "?" + query.join("&") : ""),
-      problems: problems,
-      body: op.method === "GET" ? null : body
-    };
-  }
-
-  function updatePreview() {
-    if (!currentOp) { return; }
-    var pre = $("opPreview");
-    if (!pre) { return; }
-    var request = buildRequest(currentOp);
-    pre.textContent = request.method + " " + request.url +
-      (request.body ? "\n\n" + JSON.stringify(request.body, null, 2) : "");
-  }
-
-  $("ops").addEventListener("click", function (ev) {
-    var button = ev.target.closest ? ev.target.closest("[data-op]") : null;
-    if (!button) { return; }
-    currentOp = MEM0_OPS.filter(function (o) { return o.id === button.dataset.op; })[0] || null;
-    $("opResult").innerHTML = "";
-    say($("opMsg"), "");
-    renderOpForm();
-  });
-
-  $("opForm").addEventListener("input", updatePreview);
-  $("opForm").addEventListener("change", updatePreview);
-
-  $("opForm").addEventListener("click", function (ev) {
-    if (!currentOp) { return; }
-    if (ev.target.id === "opCurl") {
-      var request = buildRequest(currentOp);
-      var lines = ["curl -X " + request.method + " " + location.origin + request.url,
-                   "  -H 'Authorization: Bearer $MATRIXARK_API_KEY'"];
-      if (request.body) {
-        lines.push("  -H 'Content-Type: application/json'");
-        lines.push("  -d '" + JSON.stringify(request.body) + "'");
-      }
-      /* The key is named, never pasted: this goes on a clipboard and often into a ticket. */
-      var text = lines.join(" \\\n");
-      window.__matrixarkCopyText(text).then(function (ok) {
-        say($("opMsg"),
-            ok ? "Copied. It reads $MATRIXARK_API_KEY from your environment rather than "
-                 + "carrying your key."
-               : "Could not copy. The command is shown above; select it and copy it by hand.",
-            ok ? "ok" : "err");
-      });
-      return;
-    }
-    if (ev.target.id === "opRun") { runOp(); }
-  });
-
-  function runOp() {
-    var op = currentOp;
-    if (!$("key").value.trim()) { say($("opMsg"), "Enter an API key first.", "info"); return; }
-    var request = buildRequest(op);
-    if (request.problems.length) {
-      say($("opMsg"), request.problems.join(" "), "warn");
-      return;
-    }
-    if (op.destructive) {
-      var confirmEl = $("opConfirm");
-      if (!confirmEl || confirmEl.value.trim() !== op.id) {
-        say($("opMsg"), "Type " + op.id + " in the confirm box to run this.", "warn");
-        return;
-      }
-    }
-    say($("opMsg"), "Running " + op.label + "…", "info");
-    var started = Date.now();
-    var init = { method: request.method, headers: auth() };
-    if (request.body) {
-      init.headers = Object.assign({ "Content-Type": "application/json" }, init.headers);
-      init.body = JSON.stringify(request.body);
-    }
-    fetch(request.url, init)
-      .then(function (r) {
-        return r.text().then(function (text) {
-          return { status: r.status, ok: r.ok, text: text };
-        });
-      })
-      .then(function (res) {
-        var ms = Date.now() - started;
-        var pretty = res.text, parsed = null;
-        try { parsed = JSON.parse(res.text); pretty = JSON.stringify(parsed, null, 2); }
-        catch (e) { /* leave it raw */ }
-        say($("opMsg"), res.ok
-          ? op.label + " answered " + res.status + " in " + ms + " ms."
-          : op.label + " answered " + res.status + " — " + reason(parsed, res.status),
-          res.ok ? "ok" : "err");
-        $("opResult").innerHTML = "<pre>" + esc(pretty) + "</pre>";
-        /* Clear the confirmation after a destructive op succeeds, or the next click runs it again
-           against a box that still says the magic word. */
-        if (res.ok && op.destructive && $("opConfirm")) { $("opConfirm").value = ""; }
-      })
-      .catch(function (e) { say($("opMsg"), window.__matrixarkWhyFailed(e), "err"); });
-  }
-
-  renderOps();
 
   /* ---------- batch ingest ---------- */
   /* Parsed here so the count and the unusable lines are visible before anything is submitted, and
@@ -6061,6 +6227,8 @@ emit("overview_portal.html", "MatrixArk", OVERVIEW_BODY, OVERVIEW_JS, "/v1/admin
 emit("api_portal.html", "MatrixArk — API", API_BODY, API_JS, "/v1/admin/api")
 emit("explore_portal.html", "MatrixArk — Explore", EXPLORE_BODY, EXPLORE_JS, "/v1/admin/explore")
 emit("setup_portal.html", "MatrixArk — Setup & Metrics", SETUP_BODY, SETUP_JS, "/v1/admin/setup")
+emit("mem0_portal.html", "MatrixArk — mem0 API", MEM0_BODY, MEM0_JS,
+     "/v1/admin/mem0")
 emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CATALOG_JS,
      "/v1/admin/catalog")
 

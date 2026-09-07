@@ -84,7 +84,7 @@ class TheShippedPagesAreCurrentTest(unittest.TestCase):
 
     #: Generated whole. A hand edit anywhere in these is caught.
     GENERATED = ("overview_portal.html", "api_portal.html", "explore_portal.html",
-                 "setup_portal.html", "catalog_portal.html")
+                 "setup_portal.html", "catalog_portal.html", "mem0_portal.html")
     #: Only nav-injected. The builder starts FROM these, so it owns part of them and no more.
     INJECTED = ("ingestion_portal.html", "api_key_portal.html")
 

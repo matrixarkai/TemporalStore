@@ -58,7 +58,7 @@ def console_ops(path: str) -> list:
 class TheConsoleIsTheGatewaysListTest(unittest.TestCase):
 
     def setUp(self) -> None:
-        self.page = console_ops(os.path.join(PORTAL, "explore_portal.html"))
+        self.page = console_ops(os.path.join(PORTAL, "mem0_portal.html"))
 
     def test_the_two_are_the_same_document(self) -> None:
         """Not "every id appears": the same operations, in the same order, field for field."""

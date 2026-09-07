@@ -60,7 +60,7 @@ _EXACT_ROUTES = frozenset({
     "/v1/skills", "/v1/skills/update", "/v1/resources", "/v1/resource/content",
     "/v1/update", "/v1/memory/feedback",
     "/v1/admin", "/v1/admin/", "/v1/admin/portal", "/v1/admin/setup", "/v1/admin/catalog",
-    "/v1/admin/explore", "/v1/admin/ingestion", "/v1/admin/overview",
+    "/v1/admin/explore", "/v1/admin/ingestion", "/v1/admin/overview", "/v1/admin/mem0",
     "/v1/admin/config", "/v1/admin/config/test", "/v1/admin/config/preset",
     "/v1/admin/scopes", "/v1/admin/embeddings",
     "/v1/admin/models",
