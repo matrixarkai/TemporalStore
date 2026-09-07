@@ -35,6 +35,14 @@ KNOWN_OVERRIDES: Dict[str, str] = {
         "the engine defaults ON; the shipped config, three binaries and the one-box all turn it "
         "off, because warming every record on load pays the whole cache cost before the first "
         "read is served",
+    "cold_scan_no_cache_fill":
+        "RECORDED, NOT BLESSED. The engine defaults ON -- DEFAULT_COLD_SCAN_NO_CACHE_FILL = true "
+        "in storage_config.rs -- so a cold scan bypasses cache fill and does not evict what the "
+        "serving path put there. The shipped config turns that bypass off, letting a cold scan "
+        "populate the cache, and no reason is written anywhere: not beside the line, not here. It "
+        "surfaced only when the extractor learned to read a default named by a const. Whether a "
+        "cold scan should fill the cache belongs to whoever owns the cache budget; this entry "
+        "makes the disagreement visible rather than settling it",
 }
 
 # The same, for keys whose value is a number. Empty today: all EIGHT comparable numeric keys
@@ -97,7 +105,43 @@ def _engine_defaults() -> Dict[str, str]:
                         value = default_of(body, 1)
                 if value:
                     defaults[flag] = value
+    defaults.update(_boolean_defaults_named_by_a_const(ns, source_root))
     return defaults
+
+
+def _boolean_defaults_named_by_a_const(ns, source_root) -> Dict[str, str]:
+    """flag -> on/off for a boolean the engine reads through a CONST, not a string literal.
+
+    The storage_config family reads `get(TS_COLD_SCAN_NO_CACHE_FILL)`; no scan of string literals
+    sees that, so the extractor above finds no default and this guard cannot compare the shipped
+    config against one. The numeric extractor below already pairs `TS_X` with `DEFAULT_X` for that
+    exact reason -- and then drops the pair when its value is a boolean:
+
+        if paired and paired not in ("on", "off"):
+
+    which says those pairs exist and belong here. They were reaching nowhere. One flag is affected
+    today, `TS_COLD_SCAN_NO_CACHE_FILL`, and the shipped config contradicts it -- so the single
+    thing this file exists to catch was invisible to it for that flag.
+    """
+    strip, literal_consts = ns["strip_test_modules"], ns["literal_consts"]
+    sources: Dict[str, str] = {}
+    for directory, _, names in os.walk(source_root):
+        if os.sep + "tests" in directory:
+            continue
+        for name in sorted(names):
+            if not name.endswith(".rs") or name.startswith("test"):
+                continue
+            path = os.path.join(directory, name)
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                sources[path] = strip(handle.read())
+    consts = literal_consts(sources)
+    found: Dict[str, str] = {}
+    for source in sources.values():
+        for ident, env in _NAME_CONST.findall(source):
+            paired = consts.get("DEFAULT_" + ident[len("TS_"):])
+            if paired in ("on", "off"):
+                found.setdefault(env, paired)
+    return found
 
 
 _NAME_CONST = re.compile(r'pub const (TS_[A-Z0-9_]+)\s*:\s*&str\s*=\s*"([A-Z0-9_]+)"\s*;')
