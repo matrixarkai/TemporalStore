@@ -5403,6 +5403,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     for record in records:
                         self._note_node_embedding_ref(self._node_embedding_refs_index, record)
                 durable_epoch = self._read_cache_compaction_epoch
+            # Outside the branch above on purpose: the two caches are populated by different
+            # callers, and an adapter that only ever calls history has a raw view and no compacted
+            # one. It carries its own guard.
+            self._extend_raw_view_locked(records, pre_size, size, mtime_ns)
             if size >= 0:
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
@@ -7591,8 +7595,22 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         memo = getattr(self, "_raw_history_index_memo", None)
         if key is not None and memo is not None and memo[0] == key:
             return memo[1]
-        index: dict[str, list[Json]] = {}
-        for record in records:
+        # The raw view is extended IN PLACE by an append, so an index already built over the first
+        # `covered` records of that same list still stands and only the tail is new. Anything that
+        # is not an append hands back a different list, which drops the claim -- the same identity
+        # test, for the same reason, as the expiry guard. Without this the index was rebuilt over
+        # the whole log on every write: 27 ms of history's 29 ms at 20,000 records.
+        index: dict[str, list[Json]] | None = None
+        start = 0
+        live = cached[1] if cached is not None else None
+        if (memo is not None and len(memo) == 4 and live is not None and memo[2] is live
+                and len(records) >= memo[3]):
+            index = memo[1]
+            start = memo[3]
+        if index is None:
+            index = {}
+            start = 0
+        for record in records[start:]:
             seen: set[str] = set()
             for field in ("event_id_hash", "target_memory_id", "superseded_by"):
                 value = record.get(field)
@@ -7604,7 +7622,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 seen.add(text_value)
                 index.setdefault(text_value, []).append(record)
         if key is not None:
-            self._raw_history_index_memo = (key, index)
+            self._raw_history_index_memo = (key, index, live, len(records))
         return index
 
     def history(self, args: Json) -> Json:
@@ -7655,6 +7673,35 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # are written to a temp file, fsync'd, then atomically os.replace'd onto the primary log (the same
     # durability the durable read-cache uses); rotated shards are folded in and removed afterward.
     # --------------------------------------------------------------------------------------------
+    def _extend_raw_view_locked(
+        self, records: list[Json], pre_size: int | None, size: int, mtime_ns: int
+    ) -> None:
+        """Keep the raw view current with a write instead of making the next read re-derive it.
+
+        The raw view is the durable history, and it was cached on (total size, newest mtime), so any
+        append moved the key and the next reader re-parsed every line of the log: 60,033
+        ``json.loads`` for one ``history`` over 20,000 records, 418.68 ms against 0.06 ms warm. These
+        are the same records that write is putting on disk, so it can hand them over.
+
+        Its own guard, and not the compacted cache's: the two are populated by different callers, and
+        an adapter that only ever calls ``history`` has a raw view and no compacted one -- which is
+        the case that needs this most. The guard is that the view was current as of immediately
+        before this write. If it was not, another writer got in and extending would stamp the new
+        signature onto a list missing their records, so it is dropped and the next read re-derives.
+
+        Nothing is created here: if no one has asked for the raw view there is nothing to keep
+        current, and the first ask still reads the file.
+        """
+        cached = getattr(self, "_raw_records_cache", None)
+        if cached is None:
+            return
+        if (size < 0 or pre_size is None or not isinstance(cached[0], tuple)
+                or cached[0][0] != pre_size):
+            self._raw_records_cache = None
+            return
+        cached[1].extend(share_repeated_values(records, _SHARED_VALUE_TABLE))
+        self._raw_records_cache = ((size, mtime_ns), cached[1])
+
     def _read_raw_records(self) -> list[Json]:
         """All records across the retained JSONL shards in append order -- NOT compacted and NOT
         tombstone-filtered (the durable event history). Empty when the local JSONL is disabled.
@@ -7682,7 +7729,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             key = (int(signature.get("total_size", -1)), int(signature.get("max_mtime_ns", -1)))
             cached = getattr(self, "_raw_records_cache", None)
             if cached is not None and cached[0] == key:
-                return cached[1]
+                # A snapshot, not the list itself. The cache is extended in place by a write now,
+                # and a caller holding an earlier result would watch it grow -- which is exactly
+                # what `first` and `after` are in test_raw_records_served_from_memory. Copying the
+                # pointers costs ~0.02 ms per 5,000 records against the 400 ms this avoids.
+                return list(cached[1])
             for path in paths:
                 for line in _iter_shard_lines(path):
                     line = line.strip()
@@ -7690,6 +7741,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         raw.append(loads_with_interned_keys(line))
             expanded = expand_interned_records(raw)
             self._raw_records_cache = (key, expanded)
+            # The caller gets its own list for the same reason the cache-hit path above does: the
+            # cached one is extended in place by a write, and a caller holding this result would
+            # watch it grow. `first` and `after` in test_raw_records_served_from_memory are exactly
+            # that pair.
+            return list(expanded)
         return expanded
 
     def _count_raw_tombstones(self) -> int:
