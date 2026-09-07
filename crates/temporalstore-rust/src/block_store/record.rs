@@ -828,9 +828,16 @@ pub(super) fn max_page_id_in_slab_file(
 /// Default OFF. `inspect_slab` runs at every engine open, and this hashes each payload a second
 /// time -- `decode_page_record` has already verified the stored checksum -- then allocates a
 /// 64-character String for it. Measured on a live-store copy, slab verification ran at 13.5 MB/s
-/// against hundreds of MB/s for sha256 alone. Nothing in the crate reads the field; it is kept for
-/// hand-inspecting a slab.
-fn block_index_checksums_enabled() -> bool {
+/// against hundreds of MB/s for sha256 alone.
+///
+/// ONE caller reads the field: `block_address_api_ready` in
+/// `StorageDataStructureApiParityReport`, which required `checksum.is_some()` on a block index
+/// entry. An earlier version of this
+/// comment claimed nothing read it -- wrong by exactly one -- and switching the hashing off left
+/// that report permanently `ready: false` behind a `block_address_metadata_incomplete` blocker on
+/// every default deployment. The report now asks for the checksum only when this is enabled, so
+/// the two agree in both positions of the flag.
+pub(crate) fn block_index_checksums_enabled() -> bool {
     std::env::var("TS_BLOCK_INDEX_CHECKSUMS")
         .map(|value| {
             let value = value.trim().to_ascii_lowercase();
