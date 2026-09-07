@@ -27,19 +27,37 @@ import matrixark_mcp_core as core  # noqa: E402
 import matrixark_mcp_temporal_adapters  # noqa: E402,F401  (the retrieve mixin imports circularly)
 import matrixark_temporal_direct_retrieve as retrieve  # noqa: E402
 
+# The same file is importable TWICE -- as `matrixark_mcp_core` from tools/, and as
+# `tools.matrixark_mcp_core` from the repo root -- and the two are different module objects with
+# different attributes. `_batch_hget_degraded_log` resolves the logger at call time and tries the
+# PACKAGE path first, so patching only the script-path module leaves the real logger in place and
+# this file captures nothing. It then passes or fails according to which path the runner used
+# rather than according to the code, which is what happened: green from tools/, three failures
+# under the suite.
+_CORE_MODULES = [core]
+try:  # available whenever the repo root is importable, which is how the suite runs
+    from tools import matrixark_mcp_core as _core_package  # noqa: E402
+except ImportError:
+    pass
+else:
+    if _core_package is not core:
+        _CORE_MODULES.append(_core_package)
+
 
 class _Captured:
     def __init__(self) -> None:
         self.lines: list[str] = []
-        self._original = None
+        self._original = []
 
     def __enter__(self) -> "_Captured":
-        self._original = core._mcp_debug_log
-        core._mcp_debug_log = self.lines.append
+        self._original = [(module, module._mcp_debug_log) for module in _CORE_MODULES]
+        for module in _CORE_MODULES:
+            module._mcp_debug_log = self.lines.append
         return self
 
     def __exit__(self, *exc) -> None:
-        core._mcp_debug_log = self._original
+        for module, original in self._original:
+            module._mcp_debug_log = original
 
 
 class TheDegradedBatchReadSaysWhyTest(unittest.TestCase):
