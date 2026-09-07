@@ -13,14 +13,20 @@
 //! is refused. Nothing exercised it for strings: `StringDelete` appears only in lib tests, and no
 //! test both deletes a string and reloads.
 //!
-//! **It passes.** Reading the arms predicted a fifth failing kind and the prediction was wrong,
-//! which is why this file exists as a test rather than as a sentence in a report. Whatever saves
-//! the string path does not save `list` and `zset`, whose equivalents fail on main today, and the
-//! difference is worth knowing to whoever fixes those: something here already does the right
-//! thing.
+//! **It fails**, and `StringDelete` is a fifth kind:
 //!
-//! Kept because the coverage was genuinely missing, not to prove a point. A string that is
-//! deleted and then reloaded is an ordinary thing to want, and nothing checked it.
+//!     wal_replay_outcome_refused: WAL replay could not install a recorded string outcome at
+//!     sequence 3 ... (address UNRESOLVED, component missing)
+//!
+//! `#[ignore]` only because a failing test trips the ratchet on every later pull request. Remove
+//! the attribute when the deleted-branch lands; this is the verification for it.
+//!
+//! A FIRST VERSION OF THIS TEST PASSED, and it was wrong. It called `unload_shard` before
+//! reopening, which flushes the index, so the reopened engine read a base that already had the
+//! delete and never replayed the tail -- the test passed without touching the path it is about.
+//! `list_recovery` and `zset_recovery` drop the engine instead, which is why they reach it. That
+//! one line was the difference between "the string path is fine" and "a string delete makes a
+//! shard refuse to load".
 
 use std::path::PathBuf;
 
@@ -73,6 +79,7 @@ fn get(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
 }
 
 #[test]
+#[ignore = "fails on main: a StringDelete outcome cannot be installed; see the module comment"]
 fn a_deleted_string_stays_deleted_across_a_restart() {
     let root = unique_root("basic");
     let _ = std::fs::remove_dir_all(&root);
@@ -83,7 +90,9 @@ fn a_deleted_string_stays_deleted_across_a_restart() {
         run(&engine, Command::StringDelete { key: "alpha".to_string() });
         assert_eq!(None, get(&engine, "alpha"));
         assert_eq!(Some(b"v2".to_vec()), get(&engine, "bravo"));
-        engine.unload_shard(SHARD_ID);
+        // Dropped, NOT unloaded -- exactly as list_recovery and zset_recovery do it. `unload_shard`
+        // flushes the index, so the reopened engine reads a base that already has the delete and
+        // never replays the tail: the test then passes without touching the path it is about.
     }
 
     // The load is where this fails if the removal outcome cannot be installed: `new_engine`
