@@ -282,18 +282,29 @@ mod tests {
     fn readiness_gate_failure_lines_include_service_next_actions() {
         let report = production_readiness_report();
         let lines = service_failure_lines(&report);
-        assert!(lines
-            .iter()
-            .all(|line| !line.contains("service client") && !line.contains("service proxy")));
-        assert!(
+        // Named, not bare. `service_failure_lines` has already formatted the service, its blocker
+        // count, the blocker classes and the next action into the line being rejected, and a bare
+        // `assert!(..all(..))` throws all of that away -- it prints the predicate and nothing
+        // about which service tripped it, so the reader has to reproduce the run to find out.
+        let blocked_by = |needles: &[&str]| -> Vec<String> {
             lines
                 .iter()
-                .all(|line| !line.contains("service ingestion")
-                    && !line.contains("service data_node"))
-        );
-        assert!(lines
-            .iter()
-            .all(|line| !line.contains("service metaserver")));
+                .filter(|line| needles.iter().any(|needle| line.contains(needle)))
+                .cloned()
+                .collect()
+        };
+        for needles in [
+            &["service client", "service proxy"][..],
+            &["service ingestion", "service data_node"][..],
+            &["service metaserver"][..],
+        ] {
+            let blocked = blocked_by(needles);
+            assert!(
+                blocked.is_empty(),
+                "these services report blockers, so the readiness gate would refuse:\n  {}",
+                blocked.join("\n  ")
+            );
+        }
     }
 
     // shared-corpus: ops_scale_readiness_slo_gate
