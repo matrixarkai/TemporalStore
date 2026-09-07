@@ -592,6 +592,14 @@ class _LocalAdapterSummariesMixin:
         skip_dirty_reasons: set[str] | None = None,
         records: list[Json] | None = None,
     ) -> Json:
+        # Resolved once per call, not once per summary: this sat inside two nested loops, so
+        # the import machinery ran for every summary of every dirty node.
+        try:
+            from tools.matrixark_index_growth_bound import (
+                index_compact_on_summary_enabled, index_compaction_tombstone)
+        except ImportError:  # Direct script execution from tools/.
+            from matrixark_index_growth_bound import (
+                index_compact_on_summary_enabled, index_compaction_tombstone)
         refreshed_at_ms = refreshed_at_ms or now_ms()
         skip_dirty_reasons = skip_dirty_reasons or set()
         # `records` lets one caller's read serve a whole pass. Reading here is a full record-log
@@ -990,12 +998,6 @@ class _LocalAdapterSummariesMixin:
                 # `index_compaction_tombstone` returns None when there is nothing to compact, so a
                 # summary with no source events appends nothing and the log stays byte-identical to
                 # what it was before this.
-                try:
-                    from tools.matrixark_index_growth_bound import (
-                        index_compact_on_summary_enabled, index_compaction_tombstone)
-                except ImportError:  # Direct script execution from tools/.
-                    from matrixark_index_growth_bound import (
-                        index_compact_on_summary_enabled, index_compaction_tombstone)
                 summary_scope = summary_record.get("scope")
                 if index_compact_on_summary_enabled(summary_scope):
                     compaction = index_compaction_tombstone(
