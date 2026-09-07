@@ -577,8 +577,11 @@ for rel, text in prod.items():
         # bool. Skipping the rest of a flag's sites once a doc was found also skipped its
         # accessor -- `TS_VECTOR_INT8` is read first by a function with a doc and a moment later
         # by `vector_int8_enabled`, and only the second one knows what unset means.
-        if entry["doc"] and entry["default"]:
-            continue
+        # The early skip that used to sit here -- `if entry["doc"] and entry["default"]: continue`
+        # -- meant a flag's later sites were never resolved, so two sites disagreeing about what
+        # unset means could not be detected: the document reported whichever site came first.
+        # There is no skip now. The doc block below keeps its own guard so doc selection is
+        # unchanged, and `entry["default"]` is still the first non-empty answer.
         line_no = text[:match.start()].count("\n")
         fn_line = None
         for i in range(line_no, max(line_no - 40, -1), -1):
@@ -604,17 +607,24 @@ for rel, text in prod.items():
                 lines[fn_line])
             if match_name:
                 accessors[(rel, fn_line)] = match_name.group(1)
-        if fn_line is not None and not entry["default"]:
+        # Resolve what THIS site says, then let the first non-empty answer stand as the flag's
+        # default exactly as before. Keeping the per-site answer is what makes a conflict visible.
+        site_default = ""
+        if fn_line is not None:
             body = NEWLINE.join(lines[fn_line:function_end(lines, fn_line)])
-            entry["default"] = default_of(body, len(set(FLAG_READ.findall(body))))
+            site_default = default_of(body, len(set(FLAG_READ.findall(body))))
+        if not site_default:
+            site_default = default_of_statement(lines, line_no)
+        if not site_default:
+            site_default = bool_helper_default(lines, line_no)
+        if not site_default:
+            site_default = numeric_default_of_statement(lines, line_no, CONSTS)
+        if not site_default:
+            site_default = numeric_helper_default(lines, line_no, CONSTS)
+        if site_default:
+            entry.setdefault("site_defaults", {})[(rel, line_no + 1)] = site_default
         if not entry["default"]:
-            entry["default"] = default_of_statement(lines, line_no)
-        if not entry["default"]:
-            entry["default"] = bool_helper_default(lines, line_no)
-        if not entry["default"]:
-            entry["default"] = numeric_default_of_statement(lines, line_no, CONSTS)
-        if not entry["default"]:
-            entry["default"] = numeric_helper_default(lines, line_no, CONSTS)
+            entry["default"] = site_default
         if entry["doc"]:
             continue
         text_doc, shared_with = doc_for_flag(name, " ".join(doc), lines, fn_line)
@@ -975,6 +985,24 @@ if sdk_only:
     for name in sdk_only:
         lines.append("- `%s`" % name)
     lines.append("")
+
+# A flag read at two production sites that disagree about its default is a coin flip on whichever
+# code path resolved it first, and an env-var search finds nothing wrong because the variable IS
+# read. Nothing else looks for this: the row below reports one default per flag.
+_conflicts = []
+for _name, _entry in sorted(flags.items()):
+    _seen = _entry.get("site_defaults") or {}
+    _answers = {v for v in _seen.values() if v}
+    if len(_answers) > 1:
+        _conflicts.append(
+            "%s: %s" % (_name, "; ".join("%s at %s:%d" % (v, r, l)
+                                         for (r, l), v in sorted(_seen.items()))))
+if _conflicts:
+    raise SystemExit(
+        "two production sites disagree about a flag's default, so this document would report\n"
+        "whichever was reached first:\n  %s\n\n"
+        "Decide which is right and make both sites say it, or give them different names."
+        % "\n  ".join(_conflicts))
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 io.open(OUT, "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
