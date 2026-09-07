@@ -2759,6 +2759,12 @@ async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
     shared = _shared_live_parts()
     return {
         "ts": time.time(),
+        # The cadence, so a page can tell an IDLE stream from a stopped one: silence for several
+        # ticks means neither a frame nor a keepalive arrived, which is a stream that has stopped
+        # rather than a deployment with nothing to report. Carried on the frame rather than
+        # announced as its own event, because every reader of this stream treats a `data:` block as
+        # a frame -- a new event name is a frame with none of the fields they expect.
+        "tick_s": EVENT_TICK_S,
         "traffic": shared["traffic"],
         "imports": shared["imports"],
         "warnings": shared["warnings"],
