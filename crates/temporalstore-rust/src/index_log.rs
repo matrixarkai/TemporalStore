@@ -1448,7 +1448,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_delta_record_written_with_the_old_field_names_still_loads() {
         // The record-level names are short now. `items` and `meta` are NOT among them: whole-index
         // and delta records are told apart on read by the PRESENCE of those two keys, so renaming
@@ -1718,7 +1717,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[test]
     fn an_index_item_written_with_the_old_field_names_still_loads() {
         // The names are short now because they repeat once per ITEM for the life of the log.
