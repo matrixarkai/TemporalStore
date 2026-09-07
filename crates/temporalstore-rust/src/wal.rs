@@ -186,36 +186,21 @@ fn split_carried_payloads(payload: &[u8]) -> Result<(&[u8], Vec<Vec<u8>>), Write
     Ok((document, carried))
 }
 
-/// Encode a record: the document, and the payloads worth carrying beside it.
+/// Encode a record. Protobuf, always.
+///
+/// The JSON writer this used to choose between is gone. It cost a third more bytes on the wire
+/// than protobuf before compression, could not be compressed at all -- the compressor is reached
+/// only from `wal_proto::encode` -- and carried its byte payloads base64'd, which is a flat 1.33x
+/// on every value. A live store that turned it off wrote 8,756 bytes per record; the same traffic
+/// through this path writes 1,774.
+///
+/// READING json is a different question and is still supported: a payload says what it is by its
+/// first byte, and logs already written -- here and in every fork and deployment of this project --
+/// hold JSON records that must keep loading. See `decode_wal_line`, which is where that lives now.
 fn encode_wal_payload(record: &WriteAheadLogRecord) -> Result<Vec<u8>, WriteAheadLogError> {
-    if crate::wal_proto::binary_records_enabled() {
-        return crate::wal_proto::encode(record).map_err(|err| {
-            WriteAheadLogError::Corruption(format!("engine wal record encode failed: {err}"))
-        });
-    }
-    let (document, carried) =
-        crate::bytes_serde::carrying_payloads(|| serde_json::to_vec(record));
-    let mut payload = document?;
-    if carried.is_empty() {
-        // Nothing worth carrying: written exactly as it always was.
-        return Ok(payload);
-    }
-    let escaped = carried
-        .iter()
-        .map(|bytes| crate::bytes_serde::escape_payload(bytes))
-        .collect::<Vec<_>>();
-    let lengths = escaped
-        .iter()
-        .map(|bytes| bytes.len().to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    payload.push(CARRIED_SEPARATOR);
-    payload.extend_from_slice(lengths.as_bytes());
-    payload.push(CARRIED_SEPARATOR);
-    for bytes in &escaped {
-        payload.extend_from_slice(bytes);
-    }
-    Ok(payload)
+    crate::wal_proto::encode(record).map_err(|err| {
+        WriteAheadLogError::Corruption(format!("engine wal record encode failed: {err}"))
+    })
 }
 impl WalOutcomeItem {
     /// The address with the routing bucket the item carries put back.
@@ -3102,8 +3087,7 @@ fn append_record_locked_on(
     // `what_each_frame_costs_on_disk` toggles the frame flag precisely to catch that, and did.
     // Compression is excluded from the borrowing writer deliberately: it reserves
     // the frame from a length the payload does not have yet. See `encode`.
-    if crate::wal_proto::binary_records_enabled()
-        && crate::log_framing::binary_frame_enabled()
+    if crate::log_framing::binary_frame_enabled()
         && !crate::wal_proto::compress_records_enabled()
     {
         // The payload lands directly in the frame. Building it separately meant carrying the
@@ -6128,83 +6112,6 @@ mod tests {
         }
     }
 
-    /// What a record actually costs on disk AT THE DEFAULTS.
-    ///
-    /// The neighbouring size analysis builds its "today" baseline by hand, as JSON. Both encoding
-    /// flags now default ON, so that hand-built baseline is not necessarily what the log writes,
-    /// and a stale baseline overstates what is left -- which is the exact error that analysis
-    /// warns about. This one asks the store instead, with no flags set.
-    ///
-    /// Measured as the DELTA between records rather than the file size: the log preallocates in
-    /// large steps, so file size answers a different question.
-    /// Compression is unreachable while records are written as JSON, whatever its own flag says.
-    ///
-    /// `encode_wal_payload` chooses the protobuf writer or the JSON one on TS_WAL_BINARY_RECORDS,
-    /// and only the protobuf writer compresses. So with binary records OFF, TS_WAL_COMPRESS_RECORDS
-    /// still reads as on -- it defaults on, and unset means on -- while changing nothing that
-    /// reaches disk.
-    ///
-    /// Pinned rather than left to be rediscovered, because a live box runs exactly that pair:
-    /// TS_WAL_BINARY_RECORDS=0 with TS_WAL_COMPRESS_RECORDS unset. Its log is written uncompressed
-    /// while the setting that would compress it reads as enabled, and nothing in either flag's own
-    /// description says the one depends on the other.
-    #[test]
-    #[ignore]
-    fn compression_does_nothing_while_records_are_json() {
-        // Ignored by default: this writes process environment, which the suite shares.
-        let record = WriteAheadLogRecord {
-            shard_id: 1,
-            sequence: 1,
-            command: Some(Command::StringSet {
-                key: "compressible".to_string(),
-                // Repetitive on purpose: the question is whether compression runs at all, so the
-                // payload has to be one that compression would obviously shrink.
-                value: (0..8192u32).map(|index| (index % 7) as u8).collect(),
-            }),
-            metadata: None,
-            staged_pages: Vec::new(),
-            outcomes: Vec::new(),
-        };
-
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
-        std::env::set_var("TS_WAL_COMPRESS_RECORDS", "1");
-        assert!(
-            crate::wal_proto::compress_records_enabled(),
-            "the compression flag must read as on, or this test says nothing",
-        );
-
-        let json = encode_wal_payload(&record).expect("json record encodes");
-        assert_eq!(
-            json.first().copied(),
-            Some(b'{'),
-            "with binary records off the payload is bare json, carrying no marker at all",
-        );
-
-        // Same record, same compression flag, protobuf writer: now it compresses.
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
-        let binary = encode_wal_payload(&record).expect("binary record encodes");
-        assert_eq!(
-            binary.first().copied(),
-            Some(crate::wal_proto::COMPRESSED_RAW_PAYLOAD_MARKER),
-            "the only writer that honours the compression flag is the protobuf one",
-        );
-        assert!(
-            binary.len() < json.len(),
-            "compressed {} should be smaller than the json {} it replaces",
-            binary.len(),
-            json.len(),
-        );
-        println!(
-            "  COUPLING json {} B vs compressed protobuf {} B ({:.2}x), unavailable while records are json",
-            json.len(),
-            binary.len(),
-            json.len() as f64 / binary.len() as f64,
-        );
-
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
-        std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
-    }
-
     /// What the scan's read-time check costs, against the check that catches corruption.
     ///
     /// `scan_bounded` calls `decode_wal_line` on every record and throws the record away; the
@@ -6526,7 +6433,6 @@ mod tests {
     fn wal_interior_corruption_is_fatal_not_silent_truncation() {
         // Pins the TEXT encoding: the corruption this injects is a line that fails to parse
         // as a document, which is a text-shaped fault by construction.
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         for i in 0..4 {
@@ -6584,7 +6490,6 @@ mod tests {
     
         // Unpin it: this variable is process-global, and leaving it set makes every
         // test that runs after this one inherit an encoding it never asked for.
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
     }
 
     #[test]
@@ -8158,34 +8063,6 @@ mod tests {
         );
         let framed = crate::log_framing::encode_line(&payload);
         assert_eq!(decode_wal_line(&framed).unwrap(), record);
-    }
-
-    /// A record with nothing worth carrying is written exactly as it was before.
-    #[test]
-    fn a_record_with_no_payload_is_unchanged_on_disk() {
-        // Pins the TEXT encoding: this test is about the shape of a text payload, which the
-        // binary one does not have. It asserts a property of that encoding, not of the log.
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
-        let record = WriteAheadLogRecord {
-            shard_id: 1,
-            sequence: 5,
-            command: Some(Command::StringGet {
-                key: "k".to_string(),
-            }),
-            metadata: None,
-            staged_pages: Vec::new(),
-            outcomes: Vec::new(),
-        };
-        let payload = encode_wal_payload(&record).unwrap();
-        assert_eq!(
-            payload,
-            serde_json::to_vec(&record).unwrap(),
-            "a record that carries nothing must be byte-identical to the document"
-        );
-    
-        // Unpin it: this variable is process-global, and leaving it set makes every
-        // test that runs after this one inherit an encoding it never asked for.
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
     }
 
     /// Records written before payloads were carried still load.

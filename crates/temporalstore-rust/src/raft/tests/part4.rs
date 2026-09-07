@@ -4096,7 +4096,6 @@ fn overlapping_the_leader_barrier_still_commits_every_write() {
 /// a difference in the encoding rather than in the test.
 #[test]
 fn a_raft_cluster_restores_on_the_legacy_encoding_too() {
-    std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
     std::env::set_var("TS_WAL_OUTCOME_ITEMS", "0");
     std::env::set_var("TS_WAL_DATA_ONLY", "0");
     let dir = tempfile::tempdir().unwrap();
@@ -4134,7 +4133,6 @@ fn a_raft_cluster_restores_on_the_legacy_encoding_too() {
             );
         }
     }
-    std::env::remove_var("TS_WAL_BINARY_RECORDS");
     std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
     std::env::remove_var("TS_WAL_DATA_ONLY");
     println!("[raft] legacy encoding: 3 nodes restored and serving");

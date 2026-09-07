@@ -6,10 +6,11 @@ The engine has compressed durability-log records for a while. It was built **off
 deployment paid to store a log it had the code to shrink, and no surface mentioned it: not the
 portal, not `config/temporalstore.toml`, not the loader that turns that file into an environment.
 
-Its neighbours were already on -- `TS_WAL_BINARY_RECORDS` and `TS_WAL_BINARY_FRAME`, the latter of
-which is what carries the footer hint the tail scan uses -- and all three share the property that
-makes flipping safe: which encoding a record is in is a property of the RECORD, not of the flag, so
-a log written across a change reads end to end and turning it off again is not a one-way door.
+Its neighbour `TS_WAL_BINARY_FRAME` was already on -- that is what carries the footer hint the tail
+scan uses -- and both share the property that makes flipping safe: which encoding a record is in is
+a property of the RECORD, not of the flag, so a log written across a change reads end to end and
+turning it off again is not a one-way door. Records themselves are protobuf unconditionally now, so
+the variable that used to choose that is gone and the compressor is always reachable.
 
 This file covers the surfaces. The engine's own tests cover what reaches the file.
 """
@@ -66,11 +67,23 @@ class TheEngineCompressesByDefaultTest(unittest.TestCase):
             with self.subTest(spelling=spelling):
                 self.assertIn(spelling, body)
 
-    def test_its_neighbours_are_still_on_too(self) -> None:
-        """The floor, and the reason this one was the odd one out: the record encoding and the
-        frame -- which is what carries the footer hint the tail scan reads -- were already on."""
-        self.assertTrue(defaults_on(PROTO, "binary_records_enabled"))
+    def test_its_neighbour_is_still_on_too(self) -> None:
+        """The floor: the frame -- which is what carries the footer hint the tail scan reads -- is
+        on by default.
+
+        The record encoding used to be the other neighbour checked here. It is no longer a flag at
+        all: records are protobuf unconditionally, so there is no default to read and no way to
+        turn the compressor's only caller off. That is why this asserts one neighbour and not two.
+        """
         self.assertTrue(defaults_on(FRAMING, "binary_frame_enabled"))
+        with open(PROTO, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn(
+            "fn binary_records_enabled",
+            source,
+            "the record-encoding flag is retired; if it came back, this test should check its "
+            "default again rather than silently ignore it",
+        )
 
     def test_compression_is_still_only_applied_where_it_pays(self) -> None:
         """Turning it on is safe because it is not unconditional: a small record is left alone, and

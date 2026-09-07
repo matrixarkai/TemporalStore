@@ -746,18 +746,6 @@ SETTINGS: List[Setting] = [
             "WAL growth before an index dump", "int", "1048576", "live",
             "How much undumped WAL growth triggers a background index dump. A dump writes the "
             "served index, so lowering this makes dumps more frequent and each recovery shorter."),
-    Setting("storage_engine.wal_binary_records", "storage_engine",
-            "TS_WAL_BINARY_RECORDS",
-            "Write log records as protobuf", "bool", "1", "restart",
-            "On, a write-ahead log record is protobuf rather than JSON. Reading never consults "
-            "this: a payload is decoded by what its first byte says it is, so a log written "
-            "across a change reads end to end and turning it back off is not a one-way door. "
-            "Worth about 1.5x on the records themselves, measured over 2,000 identical "
-            "writes: 787,433 bytes of text against 524,735 binary. Not more than that, and "
-            "it is worth knowing why before turning it on expecting a store to halve: the "
-            "encoding gives a numeric code only to the field kinds common enough to earn "
-            "one and keeps the string otherwise, so the repeated field names that make a "
-            "log compress well survive it."),
     Setting("storage_engine.wal_binary_frame", "storage_engine",
             "TS_WAL_BINARY_FRAME",
             "Frame log records by length", "bool", "1", "restart",
@@ -771,10 +759,8 @@ SETTINGS: List[Setting] = [
     Setting("storage_engine.wal_compress_records", "storage_engine",
             "TS_WAL_COMPRESS_RECORDS",
             "Compress log records", "bool", "1", "restart",
-            "On, a log record is zstd-compressed before it is written. IT NEEDS "
-            "TS_WAL_BINARY_RECORDS ON: the compressor is reached only from the protobuf encoder, "
-            "so a deployment writing JSON records has this on, reports it on, and compresses "
-            "nothing. Expect about 3.8x on the records, not the 8.61x an earlier note quoted -- "
+            "On, a log record is zstd-compressed before it is written. Records are protobuf "
+            "always, so the compressor is always reachable. Expect about 3.8x on the records, not the 8.61x an earlier note quoted -- "
             "that came from one segment of 151 records averaging 13.5 KB, and real documents here "
             "average 426 B, far too small to amortise a dictionary. Records of 256 bytes and over, "
             "95.2% of the raw bytes, reach 4.36x. It ships ON: it spends write CPU to buy disk, "

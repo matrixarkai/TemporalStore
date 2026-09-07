@@ -99,23 +99,17 @@ const COMPRESSION_MIN_BYTES: usize = 256;
 /// Whether new records are written compressed. **DEFAULT ON.**
 ///
 /// Reading never consults this. A payload says what encoding it is in, so a log written across a
-/// change reads end to end and turning it off again is not a one-way door -- the same contract
-/// `TS_WAL_BINARY_RECORDS` keeps.
+/// change reads end to end and turning it off again is not a one-way door.
 ///
 /// It was built off, which meant every deployment paid to store a log it had the
 /// code to shrink. Compression is applied only where it pays twice over: a payload under
 /// `COMPRESSION_MIN_BYTES` is left alone, and a payload whose compressed form is not actually
 /// smaller is written raw under its own marker.
 ///
-/// The variable now opts OUT, like `TS_WAL_BINARY_RECORDS` and `TS_WAL_BINARY_FRAME` beside it --
+/// The variable opts OUT, like `TS_WAL_BINARY_FRAME` beside it --
 /// and for the same reason it is safe to flip either way: which encoding a payload is in is a
 /// property of the payload, not of this flag.
 ///
-/// IT DOES NOTHING WITHOUT `TS_WAL_BINARY_RECORDS`. The compressor is reached only from `encode`
-/// below, and `encode_wal_payload` calls that only when `binary_records_enabled()`; the JSON arm
-/// writes `serde_json::to_vec` straight out. So on a deployment that turns binary records off this
-/// flag reads as on, reports as on, and compresses nothing. Turn binary records on first, or the
-/// log stays raw JSON.
 pub(crate) fn compress_records_enabled() -> bool {
     !matches!(
         std::env::var("TS_WAL_COMPRESS_RECORDS")
@@ -284,30 +278,6 @@ fn unescape_newlines(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// TS_WAL_BINARY_RECORDS: write engine records as protobuf.
-///
-/// **Default ON.** The doc comment here used to say OFF while the code returned true and the
-/// comment inside the body said ON -- three statements, two of them wrong, about the encoding of
-/// the durability log.
-///
-/// Reading never consults this: a payload is decoded by what its first byte says it is, so a log
-/// written across the flip reads end to end in either direction, and turning it off again is not
-/// a one-way door.
-pub(crate) fn binary_records_enabled() -> bool {
-    // Spelled the way every other engine flag is spelled. This read used to accept only "0" and
-    // "false", so "off" and "no" -- which turn any of its neighbours off -- left protobuf on
-    // here. It also put the default somewhere no check could find it, which is why the portal
-    // could not offer this setting: an offered knob has to show a default the source can be
-    // asked for.
-    !matches!(
-        std::env::var("TS_WAL_BINARY_RECORDS")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
 /// The kinds common enough to be worth a code rather than a string on every item.
 ///
 /// Order is the wire contract: a code means the same kind forever. A kind missing from this list
@@ -1109,7 +1079,6 @@ mod tests {
         let record = compressible_record();
         let runs = 64usize;
 
-        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
 
         std::env::set_var("TS_WAL_COMPRESS_RECORDS", "0");
         let raw_len = encode(&record).unwrap().len();
@@ -1141,7 +1110,6 @@ mod tests {
         );
 
         std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
     }
 
     /// Whether building the proto tail copies each outcome value before the encoder copies it.
