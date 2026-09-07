@@ -237,7 +237,20 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
         if record.get("record_type") != "matrixark_async_pipeline_task":
             continue
         status = str(record.get("status") or "")
-        if status in {"idle_commit_committed", "idle_commit_attempted", "idle_commit_failed"}:
+        # The statuses that mean "this task is done, stop re-attempting it".
+        #
+        # `idle_commit_attempted` used to be here and is gone: nothing in the repository ever
+        # writes it -- not Python, not the crates, not a fixture -- so it could never match, and
+        # listing it made this set look like it covered more outcomes than it does.
+        #
+        # `idle_commit_skipped` is NOT here, and that is the open question rather than an
+        # oversight. It is what the drain writes whenever `session_commit` declines
+        # (matrixark_local_adapter_retrieval), so it is the common outcome, and its completion
+        # record keeps `remaining_stages` set and `completed_stages` empty -- it is written as
+        # work still outstanding, which is an argument for re-attempting it. Adding it here would
+        # stop the re-attempts, and marking dead work resolved looks identical from outside to
+        # dropping live work. Settle what a skip means before changing this line.
+        if status in {"idle_commit_committed", "idle_commit_failed"}:
             try:
                 resolved_task_hashes.add(int(record.get("scheduled_task_hash") or record.get("task_hash") or 0))
             except (TypeError, ValueError):
