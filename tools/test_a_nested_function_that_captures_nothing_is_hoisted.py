@@ -34,9 +34,21 @@ import unittest
 
 
 def _module():
+    """The module under guard, imported the only way it can be.
+
+    It and `matrixark_mcp_local_adapter` import each other -- the mixin split -- so neither can be
+    entered first. Asking for this one directly raises "cannot import name
+    _LocalAdapterRetrieveMixin from partially initialized module", on BOTH arms: the dotted form for
+    want of a `tools` package, the bare one on the cycle. That is why this guard errored rather than
+    checked anything.
+
+    Importing the adapter first resolves the pair, and this module is then complete in `sys.modules`.
+    """
     try:
+        importlib.import_module("tools.matrixark_mcp_local_adapter")
         return importlib.import_module("tools.matrixark_local_adapter_retrieve")
     except ImportError:
+        importlib.import_module("matrixark_mcp_local_adapter")
         return importlib.import_module("matrixark_local_adapter_retrieve")
 
 
