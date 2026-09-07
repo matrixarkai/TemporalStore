@@ -298,31 +298,16 @@ def _aws_cli_s3_cp(source: str, target: str) -> None:
         raise MatrixArkError(compact_ws(completed.stderr or completed.stdout or f"aws s3 cp failed: {source} -> {target}"))
 
 
-def upload_file_to_s3(path: Path, *, bucket: str, key: str) -> str:
-    client = _s3_client()
-    if client is not None:
-        try:
-            client.upload_file(str(path), bucket, key)
-            return f"s3://{bucket}/{key}"
-        except Exception as exc:
-            raise MatrixArkError(f"S3 upload failed for {path}: {exc}") from exc
-    target = f"s3://{bucket}/{key}"
-    _aws_cli_s3_cp(str(path), target)
-    return target
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import upload_file_to_s3
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import upload_file_to_s3
 
 
-def download_s3_to_file(uri: str, target: Path) -> Path:
-    bucket, key = parse_s3_uri(uri)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    client = _s3_client()
-    if client is not None:
-        try:
-            client.download_file(bucket, key, str(target))
-            return target
-        except Exception as exc:
-            raise MatrixArkError(f"S3 download failed for {uri}: {exc}") from exc
-    _aws_cli_s3_cp(uri, str(target))
-    return target
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import download_s3_to_file
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import download_s3_to_file
 
 
 try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
@@ -402,39 +387,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_resource_io import infer_resource_suffix
 
 
-def rewrite_chunk_uris(chunks: list[Any], *, parse_uri: str, stored_raw_uri: str) -> list[Any]:
-    if not stored_raw_uri or stored_raw_uri == parse_uri:
-        return chunks
-    rewritten: list[Any] = []
-    for chunk in chunks:
-        metadata = dict(getattr(chunk, "metadata", {}) or {})
-        old_source_ref = str(getattr(chunk, "source_ref", ""))
-        fragment = old_source_ref.partition("#")[2]
-        relative_path = str(metadata.get("relative_path") or "").strip()
-        if relative_path and fragment:
-            new_source_ref = f"{stored_raw_uri}#path={relative_path}&{fragment}"
-        elif fragment:
-            new_source_ref = f"{stored_raw_uri}#{fragment}"
-        else:
-            new_source_ref = stored_raw_uri
-        metadata["raw_uri"] = stored_raw_uri
-        metadata["citation"] = new_source_ref
-        metadata["source_ref"] = new_source_ref
-        metadata["raw_storage_policy"] = "s3_raw_uri_only" if is_s3_uri(stored_raw_uri) else metadata.get("raw_storage_policy", "raw_uri_only")
-        metadata["raw_bytes_stored"] = False
-        piece_hash = str(metadata.get("content_hash") or content_hash(str(getattr(chunk, "text", ""))))
-        version = str(metadata.get("resource_version") or "")
-        chunk_hash = stable_hash(f"resource_chunk:{new_source_ref}:{version}:{piece_hash}")
-        rewritten.append(
-            chunk.__class__(
-                chunk_hash=chunk_hash,
-                source_ref=new_source_ref,
-                text=getattr(chunk, "text", ""),
-                token_estimate=int(getattr(chunk, "token_estimate", 1)),
-                metadata=metadata,
-            )
-        )
-    return rewritten
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import rewrite_chunk_uris
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import rewrite_chunk_uris
 
 
 try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
@@ -443,14 +399,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_resource_io import cleanup_temp_paths
 
 
-def aggregate_parse_warnings_from_chunks(chunks: list[Any]) -> list[str]:
-    warnings: list[str] = []
-    for chunk in chunks:
-        metadata = getattr(chunk, "metadata", {}) or {}
-        for warning in normalize_parse_warnings(metadata):
-            if warning not in warnings:
-                warnings.append(warning)
-    return warnings
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import aggregate_parse_warnings_from_chunks
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import aggregate_parse_warnings_from_chunks
 
 
 RESOURCE_FACT_KEYWORDS = re.compile(
