@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matrixark_gateway_metrics as gwm  # noqa: E402
 import matrixark_v1_gateway as gw  # noqa: E402
-from test_matrixark_v1_gateway import _FakeServer, _cfg  # noqa: E402
 
 ADMIN = {"Authorization": "Bearer k-acme"}
 
@@ -74,6 +73,11 @@ async def _explode(*args, **kwargs):
 class AStreamThatBreaksSaysWhyTest(unittest.TestCase):
 
     def setUp(self) -> None:
+        # Imported here rather than at module scope: importing another test module at import time
+        # reorders `unittest discover`, which can fail tests this file has nothing to do with --
+        # in CI, while passing locally.
+        from test_matrixark_v1_gateway import _FakeServer, _cfg
+
         self.original = gw._event_frame
         self.addCleanup(setattr, gw, "_event_frame", self.original)
         self.app = gw.make_v1_app(_FakeServer(), _cfg())
@@ -144,6 +148,11 @@ class HowTheStreamsEndedIsCountedTest(unittest.TestCase):
     series the gateway publishes."""
 
     def setUp(self) -> None:
+        # Imported here rather than at module scope: importing another test module at import time
+        # reorders `unittest discover`, which can fail tests this file has nothing to do with --
+        # in CI, while passing locally.
+        from test_matrixark_v1_gateway import _FakeServer, _cfg
+
         self.original = gw._event_frame
         self.addCleanup(setattr, gw, "_event_frame", self.original)
         self.app = gw.make_v1_app(_FakeServer(), _cfg())
