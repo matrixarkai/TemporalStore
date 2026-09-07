@@ -6268,11 +6268,40 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if memo is not None and memo[0] == signature:
             needs_filter = memo[1]
         else:
-            needs_filter = _memory_records_need_expiry_filter(records)
+            needs_filter = self._records_need_expiry_filter_incrementally(records)
             self._expiry_filter_memo = (signature, needs_filter)
         if not needs_filter:
             return records
         return filter_live_memory_records(records)
+
+    def _records_need_expiry_filter_incrementally(self, records: list[Json]) -> bool:
+        """The guard's answer, re-asking only about records it has not seen.
+
+        A write moves the signature above, which sent this walk over the WHOLE store for every
+        write: at 32,000 records the read after one append cost 14.34 ms against 0.333 ms warm, and
+        97% of it was here. The compaction a write appears to trigger is a tenth of a millisecond of
+        that.
+
+        The question is a monotone OR of a per-record property, so an answer already obtained for a
+        set of records still holds for them. What is needed is to know WHICH records those were, and
+        the cache says so by identity: ``_read_cache_records`` is extended in place by appends and
+        REPLACED by anything that removes -- a delete hands back a different list object. So the same
+        object means the walked prefix is intact and only the tail is new; a different object, or a
+        shorter list, means re-ask everything.
+
+        Holding the list keeps its references alive until the next read replaces the memo. That is
+        one list of pointers, not a copy of the records, and it is what makes the check identity-safe
+        rather than an ``id()`` that a freed list could have its address reused for.
+        """
+        base = self._read_cache_records
+        memo = getattr(self, "_expiry_guard_memo", None)
+        if (base is not None and memo is not None and memo[0] is base
+                and len(records) >= memo[1]):
+            answer = memo[2] or _memory_records_need_expiry_filter(records[memo[1]:])
+        else:
+            answer = _memory_records_need_expiry_filter(records)
+        self._expiry_guard_memo = (base, len(records), answer)
+        return answer
 
     def _read_all_compacted(self) -> list[Json]:
         cache_key = self._cache_key_str()
