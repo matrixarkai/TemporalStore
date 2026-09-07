@@ -585,6 +585,23 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
             args=args,
         )
 
+        # The transport identifiers stay out of what gets persisted. `thread_id` and `turn_id`
+        # name a Codex transport exchange, not a memory, and the context built here is what the
+        # hook writes.
+        for field in ("thread_id", "turn_id", "conversation_id"):
+            self.assertNotIn(field, agent_context)
+        metadata = agent_context.get("metadata") or {}
+        for field in ("thread_id", "turn_id", "conversation_id"):
+            self.assertNotIn(field, metadata)
+        self.assertNotIn(payload["thread_id"], json.dumps(agent_context))
+
+        # The control, without which this passes on any payload that simply lacks them: the same
+        # payload DOES carry a thread and turn id, and the lineage helper reads them. So their
+        # absence above is a choice about what is persisted, not an empty input.
+        lineage = hook.codex_hook_lineage_from_payload(
+            payload, Namespace(session_id="s-1"), session_id_source="payload_field")
+        self.assertEqual(payload["thread_id"], lineage.get("thread_id"))
+        self.assertEqual(payload["turn_id"], lineage.get("turn_id"))
 
     def test_user_prompt_payload_unwraps_delegation_input(self) -> None:
         payload = decode_payload(
