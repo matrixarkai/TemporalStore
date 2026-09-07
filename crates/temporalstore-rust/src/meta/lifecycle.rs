@@ -654,16 +654,26 @@ impl SingleNodeMeta {
                 };
             }
         }
-        let latest_snapshot = state
+        // A load finishing says where the shard now is. It does not say that
+        // the shard stopped preferring anywhere, nor that it has only just
+        // joined -- so both are carried across, the way the snapshot already is.
+        let (latest_snapshot, preferred_location, registered_at_ms) = state
             .shards
             .get(&request.shard_id)
-            .and_then(|location| location.latest_snapshot.clone());
+            .map(|location| {
+                (
+                    location.latest_snapshot.clone(),
+                    location.preferred_location.clone(),
+                    location.registered_at_ms,
+                )
+            })
+            .unwrap_or_default();
         let server_addr = request.server_addr.clone();
         state.shards.insert(
             request.shard_id,
             ShardLocation {
-                registered_at_ms: 0,
-                preferred_location: String::new(),
+                registered_at_ms,
+                preferred_location,
                 state: MetaEntityState::Normal,
                 shard_id: request.shard_id,
                 server_addr: server_addr.clone(),
