@@ -594,6 +594,16 @@
       newest first. Route, method and status only &mdash; no key, no tenant, nothing about who
       asked. Counters tell you seven requests failed; this tells you whether that was a minute ago
       or last Tuesday.</p>
+    <!-- The id was already printed in its own column and named nowhere. It is the whole route from
+         "something failed" to the traceback, and it is not guessable: the token appears in the
+         caller's response body AND in this worker's log, and joining the two is the only way to
+         see what the gateway declined to tell the caller. -->
+    <p class="hint" style="margin-top:0">An <b>incident</b> is the token the gateway gave the
+      caller in place of the error. The same token is in this worker&rsquo;s log, at ERROR level
+      under the logger <code>matrixark.gateway</code>, with the traceback the caller was not
+      given &mdash; so <code>grep</code> the id there. A dash means the request was refused
+      rather than broken: a 401 for a wrong key mints no incident, because nothing went wrong
+      inside.</p>
     <div id="failures"><div class="empty">Nothing yet.</div></div>
   </section>
 
