@@ -39,10 +39,10 @@ except ImportError:  # top-level path
     from matrixark_mcp_validation import fold_mem0_scope_aliases
 
 
-def normalize_matrixark_role(role: str) -> str:
-    normalized = safe_identifier(role or "service", default="service")
-    aliases = {"administrator": "admin", "tenant_admin": "admin", "portal_user": "developer", "read_only": "viewer", "readonly": "viewer", "agent": "service", "agent_service": "service"}
-    return aliases.get(normalized, normalized)
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import normalize_matrixark_role
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import normalize_matrixark_role
 
 
 def role_allows_scopes(role: str, scopes: set[str]) -> bool:
@@ -218,43 +218,22 @@ def optional_string_list(data: Json, field: str, default: list[str] | None = Non
     return list(value)
 
 
-def safe_identifier(value: str, *, default: str) -> str:
-    compact = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip()).strip("._-").lower()
-    return compact or default
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import safe_identifier
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import safe_identifier
 
 
-def local_account_user_id() -> str:
-    return safe_identifier(
-        os.environ.get("MATRIXARK_LOCAL_USER_ID")
-        or os.environ.get("USERNAME")
-        or os.environ.get("USER")
-        or "local_user",
-        default="local_user",
-    )
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import local_account_user_id
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import local_account_user_id
 
 
-def local_agent_name(args: Json, scope: Json) -> str:
-    hook = args.get("agent_hook") if isinstance(args.get("agent_hook"), dict) else {}
-    metadata = args.get("metadata") if isinstance(args.get("metadata"), dict) else {}
-    messages = args.get("messages") if isinstance(args.get("messages"), list) else []
-    first_named_message = ""
-    for message in messages:
-        if isinstance(message, dict) and isinstance(message.get("name"), str) and message.get("name"):
-            first_named_message = str(message["name"])
-            break
-    return safe_identifier(
-        str(
-            args.get("agent_name")
-            or scope.get("agent_name")
-            or scope.get("agent")
-            or hook.get("source")
-            or metadata.get("source")
-            or first_named_message
-            or os.environ.get("MATRIXARK_LOCAL_AGENT_NAME")
-            or "local_agent"
-        ),
-        default="local_agent",
-    )
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import local_agent_name
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import local_agent_name
 
 
 def local_identity_defaults(args: Json, scope: Json) -> Json:
@@ -274,12 +253,16 @@ def local_identity_defaults(args: Json, scope: Json) -> Json:
     }
 
 
-def canonical_account_id(value: str) -> str:
-    return value or "acct_local"
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import canonical_account_id
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import canonical_account_id
 
 
-def canonical_tenant_id(value: str) -> str:
-    return value or "tenant_local_agent"
+try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
+    from .matrixark_mcp_identity import canonical_tenant_id
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import canonical_tenant_id
 
 
 def identity_hashes(account_id: str, tenant_id: str, user_id: str = "", session_id: str = "", agent_id: str = "") -> Json:

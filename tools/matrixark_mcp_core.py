@@ -3620,8 +3620,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_scoring import clamp01
 
 
-def normalized_dense_score(value: float) -> float:
-    return clamp01((value + 1.0) / 2.0)
+try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it
+    from .matrixark_mcp_scoring import normalized_dense_score
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import normalized_dense_score
 
 
 def sparse_lexical_score(query_terms: set[str], text: str) -> float:

@@ -778,8 +778,10 @@ def normalized_session_buffer_from_ingest(ingest: Json | None) -> Json:
     return summary
 
 
-def hook_storage_options() -> Json:
-    return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
+try:  # the implementation lives in matrixark_codex_hook; this module re-exports it
+    from .matrixark_codex_hook import hook_storage_options
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_codex_hook import hook_storage_options
 
 
 def require_retrieval_memory_coverage(value: Any) -> bool:
