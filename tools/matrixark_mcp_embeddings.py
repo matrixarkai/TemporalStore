@@ -159,17 +159,9 @@ def embedding_for_text(text: str, role: str = "passage") -> list[float]:
         with _EMBEDDING_VECTOR_CACHE_LOCK:
             _cache_put(cache_key, vector)
         return vector
-    vector = [0.0] * EMBEDDING_DIM
-    for token in tokens(text):
-        digest = hashlib.sha256(token.encode("utf-8")).digest()
-        index = digest[0] % EMBEDDING_DIM
-        sign = 1.0 if digest[1] % 2 == 0 else -1.0
-        vector[index] += sign
-    norm = math.sqrt(sum(value * value for value in vector))
-    if norm == 0:
-        result = vector
-    else:
-        result = [round(value / norm, 6) for value in vector]
+    # The same token-hash encoder the api and oss paths fall back to; one copy, so widening or
+    # reweighting it cannot reach one caller and miss the other.
+    result = _deterministic_embedding_for_text(text)
     with _EMBEDDING_VECTOR_CACHE_LOCK:
         _cache_put(cache_key, result)
     return result

@@ -72,7 +72,14 @@ def _mcp_debug_log(message: str) -> None:
         pass
 MAX_PRIOR_MESSAGES = 8
 MAX_PRIOR_CHARS = 4096
-EMBEDDING_DIM = 32
+# EMBEDDING_DIM lives with the encoder that uses it. core carried its own copy of this
+# constant, left from when it also carried its own embedding_for_text -- and because the
+# serving modules pull core in with `import *`, a copy here is the one they would resolve.
+# One definition, imported, so widening the encoder reaches every reader.
+try:  # package path
+    from tools.matrixark_mcp_embeddings import EMBEDDING_DIM  # noqa: F401
+except ImportError:  # top-level path (direct tools/ execution)
+    from matrixark_mcp_embeddings import EMBEDDING_DIM  # noqa: F401
 DIRECT_RECORD_LOG_SHARD_SIZE = 256
 DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "65536"))
 DIRECT_RECORD_HOT_CACHE_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "20000"))

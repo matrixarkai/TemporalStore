@@ -2,6 +2,16 @@
 from __future__ import annotations
 
 try:  # package path
+    from tools.matrixark_mcp_native_pack_policy import (
+        native_context_pack_required_for_backend,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_native_pack_policy import (
+        native_context_pack_required_for_backend,
+    )
+
+
+try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
@@ -4317,10 +4327,11 @@ class _LocalAdapterIngestMixin:
         return False
 
     def native_context_pack_required(self) -> bool:
-        if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
-            return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in {"1", "true", "yes"}
+        # One rule, in matrixark_mcp_native_pack_policy. This used to restate it, and a rule stated
+        # twice is a rule that can be changed once.
         backend_label = str(getattr(self, "_backend_label", lambda: "local")())
-        return backend_label != "local"
+        return native_context_pack_required_for_backend(
+            backend_label, require_flag=MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK)
 
     def native_context_pack(self, request: Json) -> Json | None:
         """Return a backend-assembled ContextPack when the native backend supports it.
