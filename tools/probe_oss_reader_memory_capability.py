@@ -159,12 +159,10 @@ def call_reader(base_url: str, model: str, question: str, context: str, *, timeo
         return f"reader_error:{type(exc).__name__}:{exc}"
 
 
-def probe_reader(base_url: str) -> bool:
-    try:
-        with urllib.request.urlopen(base_url.rstrip("/") + "/models", timeout=10) as resp:
-            return 200 <= resp.status < 300
-    except Exception:
-        return False
+try:  # the implementation lives in check_oss_model_readiness; this module re-exports it
+    from .check_oss_model_readiness import endpoint_reachable
+except ImportError:  # Direct script execution from tools/.
+    from check_oss_model_readiness import endpoint_reachable
 
 
 def answer_matches(answer: str, accepted: list[str]) -> bool:
@@ -189,12 +187,10 @@ def percentile(values: list[float], pct: float) -> float:
     return round(ordered[low] * (1 - frac) + ordered[high] * frac, 3)
 
 
-def finish(report: dict[str, Any], path: str, started: float, code: int) -> int:
-    report["duration_seconds"] = round(time.time() - started, 3)
-    report["ready"] = code == 0 and not report.get("blockers")
-    Path(path).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-    print(path)
-    return code
+try:  # the implementation lives in run_external_baseline_direct_retrieval; this module re-exports it
+    from .run_external_baseline_direct_retrieval import finish
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_direct_retrieval import finish
 
 
 if __name__ == "__main__":

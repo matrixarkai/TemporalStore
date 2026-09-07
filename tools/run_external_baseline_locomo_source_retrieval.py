@@ -562,25 +562,16 @@ def normalized_model_name(value: Any) -> str:
     return re.sub(r"[^a-z0-9._:-]+", "", str(value or "").strip().lower())
 
 
-def percentile(values: list[float], pct: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return round(ordered[0], 3)
-    rank = (len(ordered) - 1) * (pct / 100.0)
-    low = math.floor(rank)
-    high = math.ceil(rank)
-    if low == high:
-        return round(ordered[int(rank)], 3)
-    value = ordered[low] * (high - rank) + ordered[high] * (rank - low)
-    return round(value, 3)
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import percentile
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import percentile
 
 
-def reduction_percent(retrieved: int, source: int) -> float:
-    if source <= 0:
-        return 0.0
-    return round(100.0 * (1.0 - (retrieved / source)), 4)
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import reduction_percent
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import reduction_percent
 
 
 def finish_with_contract_gate(report: dict[str, Any], path: str, started: float, require_contract: bool) -> int:

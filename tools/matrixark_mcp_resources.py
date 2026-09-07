@@ -146,18 +146,10 @@ def debug_resource_metadata(metadata: Json) -> Json:
     return debug
 
 
-def source_locator_from_ref(source_ref: str, raw_uri: str) -> str:
-    source_ref = str(source_ref or "")
-    raw_uri = str(raw_uri or "")
-    if not source_ref:
-        return ""
-    if raw_uri and source_ref == raw_uri:
-        return ""
-    if raw_uri and source_ref.startswith(raw_uri + "#"):
-        return source_ref.partition("#")[2]
-    if "#" in source_ref:
-        return source_ref.partition("#")[2]
-    return source_ref
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import source_locator_from_ref
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import source_locator_from_ref
 
 
 def source_ref_from_locator(raw_uri: str, source_locator: str) -> str:
@@ -424,11 +416,10 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
     return result
 
 
-def infer_resource_suffix(resource_type: str, raw_uri: str) -> str:
-    suffix = (resource_type or "").lower().lstrip(".")
-    if not suffix and raw_uri and raw_uri != "inline-resource":
-        suffix = Path(raw_uri).suffix.lower().lstrip(".")
-    return suffix or "txt"
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import infer_resource_suffix
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import infer_resource_suffix
 
 
 def rewrite_chunk_uris(chunks: list[Any], *, parse_uri: str, stored_raw_uri: str) -> list[Any]:
@@ -466,14 +457,10 @@ def rewrite_chunk_uris(chunks: list[Any], *, parse_uri: str, stored_raw_uri: str
     return rewritten
 
 
-def cleanup_temp_paths(paths: list[str]) -> None:
-    for path_text in paths:
-        try:
-            path = Path(path_text)
-            if path.exists() and path.is_dir() and path.name.startswith("matrixark-"):
-                shutil.rmtree(path, ignore_errors=True)
-        except Exception:
-            pass
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import cleanup_temp_paths
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import cleanup_temp_paths
 
 
 def aggregate_parse_warnings_from_chunks(chunks: list[Any]) -> list[str]:

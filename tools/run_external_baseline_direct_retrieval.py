@@ -286,50 +286,16 @@ def extract_candidate_hint(question: str, context: str) -> str:
     return best_sentence[:500]
 
 
-def call_reader(
-    base_url: str,
-    model: str,
-    question: str,
-    context: str,
-    *,
-    timeout: float,
-    max_tokens: int,
-) -> str:
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": OSS_READER_SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": f"Question: {question}\nContext:\n{context}\nAnswer:",
-            },
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens,
-    }
-    req = urllib.request.Request(
-        base_url.rstrip("/") + "/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        return str(data["choices"][0]["message"]["content"]).strip()
-    except Exception as exc:
-        return f"reader_error:{type(exc).__name__}:{exc}"
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import call_reader
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import call_reader
 
 
-def probe_reader(base_url: str) -> bool:
-    try:
-        with urllib.request.urlopen(base_url.rstrip("/") + "/models", timeout=10) as resp:
-            return 200 <= resp.status < 300
-    except Exception:
-        return False
+try:  # the implementation lives in check_oss_model_readiness; this module re-exports it
+    from .check_oss_model_readiness import endpoint_reachable
+except ImportError:  # Direct script execution from tools/.
+    from check_oss_model_readiness import endpoint_reachable
 
 
 def answer_matches(expected: str, actual: str, context: str) -> bool:
@@ -362,25 +328,16 @@ def token_count(text: str) -> int:
     return len(WORD_RE.findall(text))
 
 
-def reduction_percent(retrieved: int, source: int) -> float:
-    if source <= 0:
-        return 0.0
-    return round(100.0 * (1.0 - (retrieved / source)), 4)
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import reduction_percent
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import reduction_percent
 
 
-def percentile(values: list[float], pct: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return round(ordered[0], 3)
-    rank = (len(ordered) - 1) * (pct / 100.0)
-    low = math.floor(rank)
-    high = math.ceil(rank)
-    if low == high:
-        return round(ordered[int(rank)], 3)
-    value = ordered[low] * (high - rank) + ordered[high] * (rank - low)
-    return round(value, 3)
+try:  # the implementation lives in run_external_baseline_longmem_source_retrieval; this module re-exports it
+    from .run_external_baseline_longmem_source_retrieval import percentile
+except ImportError:  # Direct script execution from tools/.
+    from run_external_baseline_longmem_source_retrieval import percentile
 
 
 def load_matrixark_reference(path: str) -> dict[str, Any]:
