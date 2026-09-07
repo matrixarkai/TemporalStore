@@ -7395,13 +7395,55 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 "feedback_reason": reason}
 
     def records_for_get_all(self, scope: Json) -> list[Json]:
-        """The live records get_all filters. Base implementation: the whole store.
+        """The live records get_all filters. Base implementation: the subject's, or the whole store.
 
         get_all's own scope filter (hash equality) runs over whatever this returns, so an
         override only has to produce a SUPERSET of the subject's live events -- being slow is
         recoverable, dropping a memory from the listing is not.
+
+        The subject's own records are a superset of what get_all keeps for that subject, and a much
+        smaller one: a listing then costs its subject rather than the store. Real callers always
+        arrive with both hashes resolved (measured end to end, 86 of 86), so this narrows in
+        practice and not only in principle; a scope carrying neither hash matches everything, and
+        gets the whole list exactly as before.
+
+        The bucket is remembered per (tenant_hash, user_hash) on the same signature the compacted
+        read cache uses, and only while the expiry filter is inactive.
+
+        On that condition, honestly: the signature's third term is ``len(records)`` AFTER expiry,
+        and expiry only ever removes records from a fixed set, so a clock that passes an expiry
+        shortens the list and moves the signature by itself. The condition is therefore a second
+        line of defence rather than the only one -- it makes the hazard structurally unreachable
+        instead of relying on that monotonicity argument holding as the code changes, which is the
+        same reason ``read_all`` refuses to cache expiry at all. It is not free: a store holding a
+        single TTL record memoises no bucket for any subject and pays the full pass every time.
         """
-        return self.read_all()
+        records = self.read_all()
+        tenant_hash, user_hash = self._resolve_subject_hashes(scope) if scope else (0, 0)
+        if not tenant_hash and not user_hash:
+            return records
+        signature = (self._read_cache_size, self._read_cache_mtime_ns, len(records))
+        expiry = getattr(self, "_expiry_filter_memo", None)
+        cacheable = expiry is not None and expiry[0] == signature and not expiry[1]
+        if cacheable:
+            memo = getattr(self, "_get_all_scope_memo", None)
+            if memo is None or memo[0] != signature:
+                memo = (signature, {})
+                self._get_all_scope_memo = memo
+            bucket = memo[1].get((tenant_hash, user_hash))
+            if bucket is not None:
+                return bucket
+        bucket = []
+        for record in records:
+            rec_tenant, rec_user = _record_scope_hashes(record)
+            if tenant_hash and rec_tenant != tenant_hash:
+                continue
+            if user_hash and rec_user != user_hash:
+                continue
+            bucket.append(record)
+        if cacheable:
+            self._get_all_scope_memo[1][(tenant_hash, user_hash)] = bucket
+        return bucket
 
     def records_for_summary_refresh(self) -> list[Json]:
         """The live records a summary-refresh pass reads. Base implementation: the whole store.
