@@ -881,18 +881,10 @@ def build_segment_prompt(messages: list[Json]) -> str:
     )
 
 
-def parse_first_json_object(text: str) -> Json:
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(text):
-        if char != "{":
-            continue
-        try:
-            value, _end = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            return value
-    raise MatrixArkError("model response did not contain a JSON object")
+try:  # the implementation lives in matrixark_mcp_extraction_provider; this module re-exports it
+    from .matrixark_mcp_extraction_provider import parse_first_json_object
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_extraction_provider import parse_first_json_object
 
 
 def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: str = "", max_new_tokens: int = 512, local_only: bool = False) -> Json:

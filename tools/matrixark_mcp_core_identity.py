@@ -81,8 +81,14 @@ def json_text(value: Json) -> Json:
     }
 
 
-class MatrixArkError(ValueError):
-    pass
+# One class, not two. This was written out here as well as in matrixark_mcp_errors, and two
+# classes of the same name are not interchangeable: `except` compares by identity, so a handler
+# bound to one silently misses an exception raised through the other. matrixark_mcp_errors owns
+# it -- more modules import from there, and it is a leaf, so nothing can cycle through it.
+try:  # the implementation lives in matrixark_mcp_errors; this module re-exports it
+    from .matrixark_mcp_errors import MatrixArkError
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_errors import MatrixArkError
 
 
 class MatrixArkInvalidRequestError(MatrixArkError):
@@ -188,13 +194,10 @@ def require_messages(data: Json) -> list[Json]:
     return normalized_messages
 
 
-def optional_object(data: Json, field: str) -> Json:
-    value = data.get(field, {})
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise MatrixArkError(f"{field} must be an object")
-    return value
+try:  # the implementation lives in matrixark_mcp_validation; this module re-exports it
+    from .matrixark_mcp_validation import optional_object
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_validation import optional_object
 
 
 def optional_string(data: Json, field: str, default: str = "") -> str:

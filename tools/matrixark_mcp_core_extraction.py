@@ -84,36 +84,10 @@ except ImportError:  # top-level path (matrixark_mcp_core)
 __all__ = ['openai_compatible_json_call', 'anthropic_json_call', 'normalize_entity_operator', 'normalize_extracted_entities', 'normalize_extracted_segments', 'normalize_extracted_facts', 'openai_compatible_one_pass_memory_extraction', 'anthropic_one_pass_memory_extraction', 'openai_compatible_resource_facts', 'compact_internal_extraction', 'ONE_PASS_MEMORY_SCHEMA']
 
 
-def openai_compatible_json_call(*, system: str, user: str, model: str | None = None, max_tokens: int | None = None) -> Json:
-    payload = {
-        "model": model or EXTRACTION_LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens or EXTRACTION_LLM_MAX_TOKENS,
-        "response_format": {"type": "json_object"},
-    }
-    headers = {"Content-Type": "application/json"}
-    api_key = os.environ.get(EXTRACTION_LLM_API_KEY_ENV, "")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(
-        f"{EXTRACTION_LLM_BASE_URL}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=EXTRACTION_LLM_TIMEOUT_SEC) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        content = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
-        if not content:
-            raise MatrixArkError("OpenAI-compatible extraction provider returned empty content")
-        return parse_first_json_object(content)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, MatrixArkError) as exc:
-        raise MatrixArkError(f"OpenAI-compatible extraction provider failed: {exc}") from exc
+try:  # the implementation lives in matrixark_mcp_extraction_provider; this module re-exports it
+    from .matrixark_mcp_extraction_provider import openai_compatible_json_call
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_extraction_provider import openai_compatible_json_call
 
 
 def anthropic_json_call(*, system: str, user: str, model: str | None = None, max_tokens: int | None = None) -> Json:
