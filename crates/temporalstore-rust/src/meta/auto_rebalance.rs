@@ -113,8 +113,30 @@ impl Default for AutoRebalanceOptions {
 /// set of `live_servers`, evacuating unavailable owners first and then (if
 /// enabled) balancing load. `shard_owners` maps shard id → current owner addr
 /// (owner may be a dead/frozen server, not present in `live_servers`).
+/// Plan from owners the caller holds.
+///
+/// Kept for callers outside this crate that already have an owned map; it
+/// borrows from theirs rather than copying it again. The metaserver uses
+/// [`compute_auto_rebalance_borrowed`], which never makes the copies.
 pub fn compute_auto_rebalance(
     shard_owners: &BTreeMap<ShardId, String>,
+    live_servers: &BTreeSet<String>,
+    options: AutoRebalanceOptions,
+) -> Vec<ShardReassignment> {
+    let borrowed = shard_owners
+        .iter()
+        .map(|(shard_id, owner)| (*shard_id, owner.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    compute_auto_rebalance_borrowed(&borrowed, live_servers, options)
+}
+
+/// Plan without owning the owner names.
+///
+/// They are compared and named as targets, never kept, and the state they come
+/// from is read-locked for the whole round -- so copying one per serving shard
+/// bought nothing.
+pub fn compute_auto_rebalance_borrowed(
+    shard_owners: &BTreeMap<ShardId, &str>,
     live_servers: &BTreeSet<String>,
     options: AutoRebalanceOptions,
 ) -> Vec<ShardReassignment> {
@@ -129,7 +151,7 @@ pub fn compute_auto_rebalance(
     let mut load: BTreeMap<&str, usize> =
         live_servers.iter().map(|addr| (addr.as_str(), 0)).collect();
     for current in shard_owners.values() {
-        if let Some(count) = load.get_mut(current.as_str()) {
+        if let Some(count) = load.get_mut(*current) {
             *count += 1;
         }
     }
@@ -148,7 +170,7 @@ pub fn compute_auto_rebalance(
         if plans.len() >= options.max_moves {
             return plans;
         }
-        if live_servers.contains(current) {
+        if live_servers.contains(*current) {
             continue;
         }
         let target = least_loaded_server(&load);
@@ -156,7 +178,7 @@ pub fn compute_auto_rebalance(
         owner_map(&mut owner, shard_owners, live_servers).insert(*shard_id, Some(target));
         plans.push(ShardReassignment {
             shard_id: *shard_id,
-            from_server: Some(current.clone()),
+            from_server: Some((*current).to_string()),
             to_server: target.to_string(),
             reason: ShardReassignmentReason::OwnerUnavailable,
         });
@@ -207,16 +229,14 @@ pub fn compute_auto_rebalance(
 /// deciding to do nothing.
 fn owner_map<'slot, 'data>(
     slot: &'slot mut Option<BTreeMap<ShardId, Option<&'data str>>>,
-    shard_owners: &'data BTreeMap<ShardId, String>,
+    shard_owners: &'data BTreeMap<ShardId, &'data str>,
     live_servers: &'data BTreeSet<String>,
 ) -> &'slot mut BTreeMap<ShardId, Option<&'data str>> {
     slot.get_or_insert_with(|| {
         shard_owners
             .iter()
             .map(|(shard_id, current)| {
-                let held = live_servers
-                    .get(current.as_str())
-                    .map(|addr| addr.as_str());
+                let held = live_servers.get(*current).map(|addr| addr.as_str());
                 (*shard_id, held)
             })
             .collect()
@@ -267,7 +287,7 @@ impl SingleNodeMeta {
             .map(|server| server.server_addr.clone())
             .collect::<BTreeSet<_>>();
         let shard_owners = serving_shard_owners(&state);
-        compute_auto_rebalance(&shard_owners, &live_servers, options)
+        compute_auto_rebalance_borrowed(&shard_owners, &live_servers, options)
     }
 
     /// Apply a single reassignment to the shard→owner map, preserving any

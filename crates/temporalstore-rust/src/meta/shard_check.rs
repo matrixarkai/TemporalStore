@@ -422,7 +422,12 @@ impl SingleNodeMeta {
             let state = self.inner.read().expect("meta lock poisoned");
             // A frozen shard is out of service on purpose, so its owner not
             // serving it is expected rather than divergence.
-            let shard_owners = serving_shard_owners(&state);
+            // The check plans after this lock is dropped, so it takes names
+            // of its own rather than borrowing ones that will not outlive it.
+            let shard_owners = serving_shard_owners(&state)
+                .into_iter()
+                .map(|(shard_id, owner)| (shard_id, owner.to_string()))
+                .collect::<BTreeMap<_, _>>();
             let servers = state
                 .servers
                 .values()
