@@ -3229,6 +3229,22 @@ function liveStream(options) {
   if (window.__matrixarkLive) { return; }
   window.__matrixarkLive = "strip";
 
+  /* Nothing arrives to announce that nothing is arriving, so noticing needs a timer. Three ticks
+     of the gateway's OWN cadence: one missed tick is scheduling, two is a slow one, three is not
+     arriving. The number is not written here -- it is whatever the gateway last said. */
+  function watchQuiet() {
+    if (!tickMs || !blockAt || !controller) { return; }
+    var quiet = Date.now() - blockAt;
+    if (quiet > tickMs * 3 && dot.className.indexOf("stale") < 0) {
+      dot.className = "live-dot stale";
+      dot.title = "no update for " + Math.round(quiet / 1000) + "s";
+    }
+  }
+  quietTimer = setInterval(watchQuiet, 1000);
+  window.addEventListener("pagehide", function () {
+    if (quietTimer) { clearInterval(quietTimer); quietTimer = null; }
+  });
+
   function key() {
     var el = document.getElementById("key");
     if (el && el.value.trim()) { return el.value.trim(); }
@@ -3236,6 +3252,13 @@ function liveStream(options) {
   }
 
   var controller = null, backoff = 1000, buffer = "";
+  /* When anything last arrived, and the gateway's own cadence off its frames.
+     The strip is the one element on every page, and it said "live" whenever the socket was open --
+     so a gateway that stopped producing frames left every page green. The page-side client learned
+     this in mx#1189; the strip runs its own client, because five of the seven pages never load the
+     other one, so it has to learn it too. `test_both_stream_clients_agree_when_a_stream_is_quiet`
+     is what stops the two rules drifting apart. */
+  var blockAt = 0, tickMs = 0, quietTimer = null;
   /* Set when the gateway says it is closing on purpose, cleared by the reopen it
      causes. A planned recycle and a gateway that stopped answering look identical
      from here without it, and only one of them is      one of them is worth telling anybody about. */
@@ -3288,6 +3311,14 @@ function liveStream(options) {
           var parts = buffer.split("\n\n");
           buffer = parts.pop();
           parts.forEach(function (block) {
+            /* Every block, keepalives included: when nothing has changed the gateway sends a
+               keepalive instead of a frame, so silence on an idle deployment is HEALTHY and only
+               nothing-at-all is not. */
+            blockAt = Date.now();
+            if (dot.className.indexOf("stale") >= 0) {
+              dot.className = "live-dot";
+              dot.title = "live";
+            }
             /* Read the label. A goodbye carries a data line of its own, and rendering it as a
                frame empties every segment of the strip -- on all five pages that read the stream
                through here, every ten minutes. */
@@ -3298,7 +3329,15 @@ function liveStream(options) {
             });
             if (name === "bye") { planned = true; return; }
             if (name !== "status" || !payload) { return; }
-            try { render(JSON.parse(payload)); } catch (err) { /* ignore */ }
+            try {
+              var frame = JSON.parse(payload);
+              /* The gateway states its cadence on every frame. Without one -- an older gateway --
+                 nothing is claimed about a quiet stream. */
+              if (typeof frame.tick_s === "number" && frame.tick_s > 0) {
+                tickMs = frame.tick_s * 1000;
+              }
+              render(frame);
+            } catch (err) { /* ignore */ }
           });
           return pump();
         });
