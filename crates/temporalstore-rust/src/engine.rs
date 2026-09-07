@@ -2927,24 +2927,29 @@ pub(super) fn wal_single_barrier() -> bool {
     !wal_legacy_recovery()
 }
 
-// TS_ENGINE_CONCURRENT_COMMIT: run the WAL durability barrier OUTSIDE the global `shards`
-// write lock. When ON, a synchronous write reserves its WAL sequence and appends its record
-// UNDER the `shards` lock (preserving WAL-order == apply-order), then RELEASES the lock and
-// awaits the durable barrier (`commit_barrier`). This lets concurrent same-shard writers reach
-// the group-commit queue while a peer's fdatasync is in flight, so #45's fsync coalescing
-// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default ON; set
-// the variable to 0 for byte-identical behaviour to the legacy in-lock `append_with_sync`
-// barrier. The ack is always returned
-// strictly AFTER the covering barrier succeeds, so durability is never weakened.
+// CONCURRENT COMMIT: run the WAL durability barrier OUTSIDE the global `shards` write lock.
+// A synchronous write reserves its WAL sequence and appends its record UNDER the `shards` lock
+// (preserving WAL-order == apply-order), then RELEASES the lock and awaits the durable barrier
+// (`commit_barrier`). This lets concurrent same-shard writers reach the group-commit queue while
+// a peer's fdatasync is in flight, so #45's fsync coalescing actually engages (fewer fsyncs than
+// writes; QPS scales with concurrency). The ack is always returned strictly AFTER the covering
+// barrier succeeds, so durability is never weakened.
+//
+// This is the `concurrent_commit` field, per engine, true everywhere but the test that measures
+// what the in-lock barrier costs. `TS_ENGINE_CONCURRENT_COMMIT` used to decide it for every
+// engine in the process at once; it is read by nothing now, so setting it does nothing.
 
 
-// TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
-// engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch / recovery
-// replay / pipelined-propose group instead of one per entry) and anchor the served index off the
-// O(1) cached WAL sequence. Default ON; set the variable to 0 for per-entry
-// `execute_raft_apply` (byte-identical). The
-// raft log stays the durability + reconstruction source; the coalesced barrier still completes
-// before the raft runtime advances the durable applied_index.
+// RAFT APPLY COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
+// engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch /
+// recovery replay / pipelined-propose group instead of one per entry) and anchor the served index
+// off the O(1) cached WAL sequence. The raft log stays the durability + reconstruction source;
+// the coalesced barrier still completes before the raft runtime advances the durable
+// applied_index.
+//
+// This is the `raft_apply_coalesce` field, per engine, true everywhere but the test that measures
+// the per-entry loop. `TS_RAFT_APPLY_COALESCE` used to decide it for every engine in the process
+// at once; it is read by nothing now, so setting it does nothing.
 
 fn env_flag_on(name: &str) -> bool {
     matches!(
@@ -2957,9 +2962,6 @@ fn env_flag_on(name: &str) -> bool {
     )
 }
 
-/// Default-ON gate read: the fix is LIVE unless explicitly disabled with
-/// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
-/// fixed behavior by default; the env var remains only as an escape hatch.
 /// Tuning for sampled eviction, read from the environment with defaults that mirror the
 /// established policy: sample several buckets per wanted victim, keep a bounded candidate pool
 /// across passes, and cap how far one pass may walk.
@@ -2978,6 +2980,9 @@ pub(crate) fn evict_sampler_config() -> eviction_sampler::EvictionSamplerConfig 
     }
 }
 
+/// Default-ON gate read: the fix is LIVE unless explicitly disabled with
+/// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
+/// fixed behavior by default; the env var remains only as an escape hatch.
 fn env_flag_default_on(name: &str) -> bool {
     !matches!(
         std::env::var(name)
