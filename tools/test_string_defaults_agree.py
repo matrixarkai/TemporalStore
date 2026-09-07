@@ -25,6 +25,7 @@ disagreeing fails too, because a list allowed to rot describes a tree that no lo
 """
 from __future__ import annotations
 
+import ast
 import collections
 import os
 import re
@@ -35,9 +36,7 @@ from typing import Dict, List, Tuple
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
 
-_READ = re.compile(
-    r'os\.(?:environ\.get|getenv)\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']\s*,\s*'
-    r'["\']([^"\']*)["\']\s*\)')
+_NAME = re.compile("(?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+")
 
 #: Values that are really booleans or numbers wearing quotes. Their own guards own them.
 _NOT_A_STRING = {"", "0", "1", "true", "false", "yes", "no", "on", "off",
@@ -86,20 +85,85 @@ def _production_sources() -> List[str]:
     return [path for path in listed if not os.path.basename(path).startswith("test_")]
 
 
+def _looks_numeric(value: str) -> bool:
+    """A number wearing quotes. Its own guard owns it; see _NOT_A_STRING above."""
+    return value.lstrip("+-").replace(".", "", 1).isdigit()
+
+
+#: Disagreements that are NOT legitimate and are not fixed here. Kept apart from the list
+#: above on purpose: filing a defect under what makes it legitimate is how it stops being
+#: looked at. Each needs a decision, not a reason.
+KNOWN_DEFECTS: Dict[str, str] = {
+    "MATRIXARK_EMBEDDING_MODEL":
+        "DEFECT, decision pending. matrixark_mcp_core defaults the sentence-transformers "
+        "model to all-MiniLM-L6-v2 and matrixark_mcp_embeddings to multilingual-e5-large, "
+        "and mcp_embeddings is the module that LOADS the encoder -- so vectors are produced "
+        "by e5-large while thirteen modules label them MiniLM. Making the name truthful "
+        "changes embedding_model_ref_for_name and orphans every embedding a populated store "
+        "already holds, so it needs a backfill decision rather than an edit here. This entry "
+        "exists so the disagreement is visible: it was invisible while the scan was "
+        "line-oriented, because both reads are split across lines.",
+    "MATRIXARK_BENCHMARK_EMBEDDING_MODEL":
+        "DEFECT, small. One harness defaults to matrixark-local-hash-embedding and another to "
+        "all-MiniLM-L6-v2, so two benchmark runs that set nothing measure different encoders "
+        "under one variable and their numbers are not comparable. Harmless to a deployment, "
+        "which is why it survived, and worth a look by whoever owns the harness.",
+}
+
+#: What the assertions below accept as already-known: legitimate by role, or a defect that
+#: has been written down. Anything else is new and fails.
+_LISTED: Dict[str, str] = dict(KNOWN_DISAGREEMENTS, **KNOWN_DEFECTS)
+
+
 def _reads() -> Dict[str, List[Tuple[str, int, str]]]:
+    """Every os.environ.get(NAME, "literal") in production source, keyed by variable.
+
+    PARSED, not matched line by line. The previous scan ran a regex over ONE LINE AT A TIME,
+    so every read split across lines was invisible to it -- and a long default is exactly what
+    makes a formatter split the call:
+
+        os.environ.get(
+            "MATRIXARK_EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+
+    Two variables were hidden that way, one of them a recorded defect, from the guard whose
+    whole purpose is to fail when a second default appears. A formatting choice should not
+    decide what a guard can see.
+    """
     found: Dict[str, List[Tuple[str, int, str]]] = collections.defaultdict(list)
     for path in _production_sources():
         try:
             with open(os.path.join(REPO, path), encoding="utf-8", errors="replace") as handle:
-                lines = handle.read().splitlines()
-        except OSError:
+                tree = ast.parse(handle.read())
+        except (OSError, SyntaxError):
             continue
-        for number, line in enumerate(lines, 1):
-            for match in _READ.finditer(line):
-                value = match.group(2)
-                if value in _NOT_A_STRING or re.fullmatch(r"-?\d+(\.\d+)?", value):
-                    continue
-                found[match.group(1)].append((path, number, value))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or len(node.args) != 2:
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr not in ("get", "getenv"):
+                continue
+            owner = func.value
+            if isinstance(owner, ast.Attribute):
+                is_env = owner.attr == "environ"
+            elif isinstance(owner, ast.Name):
+                is_env = owner.id in ("os", "environ")
+            else:
+                is_env = False
+            if not is_env:
+                continue
+            key, default = node.args
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                continue
+            if not _NAME.fullmatch(key.value):
+                continue
+            if not (isinstance(default, ast.Constant) and isinstance(default.value, str)):
+                continue
+            value = default.value
+            if value in _NOT_A_STRING or _looks_numeric(value):
+                continue
+            found[key.value].append((path, key.lineno, value))
     return found
 
 
@@ -119,7 +183,7 @@ class StringDefaultsAgreeTest(unittest.TestCase):
 
     def test_no_new_variable_disagrees_about_its_default(self) -> None:
         reads = _reads()
-        new = sorted(_disagreeing() - set(KNOWN_DISAGREEMENTS))
+        new = sorted(_disagreeing() - set(_LISTED))
         detail = ["%s (%s)" % (name, ", ".join(sorted({v for _, _, v in reads[name]})))
                   for name in new]
         self.assertEqual(
@@ -130,13 +194,13 @@ class StringDefaultsAgreeTest(unittest.TestCase):
             "else does. Make them agree, or list it above with what makes it legitimate." % detail)
 
     def test_a_listed_variable_that_now_agrees_is_struck_off(self) -> None:
-        stale = sorted(set(KNOWN_DISAGREEMENTS) - _disagreeing())
+        stale = sorted(set(_LISTED) - _disagreeing())
         self.assertEqual(
             [], stale,
             "these are listed as disagreeing and no longer do: %s. Strike them off." % stale)
 
     def test_every_listed_variable_gives_a_reason(self) -> None:
-        thin = sorted(name for name, why in KNOWN_DISAGREEMENTS.items() if len(why.strip()) < 30)
+        thin = sorted(name for name, why in _LISTED.items() if len(why.strip()) < 30)
         self.assertEqual([], thin, "listed without a reason worth reading: %s" % thin)
 
 
