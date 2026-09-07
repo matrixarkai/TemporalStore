@@ -158,43 +158,22 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_scoring import time_decay_score
 
 
-def business_instance_weight(*sources: Json) -> float | None:
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        for field in ["business_weight", "business_score", "importance", "priority"]:
-            if field in source:
-                return clamp01(source.get(field))
-    return None
+try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it
+    from .matrixark_mcp_scoring import business_instance_weight
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import business_instance_weight
 
 
-def business_type_score(type_name: str, type_weights: Json) -> float:
-    if not type_name:
-        return 0.5
-    normalized = type_name.lower()
-    if normalized in type_weights:
-        return clamp01(type_weights[normalized], 0.5)
-    if "approval" in normalized or "budget" in normalized:
-        return 0.9
-    if "correction" in normalized or "confirmation" in normalized:
-        return 1.0
-    if "preference" in normalized or "plan" in normalized or "status" in normalized:
-        return 0.75
-    return 0.5
+try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it
+    from .matrixark_mcp_scoring import business_type_score
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import business_type_score
 
 
-def business_score_for_candidate(candidate: Json, type_weights: Json) -> float:
-    instance = business_instance_weight(candidate, candidate.get("metadata", {}), candidate.get("scope", {}))
-    if instance is not None:
-        return instance
-    type_name = str(
-        candidate.get("event_type")
-        or candidate.get("entity_type")
-        or candidate.get("topic")
-        or candidate.get("ref_type")
-        or ""
-    )
-    return business_type_score(type_name, type_weights)
+try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it
+    from .matrixark_mcp_scoring import business_score_for_candidate
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import business_score_for_candidate
 
 
 def final_recall_score(origin_score: float, time_score: float, business_score: float, weights: Json) -> float:

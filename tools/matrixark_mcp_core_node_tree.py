@@ -54,21 +54,20 @@ def node_prefixes(node_path: list[str]) -> list[list[str]]:
     return [node_path[: index + 1] for index in range(len(node_path))]
 
 
-def node_path_tuple(node_path: Any) -> tuple[str, ...]:
-    if not isinstance(node_path, list):
-        return ()
-    return tuple(str(part) for part in node_path if str(part))
+try:  # the implementation lives in matrixark_mcp_tree; this module re-exports it
+    from .matrixark_mcp_tree import node_path_tuple
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_tree import node_path_tuple
 
 
 def starts_with_path(path: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
     return len(path) >= len(prefix) and path[: len(prefix)] == prefix
 
 
-def top_scored_nodes(nodes: list[Json], limit: int) -> list[Json]:
-    return sorted(
-        nodes,
-        key=lambda item: (-float(item.get("score", 0.0)), int(item.get("depth", 0)), str(item.get("node_path", []))),
-    )[:limit]
+try:  # the implementation lives in matrixark_mcp_tree; this module re-exports it
+    from .matrixark_mcp_tree import top_scored_nodes
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_tree import top_scored_nodes
 
 
 def tree_first_traversal(

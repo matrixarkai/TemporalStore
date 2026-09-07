@@ -494,17 +494,10 @@ def session_event_message_count(records: list[Json]) -> int:
     return sum(len(messages_from_event_record(record)) for record in records)
 
 
-def session_events_by_message_limit(records: list[Json], limit: int | None) -> list[Json]:
-    if limit is None:
-        return records
-    selected: list[Json] = []
-    message_count = 0
-    for record in records:
-        selected.append(record)
-        message_count += max(1, len(messages_from_event_record(record)))
-        if message_count >= limit:
-            break
-    return selected
+try:  # the implementation lives in matrixark_mcp_local_adapter; this module re-exports it
+    from .matrixark_mcp_local_adapter import session_events_by_message_limit
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_local_adapter import session_events_by_message_limit
 
 
 def append_session_commit_task_progress(

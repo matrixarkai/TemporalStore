@@ -448,12 +448,10 @@ def call_reader(base_url: str, model: str, question: str, context: str, *, timeo
         return f"reader_error:{type(exc).__name__}:{exc}"
 
 
-def probe_reader(base_url: str) -> bool:
-    try:
-        with urllib.request.urlopen(base_url.rstrip("/") + "/models", timeout=10) as resp:
-            return 200 <= resp.status < 300
-    except Exception:
-        return False
+try:  # the implementation lives in check_oss_model_readiness; this module re-exports it
+    from .check_oss_model_readiness import endpoint_reachable
+except ImportError:  # Direct script execution from tools/.
+    from check_oss_model_readiness import endpoint_reachable
 
 
 def answer_matches(expected: str, actual: str) -> bool:

@@ -252,29 +252,10 @@ def attach_storage_route(record: Json) -> Json:
     return record
 
 
-def context_placement_key(record: Json, *, scope_key: str = "", node_hash: Any = None) -> str:
-    explicit = str(record.get("placement_key") or "")
-    if explicit:
-        return explicit
-    scope_key = scope_key or str(record.get("scope_key") or "")
-    if not scope_key:
-        scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
-        scope_key = canonical_scope_key(scope) if scope else ""
-    if node_hash is None:
-        node_hash = record.get("node_hash") or record.get("node_id")
-    try:
-        node_hash_int = int(node_hash or 0)
-    except (TypeError, ValueError):
-        node_hash_int = 0
-    if scope_key and node_hash_int:
-        return f"context:{scope_key}:node={node_hash_int}"
-    if scope_key:
-        return f"context:{scope_key}"
-    try:
-        tenant_hash = int(record.get("tenant_hash") or 0)
-    except (TypeError, ValueError):
-        tenant_hash = 0
-    return f"context:t={tenant_hash}" if tenant_hash else ""
+try:  # the implementation lives in matrixark_mcp_event_keys; this module re-exports it
+    from .matrixark_mcp_event_keys import context_placement_key
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_event_keys import context_placement_key
 
 
 def attach_context_placement(record: Json, *, scope_key: str = "", node_hash: Any = None) -> Json:

@@ -744,43 +744,10 @@ def clean_patch_value(value: str) -> str:
     return summarize_text(" ".join(value.split()).strip(" ,;:-"), limit=180)
 
 
-def canonical_entity_name(entity_type: str, value: str) -> str:
-    compact_value = " ".join(str(value or "").split()).strip(" ,;:-")
-    if entity_type in {
-        "preference",
-        "location",
-        "job_status",
-        "current_plan",
-        "family_profile",
-        "identity_profile",
-        "communication_profile",
-        "memory_feature_profile",
-        "workspace_profile",
-        "correction",
-        "confirmation",
-        "assistant_decision",
-        "tool_evidence",
-        *CODEX_OUTCOME_ENTITY_TYPES,
-    }:
-        return entity_type
-    if entity_type == "approval_state":
-        subject = compact_value
-        subject_patterns = [
-            r"^(?:the\s+)?(.+?)\s+(?:is|was|are|were|has been|have been)\s+(?:approved|required|missing|blocked|ready|done|complete|needed)\b",
-            r"^(?:the\s+)?(.+?)\s+as\s+(?:a\s+|an\s+|the\s+)?(?:blocker|requirement|approval|decision|status)\b",
-            r"^(?:the\s+)?(.+?)\s+after\b",
-            r"^(?:the\s+)?(.+?)\s+before\b",
-            r"^(?:the\s+)?(.+?)\s+because\b",
-            r"^(?:the\s+)?(.+?)\s+as\b",
-        ]
-        for pattern in subject_patterns:
-            match = re.search(pattern, subject, flags=re.IGNORECASE)
-            if match:
-                subject = match.group(1)
-                break
-        subject = re.sub(r"^(?:the|a|an)\s+", "", subject, flags=re.IGNORECASE).strip(" ,;:-")
-        return summarize_text(subject or compact_value, limit=80) if (subject or compact_value) else entity_type
-    return compact_value[:80] if compact_value else entity_type
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import canonical_entity_name
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import canonical_entity_name
 
 
 def entity_retention_priority(entity: Json) -> int:

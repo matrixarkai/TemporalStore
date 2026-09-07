@@ -112,16 +112,10 @@ def run_command(command: str, cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, shell=True, check=True)
 
 
-def render_native_command(template: str, corpus: Path, case: str, native_repo: Path | None) -> str:
-    values = {
-        "corpus": shlex.quote(str(corpus)),
-        "case": shlex.quote(case),
-    }
-    if native_repo is not None:
-        values["native_repo"] = shlex.quote(str(native_repo))
-    if any(f"{{{key}}}" in template for key in values):
-        return template.format(**values)
-    return f"{template} --corpus {shlex.quote(str(corpus))} --case {shlex.quote(case)}"
+try:  # the implementation lives in run_raft_shared_cases; this module re-exports it
+    from .run_raft_shared_cases import render_native_command
+except ImportError:  # Direct script execution from tools/.
+    from run_raft_shared_cases import render_native_command
 
 
 def main() -> int:

@@ -389,12 +389,10 @@ def to_float(value: str | None) -> float | None:
         return None
 
 
-def percentile(values: list[float], pct: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    index = int((len(ordered) - 1) * pct / 100.0)
-    return round(ordered[index], 4)
+try:  # the implementation lives in summarize_oss_memory_benchmark_artifacts; this module re-exports it
+    from .summarize_oss_memory_benchmark_artifacts import percentile
+except ImportError:  # Direct script execution from tools/.
+    from summarize_oss_memory_benchmark_artifacts import percentile
 
 
 def safe_div(numerator: float, denominator: float) -> float:
