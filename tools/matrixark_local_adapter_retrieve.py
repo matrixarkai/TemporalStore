@@ -277,6 +277,27 @@ def _tenant_allows_recall_reinforcement(scope: Any) -> bool:
         return True
 
 
+def _return_all_candidates(scope) -> bool:
+    """Whether to return every candidate, leaving the token budget as the only limit."""
+    try:
+        from matrixark_index_growth_bound import return_all_candidates_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return False
+    return bool(return_all_candidates_enabled(scope))
+
+
+def _return_all_candidate_threshold(scope) -> int:
+    """Candidate count at or below which retrieval returns everything. 0 disables the rule."""
+    try:
+        from matrixark_index_growth_bound import return_all_candidate_threshold
+    except Exception:  # pragma: no cover - policy module absent
+        return 0
+    try:
+        return max(0, int(return_all_candidate_threshold(scope)))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _tenant_retrieval_limit(name: str, scope: Any, fallback: int) -> int:
     """A retrieval budget: an explicit tenant override, else an explicit env var, else this build.
 
@@ -453,6 +474,12 @@ class _LocalAdapterRetrieveMixin:
             retrieval_session_scope = "only"
         retrieval_scope = {**scope, "_session_scope": retrieval_session_scope}
         secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
+        # Resolved here because the scan is about to start and both are read per request. The
+        # secondary-index groups are deliberately LEFT ALONE: on this path they are not an
+        # admission filter, they add 0.08 to a node's score, so clearing them changed nothing on
+        # two fixtures -- including one built from a query that does produce groups.
+        retrieval_return_all = _return_all_candidates(scope)
+        retrieval_return_all_threshold = _return_all_candidate_threshold(scope)
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
         secondary_index_dropped_count = 0
         secondary_index_matched_count = 0
@@ -714,6 +741,14 @@ class _LocalAdapterRetrieveMixin:
                 sort_keys=True,
                 separators=(",", ":"),
             ),
+            # A tenant that turns return-all on and asks the same question again must not be
+            # handed the pack ranking built before it. Measured while wiring the knob: the same
+            # query came back from cache with the same pack id and the same two facts, while a
+            # differently-worded one returned all eight. The cross-session and shared-context
+            # policies are in this key for exactly that reason -- a policy that changes the answer
+            # belongs in the key that caches it.
+            bool(retrieval_return_all),
+            int(retrieval_return_all_threshold),
             bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
             debug_refs,
             bool(args.get("debug_context_pack") or args.get("include_retrieval_debug")),
@@ -1673,6 +1708,28 @@ class _LocalAdapterRetrieveMixin:
         else:
             tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
             tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
+        # --- Return everything, when the tenant asked for it ----------------------------
+        # The threshold is decided HERE and not with the other limits, because it asks how many
+        # candidates a broad scan actually yielded and nothing has been scanned when those are
+        # resolved. At or below it, a store is small enough that ranking can only lose facts.
+        #
+        # The cap is lifted to the number of candidates rather than to some large number: "no cap"
+        # is what is meant, and a big literal would be a second limit to discover later.
+        #
+        # Measured: 80 short facts, one question, an 8000-token budget -- 40 came back. Eighty of
+        # that length is about a thousand tokens, so the budget was never the thing cutting it.
+        if (retrieval_return_all_threshold > 0
+                and len(tree_candidate_records) <= retrieval_return_all_threshold):
+            retrieval_return_all = True
+        if retrieval_return_all and tree_candidate_records:
+            max_selected_refs = max(max_selected_refs, len(tree_candidate_records))
+        query_plan["return_all_candidates"] = {
+            "return_all": bool(retrieval_return_all),
+            "threshold": retrieval_return_all_threshold,
+            "candidates": len(tree_candidate_records),
+            "max_selected_refs": max_selected_refs,
+        }
+
         # --- Exact-value fact admission (general, gated) --------------------------------
         # Candidate FETCH is scoped to selected node placements, so a fact whose node was not
         # query-selected (a cross-session entity, or a current-session turn on an unselected
