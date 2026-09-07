@@ -42,6 +42,24 @@ def _resolved(module_name):
     return getattr(module, "latest_context_state_key", None)
 
 
+def _resolved_all(test):
+    """Every module must still expose it, or the comparisons below examine nothing.
+
+    The loops used to skip a module that resolved to None. That is the failure this file exists
+    to catch, wearing the one disguise it cannot see: if a rename or a broken import took the
+    function away from all three, each test would iterate zero times and pass. Agreement among
+    no modules is not agreement.
+    """
+    resolved = {name: _resolved(name) for name in MODULES}
+    missing = sorted(name for name, fn in resolved.items() if fn is None)
+    test.assertEqual(
+        [], missing,
+        "these modules no longer expose latest_context_state_key, so the agreement this file "
+        "checks would have been asserted against nothing: %r" % (missing,),
+    )
+    return resolved
+
+
 class LatestStateKeyAgreementCase(unittest.TestCase):
     def test_only_one_file_implements_it(self):
         """Exactly one file may carry a real body; the rest must delegate.
@@ -74,10 +92,7 @@ class LatestStateKeyAgreementCase(unittest.TestCase):
     def test_every_module_agrees_on_every_sample(self):
         for sample in SAMPLES:
             keys = {}
-            for name in MODULES:
-                fn = _resolved(name)
-                if fn is None:
-                    continue
+            for name, fn in _resolved_all(self).items():
                 keys[name] = fn(dict(sample))
             distinct = {repr(v) for v in keys.values()}
             self.assertEqual(
@@ -96,10 +111,7 @@ class LatestStateKeyAgreementCase(unittest.TestCase):
         count 545.8 -> 310.8 and made an add 143.2 -> 265.6 ms, against two control arms 7%
         apart. This test exists so the expensive direction is not re-applied as an optimisation.
         """
-        for name in MODULES:
-            fn = _resolved(name)
-            if fn is None:
-                continue
+        for name, fn in _resolved_all(self).items():
             self.assertIsNone(
                 fn({"record_type": "matrixark_async_pipeline_task", "task_hash": 42}),
                 "%s gives a pipeline task a latest-state identity; that was measured at ~2x "
@@ -108,10 +120,7 @@ class LatestStateKeyAgreementCase(unittest.TestCase):
 
     def test_a_plain_event_has_no_identity(self):
         """The guard in the other direction: an event must keep its append-log row."""
-        for name in MODULES:
-            fn = _resolved(name)
-            if fn is None:
-                continue
+        for name, fn in _resolved_all(self).items():
             self.assertIsNone(fn({"record_type": "context_event", "event_id_hash": 5}), name)
 
 
