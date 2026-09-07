@@ -771,11 +771,16 @@ SETTINGS: List[Setting] = [
     Setting("storage_engine.wal_compress_records", "storage_engine",
             "TS_WAL_COMPRESS_RECORDS",
             "Compress log records", "bool", "1", "restart",
-            "On, a log record is zstd-compressed before it is written. Measured on one live "
-            "segment -- 151 records averaging 13.5 KB -- this is 8.61x, which on a 698 MB log is "
-            "about 617 MB back. It ships ON: it spends write CPU to buy disk, and 8.61x is a large "
-            "enough return that a deployment which would rather keep the CPU is the one that "
-            "should have to say so. Turn it off where write latency is the scarce thing. Reading "
+            "On, a log record is zstd-compressed before it is written. IT NEEDS "
+            "TS_WAL_BINARY_RECORDS ON: the compressor is reached only from the protobuf encoder, "
+            "so a deployment writing JSON records has this on, reports it on, and compresses "
+            "nothing. Expect about 3.8x on the records, not the 8.61x an earlier note quoted -- "
+            "that came from one segment of 151 records averaging 13.5 KB, and real documents here "
+            "average 426 B, far too small to amortise a dictionary. Records of 256 bytes and over, "
+            "95.2% of the raw bytes, reach 4.36x. It ships ON: it spends write CPU to buy disk, "
+            "and that is a large enough return that a deployment which would rather keep the CPU "
+            "is the one that should have to say so. Turn it off where write latency is the scarce "
+            "thing. Reading "
             "never "
             "consults it: a payload says what encoding it is in, so a log written across a change "
             "reads end to end and turning it off again is not a one-way door. Records below 256 "

@@ -110,6 +110,12 @@ const COMPRESSION_MIN_BYTES: usize = 256;
 /// The variable now opts OUT, like `TS_WAL_BINARY_RECORDS` and `TS_WAL_BINARY_FRAME` beside it --
 /// and for the same reason it is safe to flip either way: which encoding a payload is in is a
 /// property of the payload, not of this flag.
+///
+/// IT DOES NOTHING WITHOUT `TS_WAL_BINARY_RECORDS`. The compressor is reached only from `encode`
+/// below, and `encode_wal_payload` calls that only when `binary_records_enabled()`; the JSON arm
+/// writes `serde_json::to_vec` straight out. So on a deployment that turns binary records off this
+/// flag reads as on, reports as on, and compresses nothing. Turn binary records on first, or the
+/// log stays raw JSON.
 pub(crate) fn compress_records_enabled() -> bool {
     !matches!(
         std::env::var("TS_WAL_COMPRESS_RECORDS")
