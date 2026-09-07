@@ -230,7 +230,11 @@ impl DataNodeRuntime {
             if resident > 0 {
                 let moved = self.inner.engine.materialize_oldest_resident_pages(
                     shard_id,
-                    resident.saturating_sub(options.max_dump_buckets_per_round.max(1)),
+                    resident.saturating_sub(if options.max_dump_buckets_per_round == 0 {
+                        usize::MAX
+                    } else {
+                        options.max_dump_buckets_per_round
+                    }),
                 );
                 tracing::debug!(
                     shard_id,

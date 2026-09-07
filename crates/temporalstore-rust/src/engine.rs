@@ -3530,6 +3530,24 @@ fn append_value(
     async_storage: bool,
 ) -> Result<BlockAddress, BlockStoreError> {
     if !async_storage {
+        // Carry the page in this write's record, the same as the asynchronous arm below.
+        //
+        // The record is allowed to state its results and drop the operation only when the blocks
+        // those results name survive a crash. A carried block does -- it IS the record. A
+        // synchronous write's block used to be assumed durable instead, but the single barrier
+        // acks on the WAL fsync and defers the block fsync (`defer_data_sync` in the block
+        // store's append), so at that moment the block store holds it in buffers and nowhere
+        // else. Wiping everything but the log then lost every acked write, which is what the
+        // recovery suite has been reporting.
+        //
+        // Carrying it costs the bytes twice for as long as the record lives, and no longer: the
+        // storage manager's reclaim stage moves carried pages into the block store and drops the
+        // registration that pins the log floor.
+        if page_store.block_in_wal() {
+            if let Some(object_id) = object_id {
+                block_in_wal::stage(object_id, bytes);
+            }
+        }
         return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
     let address = BlockAddress::from_parts(HOT_PAGE_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id, None);

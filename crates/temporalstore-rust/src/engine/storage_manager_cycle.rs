@@ -415,7 +415,14 @@ impl TemporalEngine {
             && !request.dry_run
             && wal_resident_pages_before > 0
         {
-            let per_round = request.max_dump_buckets_per_round.max(1);
+            // Zero is how this request spells "no bound" -- its own default is 0 while the
+            // scheduler's is 64 -- so a cycle asked for no bound drains the shard rather than
+            // one page per pass.
+            let per_round = if request.max_dump_buckets_per_round == 0 {
+                usize::MAX
+            } else {
+                request.max_dump_buckets_per_round
+            };
             self.materialize_oldest_resident_pages(
                 request.shard_id,
                 wal_resident_pages_before.saturating_sub(per_round),
