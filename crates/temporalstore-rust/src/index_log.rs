@@ -208,6 +208,49 @@ fn is_zero_u64(value: &u64) -> bool {
 ///
 /// A key that does NOT parse as a number still goes out as text, so nothing depends on the write
 /// path's stringification being reversible.
+impl IndexItem {
+    /// Drop from the address what the item already states, so it is not written twice.
+    ///
+    /// A page item carries `object_id` and `routing_bucket`, and the address it points at carries
+    /// both again. For a page belonging to one object they are the same value. Measured, the pair
+    /// is 18 bytes of a 142-byte item -- 12.7%. The WAL side already strips exactly this on its way
+    /// to protobuf; `item_to_proto` calls it "a full varint on every item whose page belongs to one
+    /// object".
+    ///
+    /// Only what MATCHES is dropped. An address that carries a different object id keeps it, and
+    /// `restore_address_repeats` puts back only what is absent, so the pair round-trips.
+    fn strip_address_repeats(&mut self) {
+        let object_id = self.object_id;
+        let routing_bucket = self.routing_bucket;
+        if let Some(address) = self.address.as_mut() {
+            if address.object_id() == Some(object_id) {
+                address.set_object_id(None);
+            }
+            if address.routing_bucket() == Some(routing_bucket) {
+                address.set_routing_bucket(None);
+            }
+        }
+    }
+
+    /// Put back what the writer left out, from the fields that carry it.
+    ///
+    /// The inverse of `strip_address_repeats` for anything that writer produced. A log written
+    /// before that stripping still carries both, and this leaves those alone: it fills only what is
+    /// absent.
+    fn restore_address_repeats(&mut self) {
+        let object_id = self.object_id;
+        let routing_bucket = self.routing_bucket;
+        if let Some(address) = self.address.as_mut() {
+            if address.object_id().is_none() {
+                address.set_object_id(Some(object_id));
+            }
+            if address.routing_bucket().is_none() {
+                address.set_routing_bucket(Some(routing_bucket));
+            }
+        }
+    }
+}
+
 fn page_ref_key_as_number_when_it_is_one<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -755,6 +798,13 @@ impl LocalIndexLogStore {
             }
         };
         let next_sequence = last_sequence.saturating_add(1);
+        // Do not write what the item already says. Each item carries `object_id` and
+        // `routing_bucket`, and the address it points at repeats both -- 18 bytes of a 142-byte
+        // item. `restore_address_repeats` at the decode site puts them back.
+        let mut items = items;
+        for item in items.iter_mut() {
+            item.strip_address_repeats();
+        }
         let record = IndexDeltaRecord {
             shard_id,
             sequence: next_sequence,
@@ -834,7 +884,12 @@ impl LocalIndexLogStore {
             // ref. `decode_line` also verifies the per-record integrity envelope, so a
             // value-preserving bit-flip surfaces here as `Corruption`. Consistent with the
             // scan / last_sequence_at path, which already treats interior corruption as fatal.
-            let record: IndexDeltaRecord = decode_index_payload(payload)?;
+            let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
+            // Put back what the writer left out because the item already stated it. A record
+            // written before that stripping carries both already, and this leaves those alone.
+            for item in record.items.iter_mut() {
+                item.restore_address_repeats();
+            }
             // Enforce delta sequence-continuity: sequences are assigned strictly monotonically
             // across ALL appended records (whole-index and delta share one counter), and GC
             // only truncates a leading prefix, so in file order each record's sequence must be
@@ -2416,6 +2471,108 @@ mod tests {
             as_number.len(),
             as_text.len().saturating_sub(as_number.len())
         );
+    }
+
+    /// Stripping the address repeats and putting them back returns the item that went in.
+    ///
+    /// The shape that decides this is the third one: an address whose object id DIFFERS from the
+    /// item's. Stripping must leave it alone, or the restore would overwrite a real value with the
+    /// item's -- silently pointing an index entry at the wrong object. The fourth covers an address
+    /// that never had one, where restore fills from the item, which is what the WAL does too.
+    #[test]
+    fn the_address_repeats_round_trip() {
+        let object_id = 12_345_678_901_234_567u64;
+        let bucket = 8539u32;
+        let build = |address| IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: bucket,
+            page_ref_key: 17_665_223_918_442_101_733u64.to_string(),
+            object_key: "tenant/7/object/000000123".to_string(),
+            model_id: "string".to_string(),
+            component: None,
+            object_id,
+            page_id: 7,
+            address,
+            size: 4096,
+            in_log: false,
+            deleted: false,
+        };
+        let cases = [
+            ("no address", None),
+            ("address repeats both", Some(crate::block_store::BlockAddress::from_parts(
+                42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), Some(3), Some(9)))),
+            ("address holds a DIFFERENT object", Some(crate::block_store::BlockAddress::from_parts(
+                42, 0, 0, None, Some(object_id + 1), Some(bucket + 1), None, None))),
+            ("address holds neither", Some(crate::block_store::BlockAddress::from_parts(
+                42, 0, 0, None, None, None, None, None))),
+        ];
+
+        for (label, address) in cases {
+            let original = build(address);
+            let mut stripped = original.clone();
+            stripped.strip_address_repeats();
+
+            let payload = encode_index_payload(&stripped).expect("encode");
+            let mut back: IndexItem = decode_index_payload(&payload).expect("decode");
+            back.restore_address_repeats();
+
+            match label {
+                // An address that never carried them gains the item's, which is the same answer
+                // the WAL gives and is what the index means by a page of this object.
+                "address holds neither" => {
+                    let addr = back.address.as_ref().expect("address survives");
+                    assert_eq!(addr.object_id(), Some(object_id), "{label}");
+                    assert_eq!(addr.routing_bucket(), Some(bucket), "{label}");
+                }
+                _ => assert_eq!(back, original, "{label} did not round-trip"),
+            }
+        }
+    }
+
+    /// What the address repeats costs, per index item.
+    ///
+    /// `BlockAddress` carries `object_id` and `routing_bucket`, and the item carries both again as
+    /// its own fields. For a page belonging to one object they hold the same value, so the pair is
+    /// written twice per item. The WAL side already strips that on its way to protobuf --
+    /// `item_to_proto` drops the address's object id when it repeats the item's, and says why --
+    /// and this measures whether the index log is paying what the WAL stopped paying.
+    #[test]
+    #[ignore]
+    fn what_the_address_repeats_costs() {
+        let object_id = 12_345_678_901_234_567u64;
+        let bucket = 8539u32;
+        let item = |address| IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: bucket,
+            page_ref_key: 17_665_223_918_442_101_733u64.to_string(),
+            object_key: "tenant/7/object/000000123".to_string(),
+            model_id: "string".to_string(),
+            component: None,
+            object_id,
+            page_id: 7,
+            address,
+            size: 4096,
+            in_log: false,
+            deleted: false,
+        };
+
+        // As written today: the address repeats the item's object id and routing bucket.
+        let repeats = item(Some(crate::block_store::BlockAddress::from_parts(
+            42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), Some(3), Some(9),
+        )));
+        // The same address with the two the item already states left out.
+        let deduped = item(Some(crate::block_store::BlockAddress::from_parts(
+            42, 1_048_576, 4096, Some(7), None, None, Some(3), Some(9),
+        )));
+
+        let a = encode_index_payload(&repeats).expect("encode").len();
+        let b = encode_index_payload(&deduped).expect("encode").len();
+        println!(
+            "  REPEATS item {a} B with the repeats, {b} B without -- {} B, {:.1}% of the item",
+            a - b,
+            100.0 * (a - b) as f64 / a as f64,
+        );
+        assert!(a >= b, "dropping fields cannot make it larger");
     }
 
     /// What an index-log item is actually made of, field by field.
