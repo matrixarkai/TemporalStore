@@ -26,6 +26,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import matrixark_gateway_metrics as gwm  # noqa: E402
 import matrixark_v1_gateway as gw  # noqa: E402
 from test_matrixark_v1_gateway import _FakeServer, _cfg  # noqa: E402
 
@@ -134,6 +135,54 @@ class AStreamThatBreaksSaysWhyTest(unittest.TestCase):
         body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
         self.assertNotIn(b"server_error", body)
         self.assertIn(b"event: status", body, "the stream sent nothing at all, so this proves little")
+
+
+class HowTheStreamsEndedIsCountedTest(unittest.TestCase):
+    """A stream is one request that lasts minutes, so the request counter cannot tell a deployment
+    whose tabs are open from one breaking a stream every three seconds -- both are one request on
+    /v1/admin/events. Without a count of the reasons, a reconnect storm is invisible in every
+    series the gateway publishes."""
+
+    def setUp(self) -> None:
+        self.original = gw._event_frame
+        self.addCleanup(setattr, gw, "_event_frame", self.original)
+        self.app = gw.make_v1_app(_FakeServer(), _cfg())
+
+    @staticmethod
+    def _scrape() -> str:
+        return gwm.prometheus_text({"extraction": {"provider": "deterministic"},
+                                    "embedding": {"provider": "deterministic"},
+                                    "warnings": []})
+
+    @staticmethod
+    def _count(reason: str) -> int:
+        return gwm.METRICS.stream_ends().get(reason, 0)
+
+    def test_a_broken_stream_is_counted_as_one(self) -> None:
+        before = self._count("server_error")
+        drive(self.app)
+        self.assertEqual(before + 1, self._count("server_error"))
+
+    def test_an_unknown_reason_cannot_invent_a_label(self) -> None:
+        """The reason is a metric label, and one taken from an open value is a cardinality bomb in
+        a dict that lives as long as the process -- on a path any client can trigger."""
+        before = self._count("other")
+        gwm.METRICS.note_stream_end("something nobody wrote")
+        self.assertEqual(before + 1, self._count("other"))
+        self.assertNotIn("something nobody wrote", self._scrape())
+
+    def test_every_reason_is_published_even_at_zero(self) -> None:
+        """A counter that appears only once it fires cannot be alerted on until it has fired,
+        which is exactly the moment the alert was worth having."""
+        text = self._scrape()
+        for reason in gwm.STREAM_END_REASONS:
+            with self.subTest(reason=reason):
+                self.assertIn('matrixark_gateway_event_stream_ended_total{reason="%s"}' % reason,
+                              text)
+
+    def test_it_is_in_the_scrape_at_all(self) -> None:
+        """The positive control: every assertion above passes on a build that publishes nothing."""
+        self.assertIn("matrixark_gateway_event_stream_ended_total", self._scrape())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,23 @@
 # indistinguishable from a healthy one on latency, error rate, and every storage metric. Without
 # these rules the failure mode is silent for as long as nobody looks at retrieval quality.
 groups:
+  - name: matrixark-gateway-stream
+    rules:
+      - alert: MatrixArkEventStreamBreaking
+        expr: sum(rate(matrixark_gateway_event_stream_ended_total{reason="server_error"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The portal's live stream is breaking on the server ({{ $labels.instance }})"
+          description: >-
+            Live streams are ending with reason=server_error. EventSource reconnects on the
+            cadence the stream itself sets, so the client walks straight back into the fault and
+            the portal shows stale state between attempts. Only this reason is alerted on:
+            stream_max_age is the ten-minute rotation and client_gone is a tab closing, so a rule
+            over the total would fire on a healthy deployment. The gateway log carries an incident
+            token for each one.
+
   - name: matrixark-gateway-config
     rules:
       - alert: MatrixArkRetrievalNotSemantic

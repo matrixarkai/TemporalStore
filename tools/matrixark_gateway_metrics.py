@@ -78,6 +78,10 @@ _EXACT_ROUTES = frozenset({
 })
 
 
+# Every way a live stream can end. The set is closed on purpose: this is a metric label, and one
+# taken from an open value is a cardinality bomb.
+STREAM_END_REASONS = ("stream_max_age", "server_error", "client_gone", "other")
+
 # Routes that stream. Their wall-clock duration is the length of a subscription, not a latency.
 STREAMING_ROUTES = frozenset({"/v1/admin/events"})
 
@@ -174,6 +178,11 @@ class GatewayMetrics:
 
         self._datanode: Optional[Tuple[str, float]] = None
 
+        # How the live streams ended, by reason. A stream is one request that lasts minutes, so
+        # the request counter cannot tell a deployment whose tabs are open from one breaking a
+        # stream every three seconds -- both are "one request on /v1/admin/events".
+        self._stream_ends: Dict[str, int] = {}
+
     # ---- recording -----------------------------------------------------------------------------
     def begin(self) -> None:
         with self._lock:
@@ -264,6 +273,23 @@ class GatewayMetrics:
         """Record what the readiness probe just found."""
         with self._lock:
             self._datanode = (str(state), time.time())
+
+    def note_stream_end(self, reason: str) -> None:
+        """Record how a live stream ended.
+
+        The reason becomes a label, so it is clamped to what this code can produce. A label taken
+        from a value that varies is a cardinality bomb in a dict that lives as long as the process,
+        and this one is written on a path any client can trigger by disconnecting.
+        """
+        label = str(reason or "other")
+        if label not in STREAM_END_REASONS:
+            label = "other"
+        with self._lock:
+            self._stream_ends[label] = self._stream_ends.get(label, 0) + 1
+
+    def stream_ends(self) -> Dict[str, int]:
+        with self._lock:
+            return dict(self._stream_ends)
 
     # ---- reading -------------------------------------------------------------------------------
     def series(self) -> Json:
@@ -601,6 +627,23 @@ def worker_count(argv: Optional[List[str]] = None,
     return workers if workers > 0 else 1
 
 
+def stream_lines() -> List[str]:
+    """How the live streams ended, by reason.
+
+    Every reason is emitted, including the ones at zero: a counter that appears only once it fires
+    cannot be alerted on before it has ever fired, which is the moment an alert is worth having.
+    """
+    ends = METRICS.stream_ends()
+    lines = [
+        "# HELP matrixark_gateway_event_stream_ended_total Live streams ended, by reason.",
+        "# TYPE matrixark_gateway_event_stream_ended_total counter",
+    ]
+    for reason in STREAM_END_REASONS:
+        lines.append('matrixark_gateway_event_stream_ended_total{reason="%s"} %d'
+                     % (reason, ends.get(reason, 0)))
+    return lines
+
+
 def worker_lines() -> List[str]:
     """The footprint gauges, rendered here rather than appended by the route.
 
@@ -641,6 +684,7 @@ def prometheus_text(config_snapshot: Optional[Json] = None,
     lines += config_health_lines(config_snapshot)
     lines += config_change_lines()
     lines += worker_lines()
+    lines += stream_lines()
     if extra_lines:
         lines += extra_lines
     return "\n".join(lines) + "\n"

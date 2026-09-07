@@ -709,6 +709,35 @@
           "legendFormat": "peak {{source}} {{instance}}"
         }
       ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Live stream endings",
+      "description": "How the portal's live streams ended, per second, by reason. A stream is one request that lasts minutes, so the request rate cannot tell a deployment whose tabs are open from one breaking a stream every three seconds -- both are one request on /v1/admin/events. stream_max_age is the ten-minute rotation and is expected; client_gone is a tab closing; server_error is this gateway failing mid-stream, and the client reconnects straight into it for as long as it lasts.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(matrixark_gateway_event_stream_ended_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
     }
   ]
 }
