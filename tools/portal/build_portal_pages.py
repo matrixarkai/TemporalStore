@@ -3636,6 +3636,14 @@ ONEBOX_BODY = """
   </section>
 
   <section>
+    <h2>The vectors already in the store</h2>
+    <p class="hint" style="margin-top:0">Which encoder wrote what is in there, by width. The width
+      is the check: every encoder in the catalogue is 384 wide or more, so a narrower vector
+      carrying an encoder's name was not written by it.</p>
+    <div id="vectors"><div class="empty">Enter an admin key to read the store.</div></div>
+  </section>
+
+  <section>
     <h2>What decides recall</h2>
     <p class="hint" style="margin-top:0">The three caps that bound a retrieve, and which of them was
       doing the cutting. Raising the others changed nothing in that measurement.</p>
@@ -3703,6 +3711,33 @@ ONEBOX_JS = r"""<script>
       : '<div class="empty">This build offers none of them.</div>';
   }
 
+  function renderVectors(store) {
+    if (!store || store.known === false) {
+      return '<div class="empty">' + esc((store && store.detail)
+        || "The backend could not be asked what the stored vectors were made with.") + "</div>";
+    }
+    var paired = store.model_dimensions || [];
+    var rows = paired.map(function (row) {
+      return "<tr><th class='mono'>" + esc(row.model) + "</th><td class='mono'>" + esc(row.dim)
+        + "</td><td class='mono'>" + esc(row.count) + "</td></tr>";
+    }).join("");
+    var table = rows
+      ? "<table class='inv'><thead><tr><th>Written by</th><th>Width</th><th>Vectors</th></tr>"
+        + "</thead><tbody>" + rows + "</tbody></table>"
+      : '<div class="empty">Nothing is encoded in this scope yet.</div>';
+    /* The finding, above the table rather than below it: a reader who stops at the first thing
+       they see should stop at the one that says the names cannot be right. */
+    var bad = (store.impossible || []).map(function (f) {
+      return '<div class="msg err"><b>' + esc(f.model) + " at " + esc(f.dim)
+        + " dimensions</b><br>" + esc(f.detail) + "</div>";
+    }).join("");
+    return bad + table
+      + (store.mixed_dimensions
+         ? '<div class="hint">This store holds more than one width. Vectors of different widths '
+           + 'cannot be compared, so some memories can never match a query.</div>'
+         : "");
+  }
+
   function renderPolicy(knobs) {
     var names = ["return_all_candidates", "return_all_candidate_threshold"];
     var rows = names.map(function (name) {
@@ -3745,6 +3780,16 @@ ONEBOX_JS = r"""<script>
         var said = '<div class="msg err">' + esc(window.__matrixarkWhyFailed(e)) + "</div>";
         $("profile").innerHTML = said;
         $("caps").innerHTML = said;
+      });
+
+    /* probe=0: this asks the STORE what it holds, which needs no call to any provider. Probing
+       the endpoint is a separate button on Setup and can be slow. */
+    fetch("/v1/admin/models?target=embedding&probe=0", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { $("vectors").innerHTML = renderVectors(d.in_store); })
+      .catch(function (e) {
+        $("vectors").innerHTML = '<div class="msg err">'
+          + esc(window.__matrixarkWhyFailed(e)) + "</div>";
       });
 
     fetch("/v1/admin/policy", { headers: auth() })
