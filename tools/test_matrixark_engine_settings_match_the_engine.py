@@ -106,6 +106,46 @@ def tuning_defaults() -> dict:
     return defaults
 
 
+def defaults_struct_defaults() -> dict:
+    """env name -> default, for knobs whose default comes from the defaults struct.
+
+    Three hops, each of which the `env::var` scan cannot see:
+
+        storage_band_size: parse_u64(get(TS_STORAGE_ZONE_SIZE), defaults.storage_band_size)
+        storage_band_size: DEFAULT_STORAGE_BAND_SIZE,
+        pub const DEFAULT_STORAGE_BAND_SIZE: u64 = 1 << 30;
+
+    The field name is the only thing joining them, and it does not resemble the flag: the storage
+    vocabulary rename gave the field the new word while the flag kept the old one.
+    """
+    consts = {}
+    fields_to_const = {}
+    env_to_field = {}
+    for path in _rust_files():
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        for match in SIZE_CONST.finditer(text):
+            value = _evaluate(match.group(2))
+            if value is not None:
+                consts.setdefault(match.group(1), value)
+        # `field: DEFAULT_X,` inside the struct that supplies the fallbacks
+        for match in re.finditer(r"^\s*([a-z0-9_]+)\s*:\s*(DEFAULT_[A-Z0-9_]+)\s*,", text, re.M):
+            fields_to_const.setdefault(match.group(1), match.group(2))
+        # `field: parse_*(get(TS_NAME), defaults.field)` -- the read that joins flag to field
+        for match in re.finditer(
+                r"([a-z0-9_]+)\s*:\s*parse_[a-z0-9_]+\(\s*get\(\s*(TS_[A-Z0-9_]+)\s*\)"
+                r"[^)]*?defaults\.([a-z0-9_]+)", text, re.S):
+            if match.group(1) == match.group(3):
+                env_to_field.setdefault(match.group(2), match.group(1))
+
+    out = {}
+    for env_name, field in env_to_field.items():
+        const = fields_to_const.get(field)
+        if const and const in consts:
+            out[env_name] = str(consts[const])
+    return out
+
+
 def engine_defaults() -> dict:
     """env name -> the default its Rust accessor applies, as the portal would print it."""
     defaults = {}
@@ -138,6 +178,10 @@ class TheEnginesDefaultIsWhatThePortalShowsTest(unittest.TestCase):
                                 if s.env and s.env.startswith("TS_")]
         self.derived = dict(tuning_defaults())
         self.derived.update(engine_defaults())
+        # Last, and only filling gaps: a knob the direct scan can read is read that way, and this
+        # follows the indirection for the ones it cannot.
+        for name, value in defaults_struct_defaults().items():
+            self.derived.setdefault(name, value)
 
     def test_the_portal_offers_engine_knobs_at_all(self) -> None:
         self.assertGreaterEqual(

@@ -70,7 +70,10 @@ def extract_rust_defaults(path: pathlib.Path) -> dict[str, object]:
     constant_map = {
         "TS_CONTEXT_PAGE_TARGET_BYTES": "DEFAULT_CONTEXT_PAGE_TARGET_BYTES",
         "TS_BLOCK_SLAB_TARGET_BYTES": "DEFAULT_BLOCK_SLAB_TARGET_BYTES",
-        "TS_STORAGE_ZONE_SIZE": "DEFAULT_STORAGE_ZONE_SIZE",
+        # The flag kept the old word and the constant took the new one: the storage
+        # vocabulary change renamed this to BAND while TS_STORAGE_ZONE_SIZE stayed as it
+        # is, so the two no longer resemble each other and only this line joins them.
+        "TS_STORAGE_ZONE_SIZE": "DEFAULT_STORAGE_BAND_SIZE",
         "TS_STREAM_MAX_BLOB_SIZE": "DEFAULT_STREAM_MAX_BLOB_SIZE",
         "TS_COMPACTION_WATERMARK_BYTES": "DEFAULT_COMPACTION_WATERMARK_BYTES",
         "TS_COLD_SCAN_NO_CACHE_FILL": "DEFAULT_COLD_SCAN_NO_CACHE_FILL",
