@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Scale reload-equality for upsert index-log delta records (TS_INDEXLOG_UPSERT_DELTAS).
+//! Scale reload-equality for upsert index-log delta records. `TS_INDEXLOG_UPSERT_DELTAS`
+//! names the feature and no longer gates it -- nothing reads that variable.
 //!
 //! A ~45K-record production store built through batch-committing ingest reconstructed
 //! EMPTY on reload while the small-store proofs passed, so this drives the same shape at
@@ -36,8 +37,9 @@ fn run(mode: &str, root: &Path, batches: u64, extend: Option<u64>, legacy_recove
     if let Some(extend) = extend {
         cmd.args(["--extend", &extend.to_string()]);
     }
-    // The emission gate under test: every phase runs with upsert delta records ON.
-    cmd.env("TS_INDEXLOG_UPSERT_DELTAS", "1");
+    // No emission gate is set here. `TS_INDEXLOG_UPSERT_DELTAS` used to be one; nothing reads
+    // it now, so setting it selected nothing and this ran the default path either way. The
+    // variable below is read, which is why it is still passed.
     if legacy_recovery {
         cmd.env("TS_WAL_LEGACY_RECOVERY", "1");
     }

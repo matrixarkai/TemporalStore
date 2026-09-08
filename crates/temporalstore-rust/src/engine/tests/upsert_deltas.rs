@@ -2,7 +2,8 @@
 // Copyright 2026 MatrixArkAI
 
 //! Reload-equality coverage for the upsert index-log delta records
-//! (TS_INDEXLOG_UPSERT_DELTAS): the served view reconstructed through base-only fold
+//! (`TS_INDEXLOG_UPSERT_DELTAS` named the feature and gates nothing now): the served view
+//! reconstructed through base-only fold
 //! recovery must equal the pre-reload view at scale.
 #![allow(clippy::all)]
 use super::*;
