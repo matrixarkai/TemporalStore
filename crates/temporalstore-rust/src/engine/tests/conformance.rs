@@ -820,11 +820,11 @@ fn run_one_oracle_sequence(seed: u64) -> Result<(), String> {
 fn conformance_oracle_matches_reference_model() {
     let count = std::env::var("CONFORMANCE_SEEDS")
         .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(64);
     let start = std::env::var("CONFORMANCE_START")
         .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
     let outcome = (start..start.saturating_add(count))
         .map(|seed| match run_one_oracle_sequence(seed) {
@@ -897,11 +897,11 @@ fn conformance_random_sequences_never_panic_and_survive_reload() {
     // CONFORMANCE_SEEDS / CONFORMANCE_START (e.g. CONFORMANCE_SEEDS=4000 cargo test ...).
     let count = std::env::var("CONFORMANCE_SEEDS")
         .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(64);
     let start = std::env::var("CONFORMANCE_START")
         .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
     let maintenance = std::env::var("CONFORMANCE_MAINTENANCE").is_ok();
     let outcome = (start..start.saturating_add(count))

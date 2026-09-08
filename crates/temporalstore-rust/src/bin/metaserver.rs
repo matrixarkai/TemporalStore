@@ -1142,7 +1142,7 @@ fn failure_detector_options_from_env() -> FailureDetectorOptions {
         max_interval_ms: env_u64("TS_META_FD_MAX_INTERVAL_MS", defaults.max_interval_ms),
         phi_failure_threshold: std::env::var("TS_META_FD_PHI_THRESHOLD")
             .ok()
-            .and_then(|value| value.parse::<f64>().ok())
+            .and_then(|value| value.trim().parse::<f64>().ok())
             .filter(|value| value.is_finite() && *value > 0.0)
             .unwrap_or(defaults.phi_failure_threshold),
         max_round_pause_ms: env_u64("TS_META_FD_MAX_ROUND_PAUSE_MS", defaults.max_round_pause_ms),

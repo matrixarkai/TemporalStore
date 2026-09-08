@@ -230,7 +230,7 @@ fn parse_args() -> Args {
         query: String::new(),
         max_context_tokens: std::env::var("MATRIXARK_HOOK_MAX_CONTEXT_TOKENS")
             .ok()
-            .and_then(|value| value.parse::<u32>().ok())
+            .and_then(|value| value.trim().parse::<u32>().ok())
             .unwrap_or(1024),
     };
     while let Some(arg) = args.next() {
@@ -435,7 +435,7 @@ fn env_bool(name: &str) -> bool {
 fn additional_context_char_limit() -> usize {
     std::env::var("MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT")
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(40_000)
 }

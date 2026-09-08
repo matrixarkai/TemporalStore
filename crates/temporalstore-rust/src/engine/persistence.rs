@@ -355,12 +355,12 @@ impl TemporalEngine {
                     let default_anchor = self.wal_store.stats(shard_id).last_sequence;
                     let anchor = std::env::var("MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE")
                         .ok()
-                        .and_then(|value| value.parse::<u64>().ok())
+                        .and_then(|value| value.trim().parse::<u64>().ok())
                         .map(|start_sequence| {
                             let expected_tail =
                                 std::env::var("MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS")
                                     .ok()
-                                    .and_then(|value| value.parse::<u64>().ok())
+                                    .and_then(|value| value.trim().parse::<u64>().ok())
                                     .and_then(|written| start_sequence.checked_add(written));
                             if expected_tail == Some(default_anchor) {
                                 default_anchor
