@@ -112,6 +112,11 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
     "TS_META_SHARD_DIVERGENCE_CHECK":
         "compares the owner map against what each datanode reports serving and re-places the "
         "difference. Off because it moves shards",
+    "TS_REVERIFY_ALL_SLABS":
+        "re-verifies every slab on every open, as the store did before the check was made "
+        "skippable. Off because the skip is the whole saving; the engine calls this the "
+        "escape hatch for a deployment that suspects its slabs, and says it costs the full "
+        "cold-start CPU again, which is the point",
     "TS_SERVER_RAFT":
         "the gate on the whole per-shard raft path in the datanode; `start_server_raft_from_env` "
         "returns None without it",
