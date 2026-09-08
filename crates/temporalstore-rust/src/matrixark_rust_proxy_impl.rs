@@ -588,9 +588,59 @@ fn run() -> Result<(String, RecordLogOutput), (String, String)> {
     run_request(request)
 }
 
+/// Frame marker for a binary lane response. A JSON line can never start with this byte, so a
+/// reader that somehow sees the wrong codec fails loudly instead of parsing garbage.
+const LANE_BINARY_MAGIC: u8 = 0xB5;
+
+/// Is this process speaking msgpack on the lane?
+///
+/// Decided ONCE, from the environment the process was spawned with -- never per request. The
+/// lane is a single pipe carrying a stream of responses, so a codec that changed partway would
+/// leave the reader mid-frame with no way back. The spawner chooses; an older spawner sets
+/// nothing and gets the JSON lines it has always got.
+fn lane_binary_enabled() -> bool {
+    env::var("MATRIXARK_LANE_CODEC")
+        .map(|value| value.trim().eq_ignore_ascii_case("msgpack"))
+        .unwrap_or(false)
+}
+
+/// Write one response in whichever codec this process speaks.
+///
+/// Binary frames are length-prefixed rather than delimited: a msgpack body can contain any byte,
+/// including the newline the text lane uses as its terminator, so a delimiter cannot be trusted
+/// here. Header is the magic byte plus a little-endian u32 length.
+fn write_lane_response<W: Write>(
+    out: &mut W,
+    binary: bool,
+    response: &RecordLogResponse,
+    json_text: &str,
+) {
+    if binary {
+        match rmp_serde::to_vec_named(response) {
+            Ok(body) => {
+                let mut header = [0_u8; 5];
+                header[0] = LANE_BINARY_MAGIC;
+                header[1..].copy_from_slice(&(body.len() as u32).to_le_bytes());
+                let _ = out.write_all(&header);
+                let _ = out.write_all(&body);
+            }
+            // Encoding a response that JSON accepted should not be possible, and dropping the
+            // reply would hang the caller on its deadline. Fall back to the text line: the
+            // reader can tell them apart by the first byte.
+            Err(_) => {
+                let _ = writeln!(out, "{json_text}");
+            }
+        }
+    } else {
+        let _ = writeln!(out, "{json_text}");
+    }
+    let _ = out.flush();
+}
+
 fn serve() -> i32 {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    let lane_binary = lane_binary_enabled();
     let started_at_ms = unix_ms();
     let mut command_count: u64 = 0;
     let mut failed_count: u64 = 0;
@@ -647,8 +697,8 @@ fn serve() -> i32 {
                     started.elapsed().as_millis(),
                 );
                 response.client_request_id = client_request_id;
-                let _ = writeln!(stdout, "{}", serialize_response_with_metrics(&mut response));
-                let _ = stdout.flush();
+                let json_text = serialize_response_with_metrics(&mut response);
+                write_lane_response(&mut stdout, lane_binary, &response, &json_text);
                 return 0;
             }
             Ok(request) if request.op == "metrics_prometheus" => {
@@ -704,8 +754,7 @@ fn serve() -> i32 {
             "batch_hget" | "hgetall" | "scan_hash" => response.count.unwrap_or(0) as u64,
             _ => 0,
         };
-        let _ = writeln!(stdout, "{}", response_json);
-        let _ = stdout.flush();
+        write_lane_response(&mut stdout, lane_binary, &response, &response_json);
     }
     0
 }
@@ -5572,6 +5621,70 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_text_lane_response_is_still_one_json_line() {
+        let response = super::response_from_result(
+            Err(("unavailable".to_string(), "probe".to_string())),
+            1,
+        );
+        let json_text = serde_json::to_string(&response).expect("serializes");
+        let mut out: Vec<u8> = Vec::new();
+        super::write_lane_response(&mut out, false, &response, &json_text);
+        assert_eq!(out.last(), Some(&b'\n'), "text lane must stay newline-delimited");
+        assert_ne!(out[0], super::LANE_BINARY_MAGIC, "text lane must not look framed");
+        let parsed: Value = serde_json::from_slice(&out).expect("parses as one json line");
+        assert_eq!(parsed["ok"], false, "the error path still serializes a response");
+    }
+
+    #[test]
+    fn a_binary_lane_response_is_a_length_prefixed_frame() {
+        let response = super::response_from_result(
+            Err(("unavailable".to_string(), "probe".to_string())),
+            1,
+        );
+        let json_text = serde_json::to_string(&response).expect("serializes");
+        let mut out: Vec<u8> = Vec::new();
+        super::write_lane_response(&mut out, true, &response, &json_text);
+
+        // Length-prefixed, not delimited: a msgpack body can contain a newline, so a reader
+        // that split on one would cut a frame in half.
+        assert_eq!(out[0], super::LANE_BINARY_MAGIC, "frame must start with the magic byte");
+        let len = u32::from_le_bytes([out[1], out[2], out[3], out[4]]) as usize;
+        assert_eq!(out.len(), 5 + len, "header length must describe the body exactly");
+
+        // The body carries the same response the text lane would have sent. Decode into a typed
+        // shape rather than serde_json::Value: msgpack has a `bin` type with no JSON equivalent,
+        // so a Value decoder rejects the frame with "invalid type: byte array". That is worth
+        // knowing beyond this test -- a reader that maps msgpack onto JSON types will see bytes
+        // where the text lane gave it a string.
+        #[derive(serde::Deserialize)]
+        struct OkOnly {
+            ok: bool,
+            op: String,
+        }
+        let decoded: OkOnly = rmp_serde::from_slice(&out[5..]).expect("body decodes");
+        let as_json: Value = serde_json::from_str(&json_text).expect("json parses");
+        assert_eq!(decoded.ok, as_json["ok"].as_bool().unwrap(), "same ok as the text lane");
+        assert_eq!(decoded.op, as_json["op"].as_str().unwrap(), "same op as the text lane");
+    }
+
+    #[test]
+    fn the_two_codecs_are_distinguishable_by_their_first_byte() {
+        // A reader handed the wrong codec must fail loudly rather than parse garbage. A JSON
+        // line can never begin with the frame magic.
+        let response = super::response_from_result(
+            Err(("unavailable".to_string(), "probe".to_string())),
+            1,
+        );
+        let json_text = serde_json::to_string(&response).expect("serializes");
+        let mut text: Vec<u8> = Vec::new();
+        let mut binary: Vec<u8> = Vec::new();
+        super::write_lane_response(&mut text, false, &response, &json_text);
+        super::write_lane_response(&mut binary, true, &response, &json_text);
+        assert_ne!(text[0], binary[0]);
+        assert_eq!(text[0], b'{');
+    }
 
     #[test]
     fn a_record_payload_is_a_string_unless_the_caller_asked_for_a_document() {

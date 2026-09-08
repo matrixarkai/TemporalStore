@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import select
 import subprocess
@@ -637,10 +638,15 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             and len(compact_entries) >= self._batch_hget_coalesce_min_records
         ):
             return self._coalesced_batch_hget(compact_entries)
+        # Ask for record payloads as documents rather than JSON strings, so this side parses
+        # the envelope once instead of parsing every record again. Off by default: the readers
+        # accept both shapes, but the switch is only worth taking where it has been measured.
+        inline = os.environ.get("MATRIXARK_LANE_INLINE_RECORDS", "").strip().lower() in {"1", "true", "yes", "on"}
         response = self._call_hash_batch_json(
             "batch_hget",
             compact_entries,
             compact_read_response=True,
+            **({"records_inline_json": True} if inline else {}),
         )
         return self._batch_hget_records_from_response(compact_entries, response)
 
