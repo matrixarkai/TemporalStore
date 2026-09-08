@@ -3788,9 +3788,35 @@ fn read_page_bytes(
             }
         }
     }
-    let bytes = page_store.read(address).ok()?;
-    let _ = cache.put(cache_key, bytes.clone());
-    Some(bytes)
+    if let Ok(bytes) = page_store.read(address) {
+        let _ = cache.put(cache_key, bytes.clone());
+        return Some(bytes);
+    }
+    // The block store could not answer, so try the record that carries this page.
+    //
+    // This is the same fallback the synthetic-address branch above performs, which until now was
+    // the ONLY way to reach it: the branch is entered on `is_wal_resident(address.page_slab_id)`.
+    // A synchronous write stores the real address its block-store append returned, so a read for
+    // one never entered that branch, and the copy carried in its record was registered, kept
+    // addressable, and never consulted.
+    //
+    // That is exactly the case the single barrier creates. It acks on the log fsync and defers
+    // the block fsync, so a crash can lose a block the index already names. Recovery then rebuilt
+    // the index, resolved a real address into a block that was never written, and answered None
+    // for a durably acknowledged write -- with the value sitting in the log the whole time.
+    //
+    // Ordered after the block-store read, not before it: the durable copy is the common case and
+    // a direct read, while this one resolves a log id and parses a record.
+    if page_store.block_in_wal() {
+        if let Some(bytes) = address
+            .object_id()
+            .and_then(|object_id| block_in_wal::read_page(page_store, shard_id, object_id))
+        {
+            let _ = cache.put(cache_key, bytes.clone());
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 /// The page's bytes, shared rather than copied.

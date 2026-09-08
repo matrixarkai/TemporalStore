@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use temporalstore_rust::{
+    LoadShardRequest,
     Command, CommandResponse, Config, ExecuteRequest, FeaturePoint, SetConfigRequest,
     TemporalEngine,
 };
@@ -214,7 +215,36 @@ struct RecoverReport {
 
 fn recover(root: PathBuf, keys: u64) {
     let engine = open_engine(&root);
-    engine.load_shard(1); // forces WAL replay from the durable watermark
+    // Load through the checked entry point and SAY what it answered.
+    //
+    // `load_shard` discards the status. Replay refuses a load it cannot honour -- a recorded
+    // outcome that will not install returns an error rather than serving a shard missing it --
+    // and discarding that turns a refusal into a shard that reads as empty. Every key then
+    // reports missing, which is the report a log that never held them would produce too, so the
+    // one number this harness exists to produce could not tell "lost" from "refused".
+    let load = engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    if !load.status.ok {
+        eprintln!(
+            "load refused: code={} message={}",
+            load.status.code, load.status.message
+        );
+    }
+    // What replay actually did, so "recovered 0" can be told apart from "replayed nothing".
+    let stats = engine.write_ahead_log_store().stats(1);
+    eprintln!(
+        "log: last_sequence={} | recovery: {:?}",
+        stats.last_sequence,
+        engine.storage_recovery_report(1)
+    );
     let mut missing = Vec::new();
     let mut mismatched = Vec::new();
     let mut recovered = 0u64;
