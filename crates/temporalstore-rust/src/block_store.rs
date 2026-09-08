@@ -972,7 +972,6 @@ impl LocalBlockStore {
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        let next_page_id = next_page_id_at(&root).unwrap_or_default();
         let manifest_exists =
             band_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
         let (mut bands, mut manifest_rebuilt) = if manifest_exists {
@@ -983,6 +982,12 @@ impl LocalBlockStore {
         } else {
             (rebuild_band_manifest_at(&root).unwrap_or_default(), true)
         };
+        // Loaded BEFORE the page-id scan on purpose: the manifest already records `last_page_id`
+        // per slab, and reading it turns a walk over every page record header -- 90% of a
+        // steady-state open's reads -- into a few MB. Any slab the manifest cannot prove unchanged
+        // is still walked, and the active slab always is.
+        let next_page_id =
+            next_page_id_from_bands(&root, &bands, page_slab_id).unwrap_or_default();
         let band_manifest_reconciled_on_open =
             reconcile_band_manifest_with_disk(&root, &mut bands).unwrap_or_default();
         manifest_rebuilt |= band_manifest_reconciled_on_open;
