@@ -49,6 +49,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import threading
 from typing import Any, Optional
 from urllib.parse import quote, urlsplit
 
@@ -148,23 +149,8 @@ def _put_blob(base_url: str, api_key: Optional[str], key: str, data: bytes,
     Content-addressed and idempotent: re-PUTting the same key replaces byte-identical
     content (no dup). When ``api_key`` is None/empty no ``Authorization`` header is
     sent (anonymous)."""
-    conn = _connect(base_url, timeout)
-    try:
-        conn.putrequest("PUT", f"/v1/blob/{key.lstrip('/')}")
-        if api_key:
-            conn.putheader("Authorization", f"Bearer {api_key}")
-        conn.putheader("Content-Length", str(len(data)))
-        conn.putheader("Content-Type", content_type)
-        conn.endheaders()
-        conn.send(data)
-        resp = conn.getresponse()
-        raw = resp.read()
-        status = int(getattr(resp, "status", 0) or 0)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    status, raw = _exchange(base_url, api_key, "PUT", f"/v1/blob/{key.lstrip('/')}",
+                            data, timeout, content_type)
     if status >= 400:
         raise RuntimeError(
             f"blob upload PUT /v1/blob/{key} failed: HTTP {status}: {raw[:256]!r} "
@@ -175,25 +161,106 @@ def _put_blob(base_url: str, api_key: Optional[str], key: str, data: bytes,
         return {}
 
 
+_POOL = threading.local()
+
+
+def _pool_key(base_url: str, timeout: float) -> tuple:
+    parsed = urlsplit(base_url)
+    scheme = parsed.scheme or "http"
+    return (scheme, parsed.hostname or "127.0.0.1",
+            parsed.port or (443 if scheme == "https" else 80), float(timeout))
+
+
+def _take_connection(base_url: str, timeout: float):
+    """A pooled connection for this thread, or a new one. Returns ``(conn, reused)``.
+
+    Pooled per thread because an ``http.client`` connection carries one exchange at a time; sharing
+    one between threads interleaves two requests on the same socket. ``reused`` is what tells the
+    caller whether a failure is worth another try: a server may close an idle keep-alive connection
+    at any moment, and that close is indistinguishable from a real fault until a fresh socket says
+    otherwise.
+    """
+    cache = getattr(_POOL, "connections", None)
+    if cache is None:
+        cache = {}
+        _POOL.connections = cache
+    conn = cache.pop(_pool_key(base_url, timeout), None)
+    if conn is not None:
+        return conn, True
+    return _connect(base_url, timeout), False
+
+
+def _keep_connection(base_url: str, timeout: float, conn, response) -> None:
+    """Put a connection back, or close it when the exchange ended it.
+
+    ``will_close`` is the server's answer, not a guess: it is set while the response headers are
+    parsed, and it is True for HTTP/1.0, for ``Connection: close``, and for a response whose length
+    is delimited by the close itself. Keeping such a socket would hand the next call a dead one.
+    """
+    if conn is None:
+        return
+    if response is None or getattr(response, "will_close", True):
+        _discard_connection(conn)
+        return
+    cache = getattr(_POOL, "connections", None)
+    if cache is None:
+        cache = {}
+        _POOL.connections = cache
+    key = _pool_key(base_url, timeout)
+    previous = cache.get(key)
+    if previous is not None and previous is not conn:
+        _discard_connection(previous)
+    cache[key] = conn
+
+
+def _discard_connection(conn) -> None:
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001 - closing is best effort; the socket is going away regardless.
+        pass
+
+
+def _exchange(base_url: str, api_key: Optional[str], method: str, path: str,
+              data: Optional[bytes], timeout: float,
+              content_type: str = "application/json") -> tuple:
+    """One request and its response, on a pooled connection, tried again once if a REUSED one died.
+
+    Only a reused connection earns the second try. A fresh connection that fails has met something
+    real -- nothing listening, a wrong address -- and trying again only doubles the wait before the
+    caller learns that. A reused one that fails has most likely met the server's idle timeout, which
+    is not a fault at all and cannot be seen until the write goes out.
+    """
+    failure = None
+    for attempt in (0, 1):
+        conn, reused = _take_connection(base_url, timeout)
+        response = None
+        try:
+            conn.putrequest(method, path)
+            if api_key:
+                conn.putheader("Authorization", f"Bearer {api_key}")
+            if data is not None:
+                conn.putheader("Content-Type", content_type)
+                conn.putheader("Content-Length", str(len(data)))
+            conn.endheaders()
+            if data is not None:
+                conn.send(data)
+            response = conn.getresponse()
+            raw = response.read()
+            status = int(getattr(response, "status", 0) or 0)
+        except Exception as exc:  # noqa: BLE001 - a dead pooled socket looks like any other error.
+            _discard_connection(conn)
+            failure = exc
+            if reused and attempt == 0:
+                continue
+            raise
+        _keep_connection(base_url, timeout, conn, response)
+        return status, raw
+    raise failure
+
+
 def _post_json(base_url: str, api_key: Optional[str], path: str, body: Json, timeout: float) -> Json:
     data = json.dumps(body).encode("utf-8")
-    conn = _connect(base_url, timeout)
-    try:
-        conn.putrequest("POST", path)
-        if api_key:
-            conn.putheader("Authorization", f"Bearer {api_key}")
-        conn.putheader("Content-Type", "application/json")
-        conn.putheader("Content-Length", str(len(data)))
-        conn.endheaders()
-        conn.send(data)
-        resp = conn.getresponse()
-        raw = resp.read()
-        status = int(getattr(resp, "status", 0) or 0)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    status, raw = _exchange(base_url, api_key, "POST", path, data, timeout)
     if status >= 400:
         raise RuntimeError(
             f"ingest POST {path} failed: HTTP {status}: {raw[:256]!r} "
@@ -207,20 +274,7 @@ def _post_json(base_url: str, api_key: Optional[str], path: str, body: Json, tim
 def _get_json(base_url: str, api_key: Optional[str], path: str, timeout: float) -> Json:
     """GET ``{base_url}{path}`` with an optional Bearer token; parse the JSON response. A 404 returns
     the parsed body (callers inspect ``found``); other >=400 statuses raise."""
-    conn = _connect(base_url, timeout)
-    try:
-        conn.putrequest("GET", path)
-        if api_key:
-            conn.putheader("Authorization", f"Bearer {api_key}")
-        conn.endheaders()
-        resp = conn.getresponse()
-        raw = resp.read()
-        status = int(getattr(resp, "status", 0) or 0)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    status, raw = _exchange(base_url, api_key, "GET", path, None, timeout)
     if status >= 400 and status != 404:
         raise RuntimeError(f"GET {path} failed: HTTP {status}: {raw[:256]!r}")
     try:
