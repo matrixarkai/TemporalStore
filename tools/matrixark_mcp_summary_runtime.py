@@ -666,10 +666,16 @@ def async_summary_progress_records(
     # still costs a round trip and permanent growth, and on a record-log backend that growth
     # is what turns a busy store into one where a retrieve cannot finish. Skip the write when
     # nothing about the task actually changed; a genuinely new state still lands.
+    # Select the task rows once. The two loops below want the same rows and differ only in the
+    # status they look for, and both callers hand this the whole live view from `read_all()` and
+    # call it once per dirty node -- so selecting twice was paid per node.
+    task_records = [
+        record for record in records
+        if record.get("record_type") == "matrixark_async_pipeline_task"
+    ]
+
     already_recorded: set[tuple] = set()
-    for record in records:
-        if record.get("record_type") != "matrixark_async_pipeline_task":
-            continue
+    for record in task_records:
         if str(record.get("status") or "") != "summary_completed":
             continue
         if not compatible_scope(candidate_access_scope(record), scope):
@@ -686,9 +692,7 @@ def async_summary_progress_records(
         already_recorded.add(progress_identity(record.get("task_hash"), existing_completed))
 
     progress_records: list[Json] = []
-    for record in records:
-        if record.get("record_type") != "matrixark_async_pipeline_task":
-            continue
+    for record in task_records:
         if str(record.get("status") or "") != "extraction_committed":
             continue
         try:
