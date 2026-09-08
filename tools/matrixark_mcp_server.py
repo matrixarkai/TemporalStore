@@ -315,14 +315,30 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
 
         The record log is append-only, so its count moves if and only if new content landed. One
         `get_string` answers it; the pass it guards reads and re-decodes the whole store.
+
+        The count alone is not enough to skip on. A PURGE removes and rewrites records in place
+        without moving it, and the node whose summary and index postings it just removed is
+        exactly the node that needs rebuilding -- left alone, an updated memory stays in `get_all`
+        and never becomes retrievable again. The adapter already knows this and clears its own
+        pass state on a purge, so pair the count with that state: it is constant while passes are
+        being skipped (nothing writes it), and becomes `(None, None)` the moment a purge
+        invalidates it, which makes this token differ and lets the next pass run.
         """
         getter = getattr(self.adapter, "_get_count", None)
         if not callable(getter):
             return None
         try:
-            return int(getter())
+            count = int(getter())
         except Exception:
             return None
+        pass_state = None
+        loader = getattr(self.adapter, "_load_summary_pass_state", None)
+        if callable(loader):
+            try:
+                pass_state = tuple(loader())
+            except Exception:  # noqa: BLE001 - an unreadable state just means "run the pass".
+                pass_state = None
+        return (count, pass_state)
 
     def _summary_refresh_loop(self) -> None:
         delay_s = self._summary_refresh_interval_s
