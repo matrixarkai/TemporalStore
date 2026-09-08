@@ -112,6 +112,10 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
     "TS_META_SHARD_DIVERGENCE_CHECK":
         "compares the owner map against what each datanode reports serving and re-places the "
         "difference. Off because it moves shards",
+    "TS_INDEX_LOG_COMPRESSION_ENABLED":
+        "gates only the WRITING of compressed index-log payloads; reading codec 2 is unconditional, "
+        "which is what lets a store roll forward and back without a migration. Off is the end that "
+        "an older binary can still read",
     "TS_REVERIFY_ALL_SLABS":
         "re-verifies every slab on every open, as the store did before the check was made "
         "skippable. Off because the skip is the whole saving; the engine calls this the "
