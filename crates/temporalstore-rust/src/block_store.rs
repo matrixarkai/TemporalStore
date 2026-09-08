@@ -615,6 +615,16 @@ pub struct BlockStoreBandDescriptor {
     pub last_page_id: Option<u64>,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
+    /// The file mtime this descriptor was last verified against.
+    ///
+    /// Every open re-reads and re-hashes every page record in every slab; on a 1.4 GB store that is
+    /// ~30 s of CPU, and it is the same work every time for slabs nobody has touched. Recording the
+    /// identity the descriptor was verified against makes "has this file changed" answerable from
+    /// metadata instead of by decoding the slab again.
+    ///
+    /// None on a descriptor written before this existed, which simply verifies once and fills it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_source_mtime_unix_ms: Option<u64>,
     #[serde(default)]
     pub has_corruption: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1110,6 +1120,7 @@ impl LocalBlockStore {
                 first_page_id: None,
                 last_page_id: None,
                 readable_prefix_physical_bytes: 0,
+                verified_source_mtime_unix_ms: None,
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,
@@ -1162,6 +1173,7 @@ impl LocalBlockStore {
                 first_page_id: band.first_page_id,
                 last_page_id: band.last_page_id,
                 readable_prefix_physical_bytes: band.physical_bytes,
+                verified_source_mtime_unix_ms: None,
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,
@@ -1519,6 +1531,7 @@ fn roll_slab_inner(
         first_page_id: None,
         last_page_id: None,
         readable_prefix_physical_bytes: 0,
+        verified_source_mtime_unix_ms: None,
         has_corruption: false,
         first_error_offset: None,
         first_error: None,
@@ -2495,7 +2508,27 @@ mod tests {
         let reopened = LocalBlockStore::new(dir.path());
         let reopened_bands = reopened.band_descriptors();
         assert_eq!(reopened_bands.len(), bands.len());
-        assert_eq!(reopened_bands[0], bands[0]);
+        // The band must survive a reopen unchanged. `verified_source_mtime_unix_ms` is excluded
+        // because it is not part of the band: it records when the descriptor was last checked
+        // against the file, and the two sides differ on that for a good reason, asserted below.
+        let strip = |band: &BlockStoreBandDescriptor| {
+            let mut band = band.clone();
+            band.verified_source_mtime_unix_ms = None;
+            band
+        };
+        assert_eq!(strip(&reopened_bands[0]), strip(&bands[0]));
+        // The original store wrote and sealed this slab without ever inspecting it, so it has
+        // nothing verified to record; the reopen reconciled, which inspected it, so it does.
+        assert!(
+            bands[0].verified_source_mtime_unix_ms.is_none(),
+            "a slab this process only wrote has not been verified by inspection: {:?}",
+            bands[0]
+        );
+        assert!(
+            reopened_bands[0].verified_source_mtime_unix_ms.is_some(),
+            "reopening inspected this slab, so the identity it verified should be recorded: {:?}",
+            reopened_bands[0]
+        );
         assert_eq!(
             reopened_bands[1].page_slab_id,
             bands[1].page_slab_id

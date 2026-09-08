@@ -64,6 +64,10 @@ pub(super) fn rebuild_band_manifest_at(
                 first_page_id: report.first_page_id,
                 last_page_id: report.last_page_id,
                 readable_prefix_physical_bytes: report.readable_prefix_physical_bytes,
+                // This path inspected the slab, so record the identity it was verified against;
+                // leaving it empty makes the next reconcile re-read a slab this one just proved.
+                verified_source_mtime_unix_ms: file_modified_unix_ms(&path)
+                    .or_else(|| file_created_unix_ms(&path)),
                 has_corruption: report.has_corruption,
                 first_error_offset: report.first_error_offset,
                 first_error: report.first_error,
@@ -89,12 +93,23 @@ pub(super) fn rebuild_band_manifest_at(
                 first_page_id: None,
                 last_page_id: None,
                 readable_prefix_physical_bytes: 0,
+                verified_source_mtime_unix_ms: None,
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,
             });
     }
     Ok(bands)
+}
+
+/// Re-verify every slab on every open, as before this was made skippable.
+///
+/// The escape hatch for a deployment that suspects its slabs: it costs the full cold-start CPU
+/// again, which is the point.
+fn reverify_all_slabs() -> bool {
+    std::env::var("TS_REVERIFY_ALL_SLABS")
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 pub(super) fn reconcile_band_manifest_with_disk(
@@ -120,7 +135,40 @@ pub(super) fn reconcile_band_manifest_with_disk(
     // (13.5 MB/s, against hundreds of MB/s for sha256) with the process pinned at 99% of one core.
     // Only the reads and hashing are shared out; the update loop below is unchanged and still walks
     // `live_slab_ids` in order, so it makes the same decisions in the same sequence.
-    let ordered_slab_ids = live_slab_ids.iter().copied().collect::<Vec<_>>();
+    let mut ordered_slab_ids = live_slab_ids.iter().copied().collect::<Vec<_>>();
+    // Leave out the sealed slabs whose file is still exactly what their descriptor was verified
+    // against. Inspecting one re-reads it and re-hashes every record in it, which is the bulk of a
+    // cold open -- 30.7 s of CPU in a 32.0 s restart on this store, 96% CPU-bound -- and for a slab
+    // nobody has touched it recomputes an answer already on disk.
+    //
+    // Deliberately narrow. Only a SEALED slab already in the manifest, not marked corrupt, already
+    // in the state it should be in, whose size AND mtime both still match what was verified. The
+    // active slab is always inspected: it is the one being appended to. Anything unreadable or
+    // unrecorded falls through to a full inspection, so the skip can only ever be taken on evidence.
+    if !reverify_all_slabs() {
+        ordered_slab_ids.retain(|page_slab_id| {
+            if *page_slab_id == latest {
+                return true;
+            }
+            let Some(band) = bands.get(page_slab_id) else {
+                return true;
+            };
+            if band.has_corruption || band.state != BlockStoreBandState::Sealed {
+                return true;
+            }
+            let Some(verified_mtime) = band.verified_source_mtime_unix_ms else {
+                return true;
+            };
+            let path = slab_path(root, *page_slab_id);
+            let Ok(meta) = fs::metadata(&path) else {
+                return true;
+            };
+            if meta.len() != band.physical_bytes {
+                return true;
+            }
+            file_modified_unix_ms(&path) != Some(verified_mtime)
+        });
+    }
     let workers = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1)
@@ -189,6 +237,9 @@ pub(super) fn reconcile_band_manifest_with_disk(
                 band.has_corruption = report.has_corruption;
                 band.first_error_offset = report.first_error_offset;
                 band.first_error = report.first_error;
+                // What this descriptor has now been verified against, so the next open can tell
+                // whether the file still matches without reading it.
+                band.verified_source_mtime_unix_ms = updated_unix_ms;
                 changed |= *band != old;
             }
             None => {
@@ -205,6 +256,9 @@ pub(super) fn reconcile_band_manifest_with_disk(
                         first_page_id: report.first_page_id,
                         last_page_id: report.last_page_id,
                         readable_prefix_physical_bytes: report.readable_prefix_physical_bytes,
+                        // Just inspected, so record what it was verified against; otherwise the
+                        // next open re-reads and re-hashes a slab this one already proved.
+                        verified_source_mtime_unix_ms: updated_unix_ms,
                         has_corruption: report.has_corruption,
                         first_error_offset: report.first_error_offset,
                         first_error: report.first_error,
@@ -234,6 +288,7 @@ pub(super) fn reconcile_band_manifest_with_disk(
                 first_page_id: old.as_ref().and_then(|band| band.first_page_id),
                 last_page_id: old.as_ref().and_then(|band| band.last_page_id),
                 readable_prefix_physical_bytes: 0,
+                verified_source_mtime_unix_ms: None,
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,
@@ -392,6 +447,7 @@ pub(super) fn ensure_band_descriptor(
             first_page_id: None,
             last_page_id: None,
             readable_prefix_physical_bytes: physical_bytes,
+            verified_source_mtime_unix_ms: None,
             has_corruption: false,
             first_error_offset: None,
             first_error: None,
@@ -429,6 +485,7 @@ pub(super) fn upsert_band_after_append(
             first_page_id: Some(page_id),
             last_page_id: Some(page_id),
             readable_prefix_physical_bytes: 0,
+            verified_source_mtime_unix_ms: None,
             has_corruption: false,
             first_error_offset: None,
             first_error: None,
@@ -479,6 +536,7 @@ pub(super) fn set_band_state(
             first_page_id: None,
             last_page_id: None,
             readable_prefix_physical_bytes: 0,
+            verified_source_mtime_unix_ms: None,
             has_corruption: false,
             first_error_offset: None,
             first_error: None,

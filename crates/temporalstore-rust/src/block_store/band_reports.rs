@@ -115,6 +115,7 @@ impl LocalBlockStore {
                             first_page_id: zone.first_page_id,
                             last_page_id: zone.last_page_id,
                             readable_prefix_physical_bytes: zone.physical_bytes,
+                            verified_source_mtime_unix_ms: None,
                             has_corruption: false,
                             first_error_offset: None,
                             first_error: None,
