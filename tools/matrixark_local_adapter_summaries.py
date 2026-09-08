@@ -13,6 +13,7 @@ try:  # names owned by the parent module
     Any,
     async_summary_progress_records,
     summary_progress_source_records,
+    time_compression_source_records,
     compression_context_index_records,
     compression_profile_layer_values,
     pending_dirty_node_records,
@@ -23,6 +24,7 @@ except ImportError:
     Any,
     async_summary_progress_records,
     summary_progress_source_records,
+    time_compression_source_records,
     compression_context_index_records,
     compression_profile_layer_values,
     pending_dirty_node_records,
@@ -609,6 +611,8 @@ class _LocalAdapterSummariesMixin:
         records = self.read_all() if records is None else records
         # Filtered once, not once per dirty node -- see summary_progress_source_records.
         progress_source_records = summary_progress_source_records(records)
+        # Same reason, different reader: filtered once, not once per dirty node.
+        time_compression_source = time_compression_source_records(records)
         skipped_dirty_reasons: Json = {}
         pending_by_node = pending_dirty_node_records(
             records=records,
@@ -1065,7 +1069,7 @@ class _LocalAdapterSummariesMixin:
                     }
                 )
             compression_refresh = self.auto_time_compress_node_events(
-                records=records,
+                records=time_compression_source,
                 scope=dirty.get("scope", scope),
                 node_hash=node_hash,
                 node_path=node_path,

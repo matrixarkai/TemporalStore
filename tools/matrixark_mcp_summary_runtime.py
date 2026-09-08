@@ -597,6 +597,33 @@ def append_node_summary_embeddings(
 SUMMARY_PROGRESS_RECORD_TYPES = frozenset({"context_entity", "matrixark_async_pipeline_task"})
 
 
+#: The record types `auto_time_compress_node_events` reads. Derived from that method, not guessed:
+#: its first loop tests one type in the guard and another INSIDE the body, and a reading that missed
+#: the nested one would build a filter silently dropping 1,886 reinforcement rows.
+#: `test_the_time_compression_filter_is_complete` re-derives it and fails if they drift.
+#:
+#: It lives here rather than beside the method: summaries already reaches this module through the
+#: parent, so defining it there and importing it back closes a cycle.
+TIME_COMPRESSION_RECORD_TYPES = frozenset({
+    "context_compression_event",
+    "context_debug_record",
+    "context_event",
+    "context_recall_reinforcement",
+})
+
+
+def time_compression_source_records(records: list[Json]) -> list[Json]:
+    """The subset of a live view `auto_time_compress_node_events` can act on.
+
+    Callers refreshing several nodes should filter ONCE and pass the result to every call: the
+    method runs per dirty node, and on a real store the types it reads are 2,078 of 7,085 records.
+    """
+    return [
+        record for record in records
+        if record.get("record_type") in TIME_COMPRESSION_RECORD_TYPES
+    ]
+
+
 def summary_progress_source_records(records: list[Json]) -> list[Json]:
     """The subset of a live view that `async_summary_progress_records` can act on.
 
@@ -783,6 +810,8 @@ def refresh_dirty_node_summaries(
     records = adapter.read_all()
     # Filtered once, not once per dirty node: the progress builder reads two record types.
     progress_source_records = summary_progress_source_records(records)
+    # Same reason, different reader: filtered once, not once per dirty node.
+    time_compression_source = time_compression_source_records(records)
     pending_by_node = pending_dirty_node_records(
         records=records,
         scope=scope,
@@ -841,7 +870,7 @@ def refresh_dirty_node_summaries(
         generated_summary_types = summary_refresh_records["generated_summary_types"]
         l1_policy = summary_refresh_records["summary_generation_policy"]
         compression_refresh = adapter.auto_time_compress_node_events(
-            records=records,
+            records=time_compression_source,
             scope=dirty.get("scope", scope),
             node_hash=node_hash,
             node_path=node_path,
