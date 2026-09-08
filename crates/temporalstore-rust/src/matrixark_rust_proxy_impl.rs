@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{json, Value};
 use temporalstore_rust::{
     BatchExecuteRequest, BatchExecuteResponse, BlockStoreOptions, Command, CommandResponse,
@@ -65,6 +66,10 @@ struct RecordLogRequest {
     query: String,
     #[serde(default)]
     max_selected_refs: usize,
+    /// Send record payloads as sub-documents instead of JSON strings (see `RecordPayload`).
+    /// Absent means the historical string shape, so an older reader is unaffected.
+    #[serde(default)]
+    records_inline_json: bool,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     entries: Vec<HashEntry>,
     #[serde(default, deserialize_with = "deserialize_null_default")]
@@ -148,11 +153,47 @@ struct HashEntry {
 #[derive(Clone, Debug, Deserialize)]
 struct CompactHashEntry(String, String, String);
 
+/// A record payload on the wire.
+///
+/// `Text` is the shape this lane has always used: the stored record's JSON as a STRING. That
+/// costs twice. Serializing escapes every quote in the payload into a new allocation here, and
+/// the reader then parses the envelope AND parses each record's string a second time -- the
+/// stored bytes are already JSON, so both sides are converting JSON to JSON.
+///
+/// `Inline` embeds the stored bytes verbatim as a sub-document. Nothing is escaped on the way
+/// out and the reader parses once. Only a caller that asked for it gets it, so a reader that
+/// still expects a string keeps getting one.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum RecordPayload {
+    Inline(Box<RawValue>),
+    Text(String),
+}
+
+/// Wrap a stored payload for the wire, inline when the caller asked and the bytes really are JSON.
+///
+/// The validation is not optional: `RawValue` is emitted VERBATIM, so handing it a value that is
+/// not JSON would produce a malformed response for the whole batch rather than one bad record.
+/// A payload that does not parse falls back to the string shape, which is exactly what this lane
+/// did before.
+fn record_payload(value: String, inline: bool) -> RecordPayload {
+    if inline && serde_json::from_str::<serde::de::IgnoredAny>(&value).is_ok() {
+        // The clone is a memcpy on a string we have already scanned, and it buys the caller a
+        // whole parse. `from_string` can only reject invalid JSON, which the check above has
+        // excluded, but falling through rather than unwrapping keeps a surprise from costing
+        // the record.
+        if let Ok(raw) = RawValue::from_string(value.clone()) {
+            return RecordPayload::Inline(raw);
+        }
+    }
+    RecordPayload::Text(value)
+}
+
 #[derive(Debug, Serialize)]
 struct HashReadRecord {
     key: String,
     field: String,
-    value: String,
+    value: RecordPayload,
 }
 
 #[derive(Clone, Debug)]
@@ -3573,6 +3614,9 @@ fn execute_record_log_request(
                     response.responses.len()
                 ));
             }
+            // Read the caller's choice before the loop: a bool is Copy, so this stays valid
+            // even where the arm has already moved other fields out of the request.
+            let inline_json = request.records_inline_json;
             for ((key, fields), item) in grouped_entries.into_iter().zip(response.responses) {
                 if !item.status.ok {
                     return Err(format!("{}: {}", item.status.code, item.status.message));
@@ -3592,7 +3636,7 @@ fn execute_record_log_request(
                     records.push(HashReadRecord {
                         key: key.clone(),
                         field,
-                        value,
+                        value: record_payload(value, inline_json),
                     });
                 }
             }
@@ -3622,7 +3666,10 @@ fn execute_record_log_request(
             )?;
             empty_output(root)
         }
-        "hgetall" | "scan_hash" => hash_entries_output(&engine, request.key, root)?,
+        "hgetall" | "scan_hash" => {
+            let inline_json = request.records_inline_json;
+            hash_entries_output(&engine, request.key, root, inline_json)?
+        }
         // Read the durability barrier counters. They are collected by every site that takes a
         // barrier and were, until now, unreachable from outside the process -- so the one number
         // that says how much of a write is barrier-bound could not be measured, only argued.
@@ -3956,6 +4003,7 @@ fn hash_entries_output(
     engine: &RecordStore,
     key: String,
     root: PathBuf,
+    inline_json: bool,
 ) -> Result<RecordLogOutput, String> {
     // Read through the hash snapshot: a raw HashGetAll re-reads every field's page uncached on
     // each call (measured 14.6 ms warm for a 27-field hash), while the snapshot is read once and
@@ -3968,7 +4016,7 @@ fn hash_entries_output(
                 records.push(HashReadRecord {
                     key: key.clone(),
                     field: field.clone(),
-                    value: value.clone(),
+                    value: record_payload(value.clone(), inline_json),
                 });
             }
             let mut extra = BTreeMap::new();
@@ -5524,6 +5572,63 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_record_payload_is_a_string_unless_the_caller_asked_for_a_document() {
+        let stored = "{\"record_type\":\"context_event\",\"text\":\"a \\\"quoted\\\" value\"}";
+        let record = HashReadRecord {
+            key: "k".to_string(),
+            field: "f".to_string(),
+            value: record_payload(stored.to_string(), false),
+        };
+        let wire = serde_json::to_string(&record).expect("serializes");
+        let parsed: Value = serde_json::from_str(&wire).expect("parses");
+        assert!(parsed["value"].is_string(), "default must stay a string: {wire}");
+        let inner: Value =
+            serde_json::from_str(parsed["value"].as_str().unwrap()).expect("inner parses");
+        assert_eq!(inner["record_type"], "context_event");
+    }
+
+    #[test]
+    fn an_inline_payload_carries_the_same_record_without_the_second_parse() {
+        let stored = "{\"record_type\":\"context_event\",\"text\":\"a \\\"quoted\\\" value\",\"n\":12345}";
+        let inline_wire = serde_json::to_string(&HashReadRecord {
+            key: "k".to_string(),
+            field: "f".to_string(),
+            value: record_payload(stored.to_string(), true),
+        })
+        .expect("serializes");
+        let inline: Value = serde_json::from_str(&inline_wire).expect("parses");
+        assert!(inline["value"].is_object(), "inline must be a document: {inline_wire}");
+        assert_eq!(inline["value"]["n"], 12345);
+
+        let text_wire = serde_json::to_string(&HashReadRecord {
+            key: "k".to_string(),
+            field: "f".to_string(),
+            value: record_payload(stored.to_string(), false),
+        })
+        .expect("serializes");
+        let text: Value = serde_json::from_str(&text_wire).expect("parses");
+        let from_text: Value =
+            serde_json::from_str(text["value"].as_str().unwrap()).expect("inner parses");
+        assert_eq!(from_text, inline["value"], "the shape changes, the record must not");
+    }
+
+    #[test]
+    fn a_payload_that_is_not_json_falls_back_rather_than_corrupting_the_batch() {
+        for stored in ["not json at all", "", "{unclosed"] {
+            let wire = serde_json::to_string(&HashReadRecord {
+                key: "k".to_string(),
+                field: "f".to_string(),
+                value: record_payload(stored.to_string(), true),
+            })
+            .expect("serializes");
+            let parsed: Value = serde_json::from_str(&wire)
+                .unwrap_or_else(|e| panic!("malformed for {stored:?}: {e} / {wire}"));
+            assert!(parsed["value"].is_string(), "must fall back for {stored:?}");
+            assert_eq!(parsed["value"].as_str().unwrap(), stored);
+        }
+    }
     use super::compare_scored_candidate;
     use super::{matrixark_scan_cache_key, RecordLogRequest};
 
@@ -5860,6 +5965,7 @@ mod tests {
 
     fn request(op: &str) -> RecordLogRequest {
         RecordLogRequest {
+            records_inline_json: false,
             // This request names no identities: the field is only read by the delete op.
             record_ids: None,
             op: op.to_string(),
@@ -6637,6 +6743,7 @@ mod tests {
             &engine,
             "matrixark:test:records".to_string(),
             record_log_root(&health),
+            false,
         )
         .expect("hgetall output");
         assert_eq!(output.count, Some(2));
@@ -6661,6 +6768,7 @@ mod tests {
             &engine,
             "matrixark:test:records".to_string(),
             record_log_root(&health),
+            false,
         )
         .expect("hgetall after delete");
         assert_eq!(output.count, Some(1));
