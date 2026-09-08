@@ -170,6 +170,18 @@
   .livestrip{display:flex;gap:14px;align-items:center;margin-left:auto;padding-bottom:7px;
              flex-wrap:wrap}
   .subhead{font-size:13px;font-weight:650;margin:18px 0 0;letter-spacing:.01em}
+  /* A section heading whose row also carries a control.
+
+     The control used to sit INSIDE the h2. A heading's accessible name is its contents, so the
+     heading announced itself as "Grafana copy scrape config", or "Access remember for this
+     browser tab" -- and moving through a long page by heading is how that name gets used. The
+     row is unchanged: these properties are the ones the h2 was carrying, the heading keeps its
+     own type, and .aux is still pushed right. The colour is restated because .aux used to
+     inherit it from the heading it sat in. */
+  .sechead{display:flex;align-items:center;gap:10px;margin:0 0 14px}
+  .sechead>h1,.sechead>h2,.sechead>h3,.sechead>h4{margin:0}
+  .sechead>.aux{margin-left:auto;text-transform:none;letter-spacing:0;font-size:12px;
+                font-weight:400;color:var(--muted)}
   .status-chip{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;
       padding:0 5px;border-radius:4px;background:var(--card);margin-right:4px;
       font-variant-numeric:tabular-nums}
@@ -238,7 +250,7 @@
   <div class="summary" id="summary"></div>
 
   <section>
-    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
     <label for="key">Admin API key</label>
     <input id="key" type="password" placeholder="Key carrying an admin scope" autocomplete="off" spellcheck="false">
     <p class="hint">No key yet? <a href="/v1/admin/portal#firstkey">Where the first one comes from</a>
@@ -291,12 +303,12 @@
   </section>
 
   <section>
-    <h2>Jobs <span class="aux"><label class="check"><input type="checkbox" id="auto" checked> auto-refresh</label></span></h2>
+    <div class="sechead"><h2>Jobs</h2><span class="aux"><label class="check"><input type="checkbox" id="auto" checked> auto-refresh</label></span></div>
     <div id="jobs"><div class="empty">Loading…</div></div>
   </section>
 
   <section>
-    <h2>Metrics <span class="aux"><button class="link" id="copyScrape">copy Prometheus scrape config</button></span></h2>
+    <div class="sechead"><h2>Metrics</h2><span class="aux"><button class="link" id="copyScrape">copy Prometheus scrape config</button></span></div>
     <p class="hint" style="margin-top:0">Aggregate counters are exported at <span class="mono">/v1/metrics</span>
       — no keys, no tenant identifiers — so it is safe to scrape without credentials. Import
       <span class="mono">docs/ops/matrixark-ingestion-dashboard.json</span> into Grafana for the

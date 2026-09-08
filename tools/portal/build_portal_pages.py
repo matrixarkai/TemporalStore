@@ -76,6 +76,18 @@ NAV_CSS = """
   .livestrip{display:flex;gap:14px;align-items:center;margin-left:auto;padding-bottom:7px;
              flex-wrap:wrap}
   .subhead{font-size:13px;font-weight:650;margin:18px 0 0;letter-spacing:.01em}
+  /* A section heading whose row also carries a control.
+
+     The control used to sit INSIDE the h2. A heading's accessible name is its contents, so the
+     heading announced itself as "Grafana copy scrape config", or "Access remember for this
+     browser tab" -- and moving through a long page by heading is how that name gets used. The
+     row is unchanged: these properties are the ones the h2 was carrying, the heading keeps its
+     own type, and .aux is still pushed right. The colour is restated because .aux used to
+     inherit it from the heading it sat in. */
+  .sechead{display:flex;align-items:center;gap:10px;margin:0 0 14px}
+  .sechead>h1,.sechead>h2,.sechead>h3,.sechead>h4{margin:0}
+  .sechead>.aux{margin-left:auto;text-transform:none;letter-spacing:0;font-size:12px;
+                font-weight:400;color:var(--muted)}
   .status-chip{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;
       padding:0 5px;border-radius:4px;background:var(--card);margin-right:4px;
       font-variant-numeric:tabular-nums}
@@ -1329,7 +1341,7 @@ SETUP_BODY = """
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-access" id="pane-access">
   <section>
-    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
     <label for="key">Admin API key</label>
     <input id="key" type="password" placeholder="Key carrying an admin scope" autocomplete="off" spellcheck="false">
     <p class="hint">No key yet? <a href="/v1/admin/portal#firstkey">Where the first one comes from</a>
@@ -1349,8 +1361,8 @@ SETUP_BODY = """
   </section>
 
   <section>
-    <h2>Models <span class="aux"><button class="link" id="probeModels" type="button">ask the
-      endpoints what they serve</button></span></h2>
+    <div class="sechead"><h2>Models</h2><span class="aux"><button class="link" id="probeModels" type="button">ask the
+      endpoints what they serve</button></span></div>
     <p class="hint" style="margin-top:0">Both of these are free text on the wire, and a name that is
       merely misspelt does not fail loudly: extraction falls back to the local rules and embedding to
       hash vectors, both answering 200. Pick from the catalogue, or ask the configured endpoint for
@@ -1427,9 +1439,9 @@ SETUP_BODY = """
   </section>
 
   <section>
-    <h2>Move this configuration <span class="aux">
+    <div class="sechead"><h2>Move this configuration</h2><span class="aux">
       <button class="link" id="exportCfg" type="button">export</button>
-      <button class="link" id="copyCfgCurl" type="button">copy as curl</button></span></h2>
+      <button class="link" id="copyCfgCurl" type="button">copy as curl</button></span></div>
     <p class="hint" style="margin-top:0">Export emits exactly what the write endpoint accepts, so
       making another deployment match this one is one request rather than 79 fields retyped.
       Secrets are never exported — set the keys on the target afterwards.</p>
@@ -1461,7 +1473,7 @@ SETUP_BODY = """
   </section>
 
   <section>
-    <h2>Traffic <span class="aux"><label class="check"><input type="checkbox" id="auto" checked> auto-refresh</label></span></h2>
+    <div class="sechead"><h2>Traffic</h2><span class="aux"><label class="check"><input type="checkbox" id="auto" checked> auto-refresh</label></span></div>
     <div id="traffic"><div class="empty">Loading…</div></div>
     <h3 class="subhead">Recent failures</h3>
     <p class="hint" style="margin-top:0">The last few requests this worker answered with an error,
@@ -1534,7 +1546,7 @@ SETUP_BODY = """
   </section>
 
   <section>
-    <h2>Launch a deployment <span class="aux"><button class="link" id="copyEnv" type="button">copy env file</button></span></h2>
+    <div class="sechead"><h2>Launch a deployment</h2><span class="aux"><button class="link" id="copyEnv" type="button">copy env file</button></span></div>
     <p class="hint" style="margin-top:0">The storage directories, the metaserver address and the
       topology are not editable on the Settings tab, and that is deliberate — repointing a running deployment's
       storage from a browser does not reconfigure it, it strands its data. They are chosen when a
@@ -1570,8 +1582,8 @@ SETUP_BODY = """
     <div id="depMsg" role="status" aria-live="polite"></div>
     <div id="depVerdict"></div>
     <pre id="depEnv"></pre>
-    <h3>Launch <span class="aux"><button class="link" id="copyUserData" type="button">copy
-      user-data</button></span></h3>
+    <div class="sechead"><h3 class="subhead">Launch</h3><span class="aux"><button class="link" id="copyUserData" type="button">copy
+      user-data</button></span></div>
     <p class="hint" style="margin-top:0">Nothing here runs from this page. The gateway holds no AWS
       credentials, and creating billable infrastructure is not something a web page should do on a
       click — so this produces exactly what to run, and the command that destroys it again.
@@ -1582,7 +1594,7 @@ SETUP_BODY = """
   </section>
 
   <section>
-    <h2>Grafana <span class="aux"><button class="link" id="copyScrape" type="button">copy scrape config</button></span></h2>
+    <div class="sechead"><h2>Grafana</h2><span class="aux"><button class="link" id="copyScrape" type="button">copy scrape config</button></span></div>
     <p class="hint" style="margin-top:0">Everything on this page is also exported at
       <span class="mono">/v1/metrics</span> in Prometheus text format — aggregate counters only, no
       keys and no tenant identifiers, so it is safe to scrape without credentials.</p>
@@ -3837,7 +3849,7 @@ MEM0_BODY = """
     something you did not expect.</p>
 
   <section>
-    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
     <label for="key">API key</label>
     <input id="key" type="password" placeholder="Key carrying context:ingest / context:retrieve" autocomplete="off" spellcheck="false">
     <div class="hint">An ordinary scoped key, not an admin one: these are the same routes an
@@ -4568,7 +4580,7 @@ CATALOG_BODY = """
   <div class="summary" id="summary"></div>
 
   <section>
-    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
     <label for="key">API key</label>
     <input id="key" type="password" placeholder="Key carrying skill:read / resource:read" autocomplete="off" spellcheck="false">
     <div class="hint">These are ordinary scoped reads, not admin actions: a key with
@@ -4966,7 +4978,7 @@ OVERVIEW_BODY = """
   <div class="summary" id="summary"></div>
 
   <section>
-    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
     <label for="key">Admin API key</label>
     <input id="key" type="password" placeholder="Key carrying an admin scope" autocomplete="off" spellcheck="false">
     <p class="hint">No key yet? <a href="/v1/admin/portal#firstkey">Where the first one comes from</a>
@@ -4980,8 +4992,8 @@ OVERVIEW_BODY = """
   </section>
 
   <section>
-    <h2>Setup <span class="aux"><label class="check"><input type="checkbox" id="autoOverview" checked> auto-refresh</label>
-      <span id="progressText" style="margin-left:12px"></span></span></h2>
+    <div class="sechead"><h2>Setup</h2><span class="aux"><label class="check"><input type="checkbox" id="autoOverview" checked> auto-refresh</label>
+      <span id="progressText" style="margin-left:12px"></span></span></div>
     <div class="progress"><i id="progressBar" style="width:0%%"></i></div>
     <div id="checks"><div class="empty">Enter an admin key to check this deployment.</div></div>
   </section>
@@ -4992,8 +5004,8 @@ OVERVIEW_BODY = """
   </section>
 
   <section>
-    <h2>Diagnostics <span class="aux"><button class="link" id="copyDiag" type="button">copy</button>
-      <button class="link" id="downloadDiag" type="button">download</button></span></h2>
+    <div class="sechead"><h2>Diagnostics</h2><span class="aux"><button class="link" id="copyDiag" type="button">copy</button>
+      <button class="link" id="downloadDiag" type="button">download</button></span></div>
     <p class="hint" style="margin-top:0">Everything on this page plus the effective configuration
       and the current counters, as one JSON document — the thing to attach to a support request.
       Secrets are never in it: the configuration half reports whether a key resolves, never its
@@ -5540,7 +5552,7 @@ EXPLORE_BODY = """
   </section>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-browse" id="pane-browse" hidden>
-    <h2>Browse <span class="aux"><button class="link" id="refresh" type="button">refresh</button></span></h2>
+    <div class="sechead"><h2>Browse</h2><span class="aux"><button class="link" id="refresh" type="button">refresh</button></span></div>
     <div id="users" class="metric-list"></div>
     <div id="browseMsg" role="status" aria-live="polite"></div>
     <div id="memories"><div class="empty">Not loaded.</div></div>
