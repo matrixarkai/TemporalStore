@@ -14,7 +14,7 @@ impl LocalBlockStore {
         if !inner.relaxed_dirty {
             return Ok(());
         }
-        let path = slab_path(&inner.root, inner.page_slab_id);
+        let path = slab_path(&inner.root, inner.block_slab_id);
         if let Ok(file) = OpenOptions::new().append(true).open(&path) {
             file.sync_data()?;
         }
@@ -45,7 +45,7 @@ impl LocalBlockStore {
         fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
         let mut page_id = inner.next_page_id;
-        let mut band_id = band_id_for_slab(inner.page_slab_id);
+        let mut band_id = band_id_for_slab(inner.block_slab_id);
         let mut record = encode_page_record(
             bytes,
             page_id,
@@ -61,7 +61,7 @@ impl LocalBlockStore {
         ) {
             roll_slab_inner(&mut inner)?;
             page_id = inner.next_page_id;
-            band_id = band_id_for_slab(inner.page_slab_id);
+            band_id = band_id_for_slab(inner.block_slab_id);
             record = encode_page_record(
                 bytes,
                 page_id,
@@ -71,9 +71,9 @@ impl LocalBlockStore {
                 inner.options,
             )?;
         }
-        let path = slab_path(&inner.root, inner.page_slab_id);
+        let path = slab_path(&inner.root, inner.block_slab_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let address = BlockAddress::from_parts(inner.page_slab_id, inner.write_offset, record.bytes.len() as u64, Some(page_id), object_id, routing_bucket, Some(page_id), Some(band_id));
+        let address = BlockAddress::from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(page_id), object_id, routing_bucket, Some(page_id), Some(band_id));
         file.write_all(&record.bytes)?;
         file.flush()?;
         // Two INDEPENDENT relaxations:
@@ -93,11 +93,11 @@ impl LocalBlockStore {
         }
         inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
-        let page_slab_id = inner.page_slab_id;
+        let block_slab_id = inner.block_slab_id;
         let write_offset = inner.write_offset;
         upsert_band_after_append(
             &mut inner.bands,
-            page_slab_id,
+            block_slab_id,
             write_offset,
             record.logical_len as u64,
             page_id,
@@ -138,7 +138,7 @@ impl LocalBlockStore {
 
         for (bytes, object_id, routing_bucket) in records {
             let mut page_id = inner.next_page_id;
-            let mut band_id = band_id_for_slab(inner.page_slab_id);
+            let mut band_id = band_id_for_slab(inner.block_slab_id);
             let mut record = encode_page_record(
                 bytes,
                 page_id,
@@ -158,7 +158,7 @@ impl LocalBlockStore {
                 }
                 roll_slab_inner(&mut inner)?;
                 page_id = inner.next_page_id;
-                band_id = band_id_for_slab(inner.page_slab_id);
+                band_id = band_id_for_slab(inner.block_slab_id);
                 record = encode_page_record(
                     &bytes,
                     page_id,
@@ -169,20 +169,20 @@ impl LocalBlockStore {
                 )?;
             }
             if file.is_none() {
-                let path = slab_path(&inner.root, inner.page_slab_id);
+                let path = slab_path(&inner.root, inner.block_slab_id);
                 file = Some(OpenOptions::new().create(true).append(true).open(path)?);
             }
-            let address = BlockAddress::from_parts(inner.page_slab_id, inner.write_offset, record.bytes.len() as u64, Some(page_id), object_id, routing_bucket, Some(page_id), Some(band_id));
+            let address = BlockAddress::from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(page_id), object_id, routing_bucket, Some(page_id), Some(band_id));
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;
             }
             inner.next_page_id = inner.next_page_id.saturating_add(1);
             inner.write_offset += address.length;
-            let page_slab_id = inner.page_slab_id;
+            let block_slab_id = inner.block_slab_id;
             let write_offset = inner.write_offset;
             upsert_band_after_append(
                 &mut inner.bands,
-                page_slab_id,
+                block_slab_id,
                 write_offset,
                 record.logical_len as u64,
                 page_id,

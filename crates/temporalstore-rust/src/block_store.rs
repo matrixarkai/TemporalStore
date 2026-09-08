@@ -49,18 +49,18 @@ pub enum BlockStoreError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error(
-        "block checksum mismatch for slab {page_slab_id} offset {offset} length {length}: expected {expected}, got {actual}"
+        "block checksum mismatch for slab {block_slab_id} offset {offset} length {length}: expected {expected}, got {actual}"
     )]
     ChecksumMismatch {
-        page_slab_id: u64,
+        block_slab_id: u64,
         offset: u64,
         length: u64,
         expected: String,
         actual: String,
     },
-    #[error("corrupt block envelope for slab {page_slab_id} offset {offset}: {reason}")]
+    #[error("corrupt block envelope for slab {block_slab_id} offset {offset}: {reason}")]
     CorruptPageEnvelope {
-        page_slab_id: u64,
+        block_slab_id: u64,
         offset: u64,
         reason: String,
     },
@@ -94,7 +94,7 @@ const ADDRESS_HAS_BAND_ID: u8 = 1 << 4;
 /// measured at 65.3% field names -- these were the largest remaining group of them, and
 /// `page_segment_id` alone cost more than the offset it labels. Every short name carries every
 /// spelling this field has ever had as an alias, so anything already written still loads:
-/// `page_slab_id` and its `page_segment_id` rename, `routing_bucket` and its `routing_slot`
+/// `block_slab_id` and its `page_segment_id` rename, `routing_bucket` and its `routing_slot`
 /// rename, `band_id` with its older `extent_id`/`zone_id`, and `sha256` with its `checksum`.
 ///
 /// This does change the shape a NEW record is written in, so a binary older than this cannot
@@ -103,7 +103,7 @@ const ADDRESS_HAS_BAND_ID: u8 = 1 << 4;
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct BlockAddressWire {
     #[serde(rename = "ps", alias = "page_segment_id", alias = "page_slab_id")]
-    page_slab_id: u64,
+    block_slab_id: u64,
     #[serde(rename = "o", alias = "offset")]
     offset: u64,
     #[serde(rename = "l", alias = "length")]
@@ -160,7 +160,7 @@ struct BlockAddressWire {
 impl From<BlockAddressWire> for BlockAddress {
     fn from(wire: BlockAddressWire) -> Self {
         BlockAddress::from_parts(
-            wire.page_slab_id,
+            wire.block_slab_id,
             wire.offset,
             wire.length,
             wire.page_id,
@@ -175,7 +175,7 @@ impl From<BlockAddressWire> for BlockAddress {
 impl From<BlockAddress> for BlockAddressWire {
     fn from(address: BlockAddress) -> Self {
         Self {
-            page_slab_id: address.page_slab_id,
+            block_slab_id: address.block_slab_id,
             offset: address.offset,
             length: address.length,
             page_id: address.page_id(),
@@ -195,7 +195,7 @@ impl From<BlockAddress> for BlockAddressWire {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "BlockAddressWire", into = "BlockAddressWire")]
 pub struct BlockAddress {
-    pub page_slab_id: u64,
+    pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
     page_id: u64,
@@ -216,7 +216,7 @@ impl BlockAddress {
     /// was kept. The page envelope carries the digest that a read verifies against.
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
-        page_slab_id: u64,
+        block_slab_id: u64,
         offset: u64,
         length: u64,
         page_id: Option<u64>,
@@ -242,7 +242,7 @@ impl BlockAddress {
             present |= ADDRESS_HAS_BAND_ID;
         }
         Self {
-            page_slab_id,
+            block_slab_id,
             offset,
             length,
             page_id: page_id.unwrap_or_default(),
@@ -343,7 +343,7 @@ mod hex_digest {
 
 impl BlockAddress {
     pub fn compact_slab_id(&self) -> Option<u32> {
-        u32::try_from(self.page_slab_id).ok()
+        u32::try_from(self.block_slab_id).ok()
     }
 
     pub fn compact_slab_offset(&self) -> Option<u32> {
@@ -351,7 +351,7 @@ impl BlockAddress {
     }
 
     pub fn compact_slab_address(&self) -> Option<u64> {
-        compact_slab_address_from_parts(self.page_slab_id, self.offset)
+        compact_slab_address_from_parts(self.block_slab_id, self.offset)
     }
 
     pub fn from_compact_slab_address(compact_slab_address: u64, length: u64) -> Self {
@@ -407,7 +407,7 @@ pub struct BlockStoreStats {
 /// resolve a slab id to its shared object and return its verified bytes, or `None`
 /// when the slab is not part of the recovered checkpoint.
 pub trait SharedSlabSource: Send + Sync + std::fmt::Debug {
-    fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError>;
+    fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,28 +438,34 @@ impl Default for BlockStoreOptions {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcReport {
     #[serde(alias = "retain_from_page_segment_id")]
-    pub retain_from_page_slab_id: u64,
+    #[serde(rename = "retain_from_page_slab_id")]
+    pub retain_from_block_slab_id: u64,
     #[serde(alias = "removed_page_segment_ids")]
-    pub removed_page_slab_ids: Vec<u64>,
+    #[serde(rename = "removed_page_slab_ids")]
+    pub removed_block_slab_ids: Vec<u64>,
     #[serde(alias = "retained_page_segment_ids")]
-    pub retained_page_slab_ids: Vec<u64>,
+    #[serde(rename = "retained_page_slab_ids")]
+    pub retained_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub removed_physical_bytes: u64,
     #[serde(default)]
     pub retained_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "delayed_destroy_page_segment_ids")]
-    pub delayed_destroy_page_slab_ids: Vec<u64>,
+    #[serde(rename = "delayed_destroy_page_slab_ids")]
+    pub delayed_destroy_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub delayed_destroy_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "retained_live_page_segment_ids")]
-    pub retained_live_page_slab_ids: Vec<u64>,
+    #[serde(rename = "retained_live_page_slab_ids")]
+    pub retained_live_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_live_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "retained_current_page_segment_ids")]
-    pub retained_current_page_slab_ids: Vec<u64>,
+    #[serde(rename = "retained_current_page_slab_ids")]
+    pub retained_current_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_current_physical_bytes: u64,
 }
@@ -467,7 +473,7 @@ pub struct BlockStoreGcReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcUtilityCandidate {
     #[serde(rename = "page_segment_id")]
-    pub page_slab_id: u64,
+    pub block_slab_id: u64,
     pub bytes: u64,
     #[serde(default)]
     pub total_bytes: u64,
@@ -536,9 +542,11 @@ impl BlockStoreGcPolicy {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcPolicyPlan {
     #[serde(alias = "retain_from_page_segment_id")]
-    pub retain_from_page_slab_id: u64,
+    #[serde(rename = "retain_from_page_slab_id")]
+    pub retain_from_block_slab_id: u64,
     #[serde(alias = "selected_page_segment_ids")]
-    pub selected_page_slab_ids: Vec<u64>,
+    #[serde(rename = "selected_page_slab_ids")]
+    pub selected_block_slab_ids: Vec<u64>,
     pub selected_physical_bytes: u64,
     #[serde(default)]
     pub candidate_total_bytes: u64,
@@ -560,7 +568,7 @@ pub struct BlockStoreGcPolicyPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreDelayedDestroySlabReport {
     #[serde(rename = "page_segment_id")]
-    pub page_slab_id: u64,
+    pub block_slab_id: u64,
     pub physical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified_unix_ms: Option<u64>,
@@ -569,7 +577,8 @@ pub struct BlockStoreDelayedDestroySlabReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStorePurgeDelayedDestroyReport {
     #[serde(alias = "purged_page_segment_ids")]
-    pub purged_page_slab_ids: Vec<u64>,
+    #[serde(rename = "purged_page_slab_ids")]
+    pub purged_block_slab_ids: Vec<u64>,
     pub purged_physical_bytes: u64,
 }
 
@@ -587,7 +596,7 @@ pub enum BlockStoreBandState {
 /// complete band descriptors before the first on-demand slab fetch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LazyCheckpointBand {
-    pub page_slab_id: u64,
+    pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     pub first_page_id: Option<u64>,
@@ -601,7 +610,7 @@ pub struct BlockStoreBandDescriptor {
     #[serde(alias = "extent_id", alias = "zone_id")]
     pub band_id: u64,
     #[serde(rename = "page_segment_id")]
-    pub page_slab_id: u64,
+    pub block_slab_id: u64,
     pub state: BlockStoreBandState,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -693,7 +702,7 @@ pub struct BlockStoreBandUsage {
     #[serde(alias = "extent_id", alias = "zone_id")]
     pub band_id: u64,
     #[serde(rename = "page_segment_id")]
-    pub page_slab_id: u64,
+    pub block_slab_id: u64,
     #[serde(rename = "storage_zone_id", default)]
     pub storage_band_id: u64,
     #[serde(default)]
@@ -787,7 +796,7 @@ pub struct StreamBackedBandRuntimeReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabReport {
     #[serde(rename = "page_segment_id")]
-    pub page_slab_id: u64,
+    pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     pub page_count: u64,
@@ -825,6 +834,7 @@ pub struct BlockStoreSlabReport {
 pub struct BlockStoreBlockIndexReport {
     #[serde(alias = "page_segment_id")]
     #[serde(alias = "block_segment_id")]
+    #[serde(rename = "page_slab_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -875,9 +885,11 @@ struct BlockStoreBandManifest {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreRollReport {
     #[serde(alias = "previous_page_segment_id")]
-    pub previous_page_slab_id: u64,
+    #[serde(rename = "previous_page_slab_id")]
+    pub previous_block_slab_id: u64,
     #[serde(alias = "new_page_segment_id")]
-    pub new_page_slab_id: u64,
+    #[serde(rename = "new_page_slab_id")]
+    pub new_block_slab_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -932,7 +944,7 @@ struct BlockStoreInner {
     // Set when a relaxed (bulk) append deferred its fsync + manifest persist;
     // cleared by sync_durable(). See bulk_relaxed_durability().
     relaxed_dirty: bool,
-    page_slab_id: u64,
+    block_slab_id: u64,
     write_offset: u64,
     next_page_id: u64,
     options: BlockStoreOptions,
@@ -967,8 +979,8 @@ impl LocalBlockStore {
     pub fn with_options(root: impl Into<PathBuf>, options: BlockStoreOptions) -> Self {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
-        let page_slab_id = latest_slab_id_at(&root).unwrap_or_default();
-        let mut write_offset = slab_path(&root, page_slab_id)
+        let block_slab_id = latest_slab_id_at(&root).unwrap_or_default();
+        let mut write_offset = slab_path(&root, block_slab_id)
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
@@ -987,14 +999,14 @@ impl LocalBlockStore {
         // steady-state open's reads -- into a few MB. Any slab the manifest cannot prove unchanged
         // is still walked, and the active slab always is.
         let next_page_id =
-            next_page_id_from_bands(&root, &bands, page_slab_id).unwrap_or_default();
+            next_page_id_from_bands(&root, &bands, block_slab_id).unwrap_or_default();
         let band_manifest_reconciled_on_open =
             reconcile_band_manifest_with_disk(&root, &mut bands).unwrap_or_default();
         manifest_rebuilt |= band_manifest_reconciled_on_open;
         ensure_band_descriptor(
             &mut bands,
             &root,
-            page_slab_id,
+            block_slab_id,
             BlockStoreBandState::Active,
         );
         // Fence a torn tail on the ACTIVE slab. After a crash mid-append the raw file length
@@ -1004,13 +1016,13 @@ impl LocalBlockStore {
         // page-id/generation reuse -> stale reads. Mirror the resume-at-committed-length:
         // physically truncate the active slab to its readable prefix and resume there.
         let active_readable_prefix = bands
-            .get(&page_slab_id)
+            .get(&block_slab_id)
             .map(|band| band.readable_prefix_physical_bytes);
         if let Some(readable_prefix) = active_readable_prefix {
             if readable_prefix < write_offset {
                 if let Ok(file) = OpenOptions::new()
                     .write(true)
-                    .open(slab_path(&root, page_slab_id))
+                    .open(slab_path(&root, block_slab_id))
                 {
                     if file.set_len(readable_prefix).is_ok() {
                         crate::durability_metrics::record_barrier("block_store_open");
@@ -1019,7 +1031,7 @@ impl LocalBlockStore {
                             let _ = dir.sync_all();
                         }
                         write_offset = readable_prefix;
-                        if let Some(band) = bands.get_mut(&page_slab_id) {
+                        if let Some(band) = bands.get_mut(&block_slab_id) {
                             band.physical_bytes = readable_prefix;
                             band.has_corruption = false;
                             band.first_error_offset = None;
@@ -1036,7 +1048,7 @@ impl LocalBlockStore {
             inner: Arc::new(Mutex::new(BlockStoreInner {
                 root,
                 relaxed_dirty: false,
-                page_slab_id,
+                block_slab_id,
                 write_offset,
                 next_page_id,
                 options,
@@ -1093,7 +1105,7 @@ impl LocalBlockStore {
         fs::create_dir_all(&inner.root)?;
         let existing_max = slab_ids_at(&inner.root)?.into_iter().max();
         let new_slab_id = through_slab_id
-            .max(inner.page_slab_id)
+            .max(inner.block_slab_id)
             .max(existing_max.unwrap_or_default())
             .saturating_add(1);
         let path = slab_path(&inner.root, new_slab_id);
@@ -1101,7 +1113,7 @@ impl LocalBlockStore {
         crate::durability_metrics::record_barrier("block_store_checkpoint_reserve");
         file.sync_all()?;
         sync_parent_dir(&path)?;
-        inner.page_slab_id = new_slab_id;
+        inner.block_slab_id = new_slab_id;
         inner.write_offset = 0;
         inner.next_page_id = inner.next_page_id.max(next_page_id_floor);
         let now = now_unix_ms();
@@ -1116,7 +1128,7 @@ impl LocalBlockStore {
             new_slab_id,
             BlockStoreBandDescriptor {
                 band_id: band_id_for_slab(new_slab_id),
-                page_slab_id: new_slab_id,
+                block_slab_id: new_slab_id,
                 state: BlockStoreBandState::Active,
                 physical_bytes: 0,
                 logical_bytes: 0,
@@ -1150,16 +1162,16 @@ impl LocalBlockStore {
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let root = inner.root.clone();
-        let active = inner.page_slab_id;
+        let active = inner.block_slab_id;
         let mut changed = false;
         for band in bands {
             // Never touch the active (reserved) slab — it holds live local writes.
-            if band.page_slab_id == active {
+            if band.block_slab_id == active {
                 continue;
             }
             // If the slab is materialized locally (already fetched / a real local slab), its
             // existing descriptor reflects real on-disk bytes and is authoritative — leave it.
-            if slab_path(&root, band.page_slab_id).exists() {
+            if slab_path(&root, band.block_slab_id).exists() {
                 continue;
             }
             // Lazily-backed checkpoint slab: install (or replace a fresh-store placeholder — a
@@ -1168,8 +1180,8 @@ impl LocalBlockStore {
             // overwritten with the checkpoint's real band metadata, not skipped) a complete
             // SEALED descriptor so accounting is correct before any fetch.
             let descriptor = BlockStoreBandDescriptor {
-                band_id: band_id_for_slab(band.page_slab_id),
-                page_slab_id: band.page_slab_id,
+                band_id: band_id_for_slab(band.block_slab_id),
+                block_slab_id: band.block_slab_id,
                 state: BlockStoreBandState::Sealed,
                 physical_bytes: band.physical_bytes,
                 logical_bytes: band.logical_bytes,
@@ -1183,8 +1195,8 @@ impl LocalBlockStore {
                 first_error_offset: None,
                 first_error: None,
             };
-            if inner.bands.get(&band.page_slab_id) != Some(&descriptor) {
-                inner.bands.insert(band.page_slab_id, descriptor);
+            if inner.bands.get(&band.block_slab_id) != Some(&descriptor) {
+                inner.bands.insert(band.block_slab_id, descriptor);
                 changed = true;
             }
         }
@@ -1194,23 +1206,23 @@ impl LocalBlockStore {
         Ok(())
     }
 
-    /// Ensure `page_slab_id` is present locally, fetching it from the shared
+    /// Ensure `block_slab_id` is present locally, fetching it from the shared
     /// read-through source (if any) on a local miss, caching it, and counting the
     /// on-demand fetch. A no-op when the slab already exists locally or no source is
     /// attached; in the latter case the normal read path surfaces the miss.
-    fn ensure_slab_present(&self, page_slab_id: u64) -> Result<(), BlockStoreError> {
+    fn ensure_slab_present(&self, block_slab_id: u64) -> Result<(), BlockStoreError> {
         let (root, source) = {
             let inner = self.inner.lock().expect("block store lock poisoned");
             (inner.root.clone(), inner.shared_slab_source.clone())
         };
-        if slab_path(&root, page_slab_id).exists() {
+        if slab_path(&root, block_slab_id).exists() {
             return Ok(());
         }
         let Some(source) = source else {
             return Ok(());
         };
-        if let Some(bytes) = source.fetch_slab(page_slab_id)? {
-            self.install_slab(page_slab_id, &bytes)?;
+        if let Some(bytes) = source.fetch_slab(block_slab_id)? {
+            self.install_slab(block_slab_id, &bytes)?;
             self.inner
                 .lock()
                 .expect("block store lock poisoned")
@@ -1350,7 +1362,7 @@ impl LocalBlockStore {
     pub fn purge_delayed_destroy_slabs(&self) -> Result<Vec<u64>, BlockStoreError> {
         Ok(self
             .purge_delayed_destroy_slabs_with_report()?
-            .purged_page_slab_ids)
+            .purged_block_slab_ids)
     }
 
     pub fn purge_delayed_destroy_slabs_with_report(
@@ -1380,7 +1392,7 @@ impl LocalBlockStore {
         sync_dir(&trash_dir)?;
         persist_band_manifest(&inner.root, &inner.bands)?;
         Ok(BlockStorePurgeDelayedDestroyReport {
-            purged_page_slab_ids: purged,
+            purged_block_slab_ids: purged,
             purged_physical_bytes,
         })
     }
@@ -1394,9 +1406,9 @@ impl LocalBlockStore {
             .root
             .clone();
         let mut reports = Vec::new();
-        for page_slab_id in slab_ids_at(&root)? {
-            let bytes = fs::read(slab_path(&root, page_slab_id))?;
-            reports.push(inspect_slab(&bytes, page_slab_id));
+        for block_slab_id in slab_ids_at(&root)? {
+            let bytes = fs::read(slab_path(&root, block_slab_id))?;
+            reports.push(inspect_slab(&bytes, block_slab_id));
         }
         Ok(reports)
     }
@@ -1489,37 +1501,37 @@ fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
     fs::create_dir_all(&inner.root)?;
-    let previous_page_slab_id = inner.page_slab_id;
+    let previous_block_slab_id = inner.block_slab_id;
     // The outgoing slab may hold relaxed (un-fsynced) bulk appends; make them
     // durable before we seal and stop writing to it.
     {
-        let prev_path = slab_path(&inner.root, previous_page_slab_id);
+        let prev_path = slab_path(&inner.root, previous_block_slab_id);
         if let Ok(prev) = OpenOptions::new().append(true).open(&prev_path) {
             crate::durability_metrics::record_barrier("block_store_slab_roll_prev");
             let _ = prev.sync_data();
         }
     }
-    let next_from_current = inner.page_slab_id.saturating_add(1);
+    let next_from_current = inner.block_slab_id.saturating_add(1);
     let next_from_disk = slab_ids_at(&inner.root)?
         .into_iter()
         .max()
         .map(|id| id.saturating_add(1))
         .unwrap_or_default();
-    inner.page_slab_id = next_from_current.max(next_from_disk);
+    inner.block_slab_id = next_from_current.max(next_from_disk);
     inner.write_offset = 0;
-    let path = slab_path(&inner.root, inner.page_slab_id);
+    let path = slab_path(&inner.root, inner.block_slab_id);
     let file = File::create(&path)?;
     crate::durability_metrics::record_barrier("block_store_slab_roll");
     file.sync_all()?;
     sync_parent_dir(&path)?;
     let transition_unix_ms = now_unix_ms();
-    if let Some(previous) = inner.bands.get_mut(&previous_page_slab_id) {
+    if let Some(previous) = inner.bands.get_mut(&previous_block_slab_id) {
         previous.state = BlockStoreBandState::Sealed;
         previous.updated_unix_ms = Some(transition_unix_ms);
     }
     let new_band = BlockStoreBandDescriptor {
-        band_id: band_id_for_slab(inner.page_slab_id),
-        page_slab_id: inner.page_slab_id,
+        band_id: band_id_for_slab(inner.block_slab_id),
+        block_slab_id: inner.block_slab_id,
         state: BlockStoreBandState::Active,
         physical_bytes: 0,
         logical_bytes: 0,
@@ -1533,12 +1545,12 @@ fn roll_slab_inner(
         first_error_offset: None,
         first_error: None,
     };
-    let page_slab_id = inner.page_slab_id;
-    inner.bands.insert(page_slab_id, new_band);
+    let block_slab_id = inner.block_slab_id;
+    inner.bands.insert(block_slab_id, new_band);
     persist_band_manifest(&inner.root, &inner.bands)?;
     Ok(BlockStoreRollReport {
-        previous_page_slab_id,
-        new_page_slab_id: inner.page_slab_id,
+        previous_block_slab_id,
+        new_block_slab_id: inner.block_slab_id,
     })
 }
 
@@ -1594,9 +1606,9 @@ fn compute_band_usage(
             .or_insert_with(|| BandUsageAcc {
                 usage: BlockStoreBandUsage {
                     band_id: band.band_id,
-                    page_slab_id: band.page_slab_id,
+                    block_slab_id: band.block_slab_id,
                     storage_band_id: band.band_id,
-                    stream_slab_id: band.page_slab_id,
+                    stream_slab_id: band.block_slab_id,
                     state: band.state,
                     used_bytes: 0,
                     live_bytes: 0,
@@ -1611,8 +1623,8 @@ fn compute_band_usage(
                 },
             });
         let usage = &mut entry.usage;
-        usage.page_slab_id = usage.page_slab_id.min(band.page_slab_id);
-        usage.stream_slab_id = usage.stream_slab_id.min(band.page_slab_id);
+        usage.block_slab_id = usage.block_slab_id.min(band.block_slab_id);
+        usage.stream_slab_id = usage.stream_slab_id.min(band.block_slab_id);
         usage.state = merged_band_state(usage.state, band.state);
         usage.used_bytes = usage.used_bytes.saturating_add(band.physical_bytes);
         usage.live_bytes = usage.live_bytes.saturating_add(live);
@@ -1663,7 +1675,7 @@ mod address_size_tests {
     /// extra word for its tag; five of them is the cost being removed.
     #[allow(dead_code)]
     struct OptionalShape {
-        page_slab_id: u64,
+        block_slab_id: u64,
         offset: u64,
         length: u64,
         page_id: Option<u64>,
@@ -1793,7 +1805,7 @@ mod tests {
             "checksum": "c38c2bf3055c516a98ac5d97f30e7c364e827bc0a1b2c3d4e5f60718293a4b5c"
         });
         let address: BlockAddress = serde_json::from_value(legacy).expect("a legacy address loads");
-        assert_eq!(address.page_slab_id, 3);
+        assert_eq!(address.block_slab_id, 3);
         assert_eq!(address.offset, 128);
         assert_eq!(address.length, 126);
         // Every other field the legacy record carried, under whichever name it used: this is the
@@ -1870,7 +1882,7 @@ mod tests {
         drop(store);
         // Simulate a crash that left a partial/torn record (no valid envelope) on the ACTIVE
         // slab past the last committed record.
-        let slab = slab_path(dir.path(), a2.page_slab_id);
+        let slab = slab_path(dir.path(), a2.block_slab_id);
         let clean_len = std::fs::metadata(&slab).unwrap().len();
         {
             use std::io::Write;
@@ -1961,14 +1973,14 @@ mod tests {
         let changed = reopened.install_band_catalog(&catalog).unwrap();
         let recovered = reopened.band_catalog(0);
         let state_of = |slab: u64, zs: &[crate::index_log::BandCatalogEntry]| {
-            zs.iter().find(|z| z.page_slab_id == slab).map(|z| z.state)
+            zs.iter().find(|z| z.block_slab_id == slab).map(|z| z.state)
         };
         for entry in &catalog {
             assert_eq!(
-                state_of(entry.page_slab_id, &recovered),
+                state_of(entry.block_slab_id, &recovered),
                 Some(entry.state),
                 "band {} lifecycle must reconstruct from the folded catalog",
-                entry.page_slab_id
+                entry.block_slab_id
             );
         }
         let _ = changed;
@@ -1983,15 +1995,15 @@ mod tests {
         store.install_slab(2, b"keep").unwrap();
 
         let report = store.gc_slabs_before(2).unwrap();
-        assert_eq!(report.removed_page_slab_ids, vec![0, 1]);
-        assert_eq!(report.retained_page_slab_ids, vec![2]);
+        assert_eq!(report.removed_block_slab_ids, vec![0, 1]);
+        assert_eq!(report.retained_block_slab_ids, vec![2]);
         assert_eq!(
             report.removed_physical_bytes,
             (b"current".len() + b"old".len()) as u64
         );
         assert_eq!(report.retained_physical_bytes, b"keep".len() as u64);
-        assert!(report.retained_current_page_slab_ids.is_empty());
-        assert!(report.retained_live_page_slab_ids.is_empty());
+        assert!(report.retained_current_block_slab_ids.is_empty());
+        assert!(report.retained_live_block_slab_ids.is_empty());
         assert_eq!(store.slab_ids().unwrap(), vec![2]);
     }
 
@@ -2010,7 +2022,7 @@ mod tests {
         let mut guard = 0;
         let mut full_slab = 0;
         while !store.needs_slab_preparation_with_target(TARGET) {
-            full_slab = store.append(&payload).unwrap().page_slab_id;
+            full_slab = store.append(&payload).unwrap().block_slab_id;
             guard += 1;
             assert!(guard < 200, "filled {guard} times without reaching the target");
         }
@@ -2019,12 +2031,12 @@ mod tests {
             .prepare_next_slab_with_target(TARGET)
             .unwrap()
             .expect("a slab at target must roll");
-        assert_eq!(rolled.previous_page_slab_id, full_slab);
-        assert!(rolled.new_page_slab_id > full_slab);
+        assert_eq!(rolled.previous_block_slab_id, full_slab);
+        assert!(rolled.new_block_slab_id > full_slab);
 
         // The next append lands on the fresh slab, and did not have to roll to get there.
         let after = store.append(&payload).unwrap();
-        assert_eq!(after.page_slab_id, rolled.new_page_slab_id);
+        assert_eq!(after.block_slab_id, rolled.new_block_slab_id);
     }
 
     /// Prepare must be a no-op while the slab has room, or a background cycle would shred the
@@ -2091,13 +2103,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
-        assert_eq!(first.page_slab_id, 0);
+        assert_eq!(first.block_slab_id, 0);
 
         let roll = store.roll_slab().unwrap();
-        assert_eq!(roll.previous_page_slab_id, 0);
-        assert_eq!(roll.new_page_slab_id, 1);
+        assert_eq!(roll.previous_block_slab_id, 0);
+        assert_eq!(roll.new_block_slab_id, 1);
         let second = store.append(b"second").unwrap();
-        assert_eq!(second.page_slab_id, 1);
+        assert_eq!(second.block_slab_id, 1);
         assert_eq!(second.offset, 0);
         assert_eq!(store.read(&first).unwrap(), b"first");
         assert_eq!(store.read(&second).unwrap(), b"second");
@@ -2110,12 +2122,12 @@ mod tests {
         let first = store.append(b"first").unwrap();
         let roll = store.roll_slab().unwrap();
         let second = store.append(b"second").unwrap();
-        assert_eq!(roll.new_page_slab_id, second.page_slab_id);
+        assert_eq!(roll.new_block_slab_id, second.block_slab_id);
 
         let reopened = LocalBlockStore::new(dir.path());
         let third = reopened.append(b"third").unwrap();
 
-        assert_eq!(third.page_slab_id, second.page_slab_id);
+        assert_eq!(third.block_slab_id, second.block_slab_id);
         assert!(third.offset > second.offset);
         assert_eq!(reopened.read(&first).unwrap(), b"first");
         assert_eq!(reopened.read(&second).unwrap(), b"second");
@@ -2139,7 +2151,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|band| band["page_segment_id"] == serde_json::json!(first.page_slab_id))
+            .find(|band| band["page_segment_id"] == serde_json::json!(first.block_slab_id))
             .unwrap()
             .clone()]);
         fs::write(
@@ -2153,11 +2165,11 @@ mod tests {
 
         assert!(descriptors
             .iter()
-            .any(|band| band.page_slab_id == first.page_slab_id
+            .any(|band| band.block_slab_id == first.block_slab_id
                 && band.state == BlockStoreBandState::Sealed));
         assert!(descriptors
             .iter()
-            .any(|band| band.page_slab_id == second.page_slab_id
+            .any(|band| band.block_slab_id == second.block_slab_id
                 && band.state == BlockStoreBandState::Active));
         let report = reopened.stream_backed_band_runtime_report().unwrap();
         assert!(report.band_manifest_reconciled_on_open);
@@ -2178,18 +2190,18 @@ mod tests {
         let second = store.append(b"second").unwrap();
         drop(store);
 
-        fs::remove_file(slab_path(dir.path(), first.page_slab_id)).unwrap();
+        fs::remove_file(slab_path(dir.path(), first.block_slab_id)).unwrap();
 
         let reopened = LocalBlockStore::new(dir.path());
         let descriptors = reopened.band_descriptors();
 
         assert!(descriptors
             .iter()
-            .any(|band| band.page_slab_id == first.page_slab_id
+            .any(|band| band.block_slab_id == first.block_slab_id
                 && band.state == BlockStoreBandState::Purged));
         assert!(descriptors
             .iter()
-            .any(|band| band.page_slab_id == second.page_slab_id
+            .any(|band| band.block_slab_id == second.block_slab_id
                 && band.state == BlockStoreBandState::Active));
         let report = reopened.stream_backed_band_runtime_report().unwrap();
         assert!(report.band_manifest_reconciled_on_open);
@@ -2207,7 +2219,7 @@ mod tests {
 
         let next = store.append(b"after-restore").unwrap();
 
-        assert_eq!(next.page_slab_id, 3);
+        assert_eq!(next.block_slab_id, 3);
         assert_eq!(next.offset, b"restored-segment".len() as u64);
         assert_eq!(next.compact_slab_id(), Some(3));
         assert_eq!(
@@ -2222,7 +2234,7 @@ mod tests {
             next.compact_slab_address().unwrap(),
             next.length,
         );
-        assert_eq!(from_compact_slab.page_slab_id, next.page_slab_id);
+        assert_eq!(from_compact_slab.block_slab_id, next.block_slab_id);
         assert_eq!(from_compact_slab.offset, next.offset);
         assert_eq!(from_compact_slab.length, next.length);
         assert_eq!(store.read(&next).unwrap(), b"after-restore");
@@ -2242,7 +2254,7 @@ mod tests {
         let payload = b"digest-lives-with-the-page";
         let address = store.append(payload).unwrap();
 
-        let path = slab_path(dir.path(), address.page_slab_id);
+        let path = slab_path(dir.path(), address.block_slab_id);
         let slab = fs::read(&path).unwrap();
         let start = address.offset as usize;
         let record = &slab[start..start + address.length as usize];
@@ -2270,7 +2282,7 @@ mod tests {
         // against it -- corrupting the slab below must still be caught.
         assert_eq!(store.read(&address).unwrap(), b"verified-page");
 
-        let path = slab_path(dir.path(), address.page_slab_id);
+        let path = slab_path(dir.path(), address.block_slab_id);
         let mut slab = fs::read(&path).unwrap();
         *slab.last_mut().unwrap() ^= 0xff;
         fs::write(path, slab).unwrap();
@@ -2287,7 +2299,7 @@ mod tests {
             .append_with_page_metadata(b"address-contract", Some(4242), Some(17))
             .unwrap();
 
-        assert_eq!(address.page_slab_id, 0);
+        assert_eq!(address.block_slab_id, 0);
         assert_eq!(address.offset, 0);
         assert!(address.length > b"address-contract".len() as u64);
         assert_eq!(address.page_id(), Some(0));
@@ -2302,15 +2314,15 @@ mod tests {
             address.length,
         );
         assert_eq!(
-            from_compact_slab.page_slab_id,
-            address.page_slab_id
+            from_compact_slab.block_slab_id,
+            address.block_slab_id
         );
         assert_eq!(from_compact_slab.offset, address.offset);
         assert_eq!(from_compact_slab.length, address.length);
         assert_eq!(store.read(&address).unwrap(), b"address-contract");
 
         let legacy_alias_json = serde_json::json!({
-            "page_segment_id": address.page_slab_id,
+            "page_segment_id": address.block_slab_id,
             "offset": address.offset,
             "length": address.length,
             "page_id": address.page_id(),
@@ -2339,11 +2351,11 @@ mod tests {
     }
 
     #[test]
-    fn page_slab_records_have_self_describing_envelope() {
+    fn block_slab_records_have_self_describing_envelope() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let address = store.append(b"enveloped-page").unwrap();
-        let raw = store.read_slab(address.page_slab_id).unwrap();
+        let raw = store.read_slab(address.block_slab_id).unwrap();
 
         assert!(raw.starts_with(PAGE_RECORD_MAGIC));
         assert_eq!(raw[8], PAGE_RECORD_VERSION);
@@ -2374,7 +2386,7 @@ mod tests {
         let source = LocalBlockStore::new(source_dir.path());
         let _ = source.append(b"first").unwrap();
         let restored = source.append(b"restored").unwrap();
-        let restored_bytes = source.read_slab(restored.page_slab_id).unwrap();
+        let restored_bytes = source.read_slab(restored.block_slab_id).unwrap();
 
         let store = LocalBlockStore::new(dir.path());
         store.install_slab(4, &restored_bytes).unwrap();
@@ -2431,9 +2443,9 @@ mod tests {
         let roll = store.roll_slab().unwrap();
         let second = store.append(b"second-band").unwrap();
 
-        assert_eq!(first.band_id(), Some(first.page_slab_id));
-        assert_eq!(second.band_id(), Some(second.page_slab_id));
-        assert_eq!(second.band_id(), Some(roll.new_page_slab_id));
+        assert_eq!(first.band_id(), Some(first.block_slab_id));
+        assert_eq!(second.band_id(), Some(second.block_slab_id));
+        assert_eq!(second.band_id(), Some(roll.new_block_slab_id));
         assert_ne!(first.band_id(), second.band_id());
     }
 
@@ -2447,13 +2459,13 @@ mod tests {
 
         let bands = store.band_descriptors();
         assert_eq!(bands.len(), 2);
-        assert_eq!(bands[0].page_slab_id, first.page_slab_id);
+        assert_eq!(bands[0].block_slab_id, first.block_slab_id);
         assert_eq!(bands[0].state, BlockStoreBandState::Sealed);
         assert_eq!(bands[0].first_page_id, first.page_id());
         assert_eq!(bands[0].last_page_id, first.page_id());
         assert!(bands[0].created_unix_ms.is_some());
         assert!(bands[0].updated_unix_ms.is_some());
-        assert_eq!(bands[1].page_slab_id, second.page_slab_id);
+        assert_eq!(bands[1].block_slab_id, second.block_slab_id);
         assert_eq!(bands[1].state, BlockStoreBandState::Active);
         assert_eq!(bands[1].first_page_id, second.page_id());
         assert_eq!(bands[1].last_page_id, second.page_id());
@@ -2488,8 +2500,8 @@ mod tests {
         assert_eq!(initial_band_usage.len(), 2);
         assert_eq!(initial_band_usage[0].band_id, bands[0].band_id);
         assert_eq!(
-            initial_band_usage[0].page_slab_id,
-            bands[0].page_slab_id
+            initial_band_usage[0].block_slab_id,
+            bands[0].block_slab_id
         );
         assert_eq!(
             initial_band_usage[0].page_store_used_bytes,
@@ -2527,8 +2539,8 @@ mod tests {
             reopened_bands[0]
         );
         assert_eq!(
-            reopened_bands[1].page_slab_id,
-            bands[1].page_slab_id
+            reopened_bands[1].block_slab_id,
+            bands[1].block_slab_id
         );
         assert_eq!(reopened_bands[1].state, bands[1].state);
         assert_eq!(
@@ -2545,7 +2557,7 @@ mod tests {
         let report = reopened
             .gc_slabs_before_with_live_refs_delayed_destroy(1, std::iter::empty())
             .unwrap();
-        assert_eq!(report.delayed_destroy_page_slab_ids, vec![0]);
+        assert_eq!(report.delayed_destroy_block_slab_ids, vec![0]);
         let delayed = reopened.band_descriptors();
         assert_eq!(delayed[0].state, BlockStoreBandState::DelayedDestroy);
         assert!(delayed[0].physical_bytes > 0);
@@ -2577,7 +2589,7 @@ mod tests {
         let delayed_band_usage = reopened.band_usage();
         let delayed_first = delayed_band_usage
             .iter()
-            .find(|band| band.page_slab_id == first.page_slab_id)
+            .find(|band| band.block_slab_id == first.block_slab_id)
             .unwrap();
         assert_eq!(
             delayed_first.reclaimable_page_store_used_bytes,
@@ -2588,7 +2600,7 @@ mod tests {
         let purge = reopened
             .purge_delayed_destroy_slabs_with_report()
             .unwrap();
-        assert_eq!(purge.purged_page_slab_ids, vec![0]);
+        assert_eq!(purge.purged_block_slab_ids, vec![0]);
         assert!(purge.purged_physical_bytes > 0);
         let purged = LocalBlockStore::new(dir.path()).band_descriptors();
         assert_eq!(purged[0].state, BlockStoreBandState::Purged);
@@ -2607,7 +2619,7 @@ mod tests {
         let purged_band_usage = LocalBlockStore::new(dir.path()).band_usage();
         let purged_first = purged_band_usage
             .iter()
-            .find(|band| band.page_slab_id == first.page_slab_id)
+            .find(|band| band.block_slab_id == first.block_slab_id)
             .unwrap();
         assert_eq!(
             purged_first.purged_page_store_used_bytes,
@@ -2633,13 +2645,13 @@ mod tests {
         let bands = rebuilt.band_descriptors();
 
         assert_eq!(bands.len(), 2);
-        assert_eq!(bands[0].page_slab_id, first.page_slab_id);
+        assert_eq!(bands[0].block_slab_id, first.block_slab_id);
         assert_eq!(bands[0].state, BlockStoreBandState::Sealed);
         assert_eq!(bands[0].first_page_id, first.page_id());
         assert_eq!(bands[0].last_page_id, first.page_id());
         assert!(bands[0].created_unix_ms.is_some());
         assert!(bands[0].updated_unix_ms.is_some());
-        assert_eq!(bands[1].page_slab_id, second.page_slab_id);
+        assert_eq!(bands[1].block_slab_id, second.block_slab_id);
         assert_eq!(bands[1].state, BlockStoreBandState::Active);
         assert_eq!(bands[1].first_page_id, second.page_id());
         assert_eq!(bands[1].last_page_id, second.page_id());
@@ -2682,7 +2694,7 @@ mod tests {
         store.roll_slab().unwrap();
         let second = store.append(b"active-clean-tail").unwrap();
 
-        let first_slab = slab_path(dir.path(), first.page_slab_id);
+        let first_slab = slab_path(dir.path(), first.block_slab_id);
         let readable_prefix = fs::metadata(&first_slab).unwrap().len();
         OpenOptions::new()
             .append(true)
@@ -2699,7 +2711,7 @@ mod tests {
         let bands = rebuilt.band_descriptors();
         let sealed = bands
             .iter()
-            .find(|band| band.page_slab_id == first.page_slab_id)
+            .find(|band| band.block_slab_id == first.block_slab_id)
             .unwrap();
         assert_eq!(sealed.state, BlockStoreBandState::Sealed);
         assert!(sealed.has_corruption);
@@ -2755,12 +2767,12 @@ mod tests {
         // they hit a local File::open miss instead of the shared read-through).
         #[derive(Debug)]
         struct OneSlabSource {
-            page_slab_id: u64,
+            block_slab_id: u64,
             bytes: Vec<u8>,
         }
         impl SharedSlabSource for OneSlabSource {
-            fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
-                Ok((page_slab_id == self.page_slab_id).then(|| self.bytes.clone()))
+            fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+                Ok((block_slab_id == self.block_slab_id).then(|| self.bytes.clone()))
             }
         }
 
@@ -2776,7 +2788,7 @@ mod tests {
         let range_dir = tempfile::tempdir().unwrap();
         let range_node = LocalBlockStore::new(range_dir.path());
         range_node.attach_shared_slab_source(Arc::new(OneSlabSource {
-            page_slab_id: 0,
+            block_slab_id: 0,
             bytes: raw.clone(),
         }));
         assert!(
@@ -2802,7 +2814,7 @@ mod tests {
         let logical_dir = tempfile::tempdir().unwrap();
         let logical_node = LocalBlockStore::new(logical_dir.path());
         logical_node.attach_shared_slab_source(Arc::new(OneSlabSource {
-            page_slab_id: 0,
+            block_slab_id: 0,
             bytes: raw.clone(),
         }));
         assert_eq!(logical_node.stats().shared_slab_fetches, 0);
@@ -2865,7 +2877,7 @@ mod tests {
         let second_payload = b"suffix-".repeat(80);
         let first = store.append(&first_payload).unwrap();
         let second = store.append(&second_payload).unwrap();
-        let raw = store.read_slab(first.page_slab_id).unwrap();
+        let raw = store.read_slab(first.block_slab_id).unwrap();
 
         assert!(first.length < (PAGE_RECORD_HEADER_LEN + first_payload.len()) as u64);
         assert!(second.length < (PAGE_RECORD_HEADER_LEN + second_payload.len()) as u64);
@@ -2874,7 +2886,7 @@ mod tests {
 
         let logical_offset = first_payload.len() as u64 - 3;
         let logical = store
-            .read_logical_range(first.page_slab_id, logical_offset, 12)
+            .read_logical_range(first.block_slab_id, logical_offset, 12)
             .unwrap();
         let mut expected = Vec::new();
         expected.extend_from_slice(&first_payload[first_payload.len() - 3..]);
@@ -2909,11 +2921,11 @@ mod tests {
         let second = store
             .append_with_page_metadata(&second_payload, Some(12), Some(7))
             .unwrap();
-        assert_eq!(first.page_slab_id, second.page_slab_id);
+        assert_eq!(first.block_slab_id, second.block_slab_id);
 
         let logical_offset = first_payload.len() as u64 - 8;
         let logical = store
-            .read_logical_range(first.page_slab_id, logical_offset, 16)
+            .read_logical_range(first.block_slab_id, logical_offset, 16)
             .unwrap();
         let mut expected = Vec::new();
         expected.extend_from_slice(&first_payload[first_payload.len() - 8..]);
@@ -2925,7 +2937,7 @@ mod tests {
         let third = store
             .append_with_page_metadata(&third_payload, Some(13), Some(8))
             .unwrap();
-        assert_eq!(third.page_slab_id, roll.new_page_slab_id);
+        assert_eq!(third.block_slab_id, roll.new_block_slab_id);
         let before_gc = store.stream_backed_band_runtime_report().unwrap();
         assert!(before_gc.runtime_ready, "{before_gc:?}");
         assert_eq!(before_gc.active_bands, 1);
@@ -2951,13 +2963,13 @@ mod tests {
 
         let delayed = store
             .gc_slabs_before_with_live_refs_delayed_destroy(
-                roll.new_page_slab_id,
-                [roll.new_page_slab_id],
+                roll.new_block_slab_id,
+                [roll.new_block_slab_id],
             )
             .unwrap();
         assert_eq!(
-            delayed.delayed_destroy_page_slab_ids,
-            vec![roll.previous_page_slab_id]
+            delayed.delayed_destroy_block_slab_ids,
+            vec![roll.previous_block_slab_id]
         );
 
         let reopened = LocalBlockStore::new(dir.path());
@@ -3010,8 +3022,8 @@ mod tests {
             .purge_delayed_destroy_slabs_with_report()
             .unwrap();
         assert_eq!(
-            purge.purged_page_slab_ids,
-            vec![roll.previous_page_slab_id]
+            purge.purged_block_slab_ids,
+            vec![roll.previous_block_slab_id]
         );
         let purged = LocalBlockStore::new(dir.path())
             .stream_backed_band_runtime_report()
@@ -3044,7 +3056,7 @@ mod tests {
         let reports = store.slab_reports().unwrap();
 
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].page_slab_id, first.page_slab_id);
+        assert_eq!(reports[0].block_slab_id, first.block_slab_id);
         assert_eq!(reports[0].physical_bytes, first.length + second.length);
         assert_eq!(
             reports[0].logical_bytes,
@@ -3064,7 +3076,7 @@ mod tests {
         assert_eq!(reports[0].block_index_entries.len(), 2);
         assert_eq!(
             reports[0].block_index_entries[0].block_slab_id,
-            first.page_slab_id
+            first.block_slab_id
         );
         assert_eq!(reports[0].block_index_entries[0].offset, first.offset);
         assert_eq!(reports[0].block_index_entries[0].length, first.length);
@@ -3152,7 +3164,7 @@ mod tests {
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"healthy").unwrap();
         let second = store.append(b"damaged").unwrap();
-        let path = slab_path(dir.path(), second.page_slab_id);
+        let path = slab_path(dir.path(), second.block_slab_id);
         let mut slab = fs::read(&path).unwrap();
         *slab.last_mut().unwrap() ^= 0xff;
         fs::write(path, slab).unwrap();
@@ -3188,7 +3200,7 @@ mod tests {
         );
         let disabled_address = disabled_store.append(&payload).unwrap();
         let disabled_raw = disabled_store
-            .read_slab(disabled_address.page_slab_id)
+            .read_slab(disabled_address.block_slab_id)
             .unwrap();
 
         assert_eq!(
@@ -3210,7 +3222,7 @@ mod tests {
         );
         let threshold_address = threshold_store.append(&payload).unwrap();
         let threshold_raw = threshold_store
-            .read_slab(threshold_address.page_slab_id)
+            .read_slab(threshold_address.block_slab_id)
             .unwrap();
 
         assert_eq!(
@@ -3228,7 +3240,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let address = store.append(&b"compress-me-".repeat(80)).unwrap();
-        let path = slab_path(dir.path(), address.page_slab_id);
+        let path = slab_path(dir.path(), address.block_slab_id);
         let mut slab = fs::read(&path).unwrap();
         *slab.last_mut().unwrap() ^= 0xff;
         fs::write(path, slab).unwrap();
@@ -3245,7 +3257,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let address = store.append(b"header-checked-page").unwrap();
-        let path = slab_path(dir.path(), address.page_slab_id);
+        let path = slab_path(dir.path(), address.block_slab_id);
         let mut slab = fs::read(&path).unwrap();
         slab[10] = 1;
         slab[11] = 0;
@@ -3261,7 +3273,7 @@ mod tests {
         let store = LocalBlockStore::new(dir.path());
         let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None, None, None);
         fs::write(
-            slab_path(dir.path(), legacy_address.page_slab_id),
+            slab_path(dir.path(), legacy_address.block_slab_id),
             b"alteredpage",
         )
         .unwrap();
@@ -3279,8 +3291,8 @@ mod tests {
         store.install_slab(3, b"keep").unwrap();
 
         let report = store.gc_slabs_before_with_live_refs(3, [1_u64]).unwrap();
-        assert_eq!(report.removed_page_slab_ids, vec![0, 2]);
-        assert_eq!(report.retained_page_slab_ids, vec![1, 3]);
+        assert_eq!(report.removed_block_slab_ids, vec![0, 2]);
+        assert_eq!(report.retained_block_slab_ids, vec![1, 3]);
         assert_eq!(
             report.removed_physical_bytes,
             (b"current".len() + b"stale".len()) as u64
@@ -3289,8 +3301,8 @@ mod tests {
             report.retained_physical_bytes,
             (b"live".len() + b"keep".len()) as u64
         );
-        assert!(report.retained_current_page_slab_ids.is_empty());
-        assert_eq!(report.retained_live_page_slab_ids, vec![1]);
+        assert!(report.retained_current_block_slab_ids.is_empty());
+        assert_eq!(report.retained_live_block_slab_ids, vec![1]);
         assert_eq!(report.retained_live_physical_bytes, b"live".len() as u64);
         assert_eq!(store.slab_ids().unwrap(), vec![1, 3]);
     }
@@ -3308,8 +3320,8 @@ mod tests {
             .gc_slabs_before_with_live_refs_delayed_destroy(3, [2_u64])
             .unwrap();
 
-        assert_eq!(report.removed_page_slab_ids, vec![0, 1]);
-        assert_eq!(report.delayed_destroy_page_slab_ids, vec![0, 1]);
+        assert_eq!(report.removed_block_slab_ids, vec![0, 1]);
+        assert_eq!(report.delayed_destroy_block_slab_ids, vec![0, 1]);
         assert_eq!(
             report.removed_physical_bytes,
             (b"current".len() + b"stale".len()) as u64
@@ -3318,22 +3330,22 @@ mod tests {
             report.delayed_destroy_physical_bytes,
             report.removed_physical_bytes
         );
-        assert_eq!(report.retained_page_slab_ids, vec![2, 3]);
-        assert_eq!(report.retained_live_page_slab_ids, vec![2]);
+        assert_eq!(report.retained_block_slab_ids, vec![2, 3]);
+        assert_eq!(report.retained_live_block_slab_ids, vec![2]);
         assert_eq!(report.retained_live_physical_bytes, b"live".len() as u64);
         assert_eq!(store.slab_ids().unwrap(), vec![2, 3]);
         assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![0, 1]);
         let delayed_reports = store.delayed_destroy_slab_reports().unwrap();
         assert_eq!(delayed_reports.len(), 2);
-        assert_eq!(delayed_reports[0].page_slab_id, 0);
+        assert_eq!(delayed_reports[0].block_slab_id, 0);
         assert_eq!(delayed_reports[0].physical_bytes, b"current".len() as u64);
         assert!(delayed_reports[0].modified_unix_ms.is_some());
-        assert_eq!(delayed_reports[1].page_slab_id, 1);
+        assert_eq!(delayed_reports[1].block_slab_id, 1);
         assert_eq!(delayed_reports[1].physical_bytes, b"stale".len() as u64);
         assert!(delayed_reports[1].modified_unix_ms.is_some());
 
         let purge = store.purge_delayed_destroy_slabs_with_report().unwrap();
-        assert_eq!(purge.purged_page_slab_ids, vec![0, 1]);
+        assert_eq!(purge.purged_block_slab_ids, vec![0, 1]);
         assert_eq!(
             purge.purged_physical_bytes,
             (b"current".len() + b"stale".len()) as u64
@@ -3356,7 +3368,7 @@ mod tests {
         assert_eq!(
             candidates
                 .iter()
-                .map(|candidate| candidate.page_slab_id)
+                .map(|candidate| candidate.block_slab_id)
                 .collect::<Vec<_>>(),
             vec![1, 0]
         );
@@ -3383,15 +3395,15 @@ mod tests {
         let no_op = store
             .gc_slabs_before_with_live_refs_utility(3, [2_u64], 0, true)
             .unwrap();
-        assert!(no_op.removed_page_slab_ids.is_empty());
+        assert!(no_op.removed_block_slab_ids.is_empty());
         assert_eq!(no_op.removed_physical_bytes, 0);
         assert_eq!(store.slab_ids().unwrap(), vec![0, 1, 2, 3]);
 
         let report = store
             .gc_slabs_before_with_live_refs_utility(3, [2_u64], 1, true)
             .unwrap();
-        assert_eq!(report.removed_page_slab_ids, vec![1]);
-        assert_eq!(report.delayed_destroy_page_slab_ids, vec![1]);
+        assert_eq!(report.removed_block_slab_ids, vec![1]);
+        assert_eq!(report.delayed_destroy_block_slab_ids, vec![1]);
         assert_eq!(
             report.removed_physical_bytes,
             b"largest-stale-segment".len() as u64
@@ -3400,8 +3412,8 @@ mod tests {
             report.delayed_destroy_physical_bytes,
             b"largest-stale-segment".len() as u64
         );
-        assert_eq!(report.retained_page_slab_ids, vec![0, 2, 3]);
-        assert_eq!(report.retained_live_page_slab_ids, vec![2]);
+        assert_eq!(report.retained_block_slab_ids, vec![0, 2, 3]);
+        assert_eq!(report.retained_live_block_slab_ids, vec![2]);
         assert_eq!(
             report.retained_live_physical_bytes,
             b"live-segment".len() as u64
@@ -3410,7 +3422,7 @@ mod tests {
         assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![1]);
         let delayed_reports = store.delayed_destroy_slab_reports().unwrap();
         assert_eq!(delayed_reports.len(), 1);
-        assert_eq!(delayed_reports[0].page_slab_id, 1);
+        assert_eq!(delayed_reports[0].block_slab_id, 1);
         assert_eq!(
             delayed_reports[0].physical_bytes,
             b"largest-stale-segment".len() as u64
@@ -3435,7 +3447,7 @@ mod tests {
                 &BlockStoreGcPolicy::with_band_garbage_floor(0, None),
             )
             .unwrap();
-        assert_eq!(floor_zero.selected_page_slab_ids, vec![0, 1]);
+        assert_eq!(floor_zero.selected_block_slab_ids, vec![0, 1]);
         assert_eq!(floor_zero.skipped_by_policy_count, 0);
         let floor_impossible = store
             .gc_policy_plan(
@@ -3444,7 +3456,7 @@ mod tests {
                 &BlockStoreGcPolicy::with_band_garbage_floor(10_001, None),
             )
             .unwrap();
-        assert!(floor_impossible.selected_page_slab_ids.is_empty());
+        assert!(floor_impossible.selected_block_slab_ids.is_empty());
         assert_eq!(floor_impossible.skipped_by_policy_count, 2);
     }
 
@@ -3465,7 +3477,7 @@ mod tests {
             min_band_garbage_basis_points: None,
         };
         let plan = store.gc_policy_plan(3, [2_u64], &policy).unwrap();
-        assert_eq!(plan.retain_from_page_slab_id, 3);
+        assert_eq!(plan.retain_from_block_slab_id, 3);
         assert_eq!(plan.candidate_count, 2);
         assert_eq!(
             plan.candidate_physical_bytes,
@@ -3475,7 +3487,7 @@ mod tests {
         assert_eq!(plan.candidate_used_bytes, 0);
         assert_eq!(plan.candidate_stale_bytes, plan.candidate_physical_bytes);
         assert_eq!(plan.candidate_utility_basis_points, 0);
-        assert_eq!(plan.selected_page_slab_ids, vec![0]);
+        assert_eq!(plan.selected_block_slab_ids, vec![0]);
         assert_eq!(plan.selected_physical_bytes, b"small".len() as u64);
         assert_eq!(plan.skipped_by_policy_count, 0);
         assert_eq!(plan.skipped_by_policy_physical_bytes, 0);
@@ -3487,7 +3499,7 @@ mod tests {
         assert_eq!(
             plan.candidates
                 .iter()
-                .map(|candidate| candidate.page_slab_id)
+                .map(|candidate| candidate.block_slab_id)
                 .collect::<Vec<_>>(),
             vec![1, 0]
         );
@@ -3495,9 +3507,9 @@ mod tests {
         let report = store
             .gc_slabs_before_with_live_refs_policy(3, [2_u64], policy, true)
             .unwrap();
-        assert_eq!(report.removed_page_slab_ids, vec![0]);
-        assert_eq!(report.delayed_destroy_page_slab_ids, vec![0]);
-        assert_eq!(report.retained_page_slab_ids, vec![1, 2, 3]);
+        assert_eq!(report.removed_block_slab_ids, vec![0]);
+        assert_eq!(report.delayed_destroy_block_slab_ids, vec![0]);
+        assert_eq!(report.retained_block_slab_ids, vec![1, 2, 3]);
         assert_eq!(store.slab_ids().unwrap(), vec![1, 2, 3]);
         assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![0]);
     }
@@ -3533,7 +3545,7 @@ mod tests {
             println!(
                 "  {slabs:>5} slabs: install {install:>9.1} ms ({:>6.3} ms each)   quarantine {quarantine:>9.1} ms   purge {purge:>8.1} ms ({} destroyed)",
                 install / slabs as f64,
-                report.purged_page_slab_ids.len()
+                report.purged_block_slab_ids.len()
             );
         }
     }

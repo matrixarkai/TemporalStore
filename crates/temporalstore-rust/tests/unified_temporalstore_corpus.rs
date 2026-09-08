@@ -3873,15 +3873,15 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
             value: b"v2".to_vec(),
         },
     });
-    assert_eq!(engine.live_page_slab_ids(shard_id), vec![1]);
+    assert_eq!(engine.live_block_slab_ids(shard_id), vec![1]);
     let delayed = engine
         .block_store()
         .gc_slabs_before_with_live_refs_delayed_destroy(
             1,
-            engine.live_page_slab_ids(shard_id),
+            engine.live_block_slab_ids(shard_id),
         )
         .unwrap();
-    assert_eq!(delayed.delayed_destroy_page_slab_ids, vec![0]);
+    assert_eq!(delayed.delayed_destroy_block_slab_ids, vec![0]);
 
     let matrix = engine.storage_page_gc_dependency_plan(
         shard_id,
@@ -3889,7 +3889,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
         vec![StoragePageGcReplayCursor {
             cursor_id: "unified-shared-store-follower".to_string(),
             shard_id,
-            retain_from_page_slab_id: 0,
+            retain_from_block_slab_id: 0,
             reason: "shared-store follower is behind segment zero".to_string(),
         }],
         vec![BucketDumpRaftSnapshotRef {
@@ -3905,7 +3905,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
         60_000,
     );
     assert!(!matrix.safe_to_reclaim, "{matrix:?}");
-    assert_eq!(matrix.candidate_page_slab_ids, vec![0, 1]);
+    assert_eq!(matrix.candidate_block_slab_ids, vec![0, 1]);
     assert_eq!(matrix.live_ref_block_count, 1);
     assert_eq!(matrix.bucket_dump_manifest_block_count, 1);
     assert_eq!(matrix.shared_store_cursor_block_count, 2);
@@ -4426,7 +4426,7 @@ fn verify_random_size_reopen_scan() {
     let page = reopened.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Page,
-        page_slab_id: 0,
+        block_slab_id: 0,
         offset: 0,
         size: 1024 * 1024,
     });
@@ -4443,7 +4443,7 @@ fn verify_random_size_reopen_scan() {
     let scan = reopened.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Page,
-        page_slab_id: 0,
+        block_slab_id: 0,
         start_offset: 0,
         end_offset: u64::MAX,
         max_bytes: 1024 * 1024,
@@ -4510,7 +4510,7 @@ fn verify_cross_block_large_values() {
     let first_chunk = reopened.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Page,
-        page_slab_id: 0,
+        block_slab_id: 0,
         offset: 0,
         size: 256 * 1024,
     });
@@ -4520,7 +4520,7 @@ fn verify_cross_block_large_values() {
     let second_chunk = reopened.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Page,
-        page_slab_id: 0,
+        block_slab_id: 0,
         offset: 256 * 1024,
         size: 256 * 1024,
     });
@@ -4587,7 +4587,7 @@ fn assert_clean_storage_recovery(engine: &TemporalEngine, shard_id: u64, case_na
         case_name, recovery.slab_integrity
     );
     assert_eq!(recovery.slab_integrity.stale_page_ref_count, 0);
-    assert_eq!(recovery.slab_integrity.corrupt_page_slab_count, 0);
+    assert_eq!(recovery.slab_integrity.corrupt_block_slab_count, 0);
     assert_eq!(recovery.slab_integrity.unreadable_page_ref_count, 0);
     assert_eq!(
         recovery

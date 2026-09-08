@@ -4,7 +4,7 @@
 //! Durable read-by-address fallback for log-backed hot pages.
 //!
 //! Under `async_storage`, a freshly written value is served only from the in-memory cache tier
-//! at a SYNTHETIC page address (`page_slab_id == HOT_PAGE_SLAB_ID`); it is not written to the
+//! at a SYNTHETIC page address (`block_slab_id == HOT_BLOCK_SLAB_ID`); it is not written to the
 //! block store, so it exists on disk only as its WAL record. That has two costs:
 //!
 //!   1. Correctness -- if the memory-only entry is evicted before the next dump/flush
@@ -33,16 +33,16 @@ use matrixcache::{CacheEvictionRecord, MultiLayerCache};
 use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::types::ShardId;
 
-use super::constants::HOT_PAGE_SLAB_ID;
+use super::constants::HOT_BLOCK_SLAB_ID;
 
 fn redirects() -> &'static Mutex<HashMap<(ShardId, u64), BlockAddress>> {
     static REDIRECTS: OnceLock<Mutex<HashMap<(ShardId, u64), BlockAddress>>> = OnceLock::new();
     REDIRECTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The synthetic hot-page cache key's record_key, i.e. `segment-{HOT_PAGE_SLAB_ID:020}`.
+/// The synthetic hot-page cache key's record_key, i.e. `segment-{HOT_BLOCK_SLAB_ID:020}`.
 fn hot_page_record_key() -> String {
-    format!("segment-{HOT_PAGE_SLAB_ID:020}")
+    format!("segment-{HOT_BLOCK_SLAB_ID:020}")
 }
 
 /// Parse `(offset, routing_bucket)` out of a hot-page cache key selector. Selector forms produced

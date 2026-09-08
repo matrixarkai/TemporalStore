@@ -1168,7 +1168,8 @@ struct PublishShardCheckpointResponse {
     #[serde(default)]
     checkpoint_id: Option<String>,
     #[serde(default)]
-    page_slab_count: usize,
+    #[serde(rename = "page_slab_count")]
+    block_slab_count: usize,
     #[serde(default)]
     checkpoint_wal_index: u64,
 }
@@ -1205,7 +1206,7 @@ fn restore_shared_index_before_load(
                     shard_id,
                     checkpoint_id = %manifest.checkpoint_id,
                     checkpoint_wal_index = manifest.checkpoint_wal_index,
-                    page_slabs = manifest.page_slabs.len(),
+                    block_slabs = manifest.block_slabs.len(),
                     "restored shard index and lazy page addresses from shared checkpoint (pre-load)"
                 );
                 manifest.checkpoint_wal_index
@@ -1305,7 +1306,7 @@ fn publish_shard_checkpoint(
                 "shard data movement is not enabled on this node",
             ),
             checkpoint_id: None,
-            page_slab_count: 0,
+            block_slab_count: 0,
             checkpoint_wal_index: 0,
         };
     };
@@ -1319,7 +1320,7 @@ fn publish_shard_checkpoint(
             return PublishShardCheckpointResponse {
                 status: Status::error("wal_scan_failed", err.to_string()),
                 checkpoint_id: None,
-                page_slab_count: 0,
+                block_slab_count: 0,
                 checkpoint_wal_index: 0,
             };
         }
@@ -1333,7 +1334,7 @@ fn publish_shard_checkpoint(
                 return PublishShardCheckpointResponse {
                     status: Status::error("wal_decode_failed", err.to_string()),
                     checkpoint_id: None,
-                    page_slab_count: published,
+                    block_slab_count: published,
                     checkpoint_wal_index: last_wal_index,
                 };
             }
@@ -1362,7 +1363,7 @@ fn publish_shard_checkpoint(
             return PublishShardCheckpointResponse {
                 status: Status::error("publish_wal_failed", err.to_string()),
                 checkpoint_id: None,
-                page_slab_count: published,
+                block_slab_count: published,
                 checkpoint_wal_index: last_wal_index,
             };
         }
@@ -1405,7 +1406,7 @@ fn publish_shard_checkpoint(
             return PublishShardCheckpointResponse {
                 status: Status::error("publish_checkpoint_failed", err.to_string()),
                 checkpoint_id: None,
-                page_slab_count: published,
+                block_slab_count: published,
                 checkpoint_wal_index: last_wal_index,
             };
         }
@@ -1413,7 +1414,7 @@ fn publish_shard_checkpoint(
     PublishShardCheckpointResponse {
         status: Status::ok(),
         checkpoint_id: Some(checkpoint.checkpoint_id),
-        page_slab_count: checkpoint.page_slabs.len(),
+        block_slab_count: checkpoint.block_slabs.len(),
         checkpoint_wal_index: last_wal_index,
     }
 }
@@ -2132,7 +2133,7 @@ fn wire_matrixobject_networked_durability(
                     shard_id,
                     checkpoint_id = %manifest.checkpoint_id,
                     checkpoint_wal_index = manifest.checkpoint_wal_index,
-                    page_slabs = manifest.page_slabs.len(),
+                    block_slabs = manifest.block_slabs.len(),
                     "restored shard index and lazy page addresses from networked matrixobject checkpoint"
                 );
                 manifest.checkpoint_wal_index
@@ -2200,7 +2201,7 @@ fn wire_matrixobject_networked_durability(
             Ok(manifest) => info!(
                 shard_id,
                 checkpoint_id = %manifest.checkpoint_id,
-                page_slabs = manifest.page_slabs.len(),
+                block_slabs = manifest.block_slabs.len(),
                 checkpoint_wal_index = manifest.checkpoint_wal_index,
                 "published networked matrixobject checkpoint (index + slabs)"
             ),

@@ -12,6 +12,6 @@ pub use metrics::SnapshotMetrics;
 pub use object_store::{FileObjectStore, ObjectStore, ObjectStoreError};
 pub use snapshot_store::{S3SnapshotStore, SnapshotStore, SnapshotStoreError};
 pub use types::{
-    ChecksumEntry, CompressionFormat, LocalSnapshot, PageSlabManifest, SnapshotManifest,
+    ChecksumEntry, CompressionFormat, LocalSnapshot, BlockSlabManifest, SnapshotManifest,
     SnapshotRef, SnapshotRetention, SnapshotStatus,
 };

@@ -451,7 +451,7 @@ message WalEntryDelta {
 }
 
 message WalStateImageSlab {
-  uint64 page_slab_id = 1;
+  uint64 block_slab_id = 1;
   bytes slab = 2;
 }
 

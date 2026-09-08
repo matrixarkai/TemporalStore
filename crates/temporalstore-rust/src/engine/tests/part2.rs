@@ -243,7 +243,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
             .expect("target address should exist");
         CacheKey::page_with_slot(
             1,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -362,7 +362,7 @@ fn cache_replacement_policy_soak() {
             .clone();
         CacheKey::page_with_slot(
             1,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -615,7 +615,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
             .clone();
         CacheKey::page_with_slot(
             1,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -2457,9 +2457,9 @@ fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
     let recovered = restarted.block_store().band_catalog(0);
     for entry in &folded.bands {
         assert!(
-            recovered.iter().any(|z| z.page_slab_id == entry.page_slab_id),
+            recovered.iter().any(|z| z.block_slab_id == entry.block_slab_id),
             "band {} must be present after reload from the fold",
-            entry.page_slab_id
+            entry.block_slab_id
         );
     }
 }

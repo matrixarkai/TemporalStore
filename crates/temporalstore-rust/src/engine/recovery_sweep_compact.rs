@@ -49,10 +49,10 @@ impl TemporalEngine {
             .scan(shard_id, 0, u64::MAX, u64::MAX)
             .map(|records| records.len())
             .unwrap_or_default();
-        let active_page_slab_ids = self.page_store.slab_ids().unwrap_or_default();
+        let active_block_slab_ids = self.page_store.slab_ids().unwrap_or_default();
         let band_descriptors = self.page_store.band_descriptors();
         let band_summary = self.page_store.band_summary();
-        let page_slab_reports = self.page_store.slab_reports().unwrap_or_default();
+        let block_slab_reports = self.page_store.slab_reports().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         let addresses = shards
             .get(&shard_id)
@@ -65,13 +65,13 @@ impl TemporalEngine {
         let mut missing_owner_page_refs = 0usize;
         let mut object_lifecycle = StorageObjectLifecycleReport::default();
         let mut feature_page_layout = StorageFeaturePageLayoutReport::default();
-        let mut page_slab_live_reports = page_slab_reports
+        let mut block_slab_live_reports = block_slab_reports
             .iter()
             .map(|report| {
                 (
-                    report.page_slab_id,
+                    report.block_slab_id,
                     StorageRecoverySlabLiveReport {
-                        page_slab_id: report.page_slab_id,
+                        block_slab_id: report.block_slab_id,
                         physical_bytes: report.physical_bytes,
                         logical_bytes: report.logical_bytes,
                         page_count: report.page_count,
@@ -83,10 +83,10 @@ impl TemporalEngine {
         let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
         let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
         for address in &addresses {
-            let slab_report = page_slab_live_reports
-                .entry(address.page_slab_id)
+            let slab_report = block_slab_live_reports
+                .entry(address.block_slab_id)
                 .or_insert(StorageRecoverySlabLiveReport {
-                    page_slab_id: address.page_slab_id,
+                    block_slab_id: address.block_slab_id,
                     ..StorageRecoverySlabLiveReport::default()
                 });
             slab_report.live_page_refs = slab_report.live_page_refs.saturating_add(1);
@@ -94,13 +94,13 @@ impl TemporalEngine {
                 .live_physical_bytes
                 .saturating_add(address.length);
             if let Some(object_id) = address.object_id() {
-                let objects = live_object_ids.entry(address.page_slab_id).or_default();
+                let objects = live_object_ids.entry(address.block_slab_id).or_default();
                 objects.insert(object_id);
                 slab_report.live_object_count = objects.len() as u64;
             }
             if let Some(routing_bucket) = address.routing_bucket() {
                 let buckets = live_routing_buckets
-                    .entry(address.page_slab_id)
+                    .entry(address.block_slab_id)
                     .or_default();
                 buckets.insert(routing_bucket);
                 slab_report.live_routing_bucket_count = buckets.len() as u64;
@@ -118,7 +118,7 @@ impl TemporalEngine {
                     slab_report.unreadable_live_page_refs =
                         slab_report.unreadable_live_page_refs.saturating_add(1);
                     unreadable_page_refs.push(StorageRecoveryPageError {
-                        page_slab_id: address.page_slab_id,
+                        block_slab_id: address.block_slab_id,
                         offset: address.offset,
                         length: address.length,
                         error: err.to_string(),
@@ -135,7 +135,7 @@ impl TemporalEngine {
             object_lifecycle.missing_owner_page_refs = missing_owner_page_refs as u64;
             feature_page_layout = storage_feature_page_layout_report(&self.page_store, shard);
         }
-        let page_slab_live_reports = page_slab_live_reports
+        let block_slab_live_reports = block_slab_live_reports
             .into_values()
             .map(|mut report| {
                 report.stale_page_estimate =
@@ -148,29 +148,29 @@ impl TemporalEngine {
                 report
             })
             .collect::<Vec<_>>();
-        object_lifecycle.stale_object_ids = page_slab_live_reports
+        object_lifecycle.stale_object_ids = block_slab_live_reports
             .iter()
             .map(|report| report.stale_page_estimate)
             .sum();
-        let mut live_page_slab_ids = addresses
+        let mut live_block_slab_ids = addresses
             .iter()
-            .map(|address| address.page_slab_id)
+            .map(|address| address.block_slab_id)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        live_page_slab_ids.sort_unstable();
+        live_block_slab_ids.sort_unstable();
         StorageRecoveryReport {
             shard_id,
             index_bytes,
             index_write_atomic: true,
             wal_records,
             index_log_records,
-            active_page_slab_ids,
-            live_page_slab_ids,
+            active_block_slab_ids,
+            live_block_slab_ids,
             band_descriptors,
             band_summary,
-            page_slab_reports,
-            page_slab_live_reports,
+            block_slab_reports,
+            block_slab_live_reports,
             total_page_refs,
             readable_page_refs,
             unreadable_page_refs,
@@ -184,11 +184,11 @@ impl TemporalEngine {
         }
     }
 
-    pub fn live_page_slab_ids(&self, shard_id: ShardId) -> Vec<u64> {
+    pub fn live_block_slab_ids(&self, shard_id: ShardId) -> Vec<u64> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let mut ids = shards
             .get(&shard_id)
-            .map(collect_live_page_slab_ids)
+            .map(collect_live_block_slab_ids)
             .unwrap_or_default()
             .into_iter()
             .collect::<Vec<_>>();
@@ -205,13 +205,13 @@ impl TemporalEngine {
     /// stale to shard A's cycle and would be deleted, silently destroying B's committed pages.
     /// Reclaim must be driven by this union so a slab referenced by any shard is retained.
     ///
-    /// For a single loaded shard this equals `live_page_slab_ids(that_shard)`, so single-shard
+    /// For a single loaded shard this equals `live_block_slab_ids(that_shard)`, so single-shard
     /// callers are unaffected.
-    pub fn live_page_slab_ids_all_shards(&self) -> Vec<u64> {
+    pub fn live_block_slab_ids_all_shards(&self) -> Vec<u64> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let mut ids = shards
             .values()
-            .flat_map(collect_live_page_slab_ids)
+            .flat_map(collect_live_block_slab_ids)
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -393,7 +393,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 ),
             ));
         }
-        let before_slabs = collect_live_page_slab_ids(shard);
+        let before_slabs = collect_live_block_slab_ids(shard);
         let before = compaction_utility_report(&self.page_store, shard);
         let tombstoned_object_ids_before =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
@@ -595,7 +595,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
 
         rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
         refresh_bucket_runtime_flags(shard);
-        let after_slabs = collect_live_page_slab_ids(shard);
+        let after_slabs = collect_live_block_slab_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
         rebuild_bucket_page_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let tombstoned_object_ids_after =
@@ -604,11 +604,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
             object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let bucket_layout_transition_count_after = object_manager_after.layout_transition_count;
         let bucket_layout_states_after = object_manager_after.layout_states;
-        let stale_page_slab_ids = before_slabs
+        let stale_block_slab_ids = before_slabs
             .difference(&after_slabs)
             .copied()
             .collect::<Vec<_>>();
-        let reclaimable_stale_page_slab_count = stale_page_slab_ids.len();
+        let reclaimable_stale_block_slab_count = stale_block_slab_ids.len();
         let model_policy_family_count = before.model_policies.len();
         let tombstone_policy_model_count = before
             .model_policies
@@ -690,8 +690,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "stale segments left behind by moved indexes are reported as reclaimable".to_string(),
             ],
             model_layout_compaction_blockers,
-            previous_page_slab_id: roll.previous_page_slab_id,
-            compacted_page_slab_id: roll.new_page_slab_id,
+            previous_block_slab_id: roll.previous_block_slab_id,
+            compacted_block_slab_id: roll.new_block_slab_id,
             rewritten_page_refs: rewrite_stats.rewritten_page_refs,
             cold_page_rewrite_refs: rewrite_stats.cold_page_rewrite_refs,
             object_page_pack_group_count: before
@@ -699,8 +699,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 .iter()
                 .map(|policy| policy.object_page_pack_group_count as usize)
                 .sum(),
-            stale_page_slab_ids,
-            reclaimable_stale_page_slab_count,
+            stale_block_slab_ids,
+            reclaimable_stale_block_slab_count,
             model_policy_family_count,
             tombstone_policy_model_count,
             stale_density_policy_model_count,

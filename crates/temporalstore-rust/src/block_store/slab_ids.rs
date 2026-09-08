@@ -6,7 +6,7 @@
 use super::*;
 use std::path::Path;
 
-pub(crate) fn page_slab_utility_score(below_retention_floor: bool, is_current: bool, is_live: bool) -> u64 {
+pub(crate) fn block_slab_utility_score(below_retention_floor: bool, is_current: bool, is_live: bool) -> u64 {
     if is_current || is_live {
         100
     } else if below_retention_floor {
@@ -18,12 +18,12 @@ pub(crate) fn page_slab_utility_score(below_retention_floor: bool, is_current: b
 
 pub(crate) fn move_slab_to_delayed_destroy(
     root: &Path,
-    page_slab_id: u64,
+    block_slab_id: u64,
 ) -> Result<(), BlockStoreError> {
-    let source = slab_path(root, page_slab_id);
+    let source = slab_path(root, block_slab_id);
     let trash_dir = delayed_destroy_dir(root);
     fs::create_dir_all(&trash_dir)?;
-    let destination = delayed_destroy_path(root, page_slab_id);
+    let destination = delayed_destroy_path(root, block_slab_id);
     fs::rename(&source, &destination)?;
     sync_parent_dir(&source)?;
     sync_parent_dir(&destination)?;
@@ -33,7 +33,7 @@ pub(crate) fn move_slab_to_delayed_destroy(
 pub(crate) fn delayed_destroy_slab_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
     Ok(delayed_destroy_slab_reports_at(root)?
         .into_iter()
-        .map(|report| report.page_slab_id)
+        .map(|report| report.block_slab_id)
         .collect())
 }
 
@@ -50,7 +50,7 @@ pub(crate) fn delayed_destroy_slab_reports_at(
         if let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) {
             let metadata = entry.metadata().ok();
             reports.push(BlockStoreDelayedDestroySlabReport {
-                page_slab_id: id,
+                block_slab_id: id,
                 physical_bytes: metadata
                     .as_ref()
                     .map(|metadata| metadata.len())
@@ -62,7 +62,7 @@ pub(crate) fn delayed_destroy_slab_reports_at(
             });
         }
     }
-    reports.sort_by_key(|report| report.page_slab_id);
+    reports.sort_by_key(|report| report.block_slab_id);
     Ok(reports)
 }
 
@@ -75,16 +75,16 @@ pub(crate) fn delayed_destroy_slab_id_from_name(name: &std::ffi::OsStr) -> Optio
     id.parse::<u64>().ok()
 }
 
-pub(crate) fn band_id_for_slab(page_slab_id: u64) -> u64 {
+pub(crate) fn band_id_for_slab(block_slab_id: u64) -> u64 {
     let slab_target_bytes = effective_block_slab_target_bytes().max(1);
     let storage_band_size = storage_band_size_bytes().max(1);
-    page_slab_id
+    block_slab_id
         .saturating_mul(slab_target_bytes)
         .saturating_div(storage_band_size)
 }
 
-pub(crate) fn compact_slab_address_from_parts(page_slab_id: u64, offset: u64) -> Option<u64> {
-    let band_id = u32::try_from(page_slab_id).ok()?;
+pub(crate) fn compact_slab_address_from_parts(block_slab_id: u64, offset: u64) -> Option<u64> {
+    let band_id = u32::try_from(block_slab_id).ok()?;
     let band_offset = u32::try_from(offset).ok()?;
     Some(((band_id as u64) << 32) | band_offset as u64)
 }
@@ -144,20 +144,20 @@ pub(crate) fn latest_slab_id_at(root: &Path) -> Result<u64, BlockStoreError> {
 pub(crate) fn next_page_id_from_bands(
     root: &Path,
     bands: &BTreeMap<u64, BlockStoreBandDescriptor>,
-    active_page_slab_id: u64,
+    active_block_slab_id: u64,
 ) -> Result<u64, BlockStoreError> {
     let mut max_page_id: Option<u64> = None;
-    for page_slab_id in slab_ids_at(root)? {
-        let recorded = if page_slab_id == active_page_slab_id {
+    for block_slab_id in slab_ids_at(root)? {
+        let recorded = if block_slab_id == active_block_slab_id {
             None
         } else {
-            bands.get(&page_slab_id).and_then(|band| {
+            bands.get(&block_slab_id).and_then(|band| {
                 if band.has_corruption {
                     return None;
                 }
                 let last_page_id = band.last_page_id?;
                 let verified_mtime = band.verified_source_mtime_unix_ms?;
-                let path = slab_path(root, page_slab_id);
+                let path = slab_path(root, block_slab_id);
                 let meta = fs::metadata(&path).ok()?;
                 if meta.len() != band.physical_bytes {
                     return None;
@@ -171,9 +171,9 @@ pub(crate) fn next_page_id_from_bands(
         let slab_max = match recorded {
             Some(last_page_id) => Some(last_page_id),
             None => {
-                let file = File::open(slab_path(root, page_slab_id))?;
+                let file = File::open(slab_path(root, block_slab_id))?;
                 let slab_len = file.metadata()?.len();
-                max_page_id_in_slab_file(file, slab_len, page_slab_id)?
+                max_page_id_in_slab_file(file, slab_len, block_slab_id)?
             }
         };
         if let Some(slab_max) = slab_max {
@@ -187,14 +187,14 @@ pub(crate) fn next_page_id_from_bands(
 
 pub(crate) fn next_page_id_at(root: &Path) -> Result<u64, BlockStoreError> {
     let mut max_page_id = None;
-    for page_slab_id in slab_ids_at(root)? {
+    for block_slab_id in slab_ids_at(root)? {
         // Header-only walk. This used to `fs::read` the whole slab and hand it to `inspect_slab`,
         // which decodes and hashes every page to build a report that is discarded but for one
         // field. Opening the file and stepping it by record length reads the headers and nothing
         // else, so the cost stops tracking the size of the pages.
-        let file = File::open(slab_path(root, page_slab_id))?;
+        let file = File::open(slab_path(root, block_slab_id))?;
         let slab_len = file.metadata()?.len();
-        if let Some(slab_max) = max_page_id_in_slab_file(file, slab_len, page_slab_id)? {
+        if let Some(slab_max) = max_page_id_in_slab_file(file, slab_len, block_slab_id)? {
             max_page_id =
                 Some(max_page_id.map_or(slab_max, |current: u64| current.max(slab_max)));
         }
@@ -213,7 +213,7 @@ mod next_page_id_from_bands_tests {
         vec![tag; 64]
     }
 
-    fn write_slab(root: &Path, page_slab_id: u64, page_ids: &[u64]) {
+    fn write_slab(root: &Path, block_slab_id: u64, page_ids: &[u64]) {
         let mut bytes = Vec::new();
         for (index, page_id) in page_ids.iter().enumerate() {
             let encoded = encode_page_record(
@@ -228,18 +228,18 @@ mod next_page_id_from_bands_tests {
             bytes.extend_from_slice(&encoded.bytes);
         }
         fs::create_dir_all(root).expect("create slab root");
-        fs::write(slab_path(root, page_slab_id), &bytes).expect("write slab");
+        fs::write(slab_path(root, block_slab_id), &bytes).expect("write slab");
     }
 
     /// A band that claims to describe the slab exactly as it currently is on disk.
-    fn band_matching_disk(root: &Path, page_slab_id: u64, last_page_id: Option<u64>)
+    fn band_matching_disk(root: &Path, block_slab_id: u64, last_page_id: Option<u64>)
         -> BlockStoreBandDescriptor
     {
-        let path = slab_path(root, page_slab_id);
+        let path = slab_path(root, block_slab_id);
         let meta = fs::metadata(&path).expect("slab metadata");
         BlockStoreBandDescriptor {
-            band_id: page_slab_id,
-            page_slab_id,
+            band_id: block_slab_id,
+            block_slab_id,
             state: BlockStoreBandState::Sealed,
             physical_bytes: meta.len(),
             logical_bytes: meta.len(),
@@ -373,7 +373,7 @@ mod next_page_id_scan_tests {
     }
 
     /// Write one slab holding a record per page id, and report where each record starts.
-    fn slab_with(root: &Path, page_slab_id: u64, page_ids: &[u64]) -> Vec<usize> {
+    fn slab_with(root: &Path, block_slab_id: u64, page_ids: &[u64]) -> Vec<usize> {
         let mut bytes = Vec::new();
         let mut starts = Vec::new();
         for (index, page_id) in page_ids.iter().enumerate() {
@@ -390,7 +390,7 @@ mod next_page_id_scan_tests {
             bytes.extend_from_slice(&encoded.bytes);
         }
         fs::create_dir_all(root).expect("create slab root");
-        fs::write(slab_path(root, page_slab_id), &bytes).expect("write slab");
+        fs::write(slab_path(root, block_slab_id), &bytes).expect("write slab");
         starts
     }
 

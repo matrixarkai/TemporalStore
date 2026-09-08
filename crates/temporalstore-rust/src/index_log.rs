@@ -318,7 +318,8 @@ pub enum BandCatalogState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BandCatalogEntry {
     #[serde(alias = "zone_id")]
-    pub page_slab_id: u64,
+    #[serde(rename = "page_slab_id")]
+    pub block_slab_id: u64,
     pub state: BandCatalogState,
     #[serde(alias = "total_bytes")]
     pub physical_bytes: u64,
@@ -411,7 +412,7 @@ pub fn page_ref_key_from_parts(
     kind: &str,
     object_key: &str,
     component: Option<&str>,
-    page_slab_id: u64,
+    block_slab_id: u64,
     offset: u64,
     length: u64,
     page_id: u64,
@@ -432,7 +433,7 @@ pub fn page_ref_key_from_parts(
     // `write!` into a String appends in place; it does not allocate.
     let _ = write!(
         key,
-        ":{page_slab_id}:{offset}:{length}:{page_id}:{generation}"
+        ":{block_slab_id}:{offset}:{length}:{page_id}:{generation}"
     );
     key
 }
@@ -1861,7 +1862,7 @@ mod tests {
             band_version: 3,
             bands: vec![
                 BandCatalogEntry {
-                    page_slab_id: 0,
+                    block_slab_id: 0,
                     state: BandCatalogState::Sealed,
                     physical_bytes: 4096,
                     logical_bytes: 4000,
@@ -1872,7 +1873,7 @@ mod tests {
                     version: 3,
                 },
                 BandCatalogEntry {
-                    page_slab_id: 1,
+                    block_slab_id: 1,
                     state: BandCatalogState::Active,
                     physical_bytes: 512,
                     logical_bytes: 512,
@@ -1893,7 +1894,7 @@ mod tests {
         assert_eq!(recovered, meta);
         assert_eq!(recovered.bands.len(), 2);
         assert_eq!(recovered.bands[0].state, BandCatalogState::Sealed);
-        assert_eq!(recovered.bands[1].page_slab_id, 1);
+        assert_eq!(recovered.bands[1].block_slab_id, 1);
     }
 
     #[test]
@@ -1906,7 +1907,7 @@ mod tests {
             timestamp_ms: 1,
             band_version: 1,
             bands: vec![BandCatalogEntry {
-                page_slab_id: 0,
+                block_slab_id: 0,
                 state: BandCatalogState::Active,
                 physical_bytes: 1,
                 logical_bytes: 1,
@@ -1923,7 +1924,7 @@ mod tests {
             timestamp_ms: 9,
             band_version: 2,
             bands: vec![BandCatalogEntry {
-                page_slab_id: 0,
+                block_slab_id: 0,
                 state: BandCatalogState::Sealed,
                 physical_bytes: 2,
                 logical_bytes: 2,

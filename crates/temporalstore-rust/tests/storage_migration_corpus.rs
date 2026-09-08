@@ -372,7 +372,7 @@ fn assert_clean_recovery(engine: &TemporalEngine, shard_id: u64, case_name: &str
         case_name, recovery.slab_integrity
     );
     assert_eq!(recovery.slab_integrity.stale_page_ref_count, 0);
-    assert_eq!(recovery.slab_integrity.corrupt_page_slab_count, 0);
+    assert_eq!(recovery.slab_integrity.corrupt_block_slab_count, 0);
     assert_eq!(recovery.slab_integrity.unreadable_page_ref_count, 0);
     assert_eq!(recovery.slab_integrity.owner_mismatch_page_ref_count, 0);
     assert_eq!(recovery.slab_integrity.missing_owner_page_ref_count, 0);

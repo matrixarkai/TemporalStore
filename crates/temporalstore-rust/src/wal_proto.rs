@@ -338,7 +338,7 @@ fn checksum_from_raw(raw: &[u8]) -> String {
 
 fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
     v1::WalBlockAddress {
-        block_slab_id: address.page_slab_id,
+        block_slab_id: address.block_slab_id,
         offset: address.offset,
         length: address.length,
         block_id: address.page_id(),

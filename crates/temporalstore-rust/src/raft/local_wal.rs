@@ -114,7 +114,7 @@ impl LocalRaftWal {
                     .slabs
                     .iter()
                     .map(|slab| crate::sdk::v1::WalStateImageSlab {
-                        page_slab_id: slab.page_slab_id,
+                        block_slab_id: slab.block_slab_id,
                         slab: slab.bytes.clone(),
                     })
                     .collect(),
@@ -191,7 +191,7 @@ impl LocalRaftWal {
                 .slabs
                 .into_iter()
                 .map(|slab| RaftSnapshotStateImageSlab {
-                    page_slab_id: slab.page_slab_id,
+                    block_slab_id: slab.block_slab_id,
                     bytes: slab.slab,
                 })
                 .collect(),

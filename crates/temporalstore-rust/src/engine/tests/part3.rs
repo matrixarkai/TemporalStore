@@ -26,7 +26,7 @@ fn control_api_reads_page_and_index_streams() {
     let page = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
-        page_slab_id: 0,
+        block_slab_id: 0,
         offset: 0,
         size: 12,
     });
@@ -35,7 +35,7 @@ fn control_api_reads_page_and_index_streams() {
     let index = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Index,
-        page_slab_id: 0,
+        block_slab_id: 0,
         offset: 0,
         size: 32,
     });
@@ -45,7 +45,7 @@ fn control_api_reads_page_and_index_streams() {
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
-        page_slab_id: 0,
+        block_slab_id: 0,
         start_offset: 0,
         end_offset: 12,
         max_bytes: 12,
@@ -56,7 +56,7 @@ fn control_api_reads_page_and_index_streams() {
     let invalid = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
-        page_slab_id: 0,
+        block_slab_id: 0,
         start_offset: 12,
         end_offset: 1,
         max_bytes: 12,
@@ -92,7 +92,7 @@ fn a_scan_cut_short_by_its_budget_does_not_claim_the_stream_ended() {
     let all = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Wal,
-        page_slab_id: 0,
+        block_slab_id: 0,
         start_offset: 0,
         end_offset: u64::MAX,
         max_bytes: u64::MAX,
@@ -113,7 +113,7 @@ fn a_scan_cut_short_by_its_budget_does_not_claim_the_stream_ended() {
     let cut = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Wal,
-        page_slab_id: 0,
+        block_slab_id: 0,
         start_offset: 0,
         end_offset: u64::MAX,
         max_bytes: budget,
@@ -159,7 +159,7 @@ fn control_api_reads_and_scans_wal_stream() {
     let stream = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Wal,
-        page_slab_id: 0,
+        block_slab_id: 0,
         offset: 0,
         size: 4096,
     });
@@ -195,7 +195,7 @@ fn control_api_reads_and_scans_wal_stream() {
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Wal,
-        page_slab_id: 0,
+        block_slab_id: 0,
         start_offset: 0,
         end_offset: 4096,
         max_bytes: 4096,
@@ -241,7 +241,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     let stream = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::IndexLog,
-        page_slab_id: 0,
+        block_slab_id: 0,
         offset: 0,
         size: 8192,
     });
@@ -267,7 +267,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::IndexLog,
-        page_slab_id: 0,
+        block_slab_id: 0,
         start_offset: 0,
         end_offset: 8192,
         max_bytes: 8192,
@@ -318,11 +318,11 @@ fn control_api_reads_and_scans_index_log_stream() {
         .expect("the recorded page carries its address");
     // Either spelling: the field is written short now and the long name is kept as a read alias,
     // which is exactly how this test already reads `object_key` and `component` above.
-    let page_slab = address
+    let block_slab = address
         .get("ps")
         .or_else(|| address.get("page_segment_id"))
         .expect("the address carries its page slab id");
-    assert_eq!(page_slab, &serde_json::json!(0));
+    assert_eq!(block_slab, &serde_json::json!(0));
     assert!(served["strings"].get("k1").is_some());
 }
 
@@ -969,7 +969,7 @@ fn control_state_selection_omitted_occur_time_resolves_to_now_like_native() {
 }
 
 #[test]
-fn live_page_slab_ids_includes_control_state_pages() {
+fn live_block_slab_ids_includes_control_state_pages() {
     // control_state_pages is page-backed; omitting it from the GC live set let a slab holding
     // only a control-state page be reclaimed while still index-referenced -> DataLoss on read.
     let engine = TemporalEngine::default();
@@ -985,7 +985,7 @@ fn live_page_slab_ids_includes_control_state_pages() {
     });
     assert!(resp.status.ok, "{:?}", resp.status);
     assert!(
-        !engine.live_page_slab_ids(1).is_empty(),
+        !engine.live_block_slab_ids(1).is_empty(),
         "the control-state page's slab must be in the GC live set, else GC can reclaim a slab \
          still referenced by control_state_pages"
     );
@@ -2111,7 +2111,7 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
             .expect("secondary string view");
         stale.set_object_id(Some(stale.object_id().unwrap_or_default().wrapping_add(99)));
         stale.set_routing_bucket(Some(stale.routing_bucket().unwrap_or_default().wrapping_add(99)));
-        stale.page_slab_id = stale.page_slab_id.wrapping_add(999);
+        stale.block_slab_id = stale.block_slab_id.wrapping_add(999);
     }
 
     let recovery = engine.storage_recovery_report(1);

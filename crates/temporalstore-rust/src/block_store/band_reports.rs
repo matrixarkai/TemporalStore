@@ -49,7 +49,7 @@ impl LocalBlockStore {
             .bands
             .values()
             .map(|band| crate::index_log::BandCatalogEntry {
-                page_slab_id: band.page_slab_id,
+                block_slab_id: band.block_slab_id,
                 state: band_state_to_catalog_state(band.state),
                 physical_bytes: band.physical_bytes,
                 logical_bytes: band.logical_bytes,
@@ -76,16 +76,16 @@ impl LocalBlockStore {
         catalog: &[crate::index_log::BandCatalogEntry],
     ) -> Result<bool, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let active = inner.page_slab_id;
+        let active = inner.block_slab_id;
         let mut changed = false;
         for entry in catalog {
             let state = catalog_state_to_band_state(entry.state);
-            match inner.bands.get_mut(&entry.page_slab_id) {
+            match inner.bands.get_mut(&entry.block_slab_id) {
                 Some(band) => {
                     let before = band.clone();
                     // Never override the live ACTIVE slab's disk-derived state (it holds the open
                     // write frontier); for every other slab adopt the folded lifecycle state.
-                    if entry.page_slab_id != active {
+                    if entry.block_slab_id != active {
                         band.state = state;
                     }
                     band.created_unix_ms = band.created_unix_ms.or(entry.created_unix_ms);
@@ -103,10 +103,10 @@ impl LocalBlockStore {
                     // A band the disk scan did not surface (e.g. a purged/reclaimed slab with no
                     // live file): install it from the fold so accounting/GC see the full history.
                     inner.bands.insert(
-                        entry.page_slab_id,
+                        entry.block_slab_id,
                         BlockStoreBandDescriptor {
-                            band_id: band_id_for_slab(entry.page_slab_id),
-                            page_slab_id: entry.page_slab_id,
+                            band_id: band_id_for_slab(entry.block_slab_id),
+                            block_slab_id: entry.block_slab_id,
                             state,
                             physical_bytes: entry.physical_bytes,
                             logical_bytes: entry.logical_bytes,
@@ -156,7 +156,7 @@ impl LocalBlockStore {
         let summary = summarize_bands(&bands);
         let band_usage = compute_band_usage(&bands);
         let band_stats_ready = band_usage.iter().all(|band| {
-            band.band_id == band_id_for_slab(band.page_slab_id)
+            band.band_id == band_id_for_slab(band.block_slab_id)
                 && band.page_store_used_bytes
                     == band
                         .live_page_store_used_bytes
@@ -176,23 +176,23 @@ impl LocalBlockStore {
             .count() as u64;
         let live_slab_ids = slab_reports
             .iter()
-            .map(|report| report.page_slab_id)
+            .map(|report| report.block_slab_id)
             .collect::<BTreeSet<_>>();
         let delayed_slab_ids = delayed_destroy_slab_reports_at(&root)?
             .into_iter()
-            .map(|report| report.page_slab_id)
+            .map(|report| report.block_slab_id)
             .collect::<BTreeSet<_>>();
         let manifest_missing_stream_bands = bands
             .values()
             .filter(|band| {
                 !matches!(band.state, BlockStoreBandState::Purged)
-                    && !live_slab_ids.contains(&band.page_slab_id)
-                    && !delayed_slab_ids.contains(&band.page_slab_id)
+                    && !live_slab_ids.contains(&band.block_slab_id)
+                    && !delayed_slab_ids.contains(&band.block_slab_id)
             })
             .count() as u64;
         let manifest_extra_stream_bands = live_slab_ids
             .iter()
-            .filter(|page_slab_id| !bands.contains_key(page_slab_id))
+            .filter(|block_slab_id| !bands.contains_key(block_slab_id))
             .count() as u64;
         let band_manifest_disk_consistent =
             manifest_missing_stream_bands == 0 && manifest_extra_stream_bands == 0;
@@ -251,11 +251,11 @@ impl LocalBlockStore {
             && !bands.is_empty()
             && bands
                 .values()
-                .all(|band| band.band_id == band_id_for_slab(band.page_slab_id));
+                .all(|band| band.band_id == band_id_for_slab(band.block_slab_id));
         let band_manifest_rebuild_ready = band_manifest_ready
             && slab_reports.iter().all(|report| {
                 bands
-                    .get(&report.page_slab_id)
+                    .get(&report.block_slab_id)
                     .map(|band| {
                         band.first_page_id == report.first_page_id
                             && band.last_page_id == report.last_page_id
@@ -272,7 +272,7 @@ impl LocalBlockStore {
                 .filter(|report| report.has_corruption)
                 .all(|report| {
                     bands
-                        .get(&report.page_slab_id)
+                        .get(&report.block_slab_id)
                         .map(|band| {
                             band.has_corruption
                                 && band.first_error_offset == report.first_error_offset

@@ -159,7 +159,7 @@ pub(super) fn bucket_storage_summaries(
     end_routing_bucket: u32,
 ) -> Vec<BucketStorageSummary> {
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
-    let mut page_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
+    let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
     for entry in collect_live_page_entries(shard) {
         let routing_bucket = entry
             .address
@@ -175,10 +175,10 @@ pub(super) fn bucket_storage_summaries(
         // Record which page slab backs each bucket so bucket-dump manifests carry the
         // live slab set (used by manifest validation and the dump/copy path).
         // Without this the map stayed empty and every summary reported no slabs.
-        page_slabs_by_bucket
+        block_slabs_by_bucket
             .entry(routing_bucket)
             .or_default()
-            .insert(entry.address.page_slab_id);
+            .insert(entry.address.block_slab_id);
         if let Some(band_id) = entry.address.band_id() {
             summary.last_compacted_band = Some(
                 summary
@@ -220,7 +220,7 @@ pub(super) fn bucket_storage_summaries(
         summary.dirty_generation = summary.dirty_generation.saturating_add(1);
     }
     for (routing_bucket, summary) in &mut buckets {
-        summary.page_slab_ids = page_slabs_by_bucket
+        summary.block_slab_ids = block_slabs_by_bucket
             .get(routing_bucket)
             .map(|ids| ids.iter().copied().collect())
             .unwrap_or_default();
@@ -253,7 +253,7 @@ pub(super) fn storage_model_code(kind: &str) -> u8 {
 }
 
 pub(super) fn physical_address_word(address: &BlockAddress) -> u64 {
-    address.page_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
+    address.block_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
 
 pub(super) fn native_packed_page_index_bytes(
@@ -266,7 +266,7 @@ pub(super) fn native_packed_page_index_bytes(
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&BlockAddress::from_parts(page.page_slab_id, page.offset, page.length, page.page_id, page.object_id, Some(page.routing_bucket), page.page_id.or(page.object_id), page.band_id));
+    let address = physical_address_word(&BlockAddress::from_parts(page.block_slab_id, page.offset, page.length, page.page_id, page.object_id, Some(page.routing_bucket), page.page_id.or(page.object_id), page.band_id));
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
 }
@@ -298,7 +298,7 @@ pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode
     let address = bucket
         .page_indexes
         .first()
-        .map(|page| page.page_slab_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
+        .map(|page| page.block_slab_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
         .unwrap_or_default();
     bytes[16..24].copy_from_slice(&address.to_le_bytes());
     bytes
@@ -364,7 +364,7 @@ pub(super) fn storage_physical_index_report(
             model_id: entry.kind.clone().to_string(),
             component: entry.component.clone().map(|value| value.to_string()),
             routing_bucket,
-            page_slab_id: entry.address.page_slab_id,
+            block_slab_id: entry.address.block_slab_id,
             offset: entry.address.offset,
             length: entry.address.length,
             page_id: entry.address.page_id(),
@@ -405,7 +405,7 @@ pub(super) fn storage_physical_index_report(
                 existing.object_key.as_str() == page.object_key.as_ref()
                     && *existing.model_id == *page.model_id
                     && existing.component.as_deref() == page.component.as_deref()
-                    && existing.page_slab_id == page.address.page_slab_id
+                    && existing.block_slab_id == page.address.block_slab_id
                     && existing.offset == page.address.offset
             });
             if already_present {
@@ -416,7 +416,7 @@ pub(super) fn storage_physical_index_report(
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone().map(|value| value.to_string()),
                 routing_bucket: *routing_bucket,
-                page_slab_id: page.address.page_slab_id,
+                block_slab_id: page.address.block_slab_id,
                 offset: page.address.offset,
                 length: page.address.length,
                 page_id: page.address.page_id(),
@@ -440,7 +440,7 @@ pub(super) fn storage_physical_index_report(
                 .cmp(&right.object_key)
                 .then(left.model_id.cmp(&right.model_id))
                 .then(left.component.cmp(&right.component))
-                .then(left.page_slab_id.cmp(&right.page_slab_id))
+                .then(left.block_slab_id.cmp(&right.block_slab_id))
                 .then(left.offset.cmp(&right.offset))
         });
         if !shard.bucket_index.bucket_map.contains_key(&bucket.routing_bucket) {
@@ -682,8 +682,8 @@ pub(super) fn comparable_bucket_dump_summaries(
         summary.dirty_object_count = 0;
         summary.dirty_generation = 0;
         summary.last_dump_sequence = 0;
-        summary.page_slab_ids.sort_unstable();
-        summary.page_slab_ids.dedup();
+        summary.block_slab_ids.sort_unstable();
+        summary.block_slab_ids.dedup();
     }
     summaries.retain(|summary| {
         summary.object_count > 0
@@ -701,10 +701,10 @@ pub(super) fn bucket_dump_summary_matches_current_generation(
     manifest_bucket_fingerprints: &BTreeMap<u32, BTreeSet<String>>,
     current_bucket_fingerprints: &BTreeMap<u32, BTreeSet<String>>,
 ) -> bool {
-    let mut manifest_slabs = manifest_summary.page_slab_ids.clone();
+    let mut manifest_slabs = manifest_summary.block_slab_ids.clone();
     manifest_slabs.sort_unstable();
     manifest_slabs.dedup();
-    let mut current_slabs = current_summary.page_slab_ids.clone();
+    let mut current_slabs = current_summary.block_slab_ids.clone();
     current_slabs.sort_unstable();
     current_slabs.dedup();
     manifest_summary.routing_bucket == current_summary.routing_bucket
@@ -730,7 +730,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.kind,
             entry.object_key,
             entry.component.unwrap_or_default(),
-            entry.address.page_slab_id,
+            entry.address.block_slab_id,
             entry.address.offset,
             entry.address.length,
             entry.address.page_id().unwrap_or_default(),
@@ -758,8 +758,8 @@ pub(super) fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, BlockA
         .into_iter()
         .collect::<Vec<_>>();
     addresses.sort_by(|left, right| {
-        left.page_slab_id
-            .cmp(&right.page_slab_id)
+        left.block_slab_id
+            .cmp(&right.block_slab_id)
             .then(left.offset.cmp(&right.offset))
             .then(left.length.cmp(&right.length))
     });
@@ -1040,7 +1040,7 @@ pub(super) fn feature_page_error(
     StorageFeaturePageError {
         kind: kind.to_string(),
         key: key.to_string(),
-        page_slab_id: address.page_slab_id,
+        block_slab_id: address.block_slab_id,
         offset: address.offset,
         length: address.length,
         error: error.into(),
@@ -1057,7 +1057,7 @@ pub(super) fn feature_page_timestamp_mismatch(
         kind: kind.to_string(),
         key: key.to_string(),
         timestamp_ms,
-        page_slab_id: address.page_slab_id,
+        block_slab_id: address.block_slab_id,
         offset: address.offset,
         length: address.length,
     }

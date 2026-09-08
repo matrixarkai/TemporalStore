@@ -106,7 +106,7 @@ fn delta_path_defers_base_write_but_funnel_and_reload_see_current_state() {
     let stream = engine.read_stream(StreamReadRequest {
         shard_id: SHARD_ID,
         stream_kind: StreamKind::Index,
-        page_slab_id: 0,
+        block_slab_id: 0,
         offset: 0,
         size: served.len() as u64,
     });

@@ -35,5 +35,5 @@ pub(super) const CONTEXT_NODE_FIELD: &str = "meta";
 ///
 /// `pub(crate)` so [`crate::wal_record::is_wal_resident`] can answer for both sentinels in one
 /// place rather than each site comparing by hand.
-pub(crate) const HOT_PAGE_SLAB_ID: u64 = u64::MAX;
+pub(crate) const HOT_BLOCK_SLAB_ID: u64 = u64::MAX;
 pub(super) static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);

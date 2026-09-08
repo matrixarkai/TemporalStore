@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt;
 use crate::metrics::SnapshotMetrics;
 use crate::object_store::{ObjectStore, ObjectStoreError};
 use crate::types::{
-    ChecksumEntry, LocalSnapshot, PageSlabManifest, ShardId, SnapshotManifest, SnapshotRef,
+    ChecksumEntry, LocalSnapshot, BlockSlabManifest, ShardId, SnapshotManifest, SnapshotRef,
     SnapshotRetention, SnapshotStatus,
 };
 
@@ -191,7 +191,7 @@ where
             tokio::fs::write(&checksums_path, b"[]").await?;
         }
 
-        let page_slabs = list_local_page_slabs(&root.join("page_segments")).await?;
+        let block_slabs = list_local_block_slabs(&root.join("page_segments")).await?;
         let mut snapshot = LocalSnapshot::new(
             self.cluster_id.clone(),
             shard_id,
@@ -201,13 +201,13 @@ where
             root,
             index_path,
             checksums_path,
-            page_slabs,
+            block_slabs,
         );
         snapshot.manifest.engine_version = self.engine_version.clone();
-        snapshot.manifest.page_slabs = page_slab_manifests(&snapshot).await?;
+        snapshot.manifest.block_slabs = block_slab_manifests(&snapshot).await?;
         snapshot.manifest.checksums = checksum_entries(&snapshot).await?;
         snapshot.manifest.record_count = snapshot.manifest.checksums.len() as u64;
-        snapshot.manifest.object_count = snapshot.manifest.page_slabs.len() as u64;
+        snapshot.manifest.object_count = snapshot.manifest.block_slabs.len() as u64;
 
         if let Some(metrics) = &self.metrics {
             metrics.observe_create(shard_id, SnapshotStatus::Success);
@@ -241,7 +241,7 @@ where
             tokio::fs::write(&checksums_path, b"[]").await?;
         }
 
-        let page_slabs = list_local_page_slabs(&root.join("page_segments")).await?;
+        let block_slabs = list_local_block_slabs(&root.join("page_segments")).await?;
         let mut snapshot = LocalSnapshot::new(
             self.cluster_id.clone(),
             shard_id,
@@ -251,10 +251,10 @@ where
             root,
             index_path,
             checksums_path,
-            page_slabs,
+            block_slabs,
         );
         snapshot.manifest.engine_version = self.engine_version.clone();
-        snapshot.manifest.page_slabs = page_slab_manifests(&snapshot).await?;
+        snapshot.manifest.block_slabs = block_slab_manifests(&snapshot).await?;
         snapshot.manifest.checksums = checksum_entries(&snapshot).await?;
 
         if let Some(metrics) = &self.metrics {
@@ -395,12 +395,12 @@ async fn upload_snapshot_inner<O: ObjectStore>(
         &snapshot.checksums_path,
     )
     .await?;
-    for page_slab in &snapshot.page_slabs {
-        let name = page_slab.file_name().unwrap().to_string_lossy();
+    for block_slab in &snapshot.block_slabs {
+        let name = block_slab.file_name().unwrap().to_string_lossy();
         put_file(
             object_store,
             &format!("{temp_prefix}page_segments/{name}"),
-            page_slab,
+            block_slab,
         )
         .await?;
     }
@@ -445,8 +445,8 @@ async fn download_snapshot_inner<O: ObjectStore>(
     )
     .await?;
 
-    let mut page_slabs = Vec::new();
-    for slab in &manifest.page_slabs {
+    let mut block_slabs = Vec::new();
+    for slab in &manifest.block_slabs {
         let path = destination.join(&slab.relative_path);
         write_file(
             &path,
@@ -455,7 +455,7 @@ async fn download_snapshot_inner<O: ObjectStore>(
                 .await?,
         )
         .await?;
-        page_slabs.push(path);
+        block_slabs.push(path);
     }
 
     let local = LocalSnapshot {
@@ -463,7 +463,7 @@ async fn download_snapshot_inner<O: ObjectStore>(
         root_dir: destination,
         index_path,
         checksums_path,
-        page_slabs,
+        block_slabs,
     };
     verify_local_snapshot(&local).await?;
     Ok(local)
@@ -523,7 +523,7 @@ async fn delete_prefix<O: ObjectStore>(
     Ok(())
 }
 
-async fn list_local_page_slabs(dir: &Path) -> Result<Vec<PathBuf>, SnapshotStoreError> {
+async fn list_local_block_slabs(dir: &Path) -> Result<Vec<PathBuf>, SnapshotStoreError> {
     let mut out = Vec::new();
     if !dir.exists() {
         return Ok(out);
@@ -539,15 +539,15 @@ async fn list_local_page_slabs(dir: &Path) -> Result<Vec<PathBuf>, SnapshotStore
     Ok(out)
 }
 
-async fn page_slab_manifests(
+async fn block_slab_manifests(
     snapshot: &LocalSnapshot,
-) -> Result<Vec<PageSlabManifest>, SnapshotStoreError> {
+) -> Result<Vec<BlockSlabManifest>, SnapshotStoreError> {
     let mut out = Vec::new();
-    for path in &snapshot.page_slabs {
+    for path in &snapshot.block_slabs {
         let bytes = tokio::fs::read(path).await?;
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-        out.push(PageSlabManifest {
-            page_slab_id: file_name.trim_end_matches(".seg").to_string(),
+        out.push(BlockSlabManifest {
+            block_slab_id: file_name.trim_end_matches(".seg").to_string(),
             relative_path: format!("page_segments/{file_name}"),
             byte_size: bytes.len() as u64,
             sha256: sha256_hex(&bytes),
@@ -571,7 +571,7 @@ async fn checksum_entries(
             byte_size: bytes.len() as u64,
         });
     }
-    for slab in &snapshot.manifest.page_slabs {
+    for slab in &snapshot.manifest.block_slabs {
         entries.push(ChecksumEntry {
             relative_path: slab.relative_path.clone(),
             sha256: slab.sha256.clone(),
@@ -665,7 +665,7 @@ mod tests {
             checksums,
             vec![slab],
         );
-        local.manifest.page_slabs = page_slab_manifests(&local).await.unwrap();
+        local.manifest.block_slabs = block_slab_manifests(&local).await.unwrap();
         local.manifest.checksums = checksum_entries(&local).await.unwrap();
         local
     }

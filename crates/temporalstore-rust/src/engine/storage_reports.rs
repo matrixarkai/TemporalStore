@@ -228,7 +228,7 @@ impl TemporalEngine {
         if !boundary.stale_index_page_refs.is_empty() {
             blockers.push("stale_index_page_refs".to_string());
         }
-        if !boundary.corrupt_page_slab_ids.is_empty() {
+        if !boundary.corrupt_block_slab_ids.is_empty() {
             blockers.push("corrupt_page_segments".to_string());
         }
         if boundary.unreadable_page_bytes > 0 || !recovery.all_live_pages_readable {
@@ -264,10 +264,10 @@ impl TemporalEngine {
         if !plan.dirty_buckets.is_empty() {
             warnings.push("dirty_slots_pending_dump".to_string());
         }
-        if !plan.stale_page_slab_ids.is_empty() {
+        if !plan.stale_block_slab_ids.is_empty() {
             warnings.push("stale_page_segments_pending_gc".to_string());
         }
-        if !boundary.orphan_page_slab_ids.is_empty() {
+        if !boundary.orphan_block_slab_ids.is_empty() {
             warnings.push("orphan_page_segments_pending_gc".to_string());
         }
         if bucket_dump_manifest_count == 0 && recovery.total_page_refs > 0 {
@@ -281,15 +281,15 @@ impl TemporalEngine {
             blockers.push("dirty_slots_exceed_policy".to_string());
         }
         if policy
-            .max_stale_page_slabs
-            .map(|limit| plan.stale_page_slab_ids.len() > limit)
+            .max_stale_block_slabs
+            .map(|limit| plan.stale_block_slab_ids.len() > limit)
             .unwrap_or(false)
         {
             blockers.push("stale_page_segments_exceed_policy".to_string());
         }
         if policy
-            .max_orphan_page_slabs
-            .map(|limit| boundary.orphan_page_slab_ids.len() > limit)
+            .max_orphan_block_slabs
+            .map(|limit| boundary.orphan_block_slab_ids.len() > limit)
             .unwrap_or(false)
         {
             blockers.push("orphan_page_segments_exceed_policy".to_string());
@@ -318,10 +318,10 @@ impl TemporalEngine {
             blockers,
             warnings,
             dirty_bucket_count: plan.dirty_buckets.len(),
-            stale_page_slab_count: plan.stale_page_slab_ids.len(),
-            orphan_page_slab_count: boundary.orphan_page_slab_ids.len(),
+            stale_block_slab_count: plan.stale_block_slab_ids.len(),
+            orphan_block_slab_count: boundary.orphan_block_slab_ids.len(),
             undumped_wal_records,
-            corrupt_page_slab_count: boundary.corrupt_page_slab_ids.len(),
+            corrupt_block_slab_count: boundary.corrupt_block_slab_ids.len(),
             unreadable_page_ref_count: recovery.unreadable_page_refs.len(),
             owner_mismatch_page_ref_count: boundary.owner_mismatch_page_refs.len(),
             missing_owner_page_ref_count: boundary.object_lifecycle.missing_owner_page_refs,
@@ -468,7 +468,7 @@ impl TemporalEngine {
             report.considered_page_refs = report.considered_page_refs.saturating_add(1);
             let key = CacheKey::page_with_slot(
                 shard_id,
-                entry.address.page_slab_id,
+                entry.address.block_slab_id,
                 entry.address.offset,
                 entry.address.length,
                 entry.address.routing_bucket(),
@@ -554,8 +554,8 @@ impl TemporalEngine {
             .unwrap_or_default();
         let latest_safe_wal_sequence = self.wal_store.stats(shard_id).last_sequence;
         let latest_safe_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
-        let live_page_slab_ids = self
-            .live_page_slab_ids(shard_id)
+        let live_block_slab_ids = self
+            .live_block_slab_ids(shard_id)
             .into_iter()
             .collect::<BTreeSet<_>>();
         let all_slab_ids = self
@@ -564,8 +564,8 @@ impl TemporalEngine {
             .unwrap_or_default()
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let orphan_page_slab_ids = all_slab_ids
-            .difference(&live_page_slab_ids)
+        let orphan_block_slab_ids = all_slab_ids
+            .difference(&live_block_slab_ids)
             .copied()
             .collect::<Vec<_>>();
         let latest_dump_buckets = manifests
@@ -587,11 +587,11 @@ impl TemporalEngine {
         ) = bucket_dump_install_phase_counts(&interrupted_bucket_dump_installs);
         let manifest_chain_issues = bucket_dump_manifest_chain_issues(&manifests);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
-        let corrupt_page_slab_ids = recovery
-            .page_slab_reports
+        let corrupt_block_slab_ids = recovery
+            .block_slab_reports
             .iter()
             .filter(|report| report.has_corruption)
-            .map(|report| report.page_slab_id)
+            .map(|report| report.block_slab_id)
             .collect::<Vec<_>>();
         let unreadable_page_bytes = recovery
             .unreadable_page_refs
@@ -609,7 +609,7 @@ impl TemporalEngine {
                 .min(latest_safe_wal_sequence),
             selected_replay_index_log_sequence: latest_dump_index_log_sequence
                 .min(latest_safe_index_log_sequence),
-            orphan_page_slab_ids,
+            orphan_block_slab_ids,
             missing_dump_bucket_ids,
             stale_index_page_refs: recovery.unreadable_page_refs,
             interrupted_bucket_dump_installs,
@@ -620,7 +620,7 @@ impl TemporalEngine {
             owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
             missing_owner_page_refs: recovery.missing_owner_page_refs,
             object_lifecycle,
-            corrupt_page_slab_ids,
+            corrupt_block_slab_ids,
             unreadable_page_bytes,
         }
     }

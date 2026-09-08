@@ -2229,7 +2229,7 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages() {
     assert_eq!(recovery.index_log_records, 2);
     assert!(recovery.index_bytes > 0);
     assert!(recovery.index_write_atomic);
-    assert!(recovery.active_page_slab_ids.len() >= 2);
+    assert!(recovery.active_block_slab_ids.len() >= 2);
     assert!(recovery.total_page_refs >= 2);
     assert_eq!(recovery.readable_page_refs, recovery.total_page_refs);
     assert!(recovery.all_live_pages_readable);

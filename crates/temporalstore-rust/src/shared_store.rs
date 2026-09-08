@@ -43,11 +43,11 @@ pub enum SharedStoreReplicationError {
     #[error("no shared-store checkpoint found for shard {0}")]
     CheckpointNotFound(ShardId),
     #[error(
-        "checkpoint for shard {shard_id} references live slab {page_slab_id} that was not uploaded; refusing to publish a manifest that would lose durable pages"
+        "checkpoint for shard {shard_id} references live slab {block_slab_id} that was not uploaded; refusing to publish a manifest that would lose durable pages"
     )]
     CheckpointSlabNotDurable {
         shard_id: ShardId,
-        page_slab_id: u64,
+        block_slab_id: u64,
     },
     #[error("replicated command failed at WAL index {wal_index}: {status:?}")]
     ApplyFailed { wal_index: u64, status: Status },
@@ -157,9 +157,10 @@ pub struct SharedStoreWalIndexedRead {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SharedStorePageSlab {
+pub struct SharedStoreBlockSlab {
     #[serde(alias = "page_segment_id")]
-    pub page_slab_id: u64,
+    #[serde(rename = "page_slab_id")]
+    pub block_slab_id: u64,
     pub key: String,
     pub byte_size: u64,
     pub sha256: String,
@@ -192,7 +193,8 @@ pub struct SharedStoreCheckpointManifest {
     pub index_byte_size: u64,
     pub index_sha256: String,
     #[serde(alias = "page_segments")]
-    pub page_slabs: Vec<SharedStorePageSlab>,
+    #[serde(rename = "page_slabs")]
+    pub block_slabs: Vec<SharedStoreBlockSlab>,
     /// Next free block page id at checkpoint time. A lazy restore advances the fresh
     /// owner's page-id counter past this floor so replayed/new writes never reuse a
     /// page id that a lazily-fetched checkpoint slab still carries. Defaults to 0 for
@@ -937,20 +939,20 @@ where
         Ok(())
     }
 
-    pub async fn publish_page_slabs(
+    pub async fn publish_block_slabs(
         &self,
         shard_id: ShardId,
         block_store: &LocalBlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let mut published = Vec::new();
-        for page_slab_id in block_store.slab_ids()? {
+        for block_slab_id in block_store.slab_ids()? {
             self.object_store
                 .put(
-                    &self.page_slab_key(shard_id, page_slab_id),
-                    Bytes::from(block_store.read_slab(page_slab_id)?),
+                    &self.block_slab_key(shard_id, block_slab_id),
+                    Bytes::from(block_store.read_slab(block_slab_id)?),
                 )
                 .await?;
-            published.push(page_slab_id);
+            published.push(block_slab_id);
         }
         Ok(published)
     }
@@ -997,20 +999,20 @@ where
         let band_by_slab: BTreeMap<u64, _> = block_store
             .band_descriptors()
             .into_iter()
-            .map(|band| (band.page_slab_id, band))
+            .map(|band| (band.block_slab_id, band))
             .collect();
-        let mut page_slabs = Vec::new();
+        let mut block_slabs = Vec::new();
         let mut uploaded_slab_ids = std::collections::BTreeSet::new();
-        for page_slab_id in block_store.slab_ids()? {
-            let bytes = block_store.read_slab(page_slab_id)?;
-            let key = format!("{prefix}page_segments/page_segment_{page_slab_id:020}.seg");
+        for block_slab_id in block_store.slab_ids()? {
+            let bytes = block_store.read_slab(block_slab_id)?;
+            let key = format!("{prefix}page_segments/page_segment_{block_slab_id:020}.seg");
             self.object_store
                 .put(&key, Bytes::from(bytes.clone()))
                 .await?;
-            uploaded_slab_ids.insert(page_slab_id);
-            let band = band_by_slab.get(&page_slab_id);
-            page_slabs.push(SharedStorePageSlab {
-                page_slab_id,
+            uploaded_slab_ids.insert(block_slab_id);
+            let band = band_by_slab.get(&block_slab_id);
+            block_slabs.push(SharedStoreBlockSlab {
+                block_slab_id,
                 key,
                 byte_size: bytes.len() as u64,
                 sha256: sha256_hex(&bytes),
@@ -1026,15 +1028,15 @@ where
         // an uploaded slab before the manifest is written, so a restore never resolves a live page
         // to a slab that is absent from the checkpoint. The synthetic in-memory hot-page slab
         // (u64::MAX) is folded into the exported index, not a durable slab, so it is excluded.
-        const HOT_PAGE_SLAB_ID: u64 = u64::MAX;
-        for referenced in engine.live_page_slab_ids(shard_id) {
-            if referenced == HOT_PAGE_SLAB_ID {
+        const HOT_BLOCK_SLAB_ID: u64 = u64::MAX;
+        for referenced in engine.live_block_slab_ids(shard_id) {
+            if referenced == HOT_BLOCK_SLAB_ID {
                 continue;
             }
             if !uploaded_slab_ids.contains(&referenced) {
                 return Err(SharedStoreReplicationError::CheckpointSlabNotDurable {
                     shard_id,
-                    page_slab_id: referenced,
+                    block_slab_id: referenced,
                 });
             }
         }
@@ -1048,7 +1050,7 @@ where
             index_key,
             index_byte_size: index.len() as u64,
             index_sha256: sha256_hex(&index),
-            page_slabs,
+            block_slabs,
             next_page_id: block_store.next_page_id(),
         };
         self.object_store
@@ -1069,15 +1071,15 @@ where
         let index = self.object_store.get(&self.index_key(shard_id)).await?;
         engine.install_index_bytes(shard_id, &index)?;
 
-        let prefix = self.page_slab_prefix(shard_id);
+        let prefix = self.block_slab_prefix(shard_id);
         let mut restored = Vec::new();
         for key in self.object_store.list(&prefix).await? {
-            let Some(page_slab_id) = parse_page_slab_id(&key) else {
+            let Some(block_slab_id) = parse_block_slab_id(&key) else {
                 continue;
             };
             let bytes = self.object_store.get(&key).await?;
-            block_store.install_slab(page_slab_id, &bytes)?;
-            restored.push(page_slab_id);
+            block_store.install_slab(block_slab_id, &bytes)?;
+            restored.push(block_slab_id);
         }
         restored.sort_unstable();
         Ok(restored)
@@ -1193,10 +1195,10 @@ where
         )?;
         engine.install_index_bytes(manifest.shard_id, &index)?;
 
-        for slab in &manifest.page_slabs {
+        for slab in &manifest.block_slabs {
             let bytes = self.object_store.get(&slab.key).await?;
             verify_checksum(&slab.key, &bytes, slab.byte_size, &slab.sha256)?;
-            block_store.install_slab(slab.page_slab_id, &bytes)?;
+            block_store.install_slab(slab.block_slab_id, &bytes)?;
         }
         Ok(())
     }
@@ -1646,14 +1648,14 @@ where
         format!("{}index/shard.index.json", self.shard_prefix(shard_id))
     }
 
-    fn page_slab_prefix(&self, shard_id: ShardId) -> String {
+    fn block_slab_prefix(&self, shard_id: ShardId) -> String {
         format!("{}page_segments/", self.shard_prefix(shard_id))
     }
 
-    fn page_slab_key(&self, shard_id: ShardId, page_slab_id: u64) -> String {
+    fn block_slab_key(&self, shard_id: ShardId, block_slab_id: u64) -> String {
         format!(
-            "{}page_segment_{page_slab_id:020}.seg",
-            self.page_slab_prefix(shard_id)
+            "{}page_segment_{block_slab_id:020}.seg",
+            self.block_slab_prefix(shard_id)
         )
     }
 
@@ -1916,8 +1918,8 @@ impl SharedPathSlabSource {
 }
 
 impl SharedSlabSource for SharedPathSlabSource {
-    fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
-        let Some(address) = self.slabs.get(&page_slab_id) else {
+    fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+        let Some(address) = self.slabs.get(&block_slab_id) else {
             return Ok(None);
         };
         let path = self.object_store.object_path(&address.key).map_err(|err| {
@@ -1931,7 +1933,7 @@ impl SharedSlabSource for SharedPathSlabSource {
         let actual = sha256_hex(&bytes);
         if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
             return Err(BlockStoreError::ChecksumMismatch {
-                page_slab_id,
+                block_slab_id,
                 offset: 0,
                 length: address.byte_size,
                 expected: address.sha256.clone(),
@@ -1972,8 +1974,8 @@ impl MatrixObjectSlabSource {
 }
 
 impl SharedSlabSource for MatrixObjectSlabSource {
-    fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
-        let Some(address) = self.slabs.get(&page_slab_id) else {
+    fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+        let Some(address) = self.slabs.get(&block_slab_id) else {
             return Ok(None);
         };
         let bytes = self
@@ -1990,7 +1992,7 @@ impl SharedSlabSource for MatrixObjectSlabSource {
         let actual = sha256_hex(&bytes);
         if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
             return Err(BlockStoreError::ChecksumMismatch {
-                page_slab_id,
+                block_slab_id,
                 offset: 0,
                 length: address.byte_size,
                 expected: address.sha256.clone(),
@@ -2042,10 +2044,10 @@ where
 
         let mut slabs = BTreeMap::new();
         let mut max_slab_id = 0u64;
-        for slab in &manifest.page_slabs {
-            max_slab_id = max_slab_id.max(slab.page_slab_id);
+        for slab in &manifest.block_slabs {
+            max_slab_id = max_slab_id.max(slab.block_slab_id);
             slabs.insert(
-                slab.page_slab_id,
+                slab.block_slab_id,
                 SharedSlabAddress {
                     key: slab.key.clone(),
                     byte_size: slab.byte_size,
@@ -2057,17 +2059,17 @@ where
         block_store.attach_shared_slab_source(source);
         // Roll local appends past the checkpoint's slab/page-id range so replayed WAL-tail
         // and new writes never overwrite a slab still served lazily from shared storage.
-        if !manifest.page_slabs.is_empty() {
+        if !manifest.block_slabs.is_empty() {
             block_store.reserve_lazy_checkpoint_range(max_slab_id, manifest.next_page_id)?;
             // S3: install SEALED band descriptors for the lazily-backed checkpoint slabs so
             // GC/compaction accounting is complete immediately after restore, before the first
             // on-demand fetch materializes any slab locally. Runs AFTER the reserve so the freshly
             // reserved slab stays the active band and every checkpoint slab is sealed.
             let lazy_bands: Vec<LazyCheckpointBand> = manifest
-                .page_slabs
+                .block_slabs
                 .iter()
                 .map(|slab| LazyCheckpointBand {
-                    page_slab_id: slab.page_slab_id,
+                    block_slab_id: slab.block_slab_id,
                     physical_bytes: slab.byte_size,
                     logical_bytes: slab.logical_bytes,
                     first_page_id: slab.first_page_id,
@@ -2137,8 +2139,8 @@ pub struct MatrixObjectLocalSlabSource {
 
 #[cfg(feature = "matrixobject")]
 impl SharedSlabSource for MatrixObjectLocalSlabSource {
-    fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
-        let Some(address) = self.slabs.get(&page_slab_id) else {
+    fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+        let Some(address) = self.slabs.get(&block_slab_id) else {
             return Ok(None);
         };
         let bytes = self
@@ -2155,7 +2157,7 @@ impl SharedSlabSource for MatrixObjectLocalSlabSource {
         let actual = sha256_hex(&bytes);
         if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
             return Err(BlockStoreError::ChecksumMismatch {
-                page_slab_id,
+                block_slab_id,
                 offset: 0,
                 length: address.byte_size,
                 expected: address.sha256.clone(),
@@ -2449,7 +2451,7 @@ where
     }
 }
 
-fn parse_page_slab_id(key: &str) -> Option<u64> {
+fn parse_block_slab_id(key: &str) -> Option<u64> {
     key.rsplit('/')
         .next()?
         .strip_prefix("page_segment_")?
@@ -2931,7 +2933,7 @@ mod tests {
         let (_store, replicator) = test_shared_store(dir.path());
         replicator.publish_index(1, &primary).await.unwrap();
         replicator
-            .publish_page_slabs(1, &primary.block_store())
+            .publish_block_slabs(1, &primary.block_store())
             .await
             .unwrap();
         replicator
@@ -3095,7 +3097,7 @@ mod tests {
         let (_store, replicator) = test_shared_store(dir.path());
         replicator.publish_index(1, &primary).await.unwrap();
         replicator
-            .publish_page_slabs(1, &primary.block_store())
+            .publish_block_slabs(1, &primary.block_store())
             .await
             .unwrap();
 
@@ -3154,7 +3156,7 @@ mod tests {
         // Base captures both keys LIVE...
         replicator.publish_index(1, &primary).await.unwrap();
         replicator
-            .publish_page_slabs(1, &primary.block_store())
+            .publish_block_slabs(1, &primary.block_store())
             .await
             .unwrap();
         // ...then the delete arrives as a WAL-tail entry after the base.
@@ -3248,7 +3250,7 @@ mod tests {
             .publish_checkpoint(1, 1, &primary, &primary.block_store())
             .await
             .unwrap();
-        assert!(!manifest.page_slabs.is_empty());
+        assert!(!manifest.block_slabs.is_empty());
         replicator
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
@@ -3588,7 +3590,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !manifest.page_slabs.is_empty(),
+            !manifest.block_slabs.is_empty(),
             "checkpoint must upload the slab bytes so a lazy owner can fetch them"
         );
         replicator
@@ -3714,8 +3716,8 @@ mod tests {
             .await
             .unwrap();
         let manifest_slab_ids: std::collections::BTreeSet<u64> =
-            manifest.page_slabs.iter().map(|s| s.page_slab_id).collect();
-        for referenced in primary.live_page_slab_ids(1) {
+            manifest.block_slabs.iter().map(|s| s.block_slab_id).collect();
+        for referenced in primary.live_block_slab_ids(1) {
             if referenced == u64::MAX {
                 continue;
             }
@@ -3741,7 +3743,7 @@ mod tests {
             },
         });
         // The write landed in on-disk slab 0 and the index references it.
-        assert!(primary.live_page_slab_ids(1).contains(&0));
+        assert!(primary.live_block_slab_ids(1).contains(&0));
         // Simulate a lost/never-durable slab: remove slab 0 from disk so slab_ids() no longer
         // enumerates it while the in-memory index still references it.
         let slab0 = dir
@@ -3761,7 +3763,7 @@ mod tests {
                 err,
                 SharedStoreReplicationError::CheckpointSlabNotDurable {
                     shard_id: 1,
-                    page_slab_id: 0
+                    block_slab_id: 0
                 }
             ),
             "expected CheckpointSlabNotDurable, got {err:?}"
@@ -3787,7 +3789,7 @@ mod tests {
             .block_store()
             .band_descriptors()
             .into_iter()
-            .find(|b| b.page_slab_id == 0)
+            .find(|b| b.block_slab_id == 0)
             .expect("primary must have a band for slab 0");
         assert!(primary_band.logical_bytes > 0);
 
@@ -3798,9 +3800,9 @@ mod tests {
             .unwrap();
         // The manifest carries the per-slab band metadata.
         let slab0 = manifest
-            .page_slabs
+            .block_slabs
             .iter()
-            .find(|s| s.page_slab_id == 0)
+            .find(|s| s.block_slab_id == 0)
             .expect("manifest must record slab 0");
         assert_eq!(slab0.logical_bytes, primary_band.logical_bytes);
 
@@ -3821,7 +3823,7 @@ mod tests {
             .block_store()
             .band_descriptors()
             .into_iter()
-            .find(|b| b.page_slab_id == 0)
+            .find(|b| b.block_slab_id == 0)
             .expect("restore must install a band descriptor for the lazily-backed slab 0");
         assert_eq!(follower_band.state, crate::block_store::BlockStoreBandState::Sealed);
         assert_eq!(follower_band.logical_bytes, primary_band.logical_bytes);
@@ -4273,7 +4275,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !manifest.page_slabs.is_empty(),
+            !manifest.block_slabs.is_empty(),
             "checkpoint must upload the slab bytes so a lazy owner can fetch them"
         );
         replicator
@@ -4719,7 +4721,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_store_checkpoint_rejects_corrupt_page_slab() {
+    async fn shared_store_checkpoint_rejects_corrupt_block_slab() {
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
@@ -4738,7 +4740,7 @@ mod tests {
             .unwrap();
         store
             .put(
-                &manifest.page_slabs[0].key,
+                &manifest.block_slabs[0].key,
                 Bytes::from_static(b"corrupt"),
             )
             .await
@@ -5007,7 +5009,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(manifest.checkpoint_wal_index, 1);
-        assert!(!manifest.page_slabs.is_empty());
+        assert!(!manifest.block_slabs.is_empty());
 
         let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 2);
         assert_eq!(

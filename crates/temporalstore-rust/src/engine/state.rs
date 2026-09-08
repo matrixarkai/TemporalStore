@@ -827,7 +827,7 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     page.model_id.hash(&mut hasher);
     page.object_key.hash(&mut hasher);
     page.component.as_deref().hash(&mut hasher);
-    page.address.page_slab_id.hash(&mut hasher);
+    page.address.block_slab_id.hash(&mut hasher);
     page.address.offset.hash(&mut hasher);
     page.address.length.hash(&mut hasher);
     page.address.page_id().unwrap_or_default().hash(&mut hasher);
@@ -840,7 +840,7 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
         &page.model_id,
         &page.object_key,
         page.component.as_deref(),
-        page.address.page_slab_id,
+        page.address.block_slab_id,
         page.address.offset,
         page.address.length,
         page.address.page_id().unwrap_or_default(),
@@ -1611,7 +1611,7 @@ fn push_lookup_part(buffer: &mut String, value: &str) {
 }
 
 fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
-    left.page_slab_id == right.page_slab_id
+    left.block_slab_id == right.block_slab_id
         && left.offset == right.offset
         && left.length == right.length
         && left.page_id() == right.page_id()

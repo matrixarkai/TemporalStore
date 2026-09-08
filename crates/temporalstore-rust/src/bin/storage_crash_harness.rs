@@ -36,7 +36,7 @@ fn main() {
     fs::create_dir_all(&options.root).expect("failed to create crash harness root");
     match options.mode {
         HarnessMode::WriteAbort => write_then_abort(options.root),
-        HarnessMode::CorruptPage => corrupt_first_page_slab(options.root),
+        HarnessMode::CorruptPage => corrupt_first_block_slab(options.root),
         HarnessMode::Recover => recover_and_print(options.root),
     }
 }
@@ -67,7 +67,7 @@ fn recover_and_print(root: PathBuf) {
     );
 }
 
-fn corrupt_first_page_slab(root: PathBuf) {
+fn corrupt_first_block_slab(root: PathBuf) {
     let slab_path = root
         .join("pages")
         .join("page_segment_00000000000000000000.seg");

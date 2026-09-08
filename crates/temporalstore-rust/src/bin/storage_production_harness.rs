@@ -92,10 +92,12 @@ struct StorageProductionCaseSummary {
 #[derive(Debug, Serialize)]
 struct StorageRecoveryErrorSummary {
     #[serde(alias = "orphan_page_segment_count")]
-    orphan_page_slab_count: usize,
+    #[serde(rename = "orphan_page_slab_count")]
+    orphan_block_slab_count: usize,
     stale_page_ref_count: usize,
     #[serde(alias = "corrupt_page_segment_count")]
-    corrupt_page_slab_count: usize,
+    #[serde(rename = "corrupt_page_slab_count")]
+    corrupt_block_slab_count: usize,
     unreadable_page_ref_count: usize,
     unreadable_page_bytes: u64,
     owner_mismatch_page_ref_count: usize,
@@ -365,7 +367,7 @@ fn assert_recovery_ok(report: &StorageRecoveryReport, case_name: &str) {
         "case={case_name} storage recovery failed: {:?}",
         report.slab_integrity
     );
-    assert!(report.slab_integrity.orphan_page_slab_count <= 1);
+    assert!(report.slab_integrity.orphan_block_slab_count <= 1);
     assert_eq!(
         report.feature_page_layout.duplicate_packed_timestamps.len(),
         0
@@ -376,7 +378,7 @@ fn recovery_ok(report: &StorageRecoveryReport) -> bool {
     report.all_live_pages_readable
         && report.slab_integrity.integrity_ok
         && report.slab_integrity.stale_page_ref_count == 0
-        && report.slab_integrity.corrupt_page_slab_count == 0
+        && report.slab_integrity.corrupt_block_slab_count == 0
         && report.slab_integrity.unreadable_page_ref_count == 0
         && report.slab_integrity.owner_mismatch_page_ref_count == 0
         && report.slab_integrity.missing_owner_page_ref_count == 0
@@ -400,9 +402,9 @@ fn recovery_ok(report: &StorageRecoveryReport) -> bool {
 
 fn recovery_error_summary(report: &StorageRecoveryReport) -> StorageRecoveryErrorSummary {
     StorageRecoveryErrorSummary {
-        orphan_page_slab_count: report.slab_integrity.orphan_page_slab_count,
+        orphan_block_slab_count: report.slab_integrity.orphan_block_slab_count,
         stale_page_ref_count: report.slab_integrity.stale_page_ref_count,
-        corrupt_page_slab_count: report.slab_integrity.corrupt_page_slab_count,
+        corrupt_block_slab_count: report.slab_integrity.corrupt_block_slab_count,
         unreadable_page_ref_count: report.slab_integrity.unreadable_page_ref_count,
         unreadable_page_bytes: report.slab_integrity.unreadable_page_bytes,
         owner_mismatch_page_ref_count: report.slab_integrity.owner_mismatch_page_ref_count,
