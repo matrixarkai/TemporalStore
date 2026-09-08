@@ -30,6 +30,11 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+try:  # package import when tools/ is a package, plain import when it is on sys.path
+    from tools.matrixark_mcp_env import FALSE_VALUES, TRUE_VALUES
+except ImportError:  # pragma: no cover - exercised by the other import path
+    from matrixark_mcp_env import FALSE_VALUES, TRUE_VALUES
+
 Json = Dict[str, Any]
 
 # Values of TS_META_ADDR the engine reads as "no metaserver". Empty is one of them, so a plan can
@@ -170,13 +175,13 @@ def _auto(matrixobject_available: bool, endpoint: str, endpoint_reachable: bool,
 def is_standalone(env: Json) -> bool:
     """The engine's own derivation, which is not "TS_STANDALONE defaults to on"."""
     forced = _clean(env.get("TS_STANDALONE")).lower()
-    if forced in ("1", "true", "yes", "on"):
+    if forced in TRUE_VALUES:
         return True
-    if forced in ("0", "false", "no", "off"):
+    if forced in FALSE_VALUES:
         return False
     meta = _clean(env.get("TS_META_ADDR")).lower()
     meta_is_real = meta not in META_SENTINELS
-    distributed = _clean(env.get("TS_DISTRIBUTED")).lower() in ("1", "true", "yes", "on")
+    distributed = _clean(env.get("TS_DISTRIBUTED")).lower() in TRUE_VALUES
     return not (meta_is_real or distributed)
 
 
