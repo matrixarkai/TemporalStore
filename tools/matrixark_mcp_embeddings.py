@@ -9,6 +9,7 @@ import collections
 import hashlib
 import math
 import os
+import threading as _threading
 import threading
 from typing import Any
 
@@ -71,7 +72,21 @@ def embedding_cache_stats() -> dict:
         looked_up = stats["hits"] + stats["misses"]
         stats["hit_rate"] = round(stats["hits"] / looked_up, 4) if looked_up else 0.0
         return stats
-_EMBEDDING_FALLBACK_USED = False
+_EMBEDDING_CALL_STATE = _threading.local()
+
+
+def _begin_embedding_call() -> None:
+    """Start a fresh answer for this thread. Called by the public entry points below.
+
+    The question every reader asks is "did THIS call fall back", and the flag used to answer "has
+    anything fallen back since this process started" -- which is true for ever after the first
+    time, so a retrieve served correctly by a recovered encoder still reported the fallback.
+    """
+    _EMBEDDING_CALL_STATE.fallback_used = False
+
+
+def _mark_embedding_fallback() -> None:
+    _EMBEDDING_CALL_STATE.fallback_used = True
 
 
 # Some encoder families are trained with an instruction prefix on the input and score materially
@@ -141,6 +156,7 @@ def _with_prefix(text: str, role: str) -> str:
 
 
 def embedding_for_text(text: str, role: str = "passage") -> list[float]:
+    _begin_embedding_call()
     model = embedding_model_name()
     text = _with_prefix(text, role)
     cache_key = (model, text)
@@ -169,6 +185,7 @@ def embedding_for_text(text: str, role: str = "passage") -> list[float]:
 
 def embeddings_for_texts(texts: list[str], role: str = "passage") -> list[list[float]]:
     """Batch-friendly embedding helper with the same cache as embedding_for_text."""
+    _begin_embedding_call()
     if not texts:
         return []
     texts = [_with_prefix(text, role) for text in texts]
@@ -245,7 +262,7 @@ def embedding_execution_mode_name() -> str:
 
 
 def embedding_fallback_used() -> bool:
-    return _EMBEDDING_FALLBACK_USED
+    return bool(getattr(_EMBEDDING_CALL_STATE, "fallback_used", False))
 
 
 # --- API embedding providers (production: OpenAI / Voyage / any OpenAI-compatible endpoint) -------
@@ -333,13 +350,12 @@ def api_embedding_for_texts(texts: list[str], provider: str) -> list[list[float]
     """Embed via an OpenAI-compatible or Voyage embeddings API. Falls back to the deterministic
     encoder on missing key / network error unless MATRIXARK_REQUIRE_API_EMBEDDINGS is set (then it
     raises, so production fails fast instead of silently poisoning the store with mismatched-dim vectors)."""
-    global _EMBEDDING_FALLBACK_USED
     endpoint, api_key, model, key_env = _api_embedding_config(provider)
     require = require_model_embeddings("MATRIXARK_REQUIRE_API_EMBEDDINGS")
     if not api_key:
         if require:
             raise MatrixArkError(f"API embeddings require {key_env} for provider '{provider}'")
-        _EMBEDDING_FALLBACK_USED = True
+        _mark_embedding_fallback()
         return [_deterministic_embedding_for_text(text) for text in texts]
     try:
         import json as _json
@@ -363,7 +379,7 @@ def api_embedding_for_texts(texts: list[str], provider: str) -> list[list[float]
     except Exception as exc:  # network / auth / shape errors
         if require:
             raise MatrixArkError(f"API embedding call failed for provider '{provider}' ({model}): {exc}") from exc
-        _EMBEDDING_FALLBACK_USED = True
+        _mark_embedding_fallback()
         return [_deterministic_embedding_for_text(text) for text in texts]
 
 
@@ -373,7 +389,6 @@ def api_embedding_for_text(text: str, provider: str) -> list[float]:
 
 
 def oss_embedding_for_text(text: str) -> list[float]:
-    global _EMBEDDING_FALLBACK_USED
     model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
         "MATRIXARK_EMBEDDING_MODEL",
         "intfloat/multilingual-e5-large",
@@ -390,7 +405,7 @@ def oss_embedding_for_text(text: str) -> list[float]:
     except Exception as exc:  # pragma: no cover - depends on optional local model packages.
         if require_model_embeddings("MATRIXARK_REQUIRE_OSS_EMBEDDINGS"):
             raise MatrixArkError(f"OSS embedding model is required but unavailable: {model_ref}: {exc}") from exc
-        _EMBEDDING_FALLBACK_USED = True
+        _mark_embedding_fallback()
         previous = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER")
         try:
             os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = "deterministic"
