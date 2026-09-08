@@ -917,7 +917,11 @@ impl TemporalEngine {
                 // quietly here -- `.ok()` drops it, the record is not counted, and GC reports
                 // "no reclaimable index-log entries" while the log grows. A second decoder is
                 // exactly what the served index's first attempt at a binary format died of.
-                crate::index_log::decode_index_payload::<crate::index_log::IndexLogRecord>(payload)
+                // The HEAD of the record, not a whole-index record. Two shapes share this log
+                // and this counter wants only a sequence; decoding as one shape drops the other,
+                // and `.ok()` drops it SILENTLY -- which is the failure the note above describes,
+                // reached by shape rather than by format.
+                crate::index_log::decode_index_payload::<crate::index_log::IndexRecordHead>(payload)
                     .ok()
             })
             .filter(|record| record.sequence < wal_plan.retain_from_index_log_sequence)
