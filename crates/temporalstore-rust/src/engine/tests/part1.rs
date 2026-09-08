@@ -6,6 +6,71 @@
 use super::*;
 
 // shared-corpus: dynamic_event_replication_mode_selection
+/// What a dump costs as the shard grows, and whether it costs the shard or the change.
+///
+/// `flush_shard_index` writes the index out. The counterpart in the design this follows dumps a
+/// BOUNDED set of dirty slots per round -- `ReclaimOpLogWithLimit(N)` hands `DumpSlots` a capped
+/// list -- so the work of one dump is a function of the round limit, not of how much the shard
+/// holds. Ours has no such limit, and this measures what that means: if the time grows with the
+/// shard rather than with what changed since the last dump, then a store pays more to checkpoint
+/// the larger it gets, forever.
+///
+/// One write between dumps, so what CHANGED is constant and only the shard size varies.
+///
+/// Measured, debug build, so a floor rather than a ceiling:
+///
+///        1,000 objects         77 ms
+///        5,000 objects        333 ms
+///       20,000 objects      1,375 ms
+///
+/// Twenty times the objects, eighteen times the time, for the same one-write delta. The dump
+/// costs the SHARD, not the change -- so a store pays more to checkpoint the larger it grows, and
+/// pays it again every time the cadence fires. The cadence is driven by undumped bytes, so a big
+/// shard does not dump less often to compensate; it dumps just as often and each one costs more.
+///
+/// This records the cost; it is not a fix. The shape of one is visible in the design this
+/// follows: bound the dirty slots per round, dump that set, advance the dumped-log id, and let
+/// the next round take the next set.
+#[test]
+#[ignore]
+fn what_a_dump_costs_as_the_shard_grows() {
+    for objects in [1_000usize, 5_000, 20_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..objects {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("dump-cost-{index:07}"),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        // A first dump so the second one has a known, tiny delta to write.
+        engine.flush_shard_index(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "dump-cost-one-more".to_string(),
+                value: vec![b'v'; 96],
+            },
+        });
+        let started = std::time::Instant::now();
+        engine.flush_shard_index(1);
+        let elapsed = started.elapsed();
+        println!(
+            "  [dump] {objects:>6} objects, ONE write since the last dump -> {:>8.1} ms",
+            elapsed.as_secs_f64() * 1000.0,
+        );
+    }
+}
+
 /// What one compaction costs, and for how long it holds the shard.
 ///
 /// `compact_shard_pages` takes the shard write lock and relocates EVERY live page of every model
