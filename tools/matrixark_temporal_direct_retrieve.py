@@ -3,6 +3,29 @@
 """_TemporalDirectRetrieveMixin methods split from matrixark_mcp_temporal_adapters.MatrixArkTemporalStoreDirectAdapter (mixin)."""
 from __future__ import annotations
 
+def lane_record_payload(value):
+    """A lane record's payload as a dict, whether it arrived as a document or as a string.
+
+    The lane has always sent a record's stored JSON as a STRING, so every reader parses the
+    envelope and then parses the record a second time. The proxy can now send the record as a
+    sub-document instead (`records_inline_json`), which removes that second parse -- but only if
+    the readers accept both shapes. This accepts both, so the two sides can be switched over
+    independently instead of in one flip.
+
+    Returns {} for anything that is neither, which is what the callers' try/except did before.
+    """
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        import json as _json
+        decoded = _json.loads(value if isinstance(value, str) else str(value))
+    except (TypeError, ValueError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -112,7 +135,7 @@ class _TemporalDirectRetrieveMixin:
             if not isinstance(row, dict) or not row.get("value"):
                 continue
             try:
-                decoded = json.loads(str(row.get("value")))
+                decoded = lane_record_payload(row.get("value"))
             except Exception:
                 continue
             if not isinstance(decoded, dict):
@@ -141,7 +164,7 @@ class _TemporalDirectRetrieveMixin:
             if not value:
                 continue
             try:
-                decoded = json.loads(str(value))
+                decoded = lane_record_payload(value)
             except Exception:
                 continue
             raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
