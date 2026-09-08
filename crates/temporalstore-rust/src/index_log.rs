@@ -194,7 +194,7 @@ impl Default for IndexItemKind {
 /// `object_id`/`page_id` mirror the durable page metadata so replay reconstructs the same
 /// `BlockIndex` the whole-index serialization would have produced. `deleted` is a
 /// tombstone: replaying it removes the entry.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct IndexItem {
     #[serde(
         rename = "k",
@@ -471,6 +471,63 @@ where
     }
 
     deserializer.deserialize_any(EitherShape)
+}
+
+/// A row, not a map: the values in field order, with the order fixed here.
+///
+/// Every row in this log has the same shape, so the shape does not belong in the row. As a map,
+/// each row carried its own field names -- measured at about 25 bytes of a 126-byte record, the
+/// largest single line item left in it. A protobuf design pays a tag for this; a self-describing
+/// one pays a name; a row pays nothing and is read by position.
+///
+/// The record AROUND the rows stays a map on purpose. Two record shapes share this log and one is
+/// read as the other -- a delta container is decoded as a whole index record by the sweep -- which
+/// works because a map matches by name and a missing field defaults. Positions cannot do that, so
+/// only the rows are positional.
+///
+/// The derived `Deserialize` takes either shape, so rows written before this still decode; the
+/// order below must match the field order of the struct and must not be reordered.
+impl serde::Serialize for IndexItem {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq as _;
+
+        struct Kind<'a>(&'a IndexItemKind);
+        impl serde::Serialize for Kind<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                item_kind_as_number(self.0, s)
+            }
+        }
+        struct Handle<'a>(&'a str);
+        impl serde::Serialize for Handle<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                page_ref_key_as_number_when_it_is_one(self.0, s)
+            }
+        }
+        struct Model<'a>(&'a str);
+        impl serde::Serialize for Model<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                model_id_as_number_when_it_is_known(self.0, s)
+            }
+        }
+
+        let mut row = serializer.serialize_seq(Some(12))?;
+        row.serialize_element(&Kind(&self.kind))?;
+        row.serialize_element(&self.routing_bucket)?;
+        row.serialize_element(&Handle(&self.page_ref_key))?;
+        row.serialize_element(&self.object_key)?;
+        row.serialize_element(&Model(&self.model_id))?;
+        row.serialize_element(&self.component)?;
+        row.serialize_element(&self.object_id)?;
+        row.serialize_element(&self.page_id)?;
+        row.serialize_element(&self.address)?;
+        row.serialize_element(&self.size)?;
+        row.serialize_element(&self.in_log)?;
+        row.serialize_element(&self.deleted)?;
+        row.end()
+    }
 }
 
 const MODEL_ID_NUMBERS: &[&str] = &[
