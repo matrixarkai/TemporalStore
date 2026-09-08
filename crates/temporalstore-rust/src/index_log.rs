@@ -196,7 +196,13 @@ impl Default for IndexItemKind {
 /// tombstone: replaying it removes the entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexItem {
-    #[serde(rename = "k", alias = "kind", default)]
+    #[serde(
+        rename = "k",
+        alias = "kind",
+        default,
+        serialize_with = "item_kind_as_number",
+        deserialize_with = "item_kind_either_shape"
+    )]
     pub kind: IndexItemKind,
     #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
     pub routing_bucket: u32,
@@ -398,6 +404,75 @@ impl IndexItem {
 /// APPEND ONLY, and never reordered. The position IS what goes on disk, so moving a name changes
 /// what an already-written log says. A name that is not in this table is written as itself, so the
 /// table never has to be complete and a new model costs nothing until it is added here.
+/// The item kind, as a number.
+///
+/// The item taxonomy in the design this follows is an enum -- an integer on the wire. Ours was
+/// three words, `"page"`, `"object"` and `"meta"`, written once per item, and `"page"` is nearly
+/// every item a shard writes.
+///
+/// The numbers are fixed by this function and its inverse; a kind added later takes the next one
+/// and must never take another kind's. A name is still read, so a log written before this decodes
+/// unchanged.
+fn item_kind_as_number<S>(value: &IndexItemKind, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_u64(match value {
+        IndexItemKind::Page => 0,
+        IndexItemKind::Object => 1,
+        IndexItemKind::Meta => 2,
+    })
+}
+
+fn item_kind_either_shape<'de, D>(deserializer: D) -> Result<IndexItemKind, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct EitherShape;
+
+    impl serde::de::Visitor<'_> for EitherShape {
+        type Value = IndexItemKind;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an item kind, as its name or as its number")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<IndexItemKind, E> {
+            match value {
+                "page" => Ok(IndexItemKind::Page),
+                "object" => Ok(IndexItemKind::Object),
+                "meta" => Ok(IndexItemKind::Meta),
+                other => Err(E::custom(format!("unknown item kind {other}"))),
+            }
+        }
+
+        fn visit_string<E: serde::de::Error>(self, value: String) -> Result<IndexItemKind, E> {
+            self.visit_str(&value)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<IndexItemKind, E> {
+            match value {
+                0 => Ok(IndexItemKind::Page),
+                1 => Ok(IndexItemKind::Object),
+                2 => Ok(IndexItemKind::Meta),
+                // Refused rather than defaulted: a kind this cannot name would otherwise arrive as
+                // a page item, and a page item names an address that an object or meta item does
+                // not have.
+                other => Err(E::custom(format!("unknown item kind number {other}"))),
+            }
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<IndexItemKind, E> {
+            if value < 0 {
+                return Err(E::custom(format!("negative item kind {value}")));
+            }
+            self.visit_u64(value as u64)
+        }
+    }
+
+    deserializer.deserialize_any(EitherShape)
+}
+
 const MODEL_ID_NUMBERS: &[&str] = &[
     "string",
     "hash",
