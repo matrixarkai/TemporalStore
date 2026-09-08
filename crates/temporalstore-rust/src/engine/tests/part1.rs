@@ -6,6 +6,81 @@
 use super::*;
 
 // shared-corpus: dynamic_event_replication_mode_selection
+/// What a stored object costs in memory, and whether the cost follows the value or the object.
+///
+/// A page header in the design this follows spells its ids as 32-bit integers; ours holds `u64`s
+/// and `String`s per item, and an address is 64 bytes on its own. Whether that is what the memory
+/// goes on is a question, not an assumption, so this asks it the only way that answers: hold the
+/// object count fixed and vary the value size.
+///
+/// A cost that tracks the VALUE is data being retained -- caches, buffers, the pages themselves.
+/// A cost that is flat in the value size is per-object structure: keys, addresses, map nodes. The
+/// two want completely different fixes, and the number alone cannot tell them apart.
+///
+/// Measured at twenty thousand objects, debug build:
+///
+///        value    32 B      272 B per object
+///        value   256 B      272 B per object
+///        value 1,024 B      272 B per object
+///
+/// Flat, so it is structure and not data -- which the tiny cache above already implies and this
+/// confirms. Two hundred and seventy-two bytes to hold a fourteen-byte key and where its page
+/// lives: the key as a `String`, a `BlockAddress` that is 64 bytes on its own, a map entry for
+/// each, and an entry in each of the two side maps a carried page needs.
+///
+/// The sizes are deliberately measured in more than one POSITION, and that is not fussiness. Run
+/// in one order, the first size reads about 1,233 bytes per object and every later one reads 272 --
+/// and the outlier follows the position, not the size. It is the allocator taking its arena, once,
+/// and charging it to whoever went first. Run a size again at the end and it reads about 1 byte
+/// per object, because the arena is already there. A single-pass version of this test would have
+/// reported whichever number it happened to sample and looked entirely credible.
+#[test]
+#[ignore]
+fn what_a_stored_object_costs_in_memory() {
+    fn resident_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("VmRSS:")
+                        .and_then(|rest| rest.split_whitespace().next().map(str::to_string))
+                })
+            })
+            .and_then(|kb| kb.parse().ok())
+            .unwrap_or(0)
+    }
+
+    const OBJECTS: usize = 20_000;
+    for value_len in [1024usize, 256, 32, 1024, 32] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            // A cache this small holds nothing, so what grows is the shard's own state.
+            256,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let before = resident_kb();
+        for index in 0..OBJECTS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("memory-cost-{index:07}"),
+                    value: vec![b'v'; value_len],
+                },
+            });
+        }
+        let after = resident_kb();
+        let grew = after.saturating_sub(before) * 1024;
+        println!(
+            "  [memory] value {value_len:>5} B x {OBJECTS} objects -> {:>6} KB resident, {:>5} B per object",
+            grew / 1024,
+            grew / OBJECTS as u64,
+        );
+    }
+}
+
 /// What a dump costs as the shard grows, and whether it costs the shard or the change.
 ///
 /// `flush_shard_index` writes the index out. The counterpart in the design this follows dumps a
