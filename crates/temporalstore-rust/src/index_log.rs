@@ -219,6 +219,79 @@ impl IndexItem {
     ///
     /// Only what MATCHES is dropped. An address that carries a different object id keeps it, and
     /// `restore_address_repeats` puts back only what is absent, so the pair round-trips.
+    /// Drop the composite key when the record already carries every part of it.
+    ///
+    /// `page_ref_key` is `page_ref_key_from_parts` of this item's own model, object key,
+    /// component and address -- measured at 43 bytes of a 176-byte record, the largest single
+    /// field in the index log, and every byte of it is spelled out again in the fields beside it.
+    /// A reader rebuilds it with the same function, so the log carries the parts and not the
+    /// concatenation.
+    ///
+    /// Cleared only on an exact match. Anything the derivation does not reproduce is written as
+    /// it stands, so a key that is not the composite -- the numeric handle form, for one --
+    /// survives untouched.
+    fn strip_page_ref_key_repeat(&mut self) {
+        let Some(address) = self.address.as_ref() else {
+            return;
+        };
+        let derived = page_ref_key_from_parts(
+            &self.model_id,
+            &self.object_key,
+            self.component.as_deref(),
+            address.block_slab_id,
+            address.offset,
+            address.length,
+            address.page_id().unwrap_or_default(),
+            address.generation().unwrap_or_default(),
+        );
+        if derived == self.page_ref_key {
+            self.page_ref_key.clear();
+        }
+    }
+
+    /// Rebuild the composite key the writer left out.
+    ///
+    /// The inverse of `strip_page_ref_key_repeat`. A log written before that stripping carries the
+    /// key, and this leaves it alone: it fills only what is absent.
+    fn restore_page_ref_key_repeat(&mut self) {
+        if !self.page_ref_key.is_empty() {
+            return;
+        }
+        let Some(address) = self.address.as_ref() else {
+            return;
+        };
+        self.page_ref_key = page_ref_key_from_parts(
+            &self.model_id,
+            &self.object_key,
+            self.component.as_deref(),
+            address.block_slab_id,
+            address.offset,
+            address.length,
+            address.page_id().unwrap_or_default(),
+            address.generation().unwrap_or_default(),
+        );
+    }
+
+    /// Drop the size when the address already states it.
+    ///
+    /// `size` and `address.length` are the same number on a page item, written twice.
+    fn strip_size_repeat(&mut self) {
+        if let Some(address) = self.address.as_ref() {
+            if self.size == address.length {
+                self.size = 0;
+            }
+        }
+    }
+
+    /// Put the size back from the address that carries it.
+    fn restore_size_repeat(&mut self) {
+        if self.size == 0 {
+            if let Some(address) = self.address.as_ref() {
+                self.size = address.length;
+            }
+        }
+    }
+
     fn strip_address_repeats(&mut self) {
         let object_id = self.object_id;
         let routing_bucket = self.routing_bucket;
@@ -805,6 +878,8 @@ impl LocalIndexLogStore {
         // item. `restore_address_repeats` at the decode site puts them back.
         let mut items = items;
         for item in items.iter_mut() {
+            item.strip_page_ref_key_repeat();
+            item.strip_size_repeat();
             item.strip_address_repeats();
         }
         let record = IndexDeltaRecord {
@@ -891,6 +966,8 @@ impl LocalIndexLogStore {
             // written before that stripping carries both already, and this leaves those alone.
             for item in record.items.iter_mut() {
                 item.restore_address_repeats();
+                item.restore_page_ref_key_repeat();
+                item.restore_size_repeat();
             }
             // Enforce delta sequence-continuity: sequences are assigned strictly monotonically
             // across ALL appended records (whole-index and delta share one counter), and GC
