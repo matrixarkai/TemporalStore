@@ -591,6 +591,25 @@ def append_node_summary_embeddings(
     }
 
 
+#: The only record types `async_summary_progress_records` reads. Kept beside it so a future read of
+#: a third type has this in view; `test_the_summary_progress_filter_is_complete` derives the set
+#: from the function itself and fails if the two drift apart.
+SUMMARY_PROGRESS_RECORD_TYPES = frozenset({"context_entity", "matrixark_async_pipeline_task"})
+
+
+def summary_progress_source_records(records: list[Json]) -> list[Json]:
+    """The subset of a live view that `async_summary_progress_records` can act on.
+
+    Callers that refresh several nodes should filter ONCE and pass the result to every call: the
+    function is called per dirty node, and on a real store the types it reads are 951 of 7,085
+    records, so the rest was being walked and discarded once per node.
+    """
+    return [
+        record for record in records
+        if record.get("record_type") in SUMMARY_PROGRESS_RECORD_TYPES
+    ]
+
+
 def async_summary_progress_records(
     *,
     records: list[Json],
@@ -762,6 +781,8 @@ def refresh_dirty_node_summaries(
 ) -> Json:
     refreshed_at_ms = refreshed_at_ms or now_ms()
     records = adapter.read_all()
+    # Filtered once, not once per dirty node: the progress builder reads two record types.
+    progress_source_records = summary_progress_source_records(records)
     pending_by_node = pending_dirty_node_records(
         records=records,
         scope=scope,
@@ -900,7 +921,7 @@ def refresh_dirty_node_summaries(
                 }
             )
         summary_progress_records = async_summary_progress_records(
-            records=records,
+            records=progress_source_records,
             scope=dirty.get("scope", scope),
             source_event_ids=source_event_ids,
             source_entity_hashes=source_entity_hashes,
