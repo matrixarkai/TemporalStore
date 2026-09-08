@@ -160,7 +160,13 @@ pub struct IndexItem {
     pub page_ref_key: String,
     #[serde(rename = "ok", alias = "object_key", default)]
     pub object_key: String,
-    #[serde(rename = "mi", alias = "model_id", default)]
+    #[serde(
+        rename = "mi",
+        alias = "model_id",
+        default,
+        serialize_with = "model_id_as_number_when_it_is_known",
+        deserialize_with = "model_id_either_shape"
+    )]
     pub model_id: String,
     #[serde(rename = "c", alias = "component", default, skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,
@@ -322,6 +328,85 @@ impl IndexItem {
             }
         }
     }
+}
+
+/// The model names this log writes as a number instead of as themselves.
+///
+/// A page header in this design spells the model as an integer; ours spelled it as its name, on
+/// every item -- "string" and "hash" written out again for every page a shard has ever indexed,
+/// measured at 7 bytes of a 176-byte item.
+///
+/// APPEND ONLY, and never reordered. The position IS what goes on disk, so moving a name changes
+/// what an already-written log says. A name that is not in this table is written as itself, so the
+/// table never has to be complete and a new model costs nothing until it is added here.
+const MODEL_ID_NUMBERS: &[&str] = &[
+    "string",
+    "hash",
+    "set",
+    "feature",
+    "sequence",
+    "control_state",
+    "context_node",
+    "context_event",
+    "context_index",
+    "context_audit",
+    "context_child",
+    "context_embedding",
+    "context_summary",
+    "context_compression",
+    "context_entity",
+];
+
+fn model_id_as_number_when_it_is_known<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match MODEL_ID_NUMBERS.iter().position(|name| *name == value) {
+        Some(index) => serializer.serialize_u64(index as u64),
+        None => serializer.serialize_str(value),
+    }
+}
+
+fn model_id_either_shape<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct EitherShape;
+
+    impl serde::de::Visitor<'_> for EitherShape {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a model, as its name or as its number")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<String, E> {
+            Ok(value.to_string())
+        }
+
+        fn visit_string<E: serde::de::Error>(self, value: String) -> Result<String, E> {
+            Ok(value)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<String, E> {
+            // A number this table cannot name is refused rather than guessed. Answering the wrong
+            // model would file a page under a model that did not write it, which reads as missing
+            // data for one model and foreign data for another.
+            MODEL_ID_NUMBERS
+                .get(value as usize)
+                .map(|name| (*name).to_string())
+                .ok_or_else(|| E::custom(format!("unknown model number {value}")))
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<String, E> {
+            if value < 0 {
+                return Err(E::custom(format!("negative model number {value}")));
+            }
+            self.visit_u64(value as u64)
+        }
+    }
+
+    deserializer.deserialize_any(EitherShape)
 }
 
 fn page_ref_key_as_number_when_it_is_one<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
