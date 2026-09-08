@@ -6,6 +6,59 @@
 use super::*;
 
 // shared-corpus: dynamic_event_replication_mode_selection
+/// What one compaction costs, and for how long it holds the shard.
+///
+/// `compact_shard_pages` takes the shard write lock and relocates EVERY live page of every model
+/// onto a freshly rolled slab, with no bound on how much that is. A write cannot proceed while
+/// that runs, so its duration IS the stall every reader and writer of the shard sees.
+///
+/// Measured here, debug build, so a floor rather than a ceiling:
+///
+///        1,000 objects        413 ms       413 us per page ref
+///        5,000 objects      1,876 ms       375 us per page ref
+///       20,000 objects     19,664 ms       983 us per page ref
+///
+/// Twenty seconds at twenty thousand objects, and the per-ref cost RISES with the shard -- 2.6x
+/// between five and twenty thousand -- so it is worse than linear in the thing it is unbounded in.
+///
+/// Bounding it is not a one-line change, which is why this records the cost instead of pretending
+/// otherwise: `compact_shard_pages` rolls a fresh slab at the top of every call, so simply
+/// stopping early would leave each round with its own half-filled slab and trade a stall for slab
+/// proliferation. A bounded compaction needs to roll once and keep filling that slab across
+/// rounds, which is campaign state this does not have yet.
+#[test]
+#[ignore]
+fn what_a_whole_shard_compaction_costs() {
+    for objects in [1_000usize, 5_000, 20_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..objects {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("compaction-cost-{index:07}"),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        let started = std::time::Instant::now();
+        let report = engine.compact_shard_pages(1).expect("compaction runs");
+        let elapsed = started.elapsed();
+        println!(
+            "  [compaction] {objects:>6} objects -> {:>7.1} ms holding the shard, {} page refs rewritten ({:.1} us each)",
+            elapsed.as_secs_f64() * 1000.0,
+            report.rewritten_page_refs,
+            elapsed.as_secs_f64() * 1_000_000.0 / report.rewritten_page_refs.max(1) as f64,
+        );
+    }
+}
+
 #[test]
 fn stale_shard_index_is_refused_rather_than_decoded_with_the_wrong_key_meaning() {
     // A pre-rekey index decodes CLEANLY -- context_events is still
