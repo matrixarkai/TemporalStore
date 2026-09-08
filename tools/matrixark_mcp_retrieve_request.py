@@ -223,6 +223,18 @@ IDLE_COMMIT_RESOLVED_STATUSES = frozenset(
     {"idle_commit_committed", "idle_commit_attempted", "idle_commit_failed"}
 )
 
+#: The status a task must carry to be a candidate for the due-check below.
+IDLE_COMMIT_SCHEDULED_STATUS = "idle_commit_scheduled"
+
+#: Every status either loop below reads. The first collects hashes from the resolved set; the second
+#: considers only the scheduled status. A row carrying anything else is walked twice and contributes
+#: to neither, so it does not need to be walked at all -- on a real store that is 483 of 572 rows.
+#:
+#: This is NOT a statement about what counts as resolved. `idle_commit_skipped` is deliberately
+#: absent from IDLE_COMMIT_RESOLVED_STATUSES, per the comment above it, and stays absent here in the
+#: only sense that matters: it is still not treated as settling a task.
+IDLE_COMMIT_ACTED_ON_STATUSES = IDLE_COMMIT_RESOLVED_STATUSES | {IDLE_COMMIT_SCHEDULED_STATUS}
+
 
 def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, scope: Json) -> Json:
     enabled = (
@@ -260,6 +272,7 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
         record for record in records
         if isinstance(record, dict)
         and record.get("record_type") == "matrixark_async_pipeline_task"
+        and str(record.get("status") or "") in IDLE_COMMIT_ACTED_ON_STATUSES
     ]
     for record in task_records:
         status = str(record.get("status") or "")
@@ -271,7 +284,7 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
             continue
     for record in task_records:
         status = str(record.get("status") or "")
-        if status != "idle_commit_scheduled":
+        if status != IDLE_COMMIT_SCHEDULED_STATUS:
             continue
         try:
             task_hash = int(record.get("task_hash") or 0)
