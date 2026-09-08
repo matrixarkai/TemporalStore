@@ -5891,7 +5891,7 @@ mod tests {
         // absent (none was materialized), and a WAL record is corrupt -- so the reload must
         // replay the WAL and must refuse when it cannot.
         clear_engine_cache();
-        let wal_path = root.join("indexes").join("wals").join("shard-1.wal.jsonl");
+        let wal_path = root.join("indexes").join("wals").join("shard-1.wal.bin");
         let contents = std::fs::read(&wal_path).expect("wal exists");
         let mut damaged = b"GARBAGE-NOT-A-FRAMED-RECORD".to_vec();
         damaged.push(b'\n');

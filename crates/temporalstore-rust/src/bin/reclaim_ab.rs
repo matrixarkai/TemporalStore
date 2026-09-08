@@ -50,7 +50,7 @@ fn main() {
     }
     let append_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-    let path = dir.join("shard-1.wal.jsonl");
+    let path = dir.join("shard-1.wal.bin");
     let bytes_before = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
     // Reclaim the first tenth, which is the shape that matters: a small prefix removed from a

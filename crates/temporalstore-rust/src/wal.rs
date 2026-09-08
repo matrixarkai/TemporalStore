@@ -3,8 +3,9 @@
 
 //! The write-ahead log.
 //!
-//! A shard's log is a sequence of pieces. `shard-{id}.wal.jsonl` is the one being written;
-//! sealed ones are `shard-{id}.wal.{start_log_id:020}.jsonl`, named so they sort into log order.
+//! A shard's log is a sequence of pieces. `shard-{id}.wal.bin` is the one being written;
+//! sealed ones are `shard-{id}.wal.{start_log_id:020}.bin`, named so they sort into log order.
+//! Pieces written before the rename carry a `.jsonl` suffix; both are read, only `.bin` is written.
 //! `TS_WAL_SEGMENT_BYTES` sets when a piece is sealed. It defaults to
 //! [`DEFAULT_WAL_SEGMENT_BYTES`], 256 KiB, so a log ROLLS unless something says
 //! otherwise. Zero is still accepted and still means never seal, which leaves the log a
@@ -2639,8 +2640,32 @@ fn roll_wal_segment_if_due(
     Ok(true)
 }
 
+/// The suffix a piece of the log is written with.
+///
+/// The records inside are binary -- a frame magic, then protobuf -- and have been since the log
+/// stopped encoding JSON. The name said `.jsonl` for long enough that reading a store by eye
+/// suggested a format it had not used for a while.
+const WAL_PIECE_SUFFIX: &str = "bin";
+
+/// What the same piece used to be called. Still read, never written.
+///
+/// A store written before the rename has its pieces under this name, and the live one does. If
+/// this were dropped rather than kept, opening such a store would find no log where a log exists,
+/// which is indistinguishable from an empty log and loses every record in it.
+const LEGACY_WAL_PIECE_SUFFIX: &str = "jsonl";
+
 fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
-    root.join(format!("shard-{shard_id}.wal.jsonl"))
+    let renamed = root.join(format!("shard-{shard_id}.wal.{WAL_PIECE_SUFFIX}"));
+    if renamed.exists() {
+        return renamed;
+    }
+    // An existing store keeps the name it already has, so a rename never splits one shard's log
+    // across two names. A store that has neither yet is new, and starts under the current one.
+    let legacy = root.join(format!("shard-{shard_id}.wal.{LEGACY_WAL_PIECE_SUFFIX}"));
+    if legacy.exists() {
+        return legacy;
+    }
+    renamed
 }
 
 /// The active piece's path for this shard, built once and kept.
@@ -2674,7 +2699,9 @@ fn active_wal_path(inner: &mut WriteAheadLogInner, shard_id: ShardId) -> std::sy
 ///
 /// Zero-padded so the names sort into log order, which is the order the pieces are read in.
 fn sealed_wal_path(root: &Path, shard_id: ShardId, start_log_id: u64) -> PathBuf {
-    root.join(format!("shard-{shard_id}.wal.{start_log_id:020}.jsonl"))
+    root.join(format!(
+        "shard-{shard_id}.wal.{start_log_id:020}.{WAL_PIECE_SUFFIX}"
+    ))
 }
 
 /// Whether this file is an earlier piece of the given shard's log.
@@ -2683,9 +2710,12 @@ fn sealed_wal_path(root: &Path, shard_id: ShardId, start_log_id: u64) -> PathBuf
 /// section does not parse as a log id.
 fn sealed_wal_start_log_id(path: &Path, shard_id: ShardId) -> Option<u64> {
     let name = path.file_name()?.to_str()?;
-    let middle = name
-        .strip_prefix(&format!("shard-{shard_id}.wal."))?
-        .strip_suffix(".jsonl")?;
+    let middle = name.strip_prefix(&format!("shard-{shard_id}.wal."))?;
+    // Either name is a piece of the log. A store part-way through the rename holds both, and
+    // reading only one of them would silently skip whichever half it did not recognise.
+    let middle = middle
+        .strip_suffix(&format!(".{WAL_PIECE_SUFFIX}"))
+        .or_else(|| middle.strip_suffix(&format!(".{LEGACY_WAL_PIECE_SUFFIX}")))?;
     middle.parse().ok()
 }
 
@@ -4643,7 +4673,7 @@ mod tests {
                     let name = entry.file_name().to_string_lossy().into_owned();
                     name.starts_with("shard-1.wal.")
                         && name.ends_with(".jsonl")
-                        && name != "shard-1.wal.jsonl"
+                        && name != "shard-1.wal.bin"
                 })
                 .count()
         };
@@ -4754,7 +4784,7 @@ mod tests {
                 .flatten()
                 .filter(|entry| {
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    name.contains("wal.") && name != "shard-1.wal.jsonl"
+                    name.contains("wal.") && name != "shard-1.wal.bin"
                 })
                 .count()
         };
@@ -9004,7 +9034,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalWriteAheadLogStore::new(dir.path());
             append_n(&store, 1, 10);
-            let path = dir.path().join("shard-1.wal.jsonl");
+            let path = dir.path().join("shard-1.wal.bin");
             let physical = path.metadata().unwrap().len();
             let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
             assert_eq!(10, records.len());
@@ -9026,7 +9056,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalWriteAheadLogStore::new(dir.path());
             append_n(&store, 1, 50);
-            let path = dir.path().join("shard-1.wal.jsonl");
+            let path = dir.path().join("shard-1.wal.bin");
             let physical = path.metadata().unwrap().len();
             // The file was grown to a chunk boundary, not to the records.
             assert_eq!(
@@ -9048,7 +9078,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalWriteAheadLogStore::new(dir.path());
             append_n(&store, 1, 10);
-            let path = dir.path().join("shard-1.wal.jsonl");
+            let path = dir.path().join("shard-1.wal.bin");
             let physical_before = path.metadata().unwrap().len();
             for _ in 0..5 {
                 let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
@@ -9105,7 +9135,7 @@ mod tests {
                 sequence_end = store.scan(1, 0, u64::MAX, u64::MAX).unwrap().len();
             }
             assert_eq!(5, sequence_end);
-            let path = dir.path().join("shard-1.wal.jsonl");
+            let path = dir.path().join("shard-1.wal.bin");
             // Find where the records stop and plant garbage after it. The last newline answers
             // that only for records delimited by one -- a length-framed payload carries 0x0A of
             // its own, so the search lands inside a record and the garbage would overwrite half
@@ -9158,7 +9188,7 @@ mod tests {
             for entry in fs::read_dir(dir.path()).unwrap() {
                 let path = entry.unwrap().path();
                 let name = path.file_name().unwrap().to_string_lossy().to_string();
-                if name.starts_with("shard-1.wal.") && name.ends_with(".jsonl") && name != "shard-1.wal.jsonl" {
+                if name.starts_with("shard-1.wal.") && name.ends_with(".bin") && name != "shard-1.wal.bin" {
                     sealed += 1;
                     let bytes = fs::read(&path).unwrap();
                     assert!(!bytes.is_empty(), "a sealed piece must hold its records");
