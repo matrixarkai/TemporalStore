@@ -348,6 +348,7 @@ class _TemporalDirectReadMixin:
         record_types: set[str],
         secondary_index_groups: list[set[str]] | None,
         selected_node_hashes: set[int] | None,
+        record_statuses: set[str] | None = None,
     ) -> Json | None:
         scanner = getattr(getattr(self, "_client", None), "matrixark_scan_candidates", None)
         if not callable(scanner):
@@ -361,6 +362,7 @@ class _TemporalDirectReadMixin:
                 record_types=sorted(record_types),
                 secondary_index_groups=[sorted(group) for group in (secondary_index_groups or [])],
                 selected_node_hashes=sorted(int(item) for item in (selected_node_hashes or set())),
+                record_statuses=sorted(record_statuses) if record_statuses else None,
             )
         except Exception as exc:
             if native_candidate_prefilter_required(backend_label=self._backend_label()) and not getattr(self, "_native_context_pack_fallback_active", False):
@@ -404,11 +406,21 @@ class _TemporalDirectReadMixin:
 
     def idle_commit_task_records(self, scope: Json) -> list[Json]:
         """Read only scheduled idle-commit tasks without broad Python materialization."""
+        try:  # package path
+            from tools.matrixark_mcp_retrieve_request import IDLE_COMMIT_ACTED_ON_STATUSES
+        except ImportError:  # Direct script execution from tools/.
+            from matrixark_mcp_retrieve_request import IDLE_COMMIT_ACTED_ON_STATUSES
+
+        # Ask the engine for only the statuses this method's consumers read. Every one of them was
+        # checked: the flush reads the resolved set and "idle_commit_scheduled"; the stream
+        # materializer does not look at the rows; the drain reads "idle_commit_scheduled" and
+        # "idle_commit_committed". Their union is exactly this set.
         result = self._native_candidate_scan(
             scope=scope,
             record_types={"matrixark_async_pipeline_task"},
             secondary_index_groups=None,
             selected_node_hashes=None,
+            record_statuses=set(IDLE_COMMIT_ACTED_ON_STATUSES),
         )
         if not isinstance(result, dict):
             return []

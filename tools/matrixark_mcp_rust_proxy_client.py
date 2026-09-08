@@ -675,12 +675,18 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
         record_ids: list[str] | None = None,
         return_index_records: bool = False,
         newest_by_type: Json | None = None,
+        record_statuses: list[str] | None = None,
     ) -> Json:
         extra: Json = {}
         if record_ids:
             extra["record_ids"] = [str(item) for item in record_ids]
         if return_index_records:
             extra["return_index_records"] = True
+        # Keep only these statuses, in the engine. Sent only when asked for, so a request that
+        # does not carry it is byte-identical to before -- and the engine treats absent as "no
+        # status filtering", so an older engine ignores it rather than returning nothing.
+        if record_statuses:
+            extra["record_statuses"] = sorted({str(status) for status in record_statuses})
         # Cap the scan to the newest N locations of a named type. Sent only when asked for, so a
         # request that does not carry it is byte-identical to before.
         if newest_by_type:
