@@ -86,6 +86,22 @@ ts_profile_launch() {
   ts_profile_perf_flags
   ts_profile_dirs
 
+  # Env-only: set the profile up and start nothing.
+  #
+  # Sourcing a profile script to borrow its environment is a normal thing to want -- a
+  # harness that starts the node itself, a tool that only needs the paths and flags. Without
+  # this the source LAUNCHES a datanode, so a caller that then starts its own gets the
+  # profile's node on the port and its own dying with `Address already in use`. The caller's
+  # later exports never reach the process that ends up serving, which reads as a flag that
+  # does not work rather than a node it did not start.
+  #
+  # The env and the directories are still established above, because that is what the caller
+  # asked for; only the launch and its readback are skipped.
+  if [[ "${TS_PROFILE_ENV_ONLY:-0}" == "1" ]]; then
+    echo "[deploy] env-only: profile=${TS_PROFILE_EXPECT} data=${TS_PROFILE_DATA} (no node started)"
+    return 0
+  fi
+
   export NO_COLOR="${NO_COLOR:-1}"
   echo "[deploy] profile=${TS_PROFILE_EXPECT} data=${TS_PROFILE_DATA} bin=${TS_PROFILE_BIN}"
   setsid nohup "$TS_PROFILE_BIN" >>"$TS_PROFILE_LOG" 2>&1 </dev/null &
