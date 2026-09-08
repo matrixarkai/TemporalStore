@@ -13,7 +13,41 @@ use super::{
 };
 
 pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
-pub(super) const PAGE_RECORD_VERSION: u8 = 8;
+pub(super) const PAGE_RECORD_VERSION: u8 = 9;
+
+/// Version at which the header stopped writing two numbers it could not disagree with.
+///
+/// v8 wrote the payload length twice and the stored length always. The decoder REJECTED a record
+/// whose second length differed from the first, and rejected an uncompressed record whose stored
+/// length differed from its payload length -- so on every record it accepted, both were already
+/// known. A page record averages 137 bytes here and the compression floor is 256, so page records
+/// are essentially never compressed and the stored length was the payload length every time.
+///
+/// v9 writes the payload length once, and the stored length only for a record that really is
+/// compressed. Sixteen bytes of a seventy-four byte header, on every page written.
+pub(super) const PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION: u8 = 9;
+
+/// The shortest header any version writes.
+///
+/// The walks below use this to decide whether what is left of a slab can still be a record. It was
+/// the v1 header, which was the shortest until v9 stopped writing two lengths it could not
+/// disagree with -- and a v9 header is SHORTER than v1, because v1 carried a 32-byte digest where
+/// v9 carries an 8-byte checksum. Left at the v1 length, a scan treats a short v9 record as the end
+/// of the slab and a decode calls it a short header, which loses every record behind it.
+pub(super) const PAGE_RECORD_SMALLEST_HEADER_LEN: usize =
+    if PAGE_RECORD_V9_HEADER_LEN < PAGE_RECORD_V1_HEADER_LEN {
+        PAGE_RECORD_V9_HEADER_LEN
+    } else {
+        PAGE_RECORD_V1_HEADER_LEN
+    };
+
+/// v9 header for an uncompressed record: v8 without the repeated length and without the stored
+/// length.
+pub(super) const PAGE_RECORD_V9_HEADER_LEN: usize = PAGE_RECORD_HEADER_LEN - 16;
+
+/// v9 header for a compressed record: the stored length is the one thing the payload length does
+/// not give, so a compressed record still carries it.
+pub(super) const PAGE_RECORD_V9_COMPRESSED_HEADER_LEN: usize = PAGE_RECORD_HEADER_LEN - 8;
 
 /// Version at which the 32-byte checksum field switched from holding a full SHA-256 to
 /// holding a CRC32C.
@@ -69,20 +103,30 @@ pub(super) const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V7_HEADER_LEN
 /// 92, then as `PAGE_RECORD_HEADER_LEN - 16` -- and both encoded a layout: the literal encoded
 /// v7's offsets, the subtraction encoded v7's trailing padding. Neither survived a renumbering.
 pub(super) const fn page_record_compression_offset() -> usize {
-    // Flag, routing bucket, band id, then the compression byte.
-    28 + PAGE_RECORD_CHECKSUM_COMPACT_LEN + 17 + 4 + 8
+    // One payload length, the checksum, then flag, routing bucket, band id, then the
+    // compression byte. The leading 20 is where v9 puts the checksum: v8 wrote the payload
+    // length twice and this was 28.
+    20 + PAGE_RECORD_CHECKSUM_COMPACT_LEN + 17 + 4 + 8
 }
 
 /// Where the fields after the checksum begin, for a record at `version`.
 ///
 /// Every offset past the checksum is this plus a fixed step, so the two layouts differ in one
 /// number rather than in eight literals.
-fn header_body_offset(version: u8) -> usize {
-    let checksum_len = if version >= PAGE_RECORD_CHECKSUM_COMPACT_VERSION {
+fn page_record_checksum_len(version: u8) -> usize {
+    if version >= PAGE_RECORD_CHECKSUM_COMPACT_VERSION {
         PAGE_RECORD_CHECKSUM_COMPACT_LEN
     } else {
         PAGE_RECORD_CHECKSUM_LEN
-    };
+    }
+}
+
+fn header_body_offset(version: u8) -> usize {
+    let checksum_len = page_record_checksum_len(version);
+    if version >= PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION {
+        // magic, version, reserved, header length, ONE payload length, then the checksum.
+        return 20 + checksum_len;
+    }
     28 + checksum_len
 }
 pub(super) const PAGE_RECORD_COMPRESSION_MIN_BYTES: usize = 256;
@@ -156,12 +200,17 @@ pub(super) fn encode_page_record(
     let checksum_field = page_record_checksum_field(payload);
     let (stored_payload, compression) = encode_page_record_payload(payload, options)?;
     let stored_len = stored_payload.len();
-    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + stored_payload.len());
+    let compressed = compression != PageRecordCompression::None;
+    let header_len = if compressed {
+        PAGE_RECORD_V9_COMPRESSED_HEADER_LEN
+    } else {
+        PAGE_RECORD_V9_HEADER_LEN
+    };
+    let mut record = Vec::with_capacity(header_len + stored_payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
     record.push(PAGE_RECORD_VERSION);
     record.push(0);
-    record.extend_from_slice(&(PAGE_RECORD_HEADER_LEN as u16).to_le_bytes());
-    record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    record.extend_from_slice(&(header_len as u16).to_le_bytes());
     record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     record.extend_from_slice(&checksum_field[..PAGE_RECORD_CHECKSUM_COMPACT_LEN]);
     record.extend_from_slice(&page_id.to_le_bytes());
@@ -173,7 +222,11 @@ pub(super) fn encode_page_record(
         PageRecordCompression::None => PAGE_RECORD_COMPRESSION_NONE,
         PageRecordCompression::Zstd => PAGE_RECORD_COMPRESSION_ZSTD,
     });
-    record.extend_from_slice(&(stored_len as u64).to_le_bytes());
+    if compressed {
+        // Only a compressed record needs this: uncompressed, it is the payload length again.
+        record.extend_from_slice(&(stored_len as u64).to_le_bytes());
+    }
+    debug_assert_eq!(record.len(), header_len, "v9 header length must match what it declared");
     record.extend_from_slice(&stored_payload);
     Ok(EncodedPageRecord {
         bytes: record,
@@ -232,7 +285,7 @@ pub(super) fn decode_page_record(
             compression: PageRecordCompression::None,
         });
     }
-    if record.len() < PAGE_RECORD_V1_HEADER_LEN {
+    if record.len() < PAGE_RECORD_SMALLEST_HEADER_LEN {
         return Err(corrupt_page_envelope(address, "short header"));
     }
     let header = parse_page_record_header(record, address)?;
@@ -335,7 +388,7 @@ pub(super) fn logical_range_from_slab(
                 "mixed raw bytes after page envelope",
             ));
         }
-        if remaining.len() < PAGE_RECORD_V1_HEADER_LEN {
+        if remaining.len() < PAGE_RECORD_SMALLEST_HEADER_LEN {
             return Err(corrupt_page_envelope(&address, "short header"));
         }
         let header = parse_page_record_header(remaining, &address)?;
@@ -404,8 +457,14 @@ fn parse_page_record_header(
         PAGE_RECORD_V5_HEADER_LEN
     } else if version < PAGE_RECORD_CHECKSUM_COMPACT_VERSION {
         PAGE_RECORD_V7_HEADER_LEN
-    } else {
+    } else if version < PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION {
         PAGE_RECORD_HEADER_LEN
+    } else if header_len == PAGE_RECORD_V9_COMPRESSED_HEADER_LEN {
+        // A compressed v9 record carries the stored length; an uncompressed one does not, so this
+        // version has two header lengths and the record says which it wrote.
+        PAGE_RECORD_V9_COMPRESSED_HEADER_LEN
+    } else {
+        PAGE_RECORD_V9_HEADER_LEN
     };
     if header_len != expected_header_len {
         return Err(corrupt_page_envelope(
@@ -421,23 +480,25 @@ fn parse_page_record_header(
             .try_into()
             .expect("page envelope payload length slice"),
     ) as usize;
-    let raw_len = u64::from_le_bytes(
-        record[20..28]
-            .try_into()
-            .expect("page envelope raw length slice"),
-    ) as usize;
-    if raw_len != payload_len {
-        return Err(corrupt_page_envelope(
-            address,
-            format!("raw length {raw_len} does not match payload length {payload_len}"),
-        ));
+    if version < PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION {
+        let raw_len = u64::from_le_bytes(
+            record[20..28]
+                .try_into()
+                .expect("page envelope raw length slice"),
+        ) as usize;
+        if raw_len != payload_len {
+            return Err(corrupt_page_envelope(
+                address,
+                format!("raw length {raw_len} does not match payload length {payload_len}"),
+            ));
+        }
     }
     // Every offset below is stated as a step from where the checksum ends, so v8's narrower
     // field moves them all by one number instead of eight.
     let body = header_body_offset(version);
     let mut expected_sha256 = [0_u8; PAGE_RECORD_CHECKSUM_LEN];
-    let checksum_len = body - 28;
-    expected_sha256[..checksum_len].copy_from_slice(&record[28..body]);
+    let checksum_len = page_record_checksum_len(version);
+    expected_sha256[..checksum_len].copy_from_slice(&record[body - checksum_len..body]);
     let expected_sha256 = expected_sha256;
     let page_id = if version >= 2 {
         Some(u64::from_le_bytes(
@@ -498,11 +559,18 @@ fn parse_page_record_header(
                 ));
             }
         };
-        let stored_len = u64::from_le_bytes(
-            record[stored_len_at..stored_len_at + 8]
-                .try_into()
-                .expect("page envelope stored length slice"),
-        ) as usize;
+        let stored_len = if version >= PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION
+            && compression == PageRecordCompression::None
+        {
+            // Not written: uncompressed, the stored bytes ARE the payload bytes.
+            payload_len
+        } else {
+            u64::from_le_bytes(
+                record[stored_len_at..stored_len_at + 8]
+                    .try_into()
+                    .expect("page envelope stored length slice"),
+            ) as usize
+        };
         (compression, stored_len)
     } else {
         (PageRecordCompression::None, payload_len)
@@ -710,7 +778,7 @@ pub(super) fn summarize_slab(
                 "mixed raw bytes after page envelope",
             ));
         }
-        if remaining.len() < PAGE_RECORD_V1_HEADER_LEN {
+        if remaining.len() < PAGE_RECORD_SMALLEST_HEADER_LEN {
             return Err(corrupt_page_envelope(&address, "short header"));
         }
         let header = parse_page_record_header(remaining, &address)?;
@@ -876,7 +944,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
             );
             break;
         }
-        if remaining.len() < PAGE_RECORD_V1_HEADER_LEN {
+        if remaining.len() < PAGE_RECORD_SMALLEST_HEADER_LEN {
             record_slab_inspection_error(
                 &mut report,
                 address.offset,
@@ -1103,7 +1171,7 @@ mod crc32c_switch_tests {
         // CRC32C in the four bytes the field now is. The marker that followed it existed to
         // make a 32-byte field self-describing; at v8 the field is exactly the checksum and the
         // version byte says which algorithm it is.
-        let stored = u32::from_le_bytes(encoded.bytes[28..32].try_into().unwrap());
+        let stored = u32::from_le_bytes(encoded.bytes[20..24].try_into().unwrap());
         assert_eq!(stored, crate::checksum::crc32c(payload));
     }
 
