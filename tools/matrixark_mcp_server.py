@@ -344,11 +344,24 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
                 continue
             try:
                 result = self.adapter.refresh_summaries({"scope": {}, "limit": self._summary_refresh_limit})
-                self._summary_last_watermark = watermark
                 self.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
                 refreshed_count = int(result.get("refreshed_count") or 0)
                 if refreshed_count:
                     self.access.append_audit("context.refresh_summaries.background", {"account_id": "system", "tenant_id": "system", "user_id": "summary_worker"}, status="ok", details={"refreshed_count": refreshed_count, "interval_ms": SUMMARY_REFRESH_INTERVAL_MS, "limit": self._summary_refresh_limit})
+                # Remember the count as of the END of this pass, not its start.
+                #
+                # A pass writes: the summaries and embeddings it refreshes, and the audit record
+                # just above. Storing the pre-pass count therefore makes the skip above
+                # unfireable -- the next tick reads a count this pass itself moved, sees a
+                # different watermark, and does the whole read_all-and-write again. On the 1s
+                # default that is a full pass every second forever on a store nobody is
+                # touching, which is where an idle one-box's background writes and its gateway
+                # and proxy CPU were going.
+                #
+                # Re-reading after the writes means the guard asks the question it means to ask:
+                # has anything landed since I last finished.
+                post_watermark = self._summary_refresh_watermark()
+                self._summary_last_watermark = watermark if post_watermark is None else post_watermark
             except Exception as exc:
                 self.metrics.observe_operation("summary_refresh", "error", 0.0, timeout=is_retryable_temporalstore_error(exc))
                 _mcp_debug_log(f"matrixark summary refresh loop failed: {exc}")
