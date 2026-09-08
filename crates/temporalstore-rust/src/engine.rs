@@ -917,6 +917,18 @@ impl TemporalEngine {
                             request.shard_id,
                             command,
                             std::mem::take(&mut staged_outcomes),
+                            if carried_pages.is_empty() {
+                                if self.page_store.block_in_wal() {
+                                    block_in_wal::take_staged()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                if self.page_store.block_in_wal() {
+                                    let _ = block_in_wal::take_staged();
+                                }
+                                std::mem::take(&mut carried_pages)
+                            },
                         )
                         .map(|record| Some(record.sequence))
                 } else {
@@ -3530,6 +3542,24 @@ fn append_value(
     async_storage: bool,
 ) -> Result<BlockAddress, BlockStoreError> {
     if !async_storage {
+        // Carry the page in this write's record, the same as the asynchronous arm below.
+        //
+        // The record is allowed to state its results and drop the operation only when the blocks
+        // those results name survive a crash. A carried block does -- it IS the record. A
+        // synchronous write's block used to be assumed durable instead, but the single barrier
+        // acks on the WAL fsync and defers the block fsync (`defer_data_sync` in the block
+        // store's append), so at that moment the block store holds it in buffers and nowhere
+        // else. Wiping everything but the log then lost every acked write, which is what the
+        // recovery suite has been reporting.
+        //
+        // Carrying it costs the bytes twice for as long as the record lives, and no longer: the
+        // storage manager's reclaim stage moves carried pages into the block store and drops the
+        // registration that pins the log floor.
+        if page_store.block_in_wal() {
+            if let Some(object_id) = object_id {
+                block_in_wal::stage(object_id, bytes);
+            }
+        }
         return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
     let address = BlockAddress::from_parts(HOT_PAGE_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id, None);
@@ -3758,9 +3788,35 @@ fn read_page_bytes(
             }
         }
     }
-    let bytes = page_store.read(address).ok()?;
-    let _ = cache.put(cache_key, bytes.clone());
-    Some(bytes)
+    if let Ok(bytes) = page_store.read(address) {
+        let _ = cache.put(cache_key, bytes.clone());
+        return Some(bytes);
+    }
+    // The block store could not answer, so try the record that carries this page.
+    //
+    // This is the same fallback the synthetic-address branch above performs, which until now was
+    // the ONLY way to reach it: the branch is entered on `is_wal_resident(address.page_slab_id)`.
+    // A synchronous write stores the real address its block-store append returned, so a read for
+    // one never entered that branch, and the copy carried in its record was registered, kept
+    // addressable, and never consulted.
+    //
+    // That is exactly the case the single barrier creates. It acks on the log fsync and defers
+    // the block fsync, so a crash can lose a block the index already names. Recovery then rebuilt
+    // the index, resolved a real address into a block that was never written, and answered None
+    // for a durably acknowledged write -- with the value sitting in the log the whole time.
+    //
+    // Ordered after the block-store read, not before it: the durable copy is the common case and
+    // a direct read, while this one resolves a log id and parses a record.
+    if page_store.block_in_wal() {
+        if let Some(bytes) = address
+            .object_id()
+            .and_then(|object_id| block_in_wal::read_page(page_store, shard_id, object_id))
+        {
+            let _ = cache.put(cache_key, bytes.clone());
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 /// The page's bytes, shared rather than copied.

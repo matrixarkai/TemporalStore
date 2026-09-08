@@ -215,6 +215,34 @@ impl DataNodeRuntime {
                 stats.storage_manager_reclaim_wal_runs += 1;
             }
             lifecycle_report = Some(response.report);
+            // Move the oldest pages that live only inside a WAL record into the block store,
+            // before anything tries to reclaim the log. `min_registered_sequence` pins retention
+            // to the LOWEST registration, so one resident page holds the floor down whatever the
+            // retention policy says. The dump this stage just took does NOT do it: measured on 48
+            // async writes, a flush left all 48 registered and so did a full eight-stage cycle,
+            // with the log floor still at sequence 1.
+            //
+            // Same bound and same order as the one-shot cycle in `engine::storage_manager_cycle`,
+            // which is the other implementation of these stages -- at most
+            // `max_dump_buckets_per_round` per pass, oldest first. This is the copy that runs on a
+            // timer, so it is the one that decides whether an IDLE shard ever becomes reclaimable.
+            let resident = self.inner.engine.wal_resident_page_count(shard_id);
+            if resident > 0 {
+                let moved = self.inner.engine.materialize_oldest_resident_pages(
+                    shard_id,
+                    resident.saturating_sub(if options.max_dump_buckets_per_round == 0 {
+                        usize::MAX
+                    } else {
+                        options.max_dump_buckets_per_round
+                    }),
+                );
+                tracing::debug!(
+                    shard_id,
+                    moved,
+                    resident,
+                    "storage manager moved log-resident pages into the block store"
+                );
+            }
             executed_stages.push("reclaim_wal".to_string());
         } else if !options.enable_wal_reclaim {
             skipped_stages.push("reclaim_wal_disabled".to_string());

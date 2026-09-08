@@ -3228,6 +3228,13 @@ pub struct StorageManagerStageReport {
     pub wal_records_removed: usize,
     #[serde(default)]
     pub index_log_records_removed: usize,
+    /// How many pages this stage moved out of the log and into the block store.
+    ///
+    /// Separate from `wal_records_removed`: this counts what had to become durable ELSEWHERE
+    /// before any record could be removed at all, because a page still living only inside a
+    /// record pins the retention floor to that record's sequence.
+    #[serde(default)]
+    pub wal_resident_pages_materialised: usize,
     #[serde(default)]
     pub retain_from_wal_sequence: u64,
     #[serde(default)]

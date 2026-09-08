@@ -1185,6 +1185,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         outcomes: Vec<WalOutcomeItem>,
+        staged_pages: Vec<StagedPage>,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         // Acquiring the append lock creates the directory the first time it opens the lock
@@ -1201,10 +1202,17 @@ impl LocalWriteAheadLogStore {
             shard_id,
             sequence: seq,
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
-            // This path exists to coalesce the fsync of a SYNCHRONOUS write, so the blocks behind
-            // these results are durable by the time the barrier this record waits on returns.
-            command: record_command(command, &outcomes, true),
-            staged_pages: Vec::new(),
+            // This path coalesces the fsync of a SYNCHRONOUS write. It used to assert that the
+            // blocks behind these results were therefore durable by the time the barrier returned,
+            // and drop the operation on that basis. They are not: the barrier this record waits on
+            // is the LOG's, and the block fsync is deferred past it, so a power cut can leave these
+            // results naming blocks that were never written. That is what makes a log carrying only
+            // results unable to rebuild what it acked.
+            //
+            // So this path asks the same question every other one does -- can these blocks be found
+            // again? -- and answers it from what the record actually carries.
+            command: record_command(command, &outcomes, !staged_pages.is_empty()),
+            staged_pages,
             outcomes,
         };
         // sync=false: write the bytes, defer the fdatasync to `commit_barrier`. Same as the
@@ -9640,6 +9648,7 @@ mod tests {
                         key: format!("k{index:06}"),
                         value: vec![118u8; 64],
                     },
+                    Vec::new(),
                     Vec::new(),
                 )
                 .unwrap()

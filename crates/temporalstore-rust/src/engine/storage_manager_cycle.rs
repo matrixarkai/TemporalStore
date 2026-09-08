@@ -394,6 +394,43 @@ impl TemporalEngine {
         } else {
             None
         };
+        // Pages whose only durable copy is a WAL record leave the log HERE, before the reclaim
+        // plan is computed, because `min_registered_sequence` pins retention to the LOWEST
+        // registration: a page still resident holds the floor down and no retention policy can
+        // pass it. That is the order this stage's counterpart uses in the design this
+        // follows -- dump the dirty slots, advance the dumped-log id, and only then reclaim.
+        //
+        // Until this ran, the only caller that moved a page out of the log was the write path,
+        // which sweeps once registrations pass `TS_WAL_RESIDENT_PAGES` and therefore stops the
+        // moment writes stop. An idle shard kept every page it had ever written that way.
+        // Measured on 48 async writes: a flush left all 48 registered, and so did a full
+        // eight-stage cycle, with the log floor still at sequence 1.
+        //
+        // Bounded per cycle at `max_dump_buckets_per_round`, so a shard sitting at the write
+        // path's ceiling drains over several cycles instead of turning one into a long pause.
+        // Oldest first, because the oldest registration is the one holding the floor down. The
+        // bytes are already durable in the log, so this moves a copy that is safe either way.
+        let wal_resident_pages_before = self.wal_resident_page_count(request.shard_id);
+        let wal_resident_pages_materialised = if request.enable_wal_reclaim
+            && !request.dry_run
+            && wal_resident_pages_before > 0
+        {
+            // Zero is how this request spells "no bound" -- its own default is 0 while the
+            // scheduler's is 64 -- so a cycle asked for no bound drains the shard rather than
+            // one page per pass.
+            let per_round = if request.max_dump_buckets_per_round == 0 {
+                usize::MAX
+            } else {
+                request.max_dump_buckets_per_round
+            };
+            self.materialize_oldest_resident_pages(
+                request.shard_id,
+                wal_resident_pages_before.saturating_sub(per_round),
+            )
+        } else {
+            0
+        };
+
         let wal_reclaim_plan = self.storage_wal_reclaim_plan(
             request.shard_id,
             request.follower_replay_cursors.clone(),
@@ -426,6 +463,7 @@ impl TemporalEngine {
                 elapsed
             },
             stage: "reclaim_wal".to_string(),
+            wal_resident_pages_materialised,
             enabled: request.enable_wal_reclaim,
             applied: wal_reclaim_report
                 .as_ref()
