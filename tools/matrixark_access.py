@@ -74,6 +74,22 @@ class MatrixArkMetadataStore:
     def read_all(self) -> list[Json]:
         raise NotImplementedError
 
+    def records_of_type(self, record_type: str) -> list[Json]:
+        """Metadata records of ONE type, in append order.
+
+        Every `latest_*` lookup below is a newest-wins scan for a single type, and each was
+        reading the WHOLE record log to find it -- on an authenticated request that is several
+        full-corpus reads before any work happens. The type is what the caller already names
+        inline, so nothing here needs a central list of type names to fall out of date.
+
+        This default keeps the previous behaviour exactly (filter the full read); a backend that
+        can answer the narrower question overrides it.
+        """
+        return [
+            record for record in self.read_all()
+            if str(record.get("record_type", "")) == record_type
+        ]
+
     def backend_info(self) -> Json:
         return {"backend": self.backend_name, "status": "ok"}
 
@@ -89,6 +105,24 @@ class MatrixArkRecordLogMetadataStore(MatrixArkMetadataStore):
 
     def read_all(self) -> list[Json]:
         return [record for record in self.adapter.read_all() if str(record.get("record_type", "")).startswith("matrixark_")]
+
+    def records_of_type(self, record_type: str) -> list[Json]:
+        """One filtered scan when the adapter can serve it, else the full read.
+
+        `_scan_records_of_types` returns records of exactly these types IN APPEND ORDER, which is
+        what the newest-wins callers need from `reversed(...)`. Its None/[] split matters here:
+        `[]` is an authoritative "no records of this type" and must NOT send us to the full read,
+        or a store that legitimately has no users would pay for the whole corpus on every call.
+        """
+        scan = getattr(self.adapter, "_scan_records_of_types", None)
+        if callable(scan):
+            try:
+                subset = scan([record_type])
+            except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+                subset = None
+            if subset is not None:
+                return subset
+        return super().records_of_type(record_type)
 
 
 def _matrixark_env_truthy(name: str) -> bool:
@@ -809,7 +843,9 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
 
     def find_active_api_key(self, api_key: str) -> Json | None:
         hashed = secret_hash(api_key)
-        for record in reversed(self.metadata.read_all()):
+        # Every authenticated request lands here. Reading the whole record log to find one key
+        # made the cost of authenticating grow with the size of the corpus.
+        for record in reversed(self.metadata.records_of_type("matrixark_api_key")):
             if record.get("record_type") != "matrixark_api_key":
                 continue
             if record.get("api_key_hash") == hashed:
@@ -822,13 +858,13 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
         return None
 
     def latest_account_record(self, account_id: str) -> Json | None:
-        for record in reversed(self.metadata.read_all()):
+        for record in reversed(self.metadata.records_of_type("matrixark_account")):
             if record.get("record_type") == "matrixark_account" and record.get("account_id") == account_id:
                 return record
         return None
 
     def latest_tenant_record(self, account_id: str, tenant_id: str) -> Json | None:
-        for record in reversed(self.metadata.read_all()):
+        for record in reversed(self.metadata.records_of_type("matrixark_tenant")):
             if (
                 record.get("record_type") == "matrixark_tenant"
                 and record.get("account_id") == account_id
@@ -846,7 +882,7 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
             raise MatrixArkError("tenant is disabled")
 
     def latest_api_key_record(self, api_key_id: str) -> Json | None:
-        for record in reversed(self.metadata.read_all()):
+        for record in reversed(self.metadata.records_of_type("matrixark_api_key")):
             if record.get("record_type") == "matrixark_api_key" and record.get("api_key_id") == api_key_id:
                 return record
         return None
@@ -854,7 +890,7 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
     def latest_user_record(self, account_id: str, tenant_id: str, user_id: str) -> Json | None:
         if not user_id:
             return None
-        for record in reversed(self.metadata.read_all()):
+        for record in reversed(self.metadata.records_of_type("matrixark_user")):
             if (
                 record.get("record_type") == "matrixark_user"
                 and record.get("account_id") == account_id
@@ -872,7 +908,7 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
     def latest_user_credential(self, account_id: str, tenant_id: str, user_id: str) -> Json | None:
         if not user_id:
             return None
-        for record in reversed(self.metadata.read_all()):
+        for record in reversed(self.metadata.records_of_type("matrixark_user_credential")):
             if (
                 record.get("record_type") == "matrixark_user_credential"
                 and record.get("account_id") == account_id
@@ -887,7 +923,7 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
         email_normalized = email.strip().lower()
         if not email_normalized:
             return ""
-        for record in reversed(self.metadata.read_all()):
+        for record in reversed(self.metadata.records_of_type("matrixark_user_credential")):
             if (
                 record.get("record_type") == "matrixark_user_credential"
                 and record.get("account_id") == account_id
