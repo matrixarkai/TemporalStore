@@ -4387,7 +4387,21 @@ fn open_remote_store(request: &RecordLogRequest, proxy_addr: &str) -> Result<Rec
     // to the client is what makes shard placement the cluster's answer rather than a guess:
     // without a meta_addr the client cannot sync topology at all and every table silently
     // collapses to one shard.
-    let meta_addr = non_empty_or(&request.metaserver, "").to_string();
+    // "No metaserver" is spelled five ways, and this must read all of them.
+    //
+    // `storage_backend::single_node` is the ONE implementation of that rule -- its own docs say a
+    // second copy is the failure it exists to prevent -- and it treats "", "local", "none",
+    // "standalone" and "off" as "there is no metaserver". Deciding it here with `is_empty()`
+    // re-derived the rule and got a narrower answer: a one-box deployment, which sets
+    // TS_META_ADDR=local, handed "local" to the client as a literal address and every write
+    // failed with `invalid socket address`. The Python side already agrees with the constant
+    // (META_SENTINELS in matrixark_deployment_plan.py); this is the surface that did not.
+    let meta_addr_raw = non_empty_or(&request.metaserver, "").to_string();
+    let meta_addr = if temporalstore_rust::storage_backend::single_node(Some(&meta_addr_raw)) {
+        String::new()
+    } else {
+        meta_addr_raw
+    };
     let client = TemporalStoreClient::with_options(temporalstore_rust::ClientOptions {
         proxy_addr: proxy_addr.to_string(),
         meta_addr: if meta_addr.is_empty() {
