@@ -138,7 +138,8 @@ pub struct RaftSnapshotStateImage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftSnapshotStateImageSlab {
-    pub page_slab_id: u64,
+    #[serde(rename = "page_slab_id")]
+    pub block_slab_id: u64,
     pub bytes: Vec<u8>,
 }
 
@@ -5925,7 +5926,7 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
         // restored an image-carrying record before this installer learned about images.
         let block_store = engine.block_store();
         for slab in &image.slabs {
-            let _ = block_store.install_slab(slab.page_slab_id, &slab.bytes);
+            let _ = block_store.install_slab(slab.block_slab_id, &slab.bytes);
         }
         let _ = engine.install_index_bytes(snapshot.shard_id, &image.index_bytes);
         engine.load_shard(snapshot.shard_id);

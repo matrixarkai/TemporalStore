@@ -5,23 +5,23 @@
 
 use super::*;
 
-/// Map a band descriptor's lifecycle state to the index-log `ZoneState` (1:1). Kept a free fn
+/// Map a band descriptor's lifecycle state to the index-log `BandCatalogState` (1:1). Kept a free fn
 /// so both directions of the MANIFEST-CONFORMANCE FOLD conversion share one mapping.
-fn band_state_to_zone_state(state: BlockStoreBandState) -> crate::index_log::ZoneState {
+fn band_state_to_catalog_state(state: BlockStoreBandState) -> crate::index_log::BandCatalogState {
     match state {
-        BlockStoreBandState::Active => crate::index_log::ZoneState::Active,
-        BlockStoreBandState::Sealed => crate::index_log::ZoneState::Sealed,
-        BlockStoreBandState::DelayedDestroy => crate::index_log::ZoneState::DelayedDestroy,
-        BlockStoreBandState::Purged => crate::index_log::ZoneState::Purged,
+        BlockStoreBandState::Active => crate::index_log::BandCatalogState::Active,
+        BlockStoreBandState::Sealed => crate::index_log::BandCatalogState::Sealed,
+        BlockStoreBandState::DelayedDestroy => crate::index_log::BandCatalogState::DelayedDestroy,
+        BlockStoreBandState::Purged => crate::index_log::BandCatalogState::Purged,
     }
 }
 
-fn zone_state_to_band_state(state: crate::index_log::ZoneState) -> BlockStoreBandState {
+fn catalog_state_to_band_state(state: crate::index_log::BandCatalogState) -> BlockStoreBandState {
     match state {
-        crate::index_log::ZoneState::Active => BlockStoreBandState::Active,
-        crate::index_log::ZoneState::Sealed => BlockStoreBandState::Sealed,
-        crate::index_log::ZoneState::DelayedDestroy => BlockStoreBandState::DelayedDestroy,
-        crate::index_log::ZoneState::Purged => BlockStoreBandState::Purged,
+        crate::index_log::BandCatalogState::Active => BlockStoreBandState::Active,
+        crate::index_log::BandCatalogState::Sealed => BlockStoreBandState::Sealed,
+        crate::index_log::BandCatalogState::DelayedDestroy => BlockStoreBandState::DelayedDestroy,
+        crate::index_log::BandCatalogState::Purged => BlockStoreBandState::Purged,
     }
 }
 
@@ -36,33 +36,33 @@ impl LocalBlockStore {
             .collect()
     }
 
-    /// MANIFEST-CONFORMANCE FOLD: project the in-memory band catalog into the DURABLE `ZoneInfo`
+    /// MANIFEST-CONFORMANCE FOLD: project the in-memory band catalog into the DURABLE `BandCatalogEntry`
     /// subset kept in the index-log band catalog. Only the durable fields ride in
     /// the fold; the band descriptor's diagnostic fields (readable_prefix / corruption / errors)
     /// are deliberately dropped -- they are recomputed on load by scanning the slab, exactly as
-    /// this design does not persist them. `zone_version` stamps every entry so a folded anchor
+    /// this design does not persist them. `band_version` stamps every entry so a folded anchor
     /// carries a monotonically-versioned snapshot.
-    pub fn zone_catalog(&self, zone_version: u64) -> Vec<crate::index_log::ZoneInfo> {
+    pub fn band_catalog(&self, band_version: u64) -> Vec<crate::index_log::BandCatalogEntry> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
             .bands
             .values()
-            .map(|band| crate::index_log::ZoneInfo {
-                page_slab_id: band.page_slab_id,
-                state: band_state_to_zone_state(band.state),
+            .map(|band| crate::index_log::BandCatalogEntry {
+                block_slab_id: band.block_slab_id,
+                state: band_state_to_catalog_state(band.state),
                 physical_bytes: band.physical_bytes,
                 logical_bytes: band.logical_bytes,
                 created_unix_ms: band.created_unix_ms,
                 updated_unix_ms: band.updated_unix_ms,
                 first_page_id: band.first_page_id,
                 last_page_id: band.last_page_id,
-                version: zone_version,
+                version: band_version,
             })
             .collect()
     }
 
-    /// MANIFEST-CONFORMANCE FOLD recovery: seed the band catalog from a folded `ZoneInfo` snapshot
+    /// MANIFEST-CONFORMANCE FOLD recovery: seed the band catalog from a folded `BandCatalogEntry` snapshot
     /// recovered from the index-log MetaItem. Applied on load AFTER the block store has already
     /// reconciled from durable pages (reconcile stays authoritative for on-disk physical bytes
     /// and diagnostics), so this only RESTORES the catalog fields a pure disk scan cannot infer:
@@ -71,50 +71,50 @@ impl LocalBlockStore {
     /// downgrades physical bytes below what the slab actually holds -- so it cannot lose durable
     /// state; it is a metadata refinement layered on the lossless disk-derived catalog. Persists
     /// the merged manifest once. Returns whether anything changed.
-    pub fn install_zone_catalog(
+    pub fn install_band_catalog(
         &self,
-        zones: &[crate::index_log::ZoneInfo],
+        catalog: &[crate::index_log::BandCatalogEntry],
     ) -> Result<bool, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let active = inner.page_slab_id;
+        let active = inner.block_slab_id;
         let mut changed = false;
-        for zone in zones {
-            let state = zone_state_to_band_state(zone.state);
-            match inner.bands.get_mut(&zone.page_slab_id) {
+        for entry in catalog {
+            let state = catalog_state_to_band_state(entry.state);
+            match inner.bands.get_mut(&entry.block_slab_id) {
                 Some(band) => {
                     let before = band.clone();
                     // Never override the live ACTIVE slab's disk-derived state (it holds the open
                     // write frontier); for every other slab adopt the folded lifecycle state.
-                    if zone.page_slab_id != active {
+                    if entry.block_slab_id != active {
                         band.state = state;
                     }
-                    band.created_unix_ms = band.created_unix_ms.or(zone.created_unix_ms);
+                    band.created_unix_ms = band.created_unix_ms.or(entry.created_unix_ms);
                     if band.updated_unix_ms.is_none() {
-                        band.updated_unix_ms = zone.updated_unix_ms;
+                        band.updated_unix_ms = entry.updated_unix_ms;
                     }
                     if band.logical_bytes == 0 {
-                        band.logical_bytes = zone.logical_bytes;
+                        band.logical_bytes = entry.logical_bytes;
                     }
-                    band.first_page_id = band.first_page_id.or(zone.first_page_id);
-                    band.last_page_id = band.last_page_id.or(zone.last_page_id);
+                    band.first_page_id = band.first_page_id.or(entry.first_page_id);
+                    band.last_page_id = band.last_page_id.or(entry.last_page_id);
                     changed |= *band != before;
                 }
                 None => {
                     // A band the disk scan did not surface (e.g. a purged/reclaimed slab with no
                     // live file): install it from the fold so accounting/GC see the full history.
                     inner.bands.insert(
-                        zone.page_slab_id,
+                        entry.block_slab_id,
                         BlockStoreBandDescriptor {
-                            band_id: band_id_for_slab(zone.page_slab_id),
-                            page_slab_id: zone.page_slab_id,
+                            band_id: band_id_for_slab(entry.block_slab_id),
+                            block_slab_id: entry.block_slab_id,
                             state,
-                            physical_bytes: zone.physical_bytes,
-                            logical_bytes: zone.logical_bytes,
-                            created_unix_ms: zone.created_unix_ms,
-                            updated_unix_ms: zone.updated_unix_ms,
-                            first_page_id: zone.first_page_id,
-                            last_page_id: zone.last_page_id,
-                            readable_prefix_physical_bytes: zone.physical_bytes,
+                            physical_bytes: entry.physical_bytes,
+                            logical_bytes: entry.logical_bytes,
+                            created_unix_ms: entry.created_unix_ms,
+                            updated_unix_ms: entry.updated_unix_ms,
+                            first_page_id: entry.first_page_id,
+                            last_page_id: entry.last_page_id,
+                            readable_prefix_physical_bytes: entry.physical_bytes,
                             verified_source_mtime_unix_ms: None,
                             has_corruption: false,
                             first_error_offset: None,
@@ -154,14 +154,14 @@ impl LocalBlockStore {
         drop(inner);
 
         let summary = summarize_bands(&bands);
-        let zone_usage = band_zone_usage(&bands);
-        let zone_stats_ready = zone_usage.iter().all(|zone| {
-            zone.band_id == band_id_for_slab(zone.page_slab_id)
-                && zone.page_store_used_bytes
-                    == zone
+        let band_usage = compute_band_usage(&bands);
+        let band_stats_ready = band_usage.iter().all(|band| {
+            band.band_id == band_id_for_slab(band.block_slab_id)
+                && band.page_store_used_bytes
+                    == band
                         .live_page_store_used_bytes
-                        .saturating_add(zone.reclaimable_page_store_used_bytes)
-                        .saturating_add(zone.purged_page_store_used_bytes)
+                        .saturating_add(band.reclaimable_page_store_used_bytes)
+                        .saturating_add(band.purged_page_store_used_bytes)
         });
         let slab_reports = {
             let mut reports = Vec::new();
@@ -176,23 +176,23 @@ impl LocalBlockStore {
             .count() as u64;
         let live_slab_ids = slab_reports
             .iter()
-            .map(|report| report.page_slab_id)
+            .map(|report| report.block_slab_id)
             .collect::<BTreeSet<_>>();
         let delayed_slab_ids = delayed_destroy_slab_reports_at(&root)?
             .into_iter()
-            .map(|report| report.page_slab_id)
+            .map(|report| report.block_slab_id)
             .collect::<BTreeSet<_>>();
         let manifest_missing_stream_bands = bands
             .values()
             .filter(|band| {
                 !matches!(band.state, BlockStoreBandState::Purged)
-                    && !live_slab_ids.contains(&band.page_slab_id)
-                    && !delayed_slab_ids.contains(&band.page_slab_id)
+                    && !live_slab_ids.contains(&band.block_slab_id)
+                    && !delayed_slab_ids.contains(&band.block_slab_id)
             })
             .count() as u64;
         let manifest_extra_stream_bands = live_slab_ids
             .iter()
-            .filter(|page_slab_id| !bands.contains_key(page_slab_id))
+            .filter(|block_slab_id| !bands.contains_key(block_slab_id))
             .count() as u64;
         let band_manifest_disk_consistent =
             manifest_missing_stream_bands == 0 && manifest_extra_stream_bands == 0;
@@ -251,11 +251,11 @@ impl LocalBlockStore {
             && !bands.is_empty()
             && bands
                 .values()
-                .all(|band| band.band_id == band_id_for_slab(band.page_slab_id));
+                .all(|band| band.band_id == band_id_for_slab(band.block_slab_id));
         let band_manifest_rebuild_ready = band_manifest_ready
             && slab_reports.iter().all(|report| {
                 bands
-                    .get(&report.page_slab_id)
+                    .get(&report.block_slab_id)
                     .map(|band| {
                         band.first_page_id == report.first_page_id
                             && band.last_page_id == report.last_page_id
@@ -272,7 +272,7 @@ impl LocalBlockStore {
                 .filter(|report| report.has_corruption)
                 .all(|report| {
                     bands
-                        .get(&report.page_slab_id)
+                        .get(&report.block_slab_id)
                         .map(|band| {
                             band.has_corruption
                                 && band.first_error_offset == report.first_error_offset
@@ -326,8 +326,8 @@ impl LocalBlockStore {
                 "band manifest still diverges from live/delayed-destroy stream files".to_string(),
             );
         }
-        if !zone_stats_ready {
-            blockers.push("page-store zone usage accounting is inconsistent".to_string());
+        if !band_stats_ready {
+            blockers.push("page-store band usage accounting is inconsistent".to_string());
         }
         if !envelope_checksum_ready {
             blockers.push("stream record envelope/checksum inspection is not clean".to_string());
@@ -351,8 +351,8 @@ impl LocalBlockStore {
             sealed_bands: summary.sealed_bands,
             delayed_destroy_bands: summary.delayed_destroy_bands,
             purged_bands: summary.purged_bands,
-            zone_stats_ready,
-            zone_usage,
+            band_stats_ready,
+            band_usage,
             stream_slab_count,
             physical_bytes,
             logical_bytes,
@@ -383,16 +383,16 @@ impl LocalBlockStore {
                 "block records are appended as self-describing stream envelopes".to_string(),
                 "logical stream reads span records while skipping envelopes and decompression"
                     .to_string(),
-                "segment roll seals the previous band and opens a new active band".to_string(),
+                "slab roll seals the previous band and opens a new active band".to_string(),
                 "band manifest persists active/sealed/delayed-destroy/purged lifecycle state"
                     .to_string(),
                 "stream runtime reports page-id continuity and logical read byte evidence"
                     .to_string(),
                 "band manifest descriptors are validated against inspected stream boundaries"
                     .to_string(),
-                "open-time reconciliation repairs manifest/live stream divergence like zone updates"
+                "open-time reconciliation repairs manifest/live stream divergence like band updates"
                     .to_string(),
-                "zone usage reports map band ids to page-store used bytes like ZoneStats"
+                "band usage reports map band ids to page-store used bytes like BandStats"
                     .to_string(),
             ],
         })

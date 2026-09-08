@@ -467,16 +467,16 @@ fn apply_shard_storage_metrics(
             "compaction_watermark",
             storage.compaction_watermark,
         );
-        add(metrics, "storage_zone_count", storage.storage_zone_count);
+        add(metrics, "storage_zone_count", storage.storage_band_count);
         add(
             metrics,
             "active_storage_zones",
-            storage.active_storage_zones,
+            storage.active_storage_bands,
         );
         add(
             metrics,
             "sealed_storage_zones",
-            storage.sealed_storage_zones,
+            storage.sealed_storage_bands,
         );
         add(
             metrics,
@@ -486,17 +486,17 @@ fn apply_shard_storage_metrics(
         add(
             metrics,
             "storage_zone_total_bytes",
-            storage.storage_zone_total_bytes,
+            storage.storage_band_total_bytes,
         );
         add(
             metrics,
             "storage_zone_used_bytes",
-            storage.storage_zone_used_bytes,
+            storage.storage_band_used_bytes,
         );
         add(
             metrics,
             "storage_zone_stale_bytes",
-            storage.storage_zone_stale_bytes,
+            storage.storage_band_stale_bytes,
         );
     }
 }
@@ -724,13 +724,16 @@ pub struct CompactionResponse {
     pub model_layouts: Vec<ShardCompactionModelLayoutReport>,
     #[serde(default)]
     #[serde(alias = "previous_page_segment_id")]
-    pub previous_page_slab_id: u64,
+    #[serde(rename = "previous_page_slab_id")]
+    pub previous_block_slab_id: u64,
     #[serde(default)]
     #[serde(alias = "compacted_page_segment_id")]
-    pub compacted_page_slab_id: u64,
+    #[serde(rename = "compacted_page_slab_id")]
+    pub compacted_block_slab_id: u64,
     #[serde(default)]
     #[serde(alias = "stale_page_segment_ids")]
-    pub stale_page_slab_ids: Vec<u64>,
+    #[serde(rename = "stale_page_slab_ids")]
+    pub stale_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub before: ShardCompactionUtilityReport,
     #[serde(default)]
@@ -746,7 +749,8 @@ pub struct GcRequest {
     pub retain_index_log_from_sequence: Option<u64>,
     #[serde(default)]
     #[serde(alias = "retain_page_segments_from_id")]
-    pub retain_page_slabs_from_id: Option<u64>,
+    #[serde(rename = "retain_page_slabs_from_id")]
+    pub retain_block_slabs_from_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -760,19 +764,24 @@ pub struct GcResponse {
     pub wal_records_removed: usize,
     pub index_log_records_removed: usize,
     #[serde(alias = "page_segments_removed")]
-    pub page_slabs_removed: usize,
+    #[serde(rename = "page_slabs_removed")]
+    pub block_slabs_removed: usize,
     #[serde(default)]
     #[serde(alias = "page_segments_removed_physical_bytes")]
-    pub page_slabs_removed_physical_bytes: u64,
+    #[serde(rename = "page_slabs_removed_physical_bytes")]
+    pub block_slabs_removed_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "page_segments_retained_physical_bytes")]
-    pub page_slabs_retained_physical_bytes: u64,
+    #[serde(rename = "page_slabs_retained_physical_bytes")]
+    pub block_slabs_retained_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "page_segments_retained_live")]
-    pub page_slabs_retained_live: usize,
+    #[serde(rename = "page_slabs_retained_live")]
+    pub block_slabs_retained_live: usize,
     #[serde(default)]
     #[serde(alias = "page_segments_retained_live_physical_bytes")]
-    pub page_slabs_retained_live_physical_bytes: u64,
+    #[serde(rename = "page_slabs_retained_live_physical_bytes")]
+    pub block_slabs_retained_live_physical_bytes: u64,
     /// The reclaims below were bounded by a durable-index proof: bucket dumps covering every
     /// live generation. False means the requested sequences were taken on trust, which is what
     /// this endpoint has always done and what a never-dumped shard still gets.
@@ -811,7 +820,8 @@ pub struct StorageManagerOptions {
     pub dirty_bucket_pressure: usize,
     #[serde(default)]
     #[serde(alias = "stale_page_segment_pressure")]
-    pub stale_page_slab_pressure: usize,
+    #[serde(rename = "stale_page_slab_pressure")]
+    pub stale_block_slab_pressure: usize,
     #[serde(default)]
     pub reclaimable_physical_bytes_pressure: u64,
     #[serde(default)]
@@ -853,7 +863,7 @@ impl Default for StorageManagerOptions {
             max_dump_buckets_per_round: default_storage_manager_max_dump_buckets_per_round(),
             min_undumped_wal_records: default_storage_manager_min_undumped_wal_records(),
             dirty_bucket_pressure: 1,
-            stale_page_slab_pressure: 1,
+            stale_block_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
             cache_memory_bytes_pressure: 1,
             cache_disk_bytes_pressure: 1,
@@ -945,12 +955,14 @@ pub struct StorageManagerPressureSnapshot {
     #[serde(default)]
     pub index_log_bytes: u64,
     #[serde(alias = "stale_page_segment_count")]
-    pub stale_page_slab_count: usize,
+    #[serde(rename = "stale_page_slab_count")]
+    pub stale_block_slab_count: usize,
     pub reclaim_candidate_count: usize,
     pub reclaimable_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "page_segment_stale_density_basis_points")]
-    pub page_slab_stale_density_basis_points: u64,
+    #[serde(rename = "page_slab_stale_density_basis_points")]
+    pub block_slab_stale_density_basis_points: u64,
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
     #[serde(default)]

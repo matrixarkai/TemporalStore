@@ -53,10 +53,10 @@ impl DataNodeRuntime {
                 undumped_wal_records: plan.undumped_wal_records,
                 wal_bytes: plan.undumped_wal_records,
                 index_log_bytes: log_pressure.index_log_bytes,
-                stale_page_slab_count: plan.stale_page_slab_ids.len(),
+                stale_block_slab_count: plan.stale_block_slab_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
                 reclaimable_physical_bytes: plan.reclaimable_physical_bytes,
-                page_slab_stale_density_basis_points: 0,
+                block_slab_stale_density_basis_points: 0,
                 cache_memory_bytes: cache.memory_bytes,
                 cache_disk_bytes: cache.disk_bytes,
                 memory_cache_pressure_score: cache
@@ -65,11 +65,11 @@ impl DataNodeRuntime {
                     .saturating_add(cache.async_writeback_queue_bytes)
                     .saturating_add(cache.async_writeback_queue_depth),
                 expired_bucket_object_scan_debt: plan.bucket_summaries.len(),
-                delayed_destroy_slab_count: plan.delayed_destroy_page_slab_ids.len(),
+                delayed_destroy_slab_count: plan.delayed_destroy_block_slab_ids.len(),
                 delayed_destroy_bytes: plan.reclaimable_physical_bytes,
                 follower_cursor_retention_blockers: 0,
                 raft_snapshot_retention_blockers: 0,
-                compaction_debt_model_count: usize::from(!plan.stale_page_slab_ids.is_empty()),
+                compaction_debt_model_count: usize::from(!plan.stale_block_slab_ids.is_empty()),
                 compaction_debt_score: plan.reclaimable_physical_bytes,
                 total_pressure_score: plan
                     .dirty_buckets
@@ -123,8 +123,8 @@ impl DataNodeRuntime {
             match self.inner.engine.block_store().prepare_next_slab() {
                 Ok(Some(roll)) => {
                     tracing::debug!(
-                        previous_page_slab_id = roll.previous_page_slab_id,
-                        new_page_slab_id = roll.new_page_slab_id,
+                        previous_block_slab_id = roll.previous_block_slab_id,
+                        new_block_slab_id = roll.new_block_slab_id,
                         "storage manager pre-allocated the next data slab"
                     );
                 }
@@ -157,8 +157,8 @@ impl DataNodeRuntime {
                 ),
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
-                    pressure.stale_page_slab_count as u64,
-                    options.stale_page_slab_pressure.max(1) as u64,
+                    pressure.stale_block_slab_count as u64,
+                    options.stale_block_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "background_queue_depth",
@@ -175,9 +175,9 @@ impl DataNodeRuntime {
         let cache_pressure = pressure.cache_memory_bytes
             >= options.cache_memory_bytes_pressure.max(1)
             || pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1);
-        let stale_page_pressure = pressure.stale_page_slab_count
-            >= options.stale_page_slab_pressure.max(1)
-            || pressure.reclaim_candidate_count >= options.stale_page_slab_pressure.max(1)
+        let stale_page_pressure = pressure.stale_block_slab_count
+            >= options.stale_block_slab_pressure.max(1)
+            || pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1)
             || pressure.reclaimable_physical_bytes
                 >= options.reclaimable_physical_bytes_pressure.max(1);
 
@@ -378,8 +378,8 @@ impl DataNodeRuntime {
         ));
 
         if options.enable_page_gc && stale_page_pressure {
-            let retain_page_slabs_from_id = lifecycle_plan
-                .stale_page_slab_ids
+            let retain_block_slabs_from_id = lifecycle_plan
+                .stale_block_slab_ids
                 .iter()
                 .min()
                 .map(|slab_id| slab_id.saturating_add(1));
@@ -395,7 +395,7 @@ impl DataNodeRuntime {
                         .as_ref()
                         .and_then(|report| report.dump_manifest.as_ref())
                         .map(|manifest| manifest.index_log_sequence),
-                    retain_page_slabs_from_id,
+                    retain_block_slabs_from_id,
                 },
             );
             if !response.status.ok {
@@ -421,13 +421,13 @@ impl DataNodeRuntime {
             vec![
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
-                    pressure.stale_page_slab_count as u64,
-                    options.stale_page_slab_pressure.max(1) as u64,
+                    pressure.stale_block_slab_count as u64,
+                    options.stale_block_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "reclaim_candidate_count",
                     pressure.reclaim_candidate_count as u64,
-                    options.stale_page_slab_pressure.max(1) as u64,
+                    options.stale_block_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "reclaimable_physical_bytes",
@@ -437,11 +437,11 @@ impl DataNodeRuntime {
             ],
             storage_manager_trigger_reasons(&[
                 (
-                    pressure.stale_page_slab_count >= options.stale_page_slab_pressure.max(1),
+                    pressure.stale_block_slab_count >= options.stale_block_slab_pressure.max(1),
                     "stale_page_segment_pressure",
                 ),
                 (
-                    pressure.reclaim_candidate_count >= options.stale_page_slab_pressure.max(1),
+                    pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1),
                     "reclaim_candidate_pressure",
                 ),
                 (
@@ -482,13 +482,13 @@ impl DataNodeRuntime {
             vec![
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
-                    pressure.stale_page_slab_count as u64,
-                    options.stale_page_slab_pressure.max(1) as u64,
+                    pressure.stale_block_slab_count as u64,
+                    options.stale_block_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "reclaim_candidate_count",
                     pressure.reclaim_candidate_count as u64,
-                    options.stale_page_slab_pressure.max(1) as u64,
+                    options.stale_block_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "reclaimable_physical_bytes",
@@ -498,11 +498,11 @@ impl DataNodeRuntime {
             ],
             storage_manager_trigger_reasons(&[
                 (
-                    pressure.stale_page_slab_count >= options.stale_page_slab_pressure.max(1),
+                    pressure.stale_block_slab_count >= options.stale_block_slab_pressure.max(1),
                     "stale_page_segment_pressure",
                 ),
                 (
-                    pressure.reclaim_candidate_count >= options.stale_page_slab_pressure.max(1),
+                    pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1),
                     "reclaim_candidate_pressure",
                 ),
                 (

@@ -67,7 +67,7 @@ use self::admin_report::*;
 use self::constants::*;
 // Re-exported so `wal_record::is_wal_resident` can answer for this sentinel too, rather than
 // every site comparing against it by hand.
-pub(crate) use self::constants::HOT_PAGE_SLAB_ID;
+pub(crate) use self::constants::HOT_BLOCK_SLAB_ID;
 use self::execute_on_shard::execute_on_shard;
 use self::context::*;
 use self::packed_pages::*;
@@ -660,7 +660,7 @@ impl TemporalEngine {
                 // long-running node permanently rejected all writes once it tripped.
                 // compares live resident size and evicts; this at least lets
                 // reclamation re-admit writes.
-                .map(|limit| self.page_store.zone_summary().total_known_physical_bytes >= limit)
+                .map(|limit| self.page_store.band_summary().total_known_physical_bytes >= limit)
                 .unwrap_or(false)
         {
             return ExecuteResponse {
@@ -1529,7 +1529,7 @@ impl TemporalEngine {
         let address = shards.get(&shard_id)?.strings.get(key)?;
         Some(CacheKey::page_with_slot(
             shard_id,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket()))
@@ -1715,7 +1715,7 @@ impl TemporalEngine {
             .map(|report| {
                 report.band_manifest_ready
                     && report.band_manifest_disk_consistent
-                    && report.zone_stats_ready
+                    && report.band_stats_ready
                     && report.stream_record_count > 0
                     && report.blockers.iter().all(|blocker| {
                         blocker.contains("append/roll") || blocker.contains("purge lifecycle")
@@ -2314,7 +2314,7 @@ fn collect_upsert_index_items(
             kind,
             object_key,
             component.as_deref().unwrap_or(""),
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.page_id().unwrap_or_default(),
@@ -3467,55 +3467,55 @@ fn associated_record_keys(key: &str) -> Vec<String> {
     keys
 }
 
-fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
+fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     let mut ids = BTreeSet::new();
     ids.extend(
         shard
             .strings
             .values()
-            .map(|address| address.page_slab_id),
+            .map(|address| address.block_slab_id),
     );
     for fields in shard.hashes.values() {
-        ids.extend(fields.values().map(|address| address.page_slab_id));
+        ids.extend(fields.values().map(|address| address.block_slab_id));
     }
     for members in shard.sets.values() {
-        ids.extend(members.values().map(|address| address.page_slab_id));
+        ids.extend(members.values().map(|address| address.block_slab_id));
     }
     for elements in shard.lists.values() {
-        ids.extend(elements.values().map(|address| address.page_slab_id));
+        ids.extend(elements.values().map(|address| address.block_slab_id));
     }
     for members in shard.zsets.values() {
-        ids.extend(members.values().map(|(_, address)| address.page_slab_id));
+        ids.extend(members.values().map(|(_, address)| address.block_slab_id));
     }
     for series in shard.features.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
+        ids.extend(series.values().map(|address| address.block_slab_id));
     }
     ids.extend(
         shard
             .context_nodes
             .values()
-            .map(|address| address.page_slab_id),
+            .map(|address| address.block_slab_id),
     );
     for series in shard.context_events.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
+        ids.extend(series.values().map(|address| address.block_slab_id));
     }
     for series in shard.context_indexes.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
+        ids.extend(series.values().map(|address| address.block_slab_id));
     }
     for series in shard.context_audits.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
+        ids.extend(series.values().map(|address| address.block_slab_id));
     }
     for series in shard.context_entities.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
+        ids.extend(series.values().map(|address| address.block_slab_id));
     }
     for series in shard.context_children.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
+        ids.extend(series.values().map(|address| address.block_slab_id));
     }
     for series in shard.context_summaries.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
+        ids.extend(series.values().map(|address| address.block_slab_id));
     }
     for series in shard.context_compressions.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
+        ids.extend(series.values().map(|address| address.block_slab_id));
     }
     // control_state_pages is the page-backed control-state model and MUST be in the
     // GC live set: it feeds both the reclaim live-slab set and the page-gc dependency plan.
@@ -3527,7 +3527,7 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         shard
             .control_state_pages
             .values()
-            .map(|address| address.page_slab_id),
+            .map(|address| address.block_slab_id),
     );
     ids
 }
@@ -3562,7 +3562,7 @@ fn append_value(
         }
         return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
-    let address = BlockAddress::from_parts(HOT_PAGE_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id, None);
+    let address = BlockAddress::from_parts(HOT_BLOCK_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id, None);
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if page_store.block_in_wal() {
@@ -3574,7 +3574,7 @@ fn append_value(
     cache.put_memory_only(
         CacheKey::page_with_slot(
             shard_id,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket()),
@@ -3754,7 +3754,7 @@ fn read_page_bytes(
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot(
         shard_id,
-        address.page_slab_id,
+        address.block_slab_id,
         address.offset,
         address.length,
         address.routing_bucket());
@@ -3766,7 +3766,7 @@ fn read_page_bytes(
     // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
     // this falls through to the normal read below, which returns None -- the WAL still holds the
     // value and a reload replays it.
-    if crate::wal_record::is_wal_resident(address.page_slab_id) {
+    if crate::wal_record::is_wal_resident(address.block_slab_id) {
         if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset) {
             if let Ok(bytes) = page_store.read(&real_address) {
                 let _ = cache.put(cache_key, bytes.clone());
@@ -3795,7 +3795,7 @@ fn read_page_bytes(
     // The block store could not answer, so try the record that carries this page.
     //
     // This is the same fallback the synthetic-address branch above performs, which until now was
-    // the ONLY way to reach it: the branch is entered on `is_wal_resident(address.page_slab_id)`.
+    // the ONLY way to reach it: the branch is entered on `is_wal_resident(address.block_slab_id)`.
     // A synchronous write stores the real address its block-store append returned, so a read for
     // one never entered that branch, and the copy carried in its record was registered, kept
     // addressable, and never consulted.
@@ -3836,7 +3836,7 @@ fn read_page_shared(
 ) -> Option<std::sync::Arc<[u8]>> {
     let cache_key = CacheKey::page_with_slot(
         shard_id,
-        address.page_slab_id,
+        address.block_slab_id,
         address.offset,
         address.length,
         address.routing_bucket());

@@ -1050,7 +1050,7 @@ impl RaftCluster {
                 let block_store = engine.block_store();
                 for slab in &image.slabs {
                     block_store
-                        .install_slab(slab.page_slab_id, &slab.bytes)
+                        .install_slab(slab.block_slab_id, &slab.bytes)
                         .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
                 }
                 engine
@@ -1195,10 +1195,10 @@ fn build_state_image(engine: &TemporalEngine, shard_id: ShardId) -> Option<RaftS
     let index_bytes = engine.export_index_bytes(shard_id).ok()?;
     let block_store = engine.block_store();
     let mut slabs = Vec::new();
-    for page_slab_id in block_store.slab_ids().ok()? {
-        let bytes = block_store.read_slab(page_slab_id).ok()?;
+    for block_slab_id in block_store.slab_ids().ok()? {
+        let bytes = block_store.read_slab(block_slab_id).ok()?;
         slabs.push(RaftSnapshotStateImageSlab {
-            page_slab_id,
+            block_slab_id,
             bytes,
         });
     }

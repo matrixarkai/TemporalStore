@@ -476,7 +476,7 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
                         .slabs
                         .into_iter()
                         .map(|slab| v1::WalStateImageSlab {
-                            page_slab_id: slab.page_slab_id,
+                            block_slab_id: slab.block_slab_id,
                             slab: slab.bytes,
                         })
                         .collect(),
@@ -579,7 +579,7 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
                     .slabs
                     .into_iter()
                     .map(|slab| RaftSnapshotStateImageSlab {
-                        page_slab_id: slab.page_slab_id,
+                        block_slab_id: slab.block_slab_id,
                         bytes: slab.slab,
                     })
                     .collect(),

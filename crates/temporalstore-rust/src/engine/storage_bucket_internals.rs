@@ -10,23 +10,23 @@ pub(super) fn storage_slab_integrity_report(
     recovery: &StorageRecoveryReport,
     boundary: &StorageRecoveryBoundaryReport,
 ) -> StorageSlabIntegrityReport {
-    let indexed_page_slab_count = recovery.active_page_slab_ids.len();
-    let discovered_page_slab_count = recovery.page_slab_reports.len();
-    let live_page_slab_count = recovery.live_page_slab_ids.len();
-    let orphan_page_slab_count = boundary.orphan_page_slab_ids.len();
+    let indexed_block_slab_count = recovery.active_block_slab_ids.len();
+    let discovered_block_slab_count = recovery.block_slab_reports.len();
+    let live_block_slab_count = recovery.live_block_slab_ids.len();
+    let orphan_block_slab_count = boundary.orphan_block_slab_ids.len();
     let stale_page_ref_count = boundary.stale_index_page_refs.len();
-    let corrupt_page_slab_count = boundary.corrupt_page_slab_ids.len();
+    let corrupt_block_slab_count = boundary.corrupt_block_slab_ids.len();
     let unreadable_page_ref_count = recovery.unreadable_page_refs.len();
     let unreadable_page_bytes = boundary.unreadable_page_bytes;
     let owner_mismatch_page_ref_count = boundary.owner_mismatch_page_refs.len();
     let missing_owner_page_ref_count = boundary.missing_owner_page_refs;
-    let reclaim_required = orphan_page_slab_count > 0
+    let reclaim_required = orphan_block_slab_count > 0
         || recovery
-            .page_slab_live_reports
+            .block_slab_live_reports
             .iter()
             .any(|report| report.stale_page_estimate > 0);
     let integrity_ok = stale_page_ref_count == 0
-        && corrupt_page_slab_count == 0
+        && corrupt_block_slab_count == 0
         && unreadable_page_ref_count == 0
         && unreadable_page_bytes == 0
         && owner_mismatch_page_ref_count == 0
@@ -35,12 +35,12 @@ pub(super) fn storage_slab_integrity_report(
 
     StorageSlabIntegrityReport {
         shard_id,
-        indexed_page_slab_count,
-        discovered_page_slab_count,
-        live_page_slab_count,
-        orphan_page_slab_count,
+        indexed_block_slab_count,
+        discovered_block_slab_count,
+        live_block_slab_count,
+        orphan_block_slab_count,
         stale_page_ref_count,
-        corrupt_page_slab_count,
+        corrupt_block_slab_count,
         unreadable_page_ref_count,
         unreadable_page_bytes,
         owner_mismatch_page_ref_count,
@@ -55,10 +55,10 @@ pub(super) fn storage_reclaim_candidates_from_recovery(
     fully_stale_slab_ids: &BTreeSet<u64>,
 ) -> Vec<StorageReclaimCandidate> {
     let mut candidates = recovery
-        .page_slab_live_reports
+        .block_slab_live_reports
         .iter()
         .filter_map(|report| {
-            let fully_stale = fully_stale_slab_ids.contains(&report.page_slab_id);
+            let fully_stale = fully_stale_slab_ids.contains(&report.block_slab_id);
             let stale_page_estimate = if fully_stale {
                 report.page_count
             } else {
@@ -79,7 +79,7 @@ pub(super) fn storage_reclaim_candidates_from_recovery(
                 .saturating_div(10_000)
                 .saturating_add(stale_page_estimate);
             Some(StorageReclaimCandidate {
-                page_slab_id: report.page_slab_id,
+                block_slab_id: report.block_slab_id,
                 physical_bytes: report.physical_bytes,
                 live_physical_bytes: report.live_physical_bytes,
                 stale_physical_bytes,
@@ -101,7 +101,7 @@ pub(super) fn storage_reclaim_candidates_from_recovery(
             .reclaim_score
             .cmp(&left.reclaim_score)
             .then_with(|| right.stale_physical_bytes.cmp(&left.stale_physical_bytes))
-            .then_with(|| left.page_slab_id.cmp(&right.page_slab_id))
+            .then_with(|| left.block_slab_id.cmp(&right.block_slab_id))
     });
     candidates
 }
@@ -240,9 +240,9 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        zone_id: address.band_id().unwrap_or(address.page_slab_id),
-        slab_id: address.page_slab_id,
-        page_id: address.page_id().unwrap_or(address.page_slab_id),
+        band_id: address.band_id().unwrap_or(address.block_slab_id),
+        slab_id: address.block_slab_id,
+        page_id: address.page_id().unwrap_or(address.block_slab_id),
         offset: address.offset,
         length: address.length,
         generation: address.object_id().unwrap_or(0),
@@ -255,8 +255,8 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        zone_id: address.band_id().unwrap_or(address.page_slab_id),
-        block_id: address.page_slab_id,
+        band_id: address.band_id().unwrap_or(address.block_slab_id),
+        block_id: address.block_slab_id,
         offset: address.offset,
         length: address.length,
         // Not carried in the index any more; the page envelope holds it.
@@ -275,14 +275,14 @@ pub(super) fn storage_index_snapshot_with_samples(
             left.kind.as_ref(),
             left.object_key.as_ref(),
             left.component.as_deref().unwrap_or(""),
-            left.address.page_slab_id,
+            left.address.block_slab_id,
             left.address.offset,
         )
             .cmp(&(
                 right.kind.as_ref(),
                 right.object_key.as_ref(),
                 right.component.as_deref().unwrap_or(""),
-                right.address.page_slab_id,
+                right.address.block_slab_id,
                 right.address.offset,
             ))
     });
@@ -312,7 +312,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 band: entry
                     .address
                     .band_id()
-                    .unwrap_or(entry.address.page_slab_id),
+                    .unwrap_or(entry.address.block_slab_id),
                 checksum: String::new(),
                 generation: entry.address.object_id().unwrap_or(0),
                 page_address,
@@ -433,7 +433,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
             left.kind.as_ref(),
             left.object_key.as_ref(),
             left.component.as_deref().unwrap_or(""),
-            left.address.page_slab_id,
+            left.address.block_slab_id,
             left.address.offset,
         )
             .cmp(&(
@@ -441,7 +441,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
                 right.kind.as_ref(),
                 right.object_key.as_ref(),
                 right.component.as_deref().unwrap_or(""),
-                right.address.page_slab_id,
+                right.address.block_slab_id,
                 right.address.offset,
             ))
     });
@@ -526,8 +526,8 @@ pub(super) fn storage_topology_snapshot_with_samples(
         (
             left.address
                 .band_id()
-                .unwrap_or(left.address.page_slab_id),
-            left.address.page_slab_id,
+                .unwrap_or(left.address.block_slab_id),
+            left.address.block_slab_id,
             left.address.offset,
             left.kind.as_ref(),
             left.object_key.as_ref(),
@@ -536,8 +536,8 @@ pub(super) fn storage_topology_snapshot_with_samples(
                 right
                     .address
                     .band_id()
-                    .unwrap_or(right.address.page_slab_id),
-                right.address.page_slab_id,
+                    .unwrap_or(right.address.block_slab_id),
+                right.address.block_slab_id,
                 right.address.offset,
                 right.kind.as_ref(),
                 right.object_key.as_ref(),
@@ -582,13 +582,13 @@ pub(super) fn storage_topology_snapshot_with_samples(
     let mut buckets = BTreeMap::<u32, BucketAcc>::new();
 
     for entry in &entries {
-        let zone_id = entry
+        let band_id = entry
             .address
             .band_id()
-            .unwrap_or(entry.address.page_slab_id);
-        let slab_id = entry.address.page_slab_id;
+            .unwrap_or(entry.address.block_slab_id);
+        let slab_id = entry.address.block_slab_id;
         let generation = entry.address.object_id().unwrap_or(0);
-        let zone = zones.entry(zone_id).or_default();
+        let zone = zones.entry(band_id).or_default();
         zone.slabs.insert(slab_id);
         zone.generation = zone.generation.max(generation);
         if entry.deleted {
@@ -598,7 +598,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         }
 
         let slab = slabs.entry(slab_id).or_insert_with(|| SlabAcc {
-            band_id: zone_id,
+            band_id,
             start_offset: entry.address.offset,
             ..SlabAcc::default()
         });
@@ -610,7 +610,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
             slab.live_refs = slab.live_refs.saturating_add(1);
         }
 
-        let band = bands.entry(zone_id).or_insert_with(|| BandAcc {
+        let band = bands.entry(band_id).or_insert_with(|| BandAcc {
             min_offset: entry.address.offset,
             max_offset: entry.address.offset.saturating_add(entry.address.length),
             ..BandAcc::default()
@@ -1144,8 +1144,8 @@ pub(super) fn sync_context_pages_for_object(
             if let Some(newest) = points
                 .values()
                 .max_by(|left, right| {
-                    left.page_slab_id
-                        .cmp(&right.page_slab_id)
+                    left.block_slab_id
+                        .cmp(&right.block_slab_id)
                         .then(left.offset.cmp(&right.offset))
                         .then(left.length.cmp(&right.length))
                 })
@@ -1400,7 +1400,7 @@ pub(super) fn page_physical_identity_key(
     Option<u64>,
 ) {
     (
-        address.page_slab_id,
+        address.block_slab_id,
         address.offset,
         address.length,
         address.page_id(),
@@ -2071,7 +2071,7 @@ pub(super) fn object_still_has_hot_page(shard: &ShardState, object_key: &str) ->
     shard
         .strings
         .get(object_key)
-        .map(|address| crate::wal_record::is_wal_resident(address.page_slab_id))
+        .map(|address| crate::wal_record::is_wal_resident(address.block_slab_id))
         .unwrap_or(false)
         || shard
             .hashes
@@ -2079,7 +2079,7 @@ pub(super) fn object_still_has_hot_page(shard: &ShardState, object_key: &str) ->
             .map(|fields| {
                 fields
                     .values()
-                    .any(|address| crate::wal_record::is_wal_resident(address.page_slab_id))
+                    .any(|address| crate::wal_record::is_wal_resident(address.block_slab_id))
             })
             .unwrap_or(false)
 }
@@ -2376,7 +2376,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     if let Some(shard_id) = warm_shard {
                         let key = CacheKey::page_with_slot(
                             shard_id,
-                            entry.address.page_slab_id,
+                            entry.address.block_slab_id,
                             entry.address.offset,
                             entry.address.length,
                             entry.address.routing_bucket(),
@@ -2585,7 +2585,7 @@ pub(super) fn insert_timestamped_secondary_view(
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -2650,7 +2650,7 @@ pub(super) fn insert_context_event_views(
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -2723,7 +2723,7 @@ pub(super) fn validate_bucket_ownership_index(
             .is_some_and(|bucket| {
                 bucket.object_index.contains(&expected_object_id)
                     && bucket.page_index.values().any(|page| {
-                        page.address.page_slab_id == entry.address.page_slab_id
+                        page.address.block_slab_id == entry.address.block_slab_id
                             && page.address.offset == entry.address.offset
                             && page.address.length == entry.address.length
                             && page.address.page_id() == expected_page_id
@@ -2739,7 +2739,7 @@ pub(super) fn validate_bucket_ownership_index(
                 .mismatches
                 .push(StorageRecoveryPageOwnerMismatch {
                     object_key: entry.object_key.to_string(),
-                    page_slab_id: entry.address.page_slab_id,
+                    block_slab_id: entry.address.block_slab_id,
                     offset: entry.address.offset,
                     expected_object_id,
                     actual_object_id: entry.address.object_id(),

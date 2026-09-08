@@ -369,8 +369,8 @@ impl TemporalEngine {
         // physical bytes below the slab's real size, so it cannot lose durable state -- it is a
         // metadata refinement over the lossless disk-derived catalog, making the per-write
         // band-manifest file unnecessary as the catalog's source of truth.
-        if let Ok(Some(meta)) = self.index_log_store.latest_zone_catalog(request.shard_id) {
-            let _ = self.page_store.install_zone_catalog(&meta.zones);
+        if let Ok(Some(meta)) = self.index_log_store.latest_band_catalog(request.shard_id) {
+            let _ = self.page_store.install_band_catalog(&meta.bands);
         }
         let mut state = loaded.unwrap_or_default();
         promote_model_maps_to_bucket_index_authority(
@@ -549,7 +549,7 @@ impl TemporalEngine {
                     page.object_key,
                     page.component,
                     page.object_id(),
-                    page.address.page_slab_id,
+                    page.address.block_slab_id,
                     page.address.offset,
                     page.address.length,
                     page.deleted,
@@ -571,7 +571,7 @@ impl TemporalEngine {
         for (key, address) in strings {
             out.push_str(&format!(
                 "string {key} slab={} off={} len={}\n",
-                address.page_slab_id, address.offset, address.length
+                address.block_slab_id, address.offset, address.length
             ));
         }
         for (key, deadline) in &shard.expires_at_ms {
@@ -595,7 +595,7 @@ impl TemporalEngine {
                 out.push_str(&format!(
                     "context_entity {key} id={entity_hash} slab={} off={} len={}
 ",
-                    address.page_slab_id, address.offset, address.length
+                    address.block_slab_id, address.offset, address.length
                 ));
             }
         }
@@ -605,7 +605,7 @@ impl TemporalEngine {
             out.push_str(&format!(
                 "control_state_page {key} slab={} off={} len={}
 ",
-                address.page_slab_id, address.offset, address.length
+                address.block_slab_id, address.offset, address.length
             ));
         }
         let mut counters: Vec<_> = shard.control_state.iter().collect();
@@ -643,7 +643,7 @@ impl TemporalEngine {
                 out.push_str(&format!(
                     "context_event {key} id={event_id_hash} slab={} off={} len={}
 ",
-                    address.page_slab_id, address.offset, address.length
+                    address.block_slab_id, address.offset, address.length
                 ));
             }
         }
@@ -674,7 +674,7 @@ impl TemporalEngine {
                     out.push_str(&format!(
                         "{kind} {key} at={stored_key} slab={} off={} len={}
 ",
-                        address.page_slab_id, address.offset, address.length
+                        address.block_slab_id, address.offset, address.length
                     ));
                 }
             }
@@ -687,7 +687,7 @@ impl TemporalEngine {
             for (field, address) in entries {
                 out.push_str(&format!(
                     "hash {key}.{field} slab={} off={}\n",
-                    address.page_slab_id, address.offset
+                    address.block_slab_id, address.offset
                 ));
             }
         }
@@ -697,7 +697,7 @@ impl TemporalEngine {
             for (member, address) in members {
                 out.push_str(&format!(
                     "set {key} member={member:?} slab={} off={}\n",
-                    address.page_slab_id, address.offset
+                    address.block_slab_id, address.offset
                 ));
             }
         }
@@ -707,7 +707,7 @@ impl TemporalEngine {
             for (sequence, address) in elements {
                 out.push_str(&format!(
                     "list {key}[{sequence}] slab={} off={}\n",
-                    address.page_slab_id, address.offset
+                    address.block_slab_id, address.offset
                 ));
             }
         }
@@ -717,7 +717,7 @@ impl TemporalEngine {
             for (member, (score, address)) in members {
                 out.push_str(&format!(
                     "zset {key} member={member:?} score={score} slab={} off={}\n",
-                    address.page_slab_id, address.offset
+                    address.block_slab_id, address.offset
                 ));
             }
         }
@@ -1363,7 +1363,7 @@ impl TemporalEngine {
                 .strings
                 .iter()
                 .filter(|(_, address)| {
-                    crate::wal_record::is_wal_resident(address.page_slab_id)
+                    crate::wal_record::is_wal_resident(address.block_slab_id)
                 })
                 .map(|(key, address)| (key.clone(), address.clone()))
                 .collect()
@@ -1434,7 +1434,7 @@ impl TemporalEngine {
         };
         let mut count = 0usize;
         let mut check = |address: &crate::block_store::BlockAddress| {
-            if crate::wal_record::is_wal_resident(address.page_slab_id) {
+            if crate::wal_record::is_wal_resident(address.block_slab_id) {
                 count += 1;
             }
         };

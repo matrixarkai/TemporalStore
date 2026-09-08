@@ -124,15 +124,15 @@ pub const WAL_LOG_SLAB_ID: u64 = u64::MAX - 1;
 /// Two sentinels answer to this, because the idea got invented twice. [`WAL_LOG_SLAB_ID`] is
 /// the ported one, where the address carries the log id of the record holding the block, so a
 /// read seeks straight to it and the mapping survives a restart because it lives in the served
-/// index. `HOT_PAGE_SLAB_ID` is what the live write path mints today: a counter rather than a
+/// index. `HOT_BLOCK_SLAB_ID` is what the live write path mints today: a counter rather than a
 /// position, which is why resolving it needs a process-local registry and why that mapping is
 /// gone after a reload.
 ///
 /// They ask the same question -- is this block in the log? -- so it gets one answer here
 /// instead of an open-coded comparison at each site. The sites are then already asking the
 /// right question on the day the write path starts minting positions instead of counters.
-pub fn is_wal_resident(page_slab_id: u64) -> bool {
-    page_slab_id == WAL_LOG_SLAB_ID || page_slab_id == crate::engine::HOT_PAGE_SLAB_ID
+pub fn is_wal_resident(block_slab_id: u64) -> bool {
+    block_slab_id == WAL_LOG_SLAB_ID || block_slab_id == crate::engine::HOT_BLOCK_SLAB_ID
 }
 
 #[cfg(test)]
@@ -264,7 +264,7 @@ mod tests {
     fn block_address_carries_the_log_id() {
         let item = block_item(11, b"bytes");
         let address = block_address_from_item(4096, 512, &item);
-        assert!(is_wal_resident(address.page_slab_id));
+        assert!(is_wal_resident(address.block_slab_id));
         assert_eq!(address.offset, 4096, "the address IS the log id");
         assert_eq!(address.length, 512);
         assert_eq!(address.routing_bucket(), Some(11));

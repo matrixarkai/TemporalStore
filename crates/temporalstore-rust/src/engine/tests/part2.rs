@@ -243,7 +243,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
             .expect("target address should exist");
         CacheKey::page_with_slot(
             1,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -362,7 +362,7 @@ fn cache_replacement_policy_soak() {
             .clone();
         CacheKey::page_with_slot(
             1,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -615,7 +615,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
             .clone();
         CacheKey::page_with_slot(
             1,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -2249,7 +2249,7 @@ fn read_string(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
 #[test]
 fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() {
     // MANIFEST-CONFORMANCE FOLD cadence: with a tiny WAL gap, a threshold dump fires once the
-    // undumped index-log has grown past it, folding the band/zone catalog into an index-log
+    // undumped index-log has grown past it, folding the band catalog into an index-log
     // MetaItem anchor; below the gap nothing is dumped. Matches
     // index-meta dump background cadence -- never a per-write dump.
     let dir = tempfile::tempdir().unwrap();
@@ -2265,7 +2265,7 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
         "no dump below the threshold"
     );
     assert!(
-        engine.index_log_store().latest_zone_catalog(1).unwrap().is_none(),
+        engine.index_log_store().latest_band_catalog(1).unwrap().is_none(),
         "no folded catalog before any dump"
     );
     // A gap of 1 byte crosses immediately: exactly one dump fires and folds the catalog.
@@ -2276,10 +2276,10 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
         engine.maybe_dump_index_catalog_with_gap_for_test(1, 1),
         "dump fires once the undumped gap crosses the threshold"
     );
-    let catalog = engine.index_log_store().latest_zone_catalog(1).unwrap();
-    let catalog = catalog.expect("a folded band/zone catalog must be durable after the dump");
+    let catalog = engine.index_log_store().latest_band_catalog(1).unwrap();
+    let catalog = catalog.expect("a folded band catalog must be durable after the dump");
     assert!(
-        !catalog.zones.is_empty(),
+        !catalog.bands.is_empty(),
         "the dump must fold at least the active band into the anchor"
     );
     // The watermark advanced: the undumped gap reset, so an immediate re-check does not re-dump.
@@ -2325,7 +2325,7 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     assert!(
         engine
             .index_log_store()
-            .latest_zone_catalog(1)
+            .latest_band_catalog(1)
             .unwrap()
             .is_some(),
         "the folded catalog anchor must survive the index-log sweep"
@@ -2429,7 +2429,7 @@ fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
     assert!(engine.dump_index_catalog(1), "explicit dump must complete");
     let folded = engine
         .index_log_store()
-        .latest_zone_catalog(1)
+        .latest_band_catalog(1)
         .unwrap()
         .expect("catalog folded");
     drop(engine);
@@ -2454,12 +2454,12 @@ fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
         );
     }
     // The folded lifecycle states are present in the reconstructed catalog.
-    let recovered = restarted.block_store().zone_catalog(0);
-    for zone in &folded.zones {
+    let recovered = restarted.block_store().band_catalog(0);
+    for entry in &folded.bands {
         assert!(
-            recovered.iter().any(|z| z.page_slab_id == zone.page_slab_id),
+            recovered.iter().any(|z| z.block_slab_id == entry.block_slab_id),
             "band {} must be present after reload from the fold",
-            zone.page_slab_id
+            entry.block_slab_id
         );
     }
 }

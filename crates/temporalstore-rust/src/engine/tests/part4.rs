@@ -695,11 +695,11 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
     let mut missing = engine
         .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
-    missing.page_slab_ids.push(999_999);
+    missing.block_slab_ids.push(999_999);
     missing.checksum = bucket_dump_manifest_checksum(&missing).unwrap();
     let missing_preflight = engine.bucket_dump_install_preflight_report(&missing);
     assert!(!missing_preflight.install_safe);
-    assert_eq!(missing_preflight.missing_page_slab_ids, vec![999_999]);
+    assert_eq!(missing_preflight.missing_block_slab_ids, vec![999_999]);
     assert!(missing_preflight
         .blockers
         .contains(&"missing_page_segments".to_string()));
@@ -708,7 +708,7 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
     let mut incomplete = engine
         .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
-    incomplete.page_slab_ids.clear();
+    incomplete.block_slab_ids.clear();
     incomplete.checksum = bucket_dump_manifest_checksum(&incomplete).unwrap();
     assert_eq!(
         engine
@@ -721,14 +721,14 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
     let corrupt = engine
         .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
-    let slab_id = corrupt.page_slab_ids[0];
+    let slab_id = corrupt.block_slab_ids[0];
     let mut slab = engine.block_store().read_slab(slab_id).unwrap();
     *slab.last_mut().unwrap() ^= 0xff;
     let _ = engine.block_store().install_slab(slab_id, &slab);
     let corrupt_preflight = engine.bucket_dump_install_preflight_report(&corrupt);
     assert!(!corrupt_preflight.install_safe);
     assert!(corrupt_preflight
-        .corrupt_page_slab_ids
+        .corrupt_block_slab_ids
         .contains(&slab_id));
     assert!(corrupt_preflight.unreadable_page_ref_count > 0);
     assert!(corrupt_preflight.unreadable_page_bytes > 0);
@@ -2437,12 +2437,12 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
             value: b"v2".to_vec(),
         },
     });
-    assert_eq!(engine.live_page_slab_ids(1), vec![1]);
+    assert_eq!(engine.live_block_slab_ids(1), vec![1]);
     let delayed = engine
         .block_store()
-        .gc_slabs_before_with_live_refs_delayed_destroy(1, engine.live_page_slab_ids(1))
+        .gc_slabs_before_with_live_refs_delayed_destroy(1, engine.live_block_slab_ids(1))
         .unwrap();
-    assert_eq!(delayed.delayed_destroy_page_slab_ids, vec![0]);
+    assert_eq!(delayed.delayed_destroy_block_slab_ids, vec![0]);
 
     let matrix = engine.storage_page_gc_dependency_plan(
         1,
@@ -2450,7 +2450,7 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
         vec![StoragePageGcReplayCursor {
             cursor_id: "shared-follower-a".to_string(),
             shard_id: 1,
-            retain_from_page_slab_id: 0,
+            retain_from_block_slab_id: 0,
             reason: "shared-store follower is behind segment zero".to_string(),
         }],
         vec![BucketDumpRaftSnapshotRef {
@@ -2466,7 +2466,7 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
         60_000,
     );
     assert!(!matrix.safe_to_reclaim, "{matrix:?}");
-    assert_eq!(matrix.candidate_page_slab_ids, vec![0, 1]);
+    assert_eq!(matrix.candidate_block_slab_ids, vec![0, 1]);
     assert_eq!(matrix.live_ref_block_count, 1);
     assert_eq!(matrix.bucket_dump_manifest_block_count, 1);
     assert_eq!(matrix.shared_store_cursor_block_count, 2);
@@ -2725,7 +2725,7 @@ fn bucket_dump_manifest_rejects_byte_accounting_mismatch() {
 }
 
 #[test]
-fn bucket_dump_manifest_rejects_non_canonical_bucket_and_page_slab_ids() {
+fn bucket_dump_manifest_rejects_non_canonical_bucket_and_block_slab_ids() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2766,19 +2766,19 @@ fn bucket_dump_manifest_rejects_non_canonical_bucket_and_page_slab_ids() {
         "slot_dump_slot_ids_not_canonical"
     );
 
-    let mut duplicate_page_slab = manifest.clone();
-    duplicate_page_slab.page_slab_ids.push(
-        duplicate_page_slab
-            .page_slab_ids
+    let mut duplicate_block_slab = manifest.clone();
+    duplicate_block_slab.block_slab_ids.push(
+        duplicate_block_slab
+            .block_slab_ids
             .first()
             .copied()
             .expect("page segment id should exist"),
     );
-    duplicate_page_slab.dump_generation_id = bucket_dump_generation_id(&duplicate_page_slab);
-    duplicate_page_slab.checksum = bucket_dump_manifest_checksum(&duplicate_page_slab).unwrap();
+    duplicate_block_slab.dump_generation_id = bucket_dump_generation_id(&duplicate_block_slab);
+    duplicate_block_slab.checksum = bucket_dump_manifest_checksum(&duplicate_block_slab).unwrap();
     assert_eq!(
         engine
-            .validate_bucket_dump_manifest(&duplicate_page_slab)
+            .validate_bucket_dump_manifest(&duplicate_block_slab)
             .unwrap_err()
             .code,
         "slot_dump_page_segment_ids_not_canonical"
@@ -2827,12 +2827,12 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
     assert!(!plan.dirty_buckets.is_empty());
     assert_eq!(plan.selected_dump_buckets, plan.dirty_buckets);
     assert!(plan.reasons.contains(&"dirty_slot_dump".to_string()));
-    assert!(plan.stale_page_slab_ids.contains(&0));
+    assert!(plan.stale_block_slab_ids.contains(&0));
     assert!(plan
         .reasons
         .contains(&"ranked_reclaim_candidates".to_string()));
     assert!(!plan.reclaim_candidates.is_empty());
-    assert_eq!(plan.reclaim_candidates[0].page_slab_id, 0);
+    assert_eq!(plan.reclaim_candidates[0].block_slab_id, 0);
     assert_eq!(plan.reclaim_candidates[0].reason, "orphan_segment");
     assert!(plan.reclaim_candidates[0].stale_physical_bytes > 0);
     assert!(plan.reclaim_candidates[0].reclaim_score > 0);
@@ -2857,7 +2857,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
     let boundary = engine.storage_recovery_boundary_report(1);
     assert_eq!(boundary.latest_safe_wal_sequence, 2);
     assert_eq!(boundary.latest_dump_wal_sequence, 2);
-    assert!(boundary.orphan_page_slab_ids.contains(&0));
+    assert!(boundary.orphan_block_slab_ids.contains(&0));
 }
 
 #[test]
@@ -3142,7 +3142,7 @@ fn storage_production_readiness_policy_can_promote_warnings_to_blockers() {
 }
 
 #[test]
-fn storage_production_readiness_blocks_corrupt_live_page_slabs() {
+fn storage_production_readiness_blocks_corrupt_live_block_slabs() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -3163,7 +3163,7 @@ fn storage_production_readiness_blocks_corrupt_live_page_slabs() {
             .status
             .ok
     );
-    let slab_id = engine.live_page_slab_ids(1)[0];
+    let slab_id = engine.live_block_slab_ids(1)[0];
     let mut bytes = engine.block_store().read_slab(slab_id).unwrap();
     let last = bytes.len() - 1;
     bytes[last] ^= 0xff;
@@ -3184,9 +3184,9 @@ fn storage_production_readiness_blocks_corrupt_live_page_slabs() {
         .blockers
         .contains(&"storage_segment_integrity_failed".to_string()));
     assert!(!report.slab_integrity.integrity_ok);
-    assert!(report.slab_integrity.corrupt_page_slab_count > 0);
+    assert!(report.slab_integrity.corrupt_block_slab_count > 0);
     assert!(report.slab_integrity.unreadable_page_ref_count > 0);
-    assert!(report.corrupt_page_slab_count > 0);
+    assert!(report.corrupt_block_slab_count > 0);
     assert!(report.unreadable_page_ref_count > 0);
 }
 
@@ -3404,7 +3404,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
             .clone();
         CacheKey::page_with_slot(
             1,
-            address.page_slab_id,
+            address.block_slab_id,
             address.offset,
             address.length,
             address.routing_bucket(),
@@ -3487,7 +3487,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     let readiness = restored.storage_production_readiness_report(1);
     assert!(readiness.production_ready, "{readiness:?}");
     assert_eq!(readiness.unreadable_page_ref_count, 0);
-    assert_eq!(readiness.corrupt_page_slab_count, 0);
+    assert_eq!(readiness.corrupt_block_slab_count, 0);
 }
 
 #[test]
@@ -3646,11 +3646,11 @@ fn cross_shard_page_reclaim_retains_another_shards_live_slab() {
     // Sanity: from shard A's own viewpoint, slab 0 is NOT live (it holds no shard-A pages), which
     // is precisely why the legacy per-shard reclaim would delete it.
     assert!(
-        !engine.live_page_slab_ids(1).contains(&0),
+        !engine.live_block_slab_ids(1).contains(&0),
         "slab 0 must be absent from shard A's per-shard live set"
     );
     assert!(
-        engine.live_page_slab_ids_all_shards().contains(&0),
+        engine.live_block_slab_ids_all_shards().contains(&0),
         "slab 0 must be present in the cross-shard union live set"
     );
 
@@ -4719,7 +4719,7 @@ fn what_each_address_field_actually_ranges_over() {
         for (_key, page) in bucket.page_index.iter() {
             pages += 1;
             let a = &page.address;
-            slab = slab.max(a.page_slab_id);
+            slab = slab.max(a.block_slab_id);
             offset = offset.max(a.offset);
             length = length.max(a.length);
             page_id = page_id.max(a.page_id().unwrap_or(0));
@@ -4735,7 +4735,7 @@ fn what_each_address_field_actually_ranges_over() {
     println!(
         "
   address field ranges over {pages} pages (max observed, and bits to hold it):
-    page_slab_id  {slab:>22}  {:>2} bits   bounded by slab count
+    block_slab_id  {slab:>22}  {:>2} bits   bounded by slab count
     offset        {offset:>22}  {:>2} bits   bounded by slab size
     length        {length:>22}  {:>2} bits   bounded by page size
     page_id       {page_id:>22}  {:>2} bits
@@ -6449,7 +6449,7 @@ fn a_bucket_summary_reads_short_field_names_too() {
         serde_json::from_str(short).expect("the short names must parse");
     assert_eq!(from_long, from_short, "both spellings must mean the same summary");
     assert_eq!(from_long.routing_bucket, 7);
-    assert_eq!(from_long.page_slab_ids, vec![9]);
+    assert_eq!(from_long.block_slab_ids, vec![9]);
 
     // And writing is now short by default -- the saving this whole change exists for.
     let written = serde_json::to_string(&from_long).expect("serialize");
@@ -11198,7 +11198,7 @@ fn what_a_live_record_is_made_of() {
             if let Some(address) = item.resolved_address() {
                 println!(
                     "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} band={:?}",
-                    address.page_slab_id,
+                    address.block_slab_id,
                     address.offset,
                     address.length,
                     address.page_id(),

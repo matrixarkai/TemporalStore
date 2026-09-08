@@ -325,7 +325,7 @@ impl TemporalEngine {
     /// which skips per-record persistence). Also refreshes the index-log tail.
     pub fn flush_shard_index(&self, shard_id: ShardId) {
         // Make the chunk's deferred bulk writes durable before publishing the
-        // served index: fsync page segments + band manifest, then the WAL. If the
+        // served index: fsync page slabs + band manifest, then the WAL. If the
         // barrier FAILS, bail without pinning applied_wal_sequence or writing the index:
         // advancing the durable anchor past pages that never reached disk would suppress
         // their replay on reload -> silent data loss. advances the watermark only after
@@ -408,7 +408,7 @@ impl TemporalEngine {
         self.dump_index_catalog(shard_id)
     }
 
-    /// MANIFEST-CONFORMANCE FOLD dump: materialize the durable base index, fold the band/zone catalog
+    /// MANIFEST-CONFORMANCE FOLD dump: materialize the durable base index, fold the band catalog
     /// into an index-log anchor (the durable band catalog, conformance), and
     /// advance the dumped watermark -- the batched, threshold-driven replacement for the per-write
     /// band-manifest persist. No-op with the gate off. Ordering is single-barrier safe: pages +
@@ -462,18 +462,18 @@ impl TemporalEngine {
         {
             return None;
         }
-        // 3. Fold the band/zone catalog into a MetaItem anchor and append it durably to the
-        //    index-log. This is this design's "dump the zone catalog into the index log" step:
+        // 3. Fold the band catalog into a MetaItem anchor and append it durably to the
+        //    index-log. This is this design's "dump the band catalog into the index log" step:
         //    after it, the band catalog is recoverable from the durable log, so the per-write
         //    band-manifest file stops being the source of truth.
-        let zone_version = anchor;
-        let zones = self.page_store.zone_catalog(zone_version);
+        let band_version = anchor;
+        let bands = self.page_store.band_catalog(band_version);
         let meta = crate::index_log::MetaItem {
             version: 1,
             start_wal_sequence: anchor,
             timestamp_ms: now_ms(),
-            zone_version,
-            zones,
+            band_version,
+            bands,
         };
         let meta_sequence = match self.index_log_store.append_delta(
             shard_id,
@@ -685,7 +685,7 @@ impl TemporalEngine {
             .cloned();
         shards.get(&shard_id).map(|state| {
             let page_store = self.page_store.stats();
-            let page_store_zones = self.page_store.zone_summary();
+            let page_store_bands = self.page_store.band_summary();
             let string_records = state.strings.len();
             let hash_records = state.hashes.len();
             let set_records = state.sets.len();
@@ -750,21 +750,21 @@ impl TemporalEngine {
                 block_index_entries: page_store.writes,
                 object_index_entries: object_manager.object_count as u64,
                 bucket_entries: object_manager.routing_bucket_count as u64,
-                storage_zone_count: page_store_zones
+                storage_band_count: page_store_bands
                     .active_bands
-                    .saturating_add(page_store_zones.sealed_bands)
-                    .saturating_add(page_store_zones.delayed_destroy_bands)
-                    .saturating_add(page_store_zones.purged_bands),
-                active_storage_zones: page_store_zones.active_bands,
-                sealed_storage_zones: page_store_zones.sealed_bands,
-                stream_slab_count: page_store_zones
+                    .saturating_add(page_store_bands.sealed_bands)
+                    .saturating_add(page_store_bands.delayed_destroy_bands)
+                    .saturating_add(page_store_bands.purged_bands),
+                active_storage_bands: page_store_bands.active_bands,
+                sealed_storage_bands: page_store_bands.sealed_bands,
+                stream_slab_count: page_store_bands
                     .active_bands
-                    .saturating_add(page_store_zones.sealed_bands)
-                    .saturating_add(page_store_zones.delayed_destroy_bands)
-                    .saturating_add(page_store_zones.purged_bands),
-                storage_zone_total_bytes: page_store_zones.total_known_physical_bytes,
-                storage_zone_used_bytes: page_store_zones.live_physical_bytes,
-                storage_zone_stale_bytes: page_store_zones.reclaimable_physical_bytes,
+                    .saturating_add(page_store_bands.sealed_bands)
+                    .saturating_add(page_store_bands.delayed_destroy_bands)
+                    .saturating_add(page_store_bands.purged_bands),
+                storage_band_total_bytes: page_store_bands.total_known_physical_bytes,
+                storage_band_used_bytes: page_store_bands.live_physical_bytes,
+                storage_band_stale_bytes: page_store_bands.reclaimable_physical_bytes,
                 page_reads: page_store.reads,
                 page_writes: page_store.writes,
                 block_reads: page_store.reads,
@@ -772,7 +772,7 @@ impl TemporalEngine {
                 bytes_read: page_store.bytes_read,
                 bytes_written: page_store.bytes_written,
                 append_watermark: page_store.writes,
-                compaction_watermark: page_store_zones.reclaimable_physical_bytes,
+                compaction_watermark: page_store_bands.reclaimable_physical_bytes,
             };
             ShardStats {
                 shard_id,
@@ -792,9 +792,9 @@ impl TemporalEngine {
                 storage,
                 cache: self.cache.stats(),
                 page_store: page_store.clone(),
-                page_store_zones: page_store_zones.clone(),
+                page_store_zones: page_store_bands.clone(),
                 block_store: page_store,
-                block_store_bands: page_store_zones,
+                block_store_bands: page_store_bands,
                 write_ahead_log: self.wal_store.stats(shard_id),
             }
         })

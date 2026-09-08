@@ -188,13 +188,13 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
     let local_file_store_ready = true;
     let shared_store_checkpoint_manifest_ready = true;
     let wal_cursor_retention_ready = true;
-    let page_slab_manifest_ready = true;
+    let block_slab_manifest_ready = true;
     let follower_cursor_retention_ready = true;
     let raft_snapshot_manifest_retention_ready = true;
     let local_shared_store_production_ready = local_file_store_ready
         && shared_store_checkpoint_manifest_ready
         && wal_cursor_retention_ready
-        && page_slab_manifest_ready
+        && block_slab_manifest_ready
         && follower_cursor_retention_ready
         && raft_snapshot_manifest_retention_ready;
     let live_external_object_store_out_of_scope = true;
@@ -222,7 +222,7 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
         local_file_store_ready,
         shared_store_checkpoint_manifest_ready,
         wal_cursor_retention_ready,
-        page_slab_manifest_ready,
+        block_slab_manifest_ready,
         follower_cursor_retention_ready,
         raft_snapshot_manifest_retention_ready,
         local_shared_store_production_ready,
@@ -294,7 +294,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "LocalBlockStore exposes stream-backed band runtime reports".to_string(),
         "logical stream reads span page records while skipping envelopes and decompression"
             .to_string(),
-        "segment roll seals previous bands and opens a new active stream band".to_string(),
+        "slab roll seals previous bands and opens a new active stream band".to_string(),
         "band manifests persist active/sealed/delayed-destroy/purged lifecycle states".to_string(),
         "stream envelopes carry checksum, page id, object id, routing slot, band id, and compression metadata"
             .to_string(),

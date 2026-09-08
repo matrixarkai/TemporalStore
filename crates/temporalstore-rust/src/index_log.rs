@@ -294,21 +294,21 @@ where
     deserializer.deserialize_any(EitherShape)
 }
 
-/// Band/zone lifecycle state folded into the index-log MetaItem. 1:1 with
+/// Band lifecycle state folded into the index-log MetaItem. 1:1 with
 /// `block_store::BlockStoreBandState` and with the on-disk band-state encoding
 /// (INIT/CREATED/FROZEN/RECYCLED): Active==CREATED, Sealed==FROZEN, DelayedDestroy/Purged
 /// cover the RECYCLED grace. Serialized snake_case so it round-trips with the band manifest's
 /// own state enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ZoneState {
+pub enum BandCatalogState {
     Active,
     Sealed,
     DelayedDestroy,
     Purged,
 }
 
-/// One band/zone catalog entry folded into the index-log MetaItem, mirroring this design
+/// One band catalog entry folded into the index-log MetaItem, mirroring this design
 /// the durable band catalog in the index-log anchor. Carries the DURABLE catalog fields the
 /// band descriptor tracks -- lifecycle state, byte counts, timestamps, page-id range, version.
 /// The band descriptor's DIAGNOSTIC fields (readable_prefix_physical_bytes / has_corruption /
@@ -316,10 +316,11 @@ pub enum ZoneState {
 /// (`inspect_slab`, driven by `rebuild_band_manifest_at` / reconcile-on-open), exactly as the
 /// are not persisted. So this is the lossless durable projection of a band.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ZoneInfo {
+pub struct BandCatalogEntry {
     #[serde(alias = "zone_id")]
-    pub page_slab_id: u64,
-    pub state: ZoneState,
+    #[serde(rename = "page_slab_id")]
+    pub block_slab_id: u64,
+    pub state: BandCatalogState,
     #[serde(alias = "total_bytes")]
     pub physical_bytes: u64,
     #[serde(default)]
@@ -342,10 +343,11 @@ pub struct ZoneInfo {
 /// and every delta record at or before it can be truncated. Matches
 /// MetaItem's `start_WAL_id` role in the native WAL vocabulary.
 ///
-/// `zones` folds the band catalog into the anchor. It
+/// `bands` folds the band catalog into the anchor, and serializes under its original
+/// `zones` key. It
 /// is populated ONLY at a threshold dump;
 /// with the gate off it is always empty and (via `skip_serializing_if`) not serialized, so an
-/// anchor record is byte-identical to the pre-fold record. Legacy anchors without `zones`
+/// anchor record is byte-identical to the pre-fold record. Anchors without `zones`
 /// deserialize to an empty catalog and replay unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaItem {
@@ -355,10 +357,10 @@ pub struct MetaItem {
     pub start_wal_sequence: u64,
     #[serde(default)]
     pub timestamp_ms: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub zones: Vec<ZoneInfo>,
-    #[serde(default)]
-    pub zone_version: u64,
+    #[serde(rename = "zones", default, skip_serializing_if = "Vec::is_empty")]
+    pub bands: Vec<BandCatalogEntry>,
+    #[serde(rename = "zone_version", default)]
+    pub band_version: u64,
 }
 
 /// One appended delta record: either a batch of page/object item deltas (PAGE/OBJECT) or
@@ -410,7 +412,7 @@ pub fn page_ref_key_from_parts(
     kind: &str,
     object_key: &str,
     component: Option<&str>,
-    page_slab_id: u64,
+    block_slab_id: u64,
     offset: u64,
     length: u64,
     page_id: u64,
@@ -431,7 +433,7 @@ pub fn page_ref_key_from_parts(
     // `write!` into a String appends in place; it does not allocate.
     let _ = write!(
         key,
-        ":{page_slab_id}:{offset}:{length}:{page_id}:{generation}"
+        ":{block_slab_id}:{offset}:{length}:{page_id}:{generation}"
     );
     key
 }
@@ -530,7 +532,7 @@ fn indexlog_wal_only_sync() -> bool {
     !crate::engine::wal_legacy_recovery()
 }
 
-/// MANIFEST-CONFORMANCE FOLD, always on: the band/zone catalog is folded into the index-log
+/// MANIFEST-CONFORMANCE FOLD, always on: the band catalog is folded into the index-log
 /// anchor at a threshold dump, and the per-write band-manifest file is no longer the catalog's
 /// source of truth (it is reconstructed on load from the durable pages plus the folded anchor).
 /// `TS_INDEX_CATALOG_FOLD` used to be able to skip all of it. It shipped dark (the flip once
@@ -540,7 +542,7 @@ fn indexlog_wal_only_sync() -> bool {
 /// engine reclaim its index-log and WAL at all, so the off side disabled reclaim entirely.
 ///
 /// The off side's compatibility claim still holds and is not conditional on anything: an anchor
-/// whose `zones` is empty serializes with no `zones` key, byte-identical to a pre-fold MetaItem.
+/// whose `bands` is empty serializes with no `zones` key, byte-identical to a pre-fold MetaItem.
 /// `meta_item_without_zones_serializes_byte_identically_to_pre_fold` asserts exactly that.
 ///
 /// Threshold decision for the background catalog/index dump, mirroring this design
@@ -596,15 +598,15 @@ impl LocalIndexLogStore {
         inner.last_dumped_len_by_shard.insert(shard_id, current);
     }
 
-    /// The most recent `MetaItem` anchor carrying a folded band/zone catalog, or `None` if no
-    /// anchor with a non-empty `zones` list has been written. Used on load (gate on) to seed the
+    /// The most recent `MetaItem` anchor carrying a folded band catalog, or `None` if no
+    /// anchor with a non-empty `bands` list has been written. Used on load (gate on) to seed the
     /// block-store band catalog from the folded anchor when the band-manifest file is absent.
-    pub fn latest_zone_catalog(&self, shard_id: ShardId) -> Result<Option<MetaItem>, IndexLogError> {
+    pub fn latest_band_catalog(&self, shard_id: ShardId) -> Result<Option<MetaItem>, IndexLogError> {
         let records = self.read_delta_records(shard_id, 0)?;
         Ok(records
             .into_iter()
             .filter_map(|record| record.meta)
-            .filter(|meta| !meta.zones.is_empty())
+            .filter(|meta| !meta.bands.is_empty())
             .next_back())
     }
 
@@ -1826,11 +1828,11 @@ mod tests {
 
     #[test]
     fn meta_item_without_zones_serializes_byte_identically_to_pre_fold() {
-        // Pre-fold compatibility invariant: an anchor whose `zones` is empty must serialize with
+        // Pre-fold compatibility invariant: an anchor whose `bands` is empty must serialize with
         // NO `zones` key and NO
-        // `zone_version` beyond what a pre-fold MetaItem produced. `zone_version` defaults to 0
+        // `band_version` beyond what a pre-fold MetaItem produced. `band_version` defaults to 0
         // and is not skipped, so it appears; assert the value carries only the legacy three
-        // fields plus a zero zone_version and no zones array.
+        // fields plus a zero band_version and no zones array.
         let meta = MetaItem {
             version: 7,
             start_wal_sequence: 11,
@@ -1850,18 +1852,18 @@ mod tests {
     }
 
     #[test]
-    fn meta_item_zone_catalog_round_trips_through_the_delta_log() {
+    fn meta_item_band_catalog_round_trips_through_the_delta_log() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let meta = MetaItem {
             version: 1,
             start_wal_sequence: 5,
             timestamp_ms: 100,
-            zone_version: 3,
-            zones: vec![
-                ZoneInfo {
-                    page_slab_id: 0,
-                    state: ZoneState::Sealed,
+            band_version: 3,
+            bands: vec![
+                BandCatalogEntry {
+                    block_slab_id: 0,
+                    state: BandCatalogState::Sealed,
                     physical_bytes: 4096,
                     logical_bytes: 4000,
                     created_unix_ms: Some(10),
@@ -1870,9 +1872,9 @@ mod tests {
                     last_page_id: Some(9),
                     version: 3,
                 },
-                ZoneInfo {
-                    page_slab_id: 1,
-                    state: ZoneState::Active,
+                BandCatalogEntry {
+                    block_slab_id: 1,
+                    state: BandCatalogState::Active,
                     physical_bytes: 512,
                     logical_bytes: 512,
                     created_unix_ms: Some(30),
@@ -1886,27 +1888,27 @@ mod tests {
         store
             .append_delta(4, Vec::new(), Vec::new(), Some(5), Some(meta.clone()), false, true)
             .unwrap();
-        // A reopen reads the folded catalog back exactly, and latest_zone_catalog finds it.
+        // A reopen reads the folded catalog back exactly, and latest_band_catalog finds it.
         let reopened = LocalIndexLogStore::new(dir.path());
-        let recovered = reopened.latest_zone_catalog(4).unwrap().unwrap();
+        let recovered = reopened.latest_band_catalog(4).unwrap().unwrap();
         assert_eq!(recovered, meta);
-        assert_eq!(recovered.zones.len(), 2);
-        assert_eq!(recovered.zones[0].state, ZoneState::Sealed);
-        assert_eq!(recovered.zones[1].page_slab_id, 1);
+        assert_eq!(recovered.bands.len(), 2);
+        assert_eq!(recovered.bands[0].state, BandCatalogState::Sealed);
+        assert_eq!(recovered.bands[1].block_slab_id, 1);
     }
 
     #[test]
-    fn latest_zone_catalog_prefers_the_newest_anchor_and_ignores_empty_ones() {
+    fn latest_band_catalog_prefers_the_newest_anchor_and_ignores_empty_ones() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let older = MetaItem {
             version: 1,
             start_wal_sequence: 1,
             timestamp_ms: 1,
-            zone_version: 1,
-            zones: vec![ZoneInfo {
-                page_slab_id: 0,
-                state: ZoneState::Active,
+            band_version: 1,
+            bands: vec![BandCatalogEntry {
+                block_slab_id: 0,
+                state: BandCatalogState::Active,
                 physical_bytes: 1,
                 logical_bytes: 1,
                 created_unix_ms: None,
@@ -1920,10 +1922,10 @@ mod tests {
             version: 2,
             start_wal_sequence: 9,
             timestamp_ms: 9,
-            zone_version: 2,
-            zones: vec![ZoneInfo {
-                page_slab_id: 0,
-                state: ZoneState::Sealed,
+            band_version: 2,
+            bands: vec![BandCatalogEntry {
+                block_slab_id: 0,
+                state: BandCatalogState::Sealed,
                 physical_bytes: 2,
                 logical_bytes: 2,
                 created_unix_ms: None,
@@ -1936,14 +1938,14 @@ mod tests {
         store
             .append_delta(6, Vec::new(), Vec::new(), Some(1), Some(older), false, true)
             .unwrap();
-        // An anchor with no zones between them must not shadow the folded catalog.
+        // An anchor with no bands between them must not shadow the folded catalog.
         store
             .append_delta(6, Vec::new(), Vec::new(), Some(5), Some(MetaItem::default()), false, true)
             .unwrap();
         store
             .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), false, true)
             .unwrap();
-        assert_eq!(store.latest_zone_catalog(6).unwrap().unwrap(), newer);
+        assert_eq!(store.latest_band_catalog(6).unwrap().unwrap(), newer);
     }
 
     #[test]

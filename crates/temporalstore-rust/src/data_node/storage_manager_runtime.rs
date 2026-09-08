@@ -103,12 +103,12 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
         undumped_wal_records: cycle.pressure_snapshot.undumped_wal_records,
         wal_bytes: cycle.pressure_snapshot.wal_bytes,
         index_log_bytes: cycle.pressure_snapshot.index_log_bytes,
-        stale_page_slab_count: cycle.plan.stale_page_slab_ids.len(),
+        stale_block_slab_count: cycle.plan.stale_block_slab_ids.len(),
         reclaim_candidate_count: cycle.plan.reclaim_candidates.len(),
         reclaimable_physical_bytes: cycle.plan.reclaimable_physical_bytes,
-        page_slab_stale_density_basis_points: cycle
+        block_slab_stale_density_basis_points: cycle
             .pressure_snapshot
-            .page_slab_stale_density_basis_points,
+            .block_slab_stale_density_basis_points,
         cache_memory_bytes: cycle.pressure_snapshot.memory_cache_bytes,
         cache_disk_bytes: cycle.pressure_snapshot.disk_cache_bytes,
         memory_cache_pressure_score: cycle.pressure_snapshot.memory_cache_pressure_score,

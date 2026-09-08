@@ -295,7 +295,7 @@ pub(super) fn decode_page_record(
 
 pub(super) fn logical_range_from_slab(
     slab: &[u8],
-    page_slab_id: u64,
+    block_slab_id: u64,
     offset: u64,
     size: u64,
 ) -> Result<LogicalRangeRead, BlockStoreError> {
@@ -328,7 +328,7 @@ pub(super) fn logical_range_from_slab(
 
     while physical_offset < slab.len() && out.len() < size as usize {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(page_slab_id, physical_offset as u64, 0, None, None, None, None, None);
+        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
             return Err(corrupt_page_envelope(
                 &address,
@@ -650,7 +650,7 @@ fn verify_page_record_checksum(
         )
     };
     Err(BlockStoreError::ChecksumMismatch {
-        page_slab_id: address.page_slab_id,
+        block_slab_id: address.block_slab_id,
         offset: address.offset,
         length: address.length,
         expected,
@@ -663,7 +663,7 @@ pub(super) fn corrupt_page_envelope(
     reason: impl Into<String>,
 ) -> BlockStoreError {
     BlockStoreError::CorruptPageEnvelope {
-        page_slab_id: address.page_slab_id,
+        block_slab_id: address.block_slab_id,
         offset: address.offset,
         reason: reason.into(),
     }
@@ -690,7 +690,7 @@ pub(super) struct SlabSummary {
 
 pub(super) fn summarize_slab(
     slab: &[u8],
-    page_slab_id: u64,
+    block_slab_id: u64,
 ) -> Result<SlabSummary, BlockStoreError> {
     if !slab.starts_with(PAGE_RECORD_MAGIC) {
         return Ok(SlabSummary {
@@ -703,7 +703,7 @@ pub(super) fn summarize_slab(
     let mut summary = SlabSummary::default();
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(page_slab_id, physical_offset as u64, 0, None, None, None, None, None);
+        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
             return Err(corrupt_page_envelope(
                 &address,
@@ -757,7 +757,7 @@ const PAGE_RECORD_WIDEST_HEADER_LEN: usize = if PAGE_RECORD_HEADER_LEN > PAGE_RE
 ///
 /// Sized so a bufferful spans many records rather than one: at the ~300-byte records the live
 /// store holds, this is ~800 per fill, which is the difference between thousands of reads for a
-/// segment and millions.
+/// slab and millions.
 const PAGE_RECORD_SCAN_BUFFER_BYTES: usize = 256 * 1024;
 
 /// The largest page id recorded in one slab, read from record headers alone.
@@ -774,7 +774,7 @@ const PAGE_RECORD_SCAN_BUFFER_BYTES: usize = 256 * 1024;
 ///
 /// It reads through a `BufReader` rather than seeking per record. Records here are small -- the
 /// live store holds ~3.4M of them averaging ~300 bytes -- so a seek and a read for each is
-/// millions of syscalls, and measured SLOWER than reading the whole segment. `seek_relative`
+/// millions of syscalls, and measured SLOWER than reading the whole slab. `seek_relative`
 /// drops buffered bytes in place when the destination is already in the buffer, so a run of
 /// small records costs one read per bufferful while a large record still seeks.
 ///
@@ -785,7 +785,7 @@ const PAGE_RECORD_SCAN_BUFFER_BYTES: usize = 256 * 1024;
 pub(super) fn max_page_id_in_slab_file(
     file: File,
     slab_len: u64,
-    page_slab_id: u64,
+    block_slab_id: u64,
 ) -> Result<Option<u64>, BlockStoreError> {
     let mut reader = BufReader::with_capacity(PAGE_RECORD_SCAN_BUFFER_BYTES, file);
     let mut max_page_id: Option<u64> = None;
@@ -802,7 +802,7 @@ pub(super) fn max_page_id_in_slab_file(
             break;
         }
         let address =
-            BlockAddress::from_parts(page_slab_id, offset, 0, None, None, None, None, None);
+            BlockAddress::from_parts(block_slab_id, offset, 0, None, None, None, None, None);
         let parsed = match parse_page_record_header(head, &address) {
             Ok(parsed) => parsed,
             Err(_) => break,
@@ -846,9 +846,9 @@ pub(crate) fn block_index_checksums_enabled() -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabReport {
+pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabReport {
     let mut report = BlockStoreSlabReport {
-        page_slab_id,
+        block_slab_id,
         physical_bytes: slab.len() as u64,
         ..BlockStoreSlabReport::default()
     };
@@ -867,7 +867,7 @@ pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabRepo
     let mut physical_offset = 0usize;
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let mut address = BlockAddress::from_parts(page_slab_id, physical_offset as u64, 0, None, None, None, None, None);
+        let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
             record_slab_inspection_error(
                 &mut report,
@@ -912,7 +912,7 @@ pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabRepo
                     .logical_bytes
                     .saturating_add(decoded.logical_len as u64);
                 report.block_index_entries.push(BlockStoreBlockIndexReport {
-                    block_slab_id: page_slab_id,
+                    block_slab_id: block_slab_id,
                     offset: address.offset,
                     length: address.length,
                     compact_slab_address: address.compact_slab_address(),
