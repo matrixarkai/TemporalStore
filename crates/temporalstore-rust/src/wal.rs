@@ -2950,11 +2950,28 @@ fn resolve_last_sequence_for_append(
 /// A bound does not reduce total work; it increases it, because every extra pass pays the
 /// directory barrier again. It bounds how long the lock is held in one pass, which is the thing
 /// writers actually feel.
+/// How many whole pieces one reclaim pass may unlink before stopping.
+///
+/// The pass runs under the append lock, so this bounds how long writers wait. 64 was chosen when
+/// deciding a piece was droppable meant decoding it forward: 24.9-72.2 ms per real piece, so even
+/// 64 was 1.6-4.6 s of held lock. Since the droppability test became a single record read from the
+/// next piece it costs 0.354-0.546 ms per piece, measured on real pieces and confirmed at 0.498 ms
+/// across 43 drops on a rolled log -- so the old number now bounds a cost that is ~50-100x smaller
+/// than the one it was set against.
+///
+/// That gap is not free. Pieces arrive faster than 64 per reclaim round on a busy log, so the
+/// backlog grows and the log never drains, and a log that does not drain is paid for at every
+/// restart: on a store whose page scan has been removed, draining the WAL took a restart from
+/// 5,456 ms to 1,908 ms.
+///
+/// 1024 is ~0.5 s of held lock at the measured rate and drains a backlog like that in one pass. It
+/// stays a bound rather than becoming unlimited, so a pathological backlog is still spread over
+/// several passes instead of stalling every writer at once.
 fn wal_reclaim_max_segments_per_pass() -> usize {
     std::env::var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(64)
+        .unwrap_or(1024)
 }
 
 /// TS_WAL_PREALLOCATE (default ON): write records inside a file that has already been grown
@@ -8645,6 +8662,73 @@ mod tests {
         if head_us > 0.0 {
             println!("  ratio: {:.0}x cheaper per segment", walk_us / head_us);
         }
+    }
+
+    /// What one reclaim pass costs per segment, swept over piece size.
+    ///
+    /// The per-pass cap bounds how long the append lock is held. Since mx#1295 made the
+    /// droppability probe a single record read, that cap is set against a cost that no longer
+    /// exists. This measures the cost that does, and prints the piece count so a threshold that
+    /// silently fails to roll cannot be read as a fast result -- an earlier version of this test
+    /// produced exactly that, one piece and zero drops.
+    #[test]
+    fn what_one_reclaim_pass_costs_per_segment() {
+        let mut measured = 0usize;
+        for threshold in [8 * 1024u64, 64 * 1024, 256 * 1024, 1024 * 1024] {
+            set_wal_segment_bytes_for_test(Some(threshold));
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let records = 6_000u64;
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: vec![118u8; 512],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let before = wal_segment_paths(dir.path(), 1).len();
+            let started = std::time::Instant::now();
+            let report = store.gc_before_sequence_unchecked(1, records - 10).unwrap();
+            let micros = started.elapsed().as_secs_f64() * 1e6;
+            let each = if report.dropped_segments > 0 {
+                micros / 1000.0 / report.dropped_segments as f64
+            } else {
+                0.0
+            };
+            // Per-segment is only meaningful once enough pieces are dropped that the one
+            // active-piece rewrite -- a fixed cost, paid whatever the piece count -- is a small
+            // share of the total. Below that it is a fixed cost divided by a small number, which
+            // is how an earlier version of this line made the cost look like it grew 70x with
+            // piece size when the total was flat.
+            let projection = if report.dropped_segments >= 20 {
+                format!("688 would be {:>6.2} s", each * 688.0 / 1000.0)
+            } else {
+                "too few drops to project".to_string()
+            };
+            println!(
+                "  threshold {:>7} KB: {:>4} pieces, dropped {:>4} ({:>9} B), total {:>9.0} us, {:>7.3} ms each, {}",
+                threshold / 1024,
+                before,
+                report.dropped_segments,
+                report.dropped_segment_bytes,
+                micros,
+                each,
+                projection
+            );
+            if report.dropped_segments > 0 {
+                measured += 1;
+            }
+            set_wal_segment_bytes_for_test(None);
+        }
+        assert!(
+            measured > 0,
+            "no threshold produced a rolled log, so nothing here measured a pass"
+        );
     }
 
     #[test]
