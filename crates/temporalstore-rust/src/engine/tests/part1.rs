@@ -6,6 +6,118 @@
 use super::*;
 
 // shared-corpus: dynamic_event_replication_mode_selection
+/// Is the per-object memory permanent, or does a storage cycle give some of it back?
+///
+/// A write that carries its page leaves an entry in two side maps -- the log-resident registry and
+/// the shard's resident-page map -- and both are released when the storage manager materialises
+/// that page into the block store. The memory probe beside this one never runs a cycle, so it
+/// measures a store that has been written to and never maintained. That is a real state, but it is
+/// the WORST one, and reporting it as "what an object costs" would overstate the steady state.
+///
+/// This runs the cycle and asks what comes back. The answer is: nothing, and it asks for a great
+/// deal more.
+///
+/// Measured at twenty thousand objects, debug build:
+///
+///        resident      58,404 KB before
+///                      75,472 KB after writing        (873 B per object)
+///                     345,012 KB after one cycle
+///                     345,016 KB after two cycles
+///
+///        first cycle took 269,540 KB, second took 4 KB
+///
+/// So the cycle needs about 263 MB of working memory for a twenty-thousand-object shard -- roughly
+/// thirteen kilobytes per object, wanted all at once -- and it is a PEAK, not a leak: the second
+/// cycle reuses every byte of it. That distinction is the whole point of running the cycle twice.
+/// One reading cannot make it, because resident memory does not fall when an allocation goes back
+/// to the allocator, and "the cycle leaks 263 MB" and "the cycle needs 263 MB" call for completely
+/// different work.
+///
+/// What it means: maintenance on a large shard needs headroom proportional to the shard, because
+/// the phases are whole-shard. The counterpart in the design this follows bounds each phase per
+/// round, so its working set is a function of the round limit instead. The compaction and dump
+/// probes above measure the time side of that same difference.
+#[test]
+#[ignore]
+fn does_a_storage_cycle_give_the_memory_back() {
+    fn resident_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("VmRSS:")
+                        .and_then(|rest| rest.split_whitespace().next().map(str::to_string))
+                })
+            })
+            .and_then(|kb| kb.parse().ok())
+            .unwrap_or(0)
+    }
+
+    const OBJECTS: usize = 20_000;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        256,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // A warm-up shard, so the allocator has taken its arena before anything is measured -- see the
+    // note on the probe above about what the first pass otherwise charges to whoever went first.
+    for index in 0..OBJECTS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("warmup-{index:07}"),
+                value: vec![b'v'; 96],
+            },
+        });
+    }
+
+    let before = resident_kb();
+    for index in 0..OBJECTS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cycle-cost-{index:07}"),
+                value: vec![b'v'; 96],
+            },
+        });
+    }
+    let written = resident_kb();
+    let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        ..Default::default()
+    });
+    let settled = resident_kb();
+
+    println!(
+        "  [cycle] {OBJECTS} objects: {:>5} B each after writing, {:>5} B each after a cycle ({} stages)",
+        (written.saturating_sub(before) * 1024) / OBJECTS as u64,
+        (settled.saturating_sub(before) * 1024) / OBJECTS as u64,
+        cycle.stages.len(),
+    );
+    // A second cycle, to separate what the cycle TAKES from what it KEEPS. Resident memory does
+    // not fall when an allocation is returned to the allocator, so one reading cannot tell a
+    // permanent cost from a peak that is now free for the next caller. If the second cycle adds
+    // little, the first one's memory is being reused and the cost is a peak; if it adds as much
+    // again, the cycle is retaining it.
+    let _ = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        ..Default::default()
+    });
+    let twice = resident_kb();
+    println!(
+        "  [cycle] resident: {} KB before, {} KB after writing, {} KB after one cycle, {} KB after two",
+        before, written, settled, twice
+    );
+    println!(
+        "  [cycle] first cycle took {} KB, second took {} KB",
+        settled.saturating_sub(written),
+        twice.saturating_sub(settled),
+    );
+}
+
 /// What a stored object costs in memory, and whether the cost follows the value or the object.
 ///
 /// A page header in the design this follows spells its ids as 32-bit integers; ours holds `u64`s
