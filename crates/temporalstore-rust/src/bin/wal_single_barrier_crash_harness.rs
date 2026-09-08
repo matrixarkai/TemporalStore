@@ -307,7 +307,30 @@ fn populate_feature(root: PathBuf) -> ! {
 
 fn recover_feature(root: PathBuf) {
     let engine = open_engine(&root);
-    engine.load_shard(1); // forces WAL replay from the durable watermark
+    // Say what the load answered, for the same reason `recover` does: a refused load and an empty
+    // series produce the same report otherwise.
+    let load = engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    if !load.status.ok {
+        eprintln!(
+            "load refused: code={} message={}",
+            load.status.code, load.status.message
+        );
+    }
+    let stats = engine.write_ahead_log_store().stats(1);
+    eprintln!(
+        "log: last_sequence={} | recovery: {:?}",
+        stats.last_sequence,
+        engine.storage_recovery_report(1)
+    );
     let got: Vec<u64> = match engine
         .execute(ExecuteRequest {
             shard_id: 1,

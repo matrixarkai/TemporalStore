@@ -281,6 +281,18 @@ fn append_timestamped_kv_pages_inner(
             .iter()
             .map(|packed| (packed.as_slice(), Some(object_id), Some(routing_bucket)))
             .collect();
+        // Carry these pages in this write's record, the way `append_value` does for a single
+        // page. This writer batches straight to the block store, so it never staged anything: a
+        // synchronous feature write's record named an address and carried nothing, and because it
+        // carried nothing the record kept its operation instead. After a crash that loses the
+        // un-fsynced block -- which the single barrier permits -- replay installed the outcomes,
+        // the outcomes named a block that was never written, and the read had nothing to fall back
+        // to. The whole series came back empty.
+        if block_store.block_in_wal() {
+            for packed in &encoded_pages {
+                super::block_in_wal::stage(object_id, packed.as_slice());
+            }
+        }
         let addresses = block_store.append_batch_with_page_metadata(writes)?;
         if addresses.len() != chunk_points.len() {
             return Err(BlockStoreError::Io(std::io::Error::new(
