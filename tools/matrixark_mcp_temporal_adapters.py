@@ -2632,13 +2632,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             rows = self._client.batch_hget(entries)
         except Exception:  # noqa: BLE001 - never let a backend read break the write path
             rows = []
-        raw_by_field: dict[str, str] = {}
+        raw_by_field: dict[str, Any] = {}
         for index, row in enumerate(rows if isinstance(rows, list) else []):
             field = ""
-            raw = ""
+            raw: Any = ""
             if isinstance(row, dict):
                 field = str(row.get("field") or "")
-                raw = str(row.get("value") or "")
+                # Not str(): an inline payload is already the list, and stringifying it would
+                # hand the decoder a Python repr that no JSON parser accepts.
+                raw = row.get("value") or ""
             elif isinstance(row, str):
                 raw = row
             if not field and index < len(entries):
@@ -2656,13 +2658,22 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         return found
 
     @staticmethod
-    def _decode_event_members(raw: str) -> set[str] | None:
+    def _decode_event_members(raw: Any) -> set[str] | None:
+        """Members from a stored payload, whether it arrived parsed or as text.
+
+        With `records_inline_json` the lane sends the record as a document, so this value is
+        already the list it used to have to parse out of a string. Accepting both is what lets
+        the proxy and the reader be switched over independently.
+        """
         if not raw:
             return None
-        try:
-            values = json.loads(raw)
-        except (ValueError, TypeError):
-            return None
+        if isinstance(raw, list):
+            values: Any = raw
+        else:
+            try:
+                values = json.loads(raw)
+            except (ValueError, TypeError):
+                return None
         if not isinstance(values, list):
             return None
         return {str(v) for v in values}
