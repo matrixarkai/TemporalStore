@@ -41,6 +41,7 @@ pub(crate) use slab_ids::*;
 #[cfg(test)]
 use record::{
     PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_HEADER_LEN,
+    PAGE_RECORD_V9_HEADER_LEN,
     PAGE_RECORD_MAGIC, PAGE_RECORD_VERSION,
 };
 
@@ -2258,7 +2259,7 @@ mod tests {
         let slab = fs::read(&path).unwrap();
         let start = address.offset as usize;
         let record = &slab[start..start + address.length as usize];
-        let field = &record[28..60];
+        let field = &record[20..52];
 
         assert_ne!(
             hex::encode(field),
@@ -3205,7 +3206,7 @@ mod tests {
 
         assert_eq!(
             disabled_address.length,
-            (PAGE_RECORD_HEADER_LEN + payload.len()) as u64
+            (PAGE_RECORD_V9_HEADER_LEN + payload.len()) as u64
         );
         assert_eq!(disabled_raw[record::page_record_compression_offset()], PAGE_RECORD_COMPRESSION_NONE);
         assert_eq!(disabled_store.read(&disabled_address).unwrap(), payload);
@@ -3227,7 +3228,7 @@ mod tests {
 
         assert_eq!(
             threshold_address.length,
-            (PAGE_RECORD_HEADER_LEN + payload.len()) as u64
+            (PAGE_RECORD_V9_HEADER_LEN + payload.len()) as u64
         );
         assert_eq!(threshold_raw[record::page_record_compression_offset()], PAGE_RECORD_COMPRESSION_NONE);
         assert_eq!(threshold_store.read(&threshold_address).unwrap(), payload);
