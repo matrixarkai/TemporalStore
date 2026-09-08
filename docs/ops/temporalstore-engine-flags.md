@@ -62,7 +62,7 @@ Anything else is blank, and a blank means go and look.
 |---|---|
 | total | 287 |
 | booleans whose default this could read off the source | 47 |
-| numbers whose default this could read off the source | 70 |
+| numbers whose default this could read off the source | 69 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 26 |
 | **that nothing in this repository sets** | 158 |
@@ -297,7 +297,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH` | 128 | config | 1 | — |
 | `TS_SERVER_MAX_QUEUE_DEPTH` | 1024 | config | 1 | — |
 | `TS_SHARED_STORE_MAX_PENDING` | 50000 | nothing | 1 | yes |
-| `TS_STORAGE_ZONE_SIZE` | 1073741824 | config, test, portal | 1 | — |
+| `TS_STORAGE_ZONE_SIZE` | — | config, test, portal | 1 | — |
 | `TS_STREAM_MAX_BLOB_SIZE` | 10485760 | config, test, portal | 1 | — |
 
 ## context (23)
