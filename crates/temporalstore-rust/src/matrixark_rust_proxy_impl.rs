@@ -79,6 +79,14 @@ struct RecordLogRequest {
     shard_size: Option<u64>,
     #[serde(default)]
     record_types: Option<Vec<String>>,
+    /// Keep only records whose `status` is one of these, when the caller supplies any.
+    ///
+    /// A consumer that acts on a narrow set of statuses -- the pre-retrieval idle-commit flush reads
+    /// three of the seven a pipeline task can carry -- otherwise receives every row of the type and
+    /// discards most of them after they have been decoded. Absent or empty means no status
+    /// filtering, so a caller that wants the whole type is unaffected.
+    #[serde(default)]
+    record_statuses: Option<Vec<String>>,
     /// Cap the scan to the newest N locations of a given record type, by append order.
     ///
     /// For a consumer that only ever looks at the tail of a type -- prior context reads the newest
@@ -1101,6 +1109,10 @@ fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
         "shard_size": command.shard_size.unwrap_or(1024).max(1),
         "count": count,
         "record_types": command.record_types,
+        // A status-filtered scan is a SUBSET of the same question, exactly like
+        // `newest_by_type` below -- sharing an entry would serve the subset to a
+        // caller that asked for the whole type.
+        "record_statuses": command.record_statuses,
         "record_ids": command.record_ids,
         "selected_node_hashes": command.selected_node_hashes,
         "secondary_index_groups": command.secondary_index_groups,
@@ -2068,6 +2080,12 @@ fn scan_matrixark_candidates(
         .unwrap_or_default()
         .into_iter()
         .collect();
+    let allowed_statuses: HashSet<String> = command
+        .record_statuses
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let selected_nodes: HashSet<u64> = command
         .selected_node_hashes
         .clone()
@@ -2083,6 +2101,7 @@ fn scan_matrixark_candidates(
     let mut placement_partitions_touched = if count == 0 { 0 } else { max_shard + 1 };
     let mut scanned_records = 0_u64;
     let mut dropped_by_type = 0_u64;
+    let mut dropped_by_status = 0_u64;
     let mut dropped_by_scope = 0_u64;
     let mut selected_node_dropped = 0_u64;
     // Collect payloads first -- from the type index when it can answer, from the shard walk
@@ -2184,6 +2203,16 @@ fn scan_matrixark_candidates(
                 if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
                     dropped_by_type += 1;
                     continue;
+                }
+                if !allowed_statuses.is_empty() {
+                    let record_status = record
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if !allowed_statuses.contains(record_status) {
+                        dropped_by_status += 1;
+                        continue;
+                    }
                 }
                 if !requested_id_set.is_empty() && !record_id_linked(&record, &requested_id_set) {
                     dropped_by_scope += 1; // id-filtered, counted with scope drops
@@ -2331,6 +2360,7 @@ fn scan_matrixark_candidates(
             "non_serving_record_dropped_count": non_serving_dropped,
             "return_index_records": command.return_index_records,
             "dropped_by_type": dropped_by_type,
+            "dropped_by_status": dropped_by_status,
             "dropped_by_scope": dropped_by_scope,
             "selected_node_dropped_candidate_count": selected_node_dropped,
             "secondary_index_groups_supplied": secondary_groups.len(),
@@ -5481,6 +5511,73 @@ fn _request_shape_for_docs() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::compare_scored_candidate;
+    use super::{matrixark_scan_cache_key, RecordLogRequest};
+
+    /// A scan request, built from the module's own helper.
+    ///
+    /// Building one from bare JSON does not work: `RecordLogRequest` has required fields and serde
+    /// will not invent them -- the first version of this failed with `missing field op`.
+    fn scan_command(statuses: Option<Vec<String>>) -> RecordLogRequest {
+        let mut command = request("matrixark_scan_candidates");
+        command.count_key = Some("matrixark:count".to_string());
+        command.record_hash_key = Some("matrixark:records".to_string());
+        command.shard_size = Some(1024);
+        command.record_types = Some(vec!["matrixark_async_pipeline_task".to_string()]);
+        command.record_statuses = statuses;
+        command
+    }
+
+    /// A status-filtered scan answers a SUBSET of the same question. If it shared a cache entry
+    /// with an unfiltered scan, a caller asking for the whole record type would be served the
+    /// subset -- and both are valid-looking results, so nothing would error.
+    #[test]
+    fn a_status_filtered_scan_does_not_share_a_cache_entry() {
+        let unfiltered = scan_command(None);
+        let filtered = scan_command(Some(vec!["idle_commit_scheduled".to_string()]));
+
+        // Control first: without it, an assert_ne that always holds would look like proof.
+        assert_eq!(
+            matrixark_scan_cache_key(&unfiltered, 7),
+            matrixark_scan_cache_key(&unfiltered, 7),
+            "the same command produced two different keys, so the comparison below means nothing"
+        );
+
+        assert_ne!(
+            matrixark_scan_cache_key(&unfiltered, 7),
+            matrixark_scan_cache_key(&filtered, 7),
+            "a status-filtered scan shares a cache entry with an unfiltered one"
+        );
+    }
+
+    /// Two different status sets are two different questions.
+    #[test]
+    fn two_status_sets_do_not_share_a_cache_entry() {
+        let scheduled = scan_command(Some(vec!["idle_commit_scheduled".to_string()]));
+        let committed = scan_command(Some(vec!["idle_commit_committed".to_string()]));
+        assert_ne!(
+            matrixark_scan_cache_key(&scheduled, 7),
+            matrixark_scan_cache_key(&committed, 7),
+            "two different status filters share one cache entry"
+        );
+    }
+
+    /// Absent means no filtering. This is what lets every existing caller keep its behaviour, and
+    /// what lets an older caller talk to a newer engine unchanged.
+    #[test]
+    fn an_absent_status_filter_is_not_an_empty_one() {
+        let absent = scan_command(None);
+        assert!(
+            absent.record_statuses.is_none(),
+            "an absent record_statuses decoded as something other than None, so the scan would \
+             filter when the caller asked for no filtering"
+        );
+        let empty = scan_command(Some(Vec::new()));
+        assert_eq!(
+            Some(Vec::<String>::new()),
+            empty.record_statuses,
+            "an explicitly empty list should decode as empty, and the scan treats it as no filter"
+        );
+    }
 
     use super::native_correctness_evidence;
 
@@ -5768,6 +5865,8 @@ mod tests {
             record_hash_key: None,
             shard_size: None,
             record_types: None,
+            // No status filtering: this helper builds the request every other test starts from.
+            record_statuses: None,
             newest_by_type: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
