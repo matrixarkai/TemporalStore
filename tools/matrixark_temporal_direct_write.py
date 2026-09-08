@@ -50,6 +50,14 @@ except ImportError:
 )
 
 
+def _context_index_postings_enabled() -> bool:
+    """Whether secondary-index postings are persisted. Default on."""
+    value = os.environ.get("MATRIXARK_CONTEXT_INDEX_POSTINGS", "").strip().lower()
+    if not value:
+        return True
+    return value not in {"0", "false", "no", "off"}
+
+
 class _TemporalDirectWriteMixin:
     def _direct_write_loop(self) -> None:
         while not self._direct_write_stop.is_set():
@@ -267,6 +275,19 @@ class _TemporalDirectWriteMixin:
     def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
+        # Optional: stop persisting secondary-index postings.
+        #
+        # A deployment that ranks by vector alone does not read them, and they are the
+        # largest single record class on an ingest-heavy store (16.4% of record bytes,
+        # 6.4 rows per message). They ARE read by the retrieval path, which builds index
+        # terms from them, so this trades recall for bytes and is off by default.
+        # The store already bounds them (dedup, summary compaction, a per-session cap of
+        # 128 and a per-tenant cap of 1024) with a measured recall floor at 128 postings;
+        # this switch goes below that floor deliberately, so measure recall before using it.
+        if not _context_index_postings_enabled():
+            records = [r for r in records if r.get("record_type") != "context_index"]
+            if not records:
+                return
         # Embeddings fold onto their owners at this single backend append call site, exactly as
         # the pure-local JSONL adapter folds at its own append -- the fast direct-ingest path
         # never goes through append_many, so folding there alone let separate embedding rows

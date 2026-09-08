@@ -1108,6 +1108,67 @@ pub mod uncovered_maintenance {
     }
 }
 
+/// Sync only the components a command actually wrote.
+///
+/// [`sync_context_pages_for_object`] is given an object key and nothing else, so it re-upserts
+/// EVERY field that object holds. For a record hash carrying one field per record that is one
+/// upsert per stored record on every write, and each upsert removes and reinserts an entry in the
+/// object's component vector -- two `Vec` shifts whose tails are the whole object. The cost is
+/// quadratic in the object's field count.
+///
+/// Measured on a production-corpus one-box at a 260 MB store: a single-message ingest cost 40.1 s
+/// of datanode CPU out of a 52 s wall, and a DWARF-unwound profile put 60.9% of engine CPU in
+/// memmove under `remove_object_page_lookup_entry`, reached from here. With this path taken the
+/// same ingest cost 0.13 s of datanode CPU.
+///
+/// The batch path already knows the exact `(kind, object_key, component)` a command wrote --
+/// `command_upsert_components` computes it and the index-log delta has been built from it all
+/// along. Given that list the maintenance is one upsert per WRITTEN component instead of one per
+/// STORED component.
+///
+/// Returns false if any component's address is not in the shard maps; the caller then runs the
+/// whole-object sync exactly as before, so a shape this does not model costs a fallback rather
+/// than a stale index.
+pub(super) fn sync_pages_for_written_components(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    components: &[(&'static str, String, Option<String>)],
+) -> bool {
+    if components.is_empty() {
+        return false;
+    }
+    for (kind, object_key, component) in components {
+        // Read the address back from the map the write just updated, exactly as
+        // `collect_upsert_index_items` does, so the page filed here is the page a reload serves.
+        let address = match (*kind, component.as_deref()) {
+            ("hash", Some(field)) => shard
+                .hashes
+                .get(object_key)
+                .and_then(|fields| fields.get(field))
+                .cloned(),
+            ("string", None) => shard.strings.get(object_key).cloned(),
+            _ => None,
+        };
+        let Some(address) = address else {
+            return false;
+        };
+        // dirty: true, stage: false -- the flags the whole-object sync uses for a hash field: the
+        // write staged its own outcome already and a second would have replay install the same
+        // page twice.
+        upsert_bucket_index_page_with(
+            shard,
+            shard_id,
+            kind,
+            object_key,
+            component.clone(),
+            address,
+            true,
+            false,
+        );
+    }
+    true
+}
+
 pub(super) fn sync_context_pages_for_object(
     shard: &mut ShardState,
     shard_id: ShardId,

@@ -25,7 +25,7 @@ except ImportError:
 
 class _AccessSsoMixin:
     def latest_sso_mapping(self, account_id: str, tenant_id: str, provider: str, external_user_id: str) -> Json | None:
-        for record in reversed(self.metadata.read_all()):
+        for record in reversed(self.metadata.records_of_type("matrixark_sso_user_mapping")):
             if (
                 record.get("record_type") == "matrixark_sso_user_mapping"
                 and record.get("account_id") == account_id

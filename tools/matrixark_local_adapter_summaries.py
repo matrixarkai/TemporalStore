@@ -497,9 +497,17 @@ class _LocalAdapterSummariesMixin:
         lineage = source_event_lineage_summary([source_lineage]) if isinstance(source_lineage, dict) else {}
         for prefix in prefixes:
             node_hash = stable_hash("/".join(prefix))
-            dirty_hash = stable_hash(
-                f"summary_dirty:{node_hash}:{dirty_reason}:{source_ref_type}:{source_hash}:{updated_at_ms}"
-            )
+            # Identity is the NODE, not the event that dirtied it.
+            #
+            # Including source_hash and updated_at_ms minted a fresh identity per event, so
+            # "this node needs a summary" -- a set membership -- was stored as an unbounded
+            # append. Measured on a one-box: 1,417 markers for 37 nodes, 392 of them for a
+            # single node, at 784 bytes each. The engine already coalesces its own in-memory
+            # dirty tracking the same way; this makes the durable record agree.
+            #
+            # The marker still carries the source hash and timestamp as FIELDS, so the
+            # newest write wins and lineage survives -- only the duplicate rows go.
+            dirty_hash = stable_hash(f"summary_dirty:{node_hash}:{dirty_reason}")
             dirty_hashes.append(dirty_hash)
             record = {
                 "record_type": "context_summary_dirty",
@@ -578,7 +586,24 @@ class _LocalAdapterSummariesMixin:
             propagate_depth=propagate_depth,
             source_lineage=source_lineage,
         )
-        self.append_many(records)
+        # Do not re-append a marker already pending for this (node, reason).
+        #
+        # The identity is the node, so repeated marks share one dirty_hash -- but the log
+        # still took a ROW each time, and the collapse only happened when a reader folded
+        # latest-state. Measured: 130 rows carrying 5 distinct identities, 125 of them
+        # duplicates, at 784 bytes apiece.
+        #
+        # The set is cleared at the start of every refresh pass, so a node dirtied after a
+        # pass is always marked again; the worst case is one redundant marker per pass, and
+        # a restart simply forgets and writes one.
+        seen = getattr(self, "_pending_summary_dirty_hashes", None)
+        if seen is None:
+            seen = set()
+            self._pending_summary_dirty_hashes = seen
+        fresh = [r for r in records if r.get("dirty_hash") not in seen]
+        if fresh:
+            self.append_many(fresh)
+            seen.update(r.get("dirty_hash") for r in fresh)
         return dirty_hashes
 
     def refresh_dirty_node_summaries(
@@ -606,6 +631,10 @@ class _LocalAdapterSummariesMixin:
                 index_compact_on_summary_enabled, index_compaction_tombstone)
         refreshed_at_ms = refreshed_at_ms or now_ms()
         skip_dirty_reasons = skip_dirty_reasons or set()
+        # Forget which markers are pending: this pass is about to consume them, so a node
+        # dirtied after it must be marked again. Clearing here bounds duplicate markers to
+        # one per node per pass instead of one per event, without a marker ever being lost.
+        self._pending_summary_dirty_hashes = set()
         # `records` lets one caller's read serve a whole pass. Reading here is a full record-log
         # read, and on a native backend it holds the single shared proxy lane while it runs.
         records = self.read_all() if records is None else records

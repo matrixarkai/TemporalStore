@@ -4348,7 +4348,11 @@ def fast_hook_summary_dirty_records(
     for depth in range(1, len(node_path) + 1):
         prefix = node_path[:depth]
         prefix_hash = stable_int_hash("/".join(prefix))
-        dirty_hash = stable_int_hash(f"summary_dirty:{prefix_hash}:new_event:event:{event_id_hash}:{updated_at_ms}")
+        # Identity is the NODE, not the event -- see node_summary_dirty_records. Keying on
+        # the event minted a fresh marker per event for a set membership, and this producer
+        # has to agree with that one or the hook path keeps appending the duplicates the
+        # adapter path no longer writes.
+        dirty_hash = stable_int_hash(f"summary_dirty:{prefix_hash}:new_event")
         records.append(
             {
                 "record_type": "context_summary_dirty",

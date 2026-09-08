@@ -323,9 +323,19 @@ pub fn run_embed_drainer_loop<F: Fn() -> bool>(
 ) {
     while !should_stop() {
         let report = drain_embedding_dirty_once(engine, config);
-        // If the pass did real work and may have more queued, loop immediately;
-        // only back off when the pending set was empty this pass.
-        if report.pending_scanned == 0 {
+        // Back off unless the pass made PROGRESS -- not merely unless it found work.
+        //
+        // The old condition read "we scanned something" as "we did real work, so come straight
+        // back". Those differ whenever a node stays dirty: an unreachable or misconfigured
+        // encoder fails the batch, `failed` rises, the markers are deliberately left for a later
+        // pass, and the next scan returns the SAME nodes. The condition is then true forever and
+        // the loop never sleeps -- a hot spin that re-queries and rewrites the same records as
+        // fast as the CPU allows, for as long as the encoder is unavailable.
+        //
+        // `cleared` is the progress signal: markers actually retired this pass, whether by
+        // embedding them or by clearing text-less ones. A pass that cleared some and left more
+        // queued still comes straight back, which is what the original condition wanted.
+        if report.cleared == 0 {
             std::thread::sleep(config.interval);
         }
     }

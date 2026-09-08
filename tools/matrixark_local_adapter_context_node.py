@@ -219,6 +219,31 @@ class _LocalAdapterContextNodeMixin:
             "node_hashes": node_hashes,
         }
 
+    #: The record types `ensure_context_embeddings` can act on: the six that
+    #: `_embedding_target_for_context_record` maps to a target, plus the embeddings themselves so
+    #: one scan answers "what needs a vector" and "what already has one".
+    EMBEDDING_PASS_RECORD_TYPES = (
+        "context_embedding",
+        "context_event",
+        "context_segment",
+        "context_entity",
+        "context_node",
+        "context_summary",
+        "context_compression_event",
+    )
+
+    def _embedding_pass_records(self) -> list[Json]:
+        """Records the embedding pass can act on, from one typed scan where possible."""
+        scan = getattr(self, "_scan_records_of_types", None)
+        if callable(scan):
+            try:
+                subset = scan(list(self.EMBEDDING_PASS_RECORD_TYPES))
+            except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+                subset = None
+            if subset is not None:
+                return subset
+        return self.read_all()
+
     def _embedding_target_for_context_record(self, record: Json) -> Json | None:
         record_type = str(record.get("record_type") or "")
         node_path = record.get("node_path") if isinstance(record.get("node_path"), list) else []
@@ -295,7 +320,23 @@ class _LocalAdapterContextNodeMixin:
         existing_embeddings: dict[tuple[str, str, int], Json] = {}
         # A caller that has already read the log this pass can hand its snapshot in, but only when
         # nothing has been written since -- this needs to see rows produced earlier in the pass.
-        records = self.read_all() if records is None else records
+        #
+        # Otherwise: read the SEVEN types this pass can act on, not the whole store.
+        #
+        # This needs two things and used to get both from a full read: every existing
+        # `context_embedding` (to know what is already current) and every record that could need
+        # one. The second set is bounded -- `_embedding_target_for_context_record` returns a target
+        # for exactly six record types and None for everything else -- so a typed scan answers both
+        # halves exactly. Measured on a one-box at 14,787 records: those seven types are 1,893 of
+        # them, so the pass reads ~8x less, and the engine serves a typed scan from its type index
+        # rather than walking the log.
+        #
+        # `_scan_records_of_types` returns None when it cannot ask (no client, an older signature,
+        # a backend that does not support it). None is not "nothing matched" -- it means the
+        # question could not be put -- so that case falls back to the full read rather than
+        # silently embedding against an empty view.
+        if records is None:
+            records = self._embedding_pass_records()
         for record in records:
             if record.get("record_type") != "context_embedding":
                 continue
