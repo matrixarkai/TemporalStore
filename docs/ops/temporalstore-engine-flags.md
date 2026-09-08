@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 286 of them, read by 87 functions.
+There are 287 of them, read by 88 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,12 +60,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 286 |
-| booleans whose default this could read off the source | 46 |
+| total | 287 |
+| booleans whose default this could read off the source | 47 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 157 |
+| **that nothing in this repository sets** | 158 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -365,7 +365,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | script | 1 | — |
 
-## behaviour (61)
+## behaviour (62)
 
 Everything else that changes what the engine does.
 
@@ -418,6 +418,7 @@ Everything else that changes what the engine does.
 | `TS_RAFT_REPLICATION_DEADLINE_MS` | — | test | 1 | — |
 | `TS_RAFT_SECURITY_MODE` | — | nothing | 1 | — |
 | `TS_RAFT_TRANSPORT_SECURITY` | — | nothing | 1 | — |
+| `TS_REVERIFY_ALL_SLABS` | off | nothing | 1 | — |
 | `TS_SERVER_JOIN_EMPTY` | off | script | 1 | — |
 | `TS_SERVER_RAFT` | off | nothing | 1 | — |
 | `TS_SERVER_RAFT_READ_MODE` | — | nothing | 1 | — |
