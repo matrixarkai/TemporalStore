@@ -1048,6 +1048,29 @@ def run_pre_retrieval_summary_refresh(target: Any, args: Json, ranking: Json, *,
     return refresh, refreshed_records
 
 
+def _summary_records_for_merge(target: Any) -> list[Json]:
+    """The summary rows this merge reads, from one typed scan where the adapter has one.
+
+    This runs on the retrieve pre-refresh path and wants exactly one record type, but it read the
+    whole record log to get it -- so a retrieve paid for the entire corpus to pick up the
+    summaries a refresh had just written.
+
+    `_scan_records_of_types` answers None when it cannot ask and [] when it authoritatively has
+    none, so only None falls back to the full read; a scope with no summaries yet must not cost
+    the corpus. The consumer re-checks `record_type` either way, so a scan that returns more than
+    asked cannot change the answer.
+    """
+    scan = getattr(target, "_scan_records_of_types", None)
+    if callable(scan):
+        try:
+            subset = scan(["context_summary"])
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            subset = None
+        if subset is not None:
+            return subset
+    return target.read_all()
+
+
 def merge_refreshed_summary_records(target: Any, records: list[Json], *, retrieval_scope: Json, refreshed_records: list[Json], refresh: Json) -> list[Json]:
     if not refreshed_records and int(refresh.get("refreshed_count") or 0) <= 0:
         return records
@@ -1055,7 +1078,7 @@ def merge_refreshed_summary_records(target: Any, records: list[Json], *, retriev
     try:
         same_user_summary_records.extend(
             record
-            for record in target.read_all()
+            for record in _summary_records_for_merge(target)
             if isinstance(record, dict)
             and record.get("record_type") == "context_summary"
             and access_scope_matches_before_scoring(record, retrieval_scope)
