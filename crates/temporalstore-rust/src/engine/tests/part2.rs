@@ -1041,7 +1041,7 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
     drop(engine);
 
     // Simulate the lost commit marker: drop the last WAL line (batch_index == batch_size).
-    let wal_path = index_dir.join("wals").join("shard-1.wal.jsonl");
+    let wal_path = index_dir.join("wals").join("shard-1.wal.bin");
     // Read as BYTES and walk the records by their FRAMES, not by newlines. A record is only a
     // "line" while the frame ends with one; once it declares its own length the payload carries
     // 0x0A freely, and splitting on that byte cuts records in half -- which makes this test

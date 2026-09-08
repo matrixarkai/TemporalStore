@@ -1136,7 +1136,7 @@ fn sync_write_surfaces_wal_commit_failure_instead_of_acking_ok() {
         "baseline write should succeed: {:?}",
         baseline.status
     );
-    let wal_path = indexes.join("wals").join("shard-1.wal.jsonl");
+    let wal_path = indexes.join("wals").join("shard-1.wal.bin");
     fs::remove_file(&wal_path).unwrap();
     fs::create_dir(&wal_path).unwrap();
     let failed = engine.execute(ExecuteRequest {
@@ -3891,7 +3891,7 @@ fn corrupt_wal_scan_refuses_load_rather_than_truncating() {
     }
     drop(engine);
 
-    let wal_path = index_dir.join("wals").join("shard-1.wal.jsonl");
+    let wal_path = index_dir.join("wals").join("shard-1.wal.bin");
     let mut bytes = std::fs::read(&wal_path).unwrap();
     let position = bytes
         .windows(9)
@@ -10492,7 +10492,7 @@ fn a_torn_or_corrupted_tail_never_half_applies() {
             }
         }
 
-        let path = indexes.join("wals").join("shard-1.wal.jsonl");
+        let path = indexes.join("wals").join("shard-1.wal.bin");
         let mut bytes = std::fs::read(&path).expect("the log exists");
         // Trim the preallocated zero run so the edit lands on a record.
         while bytes.last() == Some(&0) {
@@ -11725,7 +11725,7 @@ fn what_eight_records_per_ingest_cost() {
         }
         engine.write_ahead_log_store().flush(1).ok();
         let after = engine.write_ahead_log_store().stats(1);
-        let path = index_dir.join("wals").join("shard-1.wal.jsonl");
+        let path = index_dir.join("wals").join("shard-1.wal.bin");
         let (_, record_end) = crate::wal::last_wal_sequence_in_for_test(&path).unwrap_or((0, 0));
         (
             record_end,
