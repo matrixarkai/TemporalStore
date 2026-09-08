@@ -152,6 +152,7 @@ impl LocalBlockStore {
                 first_page_id: band_summary.first_page_id,
                 last_page_id: band_summary.last_page_id,
                 readable_prefix_physical_bytes: bytes.len() as u64,
+                verified_source_mtime_unix_ms: None,
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,

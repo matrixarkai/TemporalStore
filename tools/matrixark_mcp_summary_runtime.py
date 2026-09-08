@@ -591,6 +591,25 @@ def append_node_summary_embeddings(
     }
 
 
+#: The only record types `async_summary_progress_records` reads. Kept beside it so a future read of
+#: a third type has this in view; `test_the_summary_progress_filter_is_complete` derives the set
+#: from the function itself and fails if the two drift apart.
+SUMMARY_PROGRESS_RECORD_TYPES = frozenset({"context_entity", "matrixark_async_pipeline_task"})
+
+
+def summary_progress_source_records(records: list[Json]) -> list[Json]:
+    """The subset of a live view that `async_summary_progress_records` can act on.
+
+    Callers that refresh several nodes should filter ONCE and pass the result to every call: the
+    function is called per dirty node, and on a real store the types it reads are 951 of 7,085
+    records, so the rest was being walked and discarded once per node.
+    """
+    return [
+        record for record in records
+        if record.get("record_type") in SUMMARY_PROGRESS_RECORD_TYPES
+    ]
+
+
 def async_summary_progress_records(
     *,
     records: list[Json],
@@ -666,10 +685,16 @@ def async_summary_progress_records(
     # still costs a round trip and permanent growth, and on a record-log backend that growth
     # is what turns a busy store into one where a retrieve cannot finish. Skip the write when
     # nothing about the task actually changed; a genuinely new state still lands.
+    # Select the task rows once. The two loops below want the same rows and differ only in the
+    # status they look for, and both callers hand this the whole live view from `read_all()` and
+    # call it once per dirty node -- so selecting twice was paid per node.
+    task_records = [
+        record for record in records
+        if record.get("record_type") == "matrixark_async_pipeline_task"
+    ]
+
     already_recorded: set[tuple] = set()
-    for record in records:
-        if record.get("record_type") != "matrixark_async_pipeline_task":
-            continue
+    for record in task_records:
         if str(record.get("status") or "") != "summary_completed":
             continue
         if not compatible_scope(candidate_access_scope(record), scope):
@@ -686,9 +711,7 @@ def async_summary_progress_records(
         already_recorded.add(progress_identity(record.get("task_hash"), existing_completed))
 
     progress_records: list[Json] = []
-    for record in records:
-        if record.get("record_type") != "matrixark_async_pipeline_task":
-            continue
+    for record in task_records:
         if str(record.get("status") or "") != "extraction_committed":
             continue
         try:
@@ -758,6 +781,8 @@ def refresh_dirty_node_summaries(
 ) -> Json:
     refreshed_at_ms = refreshed_at_ms or now_ms()
     records = adapter.read_all()
+    # Filtered once, not once per dirty node: the progress builder reads two record types.
+    progress_source_records = summary_progress_source_records(records)
     pending_by_node = pending_dirty_node_records(
         records=records,
         scope=scope,
@@ -896,7 +921,7 @@ def refresh_dirty_node_summaries(
                 }
             )
         summary_progress_records = async_summary_progress_records(
-            records=records,
+            records=progress_source_records,
             scope=dirty.get("scope", scope),
             source_event_ids=source_event_ids,
             source_entity_hashes=source_entity_hashes,

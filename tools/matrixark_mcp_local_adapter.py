@@ -65,9 +65,15 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 try:
-    from tools.matrixark_mcp_summary_runtime import async_summary_progress_records
+    from tools.matrixark_mcp_summary_runtime import (
+        async_summary_progress_records,
+        summary_progress_source_records,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_summary_runtime import async_summary_progress_records
+    from matrixark_mcp_summary_runtime import (
+        async_summary_progress_records,
+        summary_progress_source_records,
+    )
 
 try:
     from tools.matrixark_mcp_summary_dirty import pending_dirty_node_records

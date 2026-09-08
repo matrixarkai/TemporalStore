@@ -12,6 +12,7 @@ try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
     Any,
     async_summary_progress_records,
+    summary_progress_source_records,
     compression_context_index_records,
     compression_profile_layer_values,
     pending_dirty_node_records,
@@ -21,6 +22,7 @@ except ImportError:
     from matrixark_mcp_local_adapter import (
     Any,
     async_summary_progress_records,
+    summary_progress_source_records,
     compression_context_index_records,
     compression_profile_layer_values,
     pending_dirty_node_records,
@@ -605,6 +607,8 @@ class _LocalAdapterSummariesMixin:
         # `records` lets one caller's read serve a whole pass. Reading here is a full record-log
         # read, and on a native backend it holds the single shared proxy lane while it runs.
         records = self.read_all() if records is None else records
+        # Filtered once, not once per dirty node -- see summary_progress_source_records.
+        progress_source_records = summary_progress_source_records(records)
         skipped_dirty_reasons: Json = {}
         pending_by_node = pending_dirty_node_records(
             records=records,
@@ -1137,7 +1141,7 @@ class _LocalAdapterSummariesMixin:
                 )
             generated_summary_types = [spec[0] for spec in summary_specs]
             summary_progress_records = async_summary_progress_records(
-                records=records,
+                records=progress_source_records,
                 scope=dirty.get("scope", scope),
                 source_event_ids=source_event_ids,
                 source_entity_hashes=source_entity_hashes,
