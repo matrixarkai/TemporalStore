@@ -1219,8 +1219,31 @@ impl Default for LocalIndexLogStore {
     }
 }
 
+/// The suffix an index log is written with.
+///
+/// Its records are binary -- the same framing the write-ahead log uses, a frame magic then a
+/// payload -- and have been since the log stopped encoding JSON. A store written before this
+/// carries the older name, which claimed a format it no longer held.
+const INDEX_LOG_SUFFIX: &str = "bin";
+
+/// What the same file used to be called. Still read, never written.
+///
+/// Dropping it rather than keeping it would find no index log where one exists, which reads as an
+/// empty log rather than an error -- and an empty index log is a silently emptier shard.
+const LEGACY_INDEX_LOG_SUFFIX: &str = "jsonl";
+
 fn index_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
-    root.join(format!("shard-{shard_id}.indexlog.jsonl"))
+    let renamed = root.join(format!("shard-{shard_id}.indexlog.{INDEX_LOG_SUFFIX}"));
+    if renamed.exists() {
+        return renamed;
+    }
+    // An existing store keeps the name it already has, so one shard's log is never split across
+    // two names. A store with neither is new, and starts under the current one.
+    let legacy = root.join(format!("shard-{shard_id}.indexlog.{LEGACY_INDEX_LOG_SUFFIX}"));
+    if legacy.exists() {
+        return legacy;
+    }
+    renamed
 }
 
 fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError> {

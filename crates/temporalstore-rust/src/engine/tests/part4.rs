@@ -3956,7 +3956,7 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
 
     let index_log_path = index_dir
         .join("indexlogs")
-        .join("shard-1.indexlog.jsonl");
+        .join("shard-1.indexlog.bin");
     let contents = std::fs::read(&index_log_path).unwrap();
     // Walk frames, not newlines: a record's payload may hold a 0x0A, so splitting on one
     // yields fragments rather than records and the corruption below would land nowhere.
@@ -6720,7 +6720,7 @@ fn what_an_index_log_record_costs() {
             });
         }
         // Deliberately NO maintenance: this is the written size, not the retained one.
-        let log = index_dir.join("indexlogs").join("shard-1.indexlog.jsonl");
+        let log = index_dir.join("indexlogs").join("shard-1.indexlog.bin");
         let bytes = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
         let raw = std::fs::read(&log).unwrap_or_default();
         let printable = raw
