@@ -5907,6 +5907,9 @@ fn the_index_wire_keys_are_what_they_were() {
             "dirty",
             "dirty_generation",
             "g",
+        // Written on every address since an absent field stopped being skipped: a row is
+        // read by position, so a field that vanishes when empty moves every field behind it.
+        "h",
             "in_memory",
             "l",
             "last_dump_sequence",

@@ -43,6 +43,16 @@ pub(crate) const INDEX_LOG_CONTAINER_MAGIC: &[u8] = b"TSILOG\x01";
 /// Payload codec: msgpack, struct-as-map.
 pub(crate) const INDEX_LOG_CODEC_MSGPACK: u8 = 1;
 
+/// Which record shape a payload holds.
+///
+/// Two shapes share this log: a whole-index record and a delta. While each row was a map the
+/// reader could tell them apart by the names inside, and could read one as the other by matching
+/// what it recognised. Rows carry no names, and a map is not proof of shape either -- a whole-index
+/// record embeds a `serde_json::Value`, which is a map whatever the rows around it are. So the
+/// container says which it holds instead of the reader guessing.
+pub(crate) const INDEX_LOG_SHAPE_WHOLE: u8 = 0;
+pub(crate) const INDEX_LOG_SHAPE_DELTA: u8 = 1;
+
 /// Payload codec: msgpack, struct-as-map, zstd-compressed.
 ///
 /// The index log is the largest durable tier on an ingest-heavy store and almost all of it
@@ -86,12 +96,20 @@ fn index_log_compression_min_bytes() -> usize {
         .unwrap_or(256)
 }
 
-fn encode_index_payload<T: serde::Serialize>(record: &T) -> Result<Vec<u8>, IndexLogError> {
+fn encode_index_payload<T: serde::Serialize>(
+    record: &T,
+    shape: u8,
+) -> Result<Vec<u8>, IndexLogError> {
     // struct-as-MAP, not struct-as-array. The array form is positional, which mis-reads a
-    // struct that skipped an absent optional -- and GC's anchor probe pulls two fields out
-    // of an arbitrary record BY NAME, which positional makes impossible.
+    // struct that skipped an absent optional, so nothing is skipped now: every record writes
+    // every field and a position always means the same thing. The reader that pulled two fields
+    // out of an arbitrary record by name reads them by position instead -- see `IndexRecordHead`,
+    // which takes the first two values and ignores whatever follows, so a delta record and a
+    // whole-index record both answer it.
     let mut packed = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+    // Values in field order, for the record as well as for the rows inside it: nothing written
+    // here spells a field name.
+    let mut serializer = rmp_serde::Serializer::new(&mut packed);
     if serde::Serialize::serialize(record, &mut serializer).is_ok() {
         if index_log_compression_enabled() && packed.len() >= index_log_compression_min_bytes() {
             if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), 3) {
@@ -111,6 +129,7 @@ fn encode_index_payload<T: serde::Serialize>(record: &T) -> Result<Vec<u8>, Inde
         let mut out = Vec::with_capacity(packed.len() + INDEX_LOG_CONTAINER_MAGIC.len() + 1);
         out.extend_from_slice(INDEX_LOG_CONTAINER_MAGIC);
         out.push(INDEX_LOG_CODEC_MSGPACK);
+        out.push(shape);
         out.extend_from_slice(&packed);
         return Ok(out);
     }
@@ -128,9 +147,14 @@ pub(crate) fn decode_index_payload<T: serde::de::DeserializeOwned>(payload: &[u8
     let Some(rest) = payload.strip_prefix(INDEX_LOG_CONTAINER_MAGIC) else {
         return Ok(serde_json::from_slice(payload)?);
     };
-    let Some((codec, body)) = rest.split_first() else {
+    let Some((codec, rest)) = rest.split_first() else {
         return Err(IndexLogError::Encoding(
             "binary index-log record has no codec byte".to_string(),
+        ));
+    };
+    let Some((_shape, body)) = rest.split_first() else {
+        return Err(IndexLogError::Encoding(
+            "binary index-log record has no shape byte".to_string(),
         ));
     };
     match *codec {
@@ -233,19 +257,19 @@ pub struct IndexItem {
         deserialize_with = "model_id_either_shape"
     )]
     pub model_id: String,
-    #[serde(rename = "c", alias = "component", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "c", alias = "component", default)]
     pub component: Option<String>,
     #[serde(rename = "oi", alias = "object_id", default)]
     pub object_id: u64,
-    #[serde(rename = "pi", alias = "page_id", default, skip_serializing_if = "is_zero_u64")]
+    #[serde(rename = "pi", alias = "page_id", default)]
     pub page_id: u64,
-    #[serde(rename = "a", alias = "address", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "a", alias = "address", default)]
     pub address: Option<BlockAddress>,
-    #[serde(rename = "sz", alias = "size", default, skip_serializing_if = "is_zero_u64")]
+    #[serde(rename = "sz", alias = "size", default)]
     pub size: u64,
-    #[serde(rename = "il", alias = "in_log", default, skip_serializing_if = "is_false")]
+    #[serde(rename = "il", alias = "in_log", default)]
     pub in_log: bool,
-    #[serde(rename = "d", alias = "deleted", default, skip_serializing_if = "is_false")]
+    #[serde(rename = "d", alias = "deleted", default)]
     pub deleted: bool,
 }
 
@@ -473,6 +497,111 @@ where
     deserializer.deserialize_any(EitherShape)
 }
 
+/// Which shape a payload says it holds, if it says.
+///
+/// A payload with no container magic is the JSON fallback, which only the whole-index path ever
+/// wrote, so it answers for that shape rather than for nothing.
+pub(crate) fn index_payload_shape(payload: &[u8]) -> Option<u8> {
+    match payload.strip_prefix(INDEX_LOG_CONTAINER_MAGIC) {
+        Some(rest) => rest.get(1).copied(),
+        // No container: written before there was one. Nothing writes that shape now -- even
+        // `append_json` wraps its record -- so a payload without a container says nothing about
+        // which record it holds, and answering None hands it to the decoder. That serves both
+        // cases it can be: a record from an older writer decodes, and a well-framed payload of
+        // garbage is REPORTED rather than skipped, because a sweep that quietly skips what it
+        // cannot read turns committed corruption into silent data loss.
+        None => None,
+    }
+}
+
+/// The first two values of a record, whatever the rest of it holds.
+///
+/// Two record shapes share this log and the sweep reads one as the other: it wants a sequence and
+/// nothing else, and a delta record also parses as a whole index record with its delta fields
+/// dropped. A map allowed that, matching by name and defaulting what was absent. A row cannot: a
+/// reader built for three values refuses a row of six.
+///
+/// Both shapes begin with the same two values, so this takes those by position and ignores
+/// whatever follows. It reads a map too, so a record written before rows still answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IndexRecordHead {
+    pub(crate) shard_id: ShardId,
+    pub(crate) sequence: u64,
+    pub(crate) applied_wal_sequence: Option<u64>,
+}
+
+impl<'de> serde::Deserialize<'de> for IndexRecordHead {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Head;
+
+        impl<'de> serde::de::Visitor<'de> for Head {
+            type Value = IndexRecordHead;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an index-log record, as a row or as a map")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<IndexRecordHead, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                use serde::de::Error as _;
+                let shard_id: ShardId = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("record has no shard"))?;
+                let sequence: u64 = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("record has no sequence"))?;
+                // Position two is the payload -- rows, or a whole index. A whole-index record
+                // ends there; a delta carries its meta and then its applied sequence.
+                let _payload: Option<serde::de::IgnoredAny> = seq.next_element()?;
+                // Position three is the meta item on a delta record; a whole-index record ends
+                // before it. It is skipped rather than read: reading it as the applied sequence
+                // is a five-field struct answering a question about a number.
+                let _meta: Option<serde::de::IgnoredAny> = seq.next_element()?;
+                let applied_wal_sequence: Option<u64> =
+                    seq.next_element::<Option<u64>>()?.flatten();
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(IndexRecordHead {
+                    shard_id,
+                    sequence,
+                    applied_wal_sequence,
+                })
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<IndexRecordHead, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                use serde::de::Error as _;
+                let mut shard_id = None;
+                let mut sequence = None;
+                let mut applied = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "s" | "shard_id" => shard_id = Some(map.next_value()?),
+                        "q" | "sequence" => sequence = Some(map.next_value()?),
+                        "aw" | "applied_wal_sequence" => applied = map.next_value()?,
+                        _ => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(IndexRecordHead {
+                    shard_id: shard_id.ok_or_else(|| A::Error::custom("record has no shard"))?,
+                    sequence: sequence.ok_or_else(|| A::Error::custom("record has no sequence"))?,
+                    applied_wal_sequence: applied,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(Head)
+    }
+}
+
 /// A row, not a map: the values in field order, with the order fixed here.
 ///
 /// Every row in this log has the same shape, so the shape does not belong in the row. As a map,
@@ -674,13 +803,13 @@ pub struct BandCatalogEntry {
     pub physical_bytes: u64,
     #[serde(default)]
     pub logical_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub created_unix_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub updated_unix_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub first_page_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_page_id: Option<u64>,
     #[serde(default)]
     pub version: u64,
@@ -706,7 +835,7 @@ pub struct MetaItem {
     pub start_wal_sequence: u64,
     #[serde(default)]
     pub timestamp_ms: u64,
-    #[serde(rename = "zones", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "zones", default)]
     pub bands: Vec<BandCatalogEntry>,
     #[serde(rename = "zone_version", default)]
     pub band_version: u64,
@@ -722,16 +851,16 @@ pub struct IndexDeltaRecord {
     pub shard_id: ShardId,
     #[serde(rename = "q", alias = "sequence")]
     pub sequence: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub items: Vec<IndexItem>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub meta: Option<MetaItem>,
     /// The WAL sequence this write reflected (the served-index anchor at append time). On
     /// load, deltas with a sequence at or below the base snapshot's anchor are already
     /// folded into the base and are skipped; folding the rest advances the reconstructed
     /// anchor so WAL replay re-executes only the uncaptured tail (never relocating the
     /// pages the deltas already pin at their original addresses).
-    #[serde(rename = "aw", alias = "applied_wal_sequence", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
     pub applied_wal_sequence: Option<u64>,
     /// When true, this record's items are the exact pages the write produced: replay replaces
     /// each item's (kind, object, component) predecessor and inserts, WITHOUT the covered-key
@@ -740,7 +869,7 @@ pub struct IndexDeltaRecord {
     /// object's whole page set and replay wipes-then-restores. The snapshot shape is what made
     /// every append O(store): a batch touching the grow-with-the-store index hashes logged
     /// every page of each of them, every time.
-    #[serde(rename = "u", alias = "upsert", default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "u", alias = "upsert", default)]
     pub upsert: bool,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
@@ -749,7 +878,7 @@ pub struct IndexDeltaRecord {
     /// nodes). Opaque here so the index-log layer stays decoupled from `ShardState`; the
     /// engine builds and applies them. Replaying these on load pins the exact membership a
     /// write produced, so reconstruction from physical pages cannot resurrect evicted data.
-    #[serde(rename = "ks", alias = "key_states", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "ks", alias = "key_states", default)]
     pub key_states: Vec<serde_json::Value>,
 }
 
@@ -1014,7 +1143,8 @@ impl LocalIndexLogStore {
         };
         // Frame the record with a length + SHA-256 digest (crate::log_framing) so a later
         // value-preserving bit-flip in this committed line is detected on read.
-        let bytes = crate::log_framing::encode_record(&encode_index_payload(&record)?);
+        let bytes =
+            crate::log_framing::encode_record(&encode_index_payload(&record, INDEX_LOG_SHAPE_WHOLE)?);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1170,7 +1300,8 @@ impl LocalIndexLogStore {
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
         // value-preserving bit-flip (e.g. a flipped `deleted` flag or page address) in this
         // committed line is detected on read rather than replayed as truth on recovery.
-        let bytes = crate::log_framing::encode_record(&encode_index_payload(&record)?);
+        let bytes =
+            crate::log_framing::encode_record(&encode_index_payload(&record, INDEX_LOG_SHAPE_DELTA)?);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1237,6 +1368,16 @@ impl LocalIndexLogStore {
             // ref. `decode_line` also verifies the per-record integrity envelope, so a
             // value-preserving bit-flip surfaces here as `Corruption`. Consistent with the
             // scan / last_sequence_at path, which already treats interior corruption as fatal.
+            // A whole-index record shares this file and is not a delta. It used to be read as
+            // one and answer with defaults; now the container says what it is, so it is skipped
+            // rather than mis-read.
+            // Skip only a payload that SAYS it is the other shape. Anything else -- an
+            // unrecognised shape, a truncated container -- goes to the decoder and is reported,
+            // because a sweep that quietly skips what it cannot read is how committed corruption
+            // becomes silent data loss.
+            if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+                continue;
+            }
             let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
             // Put back what the writer left out because the item already stated it. A record
             // written before that stripping carries both already, and this leaves those alone.
@@ -1409,7 +1550,7 @@ impl LocalIndexLogStore {
             // silently re-encoded as a whole-index record (which would drop its items/meta).
             // Decode verifies the integrity envelope; the retained raw payload is re-framed on
             // write-out below.
-            let record: IndexLogRecord = decode_index_payload(&payload)?;
+            let record: IndexRecordHead = decode_index_payload(&payload)?;
             if record.sequence < retain_from_sequence {
                 removable_records_before_budget = removable_records_before_budget.saturating_add(1);
             }
@@ -1516,7 +1657,7 @@ impl LocalIndexLogStore {
             records_before += 1;
             // Decode verifies the integrity envelope; the retained raw payload is re-framed on
             // write-out below, so a retained delta record keeps its exact on-disk bytes.
-            let probe: AnchorProbe = decode_index_payload(&payload)?;
+            let probe: IndexRecordHead = decode_index_payload(&payload)?;
             let reflected = probe.applied_wal_sequence.unwrap_or(0) <= wal_anchor;
             if probe.sequence >= meta_sequence || !reflected {
                 retained.push(payload);
@@ -1630,7 +1771,7 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
                 // corrupt one AND rewinding the sequence counter (the next append reuses a
                 // sequence that durable dump manifests already cite). Surface it as an error;
                 // index-log replay returns DataLoss on a hole or digest mismatch, never trims.
-                let record = decode_index_payload::<IndexLogRecord>(&payload)?;
+                let record = decode_index_payload::<IndexRecordHead>(&payload)?;
                 last = last.max(record.sequence);
             }
             // Nothing further, or fewer bytes than the record declares: a crash mid-append.
@@ -1852,6 +1993,22 @@ mod tests {
     /// and would stop being a record at all once records stopped being lines.
     fn undecodable_record() -> Vec<u8> {
         crate::log_framing::encode_record(b"corrupt-not-a-record")
+    }
+
+    /// Encode the way the writer did BEFORE rows: a map, with absent fields left out.
+    ///
+    /// The decoder still takes this shape, and these tests are what keeps that true. A row cannot
+    /// express a partial item -- that is the point of a row -- so a test about what happens to an
+    /// absent field has to write the shape that could leave one out.
+    fn encode_as_map<T: serde::Serialize>(record: &T, shape: u8) -> Vec<u8> {
+        let mut packed = Vec::new();
+        let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        serde::Serialize::serialize(record, &mut serializer).expect("map encode");
+        let mut out = INDEX_LOG_CONTAINER_MAGIC.to_vec();
+        out.push(INDEX_LOG_CODEC_MSGPACK);
+        out.push(shape);
+        out.extend_from_slice(&packed);
+        out
     }
 
     fn page_item(bucket: u32, key: &str, deleted: bool) -> IndexItem {
@@ -2217,7 +2374,14 @@ mod tests {
         };
         let value = serde_json::to_value(&meta).unwrap();
         let object = value.as_object().unwrap();
-        assert!(!object.contains_key("zones"), "empty zones must be skipped");
+        // Every field is written now, empty or not: a row is read by position, so a field that
+        // disappears when it is empty moves every field behind it. An empty band list costs one
+        // byte and keeps the position of everything after it.
+        assert_eq!(
+            object.get("zones").expect("bands are always written"),
+            &serde_json::json!([]),
+            "an empty band list is written, not skipped"
+        );
         assert_eq!(object.get("version").unwrap(), 7);
         assert_eq!(object.get("start_wal_sequence").unwrap(), 11);
         assert_eq!(object.get("timestamp_ms").unwrap(), 22);
@@ -2553,6 +2717,7 @@ mod tests {
         serde::Serialize::serialize(&record, &mut ser).unwrap();
         let mut as_binary = INDEX_LOG_CONTAINER_MAGIC.to_vec();
         as_binary.push(INDEX_LOG_CODEC_MSGPACK);
+        as_binary.push(INDEX_LOG_SHAPE_DELTA);
         as_binary.extend_from_slice(&packed);
 
         let from_json: IndexDeltaRecord = decode_index_payload(&as_json).unwrap();
@@ -2588,6 +2753,7 @@ mod tests {
         serde::Serialize::serialize(&binary_record, &mut ser).unwrap();
         let mut binary_payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
         binary_payload.push(INDEX_LOG_CODEC_MSGPACK);
+        binary_payload.push(INDEX_LOG_SHAPE_DELTA);
         binary_payload.extend_from_slice(&packed);
 
         // Framing is independent of the payload shape, so both frame and verify the same way.
@@ -2631,6 +2797,7 @@ mod tests {
         serde::Serialize::serialize(&record, &mut ser).unwrap();
         let mut payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
         payload.push(INDEX_LOG_CODEC_MSGPACK);
+        payload.push(INDEX_LOG_SHAPE_DELTA);
         payload.extend_from_slice(&packed);
 
         let probe: AnchorProbe = decode_index_payload(&payload).unwrap();
@@ -2700,7 +2867,7 @@ mod tests {
             model_id: "string".to_string(),
             object_id: 12_345,
         };
-        let encoded = encode_index_payload(&sparse).expect("encode the sparse shape");
+        let encoded = encode_as_map(&sparse, INDEX_LOG_SHAPE_DELTA);
         let decoded: IndexItem =
             decode_index_payload(&encoded).expect("an item missing defaults must decode");
 
@@ -2727,7 +2894,7 @@ mod tests {
             deleted: true,
         };
         let round_tripped: IndexItem = decode_index_payload(
-            &encode_index_payload(&full).expect("encode"),
+            &encode_index_payload(&full, INDEX_LOG_SHAPE_DELTA).expect("encode"),
         )
         .expect("decode");
         assert_eq!(round_tripped.page_id, 7, "a set page_id must still be written");
@@ -2785,7 +2952,7 @@ mod tests {
             in_log: false,
             deleted: false,
         };
-        let as_number = encode_index_payload(&numeric).expect("encode the numeric shape");
+        let as_number = encode_as_map(&numeric, INDEX_LOG_SHAPE_DELTA);
         let decoded: IndexItem =
             decode_index_payload(&as_number).expect("a numeric handle must decode");
         assert_eq!(
@@ -2810,7 +2977,7 @@ mod tests {
             in_log: false,
             deleted: false,
         };
-        let as_text = encode_index_payload(&textual).expect("encode the text shape");
+        let as_text = encode_as_map(&textual, INDEX_LOG_SHAPE_DELTA);
         let round_tripped: IndexItem = decode_index_payload(&as_text).expect("text must decode");
         assert_eq!(round_tripped.page_ref_key, handle.to_string());
 
@@ -2830,7 +2997,7 @@ mod tests {
             "the two handles must be the same length or the comparison measures the length"
         );
         let as_forced_text =
-            encode_index_payload(&unparseable).expect("encode the unparseable handle");
+            encode_as_map(&unparseable, INDEX_LOG_SHAPE_DELTA);
         assert!(
             as_forced_text.len() > as_text.len(),
             "a handle that parses should be written as a number and be smaller: text {} vs number {}",
@@ -2890,7 +3057,7 @@ mod tests {
             let mut stripped = original.clone();
             stripped.strip_address_repeats();
 
-            let payload = encode_index_payload(&stripped).expect("encode");
+            let payload = encode_index_payload(&stripped, INDEX_LOG_SHAPE_DELTA).expect("encode");
             let mut back: IndexItem = decode_index_payload(&payload).expect("decode");
             back.restore_address_repeats();
 
@@ -2943,8 +3110,8 @@ mod tests {
             42, 1_048_576, 4096, Some(7), None, None, Some(3), Some(9),
         )));
 
-        let a = encode_index_payload(&repeats).expect("encode").len();
-        let b = encode_index_payload(&deduped).expect("encode").len();
+        let a = encode_index_payload(&repeats, INDEX_LOG_SHAPE_DELTA).expect("encode").len();
+        let b = encode_index_payload(&deduped, INDEX_LOG_SHAPE_DELTA).expect("encode").len();
         println!(
             "  REPEATS item {a} B with the repeats, {b} B without -- {} B, {:.1}% of the item",
             a - b,
@@ -2983,9 +3150,9 @@ mod tests {
             deleted: false,
         };
 
-        let whole = encode_index_payload(&full).expect("encode").len();
+        let whole = encode_index_payload(&full, INDEX_LOG_SHAPE_DELTA).expect("encode").len();
         let price = |label: &str, mut cleared: IndexItem| {
-            let without = encode_index_payload(&cleared).expect("encode").len();
+            let without = encode_index_payload(&cleared, INDEX_LOG_SHAPE_DELTA).expect("encode").len();
             let _ = &mut cleared;
             println!(
                 "    ITEMFIELD {label:<14} {:>4} B ({:>4.1}% of {whole})",
@@ -3034,7 +3201,7 @@ mod tests {
             upsert: false,
             key_states: Vec::new(),
         };
-        let encoded = encode_index_payload(&record).unwrap();
+        let encoded = encode_index_payload(&record, INDEX_LOG_SHAPE_DELTA).unwrap();
         assert!(
             encoded.starts_with(INDEX_LOG_CONTAINER_MAGIC),
             "the default write is now the container"
@@ -3053,6 +3220,7 @@ mod tests {
         serde::Serialize::serialize(record, &mut serializer).unwrap();
         let mut payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
         payload.push(INDEX_LOG_CODEC_MSGPACK);
+        payload.push(INDEX_LOG_SHAPE_DELTA);
         payload.extend_from_slice(&packed);
 
         let path = index_log_path(dir, record.shard_id);
@@ -3314,8 +3482,11 @@ mod tests {
             .iter()
             .map(|raw| {
                 let payload = crate::log_framing::next_frame(raw).unwrap().unwrap().1;
-                let record: IndexLogRecord = decode_index_payload(payload)
-                    .expect("a delta container must decode as IndexLogRecord too");
+                // What the sweep actually reads: the head of the record, whichever shape it
+                // is. A delta no longer decodes as a whole-index record -- rows carry no names to
+                // match on -- and the head is what made that unnecessary.
+                let record: IndexRecordHead = decode_index_payload(payload)
+                    .expect("a delta container must still answer for its sequence");
                 record.sequence
             })
             .collect();

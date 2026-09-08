@@ -112,30 +112,26 @@ struct BlockAddressWire {
     #[serde(
         rename = "pi",
         alias = "page_id",
-        default,
-        skip_serializing_if = "Option::is_none"
+        default
     )]
     page_id: Option<u64>,
     #[serde(
         rename = "oi",
         alias = "object_id",
-        default,
-        skip_serializing_if = "Option::is_none"
+        default
     )]
     object_id: Option<u64>,
     #[serde(
         rename = "rs",
         alias = "routing_slot",
         alias = "routing_bucket",
-        default,
-        skip_serializing_if = "Option::is_none"
+        default
     )]
     routing_bucket: Option<u32>,
     #[serde(
         rename = "g",
         alias = "generation",
-        default,
-        skip_serializing_if = "Option::is_none"
+        default
     )]
     generation: Option<u64>,
     #[serde(
@@ -143,8 +139,7 @@ struct BlockAddressWire {
         alias = "band_id",
         alias = "extent_id",
         alias = "zone_id",
-        default,
-        skip_serializing_if = "Option::is_none"
+        default
     )]
     band_id: Option<u64>,
     #[serde(
@@ -152,7 +147,6 @@ struct BlockAddressWire {
         alias = "sha256",
         alias = "checksum",
         default,
-        skip_serializing_if = "Option::is_none",
         with = "hex_digest"
     )]
     sha256: Option<[u8; 32]>,
@@ -1843,8 +1837,13 @@ mod tests {
         for gone in ["page_segment_id", "routing_slot", "object_id", "generation"] {
             assert!(!encoded.contains(gone), "{gone} should not be written any more");
         }
+        // Ninety-one bytes, where the long-name form was more than twice that. It was 90 until
+        // an absent field stopped vanishing: a row is read by position, so a field that
+        // disappears when it is empty moves every field behind it -- which shifted `generation`
+        // into `object_id` until a round-trip test caught it. The cost of that safety, here, is
+        // one `"h":null`; in the packed form an absent field is a single byte.
         assert!(
-            encoded.len() < 90,
+            encoded.len() < 100,
             "expected a compact address, got {} bytes: {encoded}",
             encoded.len()
         );
