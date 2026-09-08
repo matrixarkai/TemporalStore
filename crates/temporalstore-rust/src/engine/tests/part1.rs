@@ -1974,29 +1974,29 @@ fn crash_recovery_report_covers_wal_index_page_and_band_manifest() {
     assert_eq!(report.slab_integrity.discovered_page_slab_count, 2);
     assert_eq!(report.slab_integrity.live_page_slab_count, 2);
     assert_eq!(report.slab_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(report.zone_descriptors.len(), 2);
+    assert_eq!(report.band_descriptors.len(), 2);
     assert_eq!(
-        report.zone_descriptors[0].state,
+        report.band_descriptors[0].state,
         BlockStoreBandState::Sealed
     );
     assert_eq!(
-        report.zone_descriptors[1].state,
+        report.band_descriptors[1].state,
         BlockStoreBandState::Active
     );
-    assert_eq!(report.zone_summary.sealed_bands, 1);
-    assert_eq!(report.zone_summary.active_bands, 1);
-    assert_eq!(report.zone_summary.delayed_destroy_bands, 0);
+    assert_eq!(report.band_summary.sealed_bands, 1);
+    assert_eq!(report.band_summary.active_bands, 1);
+    assert_eq!(report.band_summary.delayed_destroy_bands, 0);
     assert_eq!(
-        report.zone_summary.sealed_physical_bytes,
-        report.zone_descriptors[0].physical_bytes
+        report.band_summary.sealed_physical_bytes,
+        report.band_descriptors[0].physical_bytes
     );
     assert_eq!(
-        report.zone_summary.active_physical_bytes,
-        report.zone_descriptors[1].physical_bytes
+        report.band_summary.active_physical_bytes,
+        report.band_descriptors[1].physical_bytes
     );
     assert_eq!(
-        report.zone_summary.live_physical_bytes,
-        report.zone_descriptors[0].physical_bytes + report.zone_descriptors[1].physical_bytes
+        report.band_summary.live_physical_bytes,
+        report.band_descriptors[0].physical_bytes + report.band_descriptors[1].physical_bytes
     );
     assert_eq!(report.page_slab_live_reports.len(), 2);
     assert_eq!(report.page_slab_live_reports[0].page_slab_id, 0);
@@ -2273,7 +2273,7 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
 
     assert_eq!(report.wal_records, 2);
     assert!(report.all_live_pages_readable);
-    assert!(report.zone_summary.live_physical_bytes > 0);
+    assert!(report.band_summary.live_physical_bytes > 0);
     // The band manifest was rebuilt (from the page stream on the default path; from WAL-replayed
     // pages under the single barrier). Recovery of both acked writes is asserted by the reads below.
     assert!(page_dir.join("page_extent_manifest.json").exists());
@@ -2287,17 +2287,17 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
         assert_eq!(report.active_page_slab_ids, vec![0, 1]);
         assert_eq!(report.live_page_slab_ids, vec![0, 1]);
         assert_eq!(report.total_page_refs, 2);
-        assert_eq!(report.zone_descriptors.len(), 2);
+        assert_eq!(report.band_descriptors.len(), 2);
         assert_eq!(
-            report.zone_descriptors[0].state,
+            report.band_descriptors[0].state,
             BlockStoreBandState::Sealed
         );
         assert_eq!(
-            report.zone_descriptors[1].state,
+            report.band_descriptors[1].state,
             BlockStoreBandState::Active
         );
-        assert_eq!(report.zone_summary.sealed_bands, 1);
-        assert_eq!(report.zone_summary.active_bands, 1);
+        assert_eq!(report.band_summary.sealed_bands, 1);
+        assert_eq!(report.band_summary.active_bands, 1);
     }
     assert_eq!(
         recovered
@@ -6969,7 +6969,7 @@ fn what_grows_outside_the_shard_index() {
             });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
-        let bands = engine.page_store.zone_descriptors().len();
+        let bands = engine.page_store.band_descriptors().len();
         let slabs = engine.page_store.slab_ids().map(|v| v.len()).unwrap_or(0);
         let strings = {
             let shards = engine.shards.read().expect("engine lock poisoned");

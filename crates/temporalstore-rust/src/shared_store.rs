@@ -3828,7 +3828,7 @@ mod tests {
         assert_eq!(follower_band.physical_bytes, slab0.byte_size);
         // The band summary counts the sealed shared band immediately (accounting is complete).
         assert!(
-            follower.block_store().zone_summary().sealed_bands >= 1,
+            follower.block_store().band_summary().sealed_bands >= 1,
             "sealed shared band must be counted before any lazy fetch"
         );
         assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);

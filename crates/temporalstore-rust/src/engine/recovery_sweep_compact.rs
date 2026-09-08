@@ -50,8 +50,8 @@ impl TemporalEngine {
             .map(|records| records.len())
             .unwrap_or_default();
         let active_page_slab_ids = self.page_store.slab_ids().unwrap_or_default();
-        let zone_descriptors = self.page_store.zone_descriptors();
-        let zone_summary = self.page_store.zone_summary();
+        let band_descriptors = self.page_store.band_descriptors();
+        let band_summary = self.page_store.band_summary();
         let page_slab_reports = self.page_store.slab_reports().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         let addresses = shards
@@ -167,8 +167,8 @@ impl TemporalEngine {
             index_log_records,
             active_page_slab_ids,
             live_page_slab_ids,
-            zone_descriptors,
-            zone_summary,
+            band_descriptors,
+            band_summary,
             page_slab_reports,
             page_slab_live_reports,
             total_page_refs,

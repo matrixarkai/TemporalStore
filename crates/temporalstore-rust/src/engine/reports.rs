@@ -241,9 +241,10 @@ pub struct StorageRecoveryReport {
     pub active_page_slab_ids: Vec<u64>,
     #[serde(alias = "live_page_segment_ids")]
     pub live_page_slab_ids: Vec<u64>,
-    pub zone_descriptors: Vec<BlockStoreBandDescriptor>,
-    #[serde(default)]
-    pub zone_summary: BlockStoreBandSummary,
+    #[serde(rename = "zone_descriptors")]
+    pub band_descriptors: Vec<BlockStoreBandDescriptor>,
+    #[serde(rename = "zone_summary", default)]
+    pub band_summary: BlockStoreBandSummary,
     #[serde(default)]
     #[serde(alias = "page_segment_reports")]
     pub page_slab_reports: Vec<BlockStoreSlabReport>,
@@ -471,8 +472,8 @@ pub struct BucketStorageSummary {
     #[serde(default)]
     #[serde(alias = "page_segment_ids", alias = "psi")]
     pub page_slab_ids: Vec<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "lcz")]
-    pub last_compacted_zone: Option<u64>,
+    #[serde(rename = "last_compacted_zone", default, skip_serializing_if = "Option::is_none", alias = "lcz")]
+    pub last_compacted_band: Option<u64>,
 }
 
 /// Whether the manifest writer spells its fields short. **On by default.**
@@ -500,7 +501,7 @@ impl BucketStorageSummary {
     {
         use serde::ser::SerializeStruct;
         let mut fields = 9;
-        if self.last_compacted_zone.is_some() {
+        if self.last_compacted_band.is_some() {
             fields += 1;
         }
         let mut out = serializer.serialize_struct("BucketStorageSummary", fields)?;
@@ -539,9 +540,9 @@ impl BucketStorageSummary {
         )?;
         // Absent stays absent: the derived writer skipped this when None, and a manifest that
         // started emitting nulls would be bigger, not smaller.
-        match self.last_compacted_zone.as_ref() {
-            Some(zone) => {
-                out.serialize_field(if short { "lcz" } else { "last_compacted_zone" }, zone)?
+        match self.last_compacted_band.as_ref() {
+            Some(band) => {
+                out.serialize_field(if short { "lcz" } else { "last_compacted_zone" }, band)?
             }
             None => out.skip_field(if short { "lcz" } else { "last_compacted_zone" })?,
         }
@@ -587,8 +588,8 @@ pub struct StoragePhysicalPageIndex {
     pub page_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zone_id: Option<u64>,
+    #[serde(rename = "zone_id", default, skip_serializing_if = "Option::is_none")]
+    pub band_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
     pub dirty: bool,
@@ -1933,7 +1934,8 @@ pub fn default_storage_gc_snapshot() -> StorageGcSnapshot {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoragePageAddressSample {
     pub shard_id: u64,
-    pub zone_id: u64,
+    #[serde(rename = "zone_id")]
+    pub band_id: u64,
     #[serde(alias = "segment_id")]
     pub slab_id: u64,
     pub page_id: u64,
@@ -1945,7 +1947,8 @@ pub struct StoragePageAddressSample {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBlockAddressSample {
     pub shard_id: u64,
-    pub zone_id: u64,
+    #[serde(rename = "zone_id")]
+    pub band_id: u64,
     pub block_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -2084,9 +2087,12 @@ pub struct StorageBucketSample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTopologySnapshot {
-    pub storage_zone_count: u64,
-    pub active_storage_zones: u64,
-    pub sealed_storage_zones: u64,
+    #[serde(rename = "storage_zone_count")]
+    pub storage_band_count: u64,
+    #[serde(rename = "active_storage_zones")]
+    pub active_storage_bands: u64,
+    #[serde(rename = "sealed_storage_zones")]
+    pub sealed_storage_bands: u64,
     #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
     #[serde(alias = "segment_open_count")]
@@ -2094,9 +2100,12 @@ pub struct StorageTopologySnapshot {
     #[serde(alias = "segment_sealed_count")]
     pub slab_sealed_count: u64,
     pub delayed_destroy_backlog: u64,
-    pub storage_zone_total_bytes: u64,
-    pub storage_zone_used_bytes: u64,
-    pub storage_zone_stale_bytes: u64,
+    #[serde(rename = "storage_zone_total_bytes")]
+    pub storage_band_total_bytes: u64,
+    #[serde(rename = "storage_zone_used_bytes")]
+    pub storage_band_used_bytes: u64,
+    #[serde(rename = "storage_zone_stale_bytes")]
+    pub storage_band_stale_bytes: u64,
     pub append_log_replay_records: u64,
     pub append_log_reclaimed_records: u64,
     #[serde(default)]
@@ -2117,16 +2126,16 @@ pub fn storage_topology_snapshot_from_metrics(
     metrics: &BTreeMap<String, u64>,
 ) -> StorageTopologySnapshot {
     StorageTopologySnapshot {
-        storage_zone_count: metric(metrics, "storage_zone_count"),
-        active_storage_zones: metric(metrics, "active_storage_zones"),
-        sealed_storage_zones: metric(metrics, "sealed_storage_zones"),
+        storage_band_count: metric(metrics, "storage_zone_count"),
+        active_storage_bands: metric(metrics, "active_storage_zones"),
+        sealed_storage_bands: metric(metrics, "sealed_storage_zones"),
         stream_slab_count: metric(metrics, "stream_segment_count"),
         slab_open_count: metric(metrics, "segment_open_count"),
         slab_sealed_count: metric(metrics, "segment_sealed_count"),
         delayed_destroy_backlog: metric(metrics, "delayed_destroy_backlog"),
-        storage_zone_total_bytes: metric(metrics, "storage_zone_total_bytes"),
-        storage_zone_used_bytes: metric(metrics, "storage_zone_used_bytes"),
-        storage_zone_stale_bytes: metric(metrics, "storage_zone_stale_bytes"),
+        storage_band_total_bytes: metric(metrics, "storage_zone_total_bytes"),
+        storage_band_used_bytes: metric(metrics, "storage_zone_used_bytes"),
+        storage_band_stale_bytes: metric(metrics, "storage_zone_stale_bytes"),
         append_log_replay_records: metric(metrics, "append_log_replay_records"),
         append_log_reclaimed_records: metric(metrics, "append_log_reclaimed_records"),
         storage_zone_samples: Vec::new(),
@@ -2238,7 +2247,7 @@ pub fn effective_storage_tuning_from_env() -> BTreeMap<String, StorageContractVa
     );
     values.insert(
         TS_STORAGE_ZONE_SIZE.to_string(),
-        contract_u64(tuning.storage_zone_size),
+        contract_u64(tuning.storage_band_size),
     );
     values.insert(
         TS_STREAM_MAX_BLOB_SIZE.to_string(),
@@ -3635,8 +3644,8 @@ mod manifest_field_name_tests {
         dirty_generation: u64,
         last_dump_sequence: u64,
         page_slab_ids: Vec<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        last_compacted_zone: Option<u64>,
+        #[serde(rename = "last_compacted_zone", skip_serializing_if = "Option::is_none")]
+        last_compacted_band: Option<u64>,
     }
 
     fn derived_of(summary: &BucketStorageSummary) -> Derived {
@@ -3650,7 +3659,7 @@ mod manifest_field_name_tests {
             dirty_generation: summary.dirty_generation,
             last_dump_sequence: summary.last_dump_sequence,
             page_slab_ids: summary.page_slab_ids.clone(),
-            last_compacted_zone: summary.last_compacted_zone,
+            last_compacted_band: summary.last_compacted_band,
         }
     }
 
@@ -3665,15 +3674,15 @@ mod manifest_field_name_tests {
             dirty_generation: 77,
             last_dump_sequence: 909,
             page_slab_ids: vec![1, 2, 3],
-            last_compacted_zone: Some(5),
+            last_compacted_band: Some(5),
         };
-        let mut no_zone = full.clone();
-        no_zone.last_compacted_zone = None;
+        let mut no_band = full.clone();
+        no_band.last_compacted_band = None;
         let mut empty_slabs = full.clone();
         empty_slabs.page_slab_ids = Vec::new();
         vec![
             ("fully populated", full),
-            ("no compacted zone", no_zone),
+            ("no compacted band", no_band),
             ("no slab ids", empty_slabs),
             ("all defaults", BucketStorageSummary::default()),
         ]

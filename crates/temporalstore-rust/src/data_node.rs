@@ -467,16 +467,16 @@ fn apply_shard_storage_metrics(
             "compaction_watermark",
             storage.compaction_watermark,
         );
-        add(metrics, "storage_zone_count", storage.storage_zone_count);
+        add(metrics, "storage_zone_count", storage.storage_band_count);
         add(
             metrics,
             "active_storage_zones",
-            storage.active_storage_zones,
+            storage.active_storage_bands,
         );
         add(
             metrics,
             "sealed_storage_zones",
-            storage.sealed_storage_zones,
+            storage.sealed_storage_bands,
         );
         add(
             metrics,
@@ -486,17 +486,17 @@ fn apply_shard_storage_metrics(
         add(
             metrics,
             "storage_zone_total_bytes",
-            storage.storage_zone_total_bytes,
+            storage.storage_band_total_bytes,
         );
         add(
             metrics,
             "storage_zone_used_bytes",
-            storage.storage_zone_used_bytes,
+            storage.storage_band_used_bytes,
         );
         add(
             metrics,
             "storage_zone_stale_bytes",
-            storage.storage_zone_stale_bytes,
+            storage.storage_band_stale_bytes,
         );
     }
 }

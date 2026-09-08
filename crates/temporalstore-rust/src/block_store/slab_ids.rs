@@ -77,10 +77,10 @@ pub(crate) fn delayed_destroy_slab_id_from_name(name: &std::ffi::OsStr) -> Optio
 
 pub(crate) fn band_id_for_slab(page_slab_id: u64) -> u64 {
     let slab_target_bytes = effective_block_slab_target_bytes().max(1);
-    let storage_zone_size = storage_zone_size_bytes().max(1);
+    let storage_band_size = storage_band_size_bytes().max(1);
     page_slab_id
         .saturating_mul(slab_target_bytes)
-        .saturating_div(storage_zone_size)
+        .saturating_div(storage_band_size)
 }
 
 pub(crate) fn compact_slab_address_from_parts(page_slab_id: u64, offset: u64) -> Option<u64> {

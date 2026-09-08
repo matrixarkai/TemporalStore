@@ -369,8 +369,8 @@ impl TemporalEngine {
         // physical bytes below the slab's real size, so it cannot lose durable state -- it is a
         // metadata refinement over the lossless disk-derived catalog, making the per-write
         // band-manifest file unnecessary as the catalog's source of truth.
-        if let Ok(Some(meta)) = self.index_log_store.latest_zone_catalog(request.shard_id) {
-            let _ = self.page_store.install_zone_catalog(&meta.zones);
+        if let Ok(Some(meta)) = self.index_log_store.latest_band_catalog(request.shard_id) {
+            let _ = self.page_store.install_band_catalog(&meta.bands);
         }
         let mut state = loaded.unwrap_or_default();
         promote_model_maps_to_bucket_index_authority(

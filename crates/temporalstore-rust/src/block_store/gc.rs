@@ -189,20 +189,20 @@ impl LocalBlockStore {
         let current_page_slab_id = inner.page_slab_id;
         let live_page_slab_ids = live_page_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let slab_ids = slab_ids_at(&inner.root)?;
-        let mut zone_total_bytes = BTreeMap::<u64, u64>::new();
-        let mut zone_used_bytes = BTreeMap::<u64, u64>::new();
+        let mut band_total_bytes = BTreeMap::<u64, u64>::new();
+        let mut band_used_bytes = BTreeMap::<u64, u64>::new();
         for page_slab_id in &slab_ids {
             let bytes = slab_path(&inner.root, *page_slab_id)
                 .metadata()
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
-            let zone_id = inner
+            let band_id = inner
                 .bands
                 .get(page_slab_id)
                 .map(|band| band.band_id)
                 .unwrap_or_else(|| band_id_for_slab(*page_slab_id));
-            *zone_total_bytes.entry(zone_id).or_default() = zone_total_bytes
-                .get(&zone_id)
+            *band_total_bytes.entry(band_id).or_default() = band_total_bytes
+                .get(&band_id)
                 .copied()
                 .unwrap_or_default()
                 .saturating_add(bytes);
@@ -210,8 +210,8 @@ impl LocalBlockStore {
             let is_current = *page_slab_id == current_page_slab_id;
             let is_live = live_page_slab_ids.contains(page_slab_id);
             if !below_retention_floor || is_current || is_live {
-                *zone_used_bytes.entry(zone_id).or_default() = zone_used_bytes
-                    .get(&zone_id)
+                *band_used_bytes.entry(band_id).or_default() = band_used_bytes
+                    .get(&band_id)
                     .copied()
                     .unwrap_or_default()
                     .saturating_add(bytes);
@@ -234,11 +234,11 @@ impl LocalBlockStore {
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
-                let zone_id = band
+                let band_id = band
                     .map(|band| band.band_id)
                     .unwrap_or_else(|| band_id_for_slab(page_slab_id));
-                let total_bytes = zone_total_bytes.get(&zone_id).copied().unwrap_or(bytes);
-                let used_bytes = zone_used_bytes.get(&zone_id).copied().unwrap_or_default();
+                let total_bytes = band_total_bytes.get(&band_id).copied().unwrap_or(bytes);
+                let used_bytes = band_used_bytes.get(&band_id).copied().unwrap_or_default();
                 let stale_bytes = total_bytes.saturating_sub(used_bytes);
                 let utility_basis_points = if total_bytes == 0 {
                     0

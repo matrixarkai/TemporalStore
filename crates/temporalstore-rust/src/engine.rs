@@ -660,7 +660,7 @@ impl TemporalEngine {
                 // long-running node permanently rejected all writes once it tripped.
                 // compares live resident size and evicts; this at least lets
                 // reclamation re-admit writes.
-                .map(|limit| self.page_store.zone_summary().total_known_physical_bytes >= limit)
+                .map(|limit| self.page_store.band_summary().total_known_physical_bytes >= limit)
                 .unwrap_or(false)
         {
             return ExecuteResponse {
@@ -1715,7 +1715,7 @@ impl TemporalEngine {
             .map(|report| {
                 report.band_manifest_ready
                     && report.band_manifest_disk_consistent
-                    && report.zone_stats_ready
+                    && report.band_stats_ready
                     && report.stream_record_count > 0
                     && report.blockers.iter().all(|blocker| {
                         blocker.contains("append/roll") || blocker.contains("purge lifecycle")

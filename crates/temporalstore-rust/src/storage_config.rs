@@ -31,7 +31,7 @@ pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
 // Match the data-slab seal size (block_slab_target) so one slab maps to one band
 // (band_id_for_slab stays 1:1), Mirroring where group_size == zone_size
 // (specification) and a zone seals at the device zone_size (~1GiB large mode).
-pub const DEFAULT_STORAGE_ZONE_SIZE: u64 = 1 << 30;
+pub const DEFAULT_STORAGE_BAND_SIZE: u64 = 1 << 30;
 pub const DEFAULT_STREAM_MAX_BLOB_SIZE: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;
@@ -47,7 +47,8 @@ pub struct StorageTuningConfig {
     pub context_page_target_bytes: usize,
     #[serde(alias = "block_segment_target_bytes")]
     pub block_slab_target_bytes: u64,
-    pub storage_zone_size: u64,
+    #[serde(rename = "storage_zone_size")]
+    pub storage_band_size: u64,
     pub stream_max_blob_size: u64,
     pub compaction_watermark_bytes: u64,
     pub cold_scan_no_cache_fill: bool,
@@ -61,7 +62,7 @@ impl Default for StorageTuningConfig {
         Self {
             context_page_target_bytes: DEFAULT_CONTEXT_PAGE_TARGET_BYTES,
             block_slab_target_bytes: DEFAULT_BLOCK_SLAB_TARGET_BYTES,
-            storage_zone_size: DEFAULT_STORAGE_ZONE_SIZE,
+            storage_band_size: DEFAULT_STORAGE_BAND_SIZE,
             stream_max_blob_size: DEFAULT_STREAM_MAX_BLOB_SIZE,
             compaction_watermark_bytes: DEFAULT_COMPACTION_WATERMARK_BYTES,
             cold_scan_no_cache_fill: DEFAULT_COLD_SCAN_NO_CACHE_FILL,
@@ -91,7 +92,7 @@ impl StorageTuningConfig {
                 defaults.block_slab_target_bytes,
             )
             .max(1024),
-            storage_zone_size: parse_u64(get(TS_STORAGE_ZONE_SIZE), defaults.storage_zone_size)
+            storage_band_size: parse_u64(get(TS_STORAGE_ZONE_SIZE), defaults.storage_band_size)
                 .max(1024),
             stream_max_blob_size: parse_u64(
                 get(TS_STREAM_MAX_BLOB_SIZE),
@@ -157,8 +158,8 @@ pub fn effective_block_slab_target_bytes() -> u64 {
     StorageTuningConfig::from_env().effective_slab_target_bytes()
 }
 
-pub fn storage_zone_size_bytes() -> u64 {
-    StorageTuningConfig::from_env().storage_zone_size
+pub fn storage_band_size_bytes() -> u64 {
+    StorageTuningConfig::from_env().storage_band_size
 }
 
 /// Undumped index-log-gap threshold (bytes) that triggers a background catalog/index dump under
@@ -207,7 +208,7 @@ mod tests {
             config.block_slab_target_bytes,
             DEFAULT_BLOCK_SLAB_TARGET_BYTES
         );
-        assert_eq!(config.storage_zone_size, DEFAULT_STORAGE_ZONE_SIZE);
+        assert_eq!(config.storage_band_size, DEFAULT_STORAGE_BAND_SIZE);
         assert_eq!(config.stream_max_blob_size, DEFAULT_STREAM_MAX_BLOB_SIZE);
         assert_eq!(
             config.compaction_watermark_bytes,
@@ -325,7 +326,7 @@ mod tests {
         let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
         assert_eq!(config.context_page_target_bytes, 32 * 1024);
         assert_eq!(config.block_slab_target_bytes, 10 * 1024 * 1024);
-        assert_eq!(config.storage_zone_size, 10 * 1024 * 1024);
+        assert_eq!(config.storage_band_size, 10 * 1024 * 1024);
         assert_eq!(config.stream_max_blob_size, 8 * 1024 * 1024);
         // Seal = max(block_slab_target 10MiB, max_blob 8MiB) = 10MiB (blob is a floor).
         assert_eq!(config.effective_slab_target_bytes(), 10 * 1024 * 1024);

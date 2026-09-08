@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::storage_config::{effective_block_slab_target_bytes, storage_zone_size_bytes};
+use crate::storage_config::{effective_block_slab_target_bytes, storage_band_size_bytes};
 
 mod paths;
 mod band_manifest;
@@ -694,8 +694,8 @@ pub struct BlockStoreBandUsage {
     pub band_id: u64,
     #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
-    #[serde(default)]
-    pub storage_zone_id: u64,
+    #[serde(rename = "storage_zone_id", default)]
+    pub storage_band_id: u64,
     #[serde(default)]
     #[serde(alias = "stream_segment_id")]
     pub stream_slab_id: u64,
@@ -733,10 +733,10 @@ pub struct StreamBackedBandRuntimeReport {
     pub delayed_destroy_bands: u64,
     #[serde(alias = "purged_zones")]
     pub purged_bands: u64,
-    #[serde(default)]
-    pub zone_stats_ready: bool,
-    #[serde(default)]
-    pub zone_usage: Vec<BlockStoreBandUsage>,
+    #[serde(rename = "zone_stats_ready", default)]
+    pub band_stats_ready: bool,
+    #[serde(rename = "zone_usage", default)]
+    pub band_usage: Vec<BlockStoreBandUsage>,
     #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
     pub physical_bytes: u64,
@@ -1314,16 +1314,8 @@ impl LocalBlockStore {
         Ok(ids)
     }
 
-    pub fn zone_summary(&self) -> BlockStoreBandSummary {
-        self.band_summary()
-    }
-
-    pub fn zone_descriptors(&self) -> Vec<BlockStoreBandDescriptor> {
-        self.band_descriptors()
-    }
-
-    pub fn zone_usage(&self) -> Vec<BlockStoreBandUsage> {
-        band_zone_usage(
+    pub fn band_usage(&self) -> Vec<BlockStoreBandUsage> {
+        compute_band_usage(
             &self
                 .inner
                 .lock()
@@ -1567,15 +1559,15 @@ fn band_lifecycle_states(summary: &BlockStoreBandSummary) -> Vec<String> {
     states
 }
 
-fn band_zone_usage(
+fn compute_band_usage(
     bands: &BTreeMap<u64, BlockStoreBandDescriptor>,
 ) -> Vec<BlockStoreBandUsage> {
     #[derive(Debug, Clone)]
-    struct ZoneUsageAcc {
+    struct BandUsageAcc {
         usage: BlockStoreBandUsage,
     }
 
-    fn merged_zone_state(
+    fn merged_band_state(
         left: BlockStoreBandState,
         right: BlockStoreBandState,
     ) -> BlockStoreBandState {
@@ -1588,7 +1580,7 @@ fn band_zone_usage(
         }
     }
 
-    let mut zones = BTreeMap::<u64, ZoneUsageAcc>::new();
+    let mut usage_by_band = BTreeMap::<u64, BandUsageAcc>::new();
     for band in bands.values() {
         let (live, reclaimable, purged) = match band.state {
             BlockStoreBandState::Active | BlockStoreBandState::Sealed => {
@@ -1597,13 +1589,13 @@ fn band_zone_usage(
             BlockStoreBandState::DelayedDestroy => (0, band.physical_bytes, 0),
             BlockStoreBandState::Purged => (0, 0, band.physical_bytes),
         };
-        let entry = zones
+        let entry = usage_by_band
             .entry(band.band_id)
-            .or_insert_with(|| ZoneUsageAcc {
+            .or_insert_with(|| BandUsageAcc {
                 usage: BlockStoreBandUsage {
                     band_id: band.band_id,
                     page_slab_id: band.page_slab_id,
-                    storage_zone_id: band.band_id,
+                    storage_band_id: band.band_id,
                     stream_slab_id: band.page_slab_id,
                     state: band.state,
                     used_bytes: 0,
@@ -1621,7 +1613,7 @@ fn band_zone_usage(
         let usage = &mut entry.usage;
         usage.page_slab_id = usage.page_slab_id.min(band.page_slab_id);
         usage.stream_slab_id = usage.stream_slab_id.min(band.page_slab_id);
-        usage.state = merged_zone_state(usage.state, band.state);
+        usage.state = merged_band_state(usage.state, band.state);
         usage.used_bytes = usage.used_bytes.saturating_add(band.physical_bytes);
         usage.live_bytes = usage.live_bytes.saturating_add(live);
         usage.reclaimable_bytes = usage.reclaimable_bytes.saturating_add(reclaimable);
@@ -1646,7 +1638,7 @@ fn band_zone_usage(
             (left, None) => left,
         };
     }
-    zones.into_values().map(|acc| acc.usage).collect()
+    usage_by_band.into_values().map(|acc| acc.usage).collect()
 }
 
 impl Default for LocalBlockStore {
@@ -1943,9 +1935,9 @@ mod tests {
     }
 
     #[test]
-    fn zone_catalog_folds_bands_and_install_reconstructs_lifecycle() {
+    fn band_catalog_folds_bands_and_install_reconstructs_lifecycle() {
         // MANIFEST-CONFORMANCE FOLD round-trip at the block-store layer: project the band catalog into
-        // the durable ZoneInfo subset, then reconstruct the band lifecycle from that projection
+        // the durable BandCatalogEntry subset, then reconstruct the band lifecycle from that projection
         // with the band-manifest file deleted -- proving the folded catalog is a lossless source
         // of the durable band state (diagnostics are recomputed from the slab separately).
         let dir = tempfile::tempdir().unwrap();
@@ -1955,28 +1947,28 @@ mod tests {
         store.roll_slab().unwrap();
         store.append(b"b").unwrap();
         store.sync_durable().unwrap();
-        let zones = store.zone_catalog(7);
+        let catalog = store.band_catalog(7);
         // Two bands: the sealed first slab and the active second slab.
-        assert_eq!(zones.len(), 2);
-        assert!(zones.iter().any(|z| z.state == crate::index_log::ZoneState::Sealed));
-        assert!(zones.iter().any(|z| z.state == crate::index_log::ZoneState::Active));
-        assert!(zones.iter().all(|z| z.version == 7));
+        assert_eq!(catalog.len(), 2);
+        assert!(catalog.iter().any(|z| z.state == crate::index_log::BandCatalogState::Sealed));
+        assert!(catalog.iter().any(|z| z.state == crate::index_log::BandCatalogState::Active));
+        assert!(catalog.iter().all(|z| z.version == 7));
         // Delete the band-manifest file so the reopened store has no cached catalog file; it
         // reconstructs bands from the durable slabs (reconcile-on-open), then we install the
         // folded catalog on top. The lifecycle states must match the pre-crash projection.
         let reopened = LocalBlockStore::new(dir.path());
         std::fs::remove_file(band_manifest_path(dir.path())).ok();
-        let changed = reopened.install_zone_catalog(&zones).unwrap();
-        let recovered = reopened.zone_catalog(0);
-        let state_of = |slab: u64, zs: &[crate::index_log::ZoneInfo]| {
+        let changed = reopened.install_band_catalog(&catalog).unwrap();
+        let recovered = reopened.band_catalog(0);
+        let state_of = |slab: u64, zs: &[crate::index_log::BandCatalogEntry]| {
             zs.iter().find(|z| z.page_slab_id == slab).map(|z| z.state)
         };
-        for zone in &zones {
+        for entry in &catalog {
             assert_eq!(
-                state_of(zone.page_slab_id, &recovered),
-                Some(zone.state),
+                state_of(entry.page_slab_id, &recovered),
+                Some(entry.state),
                 "band {} lifecycle must reconstruct from the folded catalog",
-                zone.page_slab_id
+                entry.page_slab_id
             );
         }
         let _ = changed;
@@ -2492,23 +2484,23 @@ mod tests {
         assert!(initial_summary.oldest_live_band_age_ms.is_some());
         assert!(initial_summary.oldest_reclaimable_band_unix_ms.is_none());
         assert!(initial_summary.oldest_reclaimable_band_age_ms.is_none());
-        let initial_zone_usage = store.zone_usage();
-        assert_eq!(initial_zone_usage.len(), 2);
-        assert_eq!(initial_zone_usage[0].band_id, bands[0].band_id);
+        let initial_band_usage = store.band_usage();
+        assert_eq!(initial_band_usage.len(), 2);
+        assert_eq!(initial_band_usage[0].band_id, bands[0].band_id);
         assert_eq!(
-            initial_zone_usage[0].page_slab_id,
+            initial_band_usage[0].page_slab_id,
             bands[0].page_slab_id
         );
         assert_eq!(
-            initial_zone_usage[0].page_store_used_bytes,
+            initial_band_usage[0].page_store_used_bytes,
             bands[0].physical_bytes
         );
         assert_eq!(
-            initial_zone_usage[0].live_page_store_used_bytes,
+            initial_band_usage[0].live_page_store_used_bytes,
             bands[0].physical_bytes
         );
-        assert_eq!(initial_zone_usage[0].reclaimable_page_store_used_bytes, 0);
-        assert_eq!(initial_zone_usage[0].purged_page_store_used_bytes, 0);
+        assert_eq!(initial_band_usage[0].reclaimable_page_store_used_bytes, 0);
+        assert_eq!(initial_band_usage[0].purged_page_store_used_bytes, 0);
 
         let reopened = LocalBlockStore::new(dir.path());
         let reopened_bands = reopened.band_descriptors();
@@ -2582,10 +2574,10 @@ mod tests {
             delayed[0].updated_unix_ms
         );
         assert!(delayed_summary.oldest_reclaimable_band_age_ms.is_some());
-        let delayed_zone_usage = reopened.zone_usage();
-        let delayed_first = delayed_zone_usage
+        let delayed_band_usage = reopened.band_usage();
+        let delayed_first = delayed_band_usage
             .iter()
-            .find(|zone| zone.page_slab_id == first.page_slab_id)
+            .find(|band| band.page_slab_id == first.page_slab_id)
             .unwrap();
         assert_eq!(
             delayed_first.reclaimable_page_store_used_bytes,
@@ -2612,10 +2604,10 @@ mod tests {
         );
         assert_eq!(purged_summary.live_physical_bytes, purged[1].physical_bytes);
         assert_eq!(purged_summary.reclaimable_physical_bytes, 0);
-        let purged_zone_usage = LocalBlockStore::new(dir.path()).zone_usage();
-        let purged_first = purged_zone_usage
+        let purged_band_usage = LocalBlockStore::new(dir.path()).band_usage();
+        let purged_first = purged_band_usage
             .iter()
-            .find(|zone| zone.page_slab_id == first.page_slab_id)
+            .find(|band| band.page_slab_id == first.page_slab_id)
             .unwrap();
         assert_eq!(
             purged_first.purged_page_store_used_bytes,
@@ -2660,13 +2652,13 @@ mod tests {
         assert_eq!(report.band_lifecycle_states, vec!["active", "sealed"]);
         assert!(report.band_manifest_ready);
         assert!(report.band_manifest_rebuild_ready);
-        assert!(report.zone_stats_ready);
-        assert_eq!(report.zone_usage.len(), 2);
+        assert!(report.band_stats_ready);
+        assert_eq!(report.band_usage.len(), 2);
         assert_eq!(
             report
-                .zone_usage
+                .band_usage
                 .iter()
-                .map(|zone| zone.page_store_used_bytes)
+                .map(|band| band.page_store_used_bytes)
                 .sum::<u64>(),
             report.physical_bytes
         );
@@ -2944,13 +2936,13 @@ mod tests {
         assert_eq!(before_gc.last_page_id, third.page_id());
         assert!(before_gc.page_id_continuity_ready);
         assert!(before_gc.band_manifest_rebuild_ready);
-        assert!(before_gc.zone_stats_ready);
-        assert_eq!(before_gc.zone_usage.len(), 2);
+        assert!(before_gc.band_stats_ready);
+        assert_eq!(before_gc.band_usage.len(), 2);
         assert_eq!(
             before_gc
-                .zone_usage
+                .band_usage
                 .iter()
-                .map(|zone| zone.page_store_used_bytes)
+                .map(|band| band.page_store_used_bytes)
                 .sum::<u64>(),
             before_gc.physical_bytes
         );
@@ -2984,17 +2976,17 @@ mod tests {
         assert!(report.append_roll_ready);
         assert!(report.band_manifest_ready);
         assert!(report.band_manifest_rebuild_ready);
-        assert!(report.zone_stats_ready);
+        assert!(report.band_stats_ready);
         assert!(report
-            .zone_usage
+            .band_usage
             .iter()
-            .any(|zone| zone.state == BlockStoreBandState::DelayedDestroy
-                && zone.reclaimable_page_store_used_bytes > 0));
+            .any(|band| band.state == BlockStoreBandState::DelayedDestroy
+                && band.reclaimable_page_store_used_bytes > 0));
         assert!(report
-            .zone_usage
+            .band_usage
             .iter()
-            .any(|zone| zone.state == BlockStoreBandState::Active
-                && zone.live_page_store_used_bytes > 0));
+            .any(|band| band.state == BlockStoreBandState::Active
+                && band.live_page_store_used_bytes > 0));
         assert!(report.envelope_checksum_ready);
         assert!(report.compression_stream_ready);
         assert!(report.delayed_destroy_ready);
@@ -3029,12 +3021,12 @@ mod tests {
         assert_eq!(purged.delayed_destroy_bands, 0);
         assert_eq!(purged.purged_bands, 1);
         assert_eq!(purged.band_lifecycle_states, vec!["active", "purged"]);
-        assert!(purged.zone_stats_ready);
+        assert!(purged.band_stats_ready);
         assert!(purged
-            .zone_usage
+            .band_usage
             .iter()
-            .any(|zone| zone.state == BlockStoreBandState::Purged
-                && zone.purged_page_store_used_bytes > 0));
+            .any(|band| band.state == BlockStoreBandState::Purged
+                && band.purged_page_store_used_bytes > 0));
         assert!(purged.purge_lifecycle_ready);
         assert!(purged.append_roll_ready);
         assert!(purged.page_id_continuity_ready);

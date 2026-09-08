@@ -232,14 +232,20 @@ pub struct ShardCanonicalStorageStats {
     pub object_index_entries: u64,
     #[serde(rename = "slot_entries")]
     pub bucket_entries: u64,
-    pub storage_zone_count: u64,
-    pub active_storage_zones: u64,
-    pub sealed_storage_zones: u64,
+    #[serde(rename = "storage_zone_count")]
+    pub storage_band_count: u64,
+    #[serde(rename = "active_storage_zones")]
+    pub active_storage_bands: u64,
+    #[serde(rename = "sealed_storage_zones")]
+    pub sealed_storage_bands: u64,
     #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
-    pub storage_zone_total_bytes: u64,
-    pub storage_zone_used_bytes: u64,
-    pub storage_zone_stale_bytes: u64,
+    #[serde(rename = "storage_zone_total_bytes")]
+    pub storage_band_total_bytes: u64,
+    #[serde(rename = "storage_zone_used_bytes")]
+    pub storage_band_used_bytes: u64,
+    #[serde(rename = "storage_zone_stale_bytes")]
+    pub storage_band_stale_bytes: u64,
     pub page_reads: u64,
     pub page_writes: u64,
     pub block_reads: u64,

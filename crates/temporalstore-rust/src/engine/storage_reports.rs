@@ -397,7 +397,7 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> StoragePageFormatCompatibilityReport {
         let stats = self.page_store.stats();
-        let zones = self.page_store.zone_summary();
+        let summary = self.page_store.band_summary();
         StoragePageFormatCompatibilityReport {
             shard_id,
             page_format: "rust-page-envelope-v6".to_string(),
@@ -413,11 +413,11 @@ impl TemporalEngine {
             object_ids_embedded: true,
             routing_buckets_embedded: true,
             compression_supported: true,
-            active_bands: zones.active_bands,
-            sealed_bands: zones.sealed_bands,
-            delayed_destroy_bands: zones.delayed_destroy_bands,
-            live_physical_bytes: zones.live_physical_bytes,
-            reclaimable_physical_bytes: zones.reclaimable_physical_bytes,
+            active_bands: summary.active_bands,
+            sealed_bands: summary.sealed_bands,
+            delayed_destroy_bands: summary.delayed_destroy_bands,
+            live_physical_bytes: summary.live_physical_bytes,
+            reclaimable_physical_bytes: summary.reclaimable_physical_bytes,
             page_store_writes: stats.writes,
             page_store_bytes_written: stats.bytes_written,
             logical_bytes_written: stats.logical_bytes_written,

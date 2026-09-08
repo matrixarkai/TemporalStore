@@ -240,7 +240,7 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        zone_id: address.band_id().unwrap_or(address.page_slab_id),
+        band_id: address.band_id().unwrap_or(address.page_slab_id),
         slab_id: address.page_slab_id,
         page_id: address.page_id().unwrap_or(address.page_slab_id),
         offset: address.offset,
@@ -255,7 +255,7 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        zone_id: address.band_id().unwrap_or(address.page_slab_id),
+        band_id: address.band_id().unwrap_or(address.page_slab_id),
         block_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
@@ -582,13 +582,13 @@ pub(super) fn storage_topology_snapshot_with_samples(
     let mut buckets = BTreeMap::<u32, BucketAcc>::new();
 
     for entry in &entries {
-        let zone_id = entry
+        let band_id = entry
             .address
             .band_id()
             .unwrap_or(entry.address.page_slab_id);
         let slab_id = entry.address.page_slab_id;
         let generation = entry.address.object_id().unwrap_or(0);
-        let zone = zones.entry(zone_id).or_default();
+        let zone = zones.entry(band_id).or_default();
         zone.slabs.insert(slab_id);
         zone.generation = zone.generation.max(generation);
         if entry.deleted {
@@ -598,7 +598,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         }
 
         let slab = slabs.entry(slab_id).or_insert_with(|| SlabAcc {
-            band_id: zone_id,
+            band_id,
             start_offset: entry.address.offset,
             ..SlabAcc::default()
         });
@@ -610,7 +610,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
             slab.live_refs = slab.live_refs.saturating_add(1);
         }
 
-        let band = bands.entry(zone_id).or_insert_with(|| BandAcc {
+        let band = bands.entry(band_id).or_insert_with(|| BandAcc {
             min_offset: entry.address.offset,
             max_offset: entry.address.offset.saturating_add(entry.address.length),
             ..BandAcc::default()
