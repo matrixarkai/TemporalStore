@@ -398,15 +398,34 @@ impl TemporalEngine {
                 // Same two guards: every touched key must report that it synced, or the rebuild
                 // still runs; and an empty bucket_map still rebuilds, because maintenance updates
                 // an index rather than constructing one.
-                let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
-                    && !object_keys_for_maintenance.is_empty()
-                    && object_keys_for_maintenance.iter().all(|object_key| {
-                        crate::engine::storage_bucket_internals::sync_context_pages_for_object(
-                            shard,
-                            request.shard_id,
-                            object_key,
-                        )
-                    });
+                let maintained_bucket_index = if shard.bucket_index.bucket_map.is_empty() {
+                    false
+                } else {
+                    // Prefer the components this command actually wrote. The whole-object sync
+                    // below re-upserts every field the object holds, which is quadratic in that
+                    // count; this is one upsert per written component. It reports false when it
+                    // cannot model the write, and the whole-object sync then runs.
+                    let written = command_upsert_components(&command_for_post_write, shard);
+                    let narrow = match written.as_deref() {
+                        Some(components) => {
+                            crate::engine::storage_bucket_internals::sync_pages_for_written_components(
+                                shard,
+                                request.shard_id,
+                                components,
+                            )
+                        }
+                        None => false,
+                    };
+                    narrow
+                        || (!object_keys_for_maintenance.is_empty()
+                            && object_keys_for_maintenance.iter().all(|object_key| {
+                                crate::engine::storage_bucket_internals::sync_context_pages_for_object(
+                                    shard,
+                                    request.shard_id,
+                                    object_key,
+                                )
+                            }))
+                };
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()
                     // A command that writes no page cannot have changed the page index, so a

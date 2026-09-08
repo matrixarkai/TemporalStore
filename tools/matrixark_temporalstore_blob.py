@@ -184,7 +184,32 @@ class TemporalStoreBlobClient:
                 pass
         if status >= 400:
             raise RuntimeError(f"temporalstore blob PUT {key} failed: HTTP {status}: {raw[:256]!r}")
-        return key
+        # Return the key the SERVER says it stored, not the one we asked for: a tier that
+        # scopes objects by tenant stores under a prefixed path while the request named the
+        # bare key, and recording the requested key yields a URI nothing can fetch.
+        try:
+            receipt = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return key
+        stored = receipt.get("key") if isinstance(receipt, dict) else None
+        return str(stored) if stored else key
+
+    def _scoped_key_candidates(self, key: str) -> list:
+        """Keys the blob tier may have stored `key` under, most likely first.
+
+        The tier prefixes writes with the request's tenant and does not report it, so a
+        reader holding the bare key has to name the same scope to find the bytes.
+        `anonymous` is the tenant an unauthenticated one-box writes under.
+        """
+        if "/" in key and key.split("/", 1)[0] in self._known_scopes():
+            return []
+        return [f"{scope}/{key}" for scope in self._known_scopes()]
+
+    def _known_scopes(self) -> tuple:
+        configured = os.environ.get("MATRIXARK_BLOB_TENANT_SCOPES", "").strip()
+        if configured:
+            return tuple(part for part in configured.split(",") if part)
+        return ("anonymous",)
 
     def get(self, key: str) -> tuple[bytes, Json]:
         """Fetch bytes for a key. Returns (bytes, meta). Raises on 404/missing."""
@@ -202,6 +227,22 @@ class TemporalStoreBlobClient:
                 conn.close()
             except Exception:
                 pass
+        if status == 404 and not getattr(self, "_retry_scoped", False):
+            # The blob tier scopes stored objects by tenant while echoing the bare key in
+            # its receipt, so bytes written as `<key>` are read back only as
+            # `<tenant>/<key>`. Observed on a one-box: the upload succeeded, the file sat
+            # at `anonymous/resources/fd/...`, and every read of `resources/fd/...` 404ed,
+            # failing every skill ingest while message ingest stayed healthy.
+            # This resolves the write's own scoping instead of guessing; the asymmetry
+            # itself belongs in the blob tier and should be fixed there.
+            for scope_prefix in self._scoped_key_candidates(key):
+                self._retry_scoped = True
+                try:
+                    return self.get(scope_prefix)
+                except FileNotFoundError:
+                    continue
+                finally:
+                    self._retry_scoped = False
         if status == 404:
             raise FileNotFoundError(f"temporalstore blob not found: {key}")
         if status >= 400:
@@ -273,7 +314,9 @@ def ts_blob_storage_resolution(
         "scope": scope or {}, "content_hash": ch, "content_type": content_type,
     }
     if not deduped:
-        client.put(data, key=key, content_type=content_type)
+        # put() reports the key the server stored, which may be scoped differently from
+        # the one requested; the URI has to name that key or the later read 404s.
+        key = client.put(data, key=key, content_type=content_type) or key
     uri = blob_uri(key)
     return {
         "storage_mode": "temporalstore", "backend": "temporalstore_blob",

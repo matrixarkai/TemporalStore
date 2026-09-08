@@ -310,12 +310,41 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         """Delay before the next refresh pass -- see `next_summary_refresh_delay_s`."""
         return next_summary_refresh_delay_s(self._summary_refresh_interval_s, last_pass_s)
 
+    def _summary_refresh_watermark(self):
+        """Cheap "has anything been written" token, or None when it cannot be asked.
+
+        The record log is append-only, so its count moves if and only if new content landed. One
+        `get_string` answers it; the pass it guards reads and re-decodes the whole store.
+        """
+        getter = getattr(self.adapter, "_get_count", None)
+        if not callable(getter):
+            return None
+        try:
+            return int(getter())
+        except Exception:
+            return None
+
     def _summary_refresh_loop(self) -> None:
         delay_s = self._summary_refresh_interval_s
         while not self._summary_stop.wait(delay_s):
             started_perf = time.perf_counter()
+            # Skip a pass that cannot have anything to do.
+            #
+            # A pass calls ensure_context_embeddings, which does a full read_all() -- on a native
+            # backend that is the whole record log shipped over the proxy and re-decoded into
+            # Python objects -- and then writes any embedding it finds stale. On a 1s timer that
+            # ran whether or not anything had been ingested, and a profile of an idle one-box put
+            # this thread on the GIL inside that read.
+            #
+            # Summaries and their embeddings derive from records, so with no new record there is
+            # nothing new to derive.
+            watermark = self._summary_refresh_watermark()
+            if watermark is not None and watermark == getattr(self, "_summary_last_watermark", None):
+                delay_s = self._next_summary_refresh_delay_s(time.perf_counter() - started_perf)
+                continue
             try:
                 result = self.adapter.refresh_summaries({"scope": {}, "limit": self._summary_refresh_limit})
+                self._summary_last_watermark = watermark
                 self.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
                 refreshed_count = int(result.get("refreshed_count") or 0)
                 if refreshed_count:
