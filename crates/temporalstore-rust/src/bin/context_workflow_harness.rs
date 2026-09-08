@@ -1198,7 +1198,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     let mut unsupported_benchmark_case_ids = Vec::<String>::new();
     let max_events = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS")
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(32);
     let all_source_replay = temporalstore_rust::env_flag::env_bool(
@@ -1207,7 +1207,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     );
     let selected_id_limit = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT")
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(128);
     let direct_source_scoring =

@@ -177,7 +177,7 @@ impl Default for ContextCompressionPolicy {
 pub(super) fn default_traversal_top_k() -> usize {
     std::env::var("MATRIXARK_RETRIEVAL_TRAVERSAL_TOP_K")
         .ok()
-        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_TOP_K)
 }
@@ -186,7 +186,7 @@ pub(super) fn default_traversal_top_k() -> usize {
 pub(super) fn default_traversal_candidates() -> usize {
     std::env::var("MATRIXARK_RETRIEVAL_MAX_CANDIDATES")
         .ok()
-        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_CANDIDATES)
 }

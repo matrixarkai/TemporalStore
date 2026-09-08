@@ -1215,7 +1215,7 @@ fn wait_for_replica_read(
 fn wait_for_key(node: &ProductionRaftNode, key: &str, expected: &[u8]) -> ReplicaReadSummary {
     let timeout_secs = std::env::var("TS_DISTRIBUTED_RAFT_CATCHUP_TIMEOUT_SECS")
         .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(30);
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {

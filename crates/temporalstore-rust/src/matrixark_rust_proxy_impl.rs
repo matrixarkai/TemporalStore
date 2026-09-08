@@ -4200,7 +4200,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
     })?;
     let cache_bytes = env::var("MATRIXARK_RUST_PROXY_CACHE_BYTES")
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or_else(default_engine_cache_bytes);
     eprintln!(
@@ -4284,7 +4284,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
             // explicit truthy MATRIXARK_RUST_PROXY_ASYNC_STORAGE.
             async_storage: env::var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE")
                 .ok()
-                .and_then(|value| value.parse::<bool>().ok())
+                .and_then(|value| temporalstore_rust::env_flag::parse_bool(&value))
                 .unwrap_or(false),
             ..Config::default()
         },
