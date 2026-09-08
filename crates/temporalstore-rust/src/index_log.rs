@@ -43,11 +43,49 @@ pub(crate) const INDEX_LOG_CONTAINER_MAGIC: &[u8] = b"TSILOG\x01";
 /// Payload codec: msgpack, struct-as-map.
 pub(crate) const INDEX_LOG_CODEC_MSGPACK: u8 = 1;
 
+/// Payload codec: msgpack, struct-as-map, zstd-compressed.
+///
+/// The index log is the largest durable tier on an ingest-heavy store and almost all of it
+/// is text: object keys repeated thousands of times and ids written as decimal digits.
+/// Measured on a one-box log of 14.4 MB: 24.8% of the bytes were long decimal ids and the
+/// six most repeated key strings were another 20%, and the whole file compressed 11.1x.
+///
+/// A reader always understands this codec; a writer only emits it when asked, so a store
+/// can be rolled forward and back without a format migration. An older binary refuses it
+/// as an unknown codec rather than misreading it, which is what the codec byte is for.
+pub(crate) const INDEX_LOG_CODEC_MSGPACK_ZSTD: u8 = 2;
+
 /// The single place an index-log record becomes payload bytes.
 ///
 /// Both append paths go through here so the whole-index record and the delta record cannot
 /// drift into different shapes -- the reader tells them apart by their fields, which only
 /// works while both are encoded the same way.
+/// Whether new index-log payloads are written compressed. Off by default.
+///
+/// Reading codec 2 is unconditional; only writing it is gated, so a store can be rolled
+/// forward and back without a migration.
+fn index_log_compression_enabled() -> bool {
+    matches!(
+        std::env::var("TS_INDEX_LOG_COMPRESSION_ENABLED")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Payloads below this many bytes are stored uncompressed.
+///
+/// zstd on a very small record spends a frame header to save little; the page tier draws
+/// the same line at 256 bytes for the same reason.
+fn index_log_compression_min_bytes() -> usize {
+    std::env::var("TS_INDEX_LOG_COMPRESSION_MIN_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(256)
+}
+
 fn encode_index_payload<T: serde::Serialize>(record: &T) -> Result<Vec<u8>, IndexLogError> {
     // struct-as-MAP, not struct-as-array. The array form is positional, which mis-reads a
     // struct that skipped an absent optional -- and GC's anchor probe pulls two fields out
@@ -55,6 +93,21 @@ fn encode_index_payload<T: serde::Serialize>(record: &T) -> Result<Vec<u8>, Inde
     let mut packed = Vec::new();
     let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
     if serde::Serialize::serialize(record, &mut serializer).is_ok() {
+        if index_log_compression_enabled() && packed.len() >= index_log_compression_min_bytes() {
+            if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), 3) {
+                // Only when it actually helps: a record that does not compress would
+                // otherwise pay the frame overhead for nothing.
+                if squeezed.len() < packed.len() {
+                    let mut out = Vec::with_capacity(
+                        squeezed.len() + INDEX_LOG_CONTAINER_MAGIC.len() + 1,
+                    );
+                    out.extend_from_slice(INDEX_LOG_CONTAINER_MAGIC);
+                    out.push(INDEX_LOG_CODEC_MSGPACK_ZSTD);
+                    out.extend_from_slice(&squeezed);
+                    return Ok(out);
+                }
+            }
+        }
         let mut out = Vec::with_capacity(packed.len() + INDEX_LOG_CONTAINER_MAGIC.len() + 1);
         out.extend_from_slice(INDEX_LOG_CONTAINER_MAGIC);
         out.push(INDEX_LOG_CODEC_MSGPACK);
@@ -83,6 +136,12 @@ pub(crate) fn decode_index_payload<T: serde::de::DeserializeOwned>(payload: &[u8
     match *codec {
         INDEX_LOG_CODEC_MSGPACK => rmp_serde::from_slice(body)
             .map_err(|error| IndexLogError::Encoding(error.to_string())),
+        INDEX_LOG_CODEC_MSGPACK_ZSTD => {
+            let plain = zstd::stream::decode_all(body)
+                .map_err(|error| IndexLogError::Encoding(error.to_string()))?;
+            rmp_serde::from_slice(&plain)
+                .map_err(|error| IndexLogError::Encoding(error.to_string()))
+        }
         other => Err(IndexLogError::Encoding(format!(
             "unknown index-log payload codec {other}"
         ))),
