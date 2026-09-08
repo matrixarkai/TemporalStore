@@ -970,6 +970,39 @@ fn matrixark_scan_cache() -> &'static Mutex<BTreeMap<String, Value>> {
     MATRIXARK_SCAN_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+/// How many entries a process-global cache may hold before it starts shedding.
+///
+/// These caches live for the life of the proxy and are invalidated on write, but nothing ever
+/// capped how many distinct keys they accumulate. Measured on a 2 h production-corpus soak: the
+/// proxy grew to 4.5-5.2 GB and was OOM-killed nine times, and a retrieve that takes 22 ms in a
+/// freshly started process took 4,639 ms in the aged one against the identical store. The store
+/// was not the variable; the number of keys these maps had seen was.
+fn global_cache_capacity(var: &str, default: usize) -> usize {
+    std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+/// Shed entries until the cache is within `cap`. A capacity of 0 disables shedding.
+///
+/// Eviction is by lowest key rather than least-recently-used: a `BTreeMap` carries no recency,
+/// and adding that bookkeeping costs more than the arbitrary choice does. What matters here is
+/// that the map is BOUNDED -- an evicted key is re-read from the engine on its next use, which
+/// is the same cost as the miss it would have had before it was ever cached. Correctness does
+/// not depend on an entry being present: every read path treats a miss as "ask the engine", and
+/// the emptiness check that gates cache maintenance is an optimisation, not a source of truth.
+fn bound_global_cache<V>(cache: &mut BTreeMap<String, V>, cap: usize) {
+    if cap == 0 {
+        return;
+    }
+    while cache.len() > cap {
+        if cache.pop_first().is_none() {
+            break;
+        }
+    }
+}
+
 fn clear_matrixark_scan_cache() {
     if let Ok(mut cache) = matrixark_scan_cache().lock() {
         cache.clear();
@@ -1367,6 +1400,10 @@ fn hgetall_map(engine: &RecordStore, key: String) -> Result<BTreeMap<String, Str
             if !decoded.is_empty() {
                 if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
                     cache.insert(key, decoded.clone());
+                    bound_global_cache(
+                        &mut cache,
+                        global_cache_capacity("TS_PROXY_HGETALL_SNAPSHOT_CACHE_MAX", 512),
+                    );
                 }
             }
             Ok(decoded)
@@ -2377,6 +2414,10 @@ fn scan_matrixark_candidates(
     });
     if let Ok(mut cache) = matrixark_scan_cache().lock() {
         cache.insert(scan_cache_key, output.clone());
+        bound_global_cache(
+            &mut cache,
+            global_cache_capacity("TS_PROXY_SCAN_CACHE_MAX", 512),
+        );
     }
     Ok(output)
 }
@@ -4855,6 +4896,10 @@ fn load_retrieve_candidate_snapshot(
     });
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
         cache.insert(cache_key, Arc::clone(&snapshot));
+        bound_global_cache(
+            &mut cache,
+            global_cache_capacity("TS_PROXY_RETRIEVE_CANDIDATE_CACHE_MAX", 512),
+        );
     }
     Ok((snapshot, false))
 }
