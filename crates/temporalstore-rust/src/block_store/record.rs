@@ -13,7 +13,7 @@ use super::{
 };
 
 pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
-pub(super) const PAGE_RECORD_VERSION: u8 = 9;
+pub(super) const PAGE_RECORD_VERSION: u8 = 10;
 
 /// Version at which the header stopped writing two numbers it could not disagree with.
 ///
@@ -27,6 +27,29 @@ pub(super) const PAGE_RECORD_VERSION: u8 = 9;
 /// compressed. Sixteen bytes of a seventy-four byte header, on every page written.
 pub(super) const PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION: u8 = 9;
 
+/// The version that stopped giving every number a full 64 bits.
+///
+/// v9 spent 8 bytes on a band id that is almost always 0 and 8 on a page id that fits in two, so
+/// most of a header was leading zeroes. v10 writes those as varints. The object id is deliberately
+/// NOT one of them: object ids here are hashes, so they occupy the whole 64 bits and a varint
+/// costs 9 or 10 bytes for them, which would make the header BIGGER. It stays fixed width.
+pub(super) const PAGE_RECORD_VARINT_HEADER_VERSION: u8 = 10;
+
+/// Where the v10 varints start: magic, version, reserved, header length, checksum, object id.
+pub(super) const PAGE_RECORD_V10_FIXED_LEN: usize =
+    8 + 1 + 1 + 2 + PAGE_RECORD_CHECKSUM_COMPACT_LEN + 8;
+
+/// Where the checksum sits in a v10 record.
+///
+/// v9 put it at 20, after a fixed-width payload length. v10 writes that length as a varint, which
+/// has to come after everything fixed, so the checksum moved up to where the length used to be.
+/// Named because two tests read the field by offset, and a literal there passes silently when the
+/// layout moves under it.
+pub(super) const PAGE_RECORD_V10_CHECKSUM_OFFSET: usize = 12;
+
+/// The shortest a v10 header can be: every varint one byte, plus the compression codec.
+pub(super) const PAGE_RECORD_V10_SMALLEST_HEADER_LEN: usize = PAGE_RECORD_V10_FIXED_LEN + 4 + 1;
+
 /// The shortest header any version writes.
 ///
 /// The walks below use this to decide whether what is left of a slab can still be a record. It was
@@ -34,12 +57,19 @@ pub(super) const PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION: u8 = 9;
 /// disagree with -- and a v9 header is SHORTER than v1, because v1 carried a 32-byte digest where
 /// v9 carries an 8-byte checksum. Left at the v1 length, a scan treats a short v9 record as the end
 /// of the slab and a decode calls it a short header, which loses every record behind it.
-pub(super) const PAGE_RECORD_SMALLEST_HEADER_LEN: usize =
-    if PAGE_RECORD_V9_HEADER_LEN < PAGE_RECORD_V1_HEADER_LEN {
+pub(super) const PAGE_RECORD_SMALLEST_HEADER_LEN: usize = {
+    let shortest = if PAGE_RECORD_V9_HEADER_LEN < PAGE_RECORD_V1_HEADER_LEN {
         PAGE_RECORD_V9_HEADER_LEN
     } else {
         PAGE_RECORD_V1_HEADER_LEN
     };
+    // v10 is shorter again, for the same reason v9 was shorter than v1.
+    if PAGE_RECORD_V10_SMALLEST_HEADER_LEN < shortest {
+        PAGE_RECORD_V10_SMALLEST_HEADER_LEN
+    } else {
+        shortest
+    }
+};
 
 /// v9 header for an uncompressed record: v8 without the repeated length and without the stored
 /// length.
@@ -97,16 +127,73 @@ pub(super) const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V7_HEADER_LEN
     - (PAGE_RECORD_CHECKSUM_LEN - PAGE_RECORD_CHECKSUM_COMPACT_LEN)
     - PAGE_RECORD_V7_INTERIOR_PADDING;
 
-/// Where the compression byte sits in a record this code writes.
+/// The compression codec byte of a record this code writes, found by walking the header.
 ///
-/// Named rather than derived at each call site. Callers kept computing it -- first as the literal
-/// 92, then as `PAGE_RECORD_HEADER_LEN - 16` -- and both encoded a layout: the literal encoded
-/// v7's offsets, the subtraction encoded v7's trailing padding. Neither survived a renumbering.
-pub(super) const fn page_record_compression_offset() -> usize {
-    // One payload length, the checksum, then flag, routing bucket, band id, then the
-    // compression byte. The leading 20 is where v9 puts the checksum: v8 wrote the payload
-    // length twice and this was 28.
-    20 + PAGE_RECORD_CHECKSUM_COMPACT_LEN + 17 + 4 + 8
+/// v9 had this at a fixed offset. A v10 header is variable length, so there is no constant to
+/// name any more and a caller that wants the byte has to step over the varints to reach it.
+#[cfg(test)]
+pub(super) fn page_record_compression_byte(record: &[u8]) -> u8 {
+    let mut cursor = PAGE_RECORD_V10_FIXED_LEN;
+    for _ in 0..4 {
+        while record[cursor] & 0x80 != 0 {
+            cursor += 1;
+        }
+        cursor += 1;
+    }
+    record[cursor]
+}
+
+/// How many bytes `value` takes as a varint.
+///
+/// Lets a test state the header length it expects from the values that went in, rather than from
+/// a constant: with varints the length is a function of the data, and a test that cannot say what
+/// it should be cannot notice when it is wrong.
+#[cfg(test)]
+pub(super) fn page_record_varint_len(mut value: u64) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
+}
+
+/// Writes one LEB128 varint.
+fn put_page_record_varint(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// Reads one LEB128 varint, advancing `cursor`.
+fn read_page_record_varint(
+    record: &[u8],
+    cursor: &mut usize,
+    address: &BlockAddress,
+    what: &str,
+) -> Result<u64, BlockStoreError> {
+    let mut value = 0_u64;
+    let mut shift = 0_u32;
+    loop {
+        let byte = *record
+            .get(*cursor)
+            .ok_or_else(|| corrupt_page_envelope(address, format!("truncated {what}")))?;
+        *cursor += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+        shift += 7;
+        if shift >= 64 {
+            return Err(corrupt_page_envelope(address, format!("oversized {what}")));
+        }
+    }
 }
 
 /// Where the fields after the checksum begin, for a record at `version`.
@@ -201,32 +288,34 @@ pub(super) fn encode_page_record(
     let (stored_payload, compression) = encode_page_record_payload(payload, options)?;
     let stored_len = stored_payload.len();
     let compressed = compression != PageRecordCompression::None;
-    let header_len = if compressed {
-        PAGE_RECORD_V9_COMPRESSED_HEADER_LEN
-    } else {
-        PAGE_RECORD_V9_HEADER_LEN
-    };
-    let mut record = Vec::with_capacity(header_len + stored_payload.len());
+    let mut record =
+        Vec::with_capacity(PAGE_RECORD_V10_SMALLEST_HEADER_LEN + 8 + stored_payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
     record.push(PAGE_RECORD_VERSION);
     record.push(0);
-    record.extend_from_slice(&(header_len as u16).to_le_bytes());
-    record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    // Backfilled below: the varints are what decide the length, so it is not known yet.
+    record.extend_from_slice(&0_u16.to_le_bytes());
     record.extend_from_slice(&checksum_field[..PAGE_RECORD_CHECKSUM_COMPACT_LEN]);
-    record.extend_from_slice(&page_id.to_le_bytes());
+    // Fixed width: an object id is a hash, so it fills its 64 bits and a varint costs more.
     record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
-    record.push(u8::from(routing_bucket.is_some()));
-    record.extend_from_slice(&routing_bucket.unwrap_or_default().to_le_bytes());
-    record.extend_from_slice(&band_id.to_le_bytes());
+    put_page_record_varint(&mut record, payload.len() as u64);
+    put_page_record_varint(&mut record, page_id);
+    // 0 says there is no routing bucket, so an absent one costs one byte rather than five.
+    put_page_record_varint(
+        &mut record,
+        routing_bucket.map_or(0, |bucket| u64::from(bucket) + 1),
+    );
+    put_page_record_varint(&mut record, band_id);
     record.push(match compression {
         PageRecordCompression::None => PAGE_RECORD_COMPRESSION_NONE,
         PageRecordCompression::Zstd => PAGE_RECORD_COMPRESSION_ZSTD,
     });
     if compressed {
         // Only a compressed record needs this: uncompressed, it is the payload length again.
-        record.extend_from_slice(&(stored_len as u64).to_le_bytes());
+        put_page_record_varint(&mut record, stored_len as u64);
     }
-    debug_assert_eq!(record.len(), header_len, "v9 header length must match what it declared");
+    let header_len = record.len();
+    record[10..12].copy_from_slice(&(header_len as u16).to_le_bytes());
     record.extend_from_slice(&stored_payload);
     Ok(EncodedPageRecord {
         bytes: record,
@@ -429,6 +518,84 @@ pub(super) fn logical_range_from_slab(
     })
 }
 
+/// Reads a v10 header, whose fields are varints and so can only be read in order.
+///
+/// The declared header length is checked against where the walk ended rather than against a
+/// constant: with varints there is no constant to check it against, and a walk that ends anywhere
+/// else means the header did not write what it said it wrote.
+fn parse_varint_page_record_header(
+    record: &[u8],
+    address: &BlockAddress,
+) -> Result<PageRecordHeader, BlockStoreError> {
+    let version = record[8];
+    if record.len() < PAGE_RECORD_V10_SMALLEST_HEADER_LEN {
+        return Err(corrupt_page_envelope(address, "short header"));
+    }
+    let header_len = u16::from_le_bytes(
+        record[10..12]
+            .try_into()
+            .expect("page envelope header length slice"),
+    ) as usize;
+    let mut expected_sha256 = [0_u8; PAGE_RECORD_CHECKSUM_LEN];
+    expected_sha256[..PAGE_RECORD_CHECKSUM_COMPACT_LEN]
+        .copy_from_slice(&record[12..12 + PAGE_RECORD_CHECKSUM_COMPACT_LEN]);
+    let object_id = u64::from_le_bytes(
+        record[20..PAGE_RECORD_V10_FIXED_LEN]
+            .try_into()
+            .expect("page envelope object id slice"),
+    );
+    let mut cursor = PAGE_RECORD_V10_FIXED_LEN;
+    let payload_len =
+        read_page_record_varint(record, &mut cursor, address, "payload length")? as usize;
+    let page_id = read_page_record_varint(record, &mut cursor, address, "page id")?;
+    let routing = read_page_record_varint(record, &mut cursor, address, "routing bucket")?;
+    let band_id = read_page_record_varint(record, &mut cursor, address, "band id")?;
+    let codec = *record
+        .get(cursor)
+        .ok_or_else(|| corrupt_page_envelope(address, "truncated compression codec"))?;
+    cursor += 1;
+    let compression = match codec {
+        PAGE_RECORD_COMPRESSION_NONE => PageRecordCompression::None,
+        PAGE_RECORD_COMPRESSION_ZSTD => PageRecordCompression::Zstd,
+        codec => {
+            return Err(corrupt_page_envelope(
+                address,
+                format!("unsupported compression codec {codec}"),
+            ));
+        }
+    };
+    let stored_len = if compression == PageRecordCompression::None {
+        // Not written: uncompressed, the stored bytes ARE the payload bytes.
+        payload_len
+    } else {
+        read_page_record_varint(record, &mut cursor, address, "stored length")? as usize
+    };
+    if header_len != cursor {
+        return Err(corrupt_page_envelope(
+            address,
+            format!("unexpected header length {header_len}"),
+        ));
+    }
+    let routing_bucket = match routing {
+        0 => None,
+        encoded => Some(u32::try_from(encoded - 1).map_err(|_| {
+            corrupt_page_envelope(address, format!("routing bucket {encoded} out of range"))
+        })?),
+    };
+    Ok(PageRecordHeader {
+        version,
+        header_len,
+        payload_len,
+        stored_len,
+        expected_sha256,
+        page_id: Some(page_id),
+        object_id: (object_id != 0).then_some(object_id),
+        routing_bucket,
+        band_id: Some(band_id),
+        compression,
+    })
+}
+
 fn parse_page_record_header(
     record: &[u8],
     address: &BlockAddress,
@@ -439,6 +606,9 @@ fn parse_page_record_header(
             address,
             format!("unsupported version {version}"),
         ));
+    }
+    if version >= PAGE_RECORD_VARINT_HEADER_VERSION {
+        return parse_varint_page_record_header(record, address);
     }
     let header_len = u16::from_le_bytes(
         record[10..12]
@@ -1107,6 +1277,115 @@ mod crc32c_switch_tests {
         record
     }
 
+    /// Build a record in the v9 layout: compact checksum, one payload length, fixed-width
+    /// numbers, 58-byte header.
+    ///
+    /// Written out by hand for the reason the v7 fixture is: a store on disk today is these
+    /// bytes, and v9 became a read-only format the moment v10 started writing varints. Nothing
+    /// else covers it, so without this the compatibility branch every existing store depends on
+    /// is exercised by no test at all.
+    fn encode_v9_layout(
+        payload: &[u8],
+        page_id: u64,
+        object_id: Option<u64>,
+        routing_bucket: Option<u32>,
+        band_id: u64,
+    ) -> Vec<u8> {
+        let mut record = Vec::new();
+        record.extend_from_slice(PAGE_RECORD_MAGIC);
+        record.push(PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION);
+        record.push(0);
+        record.extend_from_slice(&(PAGE_RECORD_V9_HEADER_LEN as u16).to_le_bytes());
+        record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        record.extend_from_slice(&crate::checksum::crc32c(payload).to_le_bytes());
+        record.extend_from_slice(PAGE_RECORD_CHECKSUM_CRC32C);
+        record.extend_from_slice(&page_id.to_le_bytes());
+        record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
+        record.push(u8::from(routing_bucket.is_some()));
+        record.extend_from_slice(&routing_bucket.unwrap_or_default().to_le_bytes());
+        record.extend_from_slice(&band_id.to_le_bytes());
+        record.push(PAGE_RECORD_COMPRESSION_NONE);
+        record.extend_from_slice(payload);
+        assert_eq!(
+            record.len(),
+            PAGE_RECORD_V9_HEADER_LEN + payload.len(),
+            "the fixture must be the v9 layout, not the one this code writes now"
+        );
+        record
+    }
+
+    /// A record written at v9, with every number full width, still reads under a writer that
+    /// now writes varints.
+    #[test]
+    fn v9_records_still_decode_every_field() {
+        let payload = b"a page written before the header used varints";
+        let page_id: u64 = 0x1122_3344_5566_7788;
+        let object_id: u64 = 0x99AA_BBCC_DDEE_F001;
+        let routing_bucket: u32 = 0x0BAD_C0DE;
+        let band_id: u64 = 0x0102_0304_0506_0708;
+
+        let record = encode_v9_layout(
+            payload,
+            page_id,
+            Some(object_id),
+            Some(routing_bucket),
+            band_id,
+        );
+        let header = parse_page_record_header(&record, &address()).expect("v9 record parses");
+        assert_eq!(header.version, PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION);
+        assert_eq!(header.header_len, PAGE_RECORD_V9_HEADER_LEN);
+        assert_eq!(header.page_id, Some(page_id), "v9 page id");
+        assert_eq!(header.object_id, Some(object_id), "v9 object id");
+        assert_eq!(header.routing_bucket, Some(routing_bucket), "v9 routing bucket");
+        assert_eq!(header.band_id, Some(band_id), "v9 band id");
+        assert_eq!(header.payload_len, payload.len());
+        assert_eq!(header.stored_len, payload.len());
+        let decoded = decode_page_record(&record, &address()).expect("v9 record decodes");
+        assert_eq!(decoded.payload, payload, "v9 payload");
+    }
+
+    /// The same values written at v10 come back identical, so the two formats agree on meaning
+    /// and not merely on each parsing without error.
+    #[test]
+    fn v9_and_v10_read_back_the_same_fields() {
+        let payload = b"a page written before the header used varints";
+        let page_id: u64 = 0x1122_3344_5566_7788;
+        let object_id: u64 = 0x99AA_BBCC_DDEE_F001;
+        let routing_bucket: u32 = 0x0BAD_C0DE;
+        let band_id: u64 = 0x0102_0304_0506_0708;
+
+        let old = encode_v9_layout(
+            payload,
+            page_id,
+            Some(object_id),
+            Some(routing_bucket),
+            band_id,
+        );
+        let new = encode_page_record(
+            payload,
+            page_id,
+            Some(object_id),
+            Some(routing_bucket),
+            band_id,
+            BlockStoreOptions::default(),
+        )
+        .expect("encode");
+        let old_header = parse_page_record_header(&old, &address()).expect("v9 parses");
+        let new_header = parse_page_record_header(&new.bytes, &address()).expect("v10 parses");
+        assert_eq!(old_header.page_id, new_header.page_id);
+        assert_eq!(old_header.object_id, new_header.object_id);
+        assert_eq!(old_header.routing_bucket, new_header.routing_bucket);
+        assert_eq!(old_header.band_id, new_header.band_id);
+        assert_eq!(old_header.payload_len, new_header.payload_len);
+        assert_eq!(old_header.expected_sha256, new_header.expected_sha256);
+        assert!(
+            new_header.header_len < old_header.header_len,
+            "v10 must be the smaller header: {} vs {}",
+            new_header.header_len,
+            old_header.header_len
+        );
+    }
+
     /// A record written before the checksum field shrank still reads, fields and all.
     #[test]
     fn pre_v8_records_still_decode_every_field() {
@@ -1171,7 +1450,8 @@ mod crc32c_switch_tests {
         // CRC32C in the four bytes the field now is. The marker that followed it existed to
         // make a 32-byte field self-describing; at v8 the field is exactly the checksum and the
         // version byte says which algorithm it is.
-        let stored = u32::from_le_bytes(encoded.bytes[20..24].try_into().unwrap());
+        let at = PAGE_RECORD_V10_CHECKSUM_OFFSET;
+        let stored = u32::from_le_bytes(encoded.bytes[at..at + 4].try_into().unwrap());
         assert_eq!(stored, crate::checksum::crc32c(payload));
     }
 
