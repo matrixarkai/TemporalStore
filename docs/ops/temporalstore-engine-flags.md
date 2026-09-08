@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 287 of them, read by 88 functions.
+There are 289 of them, read by 90 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,15 +60,15 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 287 |
-| booleans whose default this could read off the source | 47 |
-| numbers whose default this could read off the source | 69 |
+| total | 289 |
+| booleans whose default this could read off the source | 48 |
+| numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 158 |
+| **that nothing in this repository sets** | 160 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
-| whose doc comment is really about another flag | 43 |
+| whose doc comment is really about another flag | 42 |
 
 ## topology (38)
 
@@ -213,7 +213,7 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
 | `TS_VECTOR_SCALED` | on | launch, test, portal | 1 | — |
 
-## capacity (80)
+## capacity (81)
 
 Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 
@@ -249,6 +249,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_DISTRIBUTED_RAFT_CATCHUP_TIMEOUT_SECS` | 30 | nothing | 1 | — |
 | `TS_EVICT_POOL_SIZE` | — | nothing | 1 | — |
 | `TS_INDEX_DUMP_OPLOG_GAP_BYTES` | — | config | 1 | — |
+| `TS_INDEX_LOG_COMPRESSION_MIN_BYTES` | 256 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_FLUSH_INTERVAL_MS` | 100 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_PROBE_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_MAX_RETAINED_FINISHED_JOBS` | 64 | portal | 1 | — |
@@ -365,7 +366,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | script | 1 | — |
 
-## behaviour (62)
+## behaviour (63)
 
 Everything else that changes what the engine does.
 
@@ -396,6 +397,7 @@ Everything else that changes what the engine does.
 | `TS_DATA_RAFT_READ_MODE` | — | config | 1 | — |
 | `TS_EVICT_SAMPLES` | — | nothing | 1 | — |
 | `TS_EVICT_SCAN_TURNS` | — | nothing | 1 | — |
+| `TS_INDEX_LOG_COMPRESSION_ENABLED` | off | nothing | 1 | — |
 | `TS_MALLOC_TRIM` | on | test, portal | 1 | — |
 | `TS_MATRIXOBJECT_CHECKPOINT_ON_START` | on | nothing | 1 | — |
 | `TS_MATRIXOBJECT_FLUSH_BATCH` | 256 | nothing | 1 | — |
