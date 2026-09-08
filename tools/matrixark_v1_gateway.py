@@ -3153,13 +3153,60 @@ async def _embedding_models_in_store(server: Any, cfg: GatewayConfig, key: Optio
                 "detail": "The backend could not be asked what the stored vectors were made with."}
     if not isinstance(result, dict):
         return {"known": False, "detail": "The backend gave no usable answer."}
+    paired = result.get("model_dimensions") or []
     return {
         "known": True,
         "models": result.get("models") or [],
         "dimensions": result.get("dimensions") or [],
         "mixed_dimensions": bool(result.get("mixed_dimensions")),
+        "model_dimensions": paired,
+        "impossible": _impossible_model_widths(paired),
         "total": result.get("total") or 0,
     }
+
+
+def _impossible_model_widths(paired: List[Json]) -> List[Json]:
+    """Stored vectors whose model name cannot be the encoder that produced them.
+
+    The deterministic fallback is `EMBEDDING_DIM` wide and every encoder in the catalogue is far
+    wider, so a vector of exactly that width carrying an encoder's name was written by the fallback
+    and labelled with whatever was configured at the time.
+
+    Reported rather than repaired. Rewriting the labels would make the store self-consistent and
+    still wrong; recording the encoder that actually ran is a change to the write path, with its
+    own migration. What this fixes is that the condition was invisible -- the store counted names
+    and widths in two separate tallies and never the pair, so nothing could notice.
+    """
+    try:
+        from matrixark_mcp_embeddings import EMBEDDING_DIM
+    except Exception:  # pragma: no cover - encoder module absent
+        return []
+    findings: List[Json] = []
+    for row in paired:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("model") or "")
+        try:
+            dim = int(row.get("dim") or 0)
+        except (TypeError, ValueError):
+            continue
+        if dim != EMBEDDING_DIM or not name:
+            continue
+        # The fallback naming itself is the honest case, and the common one on a build with no
+        # encoder configured. It is the vectors wearing somebody else's name that are the finding.
+        if "hash" in name.lower() or "local" in name.lower() or "deterministic" in name.lower():
+            continue
+        findings.append({
+            "model": name,
+            "dim": dim,
+            "count": row.get("count") or 0,
+            "detail": ("%s vectors carry %r at %d dimensions, which is the deterministic "
+                       "fallback's width. They were written by the fallback and recorded under "
+                       "the configured name, so the store holds two vector spaces under one name "
+                       "and the model hash cannot tell them apart."
+                       % (row.get("count") or 0, name, dim)),
+        })
+    return findings
 
 
 def embedding_picker_catalogue() -> List[Json]:

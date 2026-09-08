@@ -728,6 +728,10 @@ class _LocalAdapterDashboardMixin:
         without_vector = 0
         models: dict[str, int] = {}
         dimensions: dict[int, int] = {}
+        # The pairing the other two throw away. Kept because the interesting question is not which
+        # names appear or which widths appear, but whether a name appears at a width it could not
+        # have written.
+        model_dimensions: dict[tuple, int] = {}
         oldest_pending_ms = 0
         newest_pending_ms = 0
         deferred_tasks = 0
@@ -790,6 +794,9 @@ class _LocalAdapterDashboardMixin:
                 dim = 0
             if dim:
                 dimensions[dim] = dimensions.get(dim, 0) + 1
+            if model and dim:
+                pair = (model, dim)
+                model_dimensions[pair] = model_dimensions.get(pair, 0) + 1
 
         return {
             "status": "ok",
@@ -804,6 +811,9 @@ class _LocalAdapterDashboardMixin:
             "dimensions": [{"dim": dim, "count": count}
                            for dim, count in sorted(dimensions.items(), key=lambda kv: -kv[1])],
             "mixed_dimensions": len(dimensions) > 1,
+            "model_dimensions": [{"model": name, "dim": dim, "count": count}
+                                 for (name, dim), count
+                                 in sorted(model_dimensions.items(), key=lambda kv: -kv[1])],
             "oldest_pending_ms": oldest_pending_ms,
             "newest_pending_ms": newest_pending_ms,
             "deferred_tasks": deferred_tasks,
