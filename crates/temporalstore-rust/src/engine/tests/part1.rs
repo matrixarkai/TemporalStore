@@ -4367,6 +4367,8 @@ fn which_write_primitive_grows_with_the_store() {
             // promote_sync_writes: every caller in the engine passes true, and this probe
             // exists to characterise the primitive as the engine uses it.
             true,
+            // A fresh object here, so its first block is block 0.
+            0,
         );
         let key = format!("probe:series:{rung}");
         let probe = crate::alloc_probe::Probe::start();
@@ -4382,6 +4384,8 @@ fn which_write_primitive_grows_with_the_store() {
             // promote_sync_writes: every caller in the engine passes true, and this probe
             // exists to characterise the primitive as the engine uses it.
             true,
+            // A fresh object here, so its first block is block 0.
+            0,
         );
         *series_out = probe.stop().allocs;
 

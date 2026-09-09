@@ -3102,6 +3102,12 @@ fn maybe_auto_compress_context_node(
         routing_bucket,
         async_storage,
         false,
+        crate::engine::state::next_block_index_for_object(
+            &shard.bucket_index,
+            routing_bucket,
+            "context_compression",
+            &compression_key,
+        ),
     ) {
         let series = shard
             .context_compressions

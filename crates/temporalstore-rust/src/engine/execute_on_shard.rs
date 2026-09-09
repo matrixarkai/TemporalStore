@@ -1314,6 +1314,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
             ) {
                 for (timestamp_ms, address) in addresses {
                     // A replaced timestamp supersedes a page, and a superseded page must be
@@ -1404,7 +1405,8 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage,
                     true,
-                ) {
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
+            ) {
                     for (timestamp_ms, address) in addresses {
                         series.insert(timestamp_ms, address);
                         mutated = true;
@@ -1570,6 +1572,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
             ) {
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -1732,6 +1735,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
             ) {
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -2581,7 +2585,8 @@ pub(crate) fn execute_on_shard(
                     async_storage && !cold_storage,
                     !cold_storage,
                     event_id_hash,
-                ) {
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_event", &object_key),
+            ) {
                     for (stored_timeline_key, address) in addresses {
                         series.insert(event_id_hash, address);
                         shard
@@ -2661,7 +2666,8 @@ pub(crate) fn execute_on_shard(
                     async_storage && !cold_storage,
                     !cold_storage,
                     event_id_hash,
-                ) {
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_event", &event_object_key),
+            ) {
                     for (stored_timeline_key, address) in addresses {
                         event_series.insert(event_id_hash, address);
                         shard
@@ -2705,7 +2711,8 @@ pub(crate) fn execute_on_shard(
                         routing_bucket,
                         async_storage && !cold_storage,
                         !cold_storage,
-                    ) {
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_index", &object_key),
+            ) {
                         let series = shard.context_indexes.entry(object_key.clone()).or_default();
                         for (timestamp_ms, address) in addresses {
                             series.insert(timestamp_ms, address);
@@ -2832,6 +2839,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_index", &object_key),
             ) {
                 let series = shard.context_indexes.entry(object_key.clone()).or_default();
                 for (timestamp_ms, address) in addresses {
@@ -2965,6 +2973,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_audit", &object_key),
             ) {
                 let series = shard.context_audits.entry(object_key.clone()).or_default();
                 for (timestamp_ms, address) in addresses {
@@ -3305,7 +3314,8 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage,
                     true,
-                ) {
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_child", &object_key),
+            ) {
                     let series = shard
                         .context_children
                         .entry(object_key.clone())
@@ -3397,6 +3407,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_summary", &object_key),
             ) {
                 let series = shard
                     .context_summaries
@@ -3536,6 +3547,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_compression", &object_key),
             ) {
                 let series = shard
                     .context_compressions
@@ -3650,7 +3662,8 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage,
                     false,
-                ) {
+                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_compression", &object_key),
+            ) {
                     let series = shard
                         .context_compressions
                         .entry(object_key.clone())

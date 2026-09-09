@@ -34,7 +34,7 @@ use paths::{
 use record::{
     decode_page_record, default_page_record_compression_enabled,
     default_page_record_compression_level, default_page_record_compression_min_bytes,
-    encode_page_record, inspect_slab, logical_range_from_slab, max_page_id_in_slab_file,
+    encode_page_record, inspect_slab, logical_range_from_slab,
     sha256_hex, summarize_slab,
     PageRecordCompression,
 };
@@ -416,7 +416,18 @@ pub struct BlockStoreOptions {
 /// The payload is BORROWED. A caller already holds the encoded page -- it keeps it for the
 /// cache put, or it holds the buffer it published from -- so owning it here forced every
 /// caller to hand over a clone of a page that is several times its own payload.
-pub type BlockAppendRecord<'a> = (&'a [u8], Option<u64>, Option<u32>);
+/// A block to append: its bytes, the object it belongs to, that object's routing bucket, and
+/// which block of that object it is.
+///
+/// The last of those used to be the block store's to invent, from a counter running across the
+/// whole store. A block id is now an index INSIDE an object -- block 0, block 1 -- the way the
+/// comparison design numbers a block within a slot rather than within a partition. Two objects
+/// both having a block 0 is expected: a block is identified by its object and its index, and
+/// every key that names one already carries the object key.
+///
+/// The store-wide counter is gone with it, and so is the walk that recovered the counter by
+/// reading every block header in every slab to work out one integer.
+pub type BlockAppendRecord<'a> = (&'a [u8], Option<u64>, Option<u32>, u32);
 
 impl Default for BlockStoreOptions {
     fn default() -> Self {
@@ -991,8 +1002,11 @@ impl LocalBlockStore {
         // per slab, and reading it turns a walk over every page record header -- 90% of a
         // steady-state open's reads -- into a few MB. Any slab the manifest cannot prove unchanged
         // is still walked, and the active slab always is.
-        let next_page_id =
-            next_page_id_from_bands(&root, &bands, block_slab_id).unwrap_or_default();
+        // Nothing allocates from a store-wide block counter any more: a block id is an index
+        // inside its object, and the object is what knows how many blocks it has. Recovering a
+        // counter here used to mean reading every block header in every slab to work out one
+        // integer -- on a live-store copy, the bulk of a steady-state open.
+        let next_page_id = 0;
         let band_manifest_reconciled_on_open =
             reconcile_band_manifest_with_disk(&root, &mut bands).unwrap_or_default();
         manifest_rebuilt |= band_manifest_reconciled_on_open;
@@ -1904,10 +1918,14 @@ mod tests {
         // Committed records survive and remain readable.
         assert_eq!(reopened.read(&a1).unwrap(), b"record-one");
         assert_eq!(reopened.read(&a2).unwrap(), b"record-two");
-        // A new append lands right after the fenced prefix and does not reuse a page id.
+        // A new append lands right after the fenced prefix rather than on top of a committed
+        // record. Checked by OFFSET: a block id is an index inside its object now, so three
+        // blocks of three different objects all being block 0 is expected and says nothing
+        // about where they landed.
         let a3 = reopened.append(b"record-three").unwrap();
-        assert_ne!(a3.page_id(), a1.page_id());
-        assert_ne!(a3.page_id(), a2.page_id());
+        assert_eq!(a3.offset, clean_len, "a new append starts at the fenced prefix");
+        assert_ne!(a3.offset, a1.offset);
+        assert_ne!(a3.offset, a2.offset);
         assert_eq!(reopened.read(&a3).unwrap(), b"record-three");
     }
 
@@ -2363,39 +2381,6 @@ mod tests {
 
         assert_eq!(address.page_id(), Some(0));
         assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
-    }
-
-    #[test]
-    fn page_ids_are_persisted_and_continue_after_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first").unwrap();
-        let second = store.append(b"second").unwrap();
-        assert_eq!(first.page_id(), Some(0));
-        assert_eq!(second.page_id(), Some(1));
-
-        let reopened = LocalBlockStore::new(dir.path());
-        let third = reopened.append(b"third").unwrap();
-
-        assert_eq!(third.page_id(), Some(2));
-        assert_eq!(reopened.read(&third).unwrap(), b"third");
-    }
-
-    #[test]
-    fn installed_slab_page_ids_advance_future_allocations() {
-        let dir = tempfile::tempdir().unwrap();
-        let source_dir = tempfile::tempdir().unwrap();
-        let source = LocalBlockStore::new(source_dir.path());
-        let _ = source.append(b"first").unwrap();
-        let restored = source.append(b"restored").unwrap();
-        let restored_bytes = source.read_slab(restored.block_slab_id).unwrap();
-
-        let store = LocalBlockStore::new(dir.path());
-        store.install_slab(4, &restored_bytes).unwrap();
-        let next = store.append(b"next").unwrap();
-
-        assert_eq!(next.page_id(), Some(2));
-        assert_eq!(store.read(&next).unwrap(), b"next");
     }
 
     #[test]
