@@ -2258,7 +2258,8 @@ mod tests {
         let slab = fs::read(&path).unwrap();
         let start = address.offset as usize;
         let record = &slab[start..start + address.length as usize];
-        let field = &record[20..52];
+        let at = record::PAGE_RECORD_V10_CHECKSUM_OFFSET;
+        let field = &record[at..at + record::PAGE_RECORD_CHECKSUM_LEN];
 
         assert_ne!(
             hex::encode(field),
@@ -2893,7 +2894,7 @@ mod tests {
         expected.extend_from_slice(&second_payload[..9]);
         assert_eq!(logical, expected);
         assert_eq!(raw[8], PAGE_RECORD_VERSION);
-        assert_eq!(raw[record::page_record_compression_offset()], PAGE_RECORD_COMPRESSION_ZSTD);
+        assert_eq!(record::page_record_compression_byte(&raw), PAGE_RECORD_COMPRESSION_ZSTD);
 
         let stats = store.stats();
         assert_eq!(stats.writes, 2);
@@ -3203,11 +3204,27 @@ mod tests {
             .read_slab(disabled_address.block_slab_id)
             .unwrap();
 
+        // Stated from the values that went in, because a varint header has no fixed length: it
+        // is the fixed part, one varint per number, and the compression codec.
+        let expected_header = record::PAGE_RECORD_V10_FIXED_LEN
+            + record::page_record_varint_len(payload.len() as u64)
+            + record::page_record_varint_len(disabled_address.page_id().unwrap_or_default())
+            + record::page_record_varint_len(
+                disabled_address
+                    .routing_bucket()
+                    .map_or(0, |bucket| u64::from(bucket) + 1),
+            )
+            + record::page_record_varint_len(disabled_address.band_id().unwrap_or_default())
+            + 1;
         assert_eq!(
             disabled_address.length,
-            (PAGE_RECORD_V9_HEADER_LEN + payload.len()) as u64
+            (expected_header + payload.len()) as u64
         );
-        assert_eq!(disabled_raw[record::page_record_compression_offset()], PAGE_RECORD_COMPRESSION_NONE);
+        assert!(
+            expected_header < PAGE_RECORD_V9_HEADER_LEN,
+            "the varint header must be smaller than the fixed-width one it replaced"
+        );
+        assert_eq!(record::page_record_compression_byte(&disabled_raw), PAGE_RECORD_COMPRESSION_NONE);
         assert_eq!(disabled_store.read(&disabled_address).unwrap(), payload);
         assert_eq!(disabled_store.stats().compressed_records_written, 0);
         assert_eq!(disabled_store.stats().compression_bytes_saved, 0);
@@ -3225,11 +3242,21 @@ mod tests {
             .read_slab(threshold_address.block_slab_id)
             .unwrap();
 
+        let threshold_header = record::PAGE_RECORD_V10_FIXED_LEN
+            + record::page_record_varint_len(payload.len() as u64)
+            + record::page_record_varint_len(threshold_address.page_id().unwrap_or_default())
+            + record::page_record_varint_len(
+                threshold_address
+                    .routing_bucket()
+                    .map_or(0, |bucket| u64::from(bucket) + 1),
+            )
+            + record::page_record_varint_len(threshold_address.band_id().unwrap_or_default())
+            + 1;
         assert_eq!(
             threshold_address.length,
-            (PAGE_RECORD_V9_HEADER_LEN + payload.len()) as u64
+            (threshold_header + payload.len()) as u64
         );
-        assert_eq!(threshold_raw[record::page_record_compression_offset()], PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(record::page_record_compression_byte(&threshold_raw), PAGE_RECORD_COMPRESSION_NONE);
         assert_eq!(threshold_store.read(&threshold_address).unwrap(), payload);
         assert_eq!(threshold_store.stats().compressed_records_written, 0);
         assert_eq!(threshold_store.stats().compression_bytes_saved, 0);
