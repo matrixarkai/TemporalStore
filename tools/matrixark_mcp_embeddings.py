@@ -346,13 +346,33 @@ def require_model_embeddings(path: str) -> bool:
     return _truthy_env("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS") or _truthy_env(path)
 
 
+def _api_base_is_explicit() -> bool:
+    """Did the operator point this at their own endpoint?
+
+    A self-hosted OpenAI-compatible encoder -- vLLM, Ollama, TEI -- takes no key. "No key" only
+    means "cannot call" for the hosted defaults; against an endpoint the operator named, it is the
+    normal configuration. Reading the variable rather than comparing the URL to a default keeps one
+    source of truth: whatever `_api_embedding_config` used as the base, this asks whether that came
+    from the environment.
+    """
+    return bool(os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip())
+
+
 def api_embedding_for_texts(texts: list[str], provider: str) -> list[list[float]]:
     """Embed via an OpenAI-compatible or Voyage embeddings API. Falls back to the deterministic
     encoder on missing key / network error unless MATRIXARK_REQUIRE_API_EMBEDDINGS is set (then it
-    raises, so production fails fast instead of silently poisoning the store with mismatched-dim vectors)."""
+    raises, so production fails fast instead of silently poisoning the store with mismatched-dim vectors).
+
+    A missing key skips the call only for the HOSTED defaults. When MATRIXARK_EMBEDDING_API_BASE
+    names an endpoint, the call is made without an Authorization header, because a self-hosted
+    encoder takes no key -- and treating that as "cannot call" is how a whole production run came
+    to be served by 32-dimension token hashes while a healthy 1024-dimension encoder answered on
+    the same host. The gateway returned 200 throughout and the results looked plausible; the only
+    outward sign was that the encoder burned no CPU.
+    """
     endpoint, api_key, model, key_env = _api_embedding_config(provider)
     require = require_model_embeddings("MATRIXARK_REQUIRE_API_EMBEDDINGS")
-    if not api_key:
+    if not api_key and not _api_base_is_explicit():
         if require:
             raise MatrixArkError(f"API embeddings require {key_env} for provider '{provider}'")
         _mark_embedding_fallback()
@@ -362,11 +382,12 @@ def api_embedding_for_texts(texts: list[str], provider: str) -> list[list[float]
         import urllib.request as _urlreq
 
         body = _json.dumps({"model": model, "input": list(texts)}).encode("utf-8")
-        request = _urlreq.Request(
-            endpoint,
-            data=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        )
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            # Omitted rather than sent empty: some servers reject a malformed Authorization header
+            # outright, which would turn a working keyless endpoint into the silent hash fallback.
+            headers["Authorization"] = f"Bearer {api_key}"
+        request = _urlreq.Request(endpoint, data=body, headers=headers)
         timeout = float(os.environ.get("MATRIXARK_EMBEDDING_API_TIMEOUT_S", "30"))
         with _urlreq.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed provider endpoint
             payload = _json.loads(response.read().decode("utf-8"))
