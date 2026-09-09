@@ -558,6 +558,22 @@ fn response_from_result(
     }
 }
 
+/// Render a response in the codec its request arrived in, timing the render as JSON does.
+///
+/// Binary falls back to JSON when it cannot encode. Dropping the reply would hang the caller on
+/// its deadline, and the client tells the two apart by the first byte -- the same rule the
+/// request side uses -- so a fallback is understood rather than being a second failure.
+fn encode_lane_response(response: &mut RecordLogResponse, binary: bool) -> Vec<u8> {
+    if binary {
+        let started = Instant::now();
+        if let Ok(body) = rmp_serde::to_vec_named(&*response) {
+            response.serialization_time_ms = Some(started.elapsed().as_millis());
+            return body;
+        }
+    }
+    serialize_response_with_metrics(response).into_bytes()
+}
+
 fn serialize_response_with_metrics(response: &mut RecordLogResponse) -> String {
     let started = Instant::now();
     let serialized = serde_json::to_string(response)
@@ -808,6 +824,37 @@ fn http_concurrent_enabled() -> bool {
 /// JSON the pipe carried and the reply is the same `RecordLogResponse`, so a client changes only
 /// WHERE it sends, never what it sends -- which is what makes this swappable under a running
 /// gateway and comparable in an A/B.
+/// Whether a body is a msgpack map rather than JSON text.
+///
+/// The first byte settles it and cannot be ambiguous: a msgpack map begins with a fixmap
+/// (0x80-0x8f), map16 (0xde) or map32 (0xdf), and a JSON object begins with `{` (0x7b) or
+/// whitespace. This is the same way the stdio lane distinguishes its two framings, and it means
+/// the codec needs no header, no negotiation and no shared state -- a request carries its own
+/// answer, so a client and a proxy that disagree about the setting still understand each other.
+fn looks_like_msgpack_map(body: &[u8]) -> bool {
+    matches!(body.first(), Some(&first) if (0x80..=0x8f).contains(&first) || first == 0xde || first == 0xdf)
+}
+
+/// Decode a lane request in whichever codec it arrived in.
+///
+/// Returns the request and whether it was binary, because the reply must go back in the SAME
+/// codec: the caller decodes what it sent, and answering JSON to a msgpack request would be
+/// understood by nobody.
+fn decode_lane_request(body: &[u8]) -> (Result<RecordLogRequest, String>, bool) {
+    if looks_like_msgpack_map(body) {
+        return (
+            rmp_serde::from_slice::<RecordLogRequest>(body)
+                .map_err(|error| format!("invalid msgpack request: {error}")),
+            true,
+        );
+    }
+    (
+        serde_json::from_slice::<RecordLogRequest>(body)
+            .map_err(|error| format!("invalid JSON request: {error}")),
+        false,
+    )
+}
+
 fn serve_http(addr: &str) -> i32 {
     let metrics = Arc::new(Mutex::new(ServeMetrics::new()));
     let gate = Arc::new(Mutex::new(()));
@@ -816,7 +863,7 @@ fn serve_http(addr: &str) -> i32 {
     eprintln!("matrixark_rust_proxy serving http on {addr} (concurrent={concurrent})");
     let result = temporalstore_rust::http::serve(addr, move |http_request| {
         let started = Instant::now();
-        let parsed: Result<RecordLogRequest, _> = serde_json::from_slice(&http_request.body);
+        let (parsed, binary_lane) = decode_lane_request(&http_request.body);
         let client_request_id = parsed
             .as_ref()
             .ok()
@@ -847,15 +894,12 @@ fn serve_http(addr: &str) -> i32 {
                 };
                 run_request(request)
             }
-            Err(error) => Err((
-                "unknown".to_string(),
-                format!("invalid JSON request: {error}"),
-            )),
+            Err(error) => Err(("unknown".to_string(), error)),
         };
         let elapsed_ms = started.elapsed().as_millis();
         let mut response = response_from_result(result, elapsed_ms);
         response.client_request_id = client_request_id;
-        let body = serialize_response_with_metrics(&mut response);
+        let body = encode_lane_response(&mut response, binary_lane);
         if let Ok(mut metrics) = metrics.lock() {
             metrics.observe(&response, elapsed_ms);
         }
@@ -863,7 +907,7 @@ fn serve_http(addr: &str) -> i32 {
         // 200 even for an application-level failure: `ok` in the body is the contract the pipe
         // had, and a client that switched transports must not start seeing transport errors for
         // the same answers.
-        (200, body.into_bytes())
+        (200, body)
     });
     match result {
         Ok(()) => 0,

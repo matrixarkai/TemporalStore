@@ -46,6 +46,52 @@ except ImportError:  # pragma: no cover
     def _LANE_LOADS(text):
         return _lane_stdlib_json.loads(text)
 
+
+# msgpack for the lane, where both ends have it.
+#
+# A profile of the running gateway put 53.5% of its CPU in the stdlib JSON decoder, and a perf
+# profile of the proxy put ~8.7% in building and dropping serde_json Value trees with malloc at
+# 8.4% behind it. Text is the cost on both sides, so the lane can stop being text.
+#
+# Off unless MATRIXARK_LANE_CODEC=msgpack, the same switch the stdio lane already uses, and
+# unavailable rather than fatal when the module is missing: a deployment without msgpack keeps
+# working on JSON instead of failing to start.
+try:
+    import msgpack as _lane_msgpack
+except ImportError:  # pragma: no cover - exercised only where msgpack is absent
+    _lane_msgpack = None
+
+
+def _lane_codec_is_binary() -> bool:
+    """Read the switch every call, so an operator flipping it does not need a restart."""
+    if _lane_msgpack is None:
+        return False
+    return os.environ.get("MATRIXARK_LANE_CODEC", "").strip().lower() == "msgpack"
+
+
+def _LANE_PACKB(command: dict) -> bytes:
+    return _lane_msgpack.packb(command, use_bin_type=True)
+
+
+def _looks_like_msgpack_map(body: bytes) -> bool:
+    """Whether a reply is a msgpack map rather than JSON text.
+
+    The first byte settles it and cannot be ambiguous: a msgpack map begins with a fixmap
+    (0x80-0x8f), map16 (0xde) or map32 (0xdf), and a JSON object begins with `{` or whitespace.
+    The proxy answers in the codec it was asked in, but it falls back to JSON if it cannot encode
+    a reply -- so the client must read what actually arrived rather than what it expected.
+    """
+    if not body:
+        return False
+    first = body[0]
+    return 0x80 <= first <= 0x8F or first in (0xDE, 0xDF)
+
+
+def _LANE_DECODE(body: bytes):
+    if _lane_msgpack is not None and _looks_like_msgpack_map(body):
+        return _lane_msgpack.unpackb(body, raw=False, strict_map_key=False)
+    return _LANE_LOADS(body.decode("utf-8"))
+
 try:  # the proxy stderr drain is shared with the standalone proxy client
     from tools.matrixark_mcp_rust_proxy_process import (
         PROXY_STDERR_TAIL_LINES,
@@ -3826,7 +3872,8 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             try:
                 if self._proxy_http:
                     response = self._call_http_json(
-                        op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs))
+                        op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs),
+                        command=command)
                 else:
                     response = self._call_socket_json(
                         op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs))
@@ -3979,7 +4026,13 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             except Exception:  # noqa: BLE001 - closing a dead socket must not mask the real error
                 pass
 
-    def _call_http_json(self, op: str, payload: str, caller_deadline_ms: float | None = None) -> Json:
+    def _call_http_json(
+        self,
+        op: str,
+        payload: str,
+        caller_deadline_ms: float | None = None,
+        command: Json | None = None,
+    ) -> Json:
         """One request over HTTP, on the same budget the socket path uses.
 
         A kept-alive connection can be closed by the server between calls, and the close is only
@@ -3989,8 +4042,19 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         proxy actually produced.
         """
         budget_s = _socket_budget_seconds(self.request_timeout_ms, caller_deadline_ms)
-        body = payload.encode("utf-8")
-        headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+        # The already-rendered JSON is the fallback, so a codec that cannot encode this command
+        # costs nothing: the text was going to be built either way.
+        if command is not None and _lane_codec_is_binary():
+            try:
+                body = _LANE_PACKB(command)
+                content_type = "application/msgpack"
+            except (TypeError, ValueError):
+                body = payload.encode("utf-8")
+                content_type = "application/json"
+        else:
+            body = payload.encode("utf-8")
+            content_type = "application/json"
+        headers = {"Content-Type": content_type, "Content-Length": str(len(body))}
         deadline = time.monotonic() + budget_s
         last_error: Exception | None = None
         for attempt in (0, 1):
@@ -4018,12 +4082,12 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
                 )
             self._note_payload(len(body) + len(raw))
             try:
-                # _LANE_LOADS, not json.loads: this module already selects orjson for lane
-                # payloads where it is installed, measured at -14.1% gateway CPU per message,
-                # and a profile of the running gateway put 53% of its CPU in the stdlib
-                # decoder. A new transport that reached for the stdlib parser would have
-                # quietly opted the whole serving path out of that.
-                return _LANE_LOADS(raw.decode("utf-8"))
+                # _LANE_DECODE reads whichever codec arrived: orjson for text -- this module
+                # already selects it, measured at -14.1% gateway CPU per message, and a profile
+                # of the running gateway put 53% of its CPU in the stdlib decoder -- and msgpack
+                # for a binary reply. The proxy answers in the codec it was asked in but falls
+                # back to text if it cannot encode, so the reply is read by what it IS.
+                return _LANE_DECODE(raw)
             except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
                 raise MatrixArkError(
                     f"Rust TemporalStore {op} returned invalid JSON over http: {raw[:200]!r}"
