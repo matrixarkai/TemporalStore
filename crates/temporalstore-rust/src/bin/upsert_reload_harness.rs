@@ -2,7 +2,8 @@
 // Copyright 2026 MatrixArkAI
 
 //! Scale reload-equality harness for the upsert index-log delta records
-//! (TS_INDEXLOG_UPSERT_DELTAS). Builds a store the way a batch-committing ingest does --
+//! (`TS_INDEXLOG_UPSERT_DELTAS` names the feature; nothing reads that variable any more, so
+//! it gates nothing). Builds a store the way a batch-committing ingest does --
 //! thousands of hash batches (HashMultiSet + StringSet only, so every batch emits ONE
 //! upsert delta record), a durably-logged shard config (config-log present), threshold
 //! dumps part-way through (anchored base + durable pages), and an abrupt abort in place
