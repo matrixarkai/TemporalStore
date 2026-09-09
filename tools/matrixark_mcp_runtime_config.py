@@ -17,7 +17,12 @@ import os
 MAX_PRIOR_MESSAGES = 8
 MAX_PRIOR_CHARS = 4096
 
-DIRECT_RECORD_LOG_SHARD_SIZE = 256
+# Records per shard. This decides PLACEMENT: a record lands in shard index // shard_size, so a
+# reader that assumes a LARGER size than the writer used enumerates too few shards and silently
+# reads a fraction of the store. It was 256 here, 4096 in the backfill (the only module that
+# honoured the environment variable) and 1024 in the engine, so which records a scan could see
+# depended on which module opened it.
+DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "256"))
 DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "65536"))
 DIRECT_RECORD_HOT_CACHE_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "20000"))
 DIRECT_WRITE_RETRIES = int(os.environ.get("MATRIXARK_DIRECT_WRITE_RETRIES", "3"))
