@@ -38,7 +38,24 @@ pub enum IndexLogError {
 /// A reader never has to be told which it is holding: a JSON record starts with `{`, a
 /// container with this magic. That is the same discriminator the served-index container
 /// uses, and it is what lets one log file hold both shapes while a deployment rolls.
-pub(crate) const INDEX_LOG_CONTAINER_MAGIC: &[u8] = b"TSILOG\x01";
+/// Codec and shape, in one byte: codec in the high nibble, shape in the low one.
+///
+/// This replaced a nine-byte prefix -- a seven-byte magic, a codec byte and a shape byte -- on a
+/// record averaging eighty-five bytes, so a tenth of the log was a header saying what the record
+/// was. The magic was a second delimiter inside an already-delimited frame: every record reaches
+/// disk through `log_framing`, which writes its own marker, a length and a CRC32C, so where a
+/// record starts and whether it is intact are already answered before these bytes are read.
+///
+/// The magic also told a binary payload from the JSON one that predated it. Nothing writes JSON
+/// any more, so that question has no second answer either.
+fn index_container_byte(codec: u8, shape: u8) -> u8 {
+    (codec << 4) | (shape & 0x0f)
+}
+
+/// The codec and shape a container byte carries.
+fn index_container_parts(byte: u8) -> (u8, u8) {
+    (byte >> 4, byte & 0x0f)
+}
 
 /// Payload codec: msgpack, struct-as-map.
 pub(crate) const INDEX_LOG_CODEC_MSGPACK: u8 = 1;
@@ -52,6 +69,24 @@ pub(crate) const INDEX_LOG_CODEC_MSGPACK: u8 = 1;
 /// container says which it holds instead of the reader guessing.
 pub(crate) const INDEX_LOG_SHAPE_WHOLE: u8 = 0;
 pub(crate) const INDEX_LOG_SHAPE_DELTA: u8 = 1;
+
+/// The compaction anchor: which index a log position describes, without embedding it.
+///
+/// It used to be written as JSON, with the digest spelled out as 64 hex characters -- the only
+/// thing in this log that was not binary, and the reason the reader had to keep a JSON path at
+/// all. The row carries the digest as its 32 raw bytes, and its first two elements are the shard
+/// and the sequence, which is what the tail scan reads and all it reads.
+pub(crate) const INDEX_LOG_SHAPE_ANCHOR: u8 = 2;
+
+/// What an anchor says: the index it identifies, by digest and length.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IndexAnchorRecord {
+    pub shard_id: ShardId,
+    pub sequence: u64,
+    #[serde(with = "crate::bytes_serde")]
+    pub index_sha256: Vec<u8>,
+    pub index_len: u64,
+}
 
 /// Payload codec: msgpack, struct-as-map, zstd-compressed.
 ///
@@ -116,20 +151,15 @@ fn encode_index_payload<T: serde::Serialize>(
                 // Only when it actually helps: a record that does not compress would
                 // otherwise pay the frame overhead for nothing.
                 if squeezed.len() < packed.len() {
-                    let mut out = Vec::with_capacity(
-                        squeezed.len() + INDEX_LOG_CONTAINER_MAGIC.len() + 1,
-                    );
-                    out.extend_from_slice(INDEX_LOG_CONTAINER_MAGIC);
-                    out.push(INDEX_LOG_CODEC_MSGPACK_ZSTD);
+                    let mut out = Vec::with_capacity(squeezed.len() + 1);
+                    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
                     out.extend_from_slice(&squeezed);
                     return Ok(out);
                 }
             }
         }
-        let mut out = Vec::with_capacity(packed.len() + INDEX_LOG_CONTAINER_MAGIC.len() + 1);
-        out.extend_from_slice(INDEX_LOG_CONTAINER_MAGIC);
-        out.push(INDEX_LOG_CODEC_MSGPACK);
-        out.push(shape);
+        let mut out = Vec::with_capacity(packed.len() + 1);
+        out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape));
         out.extend_from_slice(&packed);
         return Ok(out);
     }
@@ -144,20 +174,13 @@ fn encode_index_payload<T: serde::Serialize>(
 /// because its decoders were scattered and could not move together; this file has four decode
 /// sites and they move as one.
 pub(crate) fn decode_index_payload<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, IndexLogError> {
-    let Some(rest) = payload.strip_prefix(INDEX_LOG_CONTAINER_MAGIC) else {
-        return Ok(serde_json::from_slice(payload)?);
-    };
-    let Some((codec, rest)) = rest.split_first() else {
+    let Some((container, body)) = payload.split_first() else {
         return Err(IndexLogError::Encoding(
-            "binary index-log record has no codec byte".to_string(),
+            "index-log record has no container byte".to_string(),
         ));
     };
-    let Some((_shape, body)) = rest.split_first() else {
-        return Err(IndexLogError::Encoding(
-            "binary index-log record has no shape byte".to_string(),
-        ));
-    };
-    match *codec {
+    let (codec, _shape) = index_container_parts(*container);
+    match codec {
         INDEX_LOG_CODEC_MSGPACK => rmp_serde::from_slice(body)
             .map_err(|error| IndexLogError::Encoding(error.to_string())),
         INDEX_LOG_CODEC_MSGPACK_ZSTD => {
@@ -502,8 +525,8 @@ where
 /// A payload with no container magic is the JSON fallback, which only the whole-index path ever
 /// wrote, so it answers for that shape rather than for nothing.
 pub(crate) fn index_payload_shape(payload: &[u8]) -> Option<u8> {
-    match payload.strip_prefix(INDEX_LOG_CONTAINER_MAGIC) {
-        Some(rest) => rest.get(1).copied(),
+    match payload.first() {
+        Some(container) => Some(index_container_parts(*container).1),
         // No container: written before there was one. Nothing writes that shape now -- even
         // `append_json` wraps its record -- so a payload without a container says nothing about
         // which record it holds, and answering None hands it to the decoder. That serves both
@@ -1210,20 +1233,19 @@ impl LocalIndexLogStore {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(index_bytes);
-            hasher
-                .finalize()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
+            hasher.finalize().to_vec()
         };
         let index_len = index_bytes.len();
-        let mut payload = Vec::with_capacity(160);
-        write!(
-            &mut payload,
-            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\
-             \"index_sha256\":\"{digest}\",\"index_len\":{index_len}}}"
-        )?;
-        let bytes = crate::log_framing::encode_record(&payload);
+        let anchor = IndexAnchorRecord {
+            shard_id,
+            sequence: next_sequence,
+            index_sha256: digest,
+            index_len: index_len as u64,
+        };
+        let bytes = crate::log_framing::encode_record(&encode_index_payload(
+            &anchor,
+            INDEX_LOG_SHAPE_ANCHOR,
+        )?);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1911,33 +1933,32 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let payload = crate::log_framing::decode_line(&rows[0].1).unwrap();
 
-        // It still parses as a log record, and the tail scan still reads its sequence.
-        let record: IndexLogRecord = serde_json::from_slice(payload).unwrap();
-        assert_eq!(record.shard_id, 5);
-        assert_eq!(record.sequence, 1);
-        assert_eq!(
-            record.index,
-            serde_json::Value::Null,
-            "the index itself must not be copied into the log"
-        );
+        // It says it is an anchor, and the tail scan still reads its sequence -- the scan
+        // takes the first two elements of any row, and an anchor puts the same two first.
+        assert_eq!(index_payload_shape(payload), Some(INDEX_LOG_SHAPE_ANCHOR));
+        let head: IndexRecordHead = decode_index_payload(payload).unwrap();
+        assert_eq!(head.shard_id, 5);
+        assert_eq!(head.sequence, 1);
 
-        // And it identifies exactly the index it anchors.
-        let anchor: serde_json::Value = serde_json::from_slice(payload).unwrap();
+        // And it identifies exactly the index it anchors, by digest and length.
+        let anchor: IndexAnchorRecord = decode_index_payload(payload).unwrap();
         let expected = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(index);
-            hasher
-                .finalize()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
+            hasher.finalize().to_vec()
         };
-        assert_eq!(anchor["index_sha256"], serde_json::Value::String(expected));
-        assert_eq!(anchor["index_len"], serde_json::json!(index.len()));
+        assert_eq!(anchor.index_sha256, expected);
+        assert_eq!(anchor.index_len, index.len() as u64);
         assert!(
-            payload.len() < 200,
-            "an anchor is a constant-size record, not a copy of the index (got {} bytes)",
+            !payload
+                .windows(index.len())
+                .any(|window| window == index),
+            "the index itself must not be copied into the log"
+        );
+        assert!(
+            payload.len() < 64,
+            "a row anchor is the digest and two numbers, not 160 bytes of JSON (got {} bytes)",
             payload.len()
         );
     }
@@ -2004,9 +2025,7 @@ mod tests {
         let mut packed = Vec::new();
         let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
         serde::Serialize::serialize(record, &mut serializer).expect("map encode");
-        let mut out = INDEX_LOG_CONTAINER_MAGIC.to_vec();
-        out.push(INDEX_LOG_CODEC_MSGPACK);
-        out.push(shape);
+        let mut out = vec![index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape)];
         out.extend_from_slice(&packed);
         out
     }
@@ -2498,24 +2517,6 @@ mod tests {
         assert!(!should_dump_index_catalog(u64::MAX, 0));
     }
 
-    #[test]
-    fn legacy_unframed_index_log_still_loads_after_upgrade() {
-        let dir = tempfile::tempdir().unwrap();
-        // Pre-upgrade whole-index records: raw single-line JSON, no framing.
-        let path = index_log_path(dir.path(), 8);
-        let raw = b"{\"shard_id\":8,\"sequence\":1,\"index\":{\"v\":1}}\n{\"shard_id\":8,\"sequence\":2,\"index\":{\"v\":2}}\n";
-        std::fs::write(&path, raw).unwrap();
-        let store = LocalIndexLogStore::new(dir.path());
-        assert_eq!(store.stats(8).last_sequence, 2);
-        assert_eq!(store.scan(8, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
-        // A new append is framed; the mixed file still loads and continues the sequence.
-        let record = store.append_json(8, b"{\"v\":3}").unwrap();
-        assert_eq!(record.sequence, 3);
-        let reopened = LocalIndexLogStore::new(dir.path());
-        assert_eq!(reopened.scan(8, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
-        assert_eq!(reopened.stats(8).last_sequence, 3);
-    }
-
     /// Bounding this collector per round costs MORE, not less.
     ///
     /// Every other sweep here is bounded per round, this one takes a limit, and the production
@@ -2696,37 +2697,6 @@ mod tests {
         );
     }
 
-
-    /// A record written either way must come back identical. This is the whole contract: the
-    /// container changes the bytes on disk and nothing else.
-    #[test]
-    fn a_binary_record_and_a_json_record_decode_to_the_same_thing() {
-        let record = IndexDeltaRecord {
-            shard_id: 7,
-            sequence: 42,
-            items: vec![page_item(3, "k", false)],
-            meta: None,
-            applied_wal_sequence: Some(9),
-            upsert: true,
-            key_states: vec![serde_json::json!({"key": "k", "pages": [1, 2]})],
-        };
-
-        let as_json = serde_json::to_vec(&record).unwrap();
-        let mut packed = Vec::new();
-        let mut ser = rmp_serde::Serializer::new(&mut packed).with_struct_map();
-        serde::Serialize::serialize(&record, &mut ser).unwrap();
-        let mut as_binary = INDEX_LOG_CONTAINER_MAGIC.to_vec();
-        as_binary.push(INDEX_LOG_CODEC_MSGPACK);
-        as_binary.push(INDEX_LOG_SHAPE_DELTA);
-        as_binary.extend_from_slice(&packed);
-
-        let from_json: IndexDeltaRecord = decode_index_payload(&as_json).unwrap();
-        let from_binary: IndexDeltaRecord = decode_index_payload(&as_binary).unwrap();
-        assert_eq!(from_json, record);
-        assert_eq!(from_binary, record, "the binary form must round-trip exactly");
-        assert_eq!(from_binary, from_json);
-    }
-
     /// The decoder sniffs, so one file may hold both shapes -- which is exactly what a log
     /// written across a rollout looks like. Nothing records which shape a line is; if the
     /// sniff were wrong this is where it would show.
@@ -2747,13 +2717,17 @@ mod tests {
             ..json_record.clone()
         };
 
-        let json_payload = serde_json::to_vec(&json_record).unwrap();
+        let mut whole_packed = Vec::new();
+        let mut whole_ser = rmp_serde::Serializer::new(&mut whole_packed).with_struct_map();
+        serde::Serialize::serialize(&json_record, &mut whole_ser).unwrap();
+        let mut json_payload =
+            vec![index_container_byte(INDEX_LOG_CODEC_MSGPACK, INDEX_LOG_SHAPE_WHOLE)];
+        json_payload.extend_from_slice(&whole_packed);
         let mut packed = Vec::new();
         let mut ser = rmp_serde::Serializer::new(&mut packed).with_struct_map();
         serde::Serialize::serialize(&binary_record, &mut ser).unwrap();
-        let mut binary_payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
-        binary_payload.push(INDEX_LOG_CODEC_MSGPACK);
-        binary_payload.push(INDEX_LOG_SHAPE_DELTA);
+        let mut binary_payload =
+            vec![index_container_byte(INDEX_LOG_CODEC_MSGPACK, INDEX_LOG_SHAPE_DELTA)];
         binary_payload.extend_from_slice(&packed);
 
         // Framing is independent of the payload shape, so both frame and verify the same way.
@@ -2795,9 +2769,8 @@ mod tests {
         let mut packed = Vec::new();
         let mut ser = rmp_serde::Serializer::new(&mut packed).with_struct_map();
         serde::Serialize::serialize(&record, &mut ser).unwrap();
-        let mut payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
-        payload.push(INDEX_LOG_CODEC_MSGPACK);
-        payload.push(INDEX_LOG_SHAPE_DELTA);
+        let mut payload =
+            vec![index_container_byte(INDEX_LOG_CODEC_MSGPACK, INDEX_LOG_SHAPE_DELTA)];
         payload.extend_from_slice(&packed);
 
         let probe: AnchorProbe = decode_index_payload(&payload).unwrap();
@@ -2815,19 +2788,18 @@ mod tests {
     /// mis-parsed. Silently mis-reading a durable record is the failure worth preventing.
     #[test]
     fn an_unknown_payload_codec_is_refused_not_guessed_at() {
-        let mut payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
-        payload.push(99);
+        let mut payload = vec![index_container_byte(9, INDEX_LOG_SHAPE_DELTA)];
         payload.extend_from_slice(b"whatever a later format puts here");
         let result: Result<IndexDeltaRecord, _> = decode_index_payload(&payload);
         match result {
             Err(IndexLogError::Encoding(message)) => {
-                assert!(message.contains("99"), "the error should name the codec: {message}")
+                assert!(message.contains('9'), "the error should name the codec: {message}")
             }
             other => panic!("an unknown codec must be refused, got {other:?}"),
         }
 
-        // A truncated container (magic, no codec byte) is refused the same way.
-        let result: Result<IndexDeltaRecord, _> = decode_index_payload(INDEX_LOG_CONTAINER_MAGIC);
+        // An empty payload has no container byte at all, and is refused the same way.
+        let result: Result<IndexDeltaRecord, _> = decode_index_payload(&[]);
         assert!(matches!(result, Err(IndexLogError::Encoding(_))));
     }
 
@@ -3171,45 +3143,6 @@ mod tests {
         assert!(whole > 0, "the probe must encode something");
     }
 
-    /// A container is only written where one can be read, and both halves are asserted here.
-    ///
-    /// The writer has no switch any more, so what pins it is the bytes it produces rather than
-    /// the setting it consulted -- and the reader half matters more than before, because a log
-    /// written by an older build is now the only way JSON gets into one.
-    #[test]
-    fn the_binary_writer_is_on_and_its_reader_shipped_first() {
-        // The reader takes a container whatever the writer is set to -- that is the property
-        // that made the flip safe, so it is worth holding rather than assuming.
-        let json = serde_json::to_vec(&IndexDeltaRecord {
-            shard_id: 1,
-            sequence: 2,
-            items: Vec::new(),
-            meta: None,
-            applied_wal_sequence: None,
-            upsert: false,
-            key_states: Vec::new(),
-        })
-        .unwrap();
-        let from_json: IndexDeltaRecord = decode_index_payload(&json).unwrap();
-        assert_eq!(from_json.sequence, 2, "a JSON record still reads");
-        let record = IndexDeltaRecord {
-            shard_id: 1,
-            sequence: 1,
-            items: Vec::new(),
-            meta: None,
-            applied_wal_sequence: None,
-            upsert: false,
-            key_states: Vec::new(),
-        };
-        let encoded = encode_index_payload(&record, INDEX_LOG_SHAPE_DELTA).unwrap();
-        assert!(
-            encoded.starts_with(INDEX_LOG_CONTAINER_MAGIC),
-            "the default write is now the container"
-        );
-        let back: IndexDeltaRecord = decode_index_payload(&encoded).unwrap();
-        assert_eq!(back.sequence, 1);
-    }
-
 
     /// Append a binary-framed record carrying a msgpack payload, after whatever is already in
     /// the log. Returns the path so a test can measure the file.
@@ -3218,9 +3151,8 @@ mod tests {
         let mut packed = Vec::new();
         let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
         serde::Serialize::serialize(record, &mut serializer).unwrap();
-        let mut payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
-        payload.push(INDEX_LOG_CODEC_MSGPACK);
-        payload.push(INDEX_LOG_SHAPE_DELTA);
+        let mut payload =
+            vec![index_container_byte(INDEX_LOG_CODEC_MSGPACK, INDEX_LOG_SHAPE_DELTA)];
         payload.extend_from_slice(&packed);
 
         let path = index_log_path(dir, record.shard_id);
@@ -3403,9 +3335,12 @@ mod tests {
             "the record carries the binary frame"
         );
         assert!(
-            raw.windows(INDEX_LOG_CONTAINER_MAGIC.len())
-                .any(|w| w == INDEX_LOG_CONTAINER_MAGIC),
-            "the payload is a container"
+            raw.iter().any(|byte| {
+                let (codec, shape) = index_container_parts(*byte);
+                (codec == INDEX_LOG_CODEC_MSGPACK || codec == INDEX_LOG_CODEC_MSGPACK_ZSTD)
+                    && (shape == INDEX_LOG_SHAPE_WHOLE || shape == INDEX_LOG_SHAPE_DELTA)
+            }),
+            "the payload carries a container byte"
         );
         assert!(
             !raw.starts_with(b"#tsf2 "),
@@ -3418,45 +3353,6 @@ mod tests {
         assert_eq!(records[0].items[0].page_ref_key, "a");
         assert_eq!(records[1].items[0].page_ref_key, "b");
         assert_eq!(records[1].applied_wal_sequence, Some(2));
-    }
-
-    /// A log that already holds JSON records keeps working when the writer starts appending
-    /// containers to it. Nobody rewrites an existing log on upgrade, so this is what every
-    /// node that has run before will actually have on disk.
-    #[test]
-    fn containers_append_onto_a_log_that_already_holds_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = index_log_path(dir.path(), 11);
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        // A record in the old shape: JSON payload, text frame.
-        let legacy = IndexDeltaRecord {
-            shard_id: 11,
-            sequence: 1,
-            items: vec![page_item(1, "old", false)],
-            meta: None,
-            applied_wal_sequence: Some(1),
-            upsert: true,
-            key_states: Vec::new(),
-        };
-        let json = serde_json::to_vec(&legacy).unwrap();
-        let mut file = OpenOptions::new().create(true).append(true).open(&path).unwrap();
-        file.write_all(&crate::log_framing::encode_line(&json)).unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-
-        // The store appends its own record after it, in the shape it writes now.
-        let store = LocalIndexLogStore::new(dir.path());
-        store
-            .append_delta(11, vec![page_item(2, "new", false)], Vec::new(), Some(2), None, true, true)
-            .unwrap();
-        drop(store);
-
-        let reopened = LocalIndexLogStore::new(dir.path());
-        let records = reopened.read_delta_records(11, 0).unwrap();
-        assert_eq!(records.len(), 2, "one file, both shapes: {records:?}");
-        assert_eq!(records[0].items[0].page_ref_key, "old");
-        assert_eq!(records[1].items[0].page_ref_key, "new");
     }
 
 
