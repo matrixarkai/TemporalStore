@@ -6492,10 +6492,15 @@ fn blended_candidate_score(
 /// irrelevant". An Option makes the distinction one the caller has to handle.
 /// What the engine selects when the caller names no limit.
 ///
-/// Mirrors `DEFAULT_MAX_SELECTED_REFS` on the calling side. This was a bare `24` here while the
-/// caller's own default was 64 and its request built a third `24` inline, so one setting had three
-/// numbers and the guard that checks for exactly this only scans environment defaults.
-const DEFAULT_MAX_SELECTED_REFS: usize = 64;
+/// 1000, which is what `config/temporalstore.toml` has declared all along -- the code was the half
+/// that disagreed. This was a bare `24` here while the caller defaulted to 64, its request builder
+/// wrote a third `24` inline, and the config asked for 1000: four numbers for one setting, and the
+/// guard that exists to catch that only scans environment defaults.
+///
+/// A node returns up to this many refs unless told otherwise. To return EVERYTHING, a caller sends
+/// a token budget -- the fill is then bounded by tokens and this is never consulted -- or enables
+/// `MATRIXARK_RETURN_ALL_CANDIDATES`, which lifts the limit to the candidate count.
+const DEFAULT_MAX_SELECTED_REFS: usize = 1000;
 
 /// Which candidates a token budget and a set of per-layer floors admit.
 ///

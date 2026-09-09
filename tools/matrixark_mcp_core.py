@@ -249,7 +249,10 @@ DEFAULT_RETRIEVAL_MIN_SCORE = float(os.environ.get("MATRIXARK_RETRIEVAL_MIN_SCOR
 DEFAULT_TOP_K_PER_LAYER = int(os.environ.get("MATRIXARK_TOP_K_PER_LAYER", "8"))
 DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_PER_NODE", "1024"))
 DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "512"))
-DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "64"))
+# 1000, matching config/temporalstore.toml. The config declared 1000 while this said 64 and
+# the engine used 24, so the number a deployment got depended on which surface it came from.
+# test_the_ref_cap_has_one_value pins all of them together.
+DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "1000"))
 DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "quality_first").strip().lower()
 # Near-duplicate suppression threshold (see matrixark_mcp_runtime_config for the
 # canonical definition). Reused here so the ref-selection path shares one source
