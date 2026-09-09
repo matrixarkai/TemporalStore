@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 pub const TS_CONTEXT_PAGE_TARGET_BYTES: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";
 pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SLAB_TARGET_BYTES";
-pub const TS_STORAGE_ZONE_SIZE: &str = "TS_STORAGE_ZONE_SIZE";
 pub const TS_STREAM_MAX_BLOB_SIZE: &str = "TS_STREAM_MAX_BLOB_SIZE";
 pub const TS_COMPACTION_WATERMARK_BYTES: &str = "TS_COMPACTION_WATERMARK_BYTES";
 pub const TS_COLD_SCAN_NO_CACHE_FILL: &str = "TS_COLD_SCAN_NO_CACHE_FILL";
@@ -47,8 +46,6 @@ pub struct StorageTuningConfig {
     pub context_page_target_bytes: usize,
     #[serde(alias = "block_segment_target_bytes")]
     pub block_slab_target_bytes: u64,
-    #[serde(rename = "storage_zone_size")]
-    pub storage_band_size: u64,
     pub stream_max_blob_size: u64,
     pub compaction_watermark_bytes: u64,
     pub cold_scan_no_cache_fill: bool,
@@ -62,7 +59,6 @@ impl Default for StorageTuningConfig {
         Self {
             context_page_target_bytes: DEFAULT_CONTEXT_PAGE_TARGET_BYTES,
             block_slab_target_bytes: DEFAULT_BLOCK_SLAB_TARGET_BYTES,
-            storage_band_size: DEFAULT_STORAGE_BAND_SIZE,
             stream_max_blob_size: DEFAULT_STREAM_MAX_BLOB_SIZE,
             compaction_watermark_bytes: DEFAULT_COMPACTION_WATERMARK_BYTES,
             cold_scan_no_cache_fill: DEFAULT_COLD_SCAN_NO_CACHE_FILL,
@@ -92,8 +88,6 @@ impl StorageTuningConfig {
                 defaults.block_slab_target_bytes,
             )
             .max(1024),
-            storage_band_size: parse_u64(get(TS_STORAGE_ZONE_SIZE), defaults.storage_band_size)
-                .max(1024),
             stream_max_blob_size: parse_u64(
                 get(TS_STREAM_MAX_BLOB_SIZE),
                 defaults.stream_max_blob_size,
@@ -133,12 +127,11 @@ impl StorageTuningConfig {
             .max(self.stream_max_blob_size)
     }
 
-    pub fn env_names() -> [&'static str; 11] {
+    pub fn env_names() -> [&'static str; 10] {
         [
             TS_CONTEXT_PAGE_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME,
-            TS_STORAGE_ZONE_SIZE,
             TS_STREAM_MAX_BLOB_SIZE,
             TS_COMPACTION_WATERMARK_BYTES,
             TS_COLD_SCAN_NO_CACHE_FILL,
@@ -156,10 +149,6 @@ pub fn context_page_target_bytes() -> usize {
 
 pub fn effective_block_slab_target_bytes() -> u64 {
     StorageTuningConfig::from_env().effective_slab_target_bytes()
-}
-
-pub fn storage_band_size_bytes() -> u64 {
-    StorageTuningConfig::from_env().storage_band_size
 }
 
 /// Undumped index-log-gap threshold (bytes) that triggers a background catalog/index dump under
@@ -208,7 +197,6 @@ mod tests {
             config.block_slab_target_bytes,
             DEFAULT_BLOCK_SLAB_TARGET_BYTES
         );
-        assert_eq!(config.storage_band_size, DEFAULT_STORAGE_BAND_SIZE);
         assert_eq!(config.stream_max_blob_size, DEFAULT_STREAM_MAX_BLOB_SIZE);
         assert_eq!(
             config.compaction_watermark_bytes,
@@ -240,7 +228,6 @@ mod tests {
                 "TS_CONTEXT_PAGE_TARGET_BYTES",
                 "TS_BLOCK_SLAB_TARGET_BYTES",
                 "TS_BLOCK_SEGMENT_TARGET_BYTES",
-                "TS_STORAGE_ZONE_SIZE",
                 "TS_STREAM_MAX_BLOB_SIZE",
                 "TS_COMPACTION_WATERMARK_BYTES",
                 "TS_COLD_SCAN_NO_CACHE_FILL",
@@ -315,7 +302,6 @@ mod tests {
         let env = HashMap::from([
             (TS_CONTEXT_PAGE_TARGET_BYTES, "32768"),
             (TS_BLOCK_SLAB_TARGET_BYTES, "10485760"),
-            (TS_STORAGE_ZONE_SIZE, "10485760"),
             (TS_STREAM_MAX_BLOB_SIZE, "8388608"),
             (TS_COMPACTION_WATERMARK_BYTES, "4096"),
             (TS_COLD_SCAN_NO_CACHE_FILL, "false"),
@@ -326,7 +312,6 @@ mod tests {
         let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
         assert_eq!(config.context_page_target_bytes, 32 * 1024);
         assert_eq!(config.block_slab_target_bytes, 10 * 1024 * 1024);
-        assert_eq!(config.storage_band_size, 10 * 1024 * 1024);
         assert_eq!(config.stream_max_blob_size, 8 * 1024 * 1024);
         // Seal = max(block_slab_target 10MiB, max_blob 8MiB) = 10MiB (blob is a floor).
         assert_eq!(config.effective_slab_target_bytes(), 10 * 1024 * 1024);

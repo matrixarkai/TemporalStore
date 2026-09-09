@@ -240,7 +240,7 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        band_id: address.band_id().unwrap_or(address.block_slab_id),
+        band_id: address.block_slab_id,
         slab_id: address.block_slab_id,
         page_id: address.page_id().unwrap_or(address.block_slab_id),
         offset: address.offset,
@@ -255,7 +255,7 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        band_id: address.band_id().unwrap_or(address.block_slab_id),
+        band_id: address.block_slab_id,
         block_id: address.block_slab_id,
         offset: address.offset,
         length: address.length,

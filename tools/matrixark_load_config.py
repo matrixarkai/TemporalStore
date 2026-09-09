@@ -78,7 +78,6 @@ ENV_MAP: Dict[str, str] = {
     "storage.object_store_bucket": "TS_MATRIXOBJECT_BUCKET",
     "storage.object_store_dir": "TS_MATRIXOBJECT_STORE_DIR",
     "storage.shared_store_dir": "TS_SHARED_STORE_DIR",
-    "storage.zone_size_bytes": "TS_STORAGE_ZONE_SIZE",
     "storage.context_page_target_bytes": "TS_CONTEXT_PAGE_TARGET_BYTES",
     "storage.block_slab_target_bytes": "TS_BLOCK_SLAB_TARGET_BYTES",
     "storage.stream_max_blob_size": "TS_STREAM_MAX_BLOB_SIZE",

@@ -75,12 +75,19 @@ pub(crate) fn delayed_destroy_slab_id_from_name(name: &std::ffi::OsStr) -> Optio
     id.parse::<u64>().ok()
 }
 
+/// A band IS a slab.
+///
+/// This divided the slab's byte range by a separate band size, so a band could group several
+/// slabs. Nothing ever configured the two differently -- the one configuration that set them
+/// set both to the same value -- and the grouping was never exercised: the band map is keyed
+/// by slab id, one descriptor per slab, with the band id a computed label inside it.
+///
+/// Collapsing them is what makes the id DERIVABLE rather than merely equal. While it was a
+/// function of two configuration sizes, a reader whose configuration had moved would
+/// reconstruct a different band than the writer meant, so it had to be written down. A band
+/// that is a slab is a fact about the address.
 pub(crate) fn band_id_for_slab(block_slab_id: u64) -> u64 {
-    let slab_target_bytes = effective_block_slab_target_bytes().max(1);
-    let storage_band_size = storage_band_size_bytes().max(1);
     block_slab_id
-        .saturating_mul(slab_target_bytes)
-        .saturating_div(storage_band_size)
 }
 
 pub(crate) fn compact_slab_address_from_parts(block_slab_id: u64, offset: u64) -> Option<u64> {

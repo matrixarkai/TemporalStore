@@ -397,7 +397,7 @@ pub(super) fn logical_range_from_slab(
 
     while physical_offset < slab.len() && out.len() < size as usize {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
+        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None);
         if remaining.len() < PAGE_RECORD_HEADER_LEN || !remaining.starts_with(PAGE_RECORD_MAGIC) {
             return Err(corrupt_page_envelope(
                 &address,
@@ -415,7 +415,7 @@ pub(super) fn logical_range_from_slab(
                 "payload length mismatch".to_string(),
             ));
         }
-        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.page_id, header.object_id, header.routing_bucket, header.page_id.or(header.object_id), header.band_id);
+        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.page_id, header.object_id, header.routing_bucket, header.page_id.or(header.object_id));
         let payload = decode_page_record_payload(
             &remaining[header.header_len..record_len],
             &header,
@@ -678,7 +678,7 @@ pub(super) fn summarize_slab(
     let mut summary = SlabSummary::default();
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
+        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None);
         if remaining.len() < PAGE_RECORD_HEADER_LEN || !remaining.starts_with(PAGE_RECORD_MAGIC) {
             return Err(corrupt_page_envelope(
                 &address,
@@ -770,7 +770,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
     let mut physical_offset = 0usize;
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
+        let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None);
         if remaining.len() < PAGE_RECORD_HEADER_LEN || !remaining.starts_with(PAGE_RECORD_MAGIC) {
             record_slab_inspection_error(
                 &mut report,
@@ -807,7 +807,6 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
         address.set_page_id(header.page_id);
         address.set_object_id(header.object_id);
         address.set_routing_bucket(header.routing_bucket);
-        address.set_band_id(header.band_id);
         match decode_page_record(&remaining[..record_len], &address) {
             Ok(decoded) => {
                 report.page_count = report.page_count.saturating_add(1);
@@ -1047,7 +1046,7 @@ mod reused_zstd_context_tests {
     }
 
     fn address_for(payload_len: usize) -> BlockAddress {
-        BlockAddress::from_parts(1, 0, payload_len as u64, Some(1), Some(1), Some(0), None, None)
+        BlockAddress::from_parts(1, 0, payload_len as u64, Some(1), Some(1), Some(0), None)
     }
 
     /// Round-trip at several sizes through the shared thread-local context.

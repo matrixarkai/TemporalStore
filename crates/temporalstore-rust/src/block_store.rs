@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::storage_config::{effective_block_slab_target_bytes, storage_band_size_bytes};
+use crate::storage_config::effective_block_slab_target_bytes;
 
 mod paths;
 mod band_manifest;
@@ -89,7 +89,6 @@ const ADDRESS_HAS_PAGE_ID: u8 = 1 << 0;
 const ADDRESS_HAS_OBJECT_ID: u8 = 1 << 1;
 const ADDRESS_HAS_ROUTING_BUCKET: u8 = 1 << 2;
 const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
-const ADDRESS_HAS_BAND_ID: u8 = 1 << 4;
 
 /// The address as it travels on the wire and on disk.
 ///
@@ -140,14 +139,6 @@ struct BlockAddressWire {
     )]
     generation: Option<u64>,
     #[serde(
-        rename = "b",
-        alias = "band_id",
-        alias = "extent_id",
-        alias = "zone_id",
-        default
-    )]
-    band_id: Option<u64>,
-    #[serde(
         rename = "h",
         alias = "sha256",
         alias = "checksum",
@@ -167,7 +158,6 @@ impl From<BlockAddressWire> for BlockAddress {
             wire.object_id,
             wire.routing_bucket,
             wire.generation,
-            wire.band_id,
         )
     }
 }
@@ -182,7 +172,6 @@ impl From<BlockAddress> for BlockAddressWire {
             object_id: address.object_id(),
             routing_bucket: address.routing_bucket(),
             generation: address.generation(),
-            band_id: address.band_id(),
             // The index no longer holds a digest, so it cannot write one. An index written
             // before this still LOADS -- the field is accepted and ignored -- but one written
             // now omits it. That is a content change, not a schema change: the field was always
@@ -201,7 +190,6 @@ pub struct BlockAddress {
     page_id: u64,
     object_id: u64,
     generation: u64,
-    band_id: u64,
     routing_bucket: u32,
     /// Which of the five above are actually set. See `ADDRESS_HAS_*`.
     present: u8,
@@ -223,7 +211,6 @@ impl BlockAddress {
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
         generation: Option<u64>,
-        band_id: Option<u64>,
     ) -> Self {
         let mut present = 0u8;
         if page_id.is_some() {
@@ -238,9 +225,6 @@ impl BlockAddress {
         if generation.is_some() {
             present |= ADDRESS_HAS_GENERATION;
         }
-        if band_id.is_some() {
-            present |= ADDRESS_HAS_BAND_ID;
-        }
         Self {
             block_slab_id,
             offset,
@@ -248,7 +232,6 @@ impl BlockAddress {
             page_id: page_id.unwrap_or_default(),
             object_id: object_id.unwrap_or_default(),
             generation: generation.unwrap_or_default(),
-            band_id: band_id.unwrap_or_default(),
             routing_bucket: routing_bucket.unwrap_or_default(),
             present,
         }
@@ -270,8 +253,17 @@ impl BlockAddress {
         (self.present & ADDRESS_HAS_GENERATION != 0).then_some(self.generation)
     }
 
+    /// The band this address is in, which is the slab it is in.
+    ///
+    /// Derived rather than stored. It was a function of the slab AND two configuration sizes,
+    /// which is what made it unsafe to derive: a reader whose configuration had moved would
+    /// reconstruct a different band than the writer meant. With one size there is nothing to
+    /// disagree about, so the band is a fact about the address instead of a field beside it.
+    ///
+    /// Still an `Option` because every caller reads it as one, and it now answers `Some` for
+    /// every address -- a slab is always known.
     pub fn band_id(&self) -> Option<u64> {
-        (self.present & ADDRESS_HAS_BAND_ID != 0).then_some(self.band_id)
+        Some(self.block_slab_id)
     }
 
     pub fn set_page_id(&mut self, value: Option<u64>) {
@@ -292,11 +284,6 @@ impl BlockAddress {
     pub fn set_generation(&mut self, value: Option<u64>) {
         self.generation = value.unwrap_or_default();
         self.set_present(ADDRESS_HAS_GENERATION, value.is_some());
-    }
-
-    pub fn set_band_id(&mut self, value: Option<u64>) {
-        self.band_id = value.unwrap_or_default();
-        self.set_present(ADDRESS_HAS_BAND_ID, value.is_some());
     }
 
     fn set_present(&mut self, bit: u8, on: bool) {
@@ -359,7 +346,6 @@ impl BlockAddress {
             compact_extract_band_id(compact_slab_address) as u64,
             compact_extract_band_offset(compact_slab_address) as u64,
             length,
-            None,
             None,
             None,
             None,
@@ -1713,25 +1699,30 @@ mod address_size_tests {
         assert!(packed <= 104, "address grew to {packed} bytes");
     }
 
-    /// A presence bit is not the same as a zero value. `0` is a legitimate `band_id` and a
-    /// legitimate `routing_slot`, so "zero means absent" would erase real values -- this is why
-    /// the byte exists instead of a sentinel.
+    /// A presence bit is not the same as a zero value. `0` is a legitimate `routing_slot` and a
+    /// legitimate `generation`, so "zero means absent" would erase real values -- this is why the
+    /// byte exists instead of a sentinel.
+    ///
+    /// The band was a third example here and is no longer one: a band IS a slab, so it is always
+    /// known, never absent, and needs no bit.
     #[test]
     fn zero_is_distinguishable_from_absent() {
-        let zero = BlockAddress::from_parts(1, 0, 0, None, None, Some(0), None, Some(0));
-        let absent = BlockAddress::from_parts(1, 0, 0, None, None, None, None, None);
-        assert_eq!(zero.band_id(), Some(0));
+        let zero = BlockAddress::from_parts(1, 0, 0, None, None, Some(0), Some(0));
+        let absent = BlockAddress::from_parts(1, 0, 0, None, None, None, None);
         assert_eq!(zero.routing_bucket(), Some(0));
-        assert_eq!(absent.band_id(), None);
+        assert_eq!(zero.generation(), Some(0));
         assert_eq!(absent.routing_bucket(), None);
+        assert_eq!(absent.generation(), None);
         assert_ne!(zero, absent);
+        assert_eq!(zero.band_id(), Some(1), "the band is the slab, present either way");
+        assert_eq!(absent.band_id(), Some(1));
     }
 
     /// Clearing a value must clear its bit, or the next read reports a stale one as present.
     #[test]
     fn setters_track_presence_both_ways() {
         let mut address =
-            BlockAddress::from_parts(1, 0, 0, Some(7), None, None, None, None);
+            BlockAddress::from_parts(1, 0, 0, Some(7), None, None, None);
         assert_eq!(address.page_id(), Some(7));
         address.set_page_id(None);
         assert_eq!(address.page_id(), None);
@@ -1759,7 +1750,6 @@ mod address_size_tests {
             Some(2),
             Some(3),
             Some(4),
-            Some(0),
         );
         let json = serde_json::to_value(&address).unwrap();
         // What is written now: the short names, and nothing else.
@@ -1767,7 +1757,10 @@ mod address_size_tests {
         assert_eq!(json["o"], 64, "the offset");
         assert_eq!(json["l"], 128, "the length");
         assert_eq!(json["rs"], 3, "the routing bucket");
-        assert_eq!(json["b"], 0, "a present zero must still be written");
+        assert!(
+            json.get("b").is_none(),
+            "a band is the slab, so it is derived rather than written"
+        );
         for long in ["page_segment_id", "routing_slot", "band_id", "object_id", "generation"] {
             assert!(
                 json.get(long).is_none(),
@@ -1829,7 +1822,15 @@ mod tests {
         assert_eq!(address.object_id(), Some(122110326161599232));
         assert_eq!(address.routing_bucket(), Some(545210715));
         assert_eq!(address.generation(), Some(2));
-        assert_eq!(address.band_id(), Some(4), "`zone_id` is the older spelling of this one");
+        // A band is the slab now, so a band STORED against a different slab is accepted and
+        // ignored rather than believed. This record says slab 3 and zone 4, which could only have
+        // been written under a configuration that sized bands and slabs differently -- one the
+        // tree never set, and no longer has a knob for.
+        assert_eq!(
+            address.band_id(),
+            Some(3),
+            "the band answers the slab, whatever an older record stored beside it"
+        );
         // And the digest is accepted and dropped rather than rejected: an index written before the
         // address stopped carrying one still loads, which is the whole point of keeping the alias.
         // The page envelope holds the digest that verifies the bytes.
@@ -1847,7 +1848,6 @@ mod tests {
             Some(122110326161599232),
             Some(545210715),
             Some(2),
-            Some(4),
         );
         let encoded = serde_json::to_string(&address).unwrap();
         // Not vacuous: the values must still be there before the size claim means anything.
@@ -2299,7 +2299,9 @@ mod tests {
             4,
             "the field is the checksum and nothing else: no padding, no marker"
         );
-        assert_eq!(std::mem::size_of::<BlockAddress>(), 64);
+        // Six u64, one u32 and the presence byte. It was 64 while a band was a seventh
+        // field; a band is a slab, so it is read off `block_slab_id` instead of stored.
+        assert_eq!(std::mem::size_of::<BlockAddress>(), 56);
     }
 
     #[test]
@@ -3203,7 +3205,7 @@ mod tests {
     fn page_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None, None, None);
+        let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None, None);
         fs::write(
             slab_path(dir.path(), legacy_address.block_slab_id),
             b"alteredpage",
