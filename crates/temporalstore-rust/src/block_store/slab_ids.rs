@@ -407,11 +407,14 @@ mod next_page_id_scan_tests {
         let root = dir.path();
         let starts = slab_with(root, 0, &[4, 9]);
 
-        // Flip a byte inside the SECOND record's payload, past its header. Magic, version,
-        // lengths and page id are untouched, so the walk can still step over the record.
+        // Flip the LAST byte of the slab, which is the last byte of the SECOND record and so
+        // inside its payload. A header is variable length now, so there is no constant to add
+        // to the record start; the end of the last record is the one place guaranteed to be
+        // past its header. Magic, lengths and page id are untouched, so the walk still steps
+        // over the record.
         let path = slab_path(root, 0);
         let mut bytes = fs::read(&path).expect("read slab");
-        let payload_at = starts[1] + PAGE_RECORD_HEADER_LEN;
+        let payload_at = bytes.len() - 1;
         bytes[payload_at] ^= 0xff;
         fs::write(&path, &bytes).expect("write slab");
 
