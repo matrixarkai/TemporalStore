@@ -1779,7 +1779,7 @@ fn matrixark_scan_cache_key(command: &RecordLogRequest, freshness: &str) -> Stri
     serde_json::to_string(&json!({
         "count_key": command.count_key,
         "record_hash_key": command.record_hash_key,
-        "shard_size": command.shard_size.unwrap_or(1024).max(1),
+        "shard_size": command.shard_size.unwrap_or(DEFAULT_RECORD_LOG_SHARD_SIZE).max(1),
         "freshness": freshness,
         "record_types": command.record_types,
         // A status-filtered scan is a SUBSET of the same question, exactly like
@@ -2872,7 +2872,11 @@ fn scan_matrixark_candidates(
 ) -> Result<Value, String> {
     let count_key = required_option(command.count_key.clone(), "count_key")?;
     let record_hash_key = required_option(command.record_hash_key.clone(), "record_hash_key")?;
-    let shard_size = command.shard_size.unwrap_or(1024).max(1);
+    // 256, matching the writer. Guessing 1024 against a store written at 256 computes
+    // max_shard = (count - 1) / 1024, enumerates a quarter of the shards, and returns a
+    // partial store as though it were the whole one. Over-enumerating is the safe direction:
+    // extra shard keys simply do not exist and read back empty.
+    let shard_size = command.shard_size.unwrap_or(DEFAULT_RECORD_LOG_SHARD_SIZE).max(1);
     let count_text = read_record_count(engine, &count_key)?;
     let count = count_text.parse::<u64>().unwrap_or(0);
     let freshness = scan_freshness_token(engine, command, &record_hash_key, count);
@@ -6501,6 +6505,12 @@ fn blended_candidate_score(
 /// a token budget -- the fill is then bounded by tokens and this is never consulted -- or enables
 /// `MATRIXARK_RETURN_ALL_CANDIDATES`, which lifts the limit to the candidate count.
 const DEFAULT_MAX_SELECTED_REFS: usize = 1000;
+
+/// Records per shard, mirroring DIRECT_RECORD_LOG_SHARD_SIZE on the writing side.
+///
+/// A reader that assumes a LARGER shard size than the writer used enumerates too few shards
+/// and silently returns part of the store. This was 1024 here against a writer at 256.
+const DEFAULT_RECORD_LOG_SHARD_SIZE: u64 = 256;
 
 /// Which candidates a token budget and a set of per-layer floors admit.
 ///
