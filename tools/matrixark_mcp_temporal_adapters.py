@@ -534,27 +534,59 @@ def _shadow_log_path(operation: str) -> str:
     return _os.environ.get("MATRIXARK_SHADOW_LOG", "/tmp/matrixark_%s_shadow.log" % operation)
 
 
-def _note_full_read_fallback(where: str, reason: BaseException) -> None:
-    """Say which scoped scan gave up and why, when the answer is to read the whole store.
+_FULL_READ_FALLBACKS: dict[str, int] = {}
+
+
+def full_read_fallback_counts() -> dict[str, int]:
+    """How many times each scoped scan gave up and read the whole store instead.
+
+    Counted in this process since start. Exposed because the fallback is otherwise undetectable
+    from outside: a measured degraded window did TEN whole-corpus reads and wrote nothing at all,
+    and from the caller it looked like a normal request that was merely slow.
+    """
+    return dict(_FULL_READ_FALLBACKS)
+
+
+def _note_full_read_fallback(where: str | None = None,
+                             reason: BaseException | None = None) -> None:
+    """Say which scoped scan gave up, when the answer is to read the whole store.
 
     Each of these replaces a scan of the records a request needs with a read of every record
     there is, on every turn it happens. Silent, that is invisible from outside: a scan path that
     has stopped working looks exactly like one that was never taken, and the cost shows up only as
     a store that got slower.
 
-    Written only when MATRIXARK_MCP_DEBUG_LOG names a file, so the normal path costs one lookup --
-    against a fallback that is about to read everything. Never raises: a channel that reports a
-    problem must not become one.
+    The COUNT is kept unconditionally -- a dict increment, against a caller that is about to read
+    every record in the store, so the cost is not worth a flag. The detailed line is still written
+    only when MATRIXARK_MCP_DEBUG_LOG names a file.
+
+    `where` defaults to the calling function's name, so the branches that have no exception to
+    report can announce themselves without each one restating its own name. `reason` is optional
+    for the same branches: `subset is None` means the scan could not answer, which is not an error
+    anything raised.
+
+    Never raises: a channel that reports a problem must not become one.
     """
+    try:
+        if where is None:
+            import sys as _sys
+            try:
+                where = _sys._getframe(1).f_code.co_name
+            except Exception:  # noqa: BLE001 - naming the caller must not fail the caller.
+                where = "unknown"
+        _FULL_READ_FALLBACKS[where] = _FULL_READ_FALLBACKS.get(where, 0) + 1
+    except Exception:  # noqa: BLE001
+        pass
     try:
         import os as _os
 
         debug_path = _os.environ.get("MATRIXARK_MCP_DEBUG_LOG")
         if not debug_path:
             return
+        detail = "scoped scan unavailable" if reason is None else "%s: %s" % (
+            reason.__class__.__name__, reason)
         with open(debug_path, "a", encoding="utf-8") as handle:
-            handle.write("%s fell back to the full read: %s: %s%s"
-                         % (where, reason.__class__.__name__, reason, chr(10)))
+            handle.write("%s fell back to the full read: %s%s" % (where, detail, chr(10)))
     except OSError:
         pass
 
@@ -1468,6 +1500,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             scope=engine_scope,
         )
         if subset is None:
+            # The scan could not answer, so this is about to read every record in the store.
+            # Counted rather than silent: this branch, not the exception one below, is what fires
+            # when the backend is unreachable, and it used to report nothing at all.
+            _note_full_read_fallback()
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
@@ -1587,6 +1623,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             scope=engine_scope,
         )
         if subset is None:
+            # The scan could not answer, so this is about to read every record in the store.
+            # Counted rather than silent: this branch, not the exception one below, is what fires
+            # when the backend is unreachable, and it used to report nothing at all.
+            _note_full_read_fallback()
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
@@ -1685,6 +1725,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         ]
         subset = self._scan_records_of_types(wanted)
         if subset is None:
+            # The scan could not answer, so this is about to read every record in the store.
+            # Counted rather than silent: this branch, not the exception one below, is what fires
+            # when the backend is unreachable, and it used to report nothing at all.
+            _note_full_read_fallback()
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
@@ -1804,6 +1848,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             else self._scan_records_of_types(kept_types, record_ids=sorted(identity_ids))
         )
         if subset is None:
+            # The scan could not answer, so this is about to read every record in the store.
+            # Counted rather than silent: this branch, not the exception one below, is what fires
+            # when the backend is unreachable, and it used to report nothing at all.
+            _note_full_read_fallback()
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
@@ -1945,6 +1993,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             else self._scan_records_of_types(kept_types, record_ids=sorted(identity_ids))
         )
         if subset is None:
+            # The scan could not answer, so this is about to read every record in the store.
+            # Counted rather than silent: this branch, not the exception one below, is what fires
+            # when the backend is unreachable, and it used to report nothing at all.
+            _note_full_read_fallback()
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
@@ -2117,6 +2169,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 newest_by_type=({"context_event": newest_events} if newest_events else None),
             )
         if subset is None:
+            # The scan could not answer, so this is about to read every record in the store.
+            # Counted rather than silent: this branch, not the exception one below, is what fires
+            # when the backend is unreachable, and it used to report nothing at all.
+            _note_full_read_fallback()
             return self.read_all()
         # Summaries and other compact records can live in the latest-state HASH rather than the
         # append log, and the scan walks only the log -- the shadow compare caught exactly this:
