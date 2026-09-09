@@ -957,11 +957,7 @@ fn start_auto_rebalance_loop(
     placement_aware: bool,
 ) -> std::thread::JoinHandle<()> {
     let interval = std::time::Duration::from_millis(interval_ms.max(1));
-    let http_options = HttpRequestOptions {
-        connect_timeout_ms: env_u64("TS_META_AUTO_REBALANCE_CONNECT_TIMEOUT_MS", 500),
-        io_timeout_ms: env_u64("TS_META_AUTO_REBALANCE_IO_TIMEOUT_MS", 2_000),
-        max_retries: 1,
-    };
+    let http_options = peer_loop_http_options(1);
     std::thread::spawn(move || loop {
         if meta.is_meta_change_muted() {
             std::thread::sleep(interval);
@@ -1088,11 +1084,8 @@ fn start_shard_divergence_loop(
     interval_ms: u64,
 ) -> std::thread::JoinHandle<()> {
     let interval = std::time::Duration::from_millis(interval_ms.max(1));
-    let http_options = HttpRequestOptions {
-        connect_timeout_ms: env_u64("TS_META_SHARD_DIVERGENCE_CONNECT_TIMEOUT_MS", 500),
-        io_timeout_ms: env_u64("TS_META_SHARD_DIVERGENCE_IO_TIMEOUT_MS", 2_000),
-        ..HttpRequestOptions::default()
-    };
+    // 0 retries, which is what `HttpRequestOptions::default()` gave this loop before.
+    let http_options = peer_loop_http_options(0);
     let mut checker = ShardChecker::new(options);
     std::thread::spawn(move || loop {
         if meta.is_meta_change_muted() {
@@ -1253,11 +1246,7 @@ fn start_raft_failover_loop(
     interval_ms: u64,
 ) -> std::thread::JoinHandle<()> {
     let interval = std::time::Duration::from_millis(interval_ms.max(1));
-    let http_options = HttpRequestOptions {
-        connect_timeout_ms: env_u64("TS_RAFT_AUTO_FAILOVER_CONNECT_TIMEOUT_MS", 500),
-        io_timeout_ms: env_u64("TS_RAFT_AUTO_FAILOVER_IO_TIMEOUT_MS", 2_000),
-        max_retries: 1,
-    };
+    let http_options = peer_loop_http_options(1);
     std::thread::spawn(move || {
         let mut driven: std::collections::HashSet<u64> = std::collections::HashSet::new();
         loop {
@@ -1338,6 +1327,25 @@ fn now_epoch_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
+}
+
+/// Connect and read timeouts for the metaserver's background peer loops.
+///
+/// Three loops -- auto-rebalance, the shard-divergence check and raft failover -- each make short
+/// HTTP calls to peers from a background thread, and each used to read its own connect/io pair:
+/// six variables holding the same two numbers. Nothing set any of them, none was offered in the
+/// config file or on the portal, and no deployment distinguished the three, so the per-loop
+/// granularity existed only in the source. One pair now covers all three.
+///
+/// `max_retries` is deliberately NOT shared. Two of the loops pass 1 and the divergence checker
+/// took `HttpRequestOptions::default()`, which is 0; folding that in would have quietly given it
+/// a retry it never had.
+fn peer_loop_http_options(max_retries: usize) -> HttpRequestOptions {
+    HttpRequestOptions {
+        connect_timeout_ms: env_u64("TS_META_PEER_CONNECT_TIMEOUT_MS", 500),
+        io_timeout_ms: env_u64("TS_META_PEER_IO_TIMEOUT_MS", 2_000),
+        max_retries,
+    }
 }
 
 fn default_connect_timeout_ms() -> u64 {
