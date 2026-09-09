@@ -76,15 +76,22 @@ def the_detail_line_still_needs_the_debug_log():
 
 
 def every_silent_branch_now_announces():
-    """The six `subset is None` branches must each call the notifier before reading everything."""
+    """No `subset is None` branch may read the whole store without announcing it.
+
+    Written first as a literal match on the announcing lines, which broke the moment those branches
+    were routed through a helper -- the invariant is "nothing reads everything silently", not "this
+    exact text appears six times". Asserted as a property now: no branch goes straight to
+    read_all(), and every one of them goes through the helper that counts.
+    """
     here = os.path.dirname(os.path.abspath(__file__))
     source = open(os.path.join(here, "matrixark_mcp_temporal_adapters.py"), encoding="utf-8").read()
     silent = "        if subset is None:\n            return self.read_all()"
     check(source.count(silent) == 0,
           "%d 'subset is None' branches still read the whole store silently" % source.count(silent))
-    announced = "_note_full_read_fallback()\n            return self.read_all()"
-    check(source.count(announced) == 6,
-          "expected 6 announcing branches, found %d" % source.count(announced))
+    routed = source.count("return self._read_all_after_scoped_scan()")
+    check(routed == 6, "expected 6 branches routed through the counting helper, found %d" % routed)
+    check("_note_full_read_fallback(where)" in source,
+          "the helper must still count the fallback it takes")
 
 
 for test in (
