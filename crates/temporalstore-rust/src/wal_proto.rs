@@ -456,7 +456,7 @@ pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
 /// they are deliberately not used for the optional fields.
 fn wal_item_body_len(item: &WalOutcomeItem, derived: &DerivedItem<'_>) -> usize {
     let mut len = optional_bytes_len(3, Some(item.object_key.len()))
-        + optional_varint_len(5, Some(item.object_id))
+        + optional_fixed64_len(5, Some(item.object_id))
         + optional_varint_len(7, item.ttl)
         + plain_bool_len(8, item.deleted)
         + plain_bool_len(9, item.meta)
@@ -482,7 +482,7 @@ fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out:
 
     // Ascending field order, because that is the order prost writes them in.
     put_optional_bytes(3, Some(item.object_key.as_bytes()), out);
-    put_optional_varint(5, Some(item.object_id), out);
+    put_optional_fixed64(5, Some(item.object_id), out);
     put_optional_varint(7, item.ttl, out);
     put_plain_bool(8, item.deleted, out);
     put_plain_bool(9, item.meta, out);
@@ -548,6 +548,19 @@ fn optional_varint_len(tag: u32, value: Option<u64>) -> usize {
             prost::encoding::key_len(tag) + prost::encoding::encoded_len_varint(value)
         }
         None => 0,
+    }
+}
+
+fn optional_fixed64_len(tag: u32, value: Option<u64>) -> usize {
+    match value {
+        Some(_) => crate::raft::wal_proto::fixed64_field_len(tag),
+        None => 0,
+    }
+}
+
+fn put_optional_fixed64(tag: u32, value: Option<u64>, out: &mut Vec<u8>) {
+    if let Some(value) = value {
+        crate::raft::wal_proto::put_fixed64_field(tag, value, out);
     }
 }
 
@@ -740,7 +753,12 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
         + record
             .staged_pages
             .iter()
-            .map(|page| crate::raft::wal_proto::len_delimited_len(6, staged_block_body_len(page)))
+            .map(|page| {
+                crate::raft::wal_proto::len_delimited_len(
+                    6,
+                    staged_block_body_len(page, implied_staged_object_id(record)),
+                )
+            })
             .sum::<usize>();
     Ok(RecordParts {
         command,
@@ -763,24 +781,34 @@ impl RecordParts<'_> {
         for (item, derived) in record.outcomes.iter().zip(self.items.iter()) {
             put_wal_item(5, item, derived, out);
         }
+        let implied = implied_staged_object_id(record);
         for page in &record.staged_pages {
-            crate::raft::wal_proto::put_staged_block(6, page, out);
+            crate::raft::wal_proto::put_staged_block(6, page, implied, out);
         }
         Ok(())
     }
 }
 
+/// The object id a staged block need not repeat, if the record already says it once.
+///
+/// Only when the record carries exactly one outcome and one block: then the block belongs to
+/// that outcome and nothing else, so dropping the id from the block loses nothing a reader
+/// cannot put back. With more than one of either, every block writes its own.
+pub(crate) fn implied_staged_object_id(record: &WriteAheadLogRecord) -> Option<u64> {
+    if record.outcomes.len() == 1 && record.staged_pages.len() == 1 {
+        return Some(record.outcomes[0].object_id);
+    }
+    None
+}
+
 /// Bytes a staged page occupies as a `WalStagedBlock` body.
 ///
-/// `routing_bucket` is never set on this path, and proto3 omits an absent optional, so it costs
-/// nothing here and is not written.
-fn staged_block_body_len(page: &crate::wal::StagedPage) -> usize {
-    crate::raft::wal_proto::varint_field_len(1, page.object_id)
-        + if page.bytes.is_empty() {
-            0
-        } else {
-            crate::raft::wal_proto::len_delimited_len(2, page.bytes.len())
-        }
+/// Deliberately a call to the writer's own measurement rather than a second copy of the rule.
+/// This length reserves the buffer the writer then fills, so if the two ever disagree the record
+/// is written into the wrong number of bytes -- and they did disagree, because this was a
+/// separate copy that still measured a varint after the writer had moved to a fixed field.
+fn staged_block_body_len(page: &crate::wal::StagedPage, implied: Option<u64>) -> usize {
+    crate::raft::wal_proto::staged_block_body_len(page, implied)
 }
 
 /// A record measured but not yet written.
@@ -916,14 +944,24 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
         sequence: message.sequence,
         command,
         metadata: message.metadata.map(metadata_from_proto).transpose()?,
-        staged_pages: message
-            .staged_blocks
-            .into_iter()
-            .map(|block| StagedPage {
-                object_id: block.object_id,
-                bytes: block.block,
-            })
-            .collect(),
+        staged_pages: {
+            // A block with no object id of its own takes it from the outcome it belongs to.
+            // The writer drops it only when there is exactly one of each, so there is never a
+            // question of which outcome an unlabelled block means.
+            let implied = if message.items.len() == 1 && message.staged_blocks.len() == 1 {
+                message.items[0].object_id
+            } else {
+                None
+            };
+            message
+                .staged_blocks
+                .into_iter()
+                .map(|block| StagedPage {
+                    object_id: block.object_id.or(implied).unwrap_or_default(),
+                    bytes: block.block,
+                })
+                .collect()
+        },
         outcomes: message.items.into_iter().map(item_from_proto).collect(),
     })
 }
@@ -959,7 +997,12 @@ mod tests {
                 .staged_pages
                 .iter()
                 .map(|page| v1::WalStagedBlock {
-                    object_id: page.object_id,
+                    // The same rule the borrowing encoder applies, so the two agree byte for
+                    // byte: a block drops the object id the record already says once.
+                    object_id: crate::raft::wal_proto::staged_block_object_id(
+                        page,
+                        implied_staged_object_id(record),
+                    ),
                     block: page.bytes.clone(),
                     routing_bucket: None,
                 })
@@ -1612,6 +1655,79 @@ mod tests {
     ///
     /// Only the body is compared: the marker and the escaping around it are framing, shared by
     /// both paths and untouched by this change.
+    fn outcome_with_object_id(object_id: u64) -> crate::wal::WalOutcomeItem {
+        crate::wal::WalOutcomeItem {
+            kind: "page".to_string(),
+            object_key: "tenant/1/object/9".to_string(),
+            component: None,
+            object_id,
+            routing_bucket: 8539,
+            address: None,
+            value: None,
+            ttl: None,
+            deleted: false,
+            meta: false,
+        }
+    }
+
+    /// One block for one outcome says the object id once, and a reader puts it back.
+    ///
+    /// The id is a 64-bit hash, so a second copy costs nine bytes on every single-value write.
+    /// Dropping it is only safe while there is exactly one outcome and one block: then the
+    /// block belongs to that outcome and nothing else.
+    #[test]
+    fn one_block_for_one_outcome_says_the_object_id_once() {
+        let mut record = record_with(None);
+        record.outcomes = vec![outcome_with_object_id(0x1234_5678_9ABC_DEF0)];
+        record.staged_pages = vec![crate::wal::StagedPage {
+            object_id: 0x1234_5678_9ABC_DEF0,
+            bytes: vec![3; 64],
+        }];
+
+        let encoded = encode(&record).expect("encode");
+        let back = decode(&encoded).expect("decode");
+        assert_eq!(
+            back.staged_pages[0].object_id, record.staged_pages[0].object_id,
+            "the reader must put the omitted id back"
+        );
+        assert_eq!(back, record, "the whole record must round trip");
+
+        // And it is genuinely smaller. The same record whose block does NOT match its outcome
+        // cannot imply the id and has to write it, so it comes out longer. Without the rule
+        // these two would encode to the same length.
+        let mut unmatched = record.clone();
+        unmatched.staged_pages[0].object_id = 0x0FED_CBA9_8765_4321;
+        let longer = encode(&unmatched).expect("encode");
+        assert!(
+            longer.len() > encoded.len(),
+            "an id that cannot be implied has to be written: {} vs {}",
+            longer.len(),
+            encoded.len()
+        );
+        assert_eq!(decode(&longer).expect("decode"), unmatched);
+    }
+
+    /// With more than one of either, every block says its own id.
+    #[test]
+    fn two_blocks_each_say_their_own_object_id() {
+        let mut record = record_with(None);
+        record.outcomes = vec![outcome_with_object_id(11), outcome_with_object_id(22)];
+        record.staged_pages = vec![
+            crate::wal::StagedPage {
+                object_id: 11,
+                bytes: vec![1; 8],
+            },
+            crate::wal::StagedPage {
+                object_id: 22,
+                bytes: vec![2; 8],
+            },
+        ];
+        let back = decode(&encode(&record).expect("encode")).expect("decode");
+        assert_eq!(back.staged_pages[0].object_id, 11);
+        assert_eq!(back.staged_pages[1].object_id, 22);
+        assert_eq!(back, record);
+    }
+
     #[test]
     fn the_borrowing_encoder_writes_the_same_bytes() {
         for (label, record) in cases() {
