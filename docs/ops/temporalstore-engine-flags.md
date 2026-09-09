@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 289 of them, read by 90 functions.
+There are 290 of them, read by 91 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,12 +60,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 289 |
-| booleans whose default this could read off the source | 48 |
+| total | 290 |
+| booleans whose default this could read off the source | 49 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 160 |
+| **that nothing in this repository sets** | 161 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 42 |
@@ -201,12 +201,13 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_RESIDENT_PAGES` | 4096 | test | 1 | — |
 | `TS_WAL_SEGMENT_BYTES` | 262144 | nothing | 1 | — |
 
-## format (5)
+## format (6)
 
 The shape of what is written. Readers generally accept both shapes, which is what makes these safe to flip and hard to retire.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
+| `MATRIXARK_LANE_CODEC` | off | nothing | 1 | — |
 | `TS_INDEX_CODEC` | — | test | 1 | — |
 | `TS_NODE_SUMMARY_VECTOR` | on | test, portal | 1 | — |
 | `TS_PROXY_BINARY_VERSION` | — | nothing | 1 | — |
