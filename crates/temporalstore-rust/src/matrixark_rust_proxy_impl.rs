@@ -81,6 +81,34 @@ struct RecordLogRequest {
     /// unaffected.
     #[serde(default)]
     query_vector: Option<Vec<f32>>,
+    /// The score a candidate must BEAT to be returned at all.
+    ///
+    /// The caller has been sending this on every request and the engine has never read it -- it was
+    /// not even a field here, so serde dropped it silently. With dense retrieval it is the control
+    /// that matters: a candidate the query embedding does not reach is not ranked low, it is not
+    /// returned.
+    ///
+    /// Absent means 0.0, which returns everything the query can score at all and excludes only what
+    /// scores exactly zero -- an opposed vector, or one this query cannot place.
+    #[serde(default)]
+    min_score: Option<f64>,
+    /// Total token budget for the pack. 0 or absent means no budget, and the slot count decides.
+    ///
+    /// The caller computes this and sends it; the engine has only ever read it in test fixtures.
+    /// Selection counted REFS and never summed tokens, so a pack of 24 long refs and a pack of 24
+    /// short ones were treated as the same size.
+    #[serde(default)]
+    max_context_tokens: Option<u64>,
+    /// The fewest refs each memory layer must get before the rest of the budget is filled by score.
+    ///
+    /// Without this every layer competes in one flat contest, so a large shared_context corpus
+    /// (skills and resources) and a handful of session memories fight for the same slots and the
+    /// bigger corpus wins on sheer count. A floor makes each layer's best survive to the pack, and
+    /// the remaining budget still goes to whatever scores highest.
+    ///
+    /// Absent means no floors, which is the flat behaviour this engine has always had.
+    #[serde(default)]
+    layer_min_refs: Option<std::collections::BTreeMap<String, u64>>,
     /// How to combine the dense and lexical scores, and what an index hint is worth.
     ///
     /// The CALLER owns ranking policy and the engine executes it. That is deliberate: the caller
@@ -5772,12 +5800,16 @@ fn retrieve_context_pack_output(
             .and_then(Value::as_u64)
             .unwrap_or(0) as usize,
     );
+    // No upper ceiling. This clamped to 128, so a caller asking for every candidate -- which is
+    // what MATRIXARK_RETURN_ALL_CANDIDATES exists to do -- silently got 128 and no error. The loop
+    // below cannot exceed the candidate count anyway, so the ceiling bounded nothing except the
+    // caller's intent.
     let max_selected_refs = if requested_max_selected_refs == 0 {
-        24
+        DEFAULT_MAX_SELECTED_REFS
     } else {
         requested_max_selected_refs
     }
-    .clamp(1, 128);
+    .max(1);
     let query = if request.query.trim().is_empty() {
         request_record
             .get("query")
@@ -5807,9 +5839,19 @@ fn retrieve_context_pack_output(
         .candidates
         .iter()
         .any(|candidate| candidate.ref_type == "event");
-    let query_vector = request.query_vector.clone().filter(|v| !v.is_empty());
+    let query_vector = ranking_field_from(
+        request.query_vector.clone(),
+        &request_record,
+        "query_vector",
+    )
+    .filter(|v: &Vec<f32>| !v.is_empty());
     let ranking_uses_vectors = query_vector.is_some();
-    let weights = request.ranking_weights.unwrap_or_default();
+    let weights = ranking_field_from(
+        request.ranking_weights,
+        &request_record,
+        "ranking_weights",
+    )
+    .unwrap_or_default();
     // The caller's own prefilter already named the nodes it believes in; the hint is what that
     // belief is worth in the score, and the caller sets its size.
     let hinted: std::collections::HashSet<u64> = request
@@ -5817,7 +5859,12 @@ fn retrieve_context_pack_output(
         .as_ref()
         .map(|v| v.iter().copied().collect())
         .unwrap_or_default();
+    // 0.0 keeps everything the query can score and excludes only what scores exactly zero.
+    let min_score =
+        ranking_field_from(request.min_score, &request_record, "min_score").unwrap_or(0.0);
     let score_started = Instant::now();
+    let mut skipped_unscoreable = 0_u64;
+    let mut skipped_below_threshold = 0_u64;
     let mut candidates = Vec::with_capacity(snapshot.candidates.len());
     for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
         if candidate.ref_type == "summary" && has_event_candidate && !summary_allowed_for_question {
@@ -5828,7 +5875,7 @@ fn retrieve_context_pack_output(
         // could not compare, not a record we know to be irrelevant, and zeroing it would drop it
         // beneath every lexical match in the same list.
         let lexical = score_lowered_text(&candidate.lower_text, &query_terms);
-        let score = candidate_score(
+        let Some(score) = candidate_score(
             &weights,
             query_vector.as_deref(),
             candidate.vector.as_deref(),
@@ -5842,17 +5889,106 @@ fn retrieve_context_pack_output(
                     .map(|h| hinted.contains(&h))
                     .unwrap_or(false)
             },
-        );
+        ) else {
+            // Not scoreable under this query. Counted so a store that returns nothing can be told
+            // apart from a query that matched nothing.
+            skipped_unscoreable += 1;
+            continue;
+        };
+        // The caller's threshold. A score at or below it is not a weak result to be ranked last --
+        // it is excluded, which is what makes a per-layer dense retrieval bounded by RELEVANCE
+        // rather than by a slot count.
+        if score <= min_score {
+            skipped_below_threshold += 1;
+            continue;
+        }
         candidates.push((score, ordinal));
     }
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
-    let keep = max_selected_refs.min(candidates.len());
-    if keep > 0 && candidates.len() > keep {
-        candidates
-            .select_nth_unstable_by(keep, |left, right| compare_scored_candidate(*left, *right));
-        candidates.truncate(keep);
+    let token_budget = ranking_field_from(
+        request.max_context_tokens,
+        &request_record,
+        "max_context_tokens",
+    )
+    .unwrap_or(0);
+    let layer_floors = ranking_field_from(
+        request.layer_min_refs.clone(),
+        &request_record,
+        "layer_min_refs",
+    )
+    .unwrap_or_default();
+    // A budget or a floor means the pack is bounded by RELEVANCE and SIZE rather than by a slot
+    // count, so the slot cut must not run first.
+    let budget_governs = token_budget > 0 || !layer_floors.is_empty();
+    if budget_governs {
+        // Every candidate stays in the running. Cutting to a slot count here would decide the pack
+        // before any floor or budget could see it, which is how a large shared_context corpus
+        // starves session memory out of a flat 24 slots.
+        candidates.sort_by(|left, right| compare_scored_candidate(*left, *right));
+    } else {
+        let keep = max_selected_refs.min(candidates.len());
+        if keep > 0 && candidates.len() > keep {
+            candidates
+                .select_nth_unstable_by(keep, |left, right| compare_scored_candidate(*left, *right));
+            candidates.truncate(keep);
+        }
+        candidates.sort_by(|left, right| compare_scored_candidate(*left, *right));
     }
-    candidates.sort_by(|left, right| compare_scored_candidate(*left, *right));
+
+    // Pass one gives every layer its floor, in score order within the layer. Pass two spends what
+    // is left of the budget on whatever scores highest, wherever it came from.
+    let mut budget_keep: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut layer_refs_selected: HashMap<String, u64> = HashMap::new();
+    let mut budget_tokens_used = 0_u64;
+    if budget_governs {
+        let snapshot_for_layer = Arc::clone(&snapshot);
+        let layer_of = move |ordinal: usize| -> String {
+            snapshot_for_layer
+                .candidates
+                .get(ordinal)
+                .and_then(|candidate| {
+                    candidate
+                        .selected_ref
+                        .get("memory_layer")
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("")
+                .to_string()
+        };
+        let snapshot_for_tokens = Arc::clone(&snapshot);
+        let tokens_of = move |ordinal: usize| -> u64 {
+            snapshot_for_tokens
+                .candidates
+                .get(ordinal)
+                .map(|candidate| {
+                    candidate
+                        .selected_ref
+                        .get("token_estimate")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_else(|| {
+                            token_estimate(
+                                candidate
+                                    .selected_ref
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or(""),
+                            )
+                        })
+                })
+                .unwrap_or(0)
+        };
+        let (keep, per_layer, used) = select_within_budget(
+            &candidates,
+            &layer_of,
+            &tokens_of,
+            &layer_floors,
+            token_budget,
+        );
+        budget_keep = keep;
+        layer_refs_selected = per_layer;
+        budget_tokens_used = used;
+    }
+
     let current_state_query = matches!(
         question_type,
         "current_state" | "latest" | "profile_memory"
@@ -5874,7 +6010,11 @@ fn retrieve_context_pack_output(
     let mut dropped_ref_type_token_counts: HashMap<String, u64> = HashMap::new();
     let mut dropped_ref_details: Vec<Value> = Vec::new();
     for (_, ordinal) in candidates.into_iter() {
-        if selected_refs.len() >= max_selected_refs {
+        if budget_governs {
+            if !budget_keep.contains(&ordinal) {
+                continue;
+            }
+        } else if selected_refs.len() >= max_selected_refs {
             break;
         }
         let Some(candidate) = snapshot.candidates.get(ordinal) else {
@@ -5968,6 +6108,15 @@ fn retrieve_context_pack_output(
         "recall_policy": {
             "memory_layer_budget": serving_memory_layer_budget,
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
+            // Outcome, not intent: how many candidates the query could not place, how many fell
+            // under the threshold, and what the fill actually spent.
+            "skipped_unscoreable": skipped_unscoreable,
+            "skipped_below_threshold": skipped_below_threshold,
+            "budget_tokens_used": budget_tokens_used,
+            "layer_refs_selected": layer_refs_selected
+                .iter()
+                .map(|(layer, count)| (layer.clone(), json!(count)))
+                .collect::<serde_json::Map<String, Value>>(),
             "memory_layer_pressure": serving_memory_layer_pressure,
             "memory_inventory": memory_inventory.clone(),
         },
@@ -6001,6 +6150,15 @@ fn retrieve_context_pack_output(
             "raw_candidate_tables_returned": false,
             "memory_layer_budget": serving_memory_layer_budget,
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
+            // Outcome, not intent: how many candidates the query could not place, how many fell
+            // under the threshold, and what the fill actually spent.
+            "skipped_unscoreable": skipped_unscoreable,
+            "skipped_below_threshold": skipped_below_threshold,
+            "budget_tokens_used": budget_tokens_used,
+            "layer_refs_selected": layer_refs_selected
+                .iter()
+                .map(|(layer, count)| (layer.clone(), json!(count)))
+                .collect::<serde_json::Map<String, Value>>(),
             "memory_layer_pressure": serving_memory_layer_pressure,
             "memory_inventory": memory_inventory,
             "broad_scan_used": false,
@@ -6291,15 +6449,21 @@ fn candidate_score<F: FnOnce() -> bool>(
     record_vector: Option<&[f32]>,
     lexical: f64,
     index_hinted: F,
-) -> f64 {
+) -> Option<f64> {
     match (query_vector, record_vector) {
-        (Some(query), Some(record)) if !query.is_empty() => {
-            let dense = dense_query_score(query, record);
-            blended_candidate_score(weights, Some(dense), lexical, index_hinted())
-        }
-        // No query vector means no dense term to blend, so this is the lexical ranking the engine
-        // has always done -- not the blend with a zero, which the weights would scale.
-        _ => lexical,
+        // Dense retrieval. `None` from the scorer means this candidate cannot be placed in the
+        // query's space at all -- a different width, so a different encoder -- and it is SKIPPED
+        // rather than given a lexical score. Under dense retrieval a candidate the query embedding
+        // does not reach is not a weak match, it is not a match, and returning it on a text
+        // coincidence is what the embedding was supposed to replace.
+        (Some(query), Some(record)) if !query.is_empty() => dense_query_score(query, record)
+            .map(|dense| blended_candidate_score(weights, Some(dense), lexical, index_hinted())),
+        // A candidate carrying no vector at all, while the caller IS ranking densely: same answer.
+        // It cannot be compared, so it is not returned.
+        (Some(query), None) if !query.is_empty() => None,
+        // No query vector: the caller is not ranking densely, so this is the lexical ranking the
+        // engine has always done. Unchanged, and still the default -- dense retrieval is opt-in.
+        _ => Some(lexical),
     }
 }
 
@@ -6315,16 +6479,102 @@ fn blended_candidate_score(
 
 /// Cosine similarity, mapped to the same 0..1 range the lexical scorer produces.
 ///
-/// Vectors of different lengths score 0 rather than panicking or comparing a prefix: a record
-/// embedded by a different model is not less relevant, it is NOT COMPARABLE, and scoring a prefix
+/// `None` means NOT COMPARABLE, which is not the same as "scored zero".
+///
+/// Vectors of different lengths are never compared on a prefix: a record embedded by a different
+/// model is not less relevant, it simply cannot be placed in this query's space, and a prefix
 /// would rank it on the coincidence of its first dimensions. This store has been observed holding
-/// 32-dimension vectors labelled as a 1024-dimension model, so that case is real here.
-fn dense_query_score(query_vector: &[f32], record_vector: &[f32]) -> f64 {
+/// 32-dimension vectors labelled as a 1024-dimension model, so the case is real here.
+///
+/// This returned 0.0 for that case, and the caller blended it: with the one-box weights (dense
+/// 1.00, sparse 0.00) the whole score became 0.00, which sank every record from an older encoder
+/// BENEATH every lexical match. That is the opposite of "not comparable" -- it is "known to be
+/// irrelevant". An Option makes the distinction one the caller has to handle.
+/// What the engine selects when the caller names no limit.
+///
+/// Mirrors `DEFAULT_MAX_SELECTED_REFS` on the calling side. This was a bare `24` here while the
+/// caller's own default was 64 and its request built a third `24` inline, so one setting had three
+/// numbers and the guard that checks for exactly this only scans environment defaults.
+const DEFAULT_MAX_SELECTED_REFS: usize = 64;
+
+/// Which candidates a token budget and a set of per-layer floors admit.
+///
+/// `scored` is (score, ordinal), already ordered best first. Two passes: every layer takes its
+/// floor first, then whatever is left of the budget goes to the best of the rest, wherever it came
+/// from. Pulled out of the retrieve path so the policy can be tested on its own -- driving it
+/// through the engine could only show which refs came back, which is the same observation for
+/// several different causes.
+///
+/// A floor is a MINIMUM and is honoured even when it overruns the budget: a category that returns
+/// nothing is the failure floors exist to prevent. The fill SKIPS an oversized candidate rather
+/// than stopping, so one long ref cannot truncate the pack while shorter ones still fit.
+fn select_within_budget(
+    scored: &[(f64, usize)],
+    layer_of: &dyn Fn(usize) -> String,
+    tokens_of: &dyn Fn(usize) -> u64,
+    floors: &std::collections::BTreeMap<String, u64>,
+    token_budget: u64,
+) -> (std::collections::HashSet<usize>, HashMap<String, u64>, u64) {
+    let mut keep: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut per_layer: HashMap<String, u64> = HashMap::new();
+    let mut used = 0_u64;
+    for (_, ordinal) in scored.iter() {
+        let layer = layer_of(*ordinal);
+        let Some(floor) = floors.get(&layer) else {
+            continue;
+        };
+        let taken = per_layer.entry(layer).or_insert(0);
+        if *taken >= *floor {
+            continue;
+        }
+        *taken += 1;
+        used = used.saturating_add(tokens_of(*ordinal));
+        keep.insert(*ordinal);
+    }
+    for (_, ordinal) in scored.iter() {
+        if keep.contains(ordinal) {
+            continue;
+        }
+        let tokens = tokens_of(*ordinal);
+        if token_budget > 0 && used.saturating_add(tokens) > token_budget {
+            continue;
+        }
+        used = used.saturating_add(tokens);
+        *per_layer.entry(layer_of(*ordinal)).or_insert(0) += 1;
+        keep.insert(*ordinal);
+    }
+    (keep, per_layer, used)
+}
+
+/// Read a ranking field from the top level of the request OR from its `record` object.
+///
+/// The two callers disagree about where the pack request goes, and both are in production. The
+/// cdylib client sends the caller's dict AS the payload, so these fields land at the top level; the
+/// proxy client passes the same dict as `record=request`, so they land one level down. The engine
+/// only ever looked at the top level, which meant a query vector sent over the proxy path was
+/// simply never seen -- serde produced None, the scorer fell back to lexical, and nothing anywhere
+/// reported that dense ranking had not happened.
+///
+/// Reading both is what makes the field work regardless of which client sent it. The typed field
+/// wins when present, so a caller that sets it explicitly is never overridden by a stale record.
+fn ranking_field_from<T: serde::de::DeserializeOwned>(
+    typed: Option<T>,
+    record: &Value,
+    key: &str,
+) -> Option<T> {
+    typed.or_else(|| {
+        record
+            .get(key)
+            .and_then(|value| serde_json::from_value::<T>(value.clone()).ok())
+    })
+}
+
+fn dense_query_score(query_vector: &[f32], record_vector: &[f32]) -> Option<f64> {
     if query_vector.is_empty()
         || record_vector.is_empty()
         || query_vector.len() != record_vector.len()
     {
-        return 0.0;
+        return None;
     }
     let mut dot = 0.0_f64;
     let mut left = 0.0_f64;
@@ -6336,11 +6586,12 @@ fn dense_query_score(query_vector: &[f32], record_vector: &[f32]) -> f64 {
         right += b * b;
     }
     if left <= 0.0 || right <= 0.0 {
-        return 0.0;
+        // A zero vector has no direction, so there is no angle to measure -- not an angle of zero.
+        return None;
     }
     // Cosine is -1..1; the selector compares against lexical scores in 0..1, so map rather than
     // clamp -- clamping would make every opposed vector tie at zero with every unrelated one.
-    ((dot / (left.sqrt() * right.sqrt())) + 1.0) / 2.0
+    Some(((dot / (left.sqrt() * right.sqrt())) + 1.0) / 2.0)
 }
 
 /// A candidate's own vector, when it carries one this scorer can use.
@@ -6524,6 +6775,125 @@ fn _request_shape_for_docs() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
 
+    /// The two production clients put the pack request in different places, so every ranking field
+    /// must be readable from either. The proxy client sends it as `record=request`; the cdylib
+    /// client sends the same dict as the payload itself. Reading only the top level is what made a
+    /// query vector sent over the proxy path invisible.
+    #[test]
+    fn the_ranking_fields_are_read_from_the_record() {
+        let record = json!({
+            "layer_min_refs": {"session": 1, "profile": 2},
+            "max_context_tokens": 30,
+            "min_score": 0.25,
+            "query_vector": [1.0, 0.0],
+        });
+        let floors: Option<std::collections::BTreeMap<String, u64>> =
+            ranking_field_from(None, &record, "layer_min_refs");
+        assert_eq!(
+            floors.as_ref().and_then(|map| map.get("session").copied()),
+            Some(1),
+            "layer_min_refs did not deserialize from the record: {floors:?}"
+        );
+        assert_eq!(
+            ranking_field_from(None, &record, "max_context_tokens"),
+            Some(30_u64)
+        );
+        assert_eq!(ranking_field_from(None, &record, "min_score"), Some(0.25_f64));
+        let vector: Option<Vec<f32>> = ranking_field_from(None, &record, "query_vector");
+        assert_eq!(vector, Some(vec![1.0_f32, 0.0]));
+    }
+
+    /// A field set at the TOP level still wins, so a caller that sets it explicitly is never
+    /// overridden by whatever the record happens to carry.
+    #[test]
+    fn a_top_level_ranking_field_beats_the_record() {
+        let record = json!({"max_context_tokens": 30});
+        assert_eq!(
+            ranking_field_from(Some(99_u64), &record, "max_context_tokens"),
+            Some(99)
+        );
+    }
+
+    fn budget_fixture() -> (Vec<(f64, usize)>, Vec<(&'static str, u64)>) {
+        // Three cheap, high-scoring shared_context refs and one expensive, low-scoring session ref
+        // -- the shape that makes a large skill corpus crowd out session memory.
+        let scored = vec![(0.9, 0), (0.8, 1), (0.7, 2), (0.2, 3)];
+        let meta = vec![
+            ("shared_context", 4),
+            ("shared_context", 4),
+            ("shared_context", 4),
+            ("session", 20),
+        ];
+        (scored, meta)
+    }
+
+    fn run_budget(
+        floors: &[(&str, u64)],
+        budget: u64,
+    ) -> (std::collections::HashSet<usize>, HashMap<String, u64>, u64) {
+        let (scored, meta) = budget_fixture();
+        let layers: Vec<String> = meta.iter().map(|(l, _)| l.to_string()).collect();
+        let tokens: Vec<u64> = meta.iter().map(|(_, t)| *t).collect();
+        let layer_of = move |ordinal: usize| -> String {
+            layers.get(ordinal).cloned().unwrap_or_default()
+        };
+        let tokens_of = move |ordinal: usize| -> u64 { tokens.get(ordinal).copied().unwrap_or(0) };
+        let floor_map: std::collections::BTreeMap<String, u64> = floors
+            .iter()
+            .map(|(name, count)| ((*name).to_string(), *count))
+            .collect();
+        select_within_budget(&scored, &layer_of, &tokens_of, &floor_map, budget)
+    }
+
+    /// Without a floor the budget goes to the best-scoring refs and a whole layer can return
+    /// nothing. This is the control, and it must hold or the floor test below proves nothing.
+    #[test]
+    fn without_a_floor_the_budget_goes_to_the_best_scores() {
+        let (keep, per_layer, used) = run_budget(&[], 30);
+        assert!(keep.contains(&0) && keep.contains(&1) && keep.contains(&2), "got {keep:?}");
+        assert!(!keep.contains(&3), "the session ref should not fit, got {keep:?}");
+        assert_eq!(per_layer.get("session"), None, "session must return nothing here");
+        assert_eq!(used, 12);
+    }
+
+    /// A floor admits a layer the budget would otherwise lose entirely.
+    #[test]
+    fn a_floor_admits_a_layer_the_budget_would_lose() {
+        let (keep, per_layer, used) = run_budget(&[("session", 1)], 30);
+        assert!(keep.contains(&3), "the session floor was not honoured, got {keep:?}");
+        assert_eq!(per_layer.get("session").copied(), Some(1));
+        // The floor spends 20 of 30, so two of the three cheap refs still fit and the third does
+        // not -- the fill keeps going rather than stopping at the first that does not fit.
+        assert_eq!(used, 28, "expected 20 + 4 + 4, got {used}");
+        assert_eq!(keep.len(), 3, "got {keep:?}");
+    }
+
+    /// A floor is a MINIMUM: it is honoured even when it alone overruns the budget, because a
+    /// category returning nothing is the failure floors exist to prevent.
+    #[test]
+    fn a_floor_outranks_the_budget_it_overruns() {
+        let (keep, _per_layer, used) = run_budget(&[("session", 1)], 5);
+        assert!(keep.contains(&3), "got {keep:?}");
+        assert_eq!(used, 20, "the floor spends past the budget, got {used}");
+        assert_eq!(keep.len(), 1, "and nothing else fits afterwards, got {keep:?}");
+    }
+
+    /// A floor for a layer with no candidates admits nothing and must not panic.
+    #[test]
+    fn a_floor_for_an_absent_layer_is_harmless() {
+        let (keep, per_layer, _used) = run_budget(&[("profile", 3)], 30);
+        assert_eq!(per_layer.get("profile"), None);
+        assert_eq!(keep.len(), 3, "the other layers still fill, got {keep:?}");
+    }
+
+    /// No budget means the fill takes everything that qualifies.
+    #[test]
+    fn a_zero_budget_means_no_token_limit() {
+        let (keep, _per_layer, used) = run_budget(&[], 0);
+        assert_eq!(keep.len(), 4, "got {keep:?}");
+        assert_eq!(used, 32);
+    }
+
     /// Weights WITHOUT a query vector must not zero the ranking.
     ///
     /// This is the default-off path in production: Python sends ranking_weights on every request
@@ -6537,20 +6907,26 @@ mod tests {
         let record = [1.0_f32, 0.0];
         for query in [None, Some(&[][..])] {
             let got = candidate_score(&onebox, query, Some(&record), 0.75, || false);
-            assert!(
-                (got - 0.75).abs() < 1e-9,
-                "query {query:?}: got {got}, expected the lexical score 0.75"
+            assert_eq!(
+                got,
+                Some(0.75),
+                "query {query:?}: with no query vector the caller is not ranking densely, so this
+                 must be the lexical score"
             );
         }
     }
 
-    /// A candidate the engine cannot compare keeps its lexical score too.
+    /// Under DENSE retrieval a candidate carrying no vector is skipped, not scored lexically.
+    ///
+    /// This is the caller's policy: a candidate the query embedding cannot reach is not a weak
+    /// match, it is not a match, and returning it on a text coincidence is what the embedding was
+    /// meant to replace. It reverses an earlier version of this engine, which fell back -- that
+    /// let un-embedded records occupy slots that dense retrieval had already ruled out.
     #[test]
-    fn a_candidate_with_no_vector_is_scored_lexically() {
+    fn a_candidate_with_no_vector_is_skipped_under_dense_retrieval() {
         let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.08 };
         let query = [1.0_f32, 0.0];
-        let got = candidate_score(&onebox, Some(&query), None, 0.6, || false);
-        assert!((got - 0.6).abs() < 1e-9, "got {got}, expected 0.6");
+        assert_eq!(candidate_score(&onebox, Some(&query), None, 0.6, || false), None);
     }
 
     /// The positive control: when BOTH vectors are present the blend really does run, so the two
@@ -6561,7 +6937,8 @@ mod tests {
         let query = [1.0_f32, 0.0];
         let record = [1.0_f32, 0.0];
         // Identical unit vectors: cosine 1.0 -> normalized 1.0, and the lexical 0.0 is ignored.
-        let got = candidate_score(&onebox, Some(&query), Some(&record), 0.0, || false);
+        let got = candidate_score(&onebox, Some(&query), Some(&record), 0.0, || false)
+            .expect("comparable");
         assert!(got > 0.99, "got {got}, expected the dense term to dominate");
     }
 
@@ -6574,7 +6951,7 @@ mod tests {
             evaluated = true;
             true
         });
-        assert!((got - 0.4).abs() < 1e-9, "got {got}");
+        assert_eq!(got, Some(0.4));
         assert!(!evaluated, "the lexical path paid for a hint lookup it did not use");
     }
 
@@ -6666,9 +7043,11 @@ mod tests {
     #[test]
     fn an_identical_vector_scores_highest() {
         let query = [1.0_f32, 0.0, 0.0];
-        let same = dense_query_score(&query, &[1.0, 0.0, 0.0]);
-        let orthogonal = dense_query_score(&query, &[0.0, 1.0, 0.0]);
-        let opposed = dense_query_score(&query, &[-1.0, 0.0, 0.0]);
+        let same = dense_query_score(&query, &[1.0, 0.0, 0.0]).expect("same width is comparable");
+        let orthogonal =
+            dense_query_score(&query, &[0.0, 1.0, 0.0]).expect("same width is comparable");
+        let opposed =
+            dense_query_score(&query, &[-1.0, 0.0, 0.0]).expect("same width is comparable");
         assert!(same > orthogonal, "{same} !> {orthogonal}");
         assert!(orthogonal > opposed, "{orthogonal} !> {opposed}");
         // Mapped into 0..1 so it is comparable with the lexical scorer, which is what the
@@ -6681,8 +7060,8 @@ mod tests {
     /// Scale must not matter -- cosine is about direction.
     #[test]
     fn a_longer_vector_of_the_same_direction_scores_the_same() {
-        let a = dense_query_score(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
-        let b = dense_query_score(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0]);
+        let a = dense_query_score(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]).expect("comparable");
+        let b = dense_query_score(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0]).expect("comparable");
         assert!((a - b).abs() < 1e-6, "{a} vs {b}");
     }
 
@@ -6692,22 +7071,55 @@ mod tests {
     /// model. Comparing a prefix would rank those on a coincidence; they are not less relevant,
     /// they are NOT COMPARABLE, and the caller must fall back rather than trust a number.
     #[test]
-    fn a_mismatched_length_scores_zero_rather_than_comparing_a_prefix() {
+    fn a_mismatched_length_is_not_comparable_rather_than_scoring_zero() {
         let query = [1.0_f32, 0.0, 0.0, 0.0];
-        assert_eq!(dense_query_score(&query, &[1.0, 0.0, 0.0]), 0.0);
-        assert_eq!(dense_query_score(&query, &[]), 0.0);
-        assert_eq!(dense_query_score(&[], &[1.0]), 0.0);
+        assert_eq!(dense_query_score(&query, &[1.0, 0.0, 0.0]), None);
+        assert_eq!(dense_query_score(&query, &[]), None);
+        assert_eq!(dense_query_score(&[], &[1.0]), None);
+    }
+
+    /// And the CALLER must act on it. This is the half the old test could not express: it asserted
+    /// the scorer returned 0.0, which the caller then blended -- with dense-only one-box weights
+    /// that is a final score of 0.00, ranking a record from an older encoder beneath every lexical
+    /// match. On a width change that is every pre-existing record in the store.
+    #[test]
+    fn a_record_from_another_encoder_is_skipped() {
+        let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.0 };
+        let query = [1.0_f32, 0.0, 0.0, 0.0];
+        let older_width = [1.0_f32, 0.0, 0.0];
+        assert_eq!(
+            candidate_score(&onebox, Some(&query), Some(&older_width), 0.7, || false),
+            None,
+            "a vector this query cannot place must be skipped, not given the lexical score"
+        );
+    }
+
+    /// The positive control: at the SAME width the dense term really does take over, so the test
+    /// above is asserting a fallback that something else would otherwise have taken.
+    #[test]
+    fn the_same_width_still_scores_densely() {
+        let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.0 };
+        let query = [1.0_f32, 0.0, 0.0];
+        let same = [1.0_f32, 0.0, 0.0];
+        let got = candidate_score(&onebox, Some(&query), Some(&same), 0.7, || false)
+            .expect("the same width is comparable");
+        assert!(got > 0.99, "identical vectors should score ~1.0 densely, got {got}");
     }
 
     /// A zero vector has no direction, so it cannot be scored -- and must not divide by zero.
+    ///
+    /// It reports NOT COMPARABLE for the same reason a width mismatch does: there is no angle to
+    /// measure, which is not the same as an angle of zero. The NaN assertion is what this test was
+    /// originally for and it still matters -- 0/0 in the cosine would poison every comparison the
+    /// selector makes, and NaN sorts unpredictably rather than merely badly.
     #[test]
-    fn a_zero_vector_scores_zero_and_does_not_produce_nan() {
+    fn a_zero_vector_is_not_comparable_and_never_produces_nan() {
         let score = dense_query_score(&[0.0, 0.0], &[1.0, 1.0]);
-        assert_eq!(score, 0.0);
-        assert!(!score.is_nan());
+        assert_eq!(score, None);
+        assert!(score.map(|v| !v.is_nan()).unwrap_or(true));
         let both = dense_query_score(&[0.0, 0.0], &[0.0, 0.0]);
-        assert_eq!(both, 0.0);
-        assert!(!both.is_nan());
+        assert_eq!(both, None);
+        assert!(both.map(|v| !v.is_nan()).unwrap_or(true));
     }
 
     #[test]
@@ -7541,6 +7953,9 @@ mod tests {
             newest_by_type: None,
             record_fields: None,
             query_vector: None,
+            min_score: None,
+            max_context_tokens: None,
+            layer_min_refs: None,
             ranking_weights: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
@@ -8962,6 +9377,159 @@ mod tests {
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
 
+
+    /// Build a store with a large shared_context layer and one session record, and return the
+    /// selected refs. `floors` goes in the RECORD, which is where the proxy client puts the pack
+    /// request -- so this also covers the engine reading its ranking fields from either place.
+    fn pack_with_layers(dir: &tempfile::TempDir, prefix: &str, budget: u64, floors: Value) -> Vec<Value> {
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{prefix}:record_count");
+        append.value = "1".to_string();
+        // Three short shared_context refs that match the query well, and one session ref that
+        // matches it poorly and costs more tokens than the leftover budget can hold. Without a
+        // floor the fill spends the budget on the three and the session layer returns NOTHING --
+        // which is the crowding this exists to stop.
+        //
+        // The session text must still CLEAR the threshold, so it carries the query term. A floor
+        // promotes a candidate past the BUDGET, not past `min_score`: something that scores zero
+        // is excluded before any layer accounting runs, which is the caller's rule. The first
+        // version of this fixture used text with no query term at all, so the session ref was
+        // dropped as unscoreable and the floor had nothing to promote -- the test failed while the
+        // engine was behaving correctly.
+        let long_session_text = format!("gpu {}", "session note ".repeat(8));
+        let bundle = json!({"record_bundle": [
+            {"record_type": "context_event", "event_id_hash": 201, "text": "gpu memory tuning",
+             "sharing_scope": "tenant_shared"},
+            {"record_type": "context_event", "event_id_hash": 202, "text": "gpu memory tuning",
+             "sharing_scope": "tenant_shared"},
+            {"record_type": "context_event", "event_id_hash": 203, "text": "gpu memory tuning",
+             "sharing_scope": "tenant_shared"},
+            {"record_type": "context_event", "event_id_hash": 204, "text": long_session_text,
+             "memory_scope": "session"},
+        ]});
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            serde_json::to_string(&bundle).expect("bundle"),
+        )];
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append");
+
+        // The PRODUCTION op. `_full_scan` routes to retrieve_context_pack_native, a SECOND
+        // pack builder with its own selection -- driving that one tested code this change
+        // never touches, which is why the floor test and its control returned identical packs.
+        let mut retrieve = request("matrixark_retrieve_context_pack");
+        retrieve.storage_prefix = prefix.to_string();
+        retrieve.count_key = Some(format!("{prefix}:record_count"));
+        retrieve.record_hash_key = Some(format!("{prefix}:records"));
+        let mut record = json!({
+            "query": "gpu memory",
+            "max_context_tokens": budget,
+        });
+        if let Some(object) = record.as_object_mut() {
+            if !floors.is_null() {
+                object.insert("layer_min_refs".to_string(), floors);
+            }
+        }
+        retrieve.record = Some(record);
+        // The query goes on the REQUEST for this op, and the pack comes back in `value` as JSON --
+        // not in `extra`, which is where the full-scan op puts it. Reading the wrong one returned
+        // an empty vec through `unwrap_or_default`, so every assertion here was made about a pack
+        // nothing had looked at. `expect` now, so a miss fails loudly instead of reading as empty.
+        retrieve.query = "gpu memory".to_string();
+        let output = execute_record_log_request(&engine, retrieve, root).expect("retrieve");
+        let response: Value =
+            serde_json::from_str(&output.value).expect("context pack json in value");
+        response
+            .get("context_pack")
+            .and_then(|pack| pack.get("selected_refs"))
+            .and_then(Value::as_array)
+            .cloned()
+            .expect("selected_refs present in the pack")
+    }
+
+    fn has_session_ref(refs: &[Value]) -> bool {
+        refs.iter().any(|value| {
+            value.get("memory_layer").and_then(Value::as_str) == Some("session")
+        })
+    }
+
+    /// Separates the two reasons a floor can appear not to work.
+    ///
+    /// The floor test failed with a pack identical to its own control, which is consistent with
+    /// BOTH "the floor was not read" and "the session record never became a candidate". With a
+    /// budget large enough to hold everything, a missing session ref can only mean the second.
+    #[test]
+    fn the_session_record_is_a_candidate_at_all() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        let refs = pack_with_layers(
+            &dir,
+            "matrixark:test:layer-candidate-probe",
+            100_000,
+            Value::Null,
+        );
+        let layers: Vec<&str> = refs
+            .iter()
+            .filter_map(|value| value.get("memory_layer").and_then(Value::as_str))
+            .collect();
+        assert!(
+            has_session_ref(&refs),
+            "with a budget nothing can exhaust, the session record must be selected; \
+             layers were {layers:?} across {} refs",
+            refs.len()
+        );
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    /// A layer floor must survive a budget the layer would otherwise lose.
+    ///
+    /// Selection used to be a flat top-N by score, and the per-layer budget was computed AFTER it
+    /// -- so a layer that lost the flat contest never reached its own budget. With a production
+    /// skill corpus in shared_context and a handful of session memories, that is how session
+    /// context disappears from a pack entirely.
+    #[test]
+    fn a_layer_floor_survives_a_budget_the_layer_would_otherwise_lose() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        let refs = pack_with_layers(
+            &dir,
+            "matrixark:test:layer-floor-on",
+            30,
+            json!({"session": 1}),
+        );
+        assert!(
+            has_session_ref(&refs),
+            "the session floor must be honoured, got {refs:?}"
+        );
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    /// The positive control: WITHOUT the floor the same store and budget lose the session layer.
+    ///
+    /// Without this the test above could pass because the session ref fitted anyway, and the floor
+    /// would be asserting nothing.
+    #[test]
+    fn without_a_floor_the_bigger_layer_takes_the_budget() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        let refs = pack_with_layers(&dir, "matrixark:test:layer-floor-off", 30, Value::Null);
+        // An EMPTY pack also has no session ref, so without this the control passes vacuously and
+        // certifies a floor test that never selected anything. It did exactly that while the
+        // harness was reading the wrong field off the response.
+        assert!(
+            !refs.is_empty(),
+            "control is vacuous: the pack came back empty, so 'no session ref' means nothing"
+        );
+        assert!(
+            !has_session_ref(&refs),
+            "control failed: the session ref fitted without a floor, so the floor test proves \
+             nothing -- retune the budget or the text sizes, got {refs:?}"
+        );
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
 
     #[test]
     fn matrixark_native_retrieve_enforces_source_role_budget() {
