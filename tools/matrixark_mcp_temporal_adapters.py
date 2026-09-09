@@ -3935,6 +3935,7 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
                     break
                 if not line.strip().startswith(b"{"):
                     continue
+                self._note_payload(len(payload) + len(line))
                 try:
                     return json.loads(line.decode("utf-8"))
                 except json.JSONDecodeError as exc:
@@ -3943,6 +3944,9 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             f"Rust TemporalStore {op} daemon timed out waiting for response from "
             f"{self._proxy_socket} after {budget_s:.1f}s"
         )
+
+    def _note_payload(self, payload_bytes: int) -> None:
+        _note_payload_bytes(payload_bytes)
 
     def _http_connection(self, timeout_s: float):
         """A per-thread keep-alive connection to the proxy.
@@ -4012,6 +4016,7 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
                     f"Rust TemporalStore {op} returned HTTP {response.status} from "
                     f"{self._proxy_http}: {raw[:200]!r}"
                 )
+            self._note_payload(len(body) + len(raw))
             try:
                 return json.loads(raw.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -5272,3 +5277,106 @@ class MatrixArkTemporalStoreRustDirectAdapter(MatrixArkTemporalStoreRustAdapter)
 
 
 
+
+
+# --- returning freed heap to the operating system -------------------------------------------------
+#
+# CPython's `free` hands memory to its allocator and to glibc's arenas, not to the kernel, so a
+# process that decodes whole record batches keeps every peak it has ever reached. The gateway shows
+# exactly that shape: measured on a production-corpus soak it grew 230 -> 573 MB monotonically over
+# 1,500 s, and in longer runs 875 -> 2,572 MB, while the store it fronts was a fraction of that.
+#
+# The proxy had the same problem and the same cause, and the fix measured well there: with a trim,
+# resident memory went from a monotonic climb to 2,987 MB down to a sawtooth peaking at 1,437 MB
+# with troughs near 240 MB -- roughly -75% at matched message counts -- for about +6% CPU, because
+# a trim walks the allocator's free lists.
+#
+# Driven by a byte ledger rather than a timer: an idle gateway must not spend CPU reclaiming
+# nothing. This deployment has already been burned by idle work, when a refresher wrote 2.3 GB a
+# day on a box doing nothing.
+
+_TRIM_LEDGER = 0
+_TRIM_LEDGER_LOCK = threading.Lock()
+_TRIM_THREAD_STARTED = False
+_LIBC_FOR_TRIM = None
+_LIBC_LOOKED_UP = False
+
+
+def _trim_threshold_bytes() -> int:
+    """Payload bytes that must pass before a trim earns its walk. 0 switches it off."""
+    try:
+        return max(0, int(os.environ.get("MATRIXARK_GATEWAY_TRIM_BYTES", str(64 * 1024 * 1024))))
+    except ValueError:
+        return 64 * 1024 * 1024
+
+
+def _libc_for_trim():
+    """glibc handle, or None where malloc_trim is not a thing."""
+    global _LIBC_FOR_TRIM, _LIBC_LOOKED_UP
+    if not _LIBC_LOOKED_UP:
+        _LIBC_LOOKED_UP = True
+        try:
+            import ctypes
+
+            candidate = ctypes.CDLL("libc.so.6")
+            candidate.malloc_trim  # raises AttributeError off glibc
+            _LIBC_FOR_TRIM = candidate
+        except Exception:  # noqa: BLE001 - trimming is an optimisation, never a requirement
+            _LIBC_FOR_TRIM = None
+    return _LIBC_FOR_TRIM
+
+
+def _note_payload_bytes(payload_bytes: int) -> None:
+    """Record bytes handled, and make sure the trimmer is running.
+
+    Started lazily here rather than at import: a module that spawns a thread on import does it in
+    every tool and test that imports it, including ones that never make a call.
+    """
+    global _TRIM_LEDGER, _TRIM_THREAD_STARTED
+    if _trim_threshold_bytes() == 0:
+        return
+    with _TRIM_LEDGER_LOCK:
+        _TRIM_LEDGER += payload_bytes
+        if _TRIM_THREAD_STARTED:
+            return
+        _TRIM_THREAD_STARTED = True
+    threading.Thread(target=_trim_loop, name="matrixark-heap-trim", daemon=True).start()
+
+
+def _trim_once() -> bool:
+    """One tick: trim if the ledger has earned it. Returns whether the allocator was asked.
+
+    Split out from the loop so the decision is testable. An infinite loop can only be asserted on
+    by its side effects, and the side effect that matters here -- NOT trimming, and not losing the
+    ledger while not trimming -- is invisible from outside.
+    """
+    global _TRIM_LEDGER
+    threshold = _trim_threshold_bytes()
+    if threshold == 0:
+        return False
+    with _TRIM_LEDGER_LOCK:
+        if _TRIM_LEDGER < threshold:
+            # Left on the ledger, not discarded: a trickle of small responses retains as much as
+            # one large one, it only takes longer to get there. Zeroing here would mean a workload
+            # of small responses never trimmed at all.
+            return False
+        _TRIM_LEDGER = 0
+    libc = _libc_for_trim()
+    if libc is None:
+        return False
+    try:
+        libc.malloc_trim(0)
+    except Exception:  # noqa: BLE001 - housekeeping must never take the process down
+        return False
+    return True
+
+
+# The tests drive a single tick rather than the loop.
+_trim_once_for_test = _trim_once
+
+
+def _trim_loop() -> None:
+    """Trim off the serving path, so no caller waits on a walk of the free lists."""
+    while True:
+        time.sleep(5.0)
+        _trim_once()
