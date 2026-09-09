@@ -131,6 +131,18 @@ pub struct TemporalEngine {
     /// which is why the tests that measure both sides had to be serialised against each other: a
     /// baseline could otherwise observe a window its sibling had opened. Shared across clones,
     /// because a clone is the same engine.
+    /// The slab an unfinished compaction round is still filling, per shard, with the slab it
+    /// rolled away from.
+    ///
+    /// A round rolls a fresh slab and relocates live pages onto it. Once a round is BOUNDED it
+    /// can stop before every page has moved -- and rolling again next round would re-move
+    /// everything the last one moved, so the next round continues filling this slab instead.
+    /// That is what makes a bounded round make progress rather than shuffle the same pages.
+    /// Absent means no round is in flight, so the next one rolls.
+    ///
+    /// Not durable: a restart loses at most the knowledge that a round was open, and the next
+    /// round then rolls, which is correct if wasteful once.
+    compaction_rounds: Arc<RwLock<HashMap<ShardId, (u64, u64)>>>,
     concurrent_commit: Arc<std::sync::atomic::AtomicBool>,
     /// Whether loading a shard warms the in-memory cache tier from the page store as part of
     /// the load, rather than leaving it to be warmed in the background.
