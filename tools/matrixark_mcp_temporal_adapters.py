@@ -3937,8 +3937,8 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
                     continue
                 self._note_payload(len(payload) + len(line))
                 try:
-                    return json.loads(line.decode("utf-8"))
-                except json.JSONDecodeError as exc:
+                    return _LANE_LOADS(line.decode("utf-8"))
+                except (json.JSONDecodeError, ValueError) as exc:
                     raise MatrixArkError(f"Rust TemporalStore {op} daemon returned invalid JSON: {line[:200]!r}") from exc
         raise MatrixArkError(
             f"Rust TemporalStore {op} daemon timed out waiting for response from "
@@ -4018,8 +4018,13 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
                 )
             self._note_payload(len(body) + len(raw))
             try:
-                return json.loads(raw.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                # _LANE_LOADS, not json.loads: this module already selects orjson for lane
+                # payloads where it is installed, measured at -14.1% gateway CPU per message,
+                # and a profile of the running gateway put 53% of its CPU in the stdlib
+                # decoder. A new transport that reached for the stdlib parser would have
+                # quietly opted the whole serving path out of that.
+                return _LANE_LOADS(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
                 raise MatrixArkError(
                     f"Rust TemporalStore {op} returned invalid JSON over http: {raw[:200]!r}"
                 ) from exc
