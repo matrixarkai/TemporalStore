@@ -24,6 +24,13 @@ mod slab_backend;
 use slab_backend::{LocalSlabBackend, SlabBackend};
 mod record;
 
+/// Bytes a block record spends on its header, before the block's own bytes.
+///
+/// Reachable outside the block store because a log that CARRIES a block can work out the length
+/// its address will hold, rather than being told it: the address covers the header and the
+/// payload together.
+pub(crate) const BLOCK_RECORD_HEADER_LEN: usize = record::PAGE_RECORD_HEADER_LEN;
+
 pub(crate) use record::block_index_checksums_enabled;
 
 use paths::{

@@ -336,11 +336,35 @@ fn checksum_from_raw(raw: &[u8]) -> String {
 }
 
 
-fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
+/// The stored length a block carried in this record implies.
+///
+/// An address covers the block record whole -- its header and then its bytes -- so a record that
+/// carries the bytes already states the length, and the address restates it. Only when there is
+/// exactly one outcome and one block, the same rule the implied object id follows: with more than
+/// one of either there is no saying which block an address belongs to.
+///
+/// A COMPRESSED block stores fewer bytes than it carries, so this will not match and the address
+/// writes its length as before. That is the point of comparing rather than assuming.
+pub(crate) fn implied_block_length(record: &WriteAheadLogRecord) -> Option<u64> {
+    if record.outcomes.len() == 1 && record.staged_pages.len() == 1 {
+        let carried = record.staged_pages[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+        return Some(carried as u64);
+    }
+    None
+}
+
+fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::WalBlockAddress {
     v1::WalBlockAddress {
         block_slab_id: address.block_slab_id,
         offset: address.offset,
-        length: address.length,
+        // `length` is a plain field, so a zero is not written -- and a block record is never zero
+        // bytes, since it always carries a header. Zero therefore reads as "the carried block
+        // says it".
+        length: if Some(address.length) == implied_length {
+            0
+        } else {
+            address.length
+        },
         block_id: address.page_id(),
         object_id: address.object_id(),
         // Deliberately dropped, exactly as the text encoding drops it: the item carries the
@@ -359,11 +383,16 @@ fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
     }
 }
 
-fn address_from_proto(address: v1::WalBlockAddress) -> BlockAddress {
+fn address_from_proto(address: v1::WalBlockAddress, implied_length: Option<u64>) -> BlockAddress {
+    let length = if address.length == 0 {
+        implied_length.unwrap_or_default()
+    } else {
+        address.length
+    };
     BlockAddress::from_parts(
         address.block_slab_id,
         address.offset,
-        address.length,
+        length,
         address.block_id,
         address.object_id,
         address.routing_bucket,
@@ -444,9 +473,10 @@ fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardI
 pub(crate) fn item_to_proto(
     item: &WalOutcomeItem,
     shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
 ) -> v1::EngineWalItem {
     let block = item.address.as_ref().map(|address| {
-        let mut encoded = address_to_proto(address);
+        let mut encoded = address_to_proto(address, implied_length);
         // The item already says this. Repeating it costs a full varint on every item whose page
         // belongs to one object, which is every kind that is not timestamped.
         if encoded.object_id == Some(item.object_id) {
@@ -559,7 +589,11 @@ struct DerivedItem<'a> {
     block: Option<v1::WalBlockAddress>,
 }
 
-fn derive_item(item: &WalOutcomeItem, shard_id: crate::types::ShardId) -> DerivedItem<'_> {
+fn derive_item(
+    item: &WalOutcomeItem,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+) -> DerivedItem<'_> {
     // `item_to_proto` calls this three times for three fields; it is one answer.
     let numeric = numeric_component(&item.kind, item.component.as_deref());
     let code = kind_code(&item.kind);
@@ -578,7 +612,7 @@ fn derive_item(item: &WalOutcomeItem, shard_id: crate::types::ShardId) -> Derive
         entry_id: numeric.and_then(|(_, id)| id),
         object_deleted: item.deleted && item.component.is_none(),
         block: item.address.as_ref().map(|address| {
-            let mut encoded = address_to_proto(address);
+            let mut encoded = address_to_proto(address, implied_length);
             if encoded.object_id == Some(item.object_id) {
                 encoded.object_id = None;
             }
@@ -652,6 +686,7 @@ fn put_plain_bool(tag: u32, value: bool, out: &mut Vec<u8>) {
 pub(crate) fn item_from_proto(
     item: v1::EngineWalItem,
     shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
 ) -> WalOutcomeItem {
     let kind = item
         .kind_code
@@ -680,7 +715,7 @@ pub(crate) fn item_from_proto(
         object_id,
         routing_bucket: item.routing_bucket.unwrap_or_default(),
         address: item.block.map(|block| {
-            let mut address = address_from_proto(block);
+            let mut address = address_from_proto(block, implied_length);
             // Absent means "the same as the item's", which is the only thing it can mean: the
             // encoder omits it exactly when they match, and it is never otherwise unset.
             if address.object_id().is_none() {
@@ -725,7 +760,15 @@ fn metadata_to_proto(metadata: &WriteAheadLogRecordMetadata) -> Result<v1::Engin
         }]
     };
     Ok(v1::EngineWalMetadata {
-        version: metadata.version,
+        // Omitted while it is the current version, which is exactly what the record's own serde
+        // form already does: "a record that does not say otherwise is current". The binary form
+        // said it on every record, so one encoding of a record stated something the other left
+        // out. `version` is a plain proto3 field, so a zero is not written at all.
+        version: if metadata.version == crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION {
+            0
+        } else {
+            metadata.version
+        },
         timestamp_ms: metadata.timestamp_ms,
         items,
         batch_id: metadata.batch_id,
@@ -745,7 +788,13 @@ fn metadata_from_proto(
         _ => Vec::new(),
     };
     Ok(WriteAheadLogRecordMetadata {
-        version: metadata.version,
+        // Absent means current, the reading half of the rule above. No record has ever been
+        // written with a zero here, so nothing legitimate is being read as current.
+        version: if metadata.version == 0 {
+            crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION
+        } else {
+            metadata.version
+        },
         timestamp_ms: metadata.timestamp_ms,
         items,
         batch_id: metadata.batch_id,
@@ -796,10 +845,11 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
         // filling this field copied every one of them before the encoder copied them again.
         staged_blocks: Vec::new(),
     };
+    let implied_length = implied_block_length(record);
     let items = record
         .outcomes
         .iter()
-        .map(|item| derive_item(item, record.shard_id))
+        .map(|item| derive_item(item, record.shard_id, implied_length))
         .collect::<Vec<_>>();
     let items_len = record
         .outcomes
@@ -1003,10 +1053,20 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
         ),
         None => None,
     };
+    // The carried block states the length its address covers, so it is read off the block
+    // before the items that point at it. Same shape as the implied object id below, and the same
+    // one-of-each rule.
+    let implied_length = if message.items.len() == 1 && message.staged_blocks.len() == 1 {
+        let carried =
+            message.staged_blocks[0].block.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+        Some(carried as u64)
+    } else {
+        None
+    };
     let outcomes = message
         .items
         .into_iter()
-        .map(|item| item_from_proto(item, message.shard_id))
+        .map(|item| item_from_proto(item, message.shard_id, implied_length))
         .collect::<Vec<_>>();
     // A block with no object id of its own takes it from the outcome it belongs to. The writer
     // drops it only when there is exactly one of each, so there is never a question of which
@@ -1066,7 +1126,7 @@ mod tests {
             items: record
                 .outcomes
                 .iter()
-                .map(|item| item_to_proto(item, record.shard_id))
+                .map(|item| item_to_proto(item, record.shard_id, implied_block_length(record)))
                 .collect(),
             staged_blocks: record
                 .staged_pages
@@ -1350,8 +1410,8 @@ mod tests {
                                             };
 
                                             let expected_body =
-                                                item_to_proto(&item, SHARD).encode_to_vec();
-                                            let derived = derive_item(&item, SHARD);
+                                                item_to_proto(&item, SHARD, None).encode_to_vec();
+                                            let derived = derive_item(&item, SHARD, None);
 
                                             assert_eq!(
                                                 wal_item_body_len(&item, &derived),
@@ -1382,7 +1442,7 @@ mod tests {
                                             // absent is exactly what `wal_replay_outcome_refused`
                                             // reports, with the component intact beside it.
                                             let decoded =
-                                                item_from_proto(item_to_proto(&item, SHARD), SHARD);
+                                                item_from_proto(item_to_proto(&item, SHARD, None), SHARD, None);
                                             assert_eq!(
                                                 decoded.address.is_some(),
                                                 item.address.is_some(),
@@ -1746,6 +1806,109 @@ mod tests {
             deleted: false,
             meta: false,
         }
+    }
+
+    /// An address does not restate the length of a block the record carries, and it comes back.
+    ///
+    /// The address covers the block record whole -- its header and then its bytes -- so a record
+    /// carrying the bytes already states the length. Stripped only when the two AGREE, which is
+    /// what keeps a compressed block correct: it stores fewer bytes than it carries, so the
+    /// derivation does not match and the address writes its own length as before.
+    #[test]
+    fn an_address_does_not_restate_a_carried_blocks_length() {
+        let bytes = vec![3u8; 64];
+        let stored = (bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN) as u64;
+        let mut record = record_with(None);
+        // The address says the item's own object id, which is the shape that round trips: an
+        // address holding NONE is given the item's on read, by the rule above this one.
+        record.outcomes = vec![crate::wal::WalOutcomeItem {
+            address: Some(crate::block_store::BlockAddress::from_parts(
+                0,
+                4096,
+                stored,
+                Some(1),
+                Some(0x1234_5678_9ABC_DEF0),
+                None,
+                None,
+                None,
+            )),
+            ..outcome_with_object_id(0x1234_5678_9ABC_DEF0)
+        }];
+        record.staged_pages = vec![crate::wal::StagedPage {
+            object_id: 0x1234_5678_9ABC_DEF0,
+            bytes,
+        }];
+
+        let encoded = encode(&record).expect("encode");
+        assert_eq!(
+            decode(&encoded).expect("decode"),
+            record,
+            "the length must come back off the block"
+        );
+
+        // A block that STORED fewer bytes than it carries -- what compression produces -- cannot
+        // be implied by what it carries, so its length is written and the record is longer.
+        let mut compressed = record.clone();
+        compressed
+            .outcomes[0]
+            .address
+            .as_mut()
+            .expect("address")
+            .length = stored - 8;
+        let longer = encode(&compressed).expect("encode");
+        assert!(
+            longer.len() > encoded.len(),
+            "a length that cannot be implied has to be written: {} vs {}",
+            longer.len(),
+            encoded.len()
+        );
+        assert_eq!(
+            decode(&longer).expect("decode"),
+            compressed,
+            "a length that was written comes back as itself"
+        );
+    }
+
+    /// A record does not restate the current format version, and absent reads as current.
+    ///
+    /// The record's serde form already omits it -- "a record that does not say otherwise is
+    /// current" -- while the binary form said it on every record, so one encoding of a record
+    /// stated something the other left out.
+    #[test]
+    fn a_record_does_not_restate_the_current_format_version() {
+        let mut record = record_with(None);
+        record.metadata = Some(WriteAheadLogRecordMetadata {
+            version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
+            timestamp_ms: 1_787_270_070_192,
+            items: Vec::new(),
+            batch_id: None,
+            batch_size: None,
+            batch_index: None,
+        });
+
+        let encoded = encode(&record).expect("encode");
+        assert_eq!(
+            decode(&encoded).expect("decode"),
+            record,
+            "an absent version reads as the current one"
+        );
+
+        // A record written under any other version says so, and is longer for saying it.
+        let mut other = record.clone();
+        other.metadata.as_mut().expect("metadata").version =
+            crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION + 1;
+        let longer = encode(&other).expect("encode");
+        assert!(
+            longer.len() > encoded.len(),
+            "a version that is not current has to be written: {} vs {}",
+            longer.len(),
+            encoded.len()
+        );
+        assert_eq!(
+            decode(&longer).expect("decode"),
+            other,
+            "and it comes back as what it was"
+        );
     }
 
     /// An item whose object id is the hash of its own fields does not write it, and comes back.
