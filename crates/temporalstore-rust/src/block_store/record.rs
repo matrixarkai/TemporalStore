@@ -12,7 +12,44 @@ use super::{
     BlockStoreSlabReport,
 };
 
-pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
+/// A block record carries only what the index cannot tell a reader.
+///
+/// The index entry already holds the object id, the block id, the routing bucket and the band,
+/// so a copy in every record said nothing new -- and the band was derivable twice over, being
+/// `band_id_for_slab` of the slab the record already sits in. Those are gone.
+///
+/// What is left is the checksum and the length, at constant offsets, so any field is one slice
+/// rather than a walk. The length stays in the record even though the address carries it too:
+/// the slab walks step record to record without an index, and the length is what lets them.
+///
+/// The checksum stays for a reason worth stating, because the comparison design does not keep
+/// one: there, the layer beneath the block store checksums. Our slabs are plain files with no
+/// such layer, so this CRC is the only thing standing between a corrupted block and a reader
+/// that believes it.
+/// Two bytes that say a slab holds records.
+///
+/// The comparison design has no marker, because a zone file there only ever holds blocks. We
+/// have `install_slab`, which puts arbitrary bytes in a slab -- a restore path, and thirty test
+/// sites -- so "is this a record" is a real question here and something has to answer it. Two
+/// bytes answer it; the checksum catches anything that gets past them.
+pub(super) const PAGE_RECORD_MAGIC: &[u8; 2] = b"TB";
+
+pub(super) const PAGE_RECORD_CHECKSUM_OFFSET: usize = PAGE_RECORD_MAGIC.len();
+
+/// Length and codec share a word, the way the comparison design packs its status bits rather
+/// than spending a byte on each. Thirty bits of length is a gigabyte per block.
+pub(super) const PAGE_RECORD_LENGTH_OFFSET: usize = PAGE_RECORD_CHECKSUM_OFFSET + 4;
+
+/// The block id, which stays only because `next_page_id` still reads it out of a slab walk.
+/// Scoping block ids per object -- as the comparison design does, where a block id is a
+/// `uint16` inside an object rather than a number across the whole store -- removes both this
+/// field and that walk.
+pub(super) const PAGE_RECORD_BLOCK_ID_OFFSET: usize = PAGE_RECORD_LENGTH_OFFSET + 4;
+pub(super) const PAGE_RECORD_LENGTH_MASK: u32 = 0x3FFF_FFFF;
+pub(super) const PAGE_RECORD_CODEC_SHIFT: u32 = 30;
+
+/// The header is one size, always.
+pub(super) const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_BLOCK_ID_OFFSET + 4;
 
 /// The checksum is a CRC32C and nothing else, so the field is exactly its width.
 ///
@@ -23,23 +60,12 @@ pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
 /// against a forged one, and CRC32C is the right tool for that.
 pub(super) const PAGE_RECORD_CHECKSUM_LEN: usize = 4;
 
-/// Where the checksum sits. Named because tests read the field by offset, and a literal there
-/// passes silently when the layout moves under it.
-pub(super) const PAGE_RECORD_CHECKSUM_OFFSET: usize = PAGE_RECORD_MAGIC.len();
-
-/// Bytes before the varints: the magic, the checksum, then the object id.
+/// What the walks use to decide whether what is left can still be a record.
 ///
-/// There is one page record format, so no byte says which format this is and nothing here is
-/// version numbered. The magic already ends in a number; a later format changes the magic.
-pub(super) const PAGE_RECORD_FIXED_LEN: usize =
-    PAGE_RECORD_MAGIC.len() + PAGE_RECORD_CHECKSUM_LEN + 8;
-
-/// The shortest header: every varint one byte, plus the compression codec.
-///
-/// The slab walks use this to decide whether what is left can still be a record. Set too high, a
-/// walk reads a short record as the end of the slab and loses every record behind it -- which has
-/// happened twice, each time a new header came out shorter than the constant said was possible.
-pub(super) const PAGE_RECORD_SMALLEST_HEADER_LEN: usize = PAGE_RECORD_FIXED_LEN + 4 + 1;
+/// One header length now, so this is that length. It was a separate constant while the header
+/// was variable, and set too high it made a walk read a short record as the end of the slab and
+/// lose every record behind it -- which happened twice.
+pub(super) const PAGE_RECORD_SMALLEST_HEADER_LEN: usize = PAGE_RECORD_HEADER_LEN;
 
 /// The compression codec byte of a record this code writes, found by walking the header.
 ///
@@ -47,14 +73,12 @@ pub(super) const PAGE_RECORD_SMALLEST_HEADER_LEN: usize = PAGE_RECORD_FIXED_LEN 
 /// name any more and a caller that wants the byte has to step over the varints to reach it.
 #[cfg(test)]
 pub(super) fn page_record_compression_byte(record: &[u8]) -> u8 {
-    let mut cursor = PAGE_RECORD_FIXED_LEN;
-    for _ in 0..4 {
-        while record[cursor] & 0x80 != 0 {
-            cursor += 1;
-        }
-        cursor += 1;
-    }
-    record[cursor]
+    let sized = u32::from_le_bytes(
+        record[PAGE_RECORD_LENGTH_OFFSET..PAGE_RECORD_LENGTH_OFFSET + 4]
+            .try_into()
+            .expect("block size slice"),
+    );
+    (sized >> PAGE_RECORD_CODEC_SHIFT) as u8
 }
 
 /// How many bytes `value` takes as a varint.
@@ -175,31 +199,43 @@ pub(super) fn encode_page_record(
     options: BlockStoreOptions,
 ) -> Result<EncodedPageRecord, BlockStoreError> {
     let checksum_field = page_record_checksum_field(payload);
-    let (stored_payload, compression) = encode_page_record_payload(payload, options)?;
-    let stored_len = stored_payload.len();
-    let compressed = compression != PageRecordCompression::None;
-    let mut record =
-        Vec::with_capacity(PAGE_RECORD_SMALLEST_HEADER_LEN + 8 + stored_payload.len());
+    let (squeezed, compression) = encode_page_record_payload(payload, options)?;
+    // A compressed block states its decompressed size in its own first four bytes. The header
+    // carries the STORED size, because that is what a slab walk steps by, and a walk cannot
+    // step over a record whose length it does not know. Putting the decompressed size here
+    // rather than in the header keeps the header one size for every block, and costs the four
+    // bytes only where something was actually compressed.
+    let stored_payload = match compression {
+        PageRecordCompression::None => squeezed,
+        PageRecordCompression::Zstd => {
+            let mut framed = Vec::with_capacity(squeezed.len() + 4);
+            framed.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            framed.extend_from_slice(&squeezed);
+            framed
+        }
+    };
+    let block_size = stored_payload.len();
+    if block_size as u64 > u64::from(PAGE_RECORD_LENGTH_MASK) {
+        return Err(corrupt_page_envelope(
+            &BlockAddress::default(),
+            format!("block of {block_size} bytes does not fit a block size field"),
+        ));
+    }
+    // The object id, the routing bucket and the band are the index's to remember. The band was
+    // derivable from the slab on top of that. None of them are written here any more.
+    let _ = (object_id, routing_bucket, band_id);
+    let codec = match compression {
+        PageRecordCompression::None => u32::from(PAGE_RECORD_COMPRESSION_NONE),
+        PageRecordCompression::Zstd => u32::from(PAGE_RECORD_COMPRESSION_ZSTD),
+    };
+    let sized = (codec << PAGE_RECORD_CODEC_SHIFT) | (block_size as u32);
+    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + block_size);
     record.extend_from_slice(PAGE_RECORD_MAGIC);
     record.extend_from_slice(&checksum_field);
-    // Fixed width: an object id is a hash, so it fills its 64 bits and a varint costs more.
-    record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
-    put_page_record_varint(&mut record, payload.len() as u64);
-    put_page_record_varint(&mut record, page_id);
-    // 0 says there is no routing bucket, so an absent one costs one byte rather than five.
-    put_page_record_varint(
-        &mut record,
-        routing_bucket.map_or(0, |bucket| u64::from(bucket) + 1),
-    );
-    put_page_record_varint(&mut record, band_id);
-    record.push(match compression {
-        PageRecordCompression::None => PAGE_RECORD_COMPRESSION_NONE,
-        PageRecordCompression::Zstd => PAGE_RECORD_COMPRESSION_ZSTD,
-    });
-    if compressed {
-        // Only a compressed record needs this: uncompressed, it is the payload length again.
-        put_page_record_varint(&mut record, stored_len as u64);
-    }
+    record.extend_from_slice(&sized.to_le_bytes());
+    record.extend_from_slice(&(page_id as u32).to_le_bytes());
+    debug_assert_eq!(record.len(), PAGE_RECORD_HEADER_LEN, "the header is one size");
+    let stored_len = block_size;
     record.extend_from_slice(&stored_payload);
     Ok(EncodedPageRecord {
         bytes: record,
@@ -251,7 +287,7 @@ pub(super) fn decode_page_record(
     record: &[u8],
     address: &BlockAddress,
 ) -> Result<DecodedPageRecord, BlockStoreError> {
-    if !record.starts_with(PAGE_RECORD_MAGIC) {
+    if record.len() < PAGE_RECORD_HEADER_LEN || !record.starts_with(PAGE_RECORD_MAGIC) {
         return Ok(DecodedPageRecord {
             payload: record.to_vec(),
             logical_len: record.len(),
@@ -331,7 +367,7 @@ pub(super) fn logical_range_from_slab(
             compressed_records_read: 0,
         });
     }
-    if !slab.starts_with(PAGE_RECORD_MAGIC) {
+    if slab.len() < PAGE_RECORD_HEADER_LEN || !slab.starts_with(PAGE_RECORD_MAGIC) {
         let start = offset as usize;
         let end = start.saturating_add(size as usize).min(slab.len());
         let bytes = if start >= slab.len() {
@@ -355,7 +391,7 @@ pub(super) fn logical_range_from_slab(
     while physical_offset < slab.len() && out.len() < size as usize {
         let remaining = &slab[physical_offset..];
         let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
-        if !remaining.starts_with(PAGE_RECORD_MAGIC) {
+        if remaining.len() < PAGE_RECORD_HEADER_LEN || !remaining.starts_with(PAGE_RECORD_MAGIC) {
             return Err(corrupt_page_envelope(
                 &address,
                 "mixed raw bytes after page envelope",
@@ -410,30 +446,26 @@ fn parse_page_record_header(
     address: &BlockAddress,
 ) -> Result<PageRecordHeader, BlockStoreError> {
     if !record.starts_with(PAGE_RECORD_MAGIC) {
-        return Err(corrupt_page_envelope(address, "bad magic"));
+        return Err(corrupt_page_envelope(address, "not a block record"));
     }
-    if record.len() < PAGE_RECORD_SMALLEST_HEADER_LEN {
+    if record.len() < PAGE_RECORD_HEADER_LEN {
         return Err(corrupt_page_envelope(address, "short header"));
     }
-    let checksum_at = PAGE_RECORD_CHECKSUM_OFFSET;
-    let checksum = record[checksum_at..checksum_at + PAGE_RECORD_CHECKSUM_LEN]
+    let checksum = record[PAGE_RECORD_CHECKSUM_OFFSET..PAGE_RECORD_CHECKSUM_OFFSET + PAGE_RECORD_CHECKSUM_LEN]
         .try_into()
-        .expect("page envelope checksum slice");
-    let object_id = u64::from_le_bytes(
-        record[checksum_at + PAGE_RECORD_CHECKSUM_LEN..PAGE_RECORD_FIXED_LEN]
+        .expect("block checksum slice");
+    let sized = u32::from_le_bytes(
+        record[PAGE_RECORD_LENGTH_OFFSET..PAGE_RECORD_LENGTH_OFFSET + 4]
             .try_into()
-            .expect("page envelope object id slice"),
+            .expect("block size slice"),
     );
-    let mut cursor = PAGE_RECORD_FIXED_LEN;
-    let payload_len =
-        read_page_record_varint(record, &mut cursor, address, "payload length")? as usize;
-    let page_id = read_page_record_varint(record, &mut cursor, address, "page id")?;
-    let routing = read_page_record_varint(record, &mut cursor, address, "routing bucket")?;
-    let band_id = read_page_record_varint(record, &mut cursor, address, "band id")?;
-    let codec = *record
-        .get(cursor)
-        .ok_or_else(|| corrupt_page_envelope(address, "truncated compression codec"))?;
-    cursor += 1;
+    let block_size = (sized & PAGE_RECORD_LENGTH_MASK) as usize;
+    let codec = (sized >> PAGE_RECORD_CODEC_SHIFT) as u8;
+    let block_id = u32::from_le_bytes(
+        record[PAGE_RECORD_BLOCK_ID_OFFSET..PAGE_RECORD_BLOCK_ID_OFFSET + 4]
+            .try_into()
+            .expect("block id slice"),
+    );
     let compression = match codec {
         PAGE_RECORD_COMPRESSION_NONE => PageRecordCompression::None,
         PAGE_RECORD_COMPRESSION_ZSTD => PageRecordCompression::Zstd,
@@ -444,26 +476,38 @@ fn parse_page_record_header(
             ));
         }
     };
-    let stored_len = if compression == PageRecordCompression::None {
-        payload_len
-    } else {
-        read_page_record_varint(record, &mut cursor, address, "stored length")? as usize
-    };
-    let routing_bucket = match routing {
-        0 => None,
-        encoded => Some(u32::try_from(encoded - 1).map_err(|_| {
-            corrupt_page_envelope(address, format!("routing bucket {encoded} out of range"))
-        })?),
+    // The header carries the STORED size, because that is what a slab walk steps by. For an
+    // uncompressed block the stored bytes ARE the block, so the two sizes are one number. For a
+    // compressed one the decompressed size is the block's own first four bytes -- which is
+    // readable here without decompressing anything, so callers that only want to ACCOUNT for
+    // logical bytes (slab summaries, logical range reads) get the right number for free.
+    let payload_len = match compression {
+        PageRecordCompression::None => block_size,
+        PageRecordCompression::Zstd => {
+            let at = PAGE_RECORD_HEADER_LEN;
+            if record.len() < at + 4 {
+                return Err(corrupt_page_envelope(
+                    address,
+                    "compressed block has no decompressed size",
+                ));
+            }
+            u32::from_le_bytes(
+                record[at..at + 4]
+                    .try_into()
+                    .expect("decompressed size slice"),
+            ) as usize
+        }
     };
     Ok(PageRecordHeader {
-        header_len: cursor,
+        header_len: PAGE_RECORD_HEADER_LEN,
         payload_len,
-        stored_len,
+        stored_len: block_size,
         checksum,
-        page_id: Some(page_id),
-        object_id: (object_id != 0).then_some(object_id),
-        routing_bucket,
-        band_id: Some(band_id),
+        page_id: Some(u64::from(block_id)),
+        // The index holds these. A record that repeated them could only ever agree or be wrong.
+        object_id: None,
+        routing_bucket: None,
+        band_id: None,
         compression,
     })
 }
@@ -519,28 +563,35 @@ fn decode_page_record_payload(
             // allocation, but a record that large is not the case being optimised, and the
             // fallback keeps behaviour identical rather than failing a read that used to work.
             const ZSTD_TRUSTED_PAYLOAD_CEILING: usize = 64 << 20;
-            let payload = if header.payload_len <= ZSTD_TRUSTED_PAYLOAD_CEILING {
+            // A compressed block states its decompressed size in its own first four bytes.
+            if stored_payload.len() < 4 {
+                return Err(corrupt_page_envelope(
+                    address,
+                    "compressed block has no decompressed size",
+                ));
+            }
+            let (size_bytes, frame) = stored_payload.split_at(4);
+            let logical_len = u32::from_le_bytes(
+                size_bytes.try_into().expect("decompressed size slice"),
+            ) as usize;
+            let payload = if logical_len <= ZSTD_TRUSTED_PAYLOAD_CEILING {
                 ZSTD_DECOMPRESSOR
-                    .with(|decompressor| {
-                        decompressor
-                            .borrow_mut()
-                            .decompress(stored_payload, header.payload_len)
-                    })
+                    .with(|decompressor| decompressor.borrow_mut().decompress(frame, logical_len))
                     .map_err(|err| {
                         corrupt_page_envelope(address, format!("zstd decompression failed: {err}"))
                     })?
             } else {
-                zstd::stream::decode_all(Cursor::new(stored_payload)).map_err(|err| {
+                zstd::stream::decode_all(Cursor::new(frame)).map_err(|err| {
                     corrupt_page_envelope(address, format!("zstd decompression failed: {err}"))
                 })?
             };
-            if payload.len() != header.payload_len {
+            if payload.len() != logical_len {
                 return Err(corrupt_page_envelope(
                     address,
                     format!(
-                        "decompressed length {} does not match payload length {}",
+                        "decompressed length {} does not match the size the block states, {}",
                         payload.len(),
-                        header.payload_len
+                        logical_len
                     ),
                 ));
             }
@@ -609,7 +660,7 @@ pub(super) fn summarize_slab(
     slab: &[u8],
     block_slab_id: u64,
 ) -> Result<SlabSummary, BlockStoreError> {
-    if !slab.starts_with(PAGE_RECORD_MAGIC) {
+    if slab.len() < PAGE_RECORD_HEADER_LEN || !slab.starts_with(PAGE_RECORD_MAGIC) {
         return Ok(SlabSummary {
             logical_bytes: slab.len() as u64,
             first_page_id: None,
@@ -621,7 +672,7 @@ pub(super) fn summarize_slab(
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
         let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
-        if !remaining.starts_with(PAGE_RECORD_MAGIC) {
+        if remaining.len() < PAGE_RECORD_HEADER_LEN || !remaining.starts_with(PAGE_RECORD_MAGIC) {
             return Err(corrupt_page_envelope(
                 &address,
                 "mixed raw bytes after page envelope",
@@ -658,11 +709,8 @@ pub(super) fn summarize_slab(
     Ok(summary)
 }
 
-/// The widest a header can be.
-///
-/// Every varint at its maximum, plus the compression codec and a stored length. Only the scan
-/// uses it, to read a prefix big enough to hold any header before parsing one.
-const PAGE_RECORD_WIDEST_HEADER_LEN: usize = PAGE_RECORD_FIXED_LEN + 5 * 10 + 1;
+/// The scan reads a prefix big enough to hold a header. There is one header size now.
+const PAGE_RECORD_WIDEST_HEADER_LEN: usize = PAGE_RECORD_HEADER_LEN;
 
 /// Read buffer for the page-id scan.
 ///
@@ -709,7 +757,7 @@ pub(super) fn max_page_id_in_slab_file(
             break;
         }
         let head = &header[..want];
-        if !head.starts_with(PAGE_RECORD_MAGIC) {
+        if head.len() < PAGE_RECORD_HEADER_LEN || !head.starts_with(PAGE_RECORD_MAGIC) {
             break;
         }
         let address =
@@ -768,7 +816,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
     if slab.is_empty() {
         return report;
     }
-    if !slab.starts_with(PAGE_RECORD_MAGIC) {
+    if slab.len() < PAGE_RECORD_HEADER_LEN || !slab.starts_with(PAGE_RECORD_MAGIC) {
         report.logical_bytes = slab.len() as u64;
         report.page_count = 1;
         report.readable_prefix_physical_bytes = slab.len() as u64;
@@ -779,7 +827,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
         let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None, None);
-        if !remaining.starts_with(PAGE_RECORD_MAGIC) {
+        if remaining.len() < PAGE_RECORD_HEADER_LEN || !remaining.starts_with(PAGE_RECORD_MAGIC) {
             record_slab_inspection_error(
                 &mut report,
                 address.offset,
@@ -908,51 +956,67 @@ mod page_record_format_tests {
         }
     }
 
-    /// Every header field comes back as it went in, each with a value that could not be mistaken
-    /// for another field's.
+    /// What the record carries comes back; what the index carries does not.
     ///
-    /// The payload is found by walking the header, so an offset error anywhere leaves the payload
-    /// correct and reads page id, object id, routing bucket or band id out of the wrong bytes --
-    /// silently. This is the test that notices.
+    /// A block record holds a checksum, its size and its block id. The object id, the routing
+    /// bucket and the band used to be repeated here as well, where they could only ever agree
+    /// with the index or be wrong. They are gone, and this states that they are: reading them
+    /// back as `None` is the contract, not an oversight.
     #[test]
-    fn every_header_field_survives_a_round_trip() {
+    fn a_record_carries_its_size_and_block_id_and_nothing_the_index_holds() {
         let payload = b"header field round trip payload";
-        let page_id: u64 = 0x1122_3344_5566_7788;
-        let object_id: u64 = 0x99AA_BBCC_DDEE_F001;
-        let routing_bucket: u32 = 0x0BAD_C0DE;
-        let band_id: u64 = 0x0102_0304_0506_0708;
+        let block_id: u64 = 0x00BA_DC0D;
 
         let encoded = encode_page_record(
             payload,
-            page_id,
-            Some(object_id),
-            Some(routing_bucket),
-            band_id,
+            block_id,
+            Some(0x99AA_BBCC_DDEE_F001),
+            Some(0x0BAD_C0DE),
+            0x0102_0304,
             BlockStoreOptions::default(),
         )
         .expect("encode");
+        assert_eq!(
+            encoded.bytes.len(),
+            PAGE_RECORD_HEADER_LEN + payload.len(),
+            "one header size, whatever the values"
+        );
         let header = parse_page_record_header(&encoded.bytes, &address()).expect("parse");
-        assert_eq!(header.page_id, Some(page_id), "page id");
-        assert_eq!(header.object_id, Some(object_id), "object id");
-        assert_eq!(header.routing_bucket, Some(routing_bucket), "routing bucket");
-        assert_eq!(header.band_id, Some(band_id), "band id");
+        assert_eq!(header.page_id, Some(block_id), "block id");
         assert_eq!(header.payload_len, payload.len());
         assert_eq!(header.stored_len, payload.len());
+        assert_eq!(header.object_id, None, "the index holds the object id");
+        assert_eq!(header.routing_bucket, None, "the index holds the routing bucket");
+        assert_eq!(header.band_id, None, "the band is the slab the record sits in");
         let decoded = decode_page_record(&encoded.bytes, &address()).expect("decode");
         assert_eq!(decoded.payload, payload);
     }
 
-    /// An absent routing bucket comes back absent rather than as zero.
+    /// Every field sits at a constant offset, so a reader takes one without walking.
     #[test]
-    fn an_absent_routing_bucket_stays_absent() {
-        let payload = b"no routing bucket here";
+    fn a_field_is_read_by_offset_not_by_walking() {
+        let payload = b"offsets are constants";
+        let block_id: u64 = 4_000_000_000;
         let encoded =
-            encode_page_record(payload, 7, None, None, 0, BlockStoreOptions::default())
+            encode_page_record(payload, block_id, None, None, 0, BlockStoreOptions::default())
                 .expect("encode");
-        let header = parse_page_record_header(&encoded.bytes, &address()).expect("parse");
-        assert_eq!(header.routing_bucket, None);
-        assert_eq!(header.object_id, None);
-        assert_eq!(header.band_id, Some(0));
+
+        let at = PAGE_RECORD_BLOCK_ID_OFFSET;
+        let read_directly = u32::from_le_bytes(encoded.bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            u64::from(read_directly),
+            block_id,
+            "the block id is one slice at a constant offset"
+        );
+
+        let at = PAGE_RECORD_LENGTH_OFFSET;
+        let sized = u32::from_le_bytes(encoded.bytes[at..at + 4].try_into().unwrap());
+        assert_eq!((sized & PAGE_RECORD_LENGTH_MASK) as usize, payload.len());
+        assert_eq!(
+            (sized >> PAGE_RECORD_CODEC_SHIFT) as u8,
+            PAGE_RECORD_COMPRESSION_NONE,
+            "the codec shares the size word rather than taking a byte of its own"
+        );
     }
 
     /// The checksum is a CRC32C of the payload, in the four bytes after the magic.
@@ -995,7 +1059,7 @@ mod page_record_format_tests {
         let encoded =
             encode_page_record(payload, 1, None, None, 0, BlockStoreOptions::default())
                 .expect("encode");
-        for keep in [0, PAGE_RECORD_FIXED_LEN, PAGE_RECORD_SMALLEST_HEADER_LEN - 1] {
+        for keep in [0, 1, PAGE_RECORD_HEADER_LEN - 1] {
             let err = parse_page_record_header(&encoded.bytes[..keep], &address())
                 .expect_err("a short record must be refused");
             assert!(
@@ -1013,16 +1077,28 @@ mod reused_zstd_context_tests {
 
     fn zstd_header(payload_len: usize, stored_len: usize) -> PageRecordHeader {
         PageRecordHeader {
-            header_len: PAGE_RECORD_SMALLEST_HEADER_LEN,
+            header_len: PAGE_RECORD_HEADER_LEN,
             payload_len,
             stored_len,
             checksum: [0_u8; PAGE_RECORD_CHECKSUM_LEN],
             page_id: Some(1),
-            object_id: Some(1),
-            routing_bucket: Some(0),
+            // The record no longer carries these; the index does.
+            object_id: None,
+            routing_bucket: None,
             band_id: None,
             compression: PageRecordCompression::Zstd,
         }
+    }
+
+    /// The stored bytes of a compressed block, which begin with its decompressed size.
+    ///
+    /// The header carries the STORED size, so the decompressed one has to be somewhere the
+    /// decoder can reach, and it is the first four bytes of the block's own bytes.
+    fn stored_bytes(original_len: usize, compressed: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(compressed.len() + 4);
+        out.extend_from_slice(&(original_len as u32).to_le_bytes());
+        out.extend_from_slice(compressed);
+        out
     }
 
     fn address_for(payload_len: usize) -> BlockAddress {
@@ -1046,8 +1122,9 @@ mod reused_zstd_context_tests {
                 PAGE_RECORD_COMPRESSION_LEVEL,
             )
             .expect("compresses");
-            let header = zstd_header(original.len(), compressed.len());
-            let decoded = decode_page_record_payload(&compressed, &header, &address_for(len))
+            let stored = stored_bytes(original.len(), &compressed);
+            let header = zstd_header(original.len(), stored.len());
+            let decoded = decode_page_record_payload(&stored, &header, &address_for(len))
                 .expect("a well-formed compressed record must decode");
             assert_eq!(
                 original, decoded,
@@ -1068,31 +1145,35 @@ mod reused_zstd_context_tests {
                     PAGE_RECORD_COMPRESSION_LEVEL,
                 )
                 .expect("compresses");
-                let header = zstd_header(original.len(), compressed.len());
-                let decoded = decode_page_record_payload(&compressed, &header, &address_for(len))
+                let stored = stored_bytes(original.len(), &compressed);
+            let header = zstd_header(original.len(), stored.len());
+                let decoded = decode_page_record_payload(&stored, &header, &address_for(len))
                     .expect("decodes");
                 assert_eq!(original, decoded, "size {len} was wrong on a reused context");
             }
         }
     }
 
-    /// A header that lies about its payload length is refused, not served.
+    /// A block that lies about its decompressed size is refused, not served.
     ///
-    /// This matters more now than it did: the bulk API allocates the CLAIMED length before
-    /// decompressing anything, so a lie is acted on before it is checked.
+    /// The size moved: the header carries the STORED size now, and the decompressed size is
+    /// the first four bytes of the block's own bytes. That is where a lie can be told, and the
+    /// bulk decompressor allocates the claimed size before decompressing anything -- so the lie
+    /// is acted on before it is checked, which is why it has to be checked afterwards.
     #[test]
-    fn a_header_that_lies_about_its_length_is_refused() {
+    fn a_block_that_lies_about_its_decompressed_size_is_refused() {
         let original: Vec<u8> = (0..1000).map(|i| (i % 5) as u8).collect();
         let compressed = zstd::stream::encode_all(
             std::io::Cursor::new(&original[..]),
             PAGE_RECORD_COMPRESSION_LEVEL,
         )
         .expect("compresses");
-        // The record really holds 1000 bytes; the header claims 4242.
-        let header = zstd_header(4242, compressed.len());
+        // The frame really holds 1000 bytes; the block says 4242.
+        let stored = stored_bytes(4242, &compressed);
+        let header = zstd_header(4242, stored.len());
         assert!(
-            decode_page_record_payload(&compressed, &header, &address_for(1000)).is_err(),
-            "a payload_len that disagrees with the record must be an error, not a short read"
+            decode_page_record_payload(&stored, &header, &address_for(1000)).is_err(),
+            "a stated size that disagrees with the frame must be an error, not a short read"
         );
     }
 }
