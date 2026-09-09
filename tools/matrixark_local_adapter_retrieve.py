@@ -1017,6 +1017,24 @@ class _LocalAdapterRetrieveMixin:
             "reference_time_ms": reference_time_ms,
             "include_superseded_resources": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
             "audit_mode": audit_mode,
+            # Ranking policy and the query embedding, for the backend that assembles this pack.
+            #
+            # These used to be attached in _try_native_context_pack, which belongs to the OTHER
+            # retrieve on this object. The one-box gateway resolves retrieve() to this one, so the
+            # engine was handed a pack request with no vector and no weights and had nothing to
+            # rank densely with -- the flag that was supposed to enable it changed nothing at all,
+            # and an A/B across it measured noise between two identical arms.
+            #
+            # hasattr rather than a bare call: a backend class without the temporal read mixin
+            # should degrade to the lexical ranking it has always done, not raise inside retrieve.
+            "query_vector": (
+                self._native_query_vector(query)
+                if hasattr(self, "_native_query_vector") else None
+            ),
+            "ranking_weights": (
+                self._native_ranking_weights()
+                if hasattr(self, "_native_ranking_weights") else None
+            ),
         })
         if native_pack is not None:
             recall_policy = native_pack.get("recall_policy") if isinstance(native_pack.get("recall_policy"), dict) else {}

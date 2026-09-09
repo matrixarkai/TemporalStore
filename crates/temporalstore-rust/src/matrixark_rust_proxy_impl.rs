@@ -81,6 +81,17 @@ struct RecordLogRequest {
     /// unaffected.
     #[serde(default)]
     query_vector: Option<Vec<f32>>,
+    /// How to combine the dense and lexical scores, and what an index hint is worth.
+    ///
+    /// The CALLER owns ranking policy and the engine executes it. That is deliberate: the caller
+    /// already computes these weights from its own configuration -- on the one-box they are 1.00
+    /// dense and 0.00 lexical, elsewhere 0.72 and 0.28 -- and an engine that hardcoded its own
+    /// would silently rank differently from the caller that used to do it, which is the failure
+    /// this whole change has to avoid.
+    ///
+    /// Absent means dense-only (1.0 / 0.0 / 0.0), which is what this engine already did.
+    #[serde(default)]
+    ranking_weights: Option<RankingWeights>,
     /// Send record payloads as sub-documents instead of JSON strings (see `RecordPayload`).
     /// Absent means the historical string shape, so an older reader is unaffected.
     #[serde(default)]
@@ -5798,6 +5809,14 @@ fn retrieve_context_pack_output(
         .any(|candidate| candidate.ref_type == "event");
     let query_vector = request.query_vector.clone().filter(|v| !v.is_empty());
     let ranking_uses_vectors = query_vector.is_some();
+    let weights = request.ranking_weights.unwrap_or_default();
+    // The caller's own prefilter already named the nodes it believes in; the hint is what that
+    // belief is worth in the score, and the caller sets its size.
+    let hinted: std::collections::HashSet<u64> = request
+        .selected_node_hashes
+        .as_ref()
+        .map(|v| v.iter().copied().collect())
+        .unwrap_or_default();
     let score_started = Instant::now();
     let mut candidates = Vec::with_capacity(snapshot.candidates.len());
     for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
@@ -5808,17 +5827,22 @@ fn retrieve_context_pack_output(
         // usable vector falls back to the lexical score rather than scoring 0: it is a record we
         // could not compare, not a record we know to be irrelevant, and zeroing it would drop it
         // beneath every lexical match in the same list.
-        let score = match (query_vector.as_deref(), candidate.vector.as_deref()) {
-            (Some(query), Some(record)) if !query.is_empty() => {
-                let dense = dense_query_score(query, record);
-                if dense > 0.0 {
-                    dense
-                } else {
-                    score_lowered_text(&candidate.lower_text, &query_terms)
-                }
-            }
-            _ => score_lowered_text(&candidate.lower_text, &query_terms),
-        };
+        let lexical = score_lowered_text(&candidate.lower_text, &query_terms);
+        let score = candidate_score(
+            &weights,
+            query_vector.as_deref(),
+            candidate.vector.as_deref(),
+            lexical,
+            // Lazy: the lexical path must not pay for a hint lookup it will not use.
+            || {
+                candidate
+                    .selected_ref
+                    .get("node_hash")
+                    .and_then(Value::as_u64)
+                    .map(|h| hinted.contains(&h))
+                    .unwrap_or(false)
+            },
+        );
         candidates.push((score, ordinal));
     }
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
@@ -6213,6 +6237,82 @@ fn native_correctness_evidence(
     })
 }
 
+/// The caller's ranking policy: `dense * normalized_cosine + sparse * lexical + hint`.
+///
+/// Mirrors what the caller computes today, so the engine can reproduce its answer rather than
+/// approximate it. The hint is added for candidates the caller named in `selected_node_hashes`,
+/// which is how the caller's own prefilter marks a node it already believes in.
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct RankingWeights {
+    #[serde(default = "one_f64")]
+    dense: f64,
+    #[serde(default)]
+    sparse: f64,
+    #[serde(default)]
+    index_hint: f64,
+}
+
+fn one_f64() -> f64 {
+    1.0
+}
+
+impl Default for RankingWeights {
+    fn default() -> Self {
+        // Dense-only, which is what this engine did before it could blend at all.
+        Self {
+            dense: 1.0,
+            sparse: 0.0,
+            index_hint: 0.0,
+        }
+    }
+}
+
+fn clamp01(value: f64) -> f64 {
+    value.clamp(0.0, 1.0)
+}
+
+/// One candidate's score under the caller's policy.
+///
+/// `dense` is already the 0..1 mapping of cosine, so this is the caller's formula term for term.
+/// A candidate with no usable vector contributes 0 to the dense term rather than being dropped:
+/// it is a record we could not compare, not one we know to be irrelevant, and with a non-zero
+/// sparse weight its lexical score still speaks for it.
+/// One candidate's score, choosing the scorer by what the caller actually sent.
+///
+/// Pulled out of the scoring loop so the no-vector case can be tested. It carries a hazard worth
+/// stating: the caller sends `ranking_weights` UNCONDITIONALLY but only sends `query_vector` when
+/// dense ranking is enabled, and on a one-box those weights are dense 1.00 / sparse 0.00. Blending
+/// with an absent dense term would therefore compute 1.00 * 0 + 0.00 * lexical = 0 for EVERY
+/// candidate and rank the whole corpus flat -- silently, with no error and a full-looking pack.
+/// So a missing query vector must bypass the blend entirely rather than pass a zero into it.
+fn candidate_score<F: FnOnce() -> bool>(
+    weights: &RankingWeights,
+    query_vector: Option<&[f32]>,
+    record_vector: Option<&[f32]>,
+    lexical: f64,
+    index_hinted: F,
+) -> f64 {
+    match (query_vector, record_vector) {
+        (Some(query), Some(record)) if !query.is_empty() => {
+            let dense = dense_query_score(query, record);
+            blended_candidate_score(weights, Some(dense), lexical, index_hinted())
+        }
+        // No query vector means no dense term to blend, so this is the lexical ranking the engine
+        // has always done -- not the blend with a zero, which the weights would scale.
+        _ => lexical,
+    }
+}
+
+fn blended_candidate_score(
+    weights: &RankingWeights,
+    dense: Option<f64>,
+    lexical: f64,
+    index_hinted: bool,
+) -> f64 {
+    let hint = if index_hinted { weights.index_hint } else { 0.0 };
+    clamp01(weights.dense * dense.unwrap_or(0.0) + weights.sparse * lexical + hint)
+}
+
 /// Cosine similarity, mapped to the same 0..1 range the lexical scorer produces.
 ///
 /// Vectors of different lengths score 0 rather than panicking or comparing a prefix: a record
@@ -6423,6 +6523,145 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    /// Weights WITHOUT a query vector must not zero the ranking.
+    ///
+    /// This is the default-off path in production: Python sends ranking_weights on every request
+    /// but withholds the query vector unless dense ranking is enabled. With one-box weights
+    /// (dense 1.00, sparse 0.00) a blend against an absent dense term scores every candidate 0,
+    /// which does not error -- it returns a pack whose ordering is meaningless. The engine must
+    /// fall through to lexical instead.
+    #[test]
+    fn weights_without_a_query_vector_do_not_zero_the_ranking() {
+        let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.08 };
+        let record = [1.0_f32, 0.0];
+        for query in [None, Some(&[][..])] {
+            let got = candidate_score(&onebox, query, Some(&record), 0.75, || false);
+            assert!(
+                (got - 0.75).abs() < 1e-9,
+                "query {query:?}: got {got}, expected the lexical score 0.75"
+            );
+        }
+    }
+
+    /// A candidate the engine cannot compare keeps its lexical score too.
+    #[test]
+    fn a_candidate_with_no_vector_is_scored_lexically() {
+        let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.08 };
+        let query = [1.0_f32, 0.0];
+        let got = candidate_score(&onebox, Some(&query), None, 0.6, || false);
+        assert!((got - 0.6).abs() < 1e-9, "got {got}, expected 0.6");
+    }
+
+    /// The positive control: when BOTH vectors are present the blend really does run, so the two
+    /// tests above are asserting a fallback that something else would otherwise have taken.
+    #[test]
+    fn both_vectors_present_takes_the_dense_blend() {
+        let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.0 };
+        let query = [1.0_f32, 0.0];
+        let record = [1.0_f32, 0.0];
+        // Identical unit vectors: cosine 1.0 -> normalized 1.0, and the lexical 0.0 is ignored.
+        let got = candidate_score(&onebox, Some(&query), Some(&record), 0.0, || false);
+        assert!(got > 0.99, "got {got}, expected the dense term to dominate");
+    }
+
+    /// The hint must stay lazy: the lexical path must not evaluate it at all.
+    #[test]
+    fn the_lexical_path_never_evaluates_the_index_hint() {
+        let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.08 };
+        let mut evaluated = false;
+        let got = candidate_score(&onebox, None, None, 0.4, || {
+            evaluated = true;
+            true
+        });
+        assert!((got - 0.4).abs() < 1e-9, "got {got}");
+        assert!(!evaluated, "the lexical path paid for a hint lookup it did not use");
+    }
+
+    /// The one-box policy, term for term against the caller's own formula.
+    ///
+    /// The caller computes, with _ONEBOX_DENSE_ONLY true:
+    ///     _DENSE_W = 1.00, _SPARSE_W = 0.00
+    ///     score = clamp01(_DENSE_W * normalized_dense_score(cosine)
+    ///                   + _SPARSE_W * sparse + index_hint_boost)
+    ///     normalized_dense_score(v) = clamp01((v + 1) / 2)
+    ///
+    /// So the engine must return exactly (cosine + 1) / 2 and ignore the lexical score entirely.
+    /// If this ever fails, the engine and the caller are ranking differently and the engine must
+    /// not be the default -- which is the whole reason this test exists rather than a benchmark.
+    #[test]
+    fn the_dense_only_policy_reproduces_the_callers_score() {
+        let dense_only = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.0 };
+        // cosine = 1.0 -> normalized 1.0; cosine = 0.0 -> 0.5; cosine = -1.0 -> 0.0
+        for (cosine, expect) in [(1.0, 1.0), (0.0, 0.5), (-1.0, 0.0), (0.5, 0.75)] {
+            let normalized = (cosine + 1.0) / 2.0;
+            let got = blended_candidate_score(&dense_only, Some(normalized), 1.0, false);
+            assert!(
+                (got - expect).abs() < 1e-9,
+                "cosine {cosine}: got {got}, caller would produce {expect}"
+            );
+        }
+    }
+
+    /// With a zero sparse weight the lexical score must not reach the result AT ALL.
+    ///
+    /// The positive control for the test above: if the engine quietly added lexical, the first
+    /// test would still pass for lexical == 1.0 by coincidence of the numbers.
+    #[test]
+    fn a_zero_sparse_weight_ignores_the_lexical_score() {
+        let dense_only = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.0 };
+        let high = blended_candidate_score(&dense_only, Some(0.5), 1.0, false);
+        let low = blended_candidate_score(&dense_only, Some(0.5), 0.0, false);
+        assert_eq!(high, low, "lexical changed a dense-only score");
+    }
+
+    /// The non-one-box policy: 0.72 dense, 0.28 lexical.
+    #[test]
+    fn the_blended_policy_weights_both_terms() {
+        let blended = RankingWeights { dense: 0.72, sparse: 0.28, index_hint: 0.0 };
+        // The caller's arithmetic: 0.72 * 0.5 + 0.28 * 1.0 = 0.36 + 0.28 = 0.64
+        let got = blended_candidate_score(&blended, Some(0.5), 1.0, false);
+        assert!((got - 0.64).abs() < 1e-9, "got {got}, expected 0.64");
+    }
+
+    /// The index hint is worth what the caller says and applies only to hinted candidates.
+    #[test]
+    fn the_index_hint_applies_only_where_the_caller_hinted() {
+        let weights = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.08 };
+        let hinted = blended_candidate_score(&weights, Some(0.5), 0.0, true);
+        let plain = blended_candidate_score(&weights, Some(0.5), 0.0, false);
+        assert!((hinted - 0.58).abs() < 1e-9, "hinted got {hinted}, expected 0.58");
+        assert!((plain - 0.50).abs() < 1e-9, "unhinted got {plain}, expected 0.50");
+    }
+
+    /// clamp01, because the caller clamps and an unclamped engine would order ties differently
+    /// at the top of the list -- exactly where selection happens.
+    #[test]
+    fn the_score_is_clamped_like_the_callers() {
+        let weights = RankingWeights { dense: 1.0, sparse: 1.0, index_hint: 0.5 };
+        assert_eq!(blended_candidate_score(&weights, Some(1.0), 1.0, true), 1.0);
+        let negative = RankingWeights { dense: -5.0, sparse: 0.0, index_hint: 0.0 };
+        assert_eq!(blended_candidate_score(&negative, Some(1.0), 0.0, false), 0.0);
+    }
+
+    /// A candidate with no usable vector contributes 0 to the DENSE term but keeps its lexical
+    /// one, so a blended policy can still rank it. Dropping it to 0 outright would sink every
+    /// record the engine could not compare beneath every record it could.
+    #[test]
+    fn a_candidate_without_a_vector_keeps_its_lexical_score() {
+        let blended = RankingWeights { dense: 0.72, sparse: 0.28, index_hint: 0.0 };
+        let got = blended_candidate_score(&blended, None, 1.0, false);
+        assert!((got - 0.28).abs() < 1e-9, "got {got}, expected 0.28");
+    }
+
+    /// Absent weights must mean what the engine did BEFORE it could blend: dense-only.
+    #[test]
+    fn absent_weights_are_dense_only() {
+        let d = RankingWeights::default();
+        assert_eq!(d.dense, 1.0);
+        assert_eq!(d.sparse, 0.0);
+        assert_eq!(d.index_hint, 0.0);
+    }
 
     #[test]
     fn an_identical_vector_scores_highest() {
@@ -7302,6 +7541,7 @@ mod tests {
             newest_by_type: None,
             record_fields: None,
             query_vector: None,
+            ranking_weights: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
             scope: None,
