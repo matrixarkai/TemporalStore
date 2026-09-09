@@ -410,6 +410,36 @@ impl IndexItem {
         }
     }
 
+    /// Drop the object id when it is the hash of what this row already says.
+    ///
+    /// An object id is `stable_page_object_id` of the shard, the kind, the key and the
+    /// component -- and a row carries the last three, with the record carrying the shard. So the
+    /// nine bytes it takes are nine bytes restating a hash of fields sitting beside it.
+    ///
+    /// Stripped only when the derivation AGREES with what is stored. A row whose id came from
+    /// somewhere else keeps it, so a disagreement costs bytes rather than correctness.
+    fn strip_object_id_repeat(&mut self, shard_id: ShardId) {
+        if self.object_id == self.derived_object_id(shard_id) {
+            self.object_id = 0;
+        }
+    }
+
+    /// Put the object id back by deriving it again.
+    fn restore_object_id_repeat(&mut self, shard_id: ShardId) {
+        if self.object_id == 0 {
+            self.object_id = self.derived_object_id(shard_id);
+        }
+    }
+
+    fn derived_object_id(&self, shard_id: ShardId) -> u64 {
+        crate::engine::hashing::stable_page_object_id(
+            shard_id,
+            &self.model_id,
+            &self.object_key,
+            self.component.as_deref(),
+        )
+    }
+
     fn strip_address_repeats(&mut self) {
         let object_id = self.object_id;
         let routing_bucket = self.routing_bucket;
@@ -1308,7 +1338,10 @@ impl LocalIndexLogStore {
         for item in items.iter_mut() {
             item.strip_page_ref_key_repeat();
             item.strip_size_repeat();
+            // The address first, because it is stripped against the item's id, and the item's
+            // id is what goes next.
             item.strip_address_repeats();
+            item.strip_object_id_repeat(shard_id);
         }
         let record = IndexDeltaRecord {
             shard_id,
@@ -1404,6 +1437,8 @@ impl LocalIndexLogStore {
             // Put back what the writer left out because the item already stated it. A record
             // written before that stripping carries both already, and this leaves those alone.
             for item in record.items.iter_mut() {
+                // The item's id first: the address is restored FROM it.
+                item.restore_object_id_repeat(record.shard_id);
                 item.restore_address_repeats();
                 item.restore_page_ref_key_repeat();
                 item.restore_size_repeat();
@@ -2045,6 +2080,43 @@ mod tests {
             in_log: false,
             deleted,
         }
+    }
+
+    /// An object id that is the hash of the row's own fields is not written, and comes back.
+    ///
+    /// It is `stable_page_object_id` of the shard, the model, the key and the component -- and a
+    /// row carries the last three while the record carries the shard. Nine bytes restating a
+    /// hash of fields sitting beside it.
+    #[test]
+    fn a_row_does_not_write_the_object_id_it_can_derive() {
+        let shard_id: ShardId = 7;
+        let mut derivable = page_item(3, "tenant/1/object/9", false);
+        derivable.object_id = crate::engine::hashing::stable_page_object_id(
+            shard_id,
+            &derivable.model_id,
+            &derivable.object_key,
+            derivable.component.as_deref(),
+        );
+
+        let mut stripped = derivable.clone();
+        stripped.strip_object_id_repeat(shard_id);
+        assert_eq!(stripped.object_id, 0, "a derivable id is not written");
+        stripped.restore_object_id_repeat(shard_id);
+        assert_eq!(
+            stripped.object_id, derivable.object_id,
+            "and it comes back as what it was"
+        );
+
+        // An id that is NOT the hash of this row is kept, because a reader could not put it
+        // back. Being wrong here costs bytes, not correctness.
+        let mut foreign = derivable.clone();
+        foreign.object_id = derivable.object_id ^ 0xFFFF;
+        let kept = foreign.clone();
+        foreign.strip_object_id_repeat(shard_id);
+        assert_eq!(
+            foreign.object_id, kept.object_id,
+            "an id that cannot be derived stays in the row"
+        );
     }
 
     #[test]
