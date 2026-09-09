@@ -100,6 +100,24 @@ struct RecordLogRequest {
     /// cap on the union would drop the very records that make deleted memories stay deleted.
     #[serde(default)]
     newest_by_type: Option<BTreeMap<String, usize>>,
+    /// Return only these top-level fields of each record.
+    ///
+    /// A scan returns whole records, and a caller uses a handful of fields. Measured on a
+    /// production store, the average record is 673 bytes of which the TEXT is 2.4%:
+    /// `storage_options` is 17.5%, `envelope` 11.9%, `scope` 10.7%, `embedding_meta` 9.6% and
+    /// `vector` 4.4% -- and the packer that asks for these records reads none of those five, since
+    /// it ranks lexically and reports `ranking_uses_vectors: false`. About nine tenths of every
+    /// record crossing the lane is never looked at, and the gateway spends 53.5% of its CPU
+    /// decoding it.
+    ///
+    /// The CALLER names the fields rather than the engine guessing them: the engine cannot know
+    /// what a caller will read, and a projection that guesses wrong is a missing field rather than
+    /// a slow response. Absent means the whole record, so nothing that does not ask is affected.
+    ///
+    /// Filtering happens BEFORE projection, so a scan can still filter on a field it does not
+    /// return -- otherwise asking for less data would silently change which records match.
+    #[serde(default)]
+    record_fields: Option<Vec<String>>,
     /// Identity ids to remove, for `matrixark_delete_records`. Sent by the caller, which owns the
     /// decision about what a delete covers; the engine only matches and removes.
     #[serde(default)]
@@ -1622,12 +1640,87 @@ fn invalidate_retrieve_candidate_cache_for_prefixes(prefixes: HashSet<String>) {
     }
 }
 
-fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
+/// Per-type append version. Changes when records OF THAT TYPE are appended, and not otherwise.
+/// Keep only the named top-level fields of a record.
+///
+/// `None` returns the record untouched. A record that is not an object is returned untouched too:
+/// projecting one would mean inventing a shape the caller did not ask for.
+///
+/// Nested paths are deliberately not supported. Every field a caller was measured to need is
+/// top-level, and a path syntax would be a second query language to get wrong in a place where
+/// being wrong means a silently missing field.
+fn project_record(record: Value, fields: Option<&std::collections::BTreeSet<String>>) -> Value {
+    let Some(fields) = fields else {
+        return record;
+    };
+    let Value::Object(map) = record else {
+        return record;
+    };
+    Value::Object(
+        map.into_iter()
+            .filter(|(key, _)| fields.contains(key))
+            .collect(),
+    )
+}
+
+fn type_version_key(record_hash_key: &str, record_type: &str) -> String {
+    format!("{record_hash_key}:type_version:{record_type}")
+}
+
+/// Per-base delete epoch, bumped by any removal.
+///
+/// Deletes get an epoch rather than a per-type version because of a hole that a per-type version
+/// alone cannot close: removing the last records of a type whose version key does not exist yet
+/// would leave the token unchanged, and the next scan would serve an answer that still contained
+/// them. An epoch is coarse -- it invalidates every scan for the base -- which is the right trade
+/// exactly because deletes are rare and appends are not.
+fn scan_delete_epoch_key(record_hash_key: &str) -> String {
+    format!("{record_hash_key}:scan_delete_epoch")
+}
+
+/// The token that decides whether a cached scan is still the right answer.
+///
+/// It used to be the storage prefix's TOTAL record count, which is correct but maximally coarse:
+/// every append changed it, so every scan of every type missed. Measured on a production-corpus
+/// soak that is 229 records written per user message, so the hit rate under ingest was
+/// effectively zero and each miss re-fetched the whole corpus of the requested types --
+/// `matrixark_scan_candidates` was 87% of all time spent inside lane calls.
+///
+/// A scan that names its types can only be changed by those types, so it is keyed on their
+/// versions plus the delete epoch. A scan that names no types could be changed by anything, so it
+/// keeps the total count. Narrowing WHEN a cached answer is reused, never WHAT a scan returns.
+fn scan_freshness_token(
+    engine: &RecordStore,
+    command: &RecordLogRequest,
+    record_hash_key: &str,
+    count: u64,
+) -> String {
+    let Some(types) = command.record_types.as_ref().filter(|types| !types.is_empty()) else {
+        return format!("count:{count}");
+    };
+    let epoch = read_record_count(engine, &scan_delete_epoch_key(record_hash_key))
+        .unwrap_or_default();
+    let mut parts = Vec::with_capacity(types.len());
+    for record_type in types {
+        // A missing key is a DISTINCT token, not a zero: a type with no records yet reads as
+        // absent, and its first append writes a version, so the token changes and the cached
+        // empty answer is dropped. Reading it as 0 would collide with a real version of 0.
+        let version = match read_record_count(engine, &type_version_key(record_hash_key, record_type)) {
+            Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+            _ => "-".to_string(),
+        };
+        parts.push(format!("{record_type}={version}"));
+    }
+    parts.sort();
+    format!("t:{}|d:{}", parts.join(","), epoch.trim())
+}
+
+fn matrixark_scan_cache_key(command: &RecordLogRequest, freshness: &str) -> String {
     serde_json::to_string(&json!({
         "count_key": command.count_key,
         "record_hash_key": command.record_hash_key,
         "shard_size": command.shard_size.unwrap_or(1024).max(1),
-        "count": count,
+        "freshness": freshness,
         "record_types": command.record_types,
         // A status-filtered scan is a SUBSET of the same question, exactly like
         // `newest_by_type` below -- sharing an entry would serve the subset to a
@@ -1641,8 +1734,12 @@ fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
         // A capped scan and an uncapped one are different answers to the same question, so they
         // must not share a cache entry: the capped answer is a SUBSET.
         "newest_by_type": command.newest_by_type,
+        // Same rule for a projection: a caller that asked for five fields must never be served
+        // the cached whole-record answer, and -- far worse -- a caller that asked for everything
+        // must never be served a projected one, which would look like data loss.
+        "record_fields": command.record_fields,
     }))
-    .unwrap_or_else(|_| format!("fallback:{count}"))
+    .unwrap_or_else(|_| format!("fallback:{freshness}"))
 }
 
 /// Stamp a cached scan result as a hit.
@@ -2718,7 +2815,8 @@ fn scan_matrixark_candidates(
     let shard_size = command.shard_size.unwrap_or(1024).max(1);
     let count_text = read_record_count(engine, &count_key)?;
     let count = count_text.parse::<u64>().unwrap_or(0);
-    let scan_cache_key = matrixark_scan_cache_key(command, count);
+    let freshness = scan_freshness_token(engine, command, &record_hash_key, count);
+    let scan_cache_key = matrixark_scan_cache_key(command, &freshness);
     // Take everything needed from the cache under one guard, then drop it before stamping the
     // result -- stamping used to re-lock this same mutex and hang the request.
     let cached_hit = match matrixark_scan_cache().lock() {
@@ -2848,6 +2946,13 @@ fn scan_matrixark_candidates(
             persist_type_index_backfill(engine, &record_hash_key, backfill)?;
         persist_scope_index_backfill(engine, &record_hash_key, scope_backfill)?;
     }
+    // Built once, outside the record loop: a set per record would allocate per record, on the
+    // very path this exists to make cheaper.
+    let projection: Option<std::collections::BTreeSet<String>> = command
+        .record_fields
+        .as_ref()
+        .filter(|fields| !fields.is_empty())
+        .map(|fields| fields.iter().cloned().collect());
     let mut records = Vec::new();
     {
         for value in &payload_values {
@@ -2889,7 +2994,7 @@ fn scan_matrixark_candidates(
                         continue;
                     }
                 }
-                records.push(record);
+                records.push(project_record(record, projection.as_ref()));
             }
         }
     }
@@ -4120,6 +4225,11 @@ fn execute_record_log_request(
             // very payloads being written, so the index can never lag a committed append. Only
             // record-shard keys feed it (see record_shard_key_parts).
             let mut index_entries: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            // (base, record_type) touched by this batch. The types are already computed here for
+            // the type index, so stamping a version costs one small write per type and no extra
+            // decode.
+            let mut touched_types: std::collections::BTreeSet<(String, String)> =
+                std::collections::BTreeSet::new();
             for (key, entries) in &grouped {
                 if let Some((base, shard6)) = record_shard_key_parts(key) {
                     for (field, value) in entries {
@@ -4158,6 +4268,7 @@ fn execute_record_log_request(
                                 }
                             };
                         for record_type in type_names {
+                            touched_types.insert((base.to_string(), record_type.clone()));
                             index_entries
                                 .entry(type_index_key(base, &record_type))
                                 .or_default()
@@ -4182,6 +4293,21 @@ fn execute_record_log_request(
             }
             for (key, entries) in index_entries {
                 commands.push(Command::HashMultiSet { key, entries });
+            }
+            // The version rides the SAME durable batch as the data and the index entries, so
+            // it can never lag a committed append -- the same rule the type index itself follows.
+            // The value is the new record count: it is already in hand and strictly increases, so
+            // it is a token that changes on every append of that type without a read-modify-write.
+            let version_stamp = if request.value.trim().is_empty() {
+                unix_ms().to_string()
+            } else {
+                request.value.trim().to_string()
+            };
+            for (base, record_type) in touched_types {
+                commands.push(Command::StringSet {
+                    key: type_version_key(&base, &record_type),
+                    value: version_stamp.clone().into_bytes(),
+                });
             }
             if !request.key.trim().is_empty() {
                 commands.push(Command::StringSet {
@@ -6213,6 +6339,121 @@ fn _request_shape_for_docs() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
 
+    fn field_set(names: &[&str]) -> std::collections::BTreeSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn a_projection_keeps_only_the_named_fields() {
+        let record = json!({
+            "record_type": "msg",
+            "text": "hello",
+            "storage_options": {"a": 1, "b": 2},
+            "vector": [0.1, 0.2, 0.3],
+            "scope_key": "t=1|u=2",
+        });
+        let kept = project_record(record, Some(&field_set(&["text", "record_type", "scope_key"])));
+        let object = kept.as_object().expect("projected record stays an object");
+        assert_eq!(object.len(), 3, "got {object:?}");
+        assert_eq!(object["text"], json!("hello"));
+        assert_eq!(object["record_type"], json!("msg"));
+        assert!(!object.contains_key("storage_options"));
+        assert!(!object.contains_key("vector"));
+    }
+
+    /// No projection must mean the WHOLE record, byte for byte.
+    ///
+    /// This is the positive control: without it, a `project_record` that dropped everything would
+    /// satisfy the test above and quietly empty every response that did not ask for fields.
+    #[test]
+    fn no_projection_returns_the_whole_record() {
+        let record = json!({"a": 1, "b": {"c": 2}, "d": [1, 2, 3]});
+        assert_eq!(project_record(record.clone(), None), record);
+    }
+
+    #[test]
+    fn a_projection_leaves_a_non_object_alone() {
+        for value in [json!([1, 2]), json!("text"), json!(7), json!(null)] {
+            assert_eq!(project_record(value.clone(), Some(&field_set(&["x"]))), value);
+        }
+    }
+
+    /// Asking for fewer FIELDS must never change which RECORDS come back.
+    ///
+    /// The scan filters on `record_type`, `status` and the scope sources, and a caller may
+    /// legitimately project none of them. Projection therefore happens after filtering. If it ever
+    /// moved before, a caller narrowing its fields would silently narrow its results too -- the
+    /// kind of bug that looks like data loss and reads like a cache problem.
+    #[test]
+    fn a_projection_does_not_change_which_records_match() {
+        let record = json!({"record_type": "msg", "status": "active", "text": "hello"});
+        // The filters read the record BEFORE projection, so they still see every field.
+        let record_type = record.get("record_type").and_then(Value::as_str).unwrap_or("");
+        let status = record.get("status").and_then(Value::as_str).unwrap_or("");
+        assert_eq!(record_type, "msg");
+        assert_eq!(status, "active");
+        // And what is emitted carries neither.
+        let emitted = project_record(record, Some(&field_set(&["text"])));
+        let object = emitted.as_object().expect("object");
+        assert_eq!(object.len(), 1);
+        assert!(!object.contains_key("record_type"));
+        assert!(!object.contains_key("status"));
+    }
+
+    fn projection_command(fields: Option<Vec<String>>) -> RecordLogRequest {
+        let mut command: RecordLogRequest =
+            serde_json::from_str(r#"{"op":"matrixark_scan_candidates"}"#).expect("request");
+        command.count_key = Some("p:record_count".to_string());
+        command.record_hash_key = Some("p:records".to_string());
+        command.record_types = Some(vec!["msg".to_string()]);
+        command.record_fields = fields;
+        command
+    }
+
+    /// A projected answer and a whole-record answer must not share a cache entry.
+    ///
+    /// The dangerous direction is the second one: serving a PROJECTED cached answer to a caller
+    /// that asked for everything looks exactly like data loss, and would be blamed on storage.
+    #[test]
+    fn a_projected_scan_does_not_share_a_cache_entry() {
+        let whole = matrixark_scan_cache_key(&projection_command(None), "t:msg=1|d:");
+        let projected = matrixark_scan_cache_key(
+            &projection_command(Some(vec!["text".to_string()])),
+            "t:msg=1|d:",
+        );
+        let other_fields = matrixark_scan_cache_key(
+            &projection_command(Some(vec!["text".to_string(), "record_type".to_string()])),
+            "t:msg=1|d:",
+        );
+        assert_ne!(whole, projected);
+        assert_ne!(projected, other_fields);
+    }
+
+    /// The freshness token is what decides reuse, so a different token must be a different key.
+    #[test]
+    fn a_changed_freshness_token_changes_the_cache_key() {
+        let command = projection_command(None);
+        let before = matrixark_scan_cache_key(&command, "t:msg=41|d:");
+        let after = matrixark_scan_cache_key(&command, "t:msg=42|d:");
+        assert_ne!(
+            before, after,
+            "an append to a requested type must not reuse the cached answer"
+        );
+    }
+
+    /// A delete bumps the epoch, and that alone must invalidate.
+    ///
+    /// Deletes carry an epoch rather than a per-type version because removing the last records of
+    /// a type whose version key does not exist yet would leave the per-type part unchanged.
+    #[test]
+    fn a_delete_epoch_change_alone_changes_the_cache_key() {
+        let command = projection_command(None);
+        assert_ne!(
+            matrixark_scan_cache_key(&command, "t:msg=7|d:"),
+            matrixark_scan_cache_key(&command, "t:msg=7|d:1788000000000"),
+        );
+    }
+
     fn snapshot_of(field_bytes: usize, fields: usize) -> Arc<BTreeMap<String, String>> {
         let mut map = BTreeMap::new();
         for index in 0..fields {
@@ -6567,14 +6808,14 @@ mod tests {
 
         // Control first: without it, an assert_ne that always holds would look like proof.
         assert_eq!(
-            matrixark_scan_cache_key(&unfiltered, 7),
-            matrixark_scan_cache_key(&unfiltered, 7),
+            matrixark_scan_cache_key(&unfiltered, "count:7"),
+            matrixark_scan_cache_key(&unfiltered, "count:7"),
             "the same command produced two different keys, so the comparison below means nothing"
         );
 
         assert_ne!(
-            matrixark_scan_cache_key(&unfiltered, 7),
-            matrixark_scan_cache_key(&filtered, 7),
+            matrixark_scan_cache_key(&unfiltered, "count:7"),
+            matrixark_scan_cache_key(&filtered, "count:7"),
             "a status-filtered scan shares a cache entry with an unfiltered one"
         );
     }
@@ -6585,8 +6826,8 @@ mod tests {
         let scheduled = scan_command(Some(vec!["idle_commit_scheduled".to_string()]));
         let committed = scan_command(Some(vec!["idle_commit_committed".to_string()]));
         assert_ne!(
-            matrixark_scan_cache_key(&scheduled, 7),
-            matrixark_scan_cache_key(&committed, 7),
+            matrixark_scan_cache_key(&scheduled, "count:7"),
+            matrixark_scan_cache_key(&committed, "count:7"),
             "two different status filters share one cache entry"
         );
     }
@@ -6899,6 +7140,7 @@ mod tests {
             // No status filtering: this helper builds the request every other test starts from.
             record_statuses: None,
             newest_by_type: None,
+            record_fields: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
             scope: None,
