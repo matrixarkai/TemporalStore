@@ -2552,7 +2552,7 @@ fn encode_wal_proto_frame(
         items: entry
             .outcomes
             .iter()
-            .map(crate::wal_proto::item_to_proto)
+            .map(|item| crate::wal_proto::item_to_proto(item, entry.shard_id))
             .collect(),
     };
     let mut encoded = frame.encode_to_vec();
@@ -2637,7 +2637,7 @@ fn decode_wal_proto_frame_exact(
         outcomes: frame
             .items
             .into_iter()
-            .map(crate::wal_proto::item_from_proto)
+            .map(|item| crate::wal_proto::item_from_proto(item, frame.shard_id))
             .collect(),
         staged_pages: frame
             .staged_pages

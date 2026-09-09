@@ -398,7 +398,53 @@ fn numeric_component(kind: &str, component: Option<&str>) -> Option<(u64, Option
 }
 
 
-pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
+/// The component text a reader rebuilds from the numeric fields, absent if there are none.
+///
+/// Shared with `item_from_proto` on purpose. The writer decides whether to drop the object id by
+/// deriving it, and it has to derive against the component the READER will hold -- a numeric
+/// component does not round trip character for character, since `007` is written as the number
+/// seven and read back as `7`. Deriving against the pre-trip form would drop an id that then
+/// comes back different.
+fn numeric_component_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -> Option<String> {
+    match (timestamp_ms, entry_id) {
+        (Some(stored), Some(entry)) => Some(format!("{stored:016x}{entry:016x}")),
+        (Some(stored), None) => Some(stored.to_string()),
+        (None, _) => None,
+    }
+}
+
+/// The object id an item has to write, or absent when the rest of the item already says it.
+///
+/// An object id is `stable_page_object_id` of the shard, the kind, the key and the component --
+/// and an item carries the last three while the record carries the shard. So the nine bytes a
+/// `fixed64` takes are nine bytes restating a hash of the fields sitting beside it.
+///
+/// Dropped only when the derivation AGREES with what the item holds. An id that came from
+/// anywhere else is written out, so being wrong here costs bytes rather than correctness -- the
+/// same rule the address, the key handle and the size already follow.
+fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardId) -> Option<u64> {
+    let numeric = numeric_component(&item.kind, item.component.as_deref());
+    // Both as the reader will see them: a coded kind comes back through the code table, and a
+    // numeric component comes back through the numbers.
+    let kind = kind_code(&item.kind)
+        .and_then(kind_from_code)
+        .unwrap_or(item.kind.as_str());
+    let component =
+        numeric_component_text(numeric.map(|(key, _)| key), numeric.and_then(|(_, id)| id))
+            .or_else(|| item.component.clone());
+    let derived = crate::engine::hashing::stable_page_object_id(
+        shard_id,
+        kind,
+        &item.object_key,
+        component.as_deref(),
+    );
+    (item.object_id != derived).then_some(item.object_id)
+}
+
+pub(crate) fn item_to_proto(
+    item: &WalOutcomeItem,
+    shard_id: crate::types::ShardId,
+) -> v1::EngineWalItem {
     let block = item.address.as_ref().map(|address| {
         let mut encoded = address_to_proto(address);
         // The item already says this. Repeating it costs a full varint on every item whose page
@@ -413,7 +459,7 @@ pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
         model: 0,
         object_key: Some(item.object_key.clone()),
         bucket_id: None,
-        object_id: Some(item.object_id),
+        object_id: item_object_id_to_write(item, shard_id),
         block_id: None,
         ttl_ms: item.ttl,
         deleted: item.deleted,
@@ -456,7 +502,7 @@ pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
 /// they are deliberately not used for the optional fields.
 fn wal_item_body_len(item: &WalOutcomeItem, derived: &DerivedItem<'_>) -> usize {
     let mut len = optional_bytes_len(3, Some(item.object_key.len()))
-        + optional_fixed64_len(5, Some(item.object_id))
+        + optional_fixed64_len(5, derived.object_id)
         + optional_varint_len(7, item.ttl)
         + plain_bool_len(8, item.deleted)
         + plain_bool_len(9, item.meta)
@@ -482,7 +528,7 @@ fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out:
 
     // Ascending field order, because that is the order prost writes them in.
     put_optional_bytes(3, Some(item.object_key.as_bytes()), out);
-    put_optional_fixed64(5, Some(item.object_id), out);
+    put_optional_fixed64(5, derived.object_id, out);
     put_optional_varint(7, item.ttl, out);
     put_plain_bool(8, item.deleted, out);
     put_plain_bool(9, item.meta, out);
@@ -503,6 +549,7 @@ fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out:
 
 /// What `item_to_proto` derives, computed once instead of three times.
 struct DerivedItem<'a> {
+    object_id: Option<u64>,
     component: Option<&'a str>,
     kind_name: Option<&'a str>,
     kind_code: Option<u32>,
@@ -512,11 +559,12 @@ struct DerivedItem<'a> {
     block: Option<v1::WalBlockAddress>,
 }
 
-fn derive_item(item: &WalOutcomeItem) -> DerivedItem<'_> {
+fn derive_item(item: &WalOutcomeItem, shard_id: crate::types::ShardId) -> DerivedItem<'_> {
     // `item_to_proto` calls this three times for three fields; it is one answer.
     let numeric = numeric_component(&item.kind, item.component.as_deref());
     let code = kind_code(&item.kind);
     DerivedItem {
+        object_id: item_object_id_to_write(item, shard_id),
         component: match numeric {
             Some(_) => None,
             None => item.component.as_deref(),
@@ -601,25 +649,37 @@ fn put_plain_bool(tag: u32, value: bool, out: &mut Vec<u8>) {
     }
 }
 
-pub(crate) fn item_from_proto(item: v1::EngineWalItem) -> WalOutcomeItem {
+pub(crate) fn item_from_proto(
+    item: v1::EngineWalItem,
+    shard_id: crate::types::ShardId,
+) -> WalOutcomeItem {
+    let kind = item
+        .kind_code
+        .and_then(kind_from_code)
+        .map(str::to_string)
+        .or(item.kind_name)
+        .unwrap_or_default();
+    let object_key = item.object_key.unwrap_or_default();
+    // Prefer the numeric fields; fall back to the string a record written before this carries.
+    let component = numeric_component_text(item.timestamp_ms, item.entry_id).or(item.component);
+    // Absent means the item's own fields say it, which is the only thing it can mean: the writer
+    // omits it exactly when the derivation agrees. This goes FIRST because the address is
+    // restored from it below.
+    let object_id = item.object_id.unwrap_or_else(|| {
+        crate::engine::hashing::stable_page_object_id(
+            shard_id,
+            &kind,
+            &object_key,
+            component.as_deref(),
+        )
+    });
     WalOutcomeItem {
-        kind: item
-            .kind_code
-            .and_then(kind_from_code)
-            .map(str::to_string)
-            .or(item.kind_name)
-            .unwrap_or_default(),
-        object_key: item.object_key.unwrap_or_default(),
-        // Prefer the numeric fields; fall back to the string a record written before this carries.
-        component: match (item.timestamp_ms, item.entry_id) {
-            (Some(stored), Some(entry)) => Some(format!("{stored:016x}{entry:016x}")),
-            (Some(stored), None) => Some(stored.to_string()),
-            (None, _) => item.component,
-        },
-        object_id: item.object_id.unwrap_or_default(),
+        kind,
+        object_key,
+        component,
+        object_id,
         routing_bucket: item.routing_bucket.unwrap_or_default(),
         address: item.block.map(|block| {
-            let object_id = item.object_id.unwrap_or_default();
             let mut address = address_from_proto(block);
             // Absent means "the same as the item's", which is the only thing it can mean: the
             // encoder omits it exactly when they match, and it is never otherwise unset.
@@ -736,7 +796,11 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
         // filling this field copied every one of them before the encoder copied them again.
         staged_blocks: Vec::new(),
     };
-    let items = record.outcomes.iter().map(derive_item).collect::<Vec<_>>();
+    let items = record
+        .outcomes
+        .iter()
+        .map(|item| derive_item(item, record.shard_id))
+        .collect::<Vec<_>>();
     let items_len = record
         .outcomes
         .iter()
@@ -939,30 +1003,37 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
         ),
         None => None,
     };
+    let outcomes = message
+        .items
+        .into_iter()
+        .map(|item| item_from_proto(item, message.shard_id))
+        .collect::<Vec<_>>();
+    // A block with no object id of its own takes it from the outcome it belongs to. The writer
+    // drops it only when there is exactly one of each, so there is never a question of which
+    // outcome an unlabelled block means.
+    //
+    // Taken from the RESTORED outcome rather than from the wire field, and that is the whole
+    // ordering constraint of this change: an outcome may not have written its id either, so a
+    // wire field that is absent on both would leave the block holding nothing.
+    let implied = if outcomes.len() == 1 && message.staged_blocks.len() == 1 {
+        Some(outcomes[0].object_id)
+    } else {
+        None
+    };
     Ok(WriteAheadLogRecord {
         shard_id: message.shard_id,
         sequence: message.sequence,
         command,
         metadata: message.metadata.map(metadata_from_proto).transpose()?,
-        staged_pages: {
-            // A block with no object id of its own takes it from the outcome it belongs to.
-            // The writer drops it only when there is exactly one of each, so there is never a
-            // question of which outcome an unlabelled block means.
-            let implied = if message.items.len() == 1 && message.staged_blocks.len() == 1 {
-                message.items[0].object_id
-            } else {
-                None
-            };
-            message
-                .staged_blocks
-                .into_iter()
-                .map(|block| StagedPage {
-                    object_id: block.object_id.or(implied).unwrap_or_default(),
-                    bytes: block.block,
-                })
-                .collect()
-        },
-        outcomes: message.items.into_iter().map(item_from_proto).collect(),
+        staged_pages: message
+            .staged_blocks
+            .into_iter()
+            .map(|block| StagedPage {
+                object_id: block.object_id.or(implied).unwrap_or_default(),
+                bytes: block.block,
+            })
+            .collect(),
+        outcomes,
     })
 }
 
@@ -992,7 +1063,11 @@ mod tests {
                 .map(metadata_to_proto)
                 .transpose()
                 .unwrap(),
-            items: record.outcomes.iter().map(item_to_proto).collect(),
+            items: record
+                .outcomes
+                .iter()
+                .map(|item| item_to_proto(item, record.shard_id))
+                .collect(),
             staged_blocks: record
                 .staged_pages
                 .iter()
@@ -1225,6 +1300,8 @@ mod tests {
     fn the_hand_written_item_is_the_same_item() {
         use prost::Message;
 
+        const SHARD: crate::types::ShardId = 7;
+
         let addresses = [
             None,
             // object_id repeats the item's, so `item_to_proto` drops it from the address.
@@ -1273,8 +1350,8 @@ mod tests {
                                             };
 
                                             let expected_body =
-                                                item_to_proto(&item).encode_to_vec();
-                                            let derived = derive_item(&item);
+                                                item_to_proto(&item, SHARD).encode_to_vec();
+                                            let derived = derive_item(&item, SHARD);
 
                                             assert_eq!(
                                                 wal_item_body_len(&item, &derived),
@@ -1304,7 +1381,8 @@ mod tests {
                                             // to both -- and an outcome whose address comes back
                                             // absent is exactly what `wal_replay_outcome_refused`
                                             // reports, with the component intact beside it.
-                                            let decoded = item_from_proto(item_to_proto(&item));
+                                            let decoded =
+                                                item_from_proto(item_to_proto(&item, SHARD), SHARD);
                                             assert_eq!(
                                                 decoded.address.is_some(),
                                                 item.address.is_some(),
@@ -1668,6 +1746,60 @@ mod tests {
             deleted: false,
             meta: false,
         }
+    }
+
+    /// An item whose object id is the hash of its own fields does not write it, and comes back.
+    ///
+    /// The second half is the ordering this change turns on. A staged block already drops its id
+    /// when the record's single outcome says it -- so once that outcome drops its id too, a
+    /// reader taking the block's id from the WIRE field would find it absent on both and hand
+    /// back a zero. From the restored outcome it is right. Silently wrong on the durability path
+    /// is the failure this exists to catch.
+    #[test]
+    fn an_item_does_not_write_the_object_id_it_can_derive() {
+        let mut record = record_with(None);
+        let derivable = crate::engine::hashing::stable_page_object_id(
+            record.shard_id,
+            "page",
+            "tenant/1/object/9",
+            None,
+        );
+        record.outcomes = vec![outcome_with_object_id(derivable)];
+        record.staged_pages = vec![crate::wal::StagedPage {
+            object_id: derivable,
+            bytes: vec![3; 64],
+        }];
+
+        let encoded = encode(&record).expect("encode");
+        let back = decode(&encoded).expect("decode");
+        assert_eq!(
+            back.outcomes[0].object_id, derivable,
+            "the item's id comes back derived"
+        );
+        assert_eq!(
+            back.staged_pages[0].object_id, derivable,
+            "and the block takes it from the RESTORED item, not from a wire field that is absent"
+        );
+        assert_eq!(back, record, "the whole record must round trip");
+
+        // And it is genuinely smaller. An id that is NOT the hash of the item cannot be put back
+        // and has to be written, so the same record comes out longer. Without the rule these two
+        // would encode to the same length.
+        let mut foreign = record.clone();
+        foreign.outcomes[0].object_id = derivable ^ 0xFFFF;
+        foreign.staged_pages[0].object_id = derivable ^ 0xFFFF;
+        let longer = encode(&foreign).expect("encode");
+        assert!(
+            longer.len() > encoded.len(),
+            "an id that cannot be derived has to be written: {} vs {}",
+            longer.len(),
+            encoded.len()
+        );
+        assert_eq!(
+            decode(&longer).expect("decode"),
+            foreign,
+            "an id that was written comes back as itself"
+        );
     }
 
     /// One block for one outcome says the object id once, and a reader puts it back.
