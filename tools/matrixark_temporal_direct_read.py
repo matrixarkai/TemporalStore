@@ -1167,7 +1167,14 @@ class _TemporalDirectReadMixin:
             "start_time_ms": 1,
             "end_time_ms": reference_time_ms,
             "as_of_ms": reference_time_ms,
-            "max_selected_refs": int(ranking.get("max_selected_refs") or args.get("max_selected_refs") or 24),
+            # One number for one setting. This said 24 while the declared default is 64 and
+            # the engine invented a third 24 of its own, so one knob carried three values and
+            # the guard that exists to catch that only scans environment defaults.
+            "max_selected_refs": int(
+                ranking.get("max_selected_refs")
+                or args.get("max_selected_refs")
+                or DEFAULT_MAX_SELECTED_REFS
+            ),
             "min_score": float(ranking.get("min_score") or args.get("min_score") or 0.0),
             "decay_half_life_ms": int(ranking.get("half_life_ms") or 0),
             "max_depth": int(ranking.get("max_depth") or 4),
