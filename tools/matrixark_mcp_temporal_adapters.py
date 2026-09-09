@@ -14,6 +14,7 @@ except ImportError:  # Direct script execution from tools/.
 from matrixark_mcp_core import record_vector
 import collections
 import queue
+import http.client
 import socket
 import threading
 import time
@@ -3536,6 +3537,16 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
         self._shared_process_mode = env_bool("MATRIXARK_RUST_PROXY_SHARED_PROCESS", True)
         self._proxy_socket = os.environ.get("MATRIXARK_RUST_PROXY_SOCKET", "").strip()
+        # HTTP straight to the proxy, replacing the unix socket AND the Python daemon that owned
+        # it. That daemon existed only because `--serve` reads its requests from a pipe: it
+        # parsed each request, re-serialised it onto the proxy's stdin, read the answer and
+        # re-serialised that too. Measured over 1,215 s of production-corpus soak it cost 21.9%
+        # of a core and 72 MB of RSS to move bytes between two file descriptors.
+        #
+        # Checked BEFORE the socket, so setting it is enough to switch a deployment over without
+        # having to unset the socket the old path is still configured with.
+        self._proxy_http = os.environ.get("MATRIXARK_RUST_PROXY_HTTP", "").strip()
+        self._http_local = threading.local()
         self._dedicated_pack_lanes_enabled = (
             env_bool("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", False)
         )
@@ -3810,21 +3821,26 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         }
         payload = json.dumps(command, separators=(",", ":")) + "\n"
         started = time.perf_counter()
-        if self._proxy_socket:
+        if self._proxy_http or self._proxy_socket:
+            transport = "http" if self._proxy_http else "daemon"
             try:
-                response = self._call_socket_json(
-                    op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs))
+                if self._proxy_http:
+                    response = self._call_http_json(
+                        op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs))
+                else:
+                    response = self._call_socket_json(
+                        op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs))
             except Exception:
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
-                self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane="daemon", wait_ms=0.0)
+                self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=transport, wait_ms=0.0)
                 raise
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             if not response.get("ok"):
-                self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True, lane="daemon", wait_ms=0.0)
+                self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True, lane=transport, wait_ms=0.0)
                 if not raise_on_error:
                     return response
                 raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
-            self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False, lane="daemon", wait_ms=0.0)
+            self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False, lane=transport, wait_ms=0.0)
             return response
         group, lane = self._choose_lane(op)
         semaphore: threading.BoundedSemaphore = lane["semaphore"]
@@ -3926,6 +3942,85 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         raise MatrixArkError(
             f"Rust TemporalStore {op} daemon timed out waiting for response from "
             f"{self._proxy_socket} after {budget_s:.1f}s"
+        )
+
+    def _http_connection(self, timeout_s: float):
+        """A per-thread keep-alive connection to the proxy.
+
+        Per-thread rather than shared: the lane pool calls this from several threads and
+        `HTTPConnection` is not safe to use from more than one at a time. Keep-alive rather than
+        connect-per-call because a new TCP connection per request would hand back a slice of
+        exactly the per-request overhead this transport exists to remove.
+        """
+        connection = getattr(self._http_local, "connection", None)
+        if connection is None:
+            connection = http.client.HTTPConnection(self._proxy_http, timeout=timeout_s)
+            self._http_local.connection = connection
+        else:
+            connection.timeout = timeout_s
+            try:
+                if connection.sock is not None:
+                    connection.sock.settimeout(timeout_s)
+            except OSError:
+                self._drop_http_connection()
+                return self._http_connection(timeout_s)
+        return connection
+
+    def _drop_http_connection(self) -> None:
+        connection = getattr(self._http_local, "connection", None)
+        self._http_local.connection = None
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:  # noqa: BLE001 - closing a dead socket must not mask the real error
+                pass
+
+    def _call_http_json(self, op: str, payload: str, caller_deadline_ms: float | None = None) -> Json:
+        """One request over HTTP, on the same budget the socket path uses.
+
+        A kept-alive connection can be closed by the server between calls, and the close is only
+        discovered on the next write -- so a failed send is retried EXACTLY once, on a fresh
+        connection. Once, because a genuine failure must surface rather than being retried into
+        the caller's deadline; and only for send/connection faults, never for a response the
+        proxy actually produced.
+        """
+        budget_s = _socket_budget_seconds(self.request_timeout_ms, caller_deadline_ms)
+        body = payload.encode("utf-8")
+        headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+        deadline = time.monotonic() + budget_s
+        last_error: Exception | None = None
+        for attempt in (0, 1):
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0:
+                break
+            try:
+                connection = self._http_connection(remaining_s)
+                connection.request("POST", "/", body=body, headers=headers)
+                response = connection.getresponse()
+                raw = response.read()
+            except (http.client.HTTPException, OSError) as exc:
+                # The connection is not reusable after a failure part-way through an exchange.
+                self._drop_http_connection()
+                last_error = exc
+                if attempt == 0:
+                    continue
+                raise MatrixArkError(
+                    f"Rust TemporalStore {op} failed over http to {self._proxy_http}: {exc}"
+                ) from exc
+            if response.status != 200:
+                raise MatrixArkError(
+                    f"Rust TemporalStore {op} returned HTTP {response.status} from "
+                    f"{self._proxy_http}: {raw[:200]!r}"
+                )
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise MatrixArkError(
+                    f"Rust TemporalStore {op} returned invalid JSON over http: {raw[:200]!r}"
+                ) from exc
+        raise MatrixArkError(
+            f"Rust TemporalStore {op} timed out over http to {self._proxy_http} after "
+            f"{budget_s:.1f}s" + (f" ({last_error})" if last_error else "")
         )
 
     def _record_call_metrics(
