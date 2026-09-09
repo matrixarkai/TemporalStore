@@ -41,10 +41,26 @@ impl LocalBlockStore {
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
     ) -> Result<BlockAddress, BlockStoreError> {
+        self.append_block_of_object(bytes, object_id, routing_bucket, 0)
+    }
+
+    /// Append one block, saying which block of its object it is.
+    ///
+    /// The index is the caller's to know, because the caller is what holds the object: a block
+    /// id is a position INSIDE an object here, not a number handed out across the whole store.
+    /// That is what makes the id small, and it is what removes the store-wide counter -- and
+    /// the walk that used to recover the counter by reading every block header in every slab.
+    pub fn append_block_of_object(
+        &self,
+        bytes: &[u8],
+        object_id: Option<u64>,
+        routing_bucket: Option<u32>,
+        block_index: u32,
+    ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
-        let mut page_id = inner.next_page_id;
+        let page_id = u64::from(block_index);
         let mut band_id = band_id_for_slab(inner.block_slab_id);
         let mut record = encode_page_record(
             bytes,
@@ -60,7 +76,6 @@ impl LocalBlockStore {
             slab_target_bytes,
         ) {
             roll_slab_inner(&mut inner)?;
-            page_id = inner.next_page_id;
             band_id = band_id_for_slab(inner.block_slab_id);
             record = encode_page_record(
                 bytes,
@@ -91,7 +106,6 @@ impl LocalBlockStore {
         if !defer_data_sync {
             file.sync_data()?;
         }
-        inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
         let block_slab_id = inner.block_slab_id;
         let write_offset = inner.write_offset;
@@ -136,8 +150,8 @@ impl LocalBlockStore {
         let mut compressed_records_written = 0u64;
         let mut compression_bytes_saved = 0u64;
 
-        for (bytes, object_id, routing_bucket) in records {
-            let mut page_id = inner.next_page_id;
+        for (bytes, object_id, routing_bucket, block_index) in records {
+            let page_id = u64::from(block_index);
             let mut band_id = band_id_for_slab(inner.block_slab_id);
             let mut record = encode_page_record(
                 bytes,
@@ -157,7 +171,6 @@ impl LocalBlockStore {
                     current.sync_data()?;
                 }
                 roll_slab_inner(&mut inner)?;
-                page_id = inner.next_page_id;
                 band_id = band_id_for_slab(inner.block_slab_id);
                 record = encode_page_record(
                     &bytes,
@@ -176,7 +189,6 @@ impl LocalBlockStore {
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;
             }
-            inner.next_page_id = inner.next_page_id.saturating_add(1);
             inner.write_offset += address.length;
             let block_slab_id = inner.block_slab_id;
             let write_offset = inner.write_offset;

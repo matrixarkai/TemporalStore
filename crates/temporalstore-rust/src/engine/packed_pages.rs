@@ -279,7 +279,15 @@ fn append_timestamped_kv_pages_inner(
         // page is several times its payload, because a value is written as decimal numbers.
         let writes: Vec<crate::block_store::BlockAppendRecord<'_>> = encoded_pages
             .iter()
-            .map(|packed| (packed.as_slice(), Some(object_id), Some(routing_bucket)))
+            .enumerate()
+            .map(|(block_index, packed)| {
+                (
+                    packed.as_slice(),
+                    Some(object_id),
+                    Some(routing_bucket),
+                    block_index as u32,
+                )
+            })
             .collect();
         // Carry these pages in this write's record, the way `append_value` does for a single
         // page. This writer batches straight to the block store, so it never staged anything: a

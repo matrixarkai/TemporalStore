@@ -748,8 +748,16 @@ impl TemporalEngine {
             .iter()
             // `publish_records` owns these bytes and outlives the append, so the store can
             // borrow them rather than take a copy of every page being published.
-            .map(|(_, _, bytes, object_id, routing_bucket)| {
-                (bytes.as_slice(), *object_id, *routing_bucket)
+            // This republishes a block that already exists, so it keeps the id it already
+            // has. A block id is an index inside its object; handing out a fresh one here
+            // would give the object two blocks claiming the same position.
+            .map(|(_, address, bytes, object_id, routing_bucket)| {
+                (
+                    bytes.as_slice(),
+                    *object_id,
+                    *routing_bucket,
+                    address.page_id().unwrap_or_default() as u32,
+                )
             })
             .collect::<Vec<BlockAppendRecord>>();
         let published_addresses = self

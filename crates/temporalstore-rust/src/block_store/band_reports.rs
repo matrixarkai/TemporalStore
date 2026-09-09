@@ -232,12 +232,12 @@ impl LocalBlockStore {
             .iter()
             .filter_map(|report| report.last_page_id)
             .max();
+        // Block ids are indexes INSIDE an object now, not a run of numbers handed out across
+        // the store, so "first to last covers exactly this many records" is no longer a
+        // property the store has: two objects in one slab both start at block 0. What still
+        // holds is that a slab holding records reports the range it holds.
         let page_id_continuity_ready = match (first_page_id, last_page_id) {
-            (Some(first), Some(last)) => {
-                stream_record_count > 0
-                    && last >= first
-                    && last.saturating_sub(first).saturating_add(1) == stream_record_count
-            }
+            (Some(first), Some(last)) => stream_record_count > 0 && last >= first,
             _ => stream_record_count == 0,
         };
         let logical_stream_read_ready = slab_reports.iter().any(|report| report.page_count > 0);
@@ -319,7 +319,7 @@ impl LocalBlockStore {
             blockers.push("band manifest is missing or inconsistent".to_string());
         }
         if !band_manifest_rebuild_ready {
-            blockers.push("band manifest does not match stream page-id boundaries".to_string());
+            blockers.push("band manifest does not match what the slabs hold".to_string());
         }
         if !band_manifest_disk_consistent {
             blockers.push(

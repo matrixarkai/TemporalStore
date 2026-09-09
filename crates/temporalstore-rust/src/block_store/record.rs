@@ -40,16 +40,17 @@ pub(super) const PAGE_RECORD_CHECKSUM_OFFSET: usize = PAGE_RECORD_MAGIC.len();
 /// than spending a byte on each. Thirty bits of length is a gigabyte per block.
 pub(super) const PAGE_RECORD_LENGTH_OFFSET: usize = PAGE_RECORD_CHECKSUM_OFFSET + 4;
 
-/// The block id, which stays only because `next_page_id` still reads it out of a slab walk.
-/// Scoping block ids per object -- as the comparison design does, where a block id is a
-/// `uint16` inside an object rather than a number across the whole store -- removes both this
-/// field and that walk.
+/// Which block of its object this is.
+///
+/// Two bytes, because a block id is an index INSIDE an object rather than a number handed out
+/// across the whole store. An object with more than 65,535 blocks is not a case this design
+/// serves; one with a handful is every case it does.
 pub(super) const PAGE_RECORD_BLOCK_ID_OFFSET: usize = PAGE_RECORD_LENGTH_OFFSET + 4;
 pub(super) const PAGE_RECORD_LENGTH_MASK: u32 = 0x3FFF_FFFF;
 pub(super) const PAGE_RECORD_CODEC_SHIFT: u32 = 30;
 
 /// The header is one size, always.
-pub(super) const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_BLOCK_ID_OFFSET + 4;
+pub(super) const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_BLOCK_ID_OFFSET + 2;
 
 /// The checksum is a CRC32C and nothing else, so the field is exactly its width.
 ///
@@ -233,7 +234,13 @@ pub(super) fn encode_page_record(
     record.extend_from_slice(PAGE_RECORD_MAGIC);
     record.extend_from_slice(&checksum_field);
     record.extend_from_slice(&sized.to_le_bytes());
-    record.extend_from_slice(&(page_id as u32).to_le_bytes());
+    if page_id > u64::from(u16::MAX) {
+        return Err(corrupt_page_envelope(
+            &BlockAddress::default(),
+            format!("block index {page_id} does not fit a block id field"),
+        ));
+    }
+    record.extend_from_slice(&(page_id as u16).to_le_bytes());
     debug_assert_eq!(record.len(), PAGE_RECORD_HEADER_LEN, "the header is one size");
     let stored_len = block_size;
     record.extend_from_slice(&stored_payload);
@@ -461,8 +468,8 @@ fn parse_page_record_header(
     );
     let block_size = (sized & PAGE_RECORD_LENGTH_MASK) as usize;
     let codec = (sized >> PAGE_RECORD_CODEC_SHIFT) as u8;
-    let block_id = u32::from_le_bytes(
-        record[PAGE_RECORD_BLOCK_ID_OFFSET..PAGE_RECORD_BLOCK_ID_OFFSET + 4]
+    let block_id = u16::from_le_bytes(
+        record[PAGE_RECORD_BLOCK_ID_OFFSET..PAGE_RECORD_BLOCK_ID_OFFSET + 2]
             .try_into()
             .expect("block id slice"),
     );
@@ -719,69 +726,6 @@ const PAGE_RECORD_WIDEST_HEADER_LEN: usize = PAGE_RECORD_HEADER_LEN;
 /// slab and millions.
 const PAGE_RECORD_SCAN_BUFFER_BYTES: usize = 256 * 1024;
 
-/// The largest page id recorded in one slab, read from record headers alone.
-///
-/// `next_page_id_at` wants a single number per slab. It used to get it from `inspect_slab`, which
-/// decodes every record to build a whole block-index report -- a zstd decompression, a checksum
-/// verify, a second SHA-256 hex-encoded into a `String`, and one report struct per page -- and
-/// then keeps only `last_page_id`. On a store whose pages are large and compressed that is tens
-/// of gigabytes of decompress-and-hash to produce one integer, and it is paid on every open.
-///
-/// The page id and the record length both live in the header, so the walk never needs a payload.
-/// Stepping the file by `header_len + stored_len` touches only headers, which is why this takes a
-/// `File` rather than a `&[u8]`: the slab never has to be read into memory at all.
-///
-/// It reads through a `BufReader` rather than seeking per record. Records here are small -- the
-/// live store holds ~3.4M of them averaging ~300 bytes -- so a seek and a read for each is
-/// millions of syscalls, and measured SLOWER than reading the whole slab. `seek_relative`
-/// drops buffered bytes in place when the destination is already in the buffer, so a run of
-/// small records costs one read per bufferful while a large record still seeks.
-///
-/// Halting is deliberately `inspect_slab`'s: a record that does not parse ends the walk, and the
-/// ids found before it stand. `LocalBlockStore::with_options` fences a torn tail on the active
-/// slab precisely because this scan halts early. Returning an error instead would reach the
-/// caller's `unwrap_or_default()` and reset the counter to 0 -- page-id reuse, and stale reads.
-pub(super) fn max_page_id_in_slab_file(
-    file: File,
-    slab_len: u64,
-    block_slab_id: u64,
-) -> Result<Option<u64>, BlockStoreError> {
-    let mut reader = BufReader::with_capacity(PAGE_RECORD_SCAN_BUFFER_BYTES, file);
-    let mut max_page_id: Option<u64> = None;
-    let mut offset: u64 = 0;
-    let mut header = [0_u8; PAGE_RECORD_WIDEST_HEADER_LEN];
-    while offset < slab_len {
-        let remaining = slab_len - offset;
-        let want = (PAGE_RECORD_WIDEST_HEADER_LEN as u64).min(remaining) as usize;
-        if reader.read_exact(&mut header[..want]).is_err() {
-            break;
-        }
-        let head = &header[..want];
-        if head.len() < PAGE_RECORD_HEADER_LEN || !head.starts_with(PAGE_RECORD_MAGIC) {
-            break;
-        }
-        let address =
-            BlockAddress::from_parts(block_slab_id, offset, 0, None, None, None, None, None);
-        let parsed = match parse_page_record_header(head, &address) {
-            Ok(parsed) => parsed,
-            Err(_) => break,
-        };
-        if let Some(page_id) = parsed.page_id {
-            max_page_id = Some(max_page_id.map_or(page_id, |current: u64| current.max(page_id)));
-        }
-        let record_len = parsed.header_len.saturating_add(parsed.stored_len) as u64;
-        if record_len == 0 || remaining < record_len {
-            break;
-        }
-        // Step over the payload without reading it. The header read above may have run past
-        // this record's end (a record shorter than the widest header) or stopped short of it,
-        // so the skip is signed; `seek_relative` handles both inside the buffer.
-        reader.seek_relative(record_len as i64 - want as i64)?;
-        offset += record_len;
-    }
-    Ok(max_page_id)
-}
-
 /// TS_BLOCK_INDEX_CHECKSUMS: recompute and record a hex digest per page record while inspecting.
 ///
 /// Default OFF. `inspect_slab` runs at every engine open, and this hashes each payload a second
@@ -965,7 +909,8 @@ mod page_record_format_tests {
     #[test]
     fn a_record_carries_its_size_and_block_id_and_nothing_the_index_holds() {
         let payload = b"header field round trip payload";
-        let block_id: u64 = 0x00BA_DC0D;
+        // A block id is an index inside its object, so it is small by construction.
+        let block_id: u64 = 9;
 
         let encoded = encode_page_record(
             payload,
@@ -996,13 +941,13 @@ mod page_record_format_tests {
     #[test]
     fn a_field_is_read_by_offset_not_by_walking() {
         let payload = b"offsets are constants";
-        let block_id: u64 = 4_000_000_000;
+        let block_id: u64 = u64::from(u16::MAX);
         let encoded =
             encode_page_record(payload, block_id, None, None, 0, BlockStoreOptions::default())
                 .expect("encode");
 
         let at = PAGE_RECORD_BLOCK_ID_OFFSET;
-        let read_directly = u32::from_le_bytes(encoded.bytes[at..at + 4].try_into().unwrap());
+        let read_directly = u16::from_le_bytes(encoded.bytes[at..at + 2].try_into().unwrap());
         assert_eq!(
             u64::from(read_directly),
             block_id,
