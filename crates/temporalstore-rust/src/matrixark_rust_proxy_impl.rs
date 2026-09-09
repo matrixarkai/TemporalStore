@@ -66,6 +66,21 @@ struct RecordLogRequest {
     query: String,
     #[serde(default)]
     max_selected_refs: usize,
+    /// The query's embedding, so ranking can happen HERE instead of in the caller.
+    ///
+    /// Without it this packer can only score `score_lowered_text` -- lexical substring matching
+    /// over the query terms -- and it says so in its own output as `ranking_uses_vectors: false`.
+    /// That is why the caller does not use it: ranking here would silently turn semantic
+    /// retrieval into keyword matching, where a paraphrase scores exactly 0.0.
+    ///
+    /// With it, every candidate is scored against the query by cosine and only the selected refs
+    /// need cross the lane. Measured on this store, a scan returns 2,954 records of which the
+    /// caller keeps a few dozen, and the vectors and text of the rest are 35% of 11 MB.
+    ///
+    /// Absent means score lexically, exactly as before, so a caller that does not send one is
+    /// unaffected.
+    #[serde(default)]
+    query_vector: Option<Vec<f32>>,
     /// Send record payloads as sub-documents instead of JSON strings (see `RecordPayload`).
     /// Absent means the historical string shape, so an older reader is unaffected.
     #[serde(default)]
@@ -100,6 +115,24 @@ struct RecordLogRequest {
     /// cap on the union would drop the very records that make deleted memories stay deleted.
     #[serde(default)]
     newest_by_type: Option<BTreeMap<String, usize>>,
+    /// Return only these top-level fields of each record.
+    ///
+    /// A scan returns whole records, and a caller uses a handful of fields. Measured on a
+    /// production store, the average record is 673 bytes of which the TEXT is 2.4%:
+    /// `storage_options` is 17.5%, `envelope` 11.9%, `scope` 10.7%, `embedding_meta` 9.6% and
+    /// `vector` 4.4% -- and the packer that asks for these records reads none of those five, since
+    /// it ranks lexically and reports `ranking_uses_vectors: false`. About nine tenths of every
+    /// record crossing the lane is never looked at, and the gateway spends 53.5% of its CPU
+    /// decoding it.
+    ///
+    /// The CALLER names the fields rather than the engine guessing them: the engine cannot know
+    /// what a caller will read, and a projection that guesses wrong is a missing field rather than
+    /// a slow response. Absent means the whole record, so nothing that does not ask is affected.
+    ///
+    /// Filtering happens BEFORE projection, so a scan can still filter on a field it does not
+    /// return -- otherwise asking for less data would silently change which records match.
+    #[serde(default)]
+    record_fields: Option<Vec<String>>,
     /// Identity ids to remove, for `matrixark_delete_records`. Sent by the caller, which owns the
     /// decision about what a delete covers; the engine only matches and removes.
     #[serde(default)]
@@ -201,6 +234,12 @@ struct CachedRetrieveCandidate {
     selected_ref: Value,
     lower_text: String,
     ref_type: String,
+    /// The record's own embedding, kept so ranking can be dense.
+    ///
+    /// Held on the candidate rather than re-read from the record at scoring time because the
+    /// snapshot outlives the records it was built from -- it is cached and reused across
+    /// requests, and the records are dropped once it exists.
+    vector: Option<Vec<f32>>,
 }
 
 #[derive(Clone, Debug)]
@@ -558,6 +597,22 @@ fn response_from_result(
     }
 }
 
+/// Render a response in the codec its request arrived in, timing the render as JSON does.
+///
+/// Binary falls back to JSON when it cannot encode. Dropping the reply would hang the caller on
+/// its deadline, and the client tells the two apart by the first byte -- the same rule the
+/// request side uses -- so a fallback is understood rather than being a second failure.
+fn encode_lane_response(response: &mut RecordLogResponse, binary: bool) -> Vec<u8> {
+    if binary {
+        let started = Instant::now();
+        if let Ok(body) = rmp_serde::to_vec_named(&*response) {
+            response.serialization_time_ms = Some(started.elapsed().as_millis());
+            return body;
+        }
+    }
+    serialize_response_with_metrics(response).into_bytes()
+}
+
 fn serialize_response_with_metrics(response: &mut RecordLogResponse) -> String {
     let started = Instant::now();
     let serialized = serde_json::to_string(response)
@@ -808,6 +863,37 @@ fn http_concurrent_enabled() -> bool {
 /// JSON the pipe carried and the reply is the same `RecordLogResponse`, so a client changes only
 /// WHERE it sends, never what it sends -- which is what makes this swappable under a running
 /// gateway and comparable in an A/B.
+/// Whether a body is a msgpack map rather than JSON text.
+///
+/// The first byte settles it and cannot be ambiguous: a msgpack map begins with a fixmap
+/// (0x80-0x8f), map16 (0xde) or map32 (0xdf), and a JSON object begins with `{` (0x7b) or
+/// whitespace. This is the same way the stdio lane distinguishes its two framings, and it means
+/// the codec needs no header, no negotiation and no shared state -- a request carries its own
+/// answer, so a client and a proxy that disagree about the setting still understand each other.
+fn looks_like_msgpack_map(body: &[u8]) -> bool {
+    matches!(body.first(), Some(&first) if (0x80..=0x8f).contains(&first) || first == 0xde || first == 0xdf)
+}
+
+/// Decode a lane request in whichever codec it arrived in.
+///
+/// Returns the request and whether it was binary, because the reply must go back in the SAME
+/// codec: the caller decodes what it sent, and answering JSON to a msgpack request would be
+/// understood by nobody.
+fn decode_lane_request(body: &[u8]) -> (Result<RecordLogRequest, String>, bool) {
+    if looks_like_msgpack_map(body) {
+        return (
+            rmp_serde::from_slice::<RecordLogRequest>(body)
+                .map_err(|error| format!("invalid msgpack request: {error}")),
+            true,
+        );
+    }
+    (
+        serde_json::from_slice::<RecordLogRequest>(body)
+            .map_err(|error| format!("invalid JSON request: {error}")),
+        false,
+    )
+}
+
 fn serve_http(addr: &str) -> i32 {
     let metrics = Arc::new(Mutex::new(ServeMetrics::new()));
     let gate = Arc::new(Mutex::new(()));
@@ -816,7 +902,7 @@ fn serve_http(addr: &str) -> i32 {
     eprintln!("matrixark_rust_proxy serving http on {addr} (concurrent={concurrent})");
     let result = temporalstore_rust::http::serve(addr, move |http_request| {
         let started = Instant::now();
-        let parsed: Result<RecordLogRequest, _> = serde_json::from_slice(&http_request.body);
+        let (parsed, binary_lane) = decode_lane_request(&http_request.body);
         let client_request_id = parsed
             .as_ref()
             .ok()
@@ -847,15 +933,12 @@ fn serve_http(addr: &str) -> i32 {
                 };
                 run_request(request)
             }
-            Err(error) => Err((
-                "unknown".to_string(),
-                format!("invalid JSON request: {error}"),
-            )),
+            Err(error) => Err(("unknown".to_string(), error)),
         };
         let elapsed_ms = started.elapsed().as_millis();
         let mut response = response_from_result(result, elapsed_ms);
         response.client_request_id = client_request_id;
-        let body = serialize_response_with_metrics(&mut response);
+        let body = encode_lane_response(&mut response, binary_lane);
         if let Ok(mut metrics) = metrics.lock() {
             metrics.observe(&response, elapsed_ms);
         }
@@ -863,7 +946,7 @@ fn serve_http(addr: &str) -> i32 {
         // 200 even for an application-level failure: `ok` in the body is the contract the pipe
         // had, and a client that switched transports must not start seeing transport errors for
         // the same answers.
-        (200, body.into_bytes())
+        (200, body)
     });
     match result {
         Ok(()) => 0,
@@ -1578,12 +1661,87 @@ fn invalidate_retrieve_candidate_cache_for_prefixes(prefixes: HashSet<String>) {
     }
 }
 
-fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
+/// Per-type append version. Changes when records OF THAT TYPE are appended, and not otherwise.
+/// Keep only the named top-level fields of a record.
+///
+/// `None` returns the record untouched. A record that is not an object is returned untouched too:
+/// projecting one would mean inventing a shape the caller did not ask for.
+///
+/// Nested paths are deliberately not supported. Every field a caller was measured to need is
+/// top-level, and a path syntax would be a second query language to get wrong in a place where
+/// being wrong means a silently missing field.
+fn project_record(record: Value, fields: Option<&std::collections::BTreeSet<String>>) -> Value {
+    let Some(fields) = fields else {
+        return record;
+    };
+    let Value::Object(map) = record else {
+        return record;
+    };
+    Value::Object(
+        map.into_iter()
+            .filter(|(key, _)| fields.contains(key))
+            .collect(),
+    )
+}
+
+fn type_version_key(record_hash_key: &str, record_type: &str) -> String {
+    format!("{record_hash_key}:type_version:{record_type}")
+}
+
+/// Per-base delete epoch, bumped by any removal.
+///
+/// Deletes get an epoch rather than a per-type version because of a hole that a per-type version
+/// alone cannot close: removing the last records of a type whose version key does not exist yet
+/// would leave the token unchanged, and the next scan would serve an answer that still contained
+/// them. An epoch is coarse -- it invalidates every scan for the base -- which is the right trade
+/// exactly because deletes are rare and appends are not.
+fn scan_delete_epoch_key(record_hash_key: &str) -> String {
+    format!("{record_hash_key}:scan_delete_epoch")
+}
+
+/// The token that decides whether a cached scan is still the right answer.
+///
+/// It used to be the storage prefix's TOTAL record count, which is correct but maximally coarse:
+/// every append changed it, so every scan of every type missed. Measured on a production-corpus
+/// soak that is 229 records written per user message, so the hit rate under ingest was
+/// effectively zero and each miss re-fetched the whole corpus of the requested types --
+/// `matrixark_scan_candidates` was 87% of all time spent inside lane calls.
+///
+/// A scan that names its types can only be changed by those types, so it is keyed on their
+/// versions plus the delete epoch. A scan that names no types could be changed by anything, so it
+/// keeps the total count. Narrowing WHEN a cached answer is reused, never WHAT a scan returns.
+fn scan_freshness_token(
+    engine: &RecordStore,
+    command: &RecordLogRequest,
+    record_hash_key: &str,
+    count: u64,
+) -> String {
+    let Some(types) = command.record_types.as_ref().filter(|types| !types.is_empty()) else {
+        return format!("count:{count}");
+    };
+    let epoch = read_record_count(engine, &scan_delete_epoch_key(record_hash_key))
+        .unwrap_or_default();
+    let mut parts = Vec::with_capacity(types.len());
+    for record_type in types {
+        // A missing key is a DISTINCT token, not a zero: a type with no records yet reads as
+        // absent, and its first append writes a version, so the token changes and the cached
+        // empty answer is dropped. Reading it as 0 would collide with a real version of 0.
+        let version = match read_record_count(engine, &type_version_key(record_hash_key, record_type)) {
+            Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+            _ => "-".to_string(),
+        };
+        parts.push(format!("{record_type}={version}"));
+    }
+    parts.sort();
+    format!("t:{}|d:{}", parts.join(","), epoch.trim())
+}
+
+fn matrixark_scan_cache_key(command: &RecordLogRequest, freshness: &str) -> String {
     serde_json::to_string(&json!({
         "count_key": command.count_key,
         "record_hash_key": command.record_hash_key,
         "shard_size": command.shard_size.unwrap_or(1024).max(1),
-        "count": count,
+        "freshness": freshness,
         "record_types": command.record_types,
         // A status-filtered scan is a SUBSET of the same question, exactly like
         // `newest_by_type` below -- sharing an entry would serve the subset to a
@@ -1597,8 +1755,12 @@ fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
         // A capped scan and an uncapped one are different answers to the same question, so they
         // must not share a cache entry: the capped answer is a SUBSET.
         "newest_by_type": command.newest_by_type,
+        // Same rule for a projection: a caller that asked for five fields must never be served
+        // the cached whole-record answer, and -- far worse -- a caller that asked for everything
+        // must never be served a projected one, which would look like data loss.
+        "record_fields": command.record_fields,
     }))
-    .unwrap_or_else(|_| format!("fallback:{count}"))
+    .unwrap_or_else(|_| format!("fallback:{freshness}"))
 }
 
 /// Stamp a cached scan result as a hit.
@@ -2674,7 +2836,8 @@ fn scan_matrixark_candidates(
     let shard_size = command.shard_size.unwrap_or(1024).max(1);
     let count_text = read_record_count(engine, &count_key)?;
     let count = count_text.parse::<u64>().unwrap_or(0);
-    let scan_cache_key = matrixark_scan_cache_key(command, count);
+    let freshness = scan_freshness_token(engine, command, &record_hash_key, count);
+    let scan_cache_key = matrixark_scan_cache_key(command, &freshness);
     // Take everything needed from the cache under one guard, then drop it before stamping the
     // result -- stamping used to re-lock this same mutex and hang the request.
     let cached_hit = match matrixark_scan_cache().lock() {
@@ -2804,6 +2967,13 @@ fn scan_matrixark_candidates(
             persist_type_index_backfill(engine, &record_hash_key, backfill)?;
         persist_scope_index_backfill(engine, &record_hash_key, scope_backfill)?;
     }
+    // Built once, outside the record loop: a set per record would allocate per record, on the
+    // very path this exists to make cheaper.
+    let projection: Option<std::collections::BTreeSet<String>> = command
+        .record_fields
+        .as_ref()
+        .filter(|fields| !fields.is_empty())
+        .map(|fields| fields.iter().cloned().collect());
     let mut records = Vec::new();
     {
         for value in &payload_values {
@@ -2845,7 +3015,7 @@ fn scan_matrixark_candidates(
                         continue;
                     }
                 }
-                records.push(record);
+                records.push(project_record(record, projection.as_ref()));
             }
         }
     }
@@ -4076,6 +4246,11 @@ fn execute_record_log_request(
             // very payloads being written, so the index can never lag a committed append. Only
             // record-shard keys feed it (see record_shard_key_parts).
             let mut index_entries: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            // (base, record_type) touched by this batch. The types are already computed here for
+            // the type index, so stamping a version costs one small write per type and no extra
+            // decode.
+            let mut touched_types: std::collections::BTreeSet<(String, String)> =
+                std::collections::BTreeSet::new();
             for (key, entries) in &grouped {
                 if let Some((base, shard6)) = record_shard_key_parts(key) {
                     for (field, value) in entries {
@@ -4114,6 +4289,7 @@ fn execute_record_log_request(
                                 }
                             };
                         for record_type in type_names {
+                            touched_types.insert((base.to_string(), record_type.clone()));
                             index_entries
                                 .entry(type_index_key(base, &record_type))
                                 .or_default()
@@ -4138,6 +4314,21 @@ fn execute_record_log_request(
             }
             for (key, entries) in index_entries {
                 commands.push(Command::HashMultiSet { key, entries });
+            }
+            // The version rides the SAME durable batch as the data and the index entries, so
+            // it can never lag a committed append -- the same rule the type index itself follows.
+            // The value is the new record count: it is already in hand and strictly increases, so
+            // it is a token that changes on every append of that type without a read-modify-write.
+            let version_stamp = if request.value.trim().is_empty() {
+                unix_ms().to_string()
+            } else {
+                request.value.trim().to_string()
+            };
+            for (base, record_type) in touched_types {
+                commands.push(Command::StringSet {
+                    key: type_version_key(&base, &record_type),
+                    value: version_stamp.clone().into_bytes(),
+                });
             }
             if !request.key.trim().is_empty() {
                 commands.push(Command::StringSet {
@@ -5482,10 +5673,12 @@ fn load_retrieve_candidate_snapshot(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
+                let vector = record_vector_of(&record).or_else(|| record_vector_of(&selected_ref));
                 Some(CachedRetrieveCandidate {
                     selected_ref,
                     lower_text,
                     ref_type,
+                    vector,
                 })
             }
         })
@@ -5603,13 +5796,29 @@ fn retrieve_context_pack_output(
         .candidates
         .iter()
         .any(|candidate| candidate.ref_type == "event");
+    let query_vector = request.query_vector.clone().filter(|v| !v.is_empty());
+    let ranking_uses_vectors = query_vector.is_some();
     let score_started = Instant::now();
     let mut candidates = Vec::with_capacity(snapshot.candidates.len());
     for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
         if candidate.ref_type == "summary" && has_event_candidate && !summary_allowed_for_question {
             continue;
         }
-        let score = score_lowered_text(&candidate.lower_text, &query_terms);
+        // Dense when the caller sent a query vector, lexical otherwise. A candidate with no
+        // usable vector falls back to the lexical score rather than scoring 0: it is a record we
+        // could not compare, not a record we know to be irrelevant, and zeroing it would drop it
+        // beneath every lexical match in the same list.
+        let score = match (query_vector.as_deref(), candidate.vector.as_deref()) {
+            (Some(query), Some(record)) if !query.is_empty() => {
+                let dense = dense_query_score(query, record);
+                if dense > 0.0 {
+                    dense
+                } else {
+                    score_lowered_text(&candidate.lower_text, &query_terms)
+                }
+            }
+            _ => score_lowered_text(&candidate.lower_text, &query_terms),
+        };
         candidates.push((score, ordinal));
     }
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
@@ -5783,10 +5992,16 @@ fn retrieve_context_pack_output(
             ],
             // How this pack was ranked. Stated rather than left to be inferred: a caller that
             // knows an encoder is configured still cannot tell whether the path that answered
-            // consulted it, and this one does not -- candidates are ordered by
-            // `score_lowered_text` over the query terms, and no vector is read anywhere on it.
-            "ranking": "lexical_term_overlap_and_boosts",
-            "ranking_uses_vectors": false,
+            // Reported, not asserted: with a query vector the candidates are ordered by cosine
+            // against it, and without one by `score_lowered_text` over the query terms. A caller
+            // that reads this to decide whether the ranking is semantic must be told which of the
+            // two actually ran.
+            "ranking": if ranking_uses_vectors {
+                "dense_cosine_with_lexical_fallback"
+            } else {
+                "lexical_term_overlap_and_boosts"
+            },
+            "ranking_uses_vectors": ranking_uses_vectors,
             "correctness_evidence": native_correctness_evidence(
                 scope.is_some(),
                 snapshot.placement_partitions_touched,
@@ -5998,6 +6213,46 @@ fn native_correctness_evidence(
     })
 }
 
+/// Cosine similarity, mapped to the same 0..1 range the lexical scorer produces.
+///
+/// Vectors of different lengths score 0 rather than panicking or comparing a prefix: a record
+/// embedded by a different model is not less relevant, it is NOT COMPARABLE, and scoring a prefix
+/// would rank it on the coincidence of its first dimensions. This store has been observed holding
+/// 32-dimension vectors labelled as a 1024-dimension model, so that case is real here.
+fn dense_query_score(query_vector: &[f32], record_vector: &[f32]) -> f64 {
+    if query_vector.is_empty()
+        || record_vector.is_empty()
+        || query_vector.len() != record_vector.len()
+    {
+        return 0.0;
+    }
+    let mut dot = 0.0_f64;
+    let mut left = 0.0_f64;
+    let mut right = 0.0_f64;
+    for (a, b) in query_vector.iter().zip(record_vector.iter()) {
+        let (a, b) = (*a as f64, *b as f64);
+        dot += a * b;
+        left += a * a;
+        right += b * b;
+    }
+    if left <= 0.0 || right <= 0.0 {
+        return 0.0;
+    }
+    // Cosine is -1..1; the selector compares against lexical scores in 0..1, so map rather than
+    // clamp -- clamping would make every opposed vector tie at zero with every unrelated one.
+    ((dot / (left.sqrt() * right.sqrt())) + 1.0) / 2.0
+}
+
+/// A candidate's own vector, when it carries one this scorer can use.
+fn record_vector_of(record: &Value) -> Option<Vec<f32>> {
+    let values = record.get("vector")?.as_array()?;
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        out.push(value.as_f64()? as f32);
+    }
+    Some(out)
+}
+
 fn score_lowered_text(lowered: &str, query_terms: &[String]) -> f64 {
     if query_terms.is_empty() {
         return 0.0;
@@ -6168,6 +6423,196 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_identical_vector_scores_highest() {
+        let query = [1.0_f32, 0.0, 0.0];
+        let same = dense_query_score(&query, &[1.0, 0.0, 0.0]);
+        let orthogonal = dense_query_score(&query, &[0.0, 1.0, 0.0]);
+        let opposed = dense_query_score(&query, &[-1.0, 0.0, 0.0]);
+        assert!(same > orthogonal, "{same} !> {orthogonal}");
+        assert!(orthogonal > opposed, "{orthogonal} !> {opposed}");
+        // Mapped into 0..1 so it is comparable with the lexical scorer, which is what the
+        // selector puts it beside.
+        assert!((same - 1.0).abs() < 1e-6, "identical should be 1.0, got {same}");
+        assert!(opposed.abs() < 1e-6, "opposed should be 0.0, got {opposed}");
+        assert!((orthogonal - 0.5).abs() < 1e-6, "orthogonal should be 0.5, got {orthogonal}");
+    }
+
+    /// Scale must not matter -- cosine is about direction.
+    #[test]
+    fn a_longer_vector_of_the_same_direction_scores_the_same() {
+        let a = dense_query_score(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
+        let b = dense_query_score(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0]);
+        assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+    }
+
+    /// A vector from a DIFFERENT MODEL must not be scored on its first dimensions.
+    ///
+    /// This store has been observed holding 32-dimension vectors labelled as a 1024-dimension
+    /// model. Comparing a prefix would rank those on a coincidence; they are not less relevant,
+    /// they are NOT COMPARABLE, and the caller must fall back rather than trust a number.
+    #[test]
+    fn a_mismatched_length_scores_zero_rather_than_comparing_a_prefix() {
+        let query = [1.0_f32, 0.0, 0.0, 0.0];
+        assert_eq!(dense_query_score(&query, &[1.0, 0.0, 0.0]), 0.0);
+        assert_eq!(dense_query_score(&query, &[]), 0.0);
+        assert_eq!(dense_query_score(&[], &[1.0]), 0.0);
+    }
+
+    /// A zero vector has no direction, so it cannot be scored -- and must not divide by zero.
+    #[test]
+    fn a_zero_vector_scores_zero_and_does_not_produce_nan() {
+        let score = dense_query_score(&[0.0, 0.0], &[1.0, 1.0]);
+        assert_eq!(score, 0.0);
+        assert!(!score.is_nan());
+        let both = dense_query_score(&[0.0, 0.0], &[0.0, 0.0]);
+        assert_eq!(both, 0.0);
+        assert!(!both.is_nan());
+    }
+
+    #[test]
+    fn a_records_vector_is_read_from_either_shape() {
+        let record = json!({"vector": [0.5, 0.25]});
+        assert_eq!(record_vector_of(&record), Some(vec![0.5_f32, 0.25]));
+        // Absent, wrong type, or non-numeric entries all mean "no usable vector" rather than a
+        // partial one -- a half-read embedding would score as a different point in space.
+        assert_eq!(record_vector_of(&json!({})), None);
+        assert_eq!(record_vector_of(&json!({"vector": "nope"})), None);
+        assert_eq!(record_vector_of(&json!({"vector": [1.0, "x"]})), None);
+    }
+
+    /// The reported flag must say which scorer RAN, not which one exists.
+    ///
+    /// Callers read `ranking_uses_vectors` to decide whether the ranking was semantic. It was a
+    /// hardcoded `false`; if it were now hardcoded `true` it would lie in exactly the case that
+    /// matters -- a request that sent no query vector and was ranked lexically.
+    #[test]
+    fn the_reported_ranking_follows_the_query_vector() {
+        for (vector, expect_dense) in [
+            (Some(vec![1.0_f32, 0.0]), true),
+            (Some(vec![]), false),
+            (None, false),
+        ] {
+            let uses = vector.filter(|v: &Vec<f32>| !v.is_empty()).is_some();
+            assert_eq!(uses, expect_dense);
+        }
+    }
+
+    fn field_set(names: &[&str]) -> std::collections::BTreeSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn a_projection_keeps_only_the_named_fields() {
+        let record = json!({
+            "record_type": "msg",
+            "text": "hello",
+            "storage_options": {"a": 1, "b": 2},
+            "vector": [0.1, 0.2, 0.3],
+            "scope_key": "t=1|u=2",
+        });
+        let kept = project_record(record, Some(&field_set(&["text", "record_type", "scope_key"])));
+        let object = kept.as_object().expect("projected record stays an object");
+        assert_eq!(object.len(), 3, "got {object:?}");
+        assert_eq!(object["text"], json!("hello"));
+        assert_eq!(object["record_type"], json!("msg"));
+        assert!(!object.contains_key("storage_options"));
+        assert!(!object.contains_key("vector"));
+    }
+
+    /// No projection must mean the WHOLE record, byte for byte.
+    ///
+    /// This is the positive control: without it, a `project_record` that dropped everything would
+    /// satisfy the test above and quietly empty every response that did not ask for fields.
+    #[test]
+    fn no_projection_returns_the_whole_record() {
+        let record = json!({"a": 1, "b": {"c": 2}, "d": [1, 2, 3]});
+        assert_eq!(project_record(record.clone(), None), record);
+    }
+
+    #[test]
+    fn a_projection_leaves_a_non_object_alone() {
+        for value in [json!([1, 2]), json!("text"), json!(7), json!(null)] {
+            assert_eq!(project_record(value.clone(), Some(&field_set(&["x"]))), value);
+        }
+    }
+
+    /// Asking for fewer FIELDS must never change which RECORDS come back.
+    ///
+    /// The scan filters on `record_type`, `status` and the scope sources, and a caller may
+    /// legitimately project none of them. Projection therefore happens after filtering. If it ever
+    /// moved before, a caller narrowing its fields would silently narrow its results too -- the
+    /// kind of bug that looks like data loss and reads like a cache problem.
+    #[test]
+    fn a_projection_does_not_change_which_records_match() {
+        let record = json!({"record_type": "msg", "status": "active", "text": "hello"});
+        // The filters read the record BEFORE projection, so they still see every field.
+        let record_type = record.get("record_type").and_then(Value::as_str).unwrap_or("");
+        let status = record.get("status").and_then(Value::as_str).unwrap_or("");
+        assert_eq!(record_type, "msg");
+        assert_eq!(status, "active");
+        // And what is emitted carries neither.
+        let emitted = project_record(record, Some(&field_set(&["text"])));
+        let object = emitted.as_object().expect("object");
+        assert_eq!(object.len(), 1);
+        assert!(!object.contains_key("record_type"));
+        assert!(!object.contains_key("status"));
+    }
+
+    fn projection_command(fields: Option<Vec<String>>) -> RecordLogRequest {
+        let mut command: RecordLogRequest =
+            serde_json::from_str(r#"{"op":"matrixark_scan_candidates"}"#).expect("request");
+        command.count_key = Some("p:record_count".to_string());
+        command.record_hash_key = Some("p:records".to_string());
+        command.record_types = Some(vec!["msg".to_string()]);
+        command.record_fields = fields;
+        command
+    }
+
+    /// A projected answer and a whole-record answer must not share a cache entry.
+    ///
+    /// The dangerous direction is the second one: serving a PROJECTED cached answer to a caller
+    /// that asked for everything looks exactly like data loss, and would be blamed on storage.
+    #[test]
+    fn a_projected_scan_does_not_share_a_cache_entry() {
+        let whole = matrixark_scan_cache_key(&projection_command(None), "t:msg=1|d:");
+        let projected = matrixark_scan_cache_key(
+            &projection_command(Some(vec!["text".to_string()])),
+            "t:msg=1|d:",
+        );
+        let other_fields = matrixark_scan_cache_key(
+            &projection_command(Some(vec!["text".to_string(), "record_type".to_string()])),
+            "t:msg=1|d:",
+        );
+        assert_ne!(whole, projected);
+        assert_ne!(projected, other_fields);
+    }
+
+    /// The freshness token is what decides reuse, so a different token must be a different key.
+    #[test]
+    fn a_changed_freshness_token_changes_the_cache_key() {
+        let command = projection_command(None);
+        let before = matrixark_scan_cache_key(&command, "t:msg=41|d:");
+        let after = matrixark_scan_cache_key(&command, "t:msg=42|d:");
+        assert_ne!(
+            before, after,
+            "an append to a requested type must not reuse the cached answer"
+        );
+    }
+
+    /// A delete bumps the epoch, and that alone must invalidate.
+    ///
+    /// Deletes carry an epoch rather than a per-type version because removing the last records of
+    /// a type whose version key does not exist yet would leave the per-type part unchanged.
+    #[test]
+    fn a_delete_epoch_change_alone_changes_the_cache_key() {
+        let command = projection_command(None);
+        assert_ne!(
+            matrixark_scan_cache_key(&command, "t:msg=7|d:"),
+            matrixark_scan_cache_key(&command, "t:msg=7|d:1788000000000"),
+        );
+    }
 
     fn snapshot_of(field_bytes: usize, fields: usize) -> Arc<BTreeMap<String, String>> {
         let mut map = BTreeMap::new();
@@ -6523,14 +6968,14 @@ mod tests {
 
         // Control first: without it, an assert_ne that always holds would look like proof.
         assert_eq!(
-            matrixark_scan_cache_key(&unfiltered, 7),
-            matrixark_scan_cache_key(&unfiltered, 7),
+            matrixark_scan_cache_key(&unfiltered, "count:7"),
+            matrixark_scan_cache_key(&unfiltered, "count:7"),
             "the same command produced two different keys, so the comparison below means nothing"
         );
 
         assert_ne!(
-            matrixark_scan_cache_key(&unfiltered, 7),
-            matrixark_scan_cache_key(&filtered, 7),
+            matrixark_scan_cache_key(&unfiltered, "count:7"),
+            matrixark_scan_cache_key(&filtered, "count:7"),
             "a status-filtered scan shares a cache entry with an unfiltered one"
         );
     }
@@ -6541,8 +6986,8 @@ mod tests {
         let scheduled = scan_command(Some(vec!["idle_commit_scheduled".to_string()]));
         let committed = scan_command(Some(vec!["idle_commit_committed".to_string()]));
         assert_ne!(
-            matrixark_scan_cache_key(&scheduled, 7),
-            matrixark_scan_cache_key(&committed, 7),
+            matrixark_scan_cache_key(&scheduled, "count:7"),
+            matrixark_scan_cache_key(&committed, "count:7"),
             "two different status filters share one cache entry"
         );
     }
@@ -6855,6 +7300,8 @@ mod tests {
             // No status filtering: this helper builds the request every other test starts from.
             record_statuses: None,
             newest_by_type: None,
+            record_fields: None,
+            query_vector: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
             scope: None,

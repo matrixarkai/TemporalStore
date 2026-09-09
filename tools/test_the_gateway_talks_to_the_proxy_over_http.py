@@ -211,5 +211,39 @@ class HttpTransportTests(unittest.TestCase):
             self.assertEqual(got["value"], f"v{i}", f"key c{i} came back wrong")
 
 
+class BinaryLaneTests(HttpTransportTests):
+    """The msgpack lane must give the SAME answers as the text lane.
+
+    Subclasses the text suite deliberately: every case above re-runs with the request encoded as
+    msgpack, and each is still compared against the PIPE's JSON answer. So this asserts the codecs
+    agree, not merely that binary parses -- a msgpack path that quietly dropped or retyped a field
+    would pass a round-trip test of its own and fail here.
+    """
+
+    def over_http(self, request):
+        try:
+            import msgpack
+        except ImportError:
+            raise unittest.SkipTest("msgpack not installed")
+        body = msgpack.packb(request, use_bin_type=True)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+        try:
+            conn.request("POST", "/", body=body,
+                         headers={"Content-Type": "application/msgpack",
+                                  "Content-Length": str(len(body))})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            raw = resp.read()
+        finally:
+            conn.close()
+        # The reply must come back BINARY, not text: the proxy answers in the codec it was asked
+        # in, and a silent downgrade to JSON would still parse here while losing the whole point.
+        self.assertTrue(
+            raw and (0x80 <= raw[0] <= 0x8F or raw[0] in (0xDE, 0xDF)),
+            f"expected a msgpack map reply, first byte was {raw[:1]!r}",
+        )
+        return msgpack.unpackb(raw, raw=False, strict_map_key=False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

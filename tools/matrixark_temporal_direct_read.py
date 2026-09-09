@@ -364,6 +364,65 @@ class _TemporalDirectReadMixin:
         pack["recall_policy"] = recall_policy
         return pack
 
+    # The fields this scan's consumers actually read, from an audit of 2,954 real records against
+    # the six modules that receive scan results: this one, matrixark_mcp_serving_records,
+    # matrixark_local_adapter_retrieval, matrixark_local_adapter_retrieve, matrixark_mcp_core_scoring
+    # and matrixark_mcp_budget_policies. A field counts as READ only where it is subscripted or
+    # .get()-ed in one of those -- not merely mentioned, because the write path names every field it
+    # stores, and not in tests, because a test asserting a field exists is not a consumer.
+    #
+    # An audit over all of tools/ instead reported 99.6% of fields "needed", which is the wrong
+    # answer arrived at by the wrong scope: it was matching the ingest path, dashboards and hooks.
+    #
+    # Left out: twelve fields totalling 14.8% of record bytes with no reader in any consumer --
+    # access_scope (7.13%; only the copy nested inside embedding_meta is consulted), placement_key
+    # (3.21%), source_memory_layer_counts, memory_layer, placement_hash, extraction_context_event_ids,
+    # parent_segment_hashes, parent_segment_hash, event_time_ms, original_source_role, source_role,
+    # async_processing.
+    #
+    # Adding a field here is safe; removing one is not. Anything uncertain stays IN: a missing field
+    # is a wrong answer that reads as data loss, while an extra field is only bytes.
+    SCAN_RECORD_FIELDS = (
+        "text", "vector", "embedding_meta",
+        "record_type", "status", "scope_key", "context_event_key", "event_id_hash",
+        "node_hash", "segment_hash", "batch_id_hash", "session_id", "entity_type",
+        "event_time_key", "timestamp_key_ms", "updated_at_ms",
+        "context_event_parent_hash", "context_event_parent_type",
+        "session_continuity", "final_session_boundary",
+        "classification", "event_type", "batch_event_type", "extraction_phase",
+        "memory_scope", "source_kind", "profile_memory_class", "profile_memory_kind",
+        "source_memory_selection_policy_counts", "source_memory_selection_policies",
+        "source_memory_layers", "source_memory_scopes", "source_session_continuities",
+        "source_role_counts", "source_roles",
+        "source_codex_event_counts", "source_codex_events",
+        "source_hook_type_counts", "source_hook_types",
+        "source_profile_memory_classes", "source_profile_memory_kinds",
+        "source_memory_selection_retained_line_ratio_avg",
+        "source_memory_selection_retained_text_ratio_avg",
+        "source_memory_selection_complete_count",
+        "source_memory_selection_dropped_line_count",
+        "source_memory_selection_dropped_text_chars",
+        "source_memory_selection_lossy_count",
+    )
+
+    def _scan_record_fields(self) -> list[str] | None:
+        """The projection to ask for, or None for whole records.
+
+        OFF by default, and the reason is measured rather than cautious. The audited list keeps 47
+        of 59 fields -- about 80% of record bytes -- while the engine pays a set lookup per field
+        per record to apply it, which on a 2,954-record scan is ~174,000 lookups to save a fifth
+        of the payload. The 5.1x result that motivated projection used FOUR fields, a 96% cut,
+        where the saving dwarfs the filter.
+
+        So this ships able to project but not projecting: a deployment can turn it on with
+        MATRIXARK_SCAN_RECORD_FIELDS=1 and measure its own corpus, and the aggressive projection
+        this is really for becomes available once ranking moves into the engine and the caller
+        stops needing vector, embedding_meta and the provenance counters at all.
+        """
+        if not env_bool("MATRIXARK_SCAN_RECORD_FIELDS", False):
+            return None
+        return list(self.SCAN_RECORD_FIELDS)
+
     def _native_candidate_scan(
         self,
         *,
@@ -386,6 +445,7 @@ class _TemporalDirectReadMixin:
                 secondary_index_groups=[sorted(group) for group in (secondary_index_groups or [])],
                 selected_node_hashes=sorted(int(item) for item in (selected_node_hashes or set())),
                 record_statuses=sorted(record_statuses) if record_statuses else None,
+                record_fields=self._scan_record_fields(),
             )
         except Exception as exc:
             if native_candidate_prefilter_required(backend_label=self._backend_label()) and not getattr(self, "_native_context_pack_fallback_active", False):

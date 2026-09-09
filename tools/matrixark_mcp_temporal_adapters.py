@@ -46,6 +46,52 @@ except ImportError:  # pragma: no cover
     def _LANE_LOADS(text):
         return _lane_stdlib_json.loads(text)
 
+
+# msgpack for the lane, where both ends have it.
+#
+# A profile of the running gateway put 53.5% of its CPU in the stdlib JSON decoder, and a perf
+# profile of the proxy put ~8.7% in building and dropping serde_json Value trees with malloc at
+# 8.4% behind it. Text is the cost on both sides, so the lane can stop being text.
+#
+# Off unless MATRIXARK_LANE_CODEC=msgpack, the same switch the stdio lane already uses, and
+# unavailable rather than fatal when the module is missing: a deployment without msgpack keeps
+# working on JSON instead of failing to start.
+try:
+    import msgpack as _lane_msgpack
+except ImportError:  # pragma: no cover - exercised only where msgpack is absent
+    _lane_msgpack = None
+
+
+def _lane_codec_is_binary() -> bool:
+    """Read the switch every call, so an operator flipping it does not need a restart."""
+    if _lane_msgpack is None:
+        return False
+    return os.environ.get("MATRIXARK_LANE_CODEC", "").strip().lower() == "msgpack"
+
+
+def _LANE_PACKB(command: dict) -> bytes:
+    return _lane_msgpack.packb(command, use_bin_type=True)
+
+
+def _looks_like_msgpack_map(body: bytes) -> bool:
+    """Whether a reply is a msgpack map rather than JSON text.
+
+    The first byte settles it and cannot be ambiguous: a msgpack map begins with a fixmap
+    (0x80-0x8f), map16 (0xde) or map32 (0xdf), and a JSON object begins with `{` or whitespace.
+    The proxy answers in the codec it was asked in, but it falls back to JSON if it cannot encode
+    a reply -- so the client must read what actually arrived rather than what it expected.
+    """
+    if not body:
+        return False
+    first = body[0]
+    return 0x80 <= first <= 0x8F or first in (0xDE, 0xDF)
+
+
+def _LANE_DECODE(body: bytes):
+    if _lane_msgpack is not None and _looks_like_msgpack_map(body):
+        return _lane_msgpack.unpackb(body, raw=False, strict_map_key=False)
+    return _LANE_LOADS(body.decode("utf-8"))
+
 try:  # the proxy stderr drain is shared with the standalone proxy client
     from tools.matrixark_mcp_rust_proxy_process import (
         PROXY_STDERR_TAIL_LINES,
@@ -3326,7 +3372,7 @@ class MatrixArkRustCdylibClient(_AppendRecordsViaBatch):
         self._call("matrixark_batch_append_records", call, records_written=len(values) + (1 if count_key else 0))
 
 
-    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], record_ids: list[str] | None = None, return_index_records: bool = False, newest_by_type: Json | None = None) -> Json:
+    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], record_ids: list[str] | None = None, return_index_records: bool = False, newest_by_type: Json | None = None, record_fields: list[str] | None = None) -> Json:
         payload: Json = {"scope": scope, "record_types": record_types, "secondary_index_groups": secondary_index_groups, "selected_node_hashes": selected_node_hashes}
         if record_ids:
             payload["record_ids"] = [str(item) for item in record_ids]
@@ -3334,6 +3380,10 @@ class MatrixArkRustCdylibClient(_AppendRecordsViaBatch):
             payload["return_index_records"] = True
         if newest_by_type:
             payload["newest_by_type"] = {str(k): int(v) for k, v in newest_by_type.items()}
+        if record_fields:
+            # Absent means the WHOLE record, so an empty list must never be sent: it would ask
+            # for nothing and read back as every field gone.
+            payload["record_fields"] = [str(name) for name in record_fields]
         request = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         def call() -> Json:
             out = self._ctypes.c_void_p()
@@ -3826,7 +3876,8 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             try:
                 if self._proxy_http:
                     response = self._call_http_json(
-                        op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs))
+                        op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs),
+                        command=command)
                 else:
                     response = self._call_socket_json(
                         op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs))
@@ -3935,14 +3986,18 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
                     break
                 if not line.strip().startswith(b"{"):
                     continue
+                self._note_payload(len(payload) + len(line))
                 try:
-                    return json.loads(line.decode("utf-8"))
-                except json.JSONDecodeError as exc:
+                    return _LANE_LOADS(line.decode("utf-8"))
+                except (json.JSONDecodeError, ValueError) as exc:
                     raise MatrixArkError(f"Rust TemporalStore {op} daemon returned invalid JSON: {line[:200]!r}") from exc
         raise MatrixArkError(
             f"Rust TemporalStore {op} daemon timed out waiting for response from "
             f"{self._proxy_socket} after {budget_s:.1f}s"
         )
+
+    def _note_payload(self, payload_bytes: int) -> None:
+        _note_payload_bytes(payload_bytes)
 
     def _http_connection(self, timeout_s: float):
         """A per-thread keep-alive connection to the proxy.
@@ -3975,7 +4030,13 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             except Exception:  # noqa: BLE001 - closing a dead socket must not mask the real error
                 pass
 
-    def _call_http_json(self, op: str, payload: str, caller_deadline_ms: float | None = None) -> Json:
+    def _call_http_json(
+        self,
+        op: str,
+        payload: str,
+        caller_deadline_ms: float | None = None,
+        command: Json | None = None,
+    ) -> Json:
         """One request over HTTP, on the same budget the socket path uses.
 
         A kept-alive connection can be closed by the server between calls, and the close is only
@@ -3985,8 +4046,19 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         proxy actually produced.
         """
         budget_s = _socket_budget_seconds(self.request_timeout_ms, caller_deadline_ms)
-        body = payload.encode("utf-8")
-        headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+        # The already-rendered JSON is the fallback, so a codec that cannot encode this command
+        # costs nothing: the text was going to be built either way.
+        if command is not None and _lane_codec_is_binary():
+            try:
+                body = _LANE_PACKB(command)
+                content_type = "application/msgpack"
+            except (TypeError, ValueError):
+                body = payload.encode("utf-8")
+                content_type = "application/json"
+        else:
+            body = payload.encode("utf-8")
+            content_type = "application/json"
+        headers = {"Content-Type": content_type, "Content-Length": str(len(body))}
         deadline = time.monotonic() + budget_s
         last_error: Exception | None = None
         for attempt in (0, 1):
@@ -4012,9 +4084,15 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
                     f"Rust TemporalStore {op} returned HTTP {response.status} from "
                     f"{self._proxy_http}: {raw[:200]!r}"
                 )
+            self._note_payload(len(body) + len(raw))
             try:
-                return json.loads(raw.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                # _LANE_DECODE reads whichever codec arrived: orjson for text -- this module
+                # already selects it, measured at -14.1% gateway CPU per message, and a profile
+                # of the running gateway put 53% of its CPU in the stdlib decoder -- and msgpack
+                # for a binary reply. The proxy answers in the codec it was asked in but falls
+                # back to text if it cannot encode, so the reply is read by what it IS.
+                return _LANE_DECODE(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
                 raise MatrixArkError(
                     f"Rust TemporalStore {op} returned invalid JSON over http: {raw[:200]!r}"
                 ) from exc
@@ -4610,6 +4688,7 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         record_ids: list[str] | None = None,
         return_index_records: bool = False,
         newest_by_type: Json | None = None,
+        record_fields: list[str] | None = None,
     ) -> Json:
         extra: Json = {}
         if record_ids:
@@ -4620,6 +4699,10 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             extra["newest_by_type"] = {
                 str(record_type): int(limit) for record_type, limit in newest_by_type.items()
             }
+        if record_fields:
+            # Absent means the WHOLE record, so an empty list must never be sent: it would ask
+            # for nothing and read back as every field gone.
+            extra["record_fields"] = [str(name) for name in record_fields]
         return self._call_json(
             "matrixark_scan_candidates",
             count_key=count_key,
@@ -5272,3 +5355,106 @@ class MatrixArkTemporalStoreRustDirectAdapter(MatrixArkTemporalStoreRustAdapter)
 
 
 
+
+
+# --- returning freed heap to the operating system -------------------------------------------------
+#
+# CPython's `free` hands memory to its allocator and to glibc's arenas, not to the kernel, so a
+# process that decodes whole record batches keeps every peak it has ever reached. The gateway shows
+# exactly that shape: measured on a production-corpus soak it grew 230 -> 573 MB monotonically over
+# 1,500 s, and in longer runs 875 -> 2,572 MB, while the store it fronts was a fraction of that.
+#
+# The proxy had the same problem and the same cause, and the fix measured well there: with a trim,
+# resident memory went from a monotonic climb to 2,987 MB down to a sawtooth peaking at 1,437 MB
+# with troughs near 240 MB -- roughly -75% at matched message counts -- for about +6% CPU, because
+# a trim walks the allocator's free lists.
+#
+# Driven by a byte ledger rather than a timer: an idle gateway must not spend CPU reclaiming
+# nothing. This deployment has already been burned by idle work, when a refresher wrote 2.3 GB a
+# day on a box doing nothing.
+
+_TRIM_LEDGER = 0
+_TRIM_LEDGER_LOCK = threading.Lock()
+_TRIM_THREAD_STARTED = False
+_LIBC_FOR_TRIM = None
+_LIBC_LOOKED_UP = False
+
+
+def _trim_threshold_bytes() -> int:
+    """Payload bytes that must pass before a trim earns its walk. 0 switches it off."""
+    try:
+        return max(0, int(os.environ.get("MATRIXARK_GATEWAY_TRIM_BYTES", str(64 * 1024 * 1024))))
+    except ValueError:
+        return 64 * 1024 * 1024
+
+
+def _libc_for_trim():
+    """glibc handle, or None where malloc_trim is not a thing."""
+    global _LIBC_FOR_TRIM, _LIBC_LOOKED_UP
+    if not _LIBC_LOOKED_UP:
+        _LIBC_LOOKED_UP = True
+        try:
+            import ctypes
+
+            candidate = ctypes.CDLL("libc.so.6")
+            candidate.malloc_trim  # raises AttributeError off glibc
+            _LIBC_FOR_TRIM = candidate
+        except Exception:  # noqa: BLE001 - trimming is an optimisation, never a requirement
+            _LIBC_FOR_TRIM = None
+    return _LIBC_FOR_TRIM
+
+
+def _note_payload_bytes(payload_bytes: int) -> None:
+    """Record bytes handled, and make sure the trimmer is running.
+
+    Started lazily here rather than at import: a module that spawns a thread on import does it in
+    every tool and test that imports it, including ones that never make a call.
+    """
+    global _TRIM_LEDGER, _TRIM_THREAD_STARTED
+    if _trim_threshold_bytes() == 0:
+        return
+    with _TRIM_LEDGER_LOCK:
+        _TRIM_LEDGER += payload_bytes
+        if _TRIM_THREAD_STARTED:
+            return
+        _TRIM_THREAD_STARTED = True
+    threading.Thread(target=_trim_loop, name="matrixark-heap-trim", daemon=True).start()
+
+
+def _trim_once() -> bool:
+    """One tick: trim if the ledger has earned it. Returns whether the allocator was asked.
+
+    Split out from the loop so the decision is testable. An infinite loop can only be asserted on
+    by its side effects, and the side effect that matters here -- NOT trimming, and not losing the
+    ledger while not trimming -- is invisible from outside.
+    """
+    global _TRIM_LEDGER
+    threshold = _trim_threshold_bytes()
+    if threshold == 0:
+        return False
+    with _TRIM_LEDGER_LOCK:
+        if _TRIM_LEDGER < threshold:
+            # Left on the ledger, not discarded: a trickle of small responses retains as much as
+            # one large one, it only takes longer to get there. Zeroing here would mean a workload
+            # of small responses never trimmed at all.
+            return False
+        _TRIM_LEDGER = 0
+    libc = _libc_for_trim()
+    if libc is None:
+        return False
+    try:
+        libc.malloc_trim(0)
+    except Exception:  # noqa: BLE001 - housekeeping must never take the process down
+        return False
+    return True
+
+
+# The tests drive a single tick rather than the loop.
+_trim_once_for_test = _trim_once
+
+
+def _trim_loop() -> None:
+    """Trim off the serving path, so no caller waits on a walk of the free lists."""
+    while True:
+        time.sleep(5.0)
+        _trim_once()
