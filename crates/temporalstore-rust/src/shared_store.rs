@@ -2534,6 +2534,15 @@ fn encode_wal_proto_frame(
             None => (serde_json::to_vec(command)?, WAL_COMMAND_ENCODING_JSON_SERDE),
         },
     };
+    // The same rule the log frame follows: a carried block states the length its address
+    // covers, so the address need not restate it.
+    let implied_length = if entry.outcomes.len() == 1 && entry.staged_pages.len() == 1 {
+        let carried =
+            entry.staged_pages[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+        Some(carried as u64)
+    } else {
+        None
+    };
     let frame = SharedStoreWalFrameProto {
         shard_id: entry.shard_id,
         wal_index: entry.wal_index,
@@ -2552,7 +2561,7 @@ fn encode_wal_proto_frame(
         items: entry
             .outcomes
             .iter()
-            .map(|item| crate::wal_proto::item_to_proto(item, entry.shard_id))
+            .map(|item| crate::wal_proto::item_to_proto(item, entry.shard_id, implied_length))
             .collect(),
     };
     let mut encoded = frame.encode_to_vec();
@@ -2630,6 +2639,13 @@ fn decode_wal_proto_frame_exact(
             )));
         }
     };
+    let implied_length = if frame.items.len() == 1 && frame.staged_pages.len() == 1 {
+        let carried =
+            frame.staged_pages[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+        Some(carried as u64)
+    } else {
+        None
+    };
     Ok(SharedStoreWalEntry {
         shard_id: frame.shard_id,
         wal_index: frame.wal_index,
@@ -2637,7 +2653,7 @@ fn decode_wal_proto_frame_exact(
         outcomes: frame
             .items
             .into_iter()
-            .map(|item| crate::wal_proto::item_from_proto(item, frame.shard_id))
+            .map(|item| crate::wal_proto::item_from_proto(item, frame.shard_id, implied_length))
             .collect(),
         staged_pages: frame
             .staged_pages
