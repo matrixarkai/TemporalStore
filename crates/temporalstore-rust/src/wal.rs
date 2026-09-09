@@ -1586,9 +1586,15 @@ impl LocalWriteAheadLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<(Vec<(u64, Vec<u8>)>, bool), WriteAheadLogError> {
-        self.scan_collect(shard_id, start_offset, end_offset, max_bytes, |log_id, line, _| {
-            Some((log_id, line))
-        })
+        self.scan_collect(
+            shard_id,
+            start_offset,
+            end_offset,
+            max_bytes,
+            true,
+            |log_id, line, _| Some((log_id, line)),
+        )
+        .map(|(records, truncated, _resume_at)| (records, truncated))
     }
 
     /// The records in the window, decoded once.
@@ -1604,9 +1610,37 @@ impl LocalWriteAheadLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<(Vec<(u64, WriteAheadLogRecord)>, bool), WriteAheadLogError> {
-        self.scan_collect(shard_id, start_offset, end_offset, max_bytes, |log_id, _line, decoded| {
-            decoded.map(|record| (log_id, record))
-        })
+        self.scan_collect(
+            shard_id,
+            start_offset,
+            end_offset,
+            max_bytes,
+            true,
+            |log_id, _line, decoded| decoded.map(|record| (log_id, record)),
+        )
+        .map(|(records, truncated, _resume_at)| (records, truncated))
+    }
+
+    /// One bounded window of decoded records, and where to resume reading.
+    ///
+    /// `scan_decoded` says whether it stopped early; this also says WHERE, so a caller replaying a
+    /// long log can walk it in bounded pieces instead of holding all of it at once. Pass
+    /// `verify_tail` on the FIRST window only -- see `scan_collect`.
+    pub fn scan_decoded_window(
+        &self,
+        shard_id: ShardId,
+        start_offset: u64,
+        max_bytes: u64,
+        verify_tail: bool,
+    ) -> Result<(Vec<(u64, WriteAheadLogRecord)>, bool, u64), WriteAheadLogError> {
+        self.scan_collect(
+            shard_id,
+            start_offset,
+            u64::MAX,
+            max_bytes,
+            verify_tail,
+            |log_id, _line, decoded| decoded.map(|record| (log_id, record)),
+        )
     }
 
     /// The one walk both scans share, so they cannot drift about what a window contains.
@@ -1616,8 +1650,9 @@ impl LocalWriteAheadLogStore {
         start_offset: u64,
         end_offset: u64,
         max_bytes: u64,
+        verify_tail: bool,
         mut take: impl FnMut(u64, Vec<u8>, Option<WriteAheadLogRecord>) -> Option<T>,
-    ) -> Result<(Vec<T>, bool), WriteAheadLogError> {
+    ) -> Result<(Vec<T>, bool, u64), WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let segments = wal_segment_paths(&inner.root, shard_id)
             .into_iter()
@@ -1628,11 +1663,19 @@ impl LocalWriteAheadLogStore {
         // (corruption) as data loss (see engine::lifecycle replay).
         if segments.is_empty() {
             inner.stats.scans += 1;
-            return Ok((Vec::new(), false));
+            return Ok((Vec::new(), false, start_offset));
         }
-        let _ = last_wal_sequence_at(&inner.root, shard_id)?;
+        // Finding the log's end also REPAIRS a torn tail, so it has to happen -- but it costs the
+        // whole file rather than the window, and a caller walking the log in pieces that repeated
+        // it per piece would trade a bounded read for a quadratic one. The first piece verifies;
+        // the continuations of that same walk do not.
+        if verify_tail {
+            let _ = last_wal_sequence_at(&inner.root, shard_id)?;
+        }
         let mut total = 0;
         let mut truncated = false;
+        // Where a caller that ran out of budget resumes. Only meaningful when `truncated`.
+        let mut resume_at = start_offset;
         let mut records: Vec<T> = Vec::new();
         'segments: for path in segments {
             // Each piece says where in the log's history its contents begin, so a record's position
@@ -1706,9 +1749,15 @@ impl LocalWriteAheadLogStore {
                 if next_log_id > end_offset {
                     break 'segments;
                 }
-                if total + read as u64 > max_bytes {
-                    // Out of budget with the window not yet walked: there is more to read.
+                // `total > 0` so a window always yields at least one record: a record larger
+                // than the whole budget would otherwise return nothing and leave a caller
+                // resuming at the position it already asked for, which is a walk that cannot
+                // advance rather than a window that is full.
+                if total > 0 && total + read as u64 > max_bytes {
+                    // Out of budget with the window not yet walked: there is more to read, and
+                    // this record's own position is where reading resumes.
                     truncated = true;
+                    resume_at = log_id;
                     break 'segments;
                 }
                 // Refuse a corrupt record here, where it is being read. This used to happen only as
@@ -1733,7 +1782,7 @@ impl LocalWriteAheadLogStore {
         }
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
-        Ok((records, truncated))
+        Ok((records, truncated, resume_at))
     }
 
     /// Where reading can start, to see every record after `sequence` and no whole piece before it.

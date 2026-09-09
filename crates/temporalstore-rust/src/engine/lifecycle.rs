@@ -1502,6 +1502,22 @@ impl TemporalEngine {
         shard_id: ShardId,
         watermark: u64,
     ) -> Result<(), Status> {
+        self.replay_wal_into_shard_windowed(shard_id, watermark, WAL_REPLAY_WINDOW_BYTES)
+    }
+
+    /// Replay, reading the log in windows of `window_bytes`.
+    ///
+    /// The size is a parameter rather than only a constant so a test can force MANY windows over
+    /// a small log. A boundary that only appears once the log passes four megabytes is a boundary
+    /// no test would ever reach, and the rules that make windowing safe -- a batch never split, a
+    /// hole in the sequence still refused, the resume point always advancing -- all live at that
+    /// boundary.
+    pub(crate) fn replay_wal_into_shard_windowed(
+        &self,
+        shard_id: ShardId,
+        watermark: u64,
+        window_bytes: u64,
+    ) -> Result<(), Status> {
         // Replay both re-executes commands and installs recorded outcomes, and BOTH stage
         // outcome items -- while replay itself never appends, so nothing ever takes them.
         // What it leaves behind is picked up by the next write on this thread and written
@@ -1535,60 +1551,6 @@ impl TemporalEngine {
             .wal_store
             .log_id_after_sequence(shard_id, watermark)
             .unwrap_or(0);
-        // `scan_decoded`, not `scan`: the walk decodes every record to verify it, and asking
-        // for the bytes instead threw that away and decoded the whole window a second time here.
-        let records = match self
-            .wal_store
-            .scan_decoded(shard_id, start_at, u64::MAX, u64::MAX)
-            .map(|(records, _truncated)| records)
-        {
-            Ok(records) => records,
-            Err(err) => {
-                // A record that will not decode is corruption and says so; anything else is an
-                // ordinary scan failure. The decode moved into the walk, so this is where that
-                // distinction has to be drawn now -- losing it would report a bit-flip as an I/O
-                // problem, which sends an operator looking in the wrong place.
-                let code = match err {
-                    crate::wal::WriteAheadLogError::Corruption(_) => "wal_record_corruption",
-                    _ => "wal_scan_failed",
-                };
-                return Err(Status::error(
-                    code,
-                    format!(
-                        "WAL scan failed during recovery for shard {shard_id}; refusing load rather than serving a truncated prefix: {err}"
-                    ),
-                ));
-            }
-        };
-        // The walk above decoded and integrity-checked every record and PROPAGATED a failure
-        // rather than dropping it via `.ok()`, which would silently truncate the replayed tail.
-        // What is left here is choosing which of those records to replay.
-        let mut pending: Vec<WriteAheadLogRecord> = Vec::new();
-        // Where each record physically lives. The scan hands this back and replay used to drop
-        // it (`for (_, line)`), which is why the registration below could not be done at all.
-        let mut log_id_by_sequence: std::collections::HashMap<u64, u64> =
-            std::collections::HashMap::new();
-        for (log_id, record) in records {
-            if record.sequence > watermark {
-                log_id_by_sequence.insert(record.sequence, log_id);
-                pending.push(record);
-            }
-        }
-        if pending.is_empty() {
-            return Ok(());
-        }
-        pending.sort_by_key(|record| record.sequence);
-        // Drop a trailing atomic batch that never reached its durability barrier. A batch is
-        // written as N contiguously-sequenced records sharing one batch_id, buffered, then made
-        // durable by a SINGLE barrier; a crash before that barrier can leave a partial suffix on
-        // disk. Because the engine assigns the batch a contiguous sequence block and serializes
-        // writes, an incomplete batch is always the WAL tail, so truncating it preserves strict
-        // sequence continuity for everything before it -- and guarantees the batch is applied
-        // all-or-nothing (never a double-applied durable prefix on retry).
-        truncate_trailing_incomplete_batch(&mut pending);
-        if pending.is_empty() {
-            return Ok(());
-        }
 
         // Replay config-driven eviction (feature_max_size trims) with the config that was
         // effective at each record's WAL frontier. An entry stamped `after_seq` is effective for
@@ -1606,129 +1568,251 @@ impl TemporalEngine {
         let mut replayed_through = watermark;
         let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentPage)> =
             Vec::new();
-        for record in pending {
-            // Strict sequence continuity, matching the WAL replay, which
-            // returns DataLoss and aborts Load on a hole in the retained WAL. A gap means
-            // a WAL record was lost (partial-GC crash / corruption); refuse the load
-            // rather than silently serve a truncated prefix.
-            if record.sequence != expected {
-                return Err(Status::error(
-                    "wal_replay_sequence_gap",
-                    format!(
-                        "WAL replay hole during recovery: expected sequence {expected}, found {}",
-                        record.sequence
-                    ),
-                ));
-            }
-            while config_cursor < config_log.len()
-                && config_log[config_cursor].after_seq < record.sequence
-            {
-                self.configs
-                    .write()
-                    .expect("config lock poisoned")
-                    .insert(shard_id, config_log[config_cursor].config.clone());
-                config_cursor += 1;
-            }
-            // A page whose only durable copy is INSIDE this record is addressable only if
-            // something says where it lives. The write path registered exactly that when it
-            // appended; replay registered nothing, so recovery installed outcomes naming pages
-            // the successor could not resolve -- and a read for one of them answered None. Not
-            // an error, not an empty shard: a durably acknowledged write reported as absent,
-            // which is the quietest way a store can lose data. Registering here, where the log
-            // id is still in hand, makes a replayed record as addressable as a written one.
-            if self.page_store.block_in_wal() && !record.staged_pages.is_empty() {
-                if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
-                    super::block_in_wal::register_record(
-                        &self.page_store,
-                        shard_id,
-                        &record.staged_pages,
-                        log_id,
-                        record.sequence,
-                        &self.wal_store,
-                    );
-                    // The same fact written where it survives this process, so a later reload
-                    // rehydrates it instead of rediscovering that it cannot.
-                    wal_resident_updates.extend(record.staged_pages.iter().map(|page| {
-                        (
-                            page.object_id,
-                            crate::engine::state::WalResidentPage {
-                                log_id,
-                                sequence: record.sequence,
-                            },
-                        )
-                    }));
+        let mut replayed_any = false;
+
+        // The log is read in BOUNDED WINDOWS rather than all at once. An unbounded scan decoded
+        // every un-replayed record -- each carrying its staged block -- into one vector before
+        // applying any of them, so recovery peaked at roughly twice the shard's steady footprint
+        // and that peak grew with the length of the log still to replay.
+        //
+        // The walk hands back where it stopped, so each window resumes exactly where the last ran
+        // out of budget. Only the FIRST window verifies the log's tail: that walk costs the whole
+        // file, and repeating it per window would trade a memory problem for a quadratic one.
+        let mut window_start = start_at;
+        let mut verify_tail = true;
+        // Records held back because an atomic batch must not be split across windows; see below.
+        let mut carried: Vec<WriteAheadLogRecord> = Vec::new();
+        let mut carried_log_ids: std::collections::HashMap<u64, u64> =
+            std::collections::HashMap::new();
+        loop {
+            // A corrupt / unreadable WAL scan is DATA LOSS, not "nothing to replay": swallowing it
+            // to Ok(()) would load the shard from the stale base index only, silently discarding
+            // the committed WAL tail and defeating the caller's refuse-load-on-DataLoss guard. An
+            // absent WAL file is the only "nothing to replay" case, and the walk already returns
+            // an empty vec for it (never an error), so any Err here is a genuine failure -> abort.
+            //
+            // `scan_decoded_window`, not `scan`: the walk decodes every record to verify it, and
+            // asking for the bytes instead threw that away and decoded the window a second time.
+            let (scanned, more_to_come, resume_at) = match self.wal_store.scan_decoded_window(
+                shard_id,
+                window_start,
+                window_bytes,
+                verify_tail,
+            ) {
+                Ok(window) => window,
+                Err(err) => {
+                    // A record that will not decode is corruption and says so; anything else is an
+                    // ordinary scan failure. The decode moved into the walk, so this is where that
+                    // distinction has to be drawn now -- losing it would report a bit-flip as an
+                    // I/O problem, which sends an operator looking in the wrong place.
+                    let code = match err {
+                        crate::wal::WriteAheadLogError::Corruption(_) => "wal_record_corruption",
+                        _ => "wal_scan_failed",
+                    };
+                    return Err(Status::error(
+                        code,
+                        format!(
+                            "WAL scan failed during recovery for shard {shard_id}; refusing load rather than serving a truncated prefix: {err}"
+                        ),
+                    ));
+                }
+            };
+            verify_tail = false;
+
+            // The walk above decoded and integrity-checked every record and PROPAGATED a failure
+            // rather than dropping it via `.ok()`, which would silently truncate the replayed
+            // tail. What is left here is choosing which of those records to replay.
+            //
+            // Where each record physically lives. The scan hands this back and replay used to drop
+            // it (`for (_, line)`), which is why the registration below could not be done at all.
+            let mut pending: Vec<WriteAheadLogRecord> = std::mem::take(&mut carried);
+            let mut log_id_by_sequence: std::collections::HashMap<u64, u64> =
+                std::mem::take(&mut carried_log_ids);
+            let mut scanned_any = false;
+            for (log_id, record) in scanned {
+                scanned_any = true;
+                if record.sequence > watermark {
+                    log_id_by_sequence.insert(record.sequence, log_id);
+                    pending.push(record);
                 }
             }
-            // A record that says what its write DID is installed, not re-executed. Re-executing
-            // reproduces state only if everything that influenced the original execution is
-            // reproduced with it -- which is why the two lines below this exist at all.
-            //
-            // The fallback is not a nicety. A record carrying no outcomes is replayed as a
-            // command exactly as before, so a kind that records nothing recovers correctly
-            // instead of silently recovering as nothing. The command cannot be dropped from the
-            // record until no accepted write can produce an empty one.
-            if !record.outcomes.is_empty() {
-                for item in &record.outcomes {
-                    if !self.apply_outcome_item(shard_id, item) {
-                        // Say which precondition was unmet. `apply_outcome_item` answers with a
-                        // bool from eighteen different places, so the caller was reporting that
-                        // an outcome would not install and never which part of it was missing --
-                        // and this refusal FAILS THE LOAD, so it is the last thing anyone sees.
-                        // Nearly every arm needs a resolved address and, for the keyed kinds, a
-                        // component; those two are what the caller can check for itself.
-                        //
-                        // The component VALUE is deliberately not printed: for a zset it is the
-                        // member, which is caller data. Present-or-missing and its length localise
-                        // the failure without putting a record key into an error string.
-                        let component = match item.component.as_deref() {
-                            None => "missing".to_string(),
-                            Some(value) => format!("present, {} chars", value.len()),
-                        };
-                        return Err(Status::error(
-                            "wal_replay_outcome_refused",
-                            format!(
-                                "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it (address {}, component {})",
-                                item.kind,
-                                record.sequence,
-                                if item.resolved_address().is_some() { "resolved" } else { "UNRESOLVED" },
-                                component
-                            ),
-                        ));
+            pending.sort_by_key(|record| record.sequence);
+
+            if more_to_come {
+                // A batch is applied all-or-nothing, and whether its final record is present can
+                // only be told once the whole run is in hand -- so a trailing run sharing one
+                // batch id is deferred to the next window rather than judged at a boundary the
+                // log did not put there. That is what keeps the rule below reading only the TRUE
+                // tail, which is the only place an incomplete batch can be.
+                carried = split_off_trailing_batch_run(&mut pending);
+                for record in &carried {
+                    if let Some(log_id) = log_id_by_sequence.remove(&record.sequence) {
+                        carried_log_ids.insert(record.sequence, log_id);
                     }
                 }
-                self.replay_installs.fetch_add(
-                    record.outcomes.len() as u64,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+            } else {
+                // Drop a trailing atomic batch that never reached its durability barrier. A batch
+                // is written as N contiguously-sequenced records sharing one batch_id, buffered,
+                // then made durable by a SINGLE barrier; a crash before that barrier can leave a
+                // partial suffix on disk. Because the engine assigns the batch a contiguous
+                // sequence block and serializes writes, an incomplete batch is always the WAL
+                // tail, so truncating it preserves strict sequence continuity for everything
+                // before it -- and guarantees the batch is applied all-or-nothing (never a
+                // double-applied durable prefix on retry).
+                truncate_trailing_incomplete_batch(&mut pending);
+            }
+
+            // Nothing read and nothing held back: the log has no more to give.
+            if !scanned_any && pending.is_empty() && carried.is_empty() {
+                break;
+            }
+            if !pending.is_empty() {
+                replayed_any = true;
+            }
+            for record in pending {
+                // Strict sequence continuity, matching the WAL replay, which
+                // returns DataLoss and aborts Load on a hole in the retained WAL. A hole means
+                // a WAL record was lost (partial-GC crash / corruption); refuse the load
+                // rather than silently serve a truncated prefix.
+                if record.sequence != expected {
+                    return Err(Status::error(
+                        "wal_replay_sequence_gap",
+                        format!(
+                            "WAL replay hole during recovery: expected sequence {expected}, found {}",
+                            record.sequence
+                        ),
+                    ));
+                }
+                while config_cursor < config_log.len()
+                    && config_log[config_cursor].after_seq < record.sequence
+                {
+                    self.configs
+                        .write()
+                        .expect("config lock poisoned")
+                        .insert(shard_id, config_log[config_cursor].config.clone());
+                    config_cursor += 1;
+                }
+                // A page whose only durable copy is INSIDE this record is addressable only if
+                // something says where it lives. The write path registered exactly that when it
+                // appended; replay registered nothing, so recovery installed outcomes naming pages
+                // the successor could not resolve -- and a read for one of them answered None. Not
+                // an error, not an empty shard: a durably acknowledged write reported as absent,
+                // which is the quietest way a store can lose data. Registering here, where the log
+                // id is still in hand, makes a replayed record as addressable as a written one.
+                if self.page_store.block_in_wal() && !record.staged_pages.is_empty() {
+                    if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
+                        super::block_in_wal::register_record(
+                            &self.page_store,
+                            shard_id,
+                            &record.staged_pages,
+                            log_id,
+                            record.sequence,
+                            &self.wal_store,
+                        );
+                        // The same fact written where it survives this process, so a later reload
+                        // rehydrates it instead of rediscovering that it cannot.
+                        wal_resident_updates.extend(record.staged_pages.iter().map(|page| {
+                            (
+                                page.object_id,
+                                crate::engine::state::WalResidentPage {
+                                    log_id,
+                                    sequence: record.sequence,
+                                },
+                            )
+                        }));
+                    }
+                }
+                // A record that says what its write DID is installed, not re-executed. Re-executing
+                // reproduces state only if everything that influenced the original execution is
+                // reproduced with it -- which is why the two lines below this exist at all.
+                //
+                // The fallback is not a nicety. A record carrying no outcomes is replayed as a
+                // command exactly as before, so a kind that records nothing recovers correctly
+                // instead of silently recovering as nothing. The command cannot be dropped from the
+                // record until no accepted write can produce an empty one.
+                if !record.outcomes.is_empty() {
+                    for item in &record.outcomes {
+                        if !self.apply_outcome_item(shard_id, item) {
+                            // Say which precondition was unmet. `apply_outcome_item` answers with a
+                            // bool from eighteen different places, so the caller was reporting that
+                            // an outcome would not install and never which part of it was missing --
+                            // and this refusal FAILS THE LOAD, so it is the last thing anyone sees.
+                            // Nearly every arm needs a resolved address and, for the keyed kinds, a
+                            // component; those two are what the caller can check for itself.
+                            //
+                            // The component VALUE is deliberately not printed: for a zset it is the
+                            // member, which is caller data. Present-or-missing and its length localise
+                            // the failure without putting a record key into an error string.
+                            let component = match item.component.as_deref() {
+                                None => "missing".to_string(),
+                                Some(value) => format!("present, {} chars", value.len()),
+                            };
+                            return Err(Status::error(
+                                "wal_replay_outcome_refused",
+                                format!(
+                                    "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it (address {}, component {})",
+                                    item.kind,
+                                    record.sequence,
+                                    if item.resolved_address().is_some() { "resolved" } else { "UNRESOLVED" },
+                                    component
+                                ),
+                            ));
+                        }
+                    }
+                    self.replay_installs.fetch_add(
+                        record.outcomes.len() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    replayed_through = record.sequence;
+                    expected = expected.saturating_add(1);
+                    continue;
+                }
+                // Resolve TTL deadlines / event times against the LEADER's timestamp
+                // captured when this record was written, not the (later) restart clock, so
+                // recovery reconstructs the identical absolute deadlines the leader logged
+                // (resolve-then-log) instead of extending every recently-SETEX'd key.
+                set_replay_clock_ms(record.metadata.as_ref().map(|meta| meta.timestamp_ms));
+                // Neither results nor an operation. Refusing is the only honest answer: replaying it
+                // as nothing would serve a shard missing a durable write and report success.
+                let Some(command) = record.command else {
+                    return Err(Status::error(
+                        "wal_replay_record_empty",
+                        format!(
+                            "WAL record at sequence {} carries neither results nor an operation; refusing load rather than skipping a durable write",
+                            record.sequence
+                        ),
+                    ));
+                };
+                let response = self.execute(ExecuteRequest { shard_id, command });
+                if !response.status.ok {
+                    return Err(Status::error(
+                        "wal_replay_failed",
+                        format!("WAL replay command at sequence {} failed", record.sequence),
+                    ));
+                }
                 replayed_through = record.sequence;
                 expected = expected.saturating_add(1);
-                continue;
             }
-            // Resolve TTL deadlines / event times against the LEADER's timestamp
-            // captured when this record was written, not the (later) restart clock, so
-            // recovery reconstructs the identical absolute deadlines the leader logged
-            // (resolve-then-log) instead of extending every recently-SETEX'd key.
-            set_replay_clock_ms(record.metadata.as_ref().map(|meta| meta.timestamp_ms));
-            // Neither results nor an operation. Refusing is the only honest answer: replaying it
-            // as nothing would serve a shard missing a durable write and report success.
-            let Some(command) = record.command else {
+
+            if !more_to_come {
+                break;
+            }
+            // A window that did not advance would spin. The walk only reports more to come after
+            // refusing a record for budget, and it always yields at least one record, so its
+            // resume point is past this window's start -- refusing to assume that is cheaper than
+            // a recovery that hangs.
+            if scanned_any && resume_at <= window_start {
                 return Err(Status::error(
-                    "wal_replay_record_empty",
+                    "wal_replay_window_stalled",
                     format!(
-                        "WAL record at sequence {} carries neither results nor an operation; refusing load rather than skipping a durable write",
-                        record.sequence
+                        "WAL replay made no progress past log id {window_start} for shard {shard_id}; refusing load rather than reading the same window forever"
                     ),
                 ));
-            };
-            let response = self.execute(ExecuteRequest { shard_id, command });
-            if !response.status.ok {
-                return Err(Status::error(
-                    "wal_replay_failed",
-                    format!("WAL replay command at sequence {} failed", record.sequence),
-                ));
             }
-            replayed_through = record.sequence;
-            expected = expected.saturating_add(1);
+            window_start = resume_at;
+        }
+        if !replayed_any {
+            return Ok(());
         }
         if !wal_resident_updates.is_empty() {
             let mut shards = self.shards.write().expect("engine lock poisoned");
@@ -1988,6 +2072,46 @@ impl TemporalEngine {
 /// complete batch (all records present, commit marker last) is kept; a non-batch tail record is
 /// left untouched. Interior batches are always complete (an incomplete batch can only be the
 /// crash tail), so this never opens a hole before a surviving record.
+/// How much of the log one replay window reads.
+///
+/// A window holds its records DECODED, which measured about three times what they occupy on disk,
+/// so this is not the memory a window takes -- it is roughly a third of it.
+///
+/// Measured on a 40,000-record store whose log was 5.25 MB, recovering the whole of it: reading
+/// the log in one piece peaked at 354.6 MB, and windows of 512 KB and 64 KB both peaked at 338,
+/// so the saving saturates once the window is well under the log. Recovery took 25.0 s unwindowed
+/// and 24.3 s either way, so the repeated walk costs nothing measurable here. Four megabytes was
+/// the first value tried and saved NOTHING on that log, which is the trap this note exists for:
+/// a window only helps while it is small against the log it is reading.
+const WAL_REPLAY_WINDOW_BYTES: u64 = 512 * 1024;
+
+/// Remove and return the trailing run of records sharing the last record's batch id.
+///
+/// Used at a WINDOW boundary, where the log has more to give: a batch that might continue into
+/// the next window is held back whole rather than judged here. A record that carries no batch id
+/// is complete on its own, so nothing is held back for it.
+///
+/// This is what lets `truncate_trailing_incomplete_batch` keep its meaning once replay reads the
+/// log in pieces -- it only ever sees the true tail, and an incomplete batch can only be there.
+fn split_off_trailing_batch_run(
+    pending: &mut Vec<WriteAheadLogRecord>,
+) -> Vec<WriteAheadLogRecord> {
+    let Some(last) = pending.last() else {
+        return Vec::new();
+    };
+    let Some(batch_id) = last.metadata.as_ref().and_then(|meta| meta.batch_id) else {
+        return Vec::new();
+    };
+    let mut first_index = pending.len();
+    for (index, record) in pending.iter().enumerate().rev() {
+        if record.metadata.as_ref().and_then(|meta| meta.batch_id) != Some(batch_id) {
+            break;
+        }
+        first_index = index;
+    }
+    pending.split_off(first_index)
+}
+
 fn truncate_trailing_incomplete_batch(pending: &mut Vec<WriteAheadLogRecord>) {
     let Some(last) = pending.last() else {
         return;
@@ -2021,6 +2145,91 @@ fn truncate_trailing_incomplete_batch(pending: &mut Vec<WriteAheadLogRecord>) {
     }
     if count < batch_size || !commit_marker_present {
         pending.truncate(first_index);
+    }
+}
+
+#[cfg(test)]
+mod replay_window_tests {
+    use super::{split_off_trailing_batch_run, WAL_REPLAY_WINDOW_BYTES};
+    use crate::types::Command;
+    use crate::wal::{WriteAheadLogRecord, WriteAheadLogRecordMetadata};
+
+    fn rec(seq: u64, batch: Option<(u64, u32, u32)>) -> WriteAheadLogRecord {
+        WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: seq,
+            command: Some(Command::StringSet {
+                key: format!("k{seq}"),
+                value: Vec::new(),
+            }),
+            metadata: Some(WriteAheadLogRecordMetadata {
+                version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
+                timestamp_ms: 1,
+                items: Vec::new(),
+                batch_id: batch.map(|(id, _, _)| id),
+                batch_size: batch.map(|(_, size, _)| size),
+                batch_index: batch.map(|(_, _, index)| index),
+            }),
+            staged_pages: Vec::new(),
+            outcomes: Vec::new(),
+        }
+    }
+
+    fn sequences(records: &[WriteAheadLogRecord]) -> Vec<u64> {
+        records.iter().map(|record| record.sequence).collect()
+    }
+
+    /// A batch that might continue past the window is held back whole, and nothing else is.
+    ///
+    /// This is what keeps `truncate_trailing_incomplete_batch` meaning what it says once replay
+    /// reads the log in pieces: an incomplete batch can only be at the TRUE tail, so a run that
+    /// merely reaches a window boundary must never be judged there.
+    #[test]
+    fn a_batch_at_a_window_edge_is_held_back_whole() {
+        // ... 1, 2 standalone, then two of a three-record batch: the run goes, the rest stays.
+        let mut pending = vec![
+            rec(1, None),
+            rec(2, None),
+            rec(3, Some((77, 3, 1))),
+            rec(4, Some((77, 3, 2))),
+        ];
+        let carried = split_off_trailing_batch_run(&mut pending);
+        assert_eq!(sequences(&pending), vec![1, 2], "only the batch run is held back");
+        assert_eq!(sequences(&carried), vec![3, 4], "and it is held back whole");
+
+        // A record outside a batch is complete on its own, so nothing is deferred for it.
+        let mut plain = vec![rec(1, Some((77, 2, 1))), rec(2, Some((77, 2, 2))), rec(3, None)];
+        let none = split_off_trailing_batch_run(&mut plain);
+        assert!(none.is_empty(), "a record with no batch id holds nothing back");
+        assert_eq!(sequences(&plain), vec![1, 2, 3], "and nothing is taken from the window");
+
+        // A window that is ENTIRELY one batch run defers all of it: the next window continues the
+        // run rather than the boundary cutting it. Replay must still advance, which it does
+        // because the walk resumes past what it read, not past what was applied.
+        let mut whole = vec![rec(1, Some((88, 4, 1))), rec(2, Some((88, 4, 2)))];
+        let all = split_off_trailing_batch_run(&mut whole);
+        assert!(whole.is_empty(), "nothing is applied at this boundary");
+        assert_eq!(sequences(&all), vec![1, 2], "the whole run waits for its rest");
+
+        // A run is the CONTIGUOUS tail sharing one id: an earlier, different batch is not part
+        // of it and is applied now.
+        let mut two_batches = vec![
+            rec(1, Some((11, 1, 1))),
+            rec(2, Some((22, 2, 1))),
+            rec(3, Some((22, 2, 2))),
+        ];
+        let tail = split_off_trailing_batch_run(&mut two_batches);
+        assert_eq!(sequences(&two_batches), vec![1], "a completed earlier batch still applies");
+        assert_eq!(sequences(&tail), vec![2, 3], "only the trailing id is deferred");
+    }
+
+    /// The window is a bound, not a default that happens to be large.
+    #[test]
+    fn the_replay_window_is_bounded() {
+        assert!(
+            WAL_REPLAY_WINDOW_BYTES > 0 && WAL_REPLAY_WINDOW_BYTES <= 64 * 1024 * 1024,
+            "a window that is unbounded, or as good as, is what this change removed: {WAL_REPLAY_WINDOW_BYTES}"
+        );
     }
 }
 
