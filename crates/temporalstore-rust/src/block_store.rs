@@ -571,12 +571,34 @@ pub struct BlockStoreDelayedDestroySlabReport {
     pub modified_unix_ms: Option<u64>,
 }
 
+/// How long a reclaimed slab waits in quarantine before it may be destroyed.
+///
+/// Quarantine existed but nothing ever aged: the purge deleted every file it found, so a slab
+/// moved there a second earlier went with the rest, and the "delay" lasted only until something
+/// called purge. The hazard is written down a few files away, in the compaction commit path -- a
+/// reclaim that quarantines and purges a slab, followed by a reload of an index that still names
+/// it, dangles at a deleted slab. An age is what makes a delayed destroy delay anything.
+///
+/// One hour rather than the twenty-four the comparison design waits. The window this has to cover
+/// is a reader holding a stale address, a replica catching up, or an index persist that failed and
+/// is retried next cycle -- minutes, not a day -- and quarantine holds real bytes on a box with a
+/// measured capacity wall. Long enough for all three, short enough not to hoard a day of garbage.
+pub(crate) const DELAYED_DESTROY_MIN_AGE_MS: u64 = 60 * 60 * 1000;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStorePurgeDelayedDestroyReport {
     #[serde(alias = "purged_page_segment_ids")]
     #[serde(rename = "purged_page_slab_ids")]
     pub purged_block_slab_ids: Vec<u64>,
     pub purged_physical_bytes: u64,
+    /// Slabs left in quarantine because they had not been there long enough yet.
+    ///
+    /// Non-zero means the purge ran and DECLINED: the space comes back on a later cycle. Without
+    /// it a caller cannot tell "nothing to reclaim" from "not yet".
+    #[serde(default)]
+    pub retained_too_young_block_slab_ids: Vec<u64>,
+    #[serde(default)]
+    pub retained_too_young_physical_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1368,10 +1390,23 @@ impl LocalBlockStore {
     pub fn purge_delayed_destroy_slabs_with_report(
         &self,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        self.purge_delayed_destroy_slabs_older_than(DELAYED_DESTROY_MIN_AGE_MS)
+    }
+
+    /// Purge quarantined slabs that have waited at least `min_age_ms`.
+    ///
+    /// The age is a parameter so a caller that wants an immediate purge has to SAY so, rather
+    /// than a suite quietly depending on there being no delay at all.
+    pub(crate) fn purge_delayed_destroy_slabs_older_than(
+        &self,
+        min_age_ms: u64,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
+        let mut retained_too_young = Vec::new();
+        let mut retained_too_young_physical_bytes = 0;
         if !trash_dir.exists() {
             return Ok(BlockStorePurgeDelayedDestroyReport::default());
         }
@@ -1380,10 +1415,26 @@ impl LocalBlockStore {
             let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) else {
                 continue;
             };
-            purged_physical_bytes += entry
+            let bytes = entry
                 .metadata()
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
+            // Quarantining goes through `set_band_state`, which stamps `updated_unix_ms`, so the
+            // manifest already records WHEN this slab was set aside. A file timestamp would not:
+            // a rename keeps the mtime of the last append, and `created` is unavailable on many
+            // filesystems.
+            //
+            // A slab with no descriptor is purged. The manifest is what names slabs, so one it
+            // does not name cannot be reached -- keeping it would leak bytes protecting nothing.
+            let quarantined_at = inner.bands.get(&id).and_then(|band| band.updated_unix_ms);
+            if let Some(quarantined_at) = quarantined_at {
+                if now_unix_ms().saturating_sub(quarantined_at) < min_age_ms {
+                    retained_too_young.push(id);
+                    retained_too_young_physical_bytes += bytes;
+                    continue;
+                }
+            }
+            purged_physical_bytes += bytes;
             fs::remove_file(entry.path())?;
             set_band_state(&mut inner.bands, id, BlockStoreBandState::Purged);
             purged.push(id);
@@ -1391,9 +1442,12 @@ impl LocalBlockStore {
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
         persist_band_manifest(&inner.root, &inner.bands)?;
+        retained_too_young.sort_unstable();
         Ok(BlockStorePurgeDelayedDestroyReport {
             purged_block_slab_ids: purged,
             purged_physical_bytes,
+            retained_too_young_block_slab_ids: retained_too_young,
+            retained_too_young_physical_bytes,
         })
     }
 
@@ -2566,7 +2620,7 @@ mod tests {
         assert_eq!(delayed_first.live_page_store_used_bytes, 0);
 
         let purge = reopened
-            .purge_delayed_destroy_slabs_with_report()
+            .purge_delayed_destroy_slabs_older_than(0)
             .unwrap();
         assert_eq!(purge.purged_block_slab_ids, vec![0]);
         assert!(purge.purged_physical_bytes > 0);
@@ -2986,7 +3040,7 @@ mod tests {
             .any(|item| item.contains("page-id continuity")));
 
         let purge = reopened
-            .purge_delayed_destroy_slabs_with_report()
+            .purge_delayed_destroy_slabs_older_than(0)
             .unwrap();
         assert_eq!(
             purge.purged_block_slab_ids,
@@ -3241,6 +3295,69 @@ mod tests {
         assert_eq!(store.slab_ids().unwrap(), vec![1, 3]);
     }
 
+    /// A freshly quarantined slab is NOT purged; one that has waited long enough is.
+    ///
+    /// "Delayed destroy" quarantined the file and then deleted every file it found, so the delay
+    /// lasted only until something called purge -- a slab set aside a second earlier went with the
+    /// rest. The hazard is written down in the compaction commit path: a reclaim that quarantines
+    /// and purges, followed by a reload of an index that still names the slab, dangles at a
+    /// deleted slab.
+    ///
+    /// Both directions are asserted because either alone is passable by a broken purge: one that
+    /// never deleted anything would satisfy the first, and one that ignored the age would satisfy
+    /// the second.
+    #[test]
+    fn a_quarantined_slab_waits_before_it_is_destroyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"stale").unwrap();
+        store.install_slab(1, b"live").unwrap();
+        store
+            .gc_slabs_before_with_live_refs_delayed_destroy(1, [1_u64])
+            .unwrap();
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap(),
+            vec![0],
+            "the slab is in quarantine to begin with"
+        );
+
+        // An hour has not passed, so the purge declines and SAYS it declined.
+        let held = store
+            .purge_delayed_destroy_slabs_older_than(DELAYED_DESTROY_MIN_AGE_MS)
+            .unwrap();
+        assert!(
+            held.purged_block_slab_ids.is_empty(),
+            "a slab quarantined moments ago must not be destroyed"
+        );
+        assert_eq!(
+            held.retained_too_young_block_slab_ids,
+            vec![0],
+            "and the report must say why it is still there"
+        );
+        assert_eq!(held.retained_too_young_physical_bytes, b"stale".len() as u64);
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap(),
+            vec![0],
+            "the file is still in quarantine"
+        );
+
+        // Old enough -- expressed as a zero age rather than by waiting an hour.
+        let purged = store.purge_delayed_destroy_slabs_older_than(0).unwrap();
+        assert_eq!(
+            purged.purged_block_slab_ids,
+            vec![0],
+            "a slab past its wait is destroyed"
+        );
+        assert!(
+            purged.retained_too_young_block_slab_ids.is_empty(),
+            "and nothing is held back once it is old enough"
+        );
+        assert!(
+            store.delayed_destroy_slab_ids().unwrap().is_empty(),
+            "quarantine is empty afterwards"
+        );
+    }
+
     #[test]
     fn delayed_destroy_gc_quarantines_stale_slabs_before_purge() {
         let dir = tempfile::tempdir().unwrap();
@@ -3278,7 +3395,7 @@ mod tests {
         assert_eq!(delayed_reports[1].physical_bytes, b"stale".len() as u64);
         assert!(delayed_reports[1].modified_unix_ms.is_some());
 
-        let purge = store.purge_delayed_destroy_slabs_with_report().unwrap();
+        let purge = store.purge_delayed_destroy_slabs_older_than(0).unwrap();
         assert_eq!(purge.purged_block_slab_ids, vec![0, 1]);
         assert_eq!(
             purge.purged_physical_bytes,
@@ -3473,7 +3590,7 @@ mod tests {
             let quarantine = started.elapsed().as_secs_f64() * 1e3;
 
             let started = std::time::Instant::now();
-            let report = store.purge_delayed_destroy_slabs_with_report().unwrap();
+            let report = store.purge_delayed_destroy_slabs_older_than(0).unwrap();
             let purge = started.elapsed().as_secs_f64() * 1e3;
 
             println!(
