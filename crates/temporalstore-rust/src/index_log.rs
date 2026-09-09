@@ -1133,12 +1133,18 @@ impl LocalIndexLogStore {
     /// anchor with a non-empty `bands` list has been written. Used on load (gate on) to seed the
     /// block-store band catalog from the folded anchor when the band-manifest file is absent.
     pub fn latest_band_catalog(&self, shard_id: ShardId) -> Result<Option<MetaItem>, IndexLogError> {
-        let records = self.read_delta_records(shard_id, 0)?;
-        Ok(records
-            .into_iter()
-            .filter_map(|record| record.meta)
-            .filter(|meta| !meta.bands.is_empty())
-            .next_back())
+        // The LAST matching record wins, so this cannot stop early -- but it never needed to
+        // hold the records it walks past. It kept every record in the log, with every item each
+        // one carries, to take one field out of one of them.
+        let mut latest = None;
+        self.for_each_delta_record(shard_id, 0, |record| {
+            if let Some(meta) = record.meta {
+                if !meta.bands.is_empty() {
+                    latest = Some(meta);
+                }
+            }
+        })?;
+        Ok(latest)
     }
 
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -1395,14 +1401,36 @@ impl LocalIndexLogStore {
         shard_id: ShardId,
         retain_after_sequence: u64,
     ) -> Result<Vec<IndexDeltaRecord>, IndexLogError> {
+        let mut records = Vec::new();
+        self.for_each_delta_record(shard_id, retain_after_sequence, |record| {
+            records.push(record);
+        })?;
+        Ok(records)
+    }
+
+    /// The same walk, handing each record over instead of collecting them.
+    ///
+    /// The file was already read a frame at a time, so what a caller held was never the FILE --
+    /// it was every record the file DECODES to, which is the larger of the two and lives until
+    /// the caller drops the vector. A caller that folds the records into one answer has no use
+    /// for that, and the folding caller here runs on the load path, which is when a store can
+    /// least afford to hold the log twice over.
+    ///
+    /// `read_delta_records` keeps its shape on top of this, so a caller that genuinely wants all
+    /// of them -- the tests that assert what a log holds -- is unchanged.
+    pub fn for_each_delta_record(
+        &self,
+        shard_id: ShardId,
+        retain_after_sequence: u64,
+        mut take: impl FnMut(IndexDeltaRecord),
+    ) -> Result<(), IndexLogError> {
         let inner = self.inner.lock().expect("index log lock poisoned");
         let path = index_log_path(&inner.root, shard_id);
         if !path.exists() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
-        let mut records = Vec::new();
         let mut last_sequence = 0_u64;
         // Read by FRAME, not by line. A record's payload may be binary, and a binary payload
         // may contain 0x0A -- a reader splitting on newlines would cut such a record in half
@@ -1467,10 +1495,10 @@ impl LocalIndexLogStore {
                 continue;
             }
             if record.sequence > retain_after_sequence {
-                records.push(record);
+                take(record);
             }
         }
-        Ok(records)
+        Ok(())
     }
 
     pub fn read_range(
@@ -2204,6 +2232,81 @@ mod tests {
         assert_eq!(folded.get(&(1, "b".to_string())).unwrap().size, 99);
         assert!(folded.contains_key(&(2, "c".to_string())));
         assert_eq!(folded.len(), 2);
+    }
+
+    /// The band catalog is the LAST record that carries one, and nothing after it clears it.
+    ///
+    /// The fold keeps a running answer instead of every record it walks past, so three things
+    /// an ordering change can break are pinned here: a later catalog must WIN; a later record
+    /// carrying a meta with NO bands must not replace it; and a log whose only meta carries no
+    /// bands must answer None rather than that meta.
+    ///
+    /// The second and third are what make this more than one assertion. Writing it with only a
+    /// catalog-less record after the catalogs let a fold that kept "the last meta, bands or not"
+    /// pass -- the record had no meta at all, so the wrong rule never fired.
+    #[test]
+    fn the_band_catalog_is_the_last_record_that_carries_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+
+        let catalog = |slab: u64| MetaItem {
+            version: 1,
+            start_wal_sequence: 1,
+            timestamp_ms: 1,
+            band_version: 1,
+            bands: vec![BandCatalogEntry {
+                block_slab_id: slab,
+                state: BandCatalogState::Active,
+                physical_bytes: 1,
+                logical_bytes: 1,
+                created_unix_ms: None,
+                updated_unix_ms: None,
+                first_page_id: None,
+                last_page_id: None,
+                version: 1,
+            }],
+        };
+        // A meta that carries no bands. An anchor looks like this whenever the fold is off.
+        let bandless = MetaItem {
+            version: 2,
+            start_wal_sequence: 2,
+            timestamp_ms: 2,
+            band_version: 0,
+            bands: Vec::new(),
+        };
+
+        store
+            .append_delta(4, Vec::new(), Vec::new(), None, Some(catalog(11)), false, true)
+            .unwrap();
+        store
+            .append_delta(4, Vec::new(), Vec::new(), None, Some(catalog(22)), false, true)
+            .unwrap();
+        // A meta AFTER the catalogs that carries none of its own.
+        store
+            .append_delta(4, Vec::new(), Vec::new(), None, Some(bandless.clone()), false, true)
+            .unwrap();
+        // And a record with no meta at all.
+        store
+            .append_delta(4, vec![page_item(1, "later", false)], Vec::new(), None, None, false, true)
+            .unwrap();
+
+        let found = store.latest_band_catalog(4).unwrap().expect("a catalog");
+        assert_eq!(
+            found.bands.first().map(|band| band.block_slab_id),
+            Some(22),
+            "the last record CARRYING a catalog wins, and neither record after it clears it"
+        );
+
+        // A log whose only meta carries no bands has no catalog to find. This is the control:
+        // a fold that kept the last meta whether or not it held bands passes the assertion
+        // above and fails here.
+        store
+            .append_delta(5, Vec::new(), Vec::new(), None, Some(bandless), false, true)
+            .unwrap();
+        assert!(
+            store.latest_band_catalog(5).unwrap().is_none(),
+            "a meta carrying no bands is not a catalog"
+        );
     }
 
     #[test]
