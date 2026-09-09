@@ -72,7 +72,8 @@ matrixark-server apply-key --agent codex
 
 Backend conformance expectations:
 
-- The same monitoring UI must work for `backend=native` and `backend=rust`.
+- The same monitoring UI must work for `MATRIXARK_MCP_BACKEND=local` and
+  `MATRIXARK_MCP_BACKEND=temporalstore-rust`.
 - Health payloads should expose `temporalstore.backend`, `mode`, `storage`, `raft`, and `gateway`.
 - and Rust runs should render the same ContextNode topology, summaries, embeddings, events, entities, resource chunks, skills, ContextPacks, and audit rows.
 - Rust CLI-per-operation is acceptable for debug conformance only; production Rust should use the Rust proxy or Rust direct SDK.
