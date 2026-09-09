@@ -245,7 +245,11 @@ DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
 DEFAULT_TIME_WEIGHT = 0.18
 DEFAULT_BUSINESS_WEIGHT = 0.22
-DEFAULT_RETRIEVAL_MIN_SCORE = float(os.environ.get("MATRIXARK_RETRIEVAL_MIN_SCORE", "0.20"))
+# 0.05, which is what config/temporalstore.toml declares. The code said 0.20, the config said
+# 0.05, and the engine request builder sent a bare 0.0 that overrode both -- so the threshold a
+# deployment got depended on which surface the request came through.
+# test_the_score_threshold_has_one_value pins the file and the code together.
+DEFAULT_RETRIEVAL_MIN_SCORE = float(os.environ.get("MATRIXARK_RETRIEVAL_MIN_SCORE", "0.05"))
 DEFAULT_TOP_K_PER_LAYER = int(os.environ.get("MATRIXARK_TOP_K_PER_LAYER", "8"))
 DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_PER_NODE", "1024"))
 DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "512"))
