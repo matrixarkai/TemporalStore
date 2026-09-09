@@ -1175,7 +1175,13 @@ class _TemporalDirectReadMixin:
                 or args.get("max_selected_refs")
                 or DEFAULT_MAX_SELECTED_REFS
             ),
-            "min_score": float(ranking.get("min_score") or args.get("min_score") or 0.0),
+            # The threshold comes from ONE place. This sent a bare 0.0, which silently
+            # overrode both the config file and the code default on every request.
+            "min_score": float(
+                ranking.get("min_score")
+                or args.get("min_score")
+                or DEFAULT_RETRIEVAL_MIN_SCORE
+            ),
             "decay_half_life_ms": int(ranking.get("half_life_ms") or 0),
             "max_depth": int(ranking.get("max_depth") or 4),
             "top_k_per_depth": int(ranking.get("top_k_per_layer") or ranking.get("top_k_per_depth") or 16),
