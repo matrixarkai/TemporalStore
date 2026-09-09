@@ -51,7 +51,7 @@ pub use storage_bucket_internals::{
 };
 mod compaction;
 mod storage_reporting;
-mod hashing;
+pub(crate) mod hashing;
 mod bucket_store;
 mod control_rollup;
 mod hll;
