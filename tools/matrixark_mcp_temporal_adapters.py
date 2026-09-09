@@ -34,17 +34,14 @@ from pathlib import PurePosixPath
 #
 # Optional by design: where orjson is not installed the stdlib parser is used and nothing about
 # the lane changes.
-try:  # pragma: no cover - whichever is installed is the one exercised
-    import orjson as _lane_orjson
-
-    def _LANE_LOADS(text):
-        return _lane_orjson.loads(text)
-
+# One decoder, shared with matrixark_mcp_rust_proxy_client. Two modules serve this lane, and when
+# the faster parser lived here only, the client went on decoding the whole context pack with the
+# stdlib one -- so a profile taken after the change still reported the decoder it was meant to
+# replace.
+try:  # pragma: no cover - import shape differs when run as a package
+    from matrixark_json_lane import lane_loads as _LANE_LOADS
 except ImportError:  # pragma: no cover
-    import json as _lane_stdlib_json
-
-    def _LANE_LOADS(text):
-        return _lane_stdlib_json.loads(text)
+    from tools.matrixark_json_lane import lane_loads as _LANE_LOADS
 
 
 # msgpack for the lane, where both ends have it.
