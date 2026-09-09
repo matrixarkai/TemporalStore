@@ -1036,6 +1036,14 @@ struct IndexLogInner {
     /// on process restart, so the first post-restart cycle may dump once -- harmless (a dump only
     /// materializes durable state that is already recoverable).
     last_dumped_len_by_shard: HashMap<ShardId, u64>,
+    /// When the last catalog dump of a shard completed. Read by `ms_since_catalog_dump` to hold
+    /// the next dump off until the minimum interval has passed.
+    ///
+    /// An `Instant`, not a wall clock, because the question is "how long since", and a wall
+    /// clock that steps backwards would hold a dump off for as long as the step, while one that
+    /// steps forward would release it early. A shard never dumped in this process has no entry,
+    /// and no entry means no floor: the first dump after a restart is never delayed.
+    last_dumped_at_by_shard: HashMap<ShardId, std::time::Instant>,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
@@ -1085,6 +1093,30 @@ pub fn should_dump_index_catalog(undumped_bytes: u64, gap_bytes: u64) -> bool {
     gap_bytes > 0 && undumped_bytes >= gap_bytes
 }
 
+/// The threshold decision above, with a floor on how often it may say yes.
+///
+/// `ms_since_dump` is `None` for a shard this process has never dumped, which is not a dump
+/// "0 ms ago" -- it is no dump at all, and nothing to wait behind. Getting that backwards would
+/// silence the first dump after every restart for the length of the interval, on exactly the
+/// engine that has the most to reclaim.
+///
+/// A zero interval is no floor at all, so the byte gap alone decides. That is what a test which
+/// is not exercising the timer passes, and it says so by passing it.
+pub fn should_dump_index_catalog_now(
+    undumped_bytes: u64,
+    gap_bytes: u64,
+    ms_since_dump: Option<u64>,
+    min_interval_ms: u64,
+) -> bool {
+    if !should_dump_index_catalog(undumped_bytes, gap_bytes) {
+        return false;
+    }
+    match ms_since_dump {
+        Some(elapsed) => elapsed >= min_interval_ms,
+        None => true,
+    }
+}
+
 impl LocalIndexLogStore {
     /// On-disk byte length of a shard's index-log file (0 if absent). Used as the "undumped
     /// length" signal for the threshold-dump cadence: the growth of this file since the last
@@ -1102,6 +1134,16 @@ impl LocalIndexLogStore {
     /// the undumped WAL length, and is the signal compared against `index_dump_wal_gap_bytes`
     /// to decide a threshold dump. A shard never dumped this process (or freshly restarted)
     /// reports the whole current length.
+    /// Milliseconds since this shard's last catalog dump, or `None` if it has not dumped in
+    /// this process. Feeds `should_dump_index_catalog_now`'s interval check.
+    pub fn ms_since_catalog_dump(&self, shard_id: ShardId) -> Option<u64> {
+        let inner = self.inner.lock().expect("index log lock poisoned");
+        inner
+            .last_dumped_at_by_shard
+            .get(&shard_id)
+            .map(|at| at.elapsed().as_millis() as u64)
+    }
+
     pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
         let inner = self.inner.lock().expect("index log lock poisoned");
         let current = index_log_path(&inner.root, shard_id)
@@ -1127,6 +1169,11 @@ impl LocalIndexLogStore {
             .map(|metadata| metadata.len())
             .unwrap_or(0);
         inner.last_dumped_len_by_shard.insert(shard_id, current);
+        // Stamped in the same call as the length, so the two halves of the cadence -- how much
+        // has accumulated, and how long ago -- can never disagree about which dump they describe.
+        inner
+            .last_dumped_at_by_shard
+            .insert(shard_id, std::time::Instant::now());
     }
 
     /// The most recent `MetaItem` anchor carrying a folded band catalog, or `None` if no
@@ -1156,6 +1203,7 @@ impl LocalIndexLogStore {
                 stats: IndexLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 last_dumped_len_by_shard: HashMap::new(),
+                last_dumped_at_by_shard: HashMap::new(),
                 scratch: None,
             })),
             flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
@@ -2680,6 +2728,29 @@ mod tests {
             .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), false, true)
             .unwrap();
         assert_eq!(store.latest_band_catalog(6).unwrap().unwrap(), newer);
+    }
+
+    /// The interval holds a second dump off, and a shard that has never dumped is not held.
+    ///
+    /// Both halves matter and neither alone is enough. A rule that only checked the gap would
+    /// satisfy "fires when enough has accumulated"; a rule that treated "never dumped" as
+    /// "dumped just now" would satisfy "holds a second dump off" while silencing the FIRST dump
+    /// of every restart -- the case with the most to reclaim and the one no interval should
+    /// ever cover.
+    #[test]
+    fn the_dump_interval_holds_off_a_second_dump_but_never_the_first() {
+        // Never dumped: no floor to wait behind, however long the interval.
+        assert!(should_dump_index_catalog_now(4096, 1024, None, 60_000));
+        // Dumped recently: the gap is crossed and the dump still waits.
+        assert!(!should_dump_index_catalog_now(4096, 1024, Some(200), 1_500));
+        // Waited long enough: it fires. The boundary itself counts as waited.
+        assert!(should_dump_index_catalog_now(4096, 1024, Some(1_500), 1_500));
+        assert!(should_dump_index_catalog_now(4096, 1024, Some(9_000), 1_500));
+        // A zero interval is no floor -- the gap alone decides, in both directions.
+        assert!(should_dump_index_catalog_now(4096, 1024, Some(0), 0));
+        assert!(!should_dump_index_catalog_now(512, 1024, Some(0), 0));
+        // And the interval never SUBSTITUTES for the gap: waiting is not accumulating.
+        assert!(!should_dump_index_catalog_now(512, 1024, Some(9_000), 1_500));
     }
 
     #[test]

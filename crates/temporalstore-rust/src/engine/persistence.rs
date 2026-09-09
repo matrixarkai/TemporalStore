@@ -382,11 +382,21 @@ impl TemporalEngine {
 
     /// MANIFEST-CONFORMANCE FOLD threshold check: dump the index catalog when the undumped index-log
     /// gap has crossed `index_dump_wal_gap_bytes` (the index-meta dump gap
-    /// cadence). Returns whether a dump fired.
+    /// cadence) AND `index_dump_min_interval_ms` has passed since this shard last dumped.
+    /// Returns whether a dump fired.
+    ///
+    /// This caller has no cadence of its own -- it checks on every background round it runs --
+    /// so without the interval, a burst that keeps crossing the gap gets a whole-index
+    /// serialize every time it does.
     pub fn maybe_dump_index_catalog(&self, shard_id: ShardId) -> bool {
         let gap = crate::storage_config::index_dump_wal_gap_bytes();
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
-        if !crate::index_log::should_dump_index_catalog(undumped, gap) {
+        if !crate::index_log::should_dump_index_catalog_now(
+            undumped,
+            gap,
+            self.index_log_store.ms_since_catalog_dump(shard_id),
+            crate::storage_config::index_dump_min_interval_ms(),
+        ) {
             return false;
         }
         self.dump_index_catalog(shard_id)
@@ -400,9 +410,15 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         gap_bytes: u64,
+        min_interval_ms: u64,
     ) -> bool {
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
-        if !crate::index_log::should_dump_index_catalog(undumped, gap_bytes) {
+        if !crate::index_log::should_dump_index_catalog_now(
+            undumped,
+            gap_bytes,
+            self.index_log_store.ms_since_catalog_dump(shard_id),
+            min_interval_ms,
+        ) {
             return false;
         }
         self.dump_index_catalog(shard_id)
@@ -506,7 +522,12 @@ impl TemporalEngine {
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
         let gap = crate::storage_config::index_dump_wal_gap_bytes();
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
-        if !crate::index_log::should_dump_index_catalog(undumped, gap) {
+        if !crate::index_log::should_dump_index_catalog_now(
+            undumped,
+            gap,
+            self.index_log_store.ms_since_catalog_dump(shard_id),
+            crate::storage_config::index_dump_min_interval_ms(),
+        ) {
             return None;
         }
         self.dump_and_reclaim_index_logs(shard_id)
@@ -602,9 +623,15 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         gap_bytes: u64,
+        min_interval_ms: u64,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
-        if !crate::index_log::should_dump_index_catalog(undumped, gap_bytes) {
+        if !crate::index_log::should_dump_index_catalog_now(
+            undumped,
+            gap_bytes,
+            self.index_log_store.ms_since_catalog_dump(shard_id),
+            min_interval_ms,
+        ) {
             return None;
         }
         self.dump_and_reclaim_index_logs(shard_id)
