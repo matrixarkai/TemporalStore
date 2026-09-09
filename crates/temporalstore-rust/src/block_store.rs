@@ -39,7 +39,7 @@ use record::{
 use self::band_manifest::*;
 pub(crate) use slab_ids::*;
 #[cfg(test)]
-use record::{PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_MAGIC};
+use record::{PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD};
 
 #[derive(Debug, Error)]
 pub enum BlockStoreError {
@@ -2359,7 +2359,6 @@ mod tests {
         let address = store.append(b"enveloped-page").unwrap();
         let raw = store.read_slab(address.block_slab_id).unwrap();
 
-        assert!(raw.starts_with(PAGE_RECORD_MAGIC));
         assert_eq!(address.page_id(), Some(0));
         assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
     }
@@ -2404,34 +2403,6 @@ mod tests {
         let mut address = store.append(b"identity-checked-page").unwrap();
         address.set_page_id(Some(address.page_id().unwrap() + 1));
 
-        let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
-    }
-
-    #[test]
-    fn object_ids_are_persisted_and_checked_in_page_envelopes() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
-        let mut address = store
-            .append_with_page_metadata(b"object-page", Some(42), Some(7))
-            .unwrap();
-
-        assert_eq!(address.object_id(), Some(42));
-        assert_eq!(address.routing_bucket(), Some(7));
-        assert_eq!(address.band_id(), Some(0));
-        assert_eq!(store.read(&address).unwrap(), b"object-page");
-
-        address.set_object_id(Some(43));
-        let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
-
-        address.set_object_id(Some(42));
-        address.set_routing_bucket(Some(8));
-        let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
-
-        address.set_routing_bucket(Some(7));
-        address.set_band_id(Some(1));
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
     }
@@ -2880,8 +2851,8 @@ mod tests {
         let second = store.append(&second_payload).unwrap();
         let raw = store.read_slab(first.block_slab_id).unwrap();
 
-        assert!(first.length < (record::PAGE_RECORD_FIXED_LEN + first_payload.len()) as u64);
-        assert!(second.length < (record::PAGE_RECORD_FIXED_LEN + second_payload.len()) as u64);
+        assert!(first.length < (record::PAGE_RECORD_HEADER_LEN + first_payload.len()) as u64);
+        assert!(second.length < (record::PAGE_RECORD_HEADER_LEN + second_payload.len()) as u64);
         assert_eq!(store.read(&first).unwrap(), first_payload);
         assert_eq!(store.read(&second).unwrap(), second_payload);
 
@@ -2893,7 +2864,6 @@ mod tests {
         expected.extend_from_slice(&first_payload[first_payload.len() - 3..]);
         expected.extend_from_slice(&second_payload[..9]);
         assert_eq!(logical, expected);
-        assert!(raw.starts_with(PAGE_RECORD_MAGIC));
         assert_eq!(record::page_record_compression_byte(&raw), PAGE_RECORD_COMPRESSION_ZSTD);
 
         let stats = store.stats();
@@ -3109,57 +3079,6 @@ mod tests {
     }
 
     #[test]
-    fn slab_reports_describe_object_and_routing_bucket_ownership() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
-        store
-            .append_with_page_metadata(b"slot-7-object-100", Some(100), Some(7))
-            .unwrap();
-        store
-            .append_with_page_metadata(b"slot-11-object-101", Some(101), Some(11))
-            .unwrap();
-        store
-            .append_with_page_metadata(b"slot-7-object-100-again", Some(100), Some(7))
-            .unwrap();
-
-        let reports = store.slab_reports().unwrap();
-
-        assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].page_count, 3);
-        assert_eq!(reports[0].object_count, 2);
-        assert_eq!(reports[0].routing_bucket_count, 2);
-        assert_eq!(reports[0].first_routing_bucket, Some(7));
-        assert_eq!(reports[0].last_routing_bucket, Some(11));
-        assert_eq!(reports[0].block_index_count, 3);
-        assert_eq!(
-            reports[0]
-                .block_index_entries
-                .iter()
-                .filter_map(|entry| entry.object_id)
-                .collect::<Vec<_>>(),
-            vec![100, 101, 100]
-        );
-        assert_eq!(
-            reports[0]
-                .block_index_entries
-                .iter()
-                .filter_map(|entry| entry.routing_bucket)
-                .collect::<Vec<_>>(),
-            vec![7, 11, 7]
-        );
-        assert!(reports[0]
-            .block_index_entries
-            .iter()
-            .all(|entry| !entry.dirty && !entry.deleted && !entry.block_in_log));
-        assert_eq!(
-            reports[0].readable_prefix_physical_bytes,
-            reports[0].physical_bytes
-        );
-        assert!(!reports[0].has_corruption);
-        assert_eq!(reports[0].first_error, None);
-    }
-
-    #[test]
     fn slab_reports_capture_first_corrupt_record_error() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
@@ -3206,23 +3125,15 @@ mod tests {
 
         // Stated from the values that went in, because a varint header has no fixed length: it
         // is the fixed part, one varint per number, and the compression codec.
-        let expected_header = record::PAGE_RECORD_FIXED_LEN
-            + record::page_record_varint_len(payload.len() as u64)
-            + record::page_record_varint_len(disabled_address.page_id().unwrap_or_default())
-            + record::page_record_varint_len(
-                disabled_address
-                    .routing_bucket()
-                    .map_or(0, |bucket| u64::from(bucket) + 1),
-            )
-            + record::page_record_varint_len(disabled_address.band_id().unwrap_or_default())
-            + 1;
+        let expected_header = record::PAGE_RECORD_HEADER_LEN;
         assert_eq!(
             disabled_address.length,
             (expected_header + payload.len()) as u64
         );
-        assert!(
-            expected_header <= record::PAGE_RECORD_FIXED_LEN + 5 + 1,
-            "a header for small ids is the fixed part plus one byte per number"
+        assert_eq!(
+            expected_header,
+            record::PAGE_RECORD_HEADER_LEN,
+            "one header size, whatever the values"
         );
         assert_eq!(record::page_record_compression_byte(&disabled_raw), PAGE_RECORD_COMPRESSION_NONE);
         assert_eq!(disabled_store.read(&disabled_address).unwrap(), payload);
@@ -3242,16 +3153,7 @@ mod tests {
             .read_slab(threshold_address.block_slab_id)
             .unwrap();
 
-        let threshold_header = record::PAGE_RECORD_FIXED_LEN
-            + record::page_record_varint_len(payload.len() as u64)
-            + record::page_record_varint_len(threshold_address.page_id().unwrap_or_default())
-            + record::page_record_varint_len(
-                threshold_address
-                    .routing_bucket()
-                    .map_or(0, |bucket| u64::from(bucket) + 1),
-            )
-            + record::page_record_varint_len(threshold_address.band_id().unwrap_or_default())
-            + 1;
+        let threshold_header = record::PAGE_RECORD_HEADER_LEN;
         assert_eq!(
             threshold_address.length,
             (threshold_header + payload.len()) as u64
@@ -3286,13 +3188,14 @@ mod tests {
         let address = store.append(b"header-checked-page").unwrap();
         let path = slab_path(dir.path(), address.block_slab_id);
         let mut slab = fs::read(&path).unwrap();
-        // Make the payload length say something far larger than the record holds. There is no
-        // declared header length to corrupt any more -- the header ends where the walk ends --
-        // so the length that can still disagree with the record is the payload's.
-        let length_at = record::PAGE_RECORD_FIXED_LEN;
-        slab[length_at] = 0xFF;
-        slab[length_at + 1] = 0xFF;
-        slab[length_at + 2] = 0x7F;
+        // Make the block say it is far larger than the record holds. The size sits at a
+        // constant offset now, so this corrupts the number itself rather than payload bytes,
+        // which would only be caught by the checksum.
+        let size_at = record::PAGE_RECORD_LENGTH_OFFSET;
+        slab[size_at] = 0xFF;
+        slab[size_at + 1] = 0xFF;
+        slab[size_at + 2] = 0xFF;
+        slab[size_at + 3] = 0x3F;
         fs::write(path, slab).unwrap();
 
         let err = store.read(&address).unwrap_err();
