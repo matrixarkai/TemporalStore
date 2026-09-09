@@ -513,8 +513,29 @@ pub(crate) fn read_frame<R: std::io::BufRead>(
                 if reader.read_exact(&mut digest).is_err() {
                     return Ok(None);
                 }
-                let mut payload = vec![0u8; declared_len];
-                if reader.read_exact(&mut payload).is_err() {
+                // Allocate what is READ, not what is DECLARED.
+                //
+                // `declared_len` is a varint out of the file, so a torn or corrupted tail can
+                // name any number at all. Sizing the buffer from it asked the allocator for the
+                // number the CORRUPTION chose -- and a failed allocation aborts the process,
+                // taking down everything else running in it. In the suite that meant a whole
+                // 1,700-test run died, which is a louder failure than the corruption being
+                // checked. Measured at about one run in twenty of the random torn-tail test.
+                //
+                // `take` + `read_to_end` grows the buffer as bytes actually arrive, so the cost
+                // is bounded by what the file really holds rather than by what it claims. The
+                // check below is unchanged and still decides: fewer bytes than declared is a
+                // torn tail. No cap is invented -- a cap would have to guess a largest
+                // legitimate record, and guessing that wrong rejects good data.
+                let mut payload = Vec::new();
+                let read = {
+                    use std::io::Read as _;
+                    match reader.by_ref().take(declared_len as u64).read_to_end(&mut payload) {
+                        Ok(read) => read,
+                        Err(_) => return Ok(None),
+                    }
+                };
+                if read != declared_len {
                     return Ok(None); // fewer bytes than declared: a torn tail
                 }
                 if crate::checksum::crc32c(&payload) != u32::from_le_bytes(digest) {
@@ -584,8 +605,18 @@ pub(crate) fn read_frame<R: std::io::BufRead>(
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| FramingError("framed record has an unparseable length field".to_string()))?;
     let digest_expected = digest_field.to_vec();
-    let mut payload = vec![0u8; declared_len];
-    if reader.read_exact(&mut payload).is_err() {
+    // Read what is there, do not reserve what is claimed. See the binary reader above: a length
+    // out of the file sizes an allocation, and a failed allocation aborts the process rather
+    // than reporting the torn tail this already knows how to report.
+    let mut payload = Vec::new();
+    let read = {
+        use std::io::Read as _;
+        match reader.by_ref().take(declared_len as u64).read_to_end(&mut payload) {
+            Ok(read) => read,
+            Err(_) => return Ok(None),
+        }
+    };
+    if read != declared_len {
         // Fewer bytes than the record declares: the append was interrupted.
         return Ok(None);
     }
@@ -649,6 +680,53 @@ fn split_once_space(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
         .iter()
         .position(|&byte| byte == b' ')
         .map(|index| (&bytes[..index], &bytes[index + 1..]))
+}
+
+#[cfg(test)]
+mod torn_length_tests {
+    use super::*;
+
+    /// A frame whose declared length is absurd reads as a torn tail instead of sizing a buffer.
+    ///
+    /// The length is a varint out of the file, so a torn or corrupted tail can name any number.
+    /// Sizing the payload buffer from it asked the allocator for the number the CORRUPTION chose;
+    /// a failed allocation aborts the process, taking down whatever else is running -- in the
+    /// suite, every remaining test.
+    ///
+    /// This is deterministic on purpose. The random torn-tail test that first surfaced it aborts
+    /// about one run in twenty, which is far too rare to guard anything: it took a full-suite run
+    /// to catch, and passed six times in a row afterwards.
+    #[test]
+    fn a_frame_that_declares_an_absurd_length_is_a_torn_tail_not_an_allocation() {
+        // A well-formed header -- magic, a varint length of 2^45 bytes, a checksum -- followed by
+        // three bytes. Nothing on this machine can hold what it claims.
+        let mut framed = vec![FRAME_MAGIC_V3];
+        write_varint(1 << 45, &mut framed);
+        framed.extend_from_slice(&0u32.to_le_bytes());
+        framed.extend_from_slice(b"abc");
+
+        let mut reader = std::io::BufReader::new(framed.as_slice());
+        let read = read_frame(&mut reader).expect("an absurd length is a torn tail, not an error");
+        assert!(
+            read.is_none(),
+            "a frame declaring more than the file holds must read as a torn tail"
+        );
+    }
+
+    /// The control: a frame that declares what it actually carries still reads back whole.
+    ///
+    /// Without this, a reader that returned `None` for everything would pass the test above.
+    #[test]
+    fn a_frame_that_declares_what_it_carries_still_reads() {
+        let payload = b"a real record".to_vec();
+        let framed = encode_frame(&payload);
+        let mut reader = std::io::BufReader::new(framed.as_slice());
+        let (consumed, read) = read_frame(&mut reader)
+            .expect("a well-formed frame reads")
+            .expect("a well-formed frame is present");
+        assert_eq!(read, payload, "the payload must survive the round trip");
+        assert_eq!(consumed, framed.len(), "the whole frame must be accounted for");
+    }
 }
 
 #[cfg(test)]
@@ -1021,8 +1099,16 @@ pub(crate) fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::R
         return Ok(None);
     }
     raw.extend_from_slice(&digest);
-    let mut payload = vec![0u8; declared as usize];
-    if reader.read_exact(&mut payload).is_err() {
+    let declared_len = declared as usize;
+    let mut payload = Vec::new();
+    let read = {
+        use std::io::Read as _;
+        match reader.by_ref().take(declared).read_to_end(&mut payload) {
+            Ok(read) => read,
+            Err(_) => return Ok(None),
+        }
+    };
+    if read != declared_len {
         return Ok(None); // fewer bytes than declared: a torn tail
     }
     raw.extend_from_slice(&payload);
