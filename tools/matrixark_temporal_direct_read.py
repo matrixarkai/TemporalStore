@@ -405,6 +405,37 @@ class _TemporalDirectReadMixin:
         "source_memory_selection_lossy_count",
     )
 
+    def _native_query_vector(self, query: str) -> list[float] | None:
+        """The query embedding to hand the engine, or None to leave ranking here.
+
+        Off unless MATRIXARK_NATIVE_DENSE_RANKING=1. With it, the engine scores candidates by
+        cosine and returns only the refs it selected, so the vectors and text of everything it
+        rejected never cross the lane -- on this corpus a scan returns 2,954 records to select a
+        few dozen. Without it the engine scores lexically, which is what it has always done.
+
+        Computing the embedding here is not extra work when ranking stays local: the same call is
+        cached, and the local packer asks for the identical vector moments later.
+        """
+        if not env_bool("MATRIXARK_NATIVE_DENSE_RANKING", False):
+            return None
+        text = (query or "").strip()
+        if not text:
+            return None
+        try:
+            from matrixark_mcp_embeddings import embedding_for_text
+        except ImportError:  # pragma: no cover - import shape differs when run as a package
+            try:
+                from tools.matrixark_mcp_embeddings import embedding_for_text
+            except ImportError:
+                return None
+        try:
+            vector = embedding_for_text(text, role="query")
+        except Exception:  # noqa: BLE001 - ranking must never be the reason a retrieve fails
+            return None
+        if not isinstance(vector, list) or not vector:
+            return None
+        return [float(value) for value in vector]
+
     def _scan_record_fields(self) -> list[str] | None:
         """The projection to ask for, or None for whole records.
 
@@ -1093,6 +1124,9 @@ class _TemporalDirectReadMixin:
             "skill_status_watermark": skill_status_watermark,
             "index_posting_watermark": watermark_count,
             "query": query,
+            # The engine ranks by cosine when this is present and lexically when it is not, and
+            # reports which it did as `ranking_uses_vectors`.
+            "query_vector": self._native_query_vector(query),
             "question_type": question_type,
             "scope": scope,
             "session_scope": retrieval_session_scope,
