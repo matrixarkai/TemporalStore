@@ -5987,6 +5987,7 @@ fn retrieve_context_pack_output(
             &tokens_of,
             &layer_floors,
             token_budget,
+            max_selected_refs,
         );
         budget_keep = keep;
         layer_refs_selected = per_layer;
@@ -6014,12 +6015,18 @@ fn retrieve_context_pack_output(
     let mut dropped_ref_type_token_counts: HashMap<String, u64> = HashMap::new();
     let mut dropped_ref_details: Vec<Value> = Vec::new();
     for (_, ordinal) in candidates.into_iter() {
-        if budget_governs {
-            if !budget_keep.contains(&ordinal) {
-                continue;
-            }
-        } else if selected_refs.len() >= max_selected_refs {
+        // The cap binds even under a budget; the budget narrows it further. The pack holds
+        // whichever is SMALLER.
+        //
+        // A budget used to replace the cap outright, so a node with a large budget returned
+        // whatever fitted. Measured on a production corpus: packs of 3,627-4,358 refs, a retrieve
+        // p50 of 9.8 SECONDS and proxy RSS peaking at 1.44 GB. A default of 1000 refs is not a
+        // default if a budget silently lifts it.
+        if selected_refs.len() >= max_selected_refs {
             break;
+        }
+        if budget_governs && !budget_keep.contains(&ordinal) {
+            continue;
         }
         let Some(candidate) = snapshot.candidates.get(ordinal) else {
             continue;
@@ -6529,6 +6536,7 @@ fn select_within_budget(
     tokens_of: &dyn Fn(usize) -> u64,
     floors: &std::collections::BTreeMap<String, u64>,
     token_budget: u64,
+    cap: usize,
 ) -> (std::collections::HashSet<usize>, HashMap<String, u64>, u64) {
     let mut keep: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut per_layer: HashMap<String, u64> = HashMap::new();
@@ -6547,6 +6555,11 @@ fn select_within_budget(
         keep.insert(*ordinal);
     }
     for (_, ordinal) in scored.iter() {
+        if keep.len() >= cap {
+            // Nothing past the cap can be returned, so pricing it is work thrown away. On the
+            // corpus that produced 4,358-ref packs, that was most of the fill.
+            break;
+        }
         if keep.contains(ordinal) {
             continue;
         }
@@ -6857,7 +6870,7 @@ mod tests {
             .iter()
             .map(|(name, count)| ((*name).to_string(), *count))
             .collect();
-        select_within_budget(&scored, &layer_of, &tokens_of, &floor_map, budget)
+        select_within_budget(&scored, &layer_of, &tokens_of, &floor_map, budget, 1000)
     }
 
     /// Without a floor the budget goes to the best-scoring refs and a whole layer can return
@@ -9499,7 +9512,7 @@ mod tests {
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
 
-    /// A token budget makes the slot count stop deciding what a pack holds.
+    /// A token budget narrows what a pack holds; the slot count still bounds it.
     ///
     /// The cap was the thing that actually cut recall: a store of 80 short facts under an
     /// 8000-token budget returned 40, because `max_selected_refs` -- not the budget -- ran out
@@ -9511,7 +9524,7 @@ mod tests {
     /// another 24 in the engine under a clamp of 128). Whichever of those a deployment ends up
     /// with must not change what a budgeted pack returns.
     #[test]
-    fn a_budget_overrides_the_slot_cap() {
+    fn a_budget_narrows_the_pack_but_does_not_lift_the_cap() {
         let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
@@ -9553,9 +9566,13 @@ mod tests {
             .and_then(|pack| pack.get("selected_refs"))
             .and_then(Value::as_array)
             .expect("selected_refs present");
-        assert!(
-            refs.len() > 1,
-            "a budget must override the slot cap, got {} ref(s)",
+        // The cap BINDS: a budget narrows the pack, it does not lift the cap. An earlier version
+        // of this test asserted the opposite, and a production run showed what that cost --
+        // 4,358-ref packs and a 9.8 s retrieve p50.
+        assert_eq!(
+            refs.len(),
+            1,
+            "the cap must still bind under a budget, got {} ref(s)",
             refs.len()
         );
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
