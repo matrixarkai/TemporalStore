@@ -14,6 +14,14 @@ import threading
 import time
 from typing import Any
 
+# The lane decoder, shared with matrixark_mcp_temporal_adapters. This module decodes the whole
+# context pack on every retrieve -- the largest payload on the path -- and did so with the stdlib
+# parser while the faster one was already wired up next door.
+try:  # pragma: no cover - import shape differs when run as a package
+    from matrixark_json_lane import lane_loads as _lane_loads
+except ImportError:  # pragma: no cover
+    from tools.matrixark_json_lane import lane_loads as _lane_loads
+
 try:
     from tools.matrixark_mcp_core import Json, MatrixArkError
     from tools.matrixark_mcp_rust_proxy_coalesce import (
@@ -208,7 +216,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             if not line.strip().startswith("{"):
                 continue
             try:
-                parsed = json.loads(line)
+                parsed = _lane_loads(line)
             except json.JSONDecodeError as exc:
                 raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {line[:200]!r}") from exc
             # The proxy answers strictly in order on one stdout, so the late response of a
@@ -613,7 +621,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             result = response
             value = response.get("value")
             if isinstance(value, str) and value:
-                decoded = json.loads(value)
+                decoded = _lane_loads(value)
                 if isinstance(decoded, dict):
                     result = decoded
             self._context_pack_response_cache_put(cache_key, result)
