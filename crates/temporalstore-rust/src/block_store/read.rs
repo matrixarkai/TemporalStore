@@ -11,11 +11,11 @@ impl LocalBlockStore {
         // metadata-only restore, fetch + cache it before serving the read.
         self.ensure_slab_present(address.block_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let path = slab_path(&inner.root, address.block_slab_id);
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::Start(address.offset))?;
-        let mut bytes = vec![0; address.length as usize];
-        file.read_exact(&mut bytes)?;
+        let bytes = LocalSlabBackend::new(&inner.root).read_range(
+            address.block_slab_id,
+            address.offset,
+            address.length,
+        )?;
         let decoded = decode_page_record(&bytes, address)?;
         // `decode_page_record` just verified this payload against the digest stored in the
         // page envelope, and cross-checked the record header's page id, object id and routing
@@ -63,8 +63,7 @@ impl LocalBlockStore {
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let path = slab_path(&inner.root, block_slab_id);
-        let slab = fs::read(path)?;
+        let slab = LocalSlabBackend::new(&inner.root).read_all(block_slab_id)?;
         let range = logical_range_from_slab(&slab, block_slab_id, offset, size)?;
         let bytes = range.bytes;
         inner.stats.reads += 1;

@@ -20,6 +20,8 @@ mod append;
 mod read;
 mod gc;
 mod slab_ids;
+mod slab_backend;
+use slab_backend::{LocalSlabBackend, SlabBackend};
 mod record;
 
 pub(crate) use record::block_index_checksums_enabled;
