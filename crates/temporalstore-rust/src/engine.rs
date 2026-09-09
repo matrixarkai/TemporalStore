@@ -1698,14 +1698,18 @@ impl TemporalEngine {
         // made this report ready: false on every default deployment. The addressing fields are
         // what a complete block address API means; the digest is a hand-inspection aid.
         let checksums_recorded = crate::block_store::block_index_checksums_enabled();
+        // What a slab walk can know, which is what a block record carries: where the block is,
+        // which block of its object it is, and its checksum. The object id and the routing
+        // bucket are NOT among them any more -- they live in the index, and a record that
+        // repeated them could only ever agree with the index or be wrong. Asking a slab-derived
+        // entry for them would report the address API permanently incomplete for a reason that
+        // is by design.
         let block_address_api_ready = slab_reports.iter().any(|slab| {
             slab.block_index_entries.iter().any(|entry| {
                 entry.compact_slab_address.is_some()
                     && entry.compact_slab_id.is_some()
                     && entry.compact_slab_offset.is_some()
                     && entry.block_id.is_some()
-                    && entry.object_id.is_some()
-                    && entry.routing_bucket.is_some()
                     && (!checksums_recorded || entry.checksum.is_some())
             })
         });
