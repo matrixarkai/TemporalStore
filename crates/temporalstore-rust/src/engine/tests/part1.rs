@@ -8259,6 +8259,107 @@ fn what_a_thousand_records_hides() {
 /// dropping anything is flat, and walking everything is correct.
 ///
 ///   cargo test -p temporalstore-rust --lib emptied_buckets_are_dropped_without_walking_the_map -- --nocapture
+/// A bounded compaction round stops at its budget, RESUMES onto the same slab, and the rounds
+/// together still move every page.
+///
+/// The resume is what makes bounding work at all. A round rolls a fresh slab and relocates onto
+/// it; rolling AGAIN while a round is unfinished would re-move everything the last round moved,
+/// because those pages would no longer be on the newest slab. A budget without a resume shuffles
+/// the same pages and the tail never moves.
+///
+/// Note what "finished" means here, because it is not what it first appears: compaction relocates
+/// every live page BY DESIGN, so a completed compaction is followed by another that moves them
+/// all again. A round is finished when it left nothing behind for want of budget, which is what
+/// `pages_left_by_budget` reports.
+///
+/// Two controls. Every value must still read after EACH round -- a partial compaction that loses
+/// a page is the risk bounding introduces -- and the unbounded round must finish in ONE, which is
+/// what keeps the default behaviour of every store small enough for the real budget.
+#[test]
+fn a_bounded_compaction_round_resumes_instead_of_rolling_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const KEYS: u64 = 40;
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("bounded-{index}"),
+                value: vec![b'v'; 256],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let reads_all_hold = |stage: &str| {
+        for index in 0..KEYS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("bounded-{index}"),
+                },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes {
+                    value: Some(vec![b'v'; 256])
+                },
+                "{stage}: bounded-{index} did not read back"
+            );
+        }
+    };
+
+    // A tiny budget: several rounds before one finishes.
+    let mut rounds = 0;
+    let mut slabs_filled = std::collections::BTreeSet::new();
+    let mut relocated = 0usize;
+    loop {
+        let report = engine
+            .compact_shard_pages_with_budget(1, 300)
+            .expect("a bounded round succeeds");
+        rounds += 1;
+        relocated += report.rewritten_page_refs;
+        slabs_filled.insert(report.compacted_block_slab_id);
+        reads_all_hold(&format!("after round {rounds}"));
+        if report.pages_left_by_budget == 0 {
+            break;
+        }
+        assert!(rounds < 100, "the rounds are not converging: {rounds} of them");
+    }
+
+    assert!(
+        rounds > 2,
+        "a 300-byte budget should have taken several rounds, took {rounds}"
+    );
+    assert_eq!(
+        slabs_filled.len(),
+        1,
+        "every round of ONE compaction must fill the SAME slab; rolling again each round is what \
+         re-moves the previous round's work: {slabs_filled:?}"
+    );
+    assert!(
+        relocated >= KEYS as usize,
+        "the rounds together must move at least every key's page, moved {relocated}"
+    );
+
+    // The control: with the real budget a compaction finishes in one round, leaving nothing
+    // behind. This is what keeps every existing assertion about a single compaction true.
+    let whole = engine
+        .compact_shard_pages(1)
+        .expect("an unbounded round succeeds");
+    assert_eq!(
+        whole.pages_left_by_budget, 0,
+        "the shipped budget must finish a store this size in one round"
+    );
+    reads_all_hold("after the unbounded round");
+}
+
 #[test]
 fn emptied_buckets_are_dropped_without_walking_the_map() {
     use crate::types::ContextNode;

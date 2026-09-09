@@ -73,6 +73,7 @@ impl TemporalEngine {
             replay_installs: Arc::default(),
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
+            compaction_rounds: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             evict_sampled_lru: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             eager_cache_warm: Arc::new(std::sync::atomic::AtomicBool::new(

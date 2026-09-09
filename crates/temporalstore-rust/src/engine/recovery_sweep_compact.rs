@@ -372,6 +372,21 @@ fn expiry_scan_budget(limit: usize) -> usize {
     }
 
     pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
+        self.compact_shard_pages_with_budget(shard_id, COMPACTION_ROUND_BYTES)
+    }
+
+    /// Compact, relocating at most `budget_bytes` of pages this round.
+    ///
+    /// The budget is a parameter and not only a constant so a test can force MANY rounds over a
+    /// handful of pages. A boundary that only appears once a store passes 256 MiB is a boundary
+    /// no test would reach, and the rules that make a bounded round correct -- a round resumes
+    /// onto the slab it was filling rather than rolling again, and rounds together still move
+    /// every page -- all live at that boundary.
+    pub(crate) fn compact_shard_pages_with_budget(
+        &self,
+        shard_id: ShardId,
+        budget_bytes: u64,
+    ) -> Result<ShardCompactionReport, Status> {
         let (start_routing_bucket, end_routing_bucket) = self
             .infos
             .read()
@@ -401,11 +416,31 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let object_manager_before =
             object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let bucket_layout_transition_count_before = object_manager_before.layout_transition_count;
-        let roll = self
-            .page_store
-            .roll_slab()
-            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-        let mut rewrite_stats = CompactionRewriteStats::default();
+        // Start a round, or continue the one a budget cut short.
+        //
+        // A round rolls a fresh slab and relocates live pages onto it. Rolling AGAIN while a
+        // round is unfinished would re-move everything the last round moved -- the pages it just
+        // relocated would no longer be on the newest slab -- so a bounded round would shuffle
+        // rather than progress. Continuing to fill the same slab is what makes each round move
+        // pages that have not moved yet.
+        let resumed = self
+            .compaction_rounds
+            .read()
+            .expect("compaction round lock poisoned")
+            .get(&shard_id)
+            .copied();
+        let (previous_block_slab_id, target_block_slab_id) = match resumed {
+            Some(round) => round,
+            None => {
+                let roll = self
+                    .page_store
+                    .roll_slab()
+                    .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+                (roll.previous_block_slab_id, roll.new_block_slab_id)
+            }
+        };
+        let mut rewrite_stats =
+            CompactionRewriteStats::for_round(target_block_slab_id, budget_bytes);
 
         // Relocate every model's live pages onto the freshly rolled slab. A mid-way failure
         // (append ENOSPC / an unreadable torn page) is caught below so we can durably commit the
@@ -593,6 +628,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
             return Err(err);
         }
 
+        // A round that spent its budget stays open, so the next one fills the same slab instead
+        // of rolling a new one and re-moving what this one moved. A round that relocated
+        // everything closes, and the next starts fresh.
+        {
+            let mut rounds = self
+                .compaction_rounds
+                .write()
+                .expect("compaction round lock poisoned");
+            if rewrite_stats.left_work_behind() {
+                rounds.insert(shard_id, (previous_block_slab_id, target_block_slab_id));
+            } else {
+                rounds.remove(&shard_id);
+            }
+        }
         rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
         refresh_bucket_runtime_flags(shard);
         let after_slabs = collect_live_block_slab_ids(shard);
@@ -690,8 +739,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "stale segments left behind by moved indexes are reported as reclaimable".to_string(),
             ],
             model_layout_compaction_blockers,
-            previous_block_slab_id: roll.previous_block_slab_id,
-            compacted_block_slab_id: roll.new_block_slab_id,
+            previous_block_slab_id,
+            compacted_block_slab_id: target_block_slab_id,
+            pages_left_by_budget: rewrite_stats.skipped_by_budget,
+            bytes_left_by_budget: rewrite_stats.skipped_by_budget_bytes,
             rewritten_page_refs: rewrite_stats.rewritten_page_refs,
             cold_page_rewrite_refs: rewrite_stats.cold_page_rewrite_refs,
             object_page_pack_group_count: before

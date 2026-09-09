@@ -4,6 +4,18 @@
 //! Compaction utility/policy/layout reporting helpers, split from engine.rs.
 use super::*;
 
+/// How many bytes one compaction round may relocate.
+///
+/// Compaction used to relocate EVERY live page of every model in one pass, holding the shard
+/// write lock throughout, so the stall grew with the store. A bound makes the round's cost a
+/// property of the constant rather than of the corpus.
+///
+/// Large enough that a store whose live pages fit inside it still compacts in a single round --
+/// which is every store the suite builds, so the existing assertions about what one compaction
+/// leaves behind are unchanged. A store bigger than this takes several rounds, and each one
+/// relocates pages that have not moved yet rather than re-moving the last round's work.
+pub(super) const COMPACTION_ROUND_BYTES: u64 = 256 * 1024 * 1024;
+
 pub(super) fn compaction_utility_report(
     page_store: &LocalBlockStore,
     shard: &ShardState,
@@ -212,6 +224,13 @@ pub(super) struct CompactionRewriteStats {
     pub(super) rewritten_page_refs: usize,
     pub(super) cold_page_rewrite_refs: usize,
     by_model: BTreeMap<String, ModelCompactionRewriteStats>,
+    /// The slab this round is filling. A page already there does not move.
+    target_block_slab_id: u64,
+    /// Bytes this round may still relocate. Saturates at zero, and a round that reaches zero
+    /// leaves the rest where it is for the next one.
+    budget_bytes: u64,
+    pub(super) skipped_by_budget: usize,
+    pub(super) skipped_by_budget_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -221,6 +240,40 @@ pub(super) struct ModelCompactionRewriteStats {
 }
 
 impl CompactionRewriteStats {
+    /// A round that relocates onto `target_block_slab_id` and may spend `budget_bytes`.
+    pub(super) fn for_round(target_block_slab_id: u64, budget_bytes: u64) -> Self {
+        Self {
+            target_block_slab_id,
+            budget_bytes,
+            ..Self::default()
+        }
+    }
+
+    /// Whether this address should move, charging the budget when it should.
+    ///
+    /// Two reasons not to move one: it is already on the slab this round is filling, which is
+    /// how a resumed round avoids redoing its predecessor's work; or the round has spent its
+    /// budget, which is how it stays bounded. Charged BEFORE the page is read, since reading is
+    /// the expensive half and the length is known from the address.
+    pub(super) fn should_relocate(&mut self, address: &BlockAddress) -> bool {
+        if address.block_slab_id == self.target_block_slab_id {
+            return false;
+        }
+        if address.length > self.budget_bytes {
+            self.skipped_by_budget = self.skipped_by_budget.saturating_add(1);
+            self.skipped_by_budget_bytes =
+                self.skipped_by_budget_bytes.saturating_add(address.length);
+            return false;
+        }
+        self.budget_bytes = self.budget_bytes.saturating_sub(address.length);
+        true
+    }
+
+    /// Whether the round stopped early, so the engine keeps it open for the next one.
+    pub(super) fn left_work_behind(&self) -> bool {
+        self.skipped_by_budget > 0
+    }
+
     fn record(&mut self, model_id: &str, cold_page: bool) {
         self.rewritten_page_refs = self.rewritten_page_refs.saturating_add(1);
         let model = self.by_model.entry(model_id.to_string()).or_default();
@@ -478,6 +531,9 @@ pub(super) fn compact_page_addresses<'a>(
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     for address in addresses {
+        if !rewrite_stats.should_relocate(address) {
+            continue;
+        }
         let cold_page = !page_memory_resident(cache, shard_id, address);
         let bytes = read_page_bytes(cache, page_store, shard_id, address).ok_or_else(|| {
             Status::error(
@@ -525,6 +581,9 @@ pub(super) fn compact_feature_page_addresses(
     let unique_addresses = unique_feature_page_addresses(series);
     let mut rewritten = HashMap::<BlockAddress, BlockAddress>::new();
     for old_address in unique_addresses {
+        if !rewrite_stats.should_relocate(&old_address) {
+            continue;
+        }
         let cold_page = !page_memory_resident(cache, shard_id, &old_address);
         let bytes =
             read_page_bytes(cache, page_store, shard_id, &old_address).ok_or_else(|| {
