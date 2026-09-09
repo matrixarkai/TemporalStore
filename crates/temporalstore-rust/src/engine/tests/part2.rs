@@ -2261,7 +2261,7 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
     write_string(&engine, "k0", b"v0");
     // A gap far larger than the current index-log must NOT dump.
     assert!(
-        !engine.maybe_dump_index_catalog_with_gap_for_test(1, u64::MAX),
+        !engine.maybe_dump_index_catalog_with_gap_for_test(1, u64::MAX, 0),
         "no dump below the threshold"
     );
     assert!(
@@ -2273,7 +2273,7 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
         write_string(&engine, &format!("k{i}"), b"value");
     }
     assert!(
-        engine.maybe_dump_index_catalog_with_gap_for_test(1, 1),
+        engine.maybe_dump_index_catalog_with_gap_for_test(1, 1, 0),
         "dump fires once the undumped gap crosses the threshold"
     );
     let catalog = engine.index_log_store().latest_band_catalog(1).unwrap();
@@ -2284,8 +2284,63 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
     );
     // The watermark advanced: the undumped gap reset, so an immediate re-check does not re-dump.
     assert!(
-        !engine.maybe_dump_index_catalog_with_gap_for_test(1, u64::MAX),
+        !engine.maybe_dump_index_catalog_with_gap_for_test(1, u64::MAX, 0),
         "the dumped watermark advanced; no immediate re-dump"
+    );
+}
+
+/// A dump that just happened holds the next one off; one that never happened holds nothing.
+///
+/// The unit test pins the rule. This pins the WIRING: that the engine reads how long ago this
+/// shard dumped, that a completed dump is what sets it, and that a shard which has not dumped
+/// reports no time at all rather than zero. A rule can be right while nothing consults it.
+///
+/// The gap stays at 1 byte throughout, so the byte half of the decision is satisfied at every
+/// step and only the interval can change the answer. Without that, a "no dump" could just as
+/// well be the gap having reset -- which is exactly what the second assertion would otherwise
+/// be observing.
+#[test]
+fn a_catalog_dump_waits_out_the_interval_before_the_next_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &page_dir, &index_dir);
+    engine.load_shard(1);
+    for i in 0..8 {
+        write_string(&engine, &format!("k{i}"), b"value");
+    }
+    assert_eq!(
+        engine.index_log_store().ms_since_catalog_dump(1),
+        None,
+        "a shard that has not dumped has no elapsed time, not an elapsed time of zero"
+    );
+    // Never dumped, so a minute-long floor holds nothing off.
+    assert!(
+        engine.maybe_dump_index_catalog_with_gap_for_test(1, 1, 60_000),
+        "the first dump is never delayed"
+    );
+    assert!(
+        engine.index_log_store().ms_since_catalog_dump(1).is_some(),
+        "a completed dump records when it happened"
+    );
+
+    // Enough new deltas to cross a 1-byte gap again -- the byte half says yes.
+    for i in 8..16 {
+        write_string(&engine, &format!("k{i}"), b"value");
+    }
+    assert!(
+        engine.index_log_store().undumped_len_since_dump(1) >= 1,
+        "the second dump must be refused by the CLOCK, not by an empty gap"
+    );
+    assert!(
+        !engine.maybe_dump_index_catalog_with_gap_for_test(1, 1, 60_000),
+        "a dump moments after the last one waits for the interval"
+    );
+    // Same state, no floor: it fires. So what held it back was the interval and nothing else.
+    assert!(
+        engine.maybe_dump_index_catalog_with_gap_for_test(1, 1, 0),
+        "with no floor the same gap dumps immediately"
     );
 }
 
@@ -2305,7 +2360,7 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
         write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
     }
     let report = engine
-        .maybe_dump_and_reclaim_with_gap_for_test(1, 1)
+        .maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0)
         .expect("past the gap, the dump + reclaim must fire");
     assert!(
         report.index_log_bytes_after < report.index_log_bytes_before,
@@ -2333,12 +2388,12 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     // The watermark was re-marked at the post-reclaim length: no immediate re-dump, and the
     // cadence fires again once new writes regrow the gap (it must not wait for the file to
     // regrow past its PRE-reclaim size).
-    assert!(engine.maybe_dump_and_reclaim_with_gap_for_test(1, u64::MAX).is_none());
+    assert!(engine.maybe_dump_and_reclaim_with_gap_for_test(1, u64::MAX, 0).is_none());
     for i in 60..70 {
         write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
     }
     assert!(
-        engine.maybe_dump_and_reclaim_with_gap_for_test(1, 1).is_some(),
+        engine.maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0).is_some(),
         "the cadence must keep firing after a reclaim shrank the log"
     );
     drop(engine);
@@ -2394,7 +2449,7 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_pages() {
         write_string(&engine, &format!("sync-{i}"), format!("val-{i}").as_bytes());
     }
     let report = engine
-        .maybe_dump_and_reclaim_with_gap_for_test(1, 1)
+        .maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0)
         .expect("dump + reclaim must fire");
     let floor = report
         .wal_retention_floor

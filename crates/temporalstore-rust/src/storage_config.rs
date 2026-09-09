@@ -14,6 +14,9 @@ pub const TS_INDEX_DUMP_WAL_GAP_BYTES: &str = "TS_INDEX_DUMP_WAL_GAP_BYTES";
 /// Previous name for [`TS_INDEX_DUMP_WAL_GAP_BYTES`], still honoured so a deployment that
 /// sets it keeps working. Read only when the current name is unset.
 pub const TS_INDEX_DUMP_GAP_BYTES_PREVIOUS_NAME: &str = "TS_INDEX_DUMP_OPLOG_GAP_BYTES";
+/// Shortest time between two catalog dumps of the same shard. The byte gap says a dump is
+/// WORTH doing; this says it is not worth doing AGAIN yet.
+pub const TS_INDEX_DUMP_MIN_INTERVAL_MS: &str = "TS_INDEX_DUMP_MIN_INTERVAL_MS";
 
 /// Previous name for [`TS_BLOCK_SLAB_TARGET_BYTES`], still honoured so a deployment that sets it
 /// keeps working. Read only when the current name is unset.
@@ -40,6 +43,25 @@ pub const DEFAULT_BLOCK_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 // MANIFEST-CONFORMANCE FOLD (TS_INDEX_CATALOG_FOLD). Matches the
 // default of 1 MiB.
 pub const DEFAULT_INDEX_DUMP_WAL_GAP_BYTES: u64 = 1024 * 1024;
+/// Shortest time between two catalog dumps of the same shard, in milliseconds.
+///
+/// The byte gap alone leaves the cadence in the hands of whoever calls the threshold check. One
+/// caller has a cadence of its own -- the proxy's reclaim thread polls on a timer -- and the
+/// other, the background storage cycle, has none: it checks on every round it runs. So under a
+/// write burst the gap can be crossed again immediately and the dump fires back to back, and a
+/// dump is not cheap: it serializes the whole served index, writes it durably, appends a folded
+/// anchor and then rewrites both logs.
+///
+/// A floor in TIME belongs with the threshold rather than with its callers, so that a caller
+/// that polls quickly cannot dump quickly. Waiting also makes each dump worth MORE: the deltas
+/// that arrive during the wait fold into the same base rather than into the next one -- the
+/// same reason the design being followed delays a dump until its log has accumulated.
+///
+/// 1.5 s, against the 1 s that design allows between two index-meta updates. Half a second more
+/// because what we do on a dump is the heavier of the two -- a whole-index serialize where
+/// theirs writes one meta record -- and because 1.5 s still bounds the extra log growth this
+/// costs to one and a half seconds of writes.
+pub const DEFAULT_INDEX_DUMP_MIN_INTERVAL_MS: u64 = 1_500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTuningConfig {
@@ -52,6 +74,7 @@ pub struct StorageTuningConfig {
     pub page_index_cache_bytes: u64,
     pub block_index_cache_bytes: u64,
     pub index_dump_wal_gap_bytes: u64,
+    pub index_dump_min_interval_ms: u64,
 }
 
 impl Default for StorageTuningConfig {
@@ -65,6 +88,7 @@ impl Default for StorageTuningConfig {
             page_index_cache_bytes: DEFAULT_PAGE_INDEX_CACHE_BYTES,
             block_index_cache_bytes: DEFAULT_BLOCK_INDEX_CACHE_BYTES,
             index_dump_wal_gap_bytes: DEFAULT_INDEX_DUMP_WAL_GAP_BYTES,
+            index_dump_min_interval_ms: DEFAULT_INDEX_DUMP_MIN_INTERVAL_MS,
         }
     }
 }
@@ -114,6 +138,10 @@ impl StorageTuningConfig {
                     .or_else(|| get(TS_INDEX_DUMP_GAP_BYTES_PREVIOUS_NAME)),
                 defaults.index_dump_wal_gap_bytes,
             ),
+            index_dump_min_interval_ms: parse_u64(
+                get(TS_INDEX_DUMP_MIN_INTERVAL_MS),
+                defaults.index_dump_min_interval_ms,
+            ),
         }
     }
 
@@ -127,7 +155,7 @@ impl StorageTuningConfig {
             .max(self.stream_max_blob_size)
     }
 
-    pub fn env_names() -> [&'static str; 10] {
+    pub fn env_names() -> [&'static str; 11] {
         [
             TS_CONTEXT_PAGE_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES,
@@ -139,6 +167,7 @@ impl StorageTuningConfig {
             TS_BLOCK_INDEX_CACHE_BYTES,
             TS_INDEX_DUMP_WAL_GAP_BYTES,
             TS_INDEX_DUMP_GAP_BYTES_PREVIOUS_NAME,
+            TS_INDEX_DUMP_MIN_INTERVAL_MS,
         ]
     }
 }
@@ -157,6 +186,12 @@ pub fn effective_block_slab_target_bytes() -> u64 {
 /// default. Only consulted by the catalog fold's threshold dump.
 pub fn index_dump_wal_gap_bytes() -> u64 {
     StorageTuningConfig::from_env().index_dump_wal_gap_bytes
+}
+
+/// Shortest time (ms) between two catalog dumps of the same shard. A zero disables the floor,
+/// which is what every test that is not exercising the timer passes.
+pub fn index_dump_min_interval_ms() -> u64 {
+    StorageTuningConfig::from_env().index_dump_min_interval_ms
 }
 
 fn parse_u64(value: Option<String>, default: u64) -> u64 {
@@ -217,6 +252,7 @@ mod tests {
             DEFAULT_INDEX_DUMP_WAL_GAP_BYTES
         );
         assert_eq!(config.index_dump_wal_gap_bytes, 1024 * 1024);
+        assert_eq!(config.index_dump_min_interval_ms, 1_500);
     }
 
     #[test]
@@ -235,6 +271,7 @@ mod tests {
                 "TS_BLOCK_INDEX_CACHE_BYTES",
                 "TS_INDEX_DUMP_WAL_GAP_BYTES",
                 "TS_INDEX_DUMP_OPLOG_GAP_BYTES",
+                "TS_INDEX_DUMP_MIN_INTERVAL_MS",
             ]
         );
     }
