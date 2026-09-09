@@ -373,7 +373,8 @@ fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::
         // anything currently reads the difference.
         routing_bucket: None,
         generation: address.generation(),
-        band_id: address.band_id(),
+        // Derivable from the slab now that a band IS one, so the log stops restating it.
+        band_id: None,
         // The digest, not its transcription. Half the bytes, same value.
         checksum: None,
         // In memory the digest is already the 32 bytes this field wants, so there is no
@@ -397,7 +398,6 @@ fn address_from_proto(address: v1::WalBlockAddress, implied_length: Option<u64>)
         address.object_id,
         address.routing_bucket,
         address.generation,
-        address.band_id,
     )
 }
 /// The numeric key a component is carrying, if it is carrying one.
@@ -1366,11 +1366,11 @@ mod tests {
             None,
             // object_id repeats the item's, so `item_to_proto` drops it from the address.
             Some(crate::block_store::BlockAddress::from_parts(
-                42, 1_048_576, 4096, Some(7), Some(9), Some(8539), Some(3), Some(9),
+                42, 1_048_576, 4096, Some(7), Some(9), Some(8539), Some(3),
             )),
             // and one that does not repeat it, so it stays.
             Some(crate::block_store::BlockAddress::from_parts(
-                42, 0, 0, None, Some(4_242), None, None, None,
+                42, 0, 0, None, Some(4_242), None, None,
             )),
         ];
 
@@ -1828,7 +1828,6 @@ mod tests {
                 stored,
                 Some(1),
                 Some(0x1234_5678_9ABC_DEF0),
-                None,
                 None,
                 None,
             )),

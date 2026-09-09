@@ -11,7 +11,7 @@ use crate::block_store::{
 use crate::storage_config::{
     StorageTuningConfig, TS_BLOCK_INDEX_CACHE_BYTES, TS_BLOCK_SLAB_TARGET_BYTES,
     TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_PAGE_TARGET_BYTES,
-    TS_PAGE_INDEX_CACHE_BYTES, TS_STORAGE_ZONE_SIZE, TS_STREAM_MAX_BLOB_SIZE,
+    TS_PAGE_INDEX_CACHE_BYTES, TS_STREAM_MAX_BLOB_SIZE,
 };
 use crate::types::{ShardId, Status};
 use matrixcache::{CacheEntryInfo, CacheStats};
@@ -2272,10 +2272,6 @@ pub fn effective_storage_tuning_from_env() -> BTreeMap<String, StorageContractVa
     values.insert(
         TS_BLOCK_SLAB_TARGET_BYTES.to_string(),
         contract_u64(tuning.block_slab_target_bytes),
-    );
-    values.insert(
-        TS_STORAGE_ZONE_SIZE.to_string(),
-        contract_u64(tuning.storage_band_size),
     );
     values.insert(
         TS_STREAM_MAX_BLOB_SIZE.to_string(),

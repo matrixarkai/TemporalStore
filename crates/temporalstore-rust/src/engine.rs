@@ -3572,7 +3572,7 @@ fn append_value(
         }
         return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
-    let address = BlockAddress::from_parts(HOT_BLOCK_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id, None);
+    let address = BlockAddress::from_parts(HOT_BLOCK_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id);
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if page_store.block_in_wal() {

@@ -3192,11 +3192,11 @@ mod tests {
         let cases = [
             ("no address", None),
             ("address repeats both", Some(crate::block_store::BlockAddress::from_parts(
-                42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), Some(3), Some(9)))),
+                42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), Some(3)))),
             ("address holds a DIFFERENT object", Some(crate::block_store::BlockAddress::from_parts(
-                42, 0, 0, None, Some(object_id + 1), Some(bucket + 1), None, None))),
+                42, 0, 0, None, Some(object_id + 1), Some(bucket + 1), None))),
             ("address holds neither", Some(crate::block_store::BlockAddress::from_parts(
-                42, 0, 0, None, None, None, None, None))),
+                42, 0, 0, None, None, None, None))),
         ];
 
         for (label, address) in cases {
@@ -3250,11 +3250,11 @@ mod tests {
 
         // As written today: the address repeats the item's object id and routing bucket.
         let repeats = item(Some(crate::block_store::BlockAddress::from_parts(
-            42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), Some(3), Some(9),
+            42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), Some(3),
         )));
         // The same address with the two the item already states left out.
         let deduped = item(Some(crate::block_store::BlockAddress::from_parts(
-            42, 1_048_576, 4096, Some(7), None, None, Some(3), Some(9),
+            42, 1_048_576, 4096, Some(7), None, None, Some(3),
         )));
 
         let a = encode_index_payload(&repeats, INDEX_LOG_SHAPE_DELTA).expect("encode").len();
@@ -3290,7 +3290,7 @@ mod tests {
             page_id: 7,
             address: Some(crate::block_store::BlockAddress::from_parts(
                 42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567), Some(8539),
-                Some(3), Some(9),
+                Some(3),
             )),
             size: 4096,
             in_log: false,
