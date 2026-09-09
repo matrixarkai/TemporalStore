@@ -568,7 +568,7 @@ message EngineWalItem {
   WalItemModel model = 2;
   optional string object_key = 3;
   optional uint64 bucket_id = 4;
-  optional uint64 object_id = 5;
+  optional fixed64 object_id = 5;
   optional uint64 block_id = 6;
   optional uint64 ttl_ms = 7;
   bool deleted = 8;
@@ -611,7 +611,7 @@ message EngineWalItem {
 
 // A block carried inside the record that produced it, so a read can serve it back out of the log.
 message WalStagedBlock {
-  uint64 object_id = 1;
+  optional fixed64 object_id = 1;
   bytes block = 2;
   optional uint32 routing_bucket = 3;
 }

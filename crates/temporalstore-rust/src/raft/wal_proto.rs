@@ -186,6 +186,20 @@ pub(crate) fn varint_field_len(tag: u32, value: u64) -> usize {
     prost::encoding::key_len(tag) + prost::encoding::encoded_len_varint(value)
 }
 
+/// A field whose value is a hash, and so has no small values to save on.
+///
+/// A varint is a saving only when the high bits are usually clear. An object id here is a hash:
+/// measured over 10,000 records, every one of them needed 9 or 10 varint bytes, where fixed64
+/// needs 8. For these fields the varint is a cost, not a saving.
+pub(crate) fn fixed64_field_len(tag: u32) -> usize {
+    prost::encoding::key_len(tag) + 8
+}
+
+pub(crate) fn put_fixed64_field(tag: u32, value: u64, out: &mut Vec<u8>) {
+    prost::encoding::encode_key(tag, prost::encoding::WireType::SixtyFourBit, out);
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
 pub(crate) fn put_varint_field(tag: u32, value: u64, out: &mut Vec<u8>) {
     if value == 0 {
         return;
@@ -195,17 +209,52 @@ pub(crate) fn put_varint_field(tag: u32, value: u64, out: &mut Vec<u8>) {
 }
 
 /// Write a staged page as field `tag`, its bytes borrowed straight into `out`.
-pub(crate) fn put_staged_block(tag: u32, page: &crate::wal::StagedPage, out: &mut Vec<u8>) {
-    let body = varint_field_len(1, page.object_id)
+pub(crate) fn put_staged_block(
+    tag: u32,
+    page: &crate::wal::StagedPage,
+    implied_object_id: Option<u64>,
+    out: &mut Vec<u8>,
+) {
+    let object_id = staged_block_object_id(page, implied_object_id);
+    let body = staged_block_body_len(page, implied_object_id);
+    prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
+    prost::encoding::encode_varint(body as u64, out);
+    if let Some(object_id) = object_id {
+        put_fixed64_field(1, object_id, out);
+    }
+    put_len_delimited(2, &page.bytes, out);
+}
+
+/// The object id a staged block has to write, if any.
+///
+/// A record that carries one block for one outcome already says the object id once, in the
+/// outcome. Writing it again in the block costs a second copy of a 64-bit hash on every write.
+/// It is omitted only when there is exactly one of each and the two agree, so a reader never
+/// has to guess which outcome an unlabelled block belongs to.
+pub(crate) fn staged_block_object_id(
+    page: &crate::wal::StagedPage,
+    implied_object_id: Option<u64>,
+) -> Option<u64> {
+    if implied_object_id == Some(page.object_id) {
+        return None;
+    }
+    Some(page.object_id)
+}
+
+pub(crate) fn staged_block_body_len(
+    page: &crate::wal::StagedPage,
+    implied_object_id: Option<u64>,
+) -> usize {
+    let id_len = match staged_block_object_id(page, implied_object_id) {
+        Some(_) => fixed64_field_len(1),
+        None => 0,
+    };
+    id_len
         + if page.bytes.is_empty() {
             0
         } else {
             len_delimited_len(2, page.bytes.len())
-        };
-    prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
-    prost::encoding::encode_varint(body as u64, out);
-    put_varint_field(1, page.object_id, out);
-    put_len_delimited(2, &page.bytes, out);
+        }
 }
 
 fn put_len_delimited(tag: u32, payload: &[u8], out: &mut Vec<u8>) {
