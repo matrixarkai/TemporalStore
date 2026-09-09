@@ -405,6 +405,32 @@ class _TemporalDirectReadMixin:
         "source_memory_selection_lossy_count",
     )
 
+    def _native_ranking_weights(self) -> dict | None:
+        """The ranking policy to hand the engine, so it cannot drift from this one.
+
+        These are the same weights the local packer uses: on a one-box that ranks
+        embedding-first they are 1.00 dense and 0.00 lexical, elsewhere 0.72 and 0.28, and an
+        index hint is worth 0.08. Sending them rather than letting the engine hold its own copy
+        is the point -- two hardcoded copies of a ranking policy diverge silently, and the symptom
+        is worse answers rather than an error.
+        """
+        try:
+            from matrixark_mcp_core import onebox_embedding_first
+        except ImportError:  # pragma: no cover - import shape differs when run as a package
+            try:
+                from tools.matrixark_mcp_core import onebox_embedding_first
+            except ImportError:
+                return None
+        try:
+            dense_only = bool(onebox_embedding_first())
+        except Exception:  # noqa: BLE001 - ranking policy must never fail a retrieve
+            return None
+        return {
+            "dense": 1.00 if dense_only else 0.72,
+            "sparse": 0.00 if dense_only else 0.28,
+            "index_hint": 0.08,
+        }
+
     def _native_query_vector(self, query: str) -> list[float] | None:
         """The query embedding to hand the engine, or None to leave ranking here.
 
@@ -1127,6 +1153,7 @@ class _TemporalDirectReadMixin:
             # The engine ranks by cosine when this is present and lexically when it is not, and
             # reports which it did as `ranking_uses_vectors`.
             "query_vector": self._native_query_vector(query),
+            "ranking_weights": self._native_ranking_weights(),
             "question_type": question_type,
             "scope": scope,
             "session_scope": retrieval_session_scope,
