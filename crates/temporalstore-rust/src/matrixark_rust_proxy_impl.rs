@@ -9484,6 +9484,112 @@ mod tests {
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
 
+    /// A token budget makes the slot count stop deciding what a pack holds.
+    ///
+    /// The cap was the thing that actually cut recall: a store of 80 short facts under an
+    /// 8000-token budget returned 40, because `max_selected_refs` -- not the budget -- ran out
+    /// first. With a budget present the fill is bounded by TOKENS, so a caller asking for
+    /// everything that fits gets it, and a small cap does not quietly truncate the answer.
+    ///
+    /// Pinned because the cap has had four different values in this codebase at once (a config
+    /// declaring 1000, a code default of 64 in two modules, a bare 24 in the request builder, and
+    /// another 24 in the engine under a clamp of 128). Whichever of those a deployment ends up
+    /// with must not change what a budgeted pack returns.
+    #[test]
+    fn a_budget_overrides_the_slot_cap() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        let prefix = "matrixark:test:budget-beats-cap";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{prefix}:record_count");
+        append.value = "1".to_string();
+        let bundle = json!({"record_bundle": [
+            {"record_type": "context_event", "event_id_hash": 401, "text": "gpu memory tuning one"},
+            {"record_type": "context_event", "event_id_hash": 402, "text": "gpu memory tuning two"},
+            {"record_type": "context_event", "event_id_hash": 403, "text": "gpu memory tuning three"},
+            {"record_type": "context_event", "event_id_hash": 404, "text": "gpu memory tuning four"},
+        ]});
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            serde_json::to_string(&bundle).expect("bundle"),
+        )];
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append");
+
+        let mut retrieve = request("matrixark_retrieve_context_pack");
+        retrieve.storage_prefix = prefix.to_string();
+        retrieve.count_key = Some(format!("{prefix}:record_count"));
+        retrieve.record_hash_key = Some(format!("{prefix}:records"));
+        retrieve.query = "gpu memory".to_string();
+        // The smallest cap there is. A budget large enough for everything must beat it.
+        retrieve.max_selected_refs = 1;
+        retrieve.record = Some(json!({
+            "query": "gpu memory",
+            "max_context_tokens": 100_000,
+        }));
+        let output = execute_record_log_request(&engine, retrieve, root).expect("retrieve");
+        let response: Value =
+            serde_json::from_str(&output.value).expect("context pack json in value");
+        let refs = response
+            .get("context_pack")
+            .and_then(|pack| pack.get("selected_refs"))
+            .and_then(Value::as_array)
+            .expect("selected_refs present");
+        assert!(
+            refs.len() > 1,
+            "a budget must override the slot cap, got {} ref(s)",
+            refs.len()
+        );
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    /// The positive control: with NO budget the cap decides, so the same store and cap returns one.
+    /// Without this, the test above could pass because the cap was never applied anywhere.
+    #[test]
+    fn without_a_budget_the_slot_cap_still_decides() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        let prefix = "matrixark:test:cap-still-decides";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{prefix}:record_count");
+        append.value = "1".to_string();
+        let bundle = json!({"record_bundle": [
+            {"record_type": "context_event", "event_id_hash": 501, "text": "gpu memory tuning one"},
+            {"record_type": "context_event", "event_id_hash": 502, "text": "gpu memory tuning two"},
+            {"record_type": "context_event", "event_id_hash": 503, "text": "gpu memory tuning three"},
+        ]});
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            serde_json::to_string(&bundle).expect("bundle"),
+        )];
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append");
+
+        let mut retrieve = request("matrixark_retrieve_context_pack");
+        retrieve.storage_prefix = prefix.to_string();
+        retrieve.count_key = Some(format!("{prefix}:record_count"));
+        retrieve.record_hash_key = Some(format!("{prefix}:records"));
+        retrieve.query = "gpu memory".to_string();
+        retrieve.max_selected_refs = 1;
+        retrieve.record = Some(json!({"query": "gpu memory"}));
+        let output = execute_record_log_request(&engine, retrieve, root).expect("retrieve");
+        let response: Value =
+            serde_json::from_str(&output.value).expect("context pack json in value");
+        let refs = response
+            .get("context_pack")
+            .and_then(|pack| pack.get("selected_refs"))
+            .and_then(Value::as_array)
+            .expect("selected_refs present");
+        assert_eq!(refs.len(), 1, "with no budget the cap must still cut, got {refs:?}");
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
     /// A layer floor must survive a budget the layer would otherwise lose.
     ///
     /// Selection used to be a flat top-N by score, and the per-layer budget was computed AFTER it
