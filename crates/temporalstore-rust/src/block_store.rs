@@ -78,6 +78,20 @@ pub enum BlockStoreError {
 ///
 /// This is the shape the design being followed uses: one byte carrying `dirty`, `page_in_log` and
 /// its reserved bits, rather than an optional wrapped around each.
+/// Store a value that cannot reach 2^32, saying so if it ever does.
+///
+/// Saturating rather than truncating: a truncated band or generation would be a plausible-looking
+/// WRONG number, and the two are used to decide which of several copies of a block is current.
+/// Neither can get here in a store that exists, which is why the debug assertion is the report.
+fn narrow_address_field(value: Option<u64>, what: &str) -> u32 {
+    let value = value.unwrap_or_default();
+    debug_assert!(
+        value <= u64::from(u32::MAX),
+        "block address {what} of {value} does not fit the field that holds it"
+    );
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
 const ADDRESS_HAS_PAGE_ID: u8 = 1 << 0;
 const ADDRESS_HAS_OBJECT_ID: u8 = 1 << 1;
 const ADDRESS_HAS_ROUTING_BUCKET: u8 = 1 << 2;
@@ -193,8 +207,17 @@ pub struct BlockAddress {
     pub length: u64,
     page_id: u64,
     object_id: u64,
-    generation: u64,
-    band_id: u64,
+    /// Narrower than the accessor that reads them, on purpose.
+    ///
+    /// A generation counts how many times one block has been rewritten and a band is
+    /// `slab_id * slab_target / band_size`. Neither can approach 2^32 in a store that fits on
+    /// real hardware -- four billion rewrites of a single block, or four billion slabs of a
+    /// gigabyte each -- while a block id is a counter across the whole store and an object id is
+    /// a hash, so those two keep their width.
+    ///
+    /// The accessors still answer `Option<u64>`, so nothing that reads an address had to change.
+    generation: u32,
+    band_id: u32,
     routing_bucket: u32,
     /// Which of the five above are actually set. See `ADDRESS_HAS_*`.
     present: u8,
@@ -240,8 +263,8 @@ impl BlockAddress {
             length,
             page_id: page_id.unwrap_or_default(),
             object_id: object_id.unwrap_or_default(),
-            generation: generation.unwrap_or_default(),
-            band_id: band_id.unwrap_or_default(),
+            generation: narrow_address_field(generation, "generation"),
+            band_id: narrow_address_field(band_id, "band id"),
             routing_bucket: routing_bucket.unwrap_or_default(),
             present,
         }
@@ -260,11 +283,11 @@ impl BlockAddress {
     }
 
     pub fn generation(&self) -> Option<u64> {
-        (self.present & ADDRESS_HAS_GENERATION != 0).then_some(self.generation)
+        (self.present & ADDRESS_HAS_GENERATION != 0).then_some(u64::from(self.generation))
     }
 
     pub fn band_id(&self) -> Option<u64> {
-        (self.present & ADDRESS_HAS_BAND_ID != 0).then_some(self.band_id)
+        (self.present & ADDRESS_HAS_BAND_ID != 0).then_some(u64::from(self.band_id))
     }
 
     pub fn set_page_id(&mut self, value: Option<u64>) {
@@ -283,12 +306,12 @@ impl BlockAddress {
     }
 
     pub fn set_generation(&mut self, value: Option<u64>) {
-        self.generation = value.unwrap_or_default();
+        self.generation = narrow_address_field(value, "generation");
         self.set_present(ADDRESS_HAS_GENERATION, value.is_some());
     }
 
     pub fn set_band_id(&mut self, value: Option<u64>) {
-        self.band_id = value.unwrap_or_default();
+        self.band_id = narrow_address_field(value, "band id");
         self.set_present(ADDRESS_HAS_BAND_ID, value.is_some());
     }
 
@@ -2274,7 +2297,15 @@ mod tests {
             4,
             "the field is the checksum and nothing else: no padding, no marker"
         );
-        assert_eq!(std::mem::size_of::<BlockAddress>(), 64);
+        // Held once per block, so this is the index memory. 64 before generation and band
+        // were sized to what they hold. The next 8 bytes are not free: object_id is a hash the
+        // WAL also stores in full, so a truncated copy here would miss the carried-block
+        // lookup, and page_id is a counter across the whole store.
+        assert_eq!(
+            std::mem::size_of::<BlockAddress>(),
+            56,
+            "an address is held once per block, so its size is the index's size"
+        );
     }
 
     #[test]
