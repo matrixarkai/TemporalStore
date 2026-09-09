@@ -456,6 +456,12 @@ fn default_true() -> bool {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    // `--serve-http <addr>`, or the env var, so a deployment can switch transport without
+    // changing its command line. Checked BEFORE `--serve`, because "--serve-http" would
+    // otherwise never be reached if anything ever passes both.
+    if let Some(addr) = http_serve_addr(&args) {
+        std::process::exit(serve_http(&addr));
+    }
     if args.iter().any(|arg| arg == "--serve") {
         std::process::exit(serve());
     }
@@ -473,6 +479,21 @@ fn main() {
     if !response.ok {
         std::process::exit(1);
     }
+}
+
+/// The HTTP listen address, from `--serve-http <addr>` or `MATRIXARK_RUST_PROXY_HTTP_ADDR`.
+fn http_serve_addr(args: &[String]) -> Option<String> {
+    if let Some(index) = args.iter().position(|arg| arg == "--serve-http") {
+        if let Some(addr) = args.get(index + 1) {
+            if !addr.trim().is_empty() && !addr.starts_with("--") {
+                return Some(addr.trim().to_string());
+            }
+        }
+    }
+    std::env::var("MATRIXARK_RUST_PROXY_HTTP_ADDR")
+        .ok()
+        .map(|addr| addr.trim().to_string())
+        .filter(|addr| !addr.is_empty())
 }
 
 fn single_shot_debug_enabled(args: &[String]) -> bool {
@@ -637,23 +658,233 @@ fn write_lane_response<W: Write>(
     let _ = out.flush();
 }
 
+/// Bytes of request and response handled since the allocator was last asked for pages back.
+fn trim_ledger() -> &'static std::sync::atomic::AtomicU64 {
+    static LEDGER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    &LEDGER
+}
+
+/// Payload bytes that must pass through before a trim is worth its walk. 0 switches it off.
+///
+/// 8 MiB, the same figure the Python bridge used for the same job before this process replaced
+/// it. `TS_MALLOC_TRIM=0` still switches the trim off underneath, so there are two levers and the
+/// one nearer the allocator wins.
+fn trim_threshold_bytes() -> u64 {
+    std::env::var("MATRIXARK_RUST_PROXY_TRIM_BYTES")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(8 * 1024 * 1024)
+}
+
+fn note_payload_bytes(bytes: usize) {
+    trim_ledger().fetch_add(bytes as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Hand freed heap back to the OS, on a thread of its own.
+///
+/// Rust's `free` returns memory to the allocator, not to the kernel, so a process that encodes and
+/// decodes whole record batches keeps every peak it has ever reached. That is not a theory here:
+/// the datanode calls `release_free_heap_to_os` after each GC and sits at 385 MB while holding the
+/// actual store; this proxy holds NO engine at all -- it is in remote mode, forwarding to that
+/// datanode -- and reached 2,941 MB, because nothing on this side ever asked. The Python bridge
+/// this process replaced had the same function for the same reason, and its comment records the
+/// same 2.9 GB.
+///
+/// On its own thread, deliberately. `memory_trim`'s own guidance is that a trim walks the free
+/// lists and does not belong on the serving path, so the request path pays one relaxed atomic add
+/// and nothing else; the trim happens where no caller is waiting on it.
+fn start_heap_trimmer() {
+    let threshold = trim_threshold_bytes();
+    if threshold == 0 {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        let handled = trim_ledger().swap(0, std::sync::atomic::Ordering::Relaxed);
+        if handled >= threshold {
+            let _ = temporalstore_rust::memory_trim::release_free_heap_to_os();
+        } else {
+            // Put it back rather than discarding it: a steady trickle of small requests retains
+            // just as much as one large one, it only takes longer to get there. Zeroing here
+            // would mean a workload of small requests never trimmed at all.
+            trim_ledger().fetch_add(handled, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
+/// Counters shared by both serving modes.
+///
+/// Extracted so `--serve` and `--serve-http` cannot drift: the Prometheus output is the same
+/// output whichever transport produced the requests, and a second hand-rolled copy of this
+/// accounting would be wrong in a way nothing would notice.
+struct ServeMetrics {
+    started_at_ms: u128,
+    command_count: u64,
+    failed_count: u64,
+    records_written: u64,
+    records_read: u64,
+    latency_sum_ms: u128,
+    latency_max_ms: u128,
+    latency_buckets: [u64; LATENCY_BUCKETS_MS.len()],
+}
+
+impl ServeMetrics {
+    fn new() -> Self {
+        Self {
+            started_at_ms: unix_ms(),
+            command_count: 0,
+            failed_count: 0,
+            records_written: 0,
+            records_read: 0,
+            latency_sum_ms: 0,
+            latency_max_ms: 0,
+            latency_buckets: [0; LATENCY_BUCKETS_MS.len()],
+        }
+    }
+
+    fn observe(&mut self, response: &RecordLogResponse, elapsed_ms: u128) {
+        self.command_count += 1;
+        let observed_elapsed_ms = response.elapsed_ms.unwrap_or(elapsed_ms);
+        self.latency_sum_ms += observed_elapsed_ms;
+        self.latency_max_ms = self.latency_max_ms.max(observed_elapsed_ms);
+        for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
+            if observed_elapsed_ms <= *upper_bound {
+                self.latency_buckets[idx] += 1;
+            }
+        }
+        if !response.ok {
+            self.failed_count += 1;
+        }
+        self.records_written += match response.op.as_str() {
+            "put_string" | "hset" => 1,
+            "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
+                response.count.unwrap_or(0) as u64
+            }
+            _ => 0,
+        };
+        self.records_read += match response.op.as_str() {
+            "get_string" | "hget" => 1,
+            "batch_hget" | "hgetall" | "scan_hash" => response.count.unwrap_or(0) as u64,
+            _ => 0,
+        };
+    }
+
+    fn render_prometheus(&self) -> String {
+        render_prometheus_metrics(
+            self.started_at_ms,
+            self.command_count,
+            self.failed_count,
+            self.records_written,
+            self.records_read,
+            self.latency_sum_ms,
+            self.latency_max_ms,
+            &self.latency_buckets,
+            cached_engine_count(),
+        )
+    }
+}
+
+/// Whether HTTP requests may run at the same time.
+///
+/// OFF by default, which reproduces exactly the serialization the pipe had: `--serve` handled one
+/// request at a time, and the daemon in front of it held a single lock over a single process, so
+/// nothing in this engine has ever had two requests in flight. Removing the middleman is a
+/// transport change and is worth having on its own; letting requests overlap is a concurrency
+/// change and belongs behind its own switch so it can be measured, and reverted, separately.
+fn http_concurrent_enabled() -> bool {
+    temporalstore_rust::env_flag::env_bool("MATRIXARK_RUST_PROXY_HTTP_CONCURRENT", false)
+}
+
+/// Serve the same requests over HTTP instead of over a pipe.
+///
+/// `--serve` reads one request per line from stdin, so something has to own that pipe. In the
+/// one-box that owner was a Python daemon: it accepted a unix socket, parsed the request,
+/// re-serialised it onto this process's stdin, read the answer back and re-serialised that too --
+/// four full JSON operations per request, on the largest payloads in the system, to move bytes
+/// between two file descriptors. Measured over 1,215 s of production-corpus soak that cost 21.9%
+/// of a core and 72 MB of RSS, and it added a process to a box that was already OOM-killing.
+///
+/// The wire format is deliberately unchanged: the request body is the same `RecordLogRequest`
+/// JSON the pipe carried and the reply is the same `RecordLogResponse`, so a client changes only
+/// WHERE it sends, never what it sends -- which is what makes this swappable under a running
+/// gateway and comparable in an A/B.
+fn serve_http(addr: &str) -> i32 {
+    let metrics = Arc::new(Mutex::new(ServeMetrics::new()));
+    let gate = Arc::new(Mutex::new(()));
+    let concurrent = http_concurrent_enabled();
+    start_heap_trimmer();
+    eprintln!("matrixark_rust_proxy serving http on {addr} (concurrent={concurrent})");
+    let result = temporalstore_rust::http::serve(addr, move |http_request| {
+        let started = Instant::now();
+        let parsed: Result<RecordLogRequest, _> = serde_json::from_slice(&http_request.body);
+        let client_request_id = parsed
+            .as_ref()
+            .ok()
+            .and_then(|request| request.client_request_id.clone());
+        let result = match parsed {
+            Ok(request) if request.op == "metrics_prometheus" => {
+                let rendered = match metrics.lock() {
+                    Ok(metrics) => metrics.render_prometheus(),
+                    Err(_) => String::new(),
+                };
+                Ok((
+                    "metrics_prometheus".to_string(),
+                    RecordLogOutput {
+                        prometheus: rendered,
+                        mode: matrixark_rust_service_mode().to_string(),
+                        cached_clients: Some(cached_engine_count()),
+                        ..empty_output(PathBuf::new())
+                    },
+                ))
+            }
+            Ok(request) => {
+                // The guard lives exactly as long as the call it serializes. Taking it around
+                // the JSON work as well would serialize parsing too, for no safety gained.
+                let _guard = if concurrent {
+                    None
+                } else {
+                    Some(gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+                };
+                run_request(request)
+            }
+            Err(error) => Err((
+                "unknown".to_string(),
+                format!("invalid JSON request: {error}"),
+            )),
+        };
+        let elapsed_ms = started.elapsed().as_millis();
+        let mut response = response_from_result(result, elapsed_ms);
+        response.client_request_id = client_request_id;
+        let body = serialize_response_with_metrics(&mut response);
+        if let Ok(mut metrics) = metrics.lock() {
+            metrics.observe(&response, elapsed_ms);
+        }
+        note_payload_bytes(http_request.body.len() + body.len());
+        // 200 even for an application-level failure: `ok` in the body is the contract the pipe
+        // had, and a client that switched transports must not start seeing transport errors for
+        // the same answers.
+        (200, body.into_bytes())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("matrixark_rust_proxy http serve failed: {error}");
+            1
+        }
+    }
+}
+
 fn serve() -> i32 {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let lane_binary = lane_binary_enabled();
-    let started_at_ms = unix_ms();
-    let mut command_count: u64 = 0;
-    let mut failed_count: u64 = 0;
-    let mut records_written: u64 = 0;
-    let mut records_read: u64 = 0;
-    let mut latency_sum_ms: u128 = 0;
-    let mut latency_max_ms: u128 = 0;
-    let mut latency_buckets = [0_u64; LATENCY_BUCKETS_MS.len()];
+    let mut metrics = ServeMetrics::new();
+    start_heap_trimmer();
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(value) => value,
             Err(error) => {
-                failed_count += 1;
+                metrics.failed_count += 1;
                 let response = response_from_result(
                     Err((
                         "unknown".to_string(),
@@ -703,17 +934,7 @@ fn serve() -> i32 {
             }
             Ok(request) if request.op == "metrics_prometheus" => {
                 let output = RecordLogOutput {
-                    prometheus: render_prometheus_metrics(
-                        started_at_ms,
-                        command_count,
-                        failed_count,
-                        records_written,
-                        records_read,
-                        latency_sum_ms,
-                        latency_max_ms,
-                        &latency_buckets,
-                        cached_engine_count(),
-                    ),
+                    prometheus: metrics.render_prometheus(),
                     mode: matrixark_rust_service_mode().to_string(),
                     cached_clients: Some(cached_engine_count()),
                     ..empty_output(PathBuf::new())
@@ -730,30 +951,8 @@ fn serve() -> i32 {
         let mut response = response_from_result(result, elapsed_ms);
         response.client_request_id = client_request_id;
         let response_json = serialize_response_with_metrics(&mut response);
-        command_count += 1;
-        let observed_elapsed_ms = response.elapsed_ms.unwrap_or(elapsed_ms);
-        latency_sum_ms += observed_elapsed_ms;
-        latency_max_ms = latency_max_ms.max(observed_elapsed_ms);
-        for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
-            if observed_elapsed_ms <= *upper_bound {
-                latency_buckets[idx] += 1;
-            }
-        }
-        if !response.ok {
-            failed_count += 1;
-        }
-        records_written += match response.op.as_str() {
-            "put_string" | "hset" => 1,
-            "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
-                response.count.unwrap_or(0) as u64
-            }
-            _ => 0,
-        };
-        records_read += match response.op.as_str() {
-            "get_string" | "hget" => 1,
-            "batch_hget" | "hgetall" | "scan_hash" => response.count.unwrap_or(0) as u64,
-            _ => 0,
-        };
+        metrics.observe(&response, elapsed_ms);
+        note_payload_bytes(line.len() + response_json.len());
         write_lane_response(&mut stdout, lane_binary, &response, &response_json);
     }
     0
@@ -1030,10 +1229,197 @@ fn required_option(value: Option<String>, name: &str) -> Result<String, String> 
         .ok_or_else(|| format!("missing {name}"))
 }
 
-fn hgetall_snapshot_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, String>>> {
-    static HGETALL_SNAPSHOT_CACHE: OnceLock<Mutex<BTreeMap<String, BTreeMap<String, String>>>> =
-        OnceLock::new();
-    HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+/// Shard and index snapshots, shared rather than copied.
+///
+/// The map used to hold the `BTreeMap` itself, which meant a deep copy of the whole snapshot
+/// twice: once to store it and once on every hit. For a record shard the values ARE the payloads,
+/// so a retrieve touching three shards copied three shards' worth of records to read the handful
+/// of fields its index named -- paid in CPU, in allocator traffic, and in a transient doubling of
+/// the proxy's resident set at exactly its high-water mark. The copy also grows with the store,
+/// which is the shape the soak showed: latency climbing steadily from the first sample on a
+/// FRESH store, with no failures and no memory pressure to blame it on.
+///
+/// `Arc` makes a hit a refcount bump. The write side still patches snapshots in place through
+/// `Arc::make_mut`, which copies only while a reader is actually holding one; readers hold theirs
+/// for the length of a single call, so in practice it does not copy at all.
+/// One cached hash, with what it costs and when it was last wanted.
+struct SnapshotEntry {
+    map: Arc<BTreeMap<String, String>>,
+    bytes: usize,
+    used: u64,
+}
+
+/// Cached shard and index snapshots under a byte budget.
+///
+/// This cache had NO bound of any kind: it kept a full in-memory copy of every record shard it
+/// ever read, and for a record shard the values are the payloads themselves. That is why the
+/// proxy's resident set tracked the corpus at roughly ten times durable and ended in an OOM kill
+/// at 4.5-5.2 GB rather than settling anywhere.
+///
+/// The budget is in BYTES, deliberately. A cap on the NUMBER of entries says nothing about memory
+/// when the entries are whole shards of variable-size records -- an entry-count cap tried here
+/// before changed the resident set by nothing at all, because the count was never what was large.
+///
+/// Eviction is always safe: this is a read-through cache and a miss re-reads from the engine, the
+/// same path a key that was never cached takes. Least-recently-used, found by scanning, because
+/// an eviction frees a whole shard and so happens far too rarely to be worth an index.
+struct SnapshotCache {
+    entries: BTreeMap<String, SnapshotEntry>,
+    bytes: usize,
+    clock: u64,
+    budget: usize,
+}
+
+impl SnapshotCache {
+    fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            bytes: 0,
+            clock: 0,
+            budget: default_snapshot_cache_bytes(),
+        }
+    }
+
+    fn weigh(map: &BTreeMap<String, String>) -> usize {
+        // The strings dominate; per-node overhead is a rounding error beside a payload and would
+        // only make the budget pessimistic in a way that varies by allocator.
+        map.iter()
+            .map(|(field, value)| field.len() + value.len())
+            .sum()
+    }
+
+    fn get(&mut self, key: &str) -> Option<Arc<BTreeMap<String, String>>> {
+        self.clock += 1;
+        let clock = self.clock;
+        let entry = self.entries.get_mut(key)?;
+        entry.used = clock;
+        Some(Arc::clone(&entry.map))
+    }
+
+    fn contains_key(&self, key: &str) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+
+    fn remove(&mut self, key: &str) {
+        if let Some(entry) = self.entries.remove(key) {
+            self.bytes = self.bytes.saturating_sub(entry.bytes);
+        }
+    }
+
+    fn insert(&mut self, key: String, map: Arc<BTreeMap<String, String>>) {
+        self.remove(&key);
+        let bytes = Self::weigh(&map);
+        // A single snapshot larger than the whole budget is not cached rather than being cached
+        // and immediately evicting everything else to make room for itself.
+        if bytes > self.budget {
+            return;
+        }
+        self.clock += 1;
+        self.entries.insert(
+            key,
+            SnapshotEntry {
+                map,
+                bytes,
+                used: self.clock,
+            },
+        );
+        self.bytes += bytes;
+        self.evict_to_budget();
+    }
+
+    /// Apply `patch` to a cached snapshot in place, re-weighing it afterwards.
+    ///
+    /// The write side keeps snapshots current rather than dropping them, so this is how a
+    /// patched snapshot stays accounted for; a patch that grew a shard and did not re-weigh it
+    /// would let the budget drift upward silently, which is the bug this whole type exists to
+    /// prevent. `patch` returns false to say the snapshot should be dropped instead.
+    fn patch<F>(&mut self, key: &str, patch: F)
+    where
+        F: FnOnce(&mut BTreeMap<String, String>) -> bool,
+    {
+        let Some(entry) = self.entries.get_mut(key) else {
+            return;
+        };
+        let keep = patch(Arc::make_mut(&mut entry.map));
+        if !keep || entry.map.is_empty() {
+            self.remove(key);
+            return;
+        }
+        let was = entry.bytes;
+        let now = Self::weigh(&entry.map);
+        entry.bytes = now;
+        self.bytes = self.bytes.saturating_sub(was) + now;
+        self.evict_to_budget();
+    }
+
+    fn evict_to_budget(&mut self) {
+        while self.bytes > self.budget {
+            let Some(victim) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| key.clone())
+            else {
+                return;
+            };
+            self.remove(&victim);
+        }
+    }
+}
+
+/// The snapshot budget: a sixteenth of RAM, held between 64 MiB and 512 MiB.
+///
+/// Same shape as the engine's own cache sizing, so a small box does not hand this cache a budget
+/// its RAM cannot back. `MATRIXARK_PROXY_SNAPSHOT_CACHE_BYTES` overrides it; a zero or unparsable
+/// value falls back to the derived default rather than disabling the cache, because a cache of
+/// size zero turns every sweep back into per-field reads.
+fn default_snapshot_cache_bytes() -> usize {
+    const FLOOR: usize = 64 * 1024 * 1024;
+    const CEILING: usize = 512 * 1024 * 1024;
+    if let Some(raw) = std::env::var("MATRIXARK_PROXY_SNAPSHOT_CACHE_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+    {
+        if raw > 0 {
+            return raw;
+        }
+    }
+    let total = total_memory_bytes();
+    if total == 0 {
+        return FLOOR;
+    }
+    (total / 16).clamp(FLOOR, CEILING)
+}
+
+/// Total RAM in bytes, or 0 when it cannot be read.
+fn total_memory_bytes() -> usize {
+    let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") else {
+        return 0;
+    };
+    for line in meminfo.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            if let Some(kb) = rest.split_whitespace().next() {
+                if let Ok(kb) = kb.parse::<usize>() {
+                    return kb * 1024;
+                }
+            }
+        }
+    }
+    0
+}
+
+fn hgetall_snapshot_cache() -> &'static Mutex<SnapshotCache> {
+    static HGETALL_SNAPSHOT_CACHE: OnceLock<Mutex<SnapshotCache>> = OnceLock::new();
+    HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(SnapshotCache::new()))
 }
 
 fn hgetall_snapshot_cache_has_entries() -> bool {
@@ -1262,35 +1648,33 @@ fn hgetall_snapshot_contains(key: &str) -> bool {
 /// exact post-delete snapshot is the snapshot minus that field.
 fn remove_hgetall_snapshot_fields(key: &str, fields: &[String]) {
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
-        let Some(snapshot) = cache.get_mut(key) else {
-            return;
-        };
-        for field in fields {
-            snapshot.remove(field);
-        }
+        cache.patch(key, |snapshot| {
+            for field in fields {
+                snapshot.remove(field);
+            }
+            true
+        });
         // Deleting the LAST field of a hash removes the whole key in the engine, and a cached
         // empty map for a key that no longer exists is the shape that once pinned a served view
         // at zero rows until restart. `hgetall_map` refuses to cache an empty read for the same
         // reason; a removal must not create through the back door what the read path declines to
         // store. Drop the snapshot instead and let the next read decide.
-        if snapshot.is_empty() {
-            cache.remove(key);
-        }
     }
 }
 
 fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
-        if let Some(snapshot) = cache.get_mut(key) {
+        cache.patch(key, |snapshot| {
             for (field, value) in entries {
-                if let Ok(text) = String::from_utf8(value.clone()) {
-                    snapshot.insert(field.clone(), text);
-                } else {
-                    cache.remove(key);
-                    break;
-                }
+                let Ok(text) = String::from_utf8(value.clone()) else {
+                    // A non-UTF-8 value means the snapshot can no longer represent the hash,
+                    // so the whole key goes.
+                    return false;
+                };
+                snapshot.insert(field.clone(), text);
             }
-        }
+            true
+        });
     }
 }
 
@@ -1319,7 +1703,7 @@ fn fetch_indexed_payload_values(
     let shards_touched = fields_by_shard.len() as u64;
     let mut values = Vec::with_capacity(locations.len());
     for (shard, fields) in fields_by_shard {
-        let snapshot = hgetall_map(engine, format!("{record_hash_key}:{shard}"))?;
+        let snapshot = hgetall_shared(engine, format!("{record_hash_key}:{shard}"))?;
         for field in fields {
             match snapshot.get(&field) {
                 Some(value) if !value.is_empty() => values.push(value.clone()),
@@ -1354,7 +1738,7 @@ fn fetch_shard_fields(
         return Ok(BTreeMap::new());
     }
     // An already-cached snapshot is free and current, so prefer it when one happens to be in hand.
-    if let Ok(cache) = hgetall_snapshot_cache().lock() {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
         if let Some(cached) = cache.get(&key) {
             let mut subset = BTreeMap::new();
             for field in fields {
@@ -1395,10 +1779,20 @@ fn fetch_shard_fields(
     }
 }
 
+/// An OWNED snapshot, for callers that consume or mutate what they get.
+///
+/// Prefer `hgetall_shared` wherever the caller only reads: this one exists to copy.
 fn hgetall_map(engine: &RecordStore, key: String) -> Result<BTreeMap<String, String>, String> {
-    if let Ok(cache) = hgetall_snapshot_cache().lock() {
+    Ok((*hgetall_shared(engine, key)?).clone())
+}
+
+fn hgetall_shared(
+    engine: &RecordStore,
+    key: String,
+) -> Result<Arc<BTreeMap<String, String>>, String> {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
         if let Some(cached) = cache.get(&key) {
-            return Ok(cached.clone());
+            return Ok(cached);
         }
     }
     let response = engine.execute_durable(ExecuteRequest {
@@ -1454,9 +1848,10 @@ fn hgetall_map(engine: &RecordStore, key: String) -> Result<BTreeMap<String, Str
             // "no data" for a key no write may ever touch again (observed once as a pinned
             // get_all stuck at 0 rows after a cold start until restart). An actually-empty hash
             // re-reads at map-miss cost, no page reads.
+            let decoded = Arc::new(decoded);
             if !decoded.is_empty() {
                 if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
-                    cache.insert(key, decoded.clone());
+                    cache.insert(key, Arc::clone(&decoded));
                 }
             }
             Ok(decoded)
@@ -1640,6 +2035,101 @@ fn passes_secondary_groups(terms: &HashSet<String>, groups: &[Vec<String>]) -> b
     }
 }
 
+/// Just the fields index maintenance needs, borrowed from the payload rather than copied.
+///
+/// The write path used to parse every appended record into a full `Value` tree to read two
+/// things from it -- the record type, and a scope key that may sit in any of five places. That
+/// allocates a `String` per key and a `Value` per node for a whole record, then drops them all.
+/// Under a production-corpus soak the proxy was burning 68.8% of a core to the gateway's 22.0%,
+/// and `Value` handling plus the allocator traffic it causes was about 40% of it.
+///
+/// Deserializing into borrowed `&str` fields skips the tree: serde walks the same bytes but
+/// materialises nothing except what is named here, and these point into the caller's buffer.
+#[derive(Deserialize)]
+struct ScopeKeyOnly<'a> {
+    #[serde(borrow, default)]
+    scope_key: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct MetadataFacts<'a> {
+    #[serde(borrow, default)]
+    access_scope: Option<ScopeKeyOnly<'a>>,
+}
+
+#[derive(Deserialize)]
+struct EnvelopeFacts<'a> {
+    #[serde(borrow, default)]
+    scope: Option<ScopeKeyOnly<'a>>,
+}
+
+#[derive(Deserialize)]
+struct IndexFacts<'a> {
+    #[serde(borrow, default)]
+    record_type: Option<&'a str>,
+    #[serde(borrow, default)]
+    scope_key: Option<&'a str>,
+    #[serde(borrow, default)]
+    access_scope: Option<ScopeKeyOnly<'a>>,
+    #[serde(borrow, default)]
+    scope: Option<ScopeKeyOnly<'a>>,
+    #[serde(borrow, default)]
+    metadata: Option<MetadataFacts<'a>>,
+    #[serde(borrow, default)]
+    envelope: Option<EnvelopeFacts<'a>>,
+    #[serde(borrow, default)]
+    record_bundle: Option<Vec<IndexFacts<'a>>>,
+}
+
+impl<'a> IndexFacts<'a> {
+    /// The scope key, in the same source order `candidate_scope_key` uses. Order is the whole
+    /// contract: a record carrying two of these must resolve to the same bucket either way.
+    fn scope_key(&self) -> &'a str {
+        let sources = [
+            self.scope_key,
+            self.access_scope.as_ref().and_then(|s| s.scope_key),
+            self.metadata
+                .as_ref()
+                .and_then(|m| m.access_scope.as_ref())
+                .and_then(|s| s.scope_key),
+            self.scope.as_ref().and_then(|s| s.scope_key),
+            self.envelope
+                .as_ref()
+                .and_then(|e| e.scope.as_ref())
+                .and_then(|s| s.scope_key),
+        ];
+        for source in sources {
+            if let Some(text) = source {
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+        ""
+    }
+}
+
+/// Index facts for one stored payload, or None when the borrowed parse cannot answer.
+///
+/// None is not "no facts" -- it means fall back to the `Value` path, which is what a payload
+/// whose shape this struct does not model (a field typed differently than expected) must do.
+/// Getting that wrong would silently mis-index a record rather than merely cost time.
+fn payload_index_facts(value: &str) -> Option<Vec<IndexFacts<'_>>> {
+    let facts: IndexFacts = serde_json::from_str(value).ok()?;
+    if let Some(bundle) = facts.record_bundle {
+        return Some(bundle);
+    }
+    Some(vec![IndexFacts {
+        record_type: facts.record_type,
+        scope_key: facts.scope_key,
+        access_scope: facts.access_scope,
+        scope: facts.scope,
+        metadata: facts.metadata,
+        envelope: facts.envelope,
+        record_bundle: None,
+    }])
+}
+
 fn decode_matrixark_payload(value: &str) -> Vec<Value> {
     let Ok(mut decoded) = serde_json::from_str::<Value>(value) else {
         return Vec::new();
@@ -1794,6 +2284,19 @@ fn payload_record_types(value: &str) -> Vec<String> {
     records_record_types(&decode_matrixark_payload(value))
 }
 
+/// `records_record_types` over the borrowed parse. The `&str`s point into the caller's buffer.
+fn facts_record_types<'a>(facts: &[IndexFacts<'a>]) -> Vec<&'a str> {
+    let mut types: Vec<&'a str> = Vec::new();
+    for fact in facts {
+        if let Some(record_type) = fact.record_type {
+            if !record_type.is_empty() && !types.contains(&record_type) {
+                types.push(record_type);
+            }
+        }
+    }
+    types
+}
+
 /// Payload values for the requested types via the type index, in append order.
 ///
 /// `Ok(None)` when the index cannot answer -- no ready-marker yet -- and the caller must walk.
@@ -1840,9 +2343,9 @@ fn type_index_payloads(
             .copied()
             .filter(|limit| *limit > 0);
         let of_type: Vec<String> =
-            hgetall_map(engine, type_index_key(record_hash_key, record_type))?
-                .into_iter()
-                .map(|(location, _)| location)
+            hgetall_shared(engine, type_index_key(record_hash_key, record_type))?
+                .keys()
+                .cloned()
                 .collect();
         locations.extend(newest_locations(of_type, limit));
     }
@@ -1884,6 +2387,24 @@ fn record_scope_buckets(record: &Value) -> Vec<String> {
         return vec!["none".to_string(), format!("none:{record_type}")];
     }
     let parts = parse_scope_key(&scope_key);
+    match (parts.get("t"), parts.get("u")) {
+        (Some(tenant), Some(user)) if *tenant != 0 && *user != 0 => {
+            vec![format!("t={tenant}|u={user}")]
+        }
+        _ => vec!["partial".to_string()],
+    }
+}
+
+/// `record_scope_buckets` over the borrowed parse. Must agree with it bucket-for-bucket, since
+/// the two run against the same store: a record filed under a different bucket by one path than
+/// the other is a record an index-served scan cannot find.
+fn facts_scope_buckets(fact: &IndexFacts<'_>) -> Vec<String> {
+    let scope_key = fact.scope_key();
+    if scope_key.is_empty() {
+        let record_type = fact.record_type.unwrap_or("");
+        return vec!["none".to_string(), format!("none:{record_type}")];
+    }
+    let parts = parse_scope_key(scope_key);
     match (parts.get("t"), parts.get("u")) {
         (Some(tenant), Some(user)) if *tenant != 0 && *user != 0 => {
             vec![format!("t={tenant}|u={user}")]
@@ -1938,10 +2459,10 @@ fn scope_index_payloads(
     }
     let mut positions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for source_bucket in &source_buckets {
-        for (location, _) in
-            hgetall_map(engine, scope_index_key(record_hash_key, source_bucket))?
+        for location in
+            hgetall_shared(engine, scope_index_key(record_hash_key, source_bucket))?.keys()
         {
-            positions.insert(location);
+            positions.insert(location.clone());
         }
     }
     if !allowed_types.is_empty() {
@@ -1950,10 +2471,10 @@ fn scope_index_payloads(
             let mut type_positions: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
             for record_type in allowed_types {
-                for (location, _) in
-                    hgetall_map(engine, type_index_key(record_hash_key, record_type))?
+                for location in
+                    hgetall_shared(engine, type_index_key(record_hash_key, record_type))?.keys()
                 {
-                    type_positions.insert(location);
+                    type_positions.insert(location.clone());
                 }
             }
             positions = positions
@@ -1971,11 +2492,11 @@ fn scope_index_payloads(
                         continue;
                     }
                     let mut of_type: Vec<String> = Vec::new();
-                    for (location, _) in
-                        hgetall_map(engine, type_index_key(record_hash_key, record_type))?
+                    for location in
+                        hgetall_shared(engine, type_index_key(record_hash_key, record_type))?.keys()
                     {
-                        if positions.contains(&location) {
-                            of_type.push(location);
+                        if positions.contains(location) {
+                            of_type.push(location.clone());
                         }
                     }
                     if of_type.len() <= *limit {
@@ -2110,8 +2631,10 @@ fn id_scoped_payloads(
             if record_type == "context_event" {
                 continue;
             }
-            for (location, _) in hgetall_map(engine, type_index_key(record_hash_key, record_type))? {
-                positions.insert(location);
+            for location in
+                hgetall_shared(engine, type_index_key(record_hash_key, record_type))?.keys()
+            {
+                positions.insert(location.clone());
             }
         }
     }
@@ -3563,20 +4086,44 @@ fn execute_record_log_request(
                         // used to call `payload_record_types` (itself a wrapper over
                         // `decode_matrixark_payload`) and then decode the same string again,
                         // deserializing every appended record into a Value tree twice.
-                        let decoded = decode_matrixark_payload(value_text);
-                        for record_type in records_record_types(&decoded) {
+                        //
+                        // It now does not build a tree at all in the common case: the two
+                        // indexes need a record type and a scope key, and `IndexFacts` borrows
+                        // exactly those out of the buffer while serde skips the rest of the
+                        // record without materialising it. A payload whose shape that struct
+                        // does not model falls back to the `Value` decode, which is the same
+                        // code as before and answers identically.
+                        let (type_names, bucket_names): (Vec<String>, Vec<String>) =
+                            match payload_index_facts(value_text) {
+                                Some(facts) => (
+                                    facts_record_types(&facts)
+                                        .into_iter()
+                                        .map(str::to_string)
+                                        .collect(),
+                                    facts.iter().flat_map(facts_scope_buckets).collect(),
+                                ),
+                                None => {
+                                    let decoded = decode_matrixark_payload(value_text);
+                                    (
+                                        records_record_types(&decoded),
+                                        decoded
+                                            .iter()
+                                            .flat_map(record_scope_buckets)
+                                            .collect(),
+                                    )
+                                }
+                            };
+                        for record_type in type_names {
                             index_entries
                                 .entry(type_index_key(base, &record_type))
                                 .or_default()
                                 .push((format!("{shard6}:{field}"), b"1".to_vec()));
                         }
-                        for record in &decoded {
-                            for bucket in record_scope_buckets(record) {
-                                index_entries
-                                    .entry(scope_index_key(base, &bucket))
-                                    .or_default()
-                                    .push((format!("{shard6}:{field}"), b"1".to_vec()));
-                            }
+                        for bucket in bucket_names {
+                            index_entries
+                                .entry(scope_index_key(base, &bucket))
+                                .or_default()
+                                .push((format!("{shard6}:{field}"), b"1".to_vec()));
                         }
                     }
                 }
@@ -5621,6 +6168,213 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    fn snapshot_of(field_bytes: usize, fields: usize) -> Arc<BTreeMap<String, String>> {
+        let mut map = BTreeMap::new();
+        for index in 0..fields {
+            map.insert(format!("f{index:06}"), "x".repeat(field_bytes));
+        }
+        Arc::new(map)
+    }
+
+    fn cache_with_budget(budget: usize) -> SnapshotCache {
+        let mut cache = SnapshotCache::new();
+        cache.budget = budget;
+        cache
+    }
+
+    /// The bound must hold in BYTES, which is the whole reason this type exists.
+    ///
+    /// An entry-count cap was tried on this proxy before and moved the resident set by nothing,
+    /// because the number of entries was never what was large. So this asserts on the byte total
+    /// and on a payload size that a count-based cap would have sailed straight past.
+    #[test]
+    fn the_snapshot_cache_stays_inside_its_byte_budget() {
+        let budget = 100_000;
+        let mut cache = cache_with_budget(budget);
+        for shard in 0..50 {
+            cache.insert(format!("records:{shard:06}"), snapshot_of(1_000, 10));
+        }
+        assert!(
+            cache.bytes <= budget,
+            "cache held {} bytes against a {budget} budget",
+            cache.bytes
+        );
+        // The positive control: without it, a cache that dropped EVERY insert would pass above.
+        assert!(
+            !cache.is_empty(),
+            "the cache evicted everything instead of staying near its budget"
+        );
+        assert!(
+            cache.bytes > budget / 2,
+            "cache holds only {} bytes of a {budget} budget -- it is evicting far too eagerly",
+            cache.bytes
+        );
+    }
+
+    /// Eviction takes the least recently USED entry, not the oldest inserted.
+    #[test]
+    fn the_least_recently_used_snapshot_is_the_one_evicted() {
+        // Budget for two snapshots, so inserting a third must evict exactly one.
+        let one = SnapshotCache::weigh(&snapshot_of(1_000, 10));
+        let mut cache = cache_with_budget(one * 2);
+        cache.insert("a".to_string(), snapshot_of(1_000, 10));
+        cache.insert("b".to_string(), snapshot_of(1_000, 10));
+        // Touch "a", making "b" the least recently used even though "a" went in first.
+        assert!(cache.get("a").is_some());
+        cache.insert("c".to_string(), snapshot_of(1_000, 10));
+        assert!(cache.contains_key("a"), "the recently used entry was evicted");
+        assert!(cache.contains_key("c"), "the new entry was not kept");
+        assert!(!cache.contains_key("b"), "the least recently used entry survived");
+    }
+
+    /// A patch that grows a snapshot must be re-weighed, or the budget drifts upward silently.
+    #[test]
+    fn patching_a_snapshot_reweighs_it() {
+        let mut cache = cache_with_budget(10_000_000);
+        cache.insert("k".to_string(), snapshot_of(10, 1));
+        let before = cache.bytes;
+        cache.patch("k", |snapshot| {
+            snapshot.insert("big".to_string(), "y".repeat(50_000));
+            true
+        });
+        assert!(
+            cache.bytes >= before + 50_000,
+            "a patch that added 50 kB moved the accounting from {before} to {}",
+            cache.bytes
+        );
+        // And shrinking must give the bytes back, or the budget ratchets one way only.
+        cache.patch("k", |snapshot| {
+            snapshot.remove("big");
+            true
+        });
+        assert_eq!(cache.bytes, before);
+    }
+
+    /// Returning false from a patch drops the key, and its bytes with it.
+    #[test]
+    fn a_patch_that_gives_up_drops_the_snapshot_and_its_bytes() {
+        let mut cache = cache_with_budget(10_000_000);
+        cache.insert("k".to_string(), snapshot_of(100, 10));
+        cache.patch("k", |_| false);
+        assert!(!cache.contains_key("k"));
+        assert_eq!(cache.bytes, 0, "the dropped snapshot left its bytes behind");
+    }
+
+    /// Emptying a snapshot by patch removes it, rather than pinning an empty map.
+    ///
+    /// `hgetall_shared` refuses to cache an empty read because a cached "no data" for a key that
+    /// no write may touch again once pinned a served view at zero rows until restart. A patch
+    /// must not create through the back door what the read path declines to store.
+    #[test]
+    fn patching_a_snapshot_empty_removes_it() {
+        let mut cache = cache_with_budget(10_000_000);
+        cache.insert("k".to_string(), snapshot_of(100, 2));
+        cache.patch("k", |snapshot| {
+            snapshot.clear();
+            true
+        });
+        assert!(!cache.contains_key("k"));
+        assert_eq!(cache.bytes, 0);
+    }
+
+    /// A snapshot bigger than the whole budget is skipped, not cached-then-everything-evicted.
+    #[test]
+    fn an_oversized_snapshot_does_not_evict_the_whole_cache() {
+        let mut cache = cache_with_budget(50_000);
+        cache.insert("small".to_string(), snapshot_of(100, 10));
+        let kept = cache.bytes;
+        cache.insert("huge".to_string(), snapshot_of(200_000, 1));
+        assert!(!cache.contains_key("huge"), "an oversized snapshot was cached");
+        assert!(cache.contains_key("small"), "an oversized insert cleared the cache");
+        assert_eq!(cache.bytes, kept);
+    }
+
+    /// Re-inserting the same key replaces its accounting instead of adding to it.
+    #[test]
+    fn reinserting_a_key_does_not_double_count_it() {
+        let mut cache = cache_with_budget(10_000_000);
+        cache.insert("k".to_string(), snapshot_of(100, 10));
+        let once = cache.bytes;
+        cache.insert("k".to_string(), snapshot_of(100, 10));
+        assert_eq!(cache.bytes, once, "re-inserting a key counted it twice");
+    }
+
+    /// The borrowed parse and the `Value` parse must name the SAME buckets and types.
+    ///
+    /// Not "both produce something": the two write into one store, so a record the fast path
+    /// files under a bucket the slow path would not is a record an index-served scan cannot
+    /// find. Each case below is checked against the `Value` path's own answer, so the test
+    /// cannot pass by both sides being wrong in the same way.
+    #[test]
+    fn borrowed_index_facts_agree_with_the_value_path() {
+        let payloads = [
+            // scope_key at each of the five sources candidate_scope_key reads, in its order
+            r#"{"record_type":"msg","scope_key":"t=11|u=22"}"#,
+            r#"{"record_type":"msg","access_scope":{"scope_key":"t=11|u=22"}}"#,
+            r#"{"record_type":"msg","metadata":{"access_scope":{"scope_key":"t=11|u=22"}}}"#,
+            r#"{"record_type":"msg","scope":{"scope_key":"t=11|u=22"}}"#,
+            r#"{"record_type":"msg","envelope":{"scope":{"scope_key":"t=11|u=22"}}}"#,
+            // precedence: an earlier source must win over a later one
+            r#"{"record_type":"msg","scope_key":"t=1|u=2","envelope":{"scope":{"scope_key":"t=9|u=9"}}}"#,
+            // an EMPTY earlier source falls through to the later one
+            r#"{"record_type":"msg","scope_key":"","scope":{"scope_key":"t=11|u=22"}}"#,
+            // scopeless, partial, and missing type -- the three bucket shapes
+            r#"{"record_type":"summary"}"#,
+            r#"{"record_type":"msg","scope_key":"t=11"}"#,
+            r#"{"scope_key":"t=11|u=22"}"#,
+            // bundles, including one holding a mix
+            r#"{"record_bundle":[{"record_type":"a","scope_key":"t=1|u=2"},{"record_type":"b"}]}"#,
+            r#"{"record_bundle":[]}"#,
+            // shapes the borrowed struct does not model -- these must FALL BACK, not misfile
+            r#"{"record_type":7,"scope_key":"t=11|u=22"}"#,
+            r#"{"record_type":"msg","access_scope":"not-an-object"}"#,
+            r#"{"record_type":"msg","scope_key":"t=11|u=22","extra":{"deep":[1,2,{"x":null}]}}"#,
+            // not a record at all
+            r#"[1,2,3]"#,
+            r#"not json"#,
+        ];
+        for payload in payloads {
+            let decoded = decode_matrixark_payload(payload);
+            let want_types = records_record_types(&decoded);
+            let want_buckets: Vec<String> = decoded
+                .iter()
+                .flat_map(record_scope_buckets)
+                .collect();
+
+            let (got_types, got_buckets): (Vec<String>, Vec<String>) =
+                match payload_index_facts(payload) {
+                    Some(facts) => (
+                        facts_record_types(&facts)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                        facts.iter().flat_map(facts_scope_buckets).collect(),
+                    ),
+                    None => (
+                        want_types.clone(),
+                        want_buckets.clone(),
+                    ),
+                };
+            assert_eq!(got_types, want_types, "types for {payload}");
+            assert_eq!(got_buckets, want_buckets, "buckets for {payload}");
+        }
+    }
+
+    /// The fast path must actually BE taken for an ordinary record.
+    ///
+    /// Without this the agreement test above passes vacuously: every case could be falling back
+    /// to the `Value` path, which trivially agrees with itself, and the optimisation would be
+    /// inert while every test stayed green.
+    #[test]
+    fn the_borrowed_parse_answers_an_ordinary_record() {
+        let facts = payload_index_facts(
+            r#"{"record_type":"msg","scope_key":"t=11|u=22","text":"hello","vector":[0.1,0.2]}"#,
+        )
+        .expect("an ordinary record must not fall back to the Value path");
+        assert_eq!(facts_record_types(&facts), vec!["msg"]);
+        assert_eq!(facts[0].scope_key(), "t=11|u=22");
+    }
 
     #[test]
     fn a_text_lane_response_is_still_one_json_line() {
