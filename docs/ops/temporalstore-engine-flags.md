@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 290 of them, read by 91 functions.
+There are 286 of them, read by 89 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,15 +60,15 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 290 |
+| total | 286 |
 | booleans whose default this could read off the source | 49 |
-| numbers whose default this could read off the source | 70 |
+| numbers whose default this could read off the source | 66 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 161 |
+| **that nothing in this repository sets** | 157 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
-| whose doc comment is really about another flag | 42 |
+| whose doc comment is really about another flag | 38 |
 
 ## topology (38)
 
@@ -214,7 +214,7 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
 | `TS_VECTOR_SCALED` | on | launch, test, portal | 1 | — |
 
-## capacity (81)
+## capacity (77)
 
 Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 
@@ -254,9 +254,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_MATRIXOBJECT_FLUSH_INTERVAL_MS` | 100 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_PROBE_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_MAX_RETAINED_FINISHED_JOBS` | 64 | portal | 1 | — |
-| `TS_META_AUTO_REBALANCE_CONNECT_TIMEOUT_MS` | 500 | nothing | 1 | — |
 | `TS_META_AUTO_REBALANCE_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_META_AUTO_REBALANCE_IO_TIMEOUT_MS` | 2000 | nothing | 1 | — |
 | `TS_META_CONVICT_CRITICAL_RATIO_PERCENT` | — | nothing | 1 | — |
 | `TS_META_CONVICT_MIN_ABNORMAL` | — | nothing | 1 | — |
 | `TS_META_CONVICT_WARNING_RATIO_PERCENT` | — | nothing | 1 | — |
@@ -266,14 +264,14 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_META_FD_MAX_ROUND_PAUSE_MS` | — | nothing | 1 | — |
 | `TS_META_FREEZE_AGING_INTERVAL_MS` | 60000 | nothing | 1 | — |
 | `TS_META_FREEZE_AGING_MAX_DROPS` | — | nothing | 1 | — |
+| `TS_META_PEER_CONNECT_TIMEOUT_MS` | 500 | nothing | 1 | — |
+| `TS_META_PEER_IO_TIMEOUT_MS` | 2000 | nothing | 1 | — |
 | `TS_META_PROXY_CALIBRATION_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_META_PROXY_CALIBRATION_MAX_CHANGES` | — | nothing | 1 | — |
 | `TS_META_RAFT_HEARTBEAT_INTERVAL_MS` | 100 | nothing | 1 | — |
 | `TS_META_RETENTION_INTERVAL_MS` | 60000 | nothing | 1 | — |
 | `TS_META_RETENTION_MAX_PURGES` | — | nothing | 1 | — |
-| `TS_META_SHARD_DIVERGENCE_CONNECT_TIMEOUT_MS` | 500 | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_META_SHARD_DIVERGENCE_IO_TIMEOUT_MS` | 2000 | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_MAX_MOVES` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_MAX_INFLIGHT` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_MAX_POSTPONE_MS` | — | nothing | 1 | — |
@@ -290,9 +288,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_PROXY_MAX_INFLIGHT_WRITE_REQUESTS` | — | nothing | 1 | — |
 | `TS_PROXY_MAX_RETRIES` | — | config | 1 | — |
 | `TS_PROXY_TOPOLOGY_CHECK_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_RAFT_AUTO_FAILOVER_CONNECT_TIMEOUT_MS` | 500 | nothing | 1 | — |
 | `TS_RAFT_AUTO_FAILOVER_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_RAFT_AUTO_FAILOVER_IO_TIMEOUT_MS` | 2000 | nothing | 1 | — |
 | `TS_RAFT_MAX_APPLIED_LOG_BYTES` | — | nothing | 1 | — |
 | `TS_RAFT_MAX_INFLIGHTS_REPLICATE` | — | test | 1 | — |
 | `TS_SERVER_HEARTBEAT_INTERVAL_MS` | 3000 | config, script | 1 | — |
