@@ -536,6 +536,13 @@ def _shadow_log_path(operation: str) -> str:
 
 _FULL_READ_FALLBACKS: dict[str, int] = {}
 
+# Why the most recent scoped scan in THIS thread gave up, or None if it simply could not be asked.
+#
+# Thread-local rather than an attribute on the adapter: one adapter serves every request, so an
+# instance attribute would let one thread's backend error decide another thread's fallback. Reset
+# at the top of every scan, so what it holds is always the scan the caller is reacting to.
+_SCAN_STATE = threading.local()
+
 
 def full_read_fallback_counts() -> dict[str, int]:
     """How many times each scoped scan gave up and read the whole store instead.
@@ -1346,6 +1353,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         """
         # An adapter with no client at all (partial construction, stubs) is the same answer as
         # a client without the scan: the question cannot be asked here.
+        # Absence and failure are different answers and the caller now acts on the difference:
+        # no scanner means the full read is the correct path, a FAILED scan means the backend could
+        # not answer -- and the full read goes back to that same backend.
+        _SCAN_STATE.last_error = None
         scanner = getattr(getattr(self, "_client", None), "matrixark_scan_candidates", None)
         if not callable(scanner):
             return None
@@ -1382,10 +1393,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                         record_types, record_ids=record_ids, scope=scope, newest_by_type=None
                     )
                 except Exception as fallback_reason:  # noqa: BLE001 - the caller reads everything.
+                    _SCAN_STATE.last_error = fallback_reason
                     _note_full_read_fallback("_scan_records_of_types", fallback_reason)
                     return None
             return None
-        except Exception:  # noqa: BLE001 - an unanswered question means "do the full read".
+        except Exception as scan_error:  # noqa: BLE001 - the caller decides what an outage means.
+            _SCAN_STATE.last_error = scan_error
             return None
         if not isinstance(response, dict):
             return None
@@ -1397,6 +1410,55 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             record for record in records
             if isinstance(record, dict) and str(record.get("record_type") or "") in wanted
         ]
+
+    def _full_read_can_answer_offline(self) -> bool:
+        """Could a full read answer without the backend that just failed?
+
+        Two ways it can. The Python hot cache may already hold the records -- but
+        `python_hot_cache_allowed` returns `backend_label == "local"`, so on a native backend it is
+        off by design, because serving is meant to read through native pushdown. Or a disk fallback
+        store may be configured, which `read_all` recovers from before reading.
+
+        With neither, `read_all` calls `_get_count()` on the same client that just failed, so the
+        full read is guaranteed to fail too. Unsure counts as "yes": an unexpected answer here must
+        leave the old behaviour in place rather than turn a served request into an error.
+        """
+        try:
+            if self.python_hot_cache_enabled() and getattr(self, "_records_cache", None) is not None:
+                return True
+        except Exception:  # noqa: BLE001 - if the policy cannot be read, keep the full read.
+            return True
+        try:
+            return bool(disk_fallback_store_path())
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _read_all_after_scoped_scan(self) -> list[Json]:
+        """The full read a scoped scan falls back to -- unless it provably cannot help.
+
+        Measured 2026-09-09 on a native one-box: one request with the backend down did TEN
+        whole-corpus reads and returned 500 anyway. Each of those went back to the same client that
+        had just refused the scan, so none of them could ever have answered; they only delayed the
+        error and, on a large store, would have done it expensively.
+
+        So when the scan FAILED and no offline source exists, re-raise the scan's own error instead.
+        The request fails exactly as it did before, with the real reason -- a refused connection
+        reads as a refused connection rather than as a slow request that eventually gave up.
+
+        When the scan could not be ASKED (no scanner on this client) there is no error and this is
+        the ordinary full read, unchanged.
+        """
+        import sys as _sys
+        where = "unknown"
+        try:
+            where = _sys._getframe(1).f_code.co_name
+        except Exception:  # noqa: BLE001
+            pass
+        _note_full_read_fallback(where)
+        error = getattr(_SCAN_STATE, "last_error", None)
+        if error is not None and not self._full_read_can_answer_offline():
+            raise error
+        return self.read_all()
 
     def _memory_tombstone_records(self) -> list[Json] | None:
         """Every memory tombstone in the store. None = could not ask (see _scan_records_of_types)."""
@@ -1500,11 +1562,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             scope=engine_scope,
         )
         if subset is None:
-            # The scan could not answer, so this is about to read every record in the store.
-            # Counted rather than silent: this branch, not the exception one below, is what fires
-            # when the backend is unreachable, and it used to report nothing at all.
-            _note_full_read_fallback()
-            return self.read_all()
+            # The scan could not answer, so this is about to read every record in the store --
+            # unless the scan FAILED and nothing offline can serve it, in which case the full read
+            # would go back to the same backend and fail too. Counted either way.
+            return self._read_all_after_scoped_scan()
         try:
             latest_state = self._load_latest_context_state_records()
         except Exception as fallback_reason:  # noqa: BLE001 - the full read is the fallback.
@@ -1623,11 +1684,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             scope=engine_scope,
         )
         if subset is None:
-            # The scan could not answer, so this is about to read every record in the store.
-            # Counted rather than silent: this branch, not the exception one below, is what fires
-            # when the backend is unreachable, and it used to report nothing at all.
-            _note_full_read_fallback()
-            return self.read_all()
+            # The scan could not answer, so this is about to read every record in the store --
+            # unless the scan FAILED and nothing offline can serve it, in which case the full read
+            # would go back to the same backend and fail too. Counted either way.
+            return self._read_all_after_scoped_scan()
         try:
             latest_state = self._load_latest_context_state_records()
         except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
@@ -1725,11 +1785,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         ]
         subset = self._scan_records_of_types(wanted)
         if subset is None:
-            # The scan could not answer, so this is about to read every record in the store.
-            # Counted rather than silent: this branch, not the exception one below, is what fires
-            # when the backend is unreachable, and it used to report nothing at all.
-            _note_full_read_fallback()
-            return self.read_all()
+            # The scan could not answer, so this is about to read every record in the store --
+            # unless the scan FAILED and nothing offline can serve it, in which case the full read
+            # would go back to the same backend and fail too. Counted either way.
+            return self._read_all_after_scoped_scan()
         try:
             latest_state = self._load_latest_context_state_records()
         except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
@@ -1848,11 +1907,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             else self._scan_records_of_types(kept_types, record_ids=sorted(identity_ids))
         )
         if subset is None:
-            # The scan could not answer, so this is about to read every record in the store.
-            # Counted rather than silent: this branch, not the exception one below, is what fires
-            # when the backend is unreachable, and it used to report nothing at all.
-            _note_full_read_fallback()
-            return self.read_all()
+            # The scan could not answer, so this is about to read every record in the store --
+            # unless the scan FAILED and nothing offline can serve it, in which case the full read
+            # would go back to the same backend and fail too. Counted either way.
+            return self._read_all_after_scoped_scan()
         try:
             latest_state = self._load_latest_context_state_records()
         except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
@@ -1993,11 +2051,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             else self._scan_records_of_types(kept_types, record_ids=sorted(identity_ids))
         )
         if subset is None:
-            # The scan could not answer, so this is about to read every record in the store.
-            # Counted rather than silent: this branch, not the exception one below, is what fires
-            # when the backend is unreachable, and it used to report nothing at all.
-            _note_full_read_fallback()
-            return self.read_all()
+            # The scan could not answer, so this is about to read every record in the store --
+            # unless the scan FAILED and nothing offline can serve it, in which case the full read
+            # would go back to the same backend and fail too. Counted either way.
+            return self._read_all_after_scoped_scan()
         try:
             latest_state = self._load_latest_context_state_records()
         except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
@@ -2169,11 +2226,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 newest_by_type=({"context_event": newest_events} if newest_events else None),
             )
         if subset is None:
-            # The scan could not answer, so this is about to read every record in the store.
-            # Counted rather than silent: this branch, not the exception one below, is what fires
-            # when the backend is unreachable, and it used to report nothing at all.
-            _note_full_read_fallback()
-            return self.read_all()
+            # The scan could not answer, so this is about to read every record in the store --
+            # unless the scan FAILED and nothing offline can serve it, in which case the full read
+            # would go back to the same backend and fail too. Counted either way.
+            return self._read_all_after_scoped_scan()
         # Summaries and other compact records can live in the latest-state HASH rather than the
         # append log, and the scan walks only the log -- the shadow compare caught exactly this:
         # the subset was missing every refresher-written context_summary. Fold the latest-state
