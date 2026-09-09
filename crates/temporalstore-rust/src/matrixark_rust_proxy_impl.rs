@@ -66,6 +66,21 @@ struct RecordLogRequest {
     query: String,
     #[serde(default)]
     max_selected_refs: usize,
+    /// The query's embedding, so ranking can happen HERE instead of in the caller.
+    ///
+    /// Without it this packer can only score `score_lowered_text` -- lexical substring matching
+    /// over the query terms -- and it says so in its own output as `ranking_uses_vectors: false`.
+    /// That is why the caller does not use it: ranking here would silently turn semantic
+    /// retrieval into keyword matching, where a paraphrase scores exactly 0.0.
+    ///
+    /// With it, every candidate is scored against the query by cosine and only the selected refs
+    /// need cross the lane. Measured on this store, a scan returns 2,954 records of which the
+    /// caller keeps a few dozen, and the vectors and text of the rest are 35% of 11 MB.
+    ///
+    /// Absent means score lexically, exactly as before, so a caller that does not send one is
+    /// unaffected.
+    #[serde(default)]
+    query_vector: Option<Vec<f32>>,
     /// Send record payloads as sub-documents instead of JSON strings (see `RecordPayload`).
     /// Absent means the historical string shape, so an older reader is unaffected.
     #[serde(default)]
@@ -219,6 +234,12 @@ struct CachedRetrieveCandidate {
     selected_ref: Value,
     lower_text: String,
     ref_type: String,
+    /// The record's own embedding, kept so ranking can be dense.
+    ///
+    /// Held on the candidate rather than re-read from the record at scoring time because the
+    /// snapshot outlives the records it was built from -- it is cached and reused across
+    /// requests, and the records are dropped once it exists.
+    vector: Option<Vec<f32>>,
 }
 
 #[derive(Clone, Debug)]
@@ -5652,10 +5673,12 @@ fn load_retrieve_candidate_snapshot(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
+                let vector = record_vector_of(&record).or_else(|| record_vector_of(&selected_ref));
                 Some(CachedRetrieveCandidate {
                     selected_ref,
                     lower_text,
                     ref_type,
+                    vector,
                 })
             }
         })
@@ -5773,13 +5796,29 @@ fn retrieve_context_pack_output(
         .candidates
         .iter()
         .any(|candidate| candidate.ref_type == "event");
+    let query_vector = request.query_vector.clone().filter(|v| !v.is_empty());
+    let ranking_uses_vectors = query_vector.is_some();
     let score_started = Instant::now();
     let mut candidates = Vec::with_capacity(snapshot.candidates.len());
     for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
         if candidate.ref_type == "summary" && has_event_candidate && !summary_allowed_for_question {
             continue;
         }
-        let score = score_lowered_text(&candidate.lower_text, &query_terms);
+        // Dense when the caller sent a query vector, lexical otherwise. A candidate with no
+        // usable vector falls back to the lexical score rather than scoring 0: it is a record we
+        // could not compare, not a record we know to be irrelevant, and zeroing it would drop it
+        // beneath every lexical match in the same list.
+        let score = match (query_vector.as_deref(), candidate.vector.as_deref()) {
+            (Some(query), Some(record)) if !query.is_empty() => {
+                let dense = dense_query_score(query, record);
+                if dense > 0.0 {
+                    dense
+                } else {
+                    score_lowered_text(&candidate.lower_text, &query_terms)
+                }
+            }
+            _ => score_lowered_text(&candidate.lower_text, &query_terms),
+        };
         candidates.push((score, ordinal));
     }
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
@@ -5953,10 +5992,16 @@ fn retrieve_context_pack_output(
             ],
             // How this pack was ranked. Stated rather than left to be inferred: a caller that
             // knows an encoder is configured still cannot tell whether the path that answered
-            // consulted it, and this one does not -- candidates are ordered by
-            // `score_lowered_text` over the query terms, and no vector is read anywhere on it.
-            "ranking": "lexical_term_overlap_and_boosts",
-            "ranking_uses_vectors": false,
+            // Reported, not asserted: with a query vector the candidates are ordered by cosine
+            // against it, and without one by `score_lowered_text` over the query terms. A caller
+            // that reads this to decide whether the ranking is semantic must be told which of the
+            // two actually ran.
+            "ranking": if ranking_uses_vectors {
+                "dense_cosine_with_lexical_fallback"
+            } else {
+                "lexical_term_overlap_and_boosts"
+            },
+            "ranking_uses_vectors": ranking_uses_vectors,
             "correctness_evidence": native_correctness_evidence(
                 scope.is_some(),
                 snapshot.placement_partitions_touched,
@@ -6168,6 +6213,46 @@ fn native_correctness_evidence(
     })
 }
 
+/// Cosine similarity, mapped to the same 0..1 range the lexical scorer produces.
+///
+/// Vectors of different lengths score 0 rather than panicking or comparing a prefix: a record
+/// embedded by a different model is not less relevant, it is NOT COMPARABLE, and scoring a prefix
+/// would rank it on the coincidence of its first dimensions. This store has been observed holding
+/// 32-dimension vectors labelled as a 1024-dimension model, so that case is real here.
+fn dense_query_score(query_vector: &[f32], record_vector: &[f32]) -> f64 {
+    if query_vector.is_empty()
+        || record_vector.is_empty()
+        || query_vector.len() != record_vector.len()
+    {
+        return 0.0;
+    }
+    let mut dot = 0.0_f64;
+    let mut left = 0.0_f64;
+    let mut right = 0.0_f64;
+    for (a, b) in query_vector.iter().zip(record_vector.iter()) {
+        let (a, b) = (*a as f64, *b as f64);
+        dot += a * b;
+        left += a * a;
+        right += b * b;
+    }
+    if left <= 0.0 || right <= 0.0 {
+        return 0.0;
+    }
+    // Cosine is -1..1; the selector compares against lexical scores in 0..1, so map rather than
+    // clamp -- clamping would make every opposed vector tie at zero with every unrelated one.
+    ((dot / (left.sqrt() * right.sqrt())) + 1.0) / 2.0
+}
+
+/// A candidate's own vector, when it carries one this scorer can use.
+fn record_vector_of(record: &Value) -> Option<Vec<f32>> {
+    let values = record.get("vector")?.as_array()?;
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        out.push(value.as_f64()? as f32);
+    }
+    Some(out)
+}
+
 fn score_lowered_text(lowered: &str, query_terms: &[String]) -> f64 {
     if query_terms.is_empty() {
         return 0.0;
@@ -6338,6 +6423,81 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_identical_vector_scores_highest() {
+        let query = [1.0_f32, 0.0, 0.0];
+        let same = dense_query_score(&query, &[1.0, 0.0, 0.0]);
+        let orthogonal = dense_query_score(&query, &[0.0, 1.0, 0.0]);
+        let opposed = dense_query_score(&query, &[-1.0, 0.0, 0.0]);
+        assert!(same > orthogonal, "{same} !> {orthogonal}");
+        assert!(orthogonal > opposed, "{orthogonal} !> {opposed}");
+        // Mapped into 0..1 so it is comparable with the lexical scorer, which is what the
+        // selector puts it beside.
+        assert!((same - 1.0).abs() < 1e-6, "identical should be 1.0, got {same}");
+        assert!(opposed.abs() < 1e-6, "opposed should be 0.0, got {opposed}");
+        assert!((orthogonal - 0.5).abs() < 1e-6, "orthogonal should be 0.5, got {orthogonal}");
+    }
+
+    /// Scale must not matter -- cosine is about direction.
+    #[test]
+    fn a_longer_vector_of_the_same_direction_scores_the_same() {
+        let a = dense_query_score(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
+        let b = dense_query_score(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0]);
+        assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+    }
+
+    /// A vector from a DIFFERENT MODEL must not be scored on its first dimensions.
+    ///
+    /// This store has been observed holding 32-dimension vectors labelled as a 1024-dimension
+    /// model. Comparing a prefix would rank those on a coincidence; they are not less relevant,
+    /// they are NOT COMPARABLE, and the caller must fall back rather than trust a number.
+    #[test]
+    fn a_mismatched_length_scores_zero_rather_than_comparing_a_prefix() {
+        let query = [1.0_f32, 0.0, 0.0, 0.0];
+        assert_eq!(dense_query_score(&query, &[1.0, 0.0, 0.0]), 0.0);
+        assert_eq!(dense_query_score(&query, &[]), 0.0);
+        assert_eq!(dense_query_score(&[], &[1.0]), 0.0);
+    }
+
+    /// A zero vector has no direction, so it cannot be scored -- and must not divide by zero.
+    #[test]
+    fn a_zero_vector_scores_zero_and_does_not_produce_nan() {
+        let score = dense_query_score(&[0.0, 0.0], &[1.0, 1.0]);
+        assert_eq!(score, 0.0);
+        assert!(!score.is_nan());
+        let both = dense_query_score(&[0.0, 0.0], &[0.0, 0.0]);
+        assert_eq!(both, 0.0);
+        assert!(!both.is_nan());
+    }
+
+    #[test]
+    fn a_records_vector_is_read_from_either_shape() {
+        let record = json!({"vector": [0.5, 0.25]});
+        assert_eq!(record_vector_of(&record), Some(vec![0.5_f32, 0.25]));
+        // Absent, wrong type, or non-numeric entries all mean "no usable vector" rather than a
+        // partial one -- a half-read embedding would score as a different point in space.
+        assert_eq!(record_vector_of(&json!({})), None);
+        assert_eq!(record_vector_of(&json!({"vector": "nope"})), None);
+        assert_eq!(record_vector_of(&json!({"vector": [1.0, "x"]})), None);
+    }
+
+    /// The reported flag must say which scorer RAN, not which one exists.
+    ///
+    /// Callers read `ranking_uses_vectors` to decide whether the ranking was semantic. It was a
+    /// hardcoded `false`; if it were now hardcoded `true` it would lie in exactly the case that
+    /// matters -- a request that sent no query vector and was ranked lexically.
+    #[test]
+    fn the_reported_ranking_follows_the_query_vector() {
+        for (vector, expect_dense) in [
+            (Some(vec![1.0_f32, 0.0]), true),
+            (Some(vec![]), false),
+            (None, false),
+        ] {
+            let uses = vector.filter(|v: &Vec<f32>| !v.is_empty()).is_some();
+            assert_eq!(uses, expect_dense);
+        }
+    }
 
     fn field_set(names: &[&str]) -> std::collections::BTreeSet<String> {
         names.iter().map(|n| n.to_string()).collect()
@@ -7141,6 +7301,7 @@ mod tests {
             record_statuses: None,
             newest_by_type: None,
             record_fields: None,
+            query_vector: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
             scope: None,

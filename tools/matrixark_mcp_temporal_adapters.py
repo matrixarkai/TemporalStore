@@ -3372,7 +3372,7 @@ class MatrixArkRustCdylibClient(_AppendRecordsViaBatch):
         self._call("matrixark_batch_append_records", call, records_written=len(values) + (1 if count_key else 0))
 
 
-    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], record_ids: list[str] | None = None, return_index_records: bool = False, newest_by_type: Json | None = None) -> Json:
+    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], record_ids: list[str] | None = None, return_index_records: bool = False, newest_by_type: Json | None = None, record_fields: list[str] | None = None) -> Json:
         payload: Json = {"scope": scope, "record_types": record_types, "secondary_index_groups": secondary_index_groups, "selected_node_hashes": selected_node_hashes}
         if record_ids:
             payload["record_ids"] = [str(item) for item in record_ids]
@@ -3380,6 +3380,10 @@ class MatrixArkRustCdylibClient(_AppendRecordsViaBatch):
             payload["return_index_records"] = True
         if newest_by_type:
             payload["newest_by_type"] = {str(k): int(v) for k, v in newest_by_type.items()}
+        if record_fields:
+            # Absent means the WHOLE record, so an empty list must never be sent: it would ask
+            # for nothing and read back as every field gone.
+            payload["record_fields"] = [str(name) for name in record_fields]
         request = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         def call() -> Json:
             out = self._ctypes.c_void_p()
@@ -4684,6 +4688,7 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         record_ids: list[str] | None = None,
         return_index_records: bool = False,
         newest_by_type: Json | None = None,
+        record_fields: list[str] | None = None,
     ) -> Json:
         extra: Json = {}
         if record_ids:
@@ -4694,6 +4699,10 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             extra["newest_by_type"] = {
                 str(record_type): int(limit) for record_type, limit in newest_by_type.items()
             }
+        if record_fields:
+            # Absent means the WHOLE record, so an empty list must never be sent: it would ask
+            # for nothing and read back as every field gone.
+            extra["record_fields"] = [str(name) for name in record_fields]
         return self._call_json(
             "matrixark_scan_candidates",
             count_key=count_key,
