@@ -39,11 +39,7 @@ use record::{
 use self::band_manifest::*;
 pub(crate) use slab_ids::*;
 #[cfg(test)]
-use record::{
-    PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_HEADER_LEN,
-    PAGE_RECORD_V9_HEADER_LEN,
-    PAGE_RECORD_MAGIC, PAGE_RECORD_VERSION,
-};
+use record::{PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_MAGIC};
 
 #[derive(Debug, Error)]
 pub enum BlockStoreError {
@@ -2258,7 +2254,7 @@ mod tests {
         let slab = fs::read(&path).unwrap();
         let start = address.offset as usize;
         let record = &slab[start..start + address.length as usize];
-        let at = record::PAGE_RECORD_V10_CHECKSUM_OFFSET;
+        let at = record::PAGE_RECORD_CHECKSUM_OFFSET;
         let field = &record[at..at + record::PAGE_RECORD_CHECKSUM_LEN];
 
         assert_ne!(
@@ -2267,9 +2263,14 @@ mod tests {
             "if this ever matches, the envelope holds a full digest and the index copy could              genuinely be relocated rather than dropped"
         );
         assert_eq!(
-            &field[4..8],
-            b"C32C",
-            "a v7 record marks its checksum field as a crc32c"
+            field,
+            crate::checksum::crc32c(payload).to_le_bytes(),
+            "the field is the crc32c of the payload"
+        );
+        assert_eq!(
+            record::PAGE_RECORD_CHECKSUM_LEN,
+            4,
+            "the field is the checksum and nothing else: no padding, no marker"
         );
         assert_eq!(std::mem::size_of::<BlockAddress>(), 64);
     }
@@ -2359,7 +2360,6 @@ mod tests {
         let raw = store.read_slab(address.block_slab_id).unwrap();
 
         assert!(raw.starts_with(PAGE_RECORD_MAGIC));
-        assert_eq!(raw[8], PAGE_RECORD_VERSION);
         assert_eq!(address.page_id(), Some(0));
         assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
     }
@@ -2880,8 +2880,8 @@ mod tests {
         let second = store.append(&second_payload).unwrap();
         let raw = store.read_slab(first.block_slab_id).unwrap();
 
-        assert!(first.length < (PAGE_RECORD_HEADER_LEN + first_payload.len()) as u64);
-        assert!(second.length < (PAGE_RECORD_HEADER_LEN + second_payload.len()) as u64);
+        assert!(first.length < (record::PAGE_RECORD_FIXED_LEN + first_payload.len()) as u64);
+        assert!(second.length < (record::PAGE_RECORD_FIXED_LEN + second_payload.len()) as u64);
         assert_eq!(store.read(&first).unwrap(), first_payload);
         assert_eq!(store.read(&second).unwrap(), second_payload);
 
@@ -2893,7 +2893,7 @@ mod tests {
         expected.extend_from_slice(&first_payload[first_payload.len() - 3..]);
         expected.extend_from_slice(&second_payload[..9]);
         assert_eq!(logical, expected);
-        assert_eq!(raw[8], PAGE_RECORD_VERSION);
+        assert!(raw.starts_with(PAGE_RECORD_MAGIC));
         assert_eq!(record::page_record_compression_byte(&raw), PAGE_RECORD_COMPRESSION_ZSTD);
 
         let stats = store.stats();
@@ -3206,7 +3206,7 @@ mod tests {
 
         // Stated from the values that went in, because a varint header has no fixed length: it
         // is the fixed part, one varint per number, and the compression codec.
-        let expected_header = record::PAGE_RECORD_V10_FIXED_LEN
+        let expected_header = record::PAGE_RECORD_FIXED_LEN
             + record::page_record_varint_len(payload.len() as u64)
             + record::page_record_varint_len(disabled_address.page_id().unwrap_or_default())
             + record::page_record_varint_len(
@@ -3221,8 +3221,8 @@ mod tests {
             (expected_header + payload.len()) as u64
         );
         assert!(
-            expected_header < PAGE_RECORD_V9_HEADER_LEN,
-            "the varint header must be smaller than the fixed-width one it replaced"
+            expected_header <= record::PAGE_RECORD_FIXED_LEN + 5 + 1,
+            "a header for small ids is the fixed part plus one byte per number"
         );
         assert_eq!(record::page_record_compression_byte(&disabled_raw), PAGE_RECORD_COMPRESSION_NONE);
         assert_eq!(disabled_store.read(&disabled_address).unwrap(), payload);
@@ -3242,7 +3242,7 @@ mod tests {
             .read_slab(threshold_address.block_slab_id)
             .unwrap();
 
-        let threshold_header = record::PAGE_RECORD_V10_FIXED_LEN
+        let threshold_header = record::PAGE_RECORD_FIXED_LEN
             + record::page_record_varint_len(payload.len() as u64)
             + record::page_record_varint_len(threshold_address.page_id().unwrap_or_default())
             + record::page_record_varint_len(
@@ -3286,12 +3286,20 @@ mod tests {
         let address = store.append(b"header-checked-page").unwrap();
         let path = slab_path(dir.path(), address.block_slab_id);
         let mut slab = fs::read(&path).unwrap();
-        slab[10] = 1;
-        slab[11] = 0;
+        // Make the payload length say something far larger than the record holds. There is no
+        // declared header length to corrupt any more -- the header ends where the walk ends --
+        // so the length that can still disagree with the record is the payload's.
+        let length_at = record::PAGE_RECORD_FIXED_LEN;
+        slab[length_at] = 0xFF;
+        slab[length_at + 1] = 0xFF;
+        slab[length_at + 2] = 0x7F;
         fs::write(path, slab).unwrap();
 
         let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
+        assert!(
+            matches!(err, BlockStoreError::CorruptPageEnvelope { .. }),
+            "expected a corrupt envelope, got {err:?}"
+        );
     }
 
     #[test]

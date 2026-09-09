@@ -13,119 +13,33 @@ use super::{
 };
 
 pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
-pub(super) const PAGE_RECORD_VERSION: u8 = 10;
 
-/// Version at which the header stopped writing two numbers it could not disagree with.
+/// The checksum is a CRC32C and nothing else, so the field is exactly its width.
 ///
-/// v8 wrote the payload length twice and the stored length always. The decoder REJECTED a record
-/// whose second length differed from the first, and rejected an uncompressed record whose stored
-/// length differed from its payload length -- so on every record it accepted, both were already
-/// known. A page record averages 137 bytes here and the compression floor is 256, so page records
-/// are essentially never compressed and the stored length was the payload length every time.
+/// It was 32 bytes holding a SHA-256, then 32 holding a 4-byte CRC32C padded out, then 8 holding
+/// the CRC32C plus a `C32C` marker that made the field self-describing across formats. With one
+/// format there is nothing to tell apart, so the marker is gone and the field is the checksum.
+/// A page checksum guards against a page that corrupted into something still decodable, not
+/// against a forged one, and CRC32C is the right tool for that.
+pub(super) const PAGE_RECORD_CHECKSUM_LEN: usize = 4;
+
+/// Where the checksum sits. Named because tests read the field by offset, and a literal there
+/// passes silently when the layout moves under it.
+pub(super) const PAGE_RECORD_CHECKSUM_OFFSET: usize = PAGE_RECORD_MAGIC.len();
+
+/// Bytes before the varints: the magic, the checksum, then the object id.
 ///
-/// v9 writes the payload length once, and the stored length only for a record that really is
-/// compressed. Sixteen bytes of a seventy-four byte header, on every page written.
-pub(super) const PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION: u8 = 9;
+/// There is one page record format, so no byte says which format this is and nothing here is
+/// version numbered. The magic already ends in a number; a later format changes the magic.
+pub(super) const PAGE_RECORD_FIXED_LEN: usize =
+    PAGE_RECORD_MAGIC.len() + PAGE_RECORD_CHECKSUM_LEN + 8;
 
-/// The version that stopped giving every number a full 64 bits.
+/// The shortest header: every varint one byte, plus the compression codec.
 ///
-/// v9 spent 8 bytes on a band id that is almost always 0 and 8 on a page id that fits in two, so
-/// most of a header was leading zeroes. v10 writes those as varints. The object id is deliberately
-/// NOT one of them: object ids here are hashes, so they occupy the whole 64 bits and a varint
-/// costs 9 or 10 bytes for them, which would make the header BIGGER. It stays fixed width.
-pub(super) const PAGE_RECORD_VARINT_HEADER_VERSION: u8 = 10;
-
-/// Where the v10 varints start: magic, version, reserved, header length, checksum, object id.
-pub(super) const PAGE_RECORD_V10_FIXED_LEN: usize =
-    8 + 1 + 1 + 2 + PAGE_RECORD_CHECKSUM_COMPACT_LEN + 8;
-
-/// Where the checksum sits in a v10 record.
-///
-/// v9 put it at 20, after a fixed-width payload length. v10 writes that length as a varint, which
-/// has to come after everything fixed, so the checksum moved up to where the length used to be.
-/// Named because two tests read the field by offset, and a literal there passes silently when the
-/// layout moves under it.
-pub(super) const PAGE_RECORD_V10_CHECKSUM_OFFSET: usize = 12;
-
-/// The shortest a v10 header can be: every varint one byte, plus the compression codec.
-pub(super) const PAGE_RECORD_V10_SMALLEST_HEADER_LEN: usize = PAGE_RECORD_V10_FIXED_LEN + 4 + 1;
-
-/// The shortest header any version writes.
-///
-/// The walks below use this to decide whether what is left of a slab can still be a record. It was
-/// the v1 header, which was the shortest until v9 stopped writing two lengths it could not
-/// disagree with -- and a v9 header is SHORTER than v1, because v1 carried a 32-byte digest where
-/// v9 carries an 8-byte checksum. Left at the v1 length, a scan treats a short v9 record as the end
-/// of the slab and a decode calls it a short header, which loses every record behind it.
-pub(super) const PAGE_RECORD_SMALLEST_HEADER_LEN: usize = {
-    let shortest = if PAGE_RECORD_V9_HEADER_LEN < PAGE_RECORD_V1_HEADER_LEN {
-        PAGE_RECORD_V9_HEADER_LEN
-    } else {
-        PAGE_RECORD_V1_HEADER_LEN
-    };
-    // v10 is shorter again, for the same reason v9 was shorter than v1.
-    if PAGE_RECORD_V10_SMALLEST_HEADER_LEN < shortest {
-        PAGE_RECORD_V10_SMALLEST_HEADER_LEN
-    } else {
-        shortest
-    }
-};
-
-/// v9 header for an uncompressed record: v8 without the repeated length and without the stored
-/// length.
-pub(super) const PAGE_RECORD_V9_HEADER_LEN: usize = PAGE_RECORD_HEADER_LEN - 16;
-
-/// v9 header for a compressed record: the stored length is the one thing the payload length does
-/// not give, so a compressed record still carries it.
-pub(super) const PAGE_RECORD_V9_COMPRESSED_HEADER_LEN: usize = PAGE_RECORD_HEADER_LEN - 8;
-
-/// Version at which the 32-byte checksum field switched from holding a full SHA-256 to
-/// holding a CRC32C.
-///
-/// The digest is computed per page record on the synchronous write path, before the
-/// durability barrier, and a cryptographic hash is the wrong tool for it: nothing here is
-/// defending against a forged page, only against a page that corrupted into something still
-/// decodable. CRC32C is what this design uses for exactly this. Records at
-/// version 6 and below keep verifying as SHA-256, so existing slabs read back unchanged.
-///
-/// The field stays 32 bytes wide even though CRC32C needs 4, because every subsequent header
-/// offset (page id, object id, routing bucket, band id, compression) is keyed off it. Keeping
-/// the width means v7 differs from v6 only in how those bytes are interpreted, rather than
-/// re-laying-out the header. The 28 unused bytes are written as zero and are worth reclaiming
-/// in a later format change that renumbers offsets deliberately.
-pub(super) const PAGE_RECORD_CHECKSUM_CRC32C_VERSION: u8 = 7;
-
-/// Width of the checksum field, unchanged across the switch.
-pub(super) const PAGE_RECORD_CHECKSUM_LEN: usize = 32;
-
-/// Marker used in the checksum field's tail so a v7 record is self-describing on inspection.
-const PAGE_RECORD_CHECKSUM_CRC32C: &[u8; 4] = b"C32C";
-pub(super) const PAGE_RECORD_V1_HEADER_LEN: usize = 8 + 1 + 1 + 2 + 8 + 8 + 32;
-pub(super) const PAGE_RECORD_V2_HEADER_LEN: usize = PAGE_RECORD_V1_HEADER_LEN + 8;
-pub(super) const PAGE_RECORD_V3_HEADER_LEN: usize = PAGE_RECORD_V2_HEADER_LEN + 8;
-pub(super) const PAGE_RECORD_V4_HEADER_LEN: usize = PAGE_RECORD_V3_HEADER_LEN + 8;
-pub(super) const PAGE_RECORD_V5_HEADER_LEN: usize = PAGE_RECORD_V4_HEADER_LEN + 8;
-pub(super) const PAGE_RECORD_V7_HEADER_LEN: usize = PAGE_RECORD_V5_HEADER_LEN + 16;
-/// Version at which the checksum field shrank to the four bytes a CRC32C needs.
-///
-/// v7 kept it 32 bytes wide so that every later offset stayed where v6 had it, and wrote the
-/// other 28 as zero. This reclaims them: the field is 4 bytes, and every field after it moves
-/// down by 28. Records at v7 and below keep their old layout, so existing slabs read unchanged.
-pub(super) const PAGE_RECORD_CHECKSUM_COMPACT_VERSION: u8 = 8;
-/// Width of the checksum field at v8 and later: the CRC32C, and the marker that follows it.
-///
-/// Four bytes would hold the checksum, and the version byte already says which algorithm it is.
-/// The marker is kept anyway because it is what makes the field self-describing to someone
-/// reading a slab by hand, which the version byte does not do for a hexdump. Reclaiming 24 of the
-/// 28 spare bytes and keeping that is the better trade.
-pub(super) const PAGE_RECORD_CHECKSUM_COMPACT_LEN: usize = 8;
-/// Bytes of interior padding v7 carried: three after the routing-bucket flag and seven after the
-/// compression byte, both there to keep the 8-byte fields behind them aligned at offsets v6 had
-/// fixed. v8 renumbers anyway, so it places those fields directly and keeps the ten.
-pub(super) const PAGE_RECORD_V7_INTERIOR_PADDING: usize = 10;
-pub(super) const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V7_HEADER_LEN
-    - (PAGE_RECORD_CHECKSUM_LEN - PAGE_RECORD_CHECKSUM_COMPACT_LEN)
-    - PAGE_RECORD_V7_INTERIOR_PADDING;
+/// The slab walks use this to decide whether what is left can still be a record. Set too high, a
+/// walk reads a short record as the end of the slab and loses every record behind it -- which has
+/// happened twice, each time a new header came out shorter than the constant said was possible.
+pub(super) const PAGE_RECORD_SMALLEST_HEADER_LEN: usize = PAGE_RECORD_FIXED_LEN + 4 + 1;
 
 /// The compression codec byte of a record this code writes, found by walking the header.
 ///
@@ -133,7 +47,7 @@ pub(super) const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V7_HEADER_LEN
 /// name any more and a caller that wants the byte has to step over the varints to reach it.
 #[cfg(test)]
 pub(super) fn page_record_compression_byte(record: &[u8]) -> u8 {
-    let mut cursor = PAGE_RECORD_V10_FIXED_LEN;
+    let mut cursor = PAGE_RECORD_FIXED_LEN;
     for _ in 0..4 {
         while record[cursor] & 0x80 != 0 {
             cursor += 1;
@@ -195,27 +109,6 @@ fn read_page_record_varint(
         }
     }
 }
-
-/// Where the fields after the checksum begin, for a record at `version`.
-///
-/// Every offset past the checksum is this plus a fixed step, so the two layouts differ in one
-/// number rather than in eight literals.
-fn page_record_checksum_len(version: u8) -> usize {
-    if version >= PAGE_RECORD_CHECKSUM_COMPACT_VERSION {
-        PAGE_RECORD_CHECKSUM_COMPACT_LEN
-    } else {
-        PAGE_RECORD_CHECKSUM_LEN
-    }
-}
-
-fn header_body_offset(version: u8) -> usize {
-    let checksum_len = page_record_checksum_len(version);
-    if version >= PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION {
-        // magic, version, reserved, header length, ONE payload length, then the checksum.
-        return 20 + checksum_len;
-    }
-    28 + checksum_len
-}
 pub(super) const PAGE_RECORD_COMPRESSION_MIN_BYTES: usize = 256;
 pub(super) const PAGE_RECORD_COMPRESSION_LEVEL: i32 = 0;
 pub(super) const PAGE_RECORD_COMPRESSION_NONE: u8 = 0;
@@ -241,13 +134,10 @@ pub(super) enum PageRecordCompression {
 
 #[derive(Debug, Clone, Copy)]
 struct PageRecordHeader {
-    /// Record format version, retained so the checksum is verified with the algorithm the
-    /// record was written with.
-    version: u8,
     header_len: usize,
     payload_len: usize,
     pub(super) stored_len: usize,
-    expected_sha256: [u8; 32],
+    checksum: [u8; PAGE_RECORD_CHECKSUM_LEN],
     page_id: Option<u64>,
     object_id: Option<u64>,
     routing_bucket: Option<u32>,
@@ -289,13 +179,9 @@ pub(super) fn encode_page_record(
     let stored_len = stored_payload.len();
     let compressed = compression != PageRecordCompression::None;
     let mut record =
-        Vec::with_capacity(PAGE_RECORD_V10_SMALLEST_HEADER_LEN + 8 + stored_payload.len());
+        Vec::with_capacity(PAGE_RECORD_SMALLEST_HEADER_LEN + 8 + stored_payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
-    record.push(PAGE_RECORD_VERSION);
-    record.push(0);
-    // Backfilled below: the varints are what decide the length, so it is not known yet.
-    record.extend_from_slice(&0_u16.to_le_bytes());
-    record.extend_from_slice(&checksum_field[..PAGE_RECORD_CHECKSUM_COMPACT_LEN]);
+    record.extend_from_slice(&checksum_field);
     // Fixed width: an object id is a hash, so it fills its 64 bits and a varint costs more.
     record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
     put_page_record_varint(&mut record, payload.len() as u64);
@@ -314,8 +200,6 @@ pub(super) fn encode_page_record(
         // Only a compressed record needs this: uncompressed, it is the payload length again.
         put_page_record_varint(&mut record, stored_len as u64);
     }
-    let header_len = record.len();
-    record[10..12].copy_from_slice(&(header_len as u16).to_le_bytes());
     record.extend_from_slice(&stored_payload);
     Ok(EncodedPageRecord {
         bytes: record,
@@ -427,7 +311,7 @@ pub(super) fn decode_page_record(
         ));
     }
     let payload = decode_page_record_payload(&record[header.header_len..], &header, address)?;
-    verify_page_record_checksum(&payload, &header.expected_sha256, header.version, address)?;
+    verify_page_record_checksum(&payload, &header.checksum, address)?;
     Ok(DecodedPageRecord {
         payload,
         logical_len: header.payload_len,
@@ -494,7 +378,7 @@ pub(super) fn logical_range_from_slab(
             &header,
             &address,
         )?;
-        verify_page_record_checksum(&payload, &header.expected_sha256, header.version, &address)?;
+        verify_page_record_checksum(&payload, &header.checksum, &address)?;
         if header.compression == PageRecordCompression::Zstd {
             compressed_records_read += 1;
         }
@@ -518,33 +402,29 @@ pub(super) fn logical_range_from_slab(
     })
 }
 
-/// Reads a v10 header, whose fields are varints and so can only be read in order.
+/// Reads a header, whose fields are varints and so can only be read in order.
 ///
-/// The declared header length is checked against where the walk ended rather than against a
-/// constant: with varints there is no constant to check it against, and a walk that ends anywhere
-/// else means the header did not write what it said it wrote.
-fn parse_varint_page_record_header(
+/// There is no declared header length to check against: the header ends where the walk ends.
+fn parse_page_record_header(
     record: &[u8],
     address: &BlockAddress,
 ) -> Result<PageRecordHeader, BlockStoreError> {
-    let version = record[8];
-    if record.len() < PAGE_RECORD_V10_SMALLEST_HEADER_LEN {
+    if !record.starts_with(PAGE_RECORD_MAGIC) {
+        return Err(corrupt_page_envelope(address, "bad magic"));
+    }
+    if record.len() < PAGE_RECORD_SMALLEST_HEADER_LEN {
         return Err(corrupt_page_envelope(address, "short header"));
     }
-    let header_len = u16::from_le_bytes(
-        record[10..12]
-            .try_into()
-            .expect("page envelope header length slice"),
-    ) as usize;
-    let mut expected_sha256 = [0_u8; PAGE_RECORD_CHECKSUM_LEN];
-    expected_sha256[..PAGE_RECORD_CHECKSUM_COMPACT_LEN]
-        .copy_from_slice(&record[12..12 + PAGE_RECORD_CHECKSUM_COMPACT_LEN]);
+    let checksum_at = PAGE_RECORD_CHECKSUM_OFFSET;
+    let checksum = record[checksum_at..checksum_at + PAGE_RECORD_CHECKSUM_LEN]
+        .try_into()
+        .expect("page envelope checksum slice");
     let object_id = u64::from_le_bytes(
-        record[20..PAGE_RECORD_V10_FIXED_LEN]
+        record[checksum_at + PAGE_RECORD_CHECKSUM_LEN..PAGE_RECORD_FIXED_LEN]
             .try_into()
             .expect("page envelope object id slice"),
     );
-    let mut cursor = PAGE_RECORD_V10_FIXED_LEN;
+    let mut cursor = PAGE_RECORD_FIXED_LEN;
     let payload_len =
         read_page_record_varint(record, &mut cursor, address, "payload length")? as usize;
     let page_id = read_page_record_varint(record, &mut cursor, address, "page id")?;
@@ -565,17 +445,10 @@ fn parse_varint_page_record_header(
         }
     };
     let stored_len = if compression == PageRecordCompression::None {
-        // Not written: uncompressed, the stored bytes ARE the payload bytes.
         payload_len
     } else {
         read_page_record_varint(record, &mut cursor, address, "stored length")? as usize
     };
-    if header_len != cursor {
-        return Err(corrupt_page_envelope(
-            address,
-            format!("unexpected header length {header_len}"),
-        ));
-    }
     let routing_bucket = match routing {
         0 => None,
         encoded => Some(u32::try_from(encoded - 1).map_err(|_| {
@@ -583,184 +456,14 @@ fn parse_varint_page_record_header(
         })?),
     };
     Ok(PageRecordHeader {
-        version,
-        header_len,
+        header_len: cursor,
         payload_len,
         stored_len,
-        expected_sha256,
+        checksum,
         page_id: Some(page_id),
         object_id: (object_id != 0).then_some(object_id),
         routing_bucket,
         band_id: Some(band_id),
-        compression,
-    })
-}
-
-fn parse_page_record_header(
-    record: &[u8],
-    address: &BlockAddress,
-) -> Result<PageRecordHeader, BlockStoreError> {
-    let version = record[8];
-    if !matches!(version, 1..=PAGE_RECORD_VERSION) {
-        return Err(corrupt_page_envelope(
-            address,
-            format!("unsupported version {version}"),
-        ));
-    }
-    if version >= PAGE_RECORD_VARINT_HEADER_VERSION {
-        return parse_varint_page_record_header(record, address);
-    }
-    let header_len = u16::from_le_bytes(
-        record[10..12]
-            .try_into()
-            .expect("page envelope header length slice"),
-    ) as usize;
-    let expected_header_len = if version == 1 {
-        PAGE_RECORD_V1_HEADER_LEN
-    } else if version == 2 {
-        PAGE_RECORD_V2_HEADER_LEN
-    } else if version == 3 {
-        PAGE_RECORD_V3_HEADER_LEN
-    } else if version == 4 {
-        PAGE_RECORD_V4_HEADER_LEN
-    } else if version == 5 {
-        PAGE_RECORD_V5_HEADER_LEN
-    } else if version < PAGE_RECORD_CHECKSUM_COMPACT_VERSION {
-        PAGE_RECORD_V7_HEADER_LEN
-    } else if version < PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION {
-        PAGE_RECORD_HEADER_LEN
-    } else if header_len == PAGE_RECORD_V9_COMPRESSED_HEADER_LEN {
-        // A compressed v9 record carries the stored length; an uncompressed one does not, so this
-        // version has two header lengths and the record says which it wrote.
-        PAGE_RECORD_V9_COMPRESSED_HEADER_LEN
-    } else {
-        PAGE_RECORD_V9_HEADER_LEN
-    };
-    if header_len != expected_header_len {
-        return Err(corrupt_page_envelope(
-            address,
-            format!("unexpected header length {header_len}"),
-        ));
-    }
-    if record.len() < expected_header_len {
-        return Err(corrupt_page_envelope(address, "short header"));
-    }
-    let payload_len = u64::from_le_bytes(
-        record[12..20]
-            .try_into()
-            .expect("page envelope payload length slice"),
-    ) as usize;
-    if version < PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION {
-        let raw_len = u64::from_le_bytes(
-            record[20..28]
-                .try_into()
-                .expect("page envelope raw length slice"),
-        ) as usize;
-        if raw_len != payload_len {
-            return Err(corrupt_page_envelope(
-                address,
-                format!("raw length {raw_len} does not match payload length {payload_len}"),
-            ));
-        }
-    }
-    // Every offset below is stated as a step from where the checksum ends, so v8's narrower
-    // field moves them all by one number instead of eight.
-    let body = header_body_offset(version);
-    let mut expected_sha256 = [0_u8; PAGE_RECORD_CHECKSUM_LEN];
-    let checksum_len = page_record_checksum_len(version);
-    expected_sha256[..checksum_len].copy_from_slice(&record[body - checksum_len..body]);
-    let expected_sha256 = expected_sha256;
-    let page_id = if version >= 2 {
-        Some(u64::from_le_bytes(
-            record[body..body + 8]
-                .try_into()
-                .expect("page envelope page id slice"),
-        ))
-    } else {
-        None
-    };
-    let object_id = if version >= 3 {
-        let object_id = u64::from_le_bytes(
-            record[body + 8..body + 16]
-                .try_into()
-                .expect("page envelope object id slice"),
-        );
-        (object_id != 0).then_some(object_id)
-    } else {
-        None
-    };
-    // v7 padded after the flag and after the compression byte; v8 does not.
-    let flag_pad = if version >= PAGE_RECORD_CHECKSUM_COMPACT_VERSION { 0 } else { 3 };
-    let compression_pad = if version >= PAGE_RECORD_CHECKSUM_COMPACT_VERSION { 0 } else { 7 };
-    let routing_at = body + 17 + flag_pad;
-    let band_at = routing_at + 4;
-    let compression_at = band_at + 8;
-    let stored_len_at = compression_at + 1 + compression_pad;
-    let routing_bucket = if version >= 4 {
-        if record[body + 16] == 1 {
-            Some(u32::from_le_bytes(
-                record[routing_at..routing_at + 4]
-                    .try_into()
-                    .expect("page envelope routing slot slice"),
-            ))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let band_id = if version >= 5 {
-        Some(u64::from_le_bytes(
-            record[band_at..band_at + 8]
-                .try_into()
-                .expect("page envelope band id slice"),
-        ))
-    } else {
-        None
-    };
-    let (compression, stored_len) = if version >= 6 {
-        let compression = match record[compression_at] {
-            PAGE_RECORD_COMPRESSION_NONE => PageRecordCompression::None,
-            PAGE_RECORD_COMPRESSION_ZSTD => PageRecordCompression::Zstd,
-            codec => {
-                return Err(corrupt_page_envelope(
-                    address,
-                    format!("unsupported compression codec {codec}"),
-                ));
-            }
-        };
-        let stored_len = if version >= PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION
-            && compression == PageRecordCompression::None
-        {
-            // Not written: uncompressed, the stored bytes ARE the payload bytes.
-            payload_len
-        } else {
-            u64::from_le_bytes(
-                record[stored_len_at..stored_len_at + 8]
-                    .try_into()
-                    .expect("page envelope stored length slice"),
-            ) as usize
-        };
-        (compression, stored_len)
-    } else {
-        (PageRecordCompression::None, payload_len)
-    };
-    if compression == PageRecordCompression::None && stored_len != payload_len {
-        return Err(corrupt_page_envelope(
-            address,
-            format!("stored length {stored_len} does not match payload length {payload_len}"),
-        ));
-    }
-    Ok(PageRecordHeader {
-        version,
-        header_len,
-        payload_len,
-        stored_len,
-        expected_sha256,
-        page_id,
-        object_id,
-        routing_bucket,
-        band_id,
         compression,
     })
 }
@@ -849,50 +552,26 @@ fn decode_page_record_payload(
 /// Build the 32-byte checksum field for a new (v7) record: CRC32C little-endian in the first
 /// four bytes, a marker so the field is self-describing, then zero padding.
 fn page_record_checksum_field(payload: &[u8]) -> [u8; PAGE_RECORD_CHECKSUM_LEN] {
-    let mut field = [0_u8; PAGE_RECORD_CHECKSUM_LEN];
-    field[..4].copy_from_slice(&crate::checksum::crc32c(payload).to_le_bytes());
-    field[4..8].copy_from_slice(PAGE_RECORD_CHECKSUM_CRC32C);
-    field
+    crate::checksum::crc32c(payload).to_le_bytes()
 }
 
-/// Verify a page record's payload against its stored checksum field.
-///
-/// `version` selects the algorithm: v7 and later carry a CRC32C, v6 and earlier a full
-/// SHA-256. Dispatching on the record's own version (rather than sniffing the field) means an
-/// old slab always verifies the way it was written.
+/// Verify a page record's payload against its stored CRC32C.
 fn verify_page_record_checksum(
     payload: &[u8],
     expected_checksum: &[u8; PAGE_RECORD_CHECKSUM_LEN],
-    version: u8,
     address: &BlockAddress,
 ) -> Result<(), BlockStoreError> {
-    let (expected, actual) = if version >= PAGE_RECORD_CHECKSUM_CRC32C_VERSION {
-        let stored = u32::from_le_bytes(
-            expected_checksum[..4]
-                .try_into()
-                .expect("page envelope crc32c slice"),
-        );
-        let actual = crate::checksum::crc32c(payload);
-        if stored == actual {
-            return Ok(());
-        }
-        (format!("{stored:08x}"), format!("{actual:08x}"))
-    } else {
-        let actual_sha256 = Sha256::digest(payload);
-        if &actual_sha256[..] == expected_checksum {
-            return Ok(());
-        }
-        (
-            hex::encode(expected_checksum),
-            hex::encode(actual_sha256),
-        )
-    };
+    let stored = u32::from_le_bytes(*expected_checksum);
+    let actual = crate::checksum::crc32c(payload);
+    if stored == actual {
+        return Ok(());
+    }
     Err(BlockStoreError::ChecksumMismatch {
         block_slab_id: address.block_slab_id,
         offset: address.offset,
         length: address.length,
-        expected,
-        actual,
+        expected: format!("{stored:08x}"),
+        actual: format!("{actual:08x}"),
     })
 }
 
@@ -979,17 +658,11 @@ pub(super) fn summarize_slab(
     Ok(summary)
 }
 
-/// The widest header any supported version writes.
+/// The widest a header can be.
 ///
-/// v7 and v8 are the same width (v8 reclaimed the checksum's spare bytes but placed fields the
-/// interior padding used to align), so this covers every version. Taking the larger of the two
-/// keeps it correct if either constant moves.
-const PAGE_RECORD_WIDEST_HEADER_LEN: usize = if PAGE_RECORD_HEADER_LEN > PAGE_RECORD_V7_HEADER_LEN
-{
-    PAGE_RECORD_HEADER_LEN
-} else {
-    PAGE_RECORD_V7_HEADER_LEN
-};
+/// Every varint at its maximum, plus the compression codec and a stored length. Only the scan
+/// uses it, to read a prefix big enough to hold any header before parsing one.
+const PAGE_RECORD_WIDEST_HEADER_LEN: usize = PAGE_RECORD_FIXED_LEN + 5 * 10 + 1;
 
 /// Read buffer for the page-id scan.
 ///
@@ -1221,253 +894,29 @@ fn record_slab_inspection_error(
     report.first_error = Some(error);
 }
 
+/// The page record format, which there is only one of.
 #[cfg(test)]
-mod crc32c_switch_tests {
+mod page_record_format_tests {
     use super::*;
 
     fn address() -> BlockAddress {
-        BlockAddress::from_parts(1, 0, 0, None, None, None, None, None)
-    }
-
-    /// Rewrite a freshly encoded record as if it had been written by the previous format:
-    /// version 6, with a full SHA-256 in the checksum field. The rest of the layout is
-    /// identical, which is the whole reason the field kept its width.
-    /// Build a record in the pre-v8 layout: 32-byte checksum field, 108-byte header.
-    ///
-    /// Written out by hand on purpose. Downgrading a record this code just encoded would test
-    /// the new layout wearing an old version number; a slab written last year is these bytes.
-    fn encode_v7_layout(
-        payload: &[u8],
-        version: u8,
-        page_id: u64,
-        object_id: Option<u64>,
-        routing_bucket: Option<u32>,
-        band_id: u64,
-    ) -> Vec<u8> {
-        let mut record = Vec::new();
-        record.extend_from_slice(PAGE_RECORD_MAGIC);
-        record.push(version);
-        record.push(0);
-        record.extend_from_slice(&(PAGE_RECORD_V7_HEADER_LEN as u16).to_le_bytes());
-        record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-        record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-        let mut checksum = [0_u8; PAGE_RECORD_CHECKSUM_LEN];
-        if version >= PAGE_RECORD_CHECKSUM_CRC32C_VERSION {
-            checksum[..4].copy_from_slice(&crate::checksum::crc32c(payload).to_le_bytes());
-            checksum[4..8].copy_from_slice(PAGE_RECORD_CHECKSUM_CRC32C);
-        } else {
-            checksum.copy_from_slice(&Sha256::digest(payload));
-        }
-        record.extend_from_slice(&checksum);
-        record.extend_from_slice(&page_id.to_le_bytes());
-        record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
-        record.push(u8::from(routing_bucket.is_some()));
-        record.extend_from_slice(&[0, 0, 0]);
-        record.extend_from_slice(&routing_bucket.unwrap_or_default().to_le_bytes());
-        record.extend_from_slice(&band_id.to_le_bytes());
-        record.push(PAGE_RECORD_COMPRESSION_NONE);
-        record.extend_from_slice(&[0; 7]);
-        record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-        record.extend_from_slice(payload);
-        assert_eq!(
-            record.len(),
-            PAGE_RECORD_V7_HEADER_LEN + payload.len(),
-            "the fixture must be the old layout, not the new one"
-        );
-        record
-    }
-
-    /// Build a record in the v9 layout: compact checksum, one payload length, fixed-width
-    /// numbers, 58-byte header.
-    ///
-    /// Written out by hand for the reason the v7 fixture is: a store on disk today is these
-    /// bytes, and v9 became a read-only format the moment v10 started writing varints. Nothing
-    /// else covers it, so without this the compatibility branch every existing store depends on
-    /// is exercised by no test at all.
-    fn encode_v9_layout(
-        payload: &[u8],
-        page_id: u64,
-        object_id: Option<u64>,
-        routing_bucket: Option<u32>,
-        band_id: u64,
-    ) -> Vec<u8> {
-        let mut record = Vec::new();
-        record.extend_from_slice(PAGE_RECORD_MAGIC);
-        record.push(PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION);
-        record.push(0);
-        record.extend_from_slice(&(PAGE_RECORD_V9_HEADER_LEN as u16).to_le_bytes());
-        record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-        record.extend_from_slice(&crate::checksum::crc32c(payload).to_le_bytes());
-        record.extend_from_slice(PAGE_RECORD_CHECKSUM_CRC32C);
-        record.extend_from_slice(&page_id.to_le_bytes());
-        record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
-        record.push(u8::from(routing_bucket.is_some()));
-        record.extend_from_slice(&routing_bucket.unwrap_or_default().to_le_bytes());
-        record.extend_from_slice(&band_id.to_le_bytes());
-        record.push(PAGE_RECORD_COMPRESSION_NONE);
-        record.extend_from_slice(payload);
-        assert_eq!(
-            record.len(),
-            PAGE_RECORD_V9_HEADER_LEN + payload.len(),
-            "the fixture must be the v9 layout, not the one this code writes now"
-        );
-        record
-    }
-
-    /// A record written at v9, with every number full width, still reads under a writer that
-    /// now writes varints.
-    #[test]
-    fn v9_records_still_decode_every_field() {
-        let payload = b"a page written before the header used varints";
-        let page_id: u64 = 0x1122_3344_5566_7788;
-        let object_id: u64 = 0x99AA_BBCC_DDEE_F001;
-        let routing_bucket: u32 = 0x0BAD_C0DE;
-        let band_id: u64 = 0x0102_0304_0506_0708;
-
-        let record = encode_v9_layout(
-            payload,
-            page_id,
-            Some(object_id),
-            Some(routing_bucket),
-            band_id,
-        );
-        let header = parse_page_record_header(&record, &address()).expect("v9 record parses");
-        assert_eq!(header.version, PAGE_RECORD_NO_REDUNDANT_LENGTHS_VERSION);
-        assert_eq!(header.header_len, PAGE_RECORD_V9_HEADER_LEN);
-        assert_eq!(header.page_id, Some(page_id), "v9 page id");
-        assert_eq!(header.object_id, Some(object_id), "v9 object id");
-        assert_eq!(header.routing_bucket, Some(routing_bucket), "v9 routing bucket");
-        assert_eq!(header.band_id, Some(band_id), "v9 band id");
-        assert_eq!(header.payload_len, payload.len());
-        assert_eq!(header.stored_len, payload.len());
-        let decoded = decode_page_record(&record, &address()).expect("v9 record decodes");
-        assert_eq!(decoded.payload, payload, "v9 payload");
-    }
-
-    /// The same values written at v10 come back identical, so the two formats agree on meaning
-    /// and not merely on each parsing without error.
-    #[test]
-    fn v9_and_v10_read_back_the_same_fields() {
-        let payload = b"a page written before the header used varints";
-        let page_id: u64 = 0x1122_3344_5566_7788;
-        let object_id: u64 = 0x99AA_BBCC_DDEE_F001;
-        let routing_bucket: u32 = 0x0BAD_C0DE;
-        let band_id: u64 = 0x0102_0304_0506_0708;
-
-        let old = encode_v9_layout(
-            payload,
-            page_id,
-            Some(object_id),
-            Some(routing_bucket),
-            band_id,
-        );
-        let new = encode_page_record(
-            payload,
-            page_id,
-            Some(object_id),
-            Some(routing_bucket),
-            band_id,
-            BlockStoreOptions::default(),
-        )
-        .expect("encode");
-        let old_header = parse_page_record_header(&old, &address()).expect("v9 parses");
-        let new_header = parse_page_record_header(&new.bytes, &address()).expect("v10 parses");
-        assert_eq!(old_header.page_id, new_header.page_id);
-        assert_eq!(old_header.object_id, new_header.object_id);
-        assert_eq!(old_header.routing_bucket, new_header.routing_bucket);
-        assert_eq!(old_header.band_id, new_header.band_id);
-        assert_eq!(old_header.payload_len, new_header.payload_len);
-        assert_eq!(old_header.expected_sha256, new_header.expected_sha256);
-        assert!(
-            new_header.header_len < old_header.header_len,
-            "v10 must be the smaller header: {} vs {}",
-            new_header.header_len,
-            old_header.header_len
-        );
-    }
-
-    /// A record written before the checksum field shrank still reads, fields and all.
-    #[test]
-    fn pre_v8_records_still_decode_every_field() {
-        let payload = b"a page written before the checksum field shrank";
-        let page_id: u64 = 0x1122_3344_5566_7788;
-        let object_id: u64 = 0x99AA_BBCC_DDEE_F001;
-        let routing_bucket: u32 = 0x0BAD_C0DE;
-        let band_id: u64 = 0x0102_0304_0506_0708;
-
-        for version in [6_u8, 7] {
-            let record = encode_v7_layout(
-                payload,
-                version,
-                page_id,
-                Some(object_id),
-                Some(routing_bucket),
-                band_id,
-            );
-            let header =
-                parse_page_record_header(&record, &address()).expect("old record parses");
-            assert_eq!(header.version, version);
-            assert_eq!(header.page_id, Some(page_id), "v{version} page id");
-            assert_eq!(header.object_id, Some(object_id), "v{version} object id");
-            assert_eq!(
-                header.routing_bucket,
-                Some(routing_bucket),
-                "v{version} routing bucket"
-            );
-            assert_eq!(header.band_id, Some(band_id), "v{version} band id");
-            let decoded = decode_page_record(&record, &address()).expect("old record decodes");
-            assert_eq!(decoded.payload, payload, "v{version} payload");
+        BlockAddress {
+            block_slab_id: 1,
+            offset: 0,
+            length: 0,
+            ..Default::default()
         }
     }
 
-    /// And a corrupted old record is still refused, at both checksum algorithms.
-    #[test]
-    fn a_corrupted_pre_v8_record_is_still_rejected() {
-        let payload = b"payload that will be corrupted after the fact";
-        for version in [6_u8, 7] {
-            let mut record = encode_v7_layout(payload, version, 1, None, None, 0);
-            let last = record.len() - 1;
-            record[last] ^= 0xFF;
-            assert!(
-                decode_page_record(&record, &address()).is_err(),
-                "v{version} corruption must be refused"
-            );
-        }
-    }
-
-    fn downgrade_to_v6_sha256(record: &mut [u8], payload: &[u8]) {
-        record[8] = 6;
-        let digest = Sha256::digest(payload);
-        record[28..60].copy_from_slice(&digest);
-    }
-
-    #[test]
-    fn new_records_are_written_at_the_crc32c_version() {
-        let payload = b"page payload that is long enough to be interesting";
-        let encoded = encode_page_record(payload, 7, None, None, 3, BlockStoreOptions::default())
-            .expect("encode");
-        assert_eq!(encoded.bytes[8], PAGE_RECORD_VERSION);
-        // CRC32C in the four bytes the field now is. The marker that followed it existed to
-        // make a 32-byte field self-describing; at v8 the field is exactly the checksum and the
-        // version byte says which algorithm it is.
-        let at = PAGE_RECORD_V10_CHECKSUM_OFFSET;
-        let stored = u32::from_le_bytes(encoded.bytes[at..at + 4].try_into().unwrap());
-        assert_eq!(stored, crate::checksum::crc32c(payload));
-    }
-
-    /// Every header field comes back as it went in, each with a value that could not be
-    /// mistaken for another field's.
+    /// Every header field comes back as it went in, each with a value that could not be mistaken
+    /// for another field's.
     ///
-    /// The existing round trips assert only the payload, and the payload is found through
-    /// `header_len`, which the record carries. So an offset error anywhere after the checksum
-    /// leaves the payload correct and reads page id, object id, routing bucket or band id out of
-    /// the wrong bytes -- silently. This is the test that would notice, and it is the safety net
-    /// any renumbering of those offsets needs.
+    /// The payload is found by walking the header, so an offset error anywhere leaves the payload
+    /// correct and reads page id, object id, routing bucket or band id out of the wrong bytes --
+    /// silently. This is the test that notices.
     #[test]
     fn every_header_field_survives_a_round_trip() {
         let payload = b"header field round trip payload";
-        // Distinct, non-overlapping, and none of them zero or equal to a length: a value read
-        // from a neighbouring field cannot coincidentally match.
         let page_id: u64 = 0x1122_3344_5566_7788;
         let object_id: u64 = 0x99AA_BBCC_DDEE_F001;
         let routing_bucket: u32 = 0x0BAD_C0DE;
@@ -1482,78 +931,78 @@ mod crc32c_switch_tests {
             BlockStoreOptions::default(),
         )
         .expect("encode");
-
-        let header = parse_page_record_header(&encoded.bytes, &address()).expect("parse header");
+        let header = parse_page_record_header(&encoded.bytes, &address()).expect("parse");
         assert_eq!(header.page_id, Some(page_id), "page id");
         assert_eq!(header.object_id, Some(object_id), "object id");
         assert_eq!(header.routing_bucket, Some(routing_bucket), "routing bucket");
         assert_eq!(header.band_id, Some(band_id), "band id");
-        assert_eq!(header.payload_len as usize, payload.len(), "payload length");
-
-        let decoded = decode_page_record(&encoded.bytes, &address()).expect("decode");
-        assert_eq!(decoded.payload, payload, "payload");
-    }
-
-    #[test]
-    fn crc32c_records_round_trip() {
-        let payload = b"round trip payload";
-        let encoded = encode_page_record(payload, 1, None, None, 0, BlockStoreOptions::default())
-            .expect("encode");
+        assert_eq!(header.payload_len, payload.len());
+        assert_eq!(header.stored_len, payload.len());
         let decoded = decode_page_record(&encoded.bytes, &address()).expect("decode");
         assert_eq!(decoded.payload, payload);
     }
 
-    /// The compatibility case that matters: slabs written before the switch must still read.
-
-
+    /// An absent routing bucket comes back absent rather than as zero.
     #[test]
-    fn a_corrupted_v7_record_is_rejected() {
-        let payload = b"payload protected by crc32c";
-        let mut encoded =
-            encode_page_record(payload, 4, None, None, 0, BlockStoreOptions::default())
+    fn an_absent_routing_bucket_stays_absent() {
+        let payload = b"no routing bucket here";
+        let encoded =
+            encode_page_record(payload, 7, None, None, 0, BlockStoreOptions::default())
                 .expect("encode");
-        let last = encoded.bytes.len() - 1;
-        encoded.bytes[last] ^= 0xff;
-        assert!(matches!(
-            decode_page_record(&encoded.bytes, &address()),
-            Err(BlockStoreError::ChecksumMismatch { .. })
-        ));
+        let header = parse_page_record_header(&encoded.bytes, &address()).expect("parse");
+        assert_eq!(header.routing_bucket, None);
+        assert_eq!(header.object_id, None);
+        assert_eq!(header.band_id, Some(0));
     }
 
-    /// A record must NOT be accepted on the strength of a checksum the wrong algorithm would
-    /// have produced -- the version alone selects the algorithm.
-    ///
-    /// Built in the pre-v8 layout so the header length agrees with the version it claims. Taking
-    /// a record this code encodes today and stamping an old version byte on it no longer tests
-    /// this: the header would be 84 bytes while v6 declares 108, so it is refused as a corrupt
-    /// envelope before any checksum is looked at, and the assertion would pass without the
-    /// algorithm ever being selected.
+    /// The checksum is a CRC32C of the payload, in the four bytes after the magic.
     #[test]
-    fn the_version_selects_the_algorithm_not_the_field_contents() {
-        let payload = b"version selects the algorithm";
-        // A v7 record: its field holds a CRC32C.
-        let mut record = encode_v7_layout(payload, 7, 5, None, None, 0);
-        // Now claim it is v6, which verifies as SHA-256. The bytes in the field are a CRC32C,
-        // so verification must fail -- and reach the checksum to do so.
-        record[8] = 6;
-        assert!(
-            matches!(
-                decode_page_record(&record, &address()),
-                Err(BlockStoreError::ChecksumMismatch { .. })
-            ),
-            "a v6 claim over a crc32c field must fail SHA-256 verification"
+    fn the_checksum_is_a_crc32c_of_the_payload() {
+        let payload = b"page payload that is long enough to be interesting";
+        let encoded =
+            encode_page_record(payload, 7, None, None, 3, BlockStoreOptions::default())
+                .expect("encode");
+        let at = PAGE_RECORD_CHECKSUM_OFFSET;
+        let stored = u32::from_le_bytes(
+            encoded.bytes[at..at + PAGE_RECORD_CHECKSUM_LEN]
+                .try_into()
+                .unwrap(),
         );
+        assert_eq!(stored, crate::checksum::crc32c(payload));
+        assert_eq!(PAGE_RECORD_CHECKSUM_LEN, 4, "the field is the checksum, nothing more");
+    }
 
-        // And the other direction: a v6 record's SHA-256 must not satisfy a v7 CRC32C read.
-        let mut other = encode_v7_layout(payload, 6, 5, None, None, 0);
-        other[8] = 7;
+    /// A record whose payload was altered after the fact is refused.
+    #[test]
+    fn a_corrupted_record_is_rejected() {
+        let payload = b"payload that will be corrupted after the fact";
+        let mut encoded =
+            encode_page_record(payload, 1, None, None, 0, BlockStoreOptions::default())
+                .expect("encode");
+        let last = encoded.bytes.len() - 1;
+        encoded.bytes[last] ^= 0xFF;
+        let err = decode_page_record(&encoded.bytes, &address()).expect_err("must be refused");
         assert!(
-            matches!(
-                decode_page_record(&other, &address()),
-                Err(BlockStoreError::ChecksumMismatch { .. })
-            ),
-            "a v7 claim over a sha256 field must fail crc32c verification"
+            matches!(err, BlockStoreError::ChecksumMismatch { .. }),
+            "expected a checksum mismatch, got {err:?}"
         );
+    }
+
+    /// A header that ends before its fields do is refused rather than read past.
+    #[test]
+    fn a_truncated_header_is_rejected() {
+        let payload = b"truncation payload";
+        let encoded =
+            encode_page_record(payload, 1, None, None, 0, BlockStoreOptions::default())
+                .expect("encode");
+        for keep in [0, PAGE_RECORD_FIXED_LEN, PAGE_RECORD_SMALLEST_HEADER_LEN - 1] {
+            let err = parse_page_record_header(&encoded.bytes[..keep], &address())
+                .expect_err("a short record must be refused");
+            assert!(
+                matches!(err, BlockStoreError::CorruptPageEnvelope { .. }),
+                "expected a corrupt envelope at {keep}, got {err:?}"
+            );
+        }
     }
 }
 
@@ -1564,11 +1013,10 @@ mod reused_zstd_context_tests {
 
     fn zstd_header(payload_len: usize, stored_len: usize) -> PageRecordHeader {
         PageRecordHeader {
-            version: PAGE_RECORD_VERSION,
-            header_len: PAGE_RECORD_HEADER_LEN,
+            header_len: PAGE_RECORD_SMALLEST_HEADER_LEN,
             payload_len,
             stored_len,
-            expected_sha256: [0_u8; 32],
+            checksum: [0_u8; PAGE_RECORD_CHECKSUM_LEN],
             page_id: Some(1),
             object_id: Some(1),
             routing_bucket: Some(0),
