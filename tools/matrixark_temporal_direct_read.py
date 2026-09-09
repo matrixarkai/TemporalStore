@@ -405,6 +405,24 @@ class _TemporalDirectReadMixin:
         "source_memory_selection_lossy_count",
     )
 
+    def _scan_record_fields(self) -> list[str] | None:
+        """The projection to ask for, or None for whole records.
+
+        OFF by default, and the reason is measured rather than cautious. The audited list keeps 47
+        of 59 fields -- about 80% of record bytes -- while the engine pays a set lookup per field
+        per record to apply it, which on a 2,954-record scan is ~174,000 lookups to save a fifth
+        of the payload. The 5.1x result that motivated projection used FOUR fields, a 96% cut,
+        where the saving dwarfs the filter.
+
+        So this ships able to project but not projecting: a deployment can turn it on with
+        MATRIXARK_SCAN_RECORD_FIELDS=1 and measure its own corpus, and the aggressive projection
+        this is really for becomes available once ranking moves into the engine and the caller
+        stops needing vector, embedding_meta and the provenance counters at all.
+        """
+        if not env_bool("MATRIXARK_SCAN_RECORD_FIELDS", False):
+            return None
+        return list(self.SCAN_RECORD_FIELDS)
+
     def _native_candidate_scan(
         self,
         *,
@@ -427,7 +445,7 @@ class _TemporalDirectReadMixin:
                 secondary_index_groups=[sorted(group) for group in (secondary_index_groups or [])],
                 selected_node_hashes=sorted(int(item) for item in (selected_node_hashes or set())),
                 record_statuses=sorted(record_statuses) if record_statuses else None,
-                record_fields=list(self.SCAN_RECORD_FIELDS),
+                record_fields=self._scan_record_fields(),
             )
         except Exception as exc:
             if native_candidate_prefilter_required(backend_label=self._backend_label()) and not getattr(self, "_native_context_pack_fallback_active", False):
