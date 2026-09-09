@@ -485,8 +485,17 @@ pub(super) fn compact_page_addresses<'a>(
                 "missing page bytes during compaction",
             )
         })?;
+        // Compaction REWRITES a block that already exists, so it keeps the id that block
+        // already has. A block id is an index inside its object: taking a fresh one here would
+        // give every block of a multi-block object the same index, and the index entries would
+        // collide -- which reads back as a reload losing rows.
         let new_address = page_store
-            .append_with_page_metadata(&bytes, address.object_id(), address.routing_bucket())
+            .append_block_of_object(
+                &bytes,
+                address.object_id(),
+                address.routing_bucket(),
+                address.page_id().unwrap_or_default() as u32,
+            )
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
         let _ = cache.put(
@@ -525,7 +534,12 @@ pub(super) fn compact_feature_page_addresses(
                 )
             })?;
         let new_address = page_store
-            .append_with_page_metadata(&bytes, old_address.object_id(), old_address.routing_bucket())
+            .append_block_of_object(
+                &bytes,
+                old_address.object_id(),
+                old_address.routing_bucket(),
+                old_address.page_id().unwrap_or_default() as u32,
+            )
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = cache.put(
             CacheKey::page_with_slot_generation(

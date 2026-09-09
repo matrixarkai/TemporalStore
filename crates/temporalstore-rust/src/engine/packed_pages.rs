@@ -205,6 +205,7 @@ pub(super) fn append_timestamped_kv_pages(
     routing_bucket: u32,
     async_storage: bool,
     promote_sync_writes: bool,
+    first_block_index: u32,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     append_timestamped_kv_pages_inner(
         cache,
@@ -217,6 +218,7 @@ pub(super) fn append_timestamped_kv_pages(
         async_storage,
         promote_sync_writes,
         None,
+        first_block_index,
     )
 }
 
@@ -236,6 +238,7 @@ pub(super) fn append_timestamped_kv_pages_keyed(
     async_storage: bool,
     promote_sync_writes: bool,
     identity: u64,
+    first_block_index: u32,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     append_timestamped_kv_pages_inner(
         cache,
@@ -248,6 +251,7 @@ pub(super) fn append_timestamped_kv_pages_keyed(
         async_storage,
         promote_sync_writes,
         Some(identity),
+        first_block_index,
     )
 }
 
@@ -263,6 +267,7 @@ fn append_timestamped_kv_pages_inner(
     async_storage: bool,
     promote_sync_writes: bool,
     identity: Option<u64>,
+    first_block_index: u32,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     let object_id = stable_page_object_id(shard_id, kind, key, None);
     let mut refs = Vec::new();
@@ -280,12 +285,12 @@ fn append_timestamped_kv_pages_inner(
         let writes: Vec<crate::block_store::BlockAppendRecord<'_>> = encoded_pages
             .iter()
             .enumerate()
-            .map(|(block_index, packed)| {
+            .map(|(chunk, packed)| {
                 (
                     packed.as_slice(),
                     Some(object_id),
                     Some(routing_bucket),
-                    block_index as u32,
+                    first_block_index.saturating_add(chunk as u32),
                 )
             })
             .collect();

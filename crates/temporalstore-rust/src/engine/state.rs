@@ -1585,6 +1585,40 @@ pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> S
     key
 }
 
+/// The next block index this object may use, which is one past the highest it holds.
+///
+/// A block id is an index INSIDE its object, which is what keeps it small. It must never be
+/// REUSED, and that is a different requirement from being small: this store keeps a rewritten
+/// block's predecessor live -- still referenced by the points it holds that were not rewritten --
+/// so an object numbering its new blocks from zero again would have two live blocks claiming the
+/// same position, and a reload would serve whichever it reached first.
+///
+/// Read from the blocks the object already has rather than from a counter, so it survives a
+/// restart without anything having to be persisted for it.
+pub(super) fn next_block_index_for_object(
+    bucket_index: &CoreIndex,
+    routing_bucket: u32,
+    model_id: &str,
+    object_key: &str,
+) -> u32 {
+    bucket_index
+        .bucket_map
+        .get(&routing_bucket)
+        .and_then(|bucket| {
+            bucket
+                .page_index
+                .values()
+                .filter(|block| {
+                    block.model_id.as_ref() == model_id && block.object_key.as_ref() == object_key
+                })
+                .filter_map(|block| block.address.page_id())
+                .max()
+        })
+        .map_or(0, |highest| {
+            u32::try_from(highest).unwrap_or(u32::MAX).saturating_add(1)
+        })
+}
+
 pub(super) fn object_page_lookup_key(
     model_id: &str,
     object_key: &str,
