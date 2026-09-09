@@ -112,6 +112,11 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
     "TS_META_SHARD_DIVERGENCE_CHECK":
         "compares the owner map against what each datanode reports serving and re-places the "
         "difference. Off because it moves shards",
+    "MATRIXARK_LANE_CODEC":
+        "picks the codec the proxy lane speaks, decided ONCE from the environment the process "
+        "was spawned with because the lane is a single pipe and a codec that changed partway "
+        "would leave the reader mid-frame. Off is what an older spawner gets: the JSON lines "
+        "it has always got",
     "TS_INDEX_LOG_COMPRESSION_ENABLED":
         "gates only the WRITING of compressed index-log payloads; reading codec 2 is unconditional, "
         "which is what lets a store roll forward and back without a migration. Off is the end that "
