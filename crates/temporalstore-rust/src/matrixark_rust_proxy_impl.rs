@@ -5878,12 +5878,12 @@ fn retrieve_context_pack_output(
         // usable vector falls back to the lexical score rather than scoring 0: it is a record we
         // could not compare, not a record we know to be irrelevant, and zeroing it would drop it
         // beneath every lexical match in the same list.
-        let lexical = score_lowered_text(&candidate.lower_text, &query_terms);
         let Some(score) = candidate_score(
             &weights,
             query_vector.as_deref(),
             candidate.vector.as_deref(),
-            lexical,
+            // Lazy: under a dense-only policy this is never evaluated.
+            || score_lowered_text(&candidate.lower_text, &query_terms),
             // Lazy: the lexical path must not pay for a hint lookup it will not use.
             || {
                 candidate
@@ -6454,11 +6454,11 @@ fn clamp01(value: f64) -> f64 {
 /// with an absent dense term would therefore compute 1.00 * 0 + 0.00 * lexical = 0 for EVERY
 /// candidate and rank the whole corpus flat -- silently, with no error and a full-looking pack.
 /// So a missing query vector must bypass the blend entirely rather than pass a zero into it.
-fn candidate_score<F: FnOnce() -> bool>(
+fn candidate_score<F: FnOnce() -> bool, L: FnOnce() -> f64>(
     weights: &RankingWeights,
     query_vector: Option<&[f32]>,
     record_vector: Option<&[f32]>,
-    lexical: f64,
+    lexical: L,
     index_hinted: F,
 ) -> Option<f64> {
     match (query_vector, record_vector) {
@@ -6468,13 +6468,20 @@ fn candidate_score<F: FnOnce() -> bool>(
         // does not reach is not a weak match, it is not a match, and returning it on a text
         // coincidence is what the embedding was supposed to replace.
         (Some(query), Some(record)) if !query.is_empty() => dense_query_score(query, record)
-            .map(|dense| blended_candidate_score(weights, Some(dense), lexical, index_hinted())),
+            .map(|dense| {
+                // Only pay for the lexical score if the weights can use it. `score_lowered_text`
+                // runs a substring search PER QUERY TERM PER CANDIDATE, and a dense-only policy
+                // (the one-box default: dense 1.00, sparse 0.00) multiplies the result by zero --
+                // so the whole scan was searching text to discard the answer.
+                let lex = if weights.sparse == 0.0 { 0.0 } else { lexical() };
+                blended_candidate_score(weights, Some(dense), lex, index_hinted())
+            }),
         // A candidate carrying no vector at all, while the caller IS ranking densely: same answer.
         // It cannot be compared, so it is not returned.
         (Some(query), None) if !query.is_empty() => None,
         // No query vector: the caller is not ranking densely, so this is the lexical ranking the
         // engine has always done. Unchanged, and still the default -- dense retrieval is opt-in.
-        _ => Some(lexical),
+        _ => Some(lexical()),
     }
 }
 
@@ -6803,6 +6810,42 @@ fn _request_shape_for_docs() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
 
+    /// A dense-only policy must not pay for the lexical score at all.
+    ///
+    /// `score_lowered_text` runs a substring search per query term per candidate, and the one-box
+    /// weights (dense 1.00, sparse 0.00) multiply its answer by zero. The scan was searching every
+    /// candidate's text to discard the result.
+    #[test]
+    fn a_dense_only_policy_never_computes_the_lexical_score() {
+        let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.0 };
+        let query = [1.0_f32, 0.0];
+        let record = [1.0_f32, 0.0];
+        let mut evaluated = false;
+        let got = candidate_score(&onebox, Some(&query), Some(&record), || {
+            evaluated = true;
+            0.9
+        }, || false);
+        assert!(got.expect("comparable") > 0.99, "got {got:?}");
+        assert!(!evaluated, "the lexical scorer ran under a dense-only policy");
+    }
+
+    /// The positive control: a policy that DOES weight lexical must still evaluate it, or the
+    /// skip above would be silently dropping a term the caller asked for.
+    #[test]
+    fn a_blended_policy_still_computes_the_lexical_score() {
+        let blended = RankingWeights { dense: 0.72, sparse: 0.28, index_hint: 0.0 };
+        let query = [1.0_f32, 0.0];
+        let record = [1.0_f32, 0.0];
+        let mut evaluated = false;
+        let got = candidate_score(&blended, Some(&query), Some(&record), || {
+            evaluated = true;
+            1.0
+        }, || false);
+        assert!(evaluated, "a blended policy must evaluate the lexical score");
+        // 0.72 * 1.0 + 0.28 * 1.0 = 1.0
+        assert!((got.expect("comparable") - 1.0).abs() < 1e-9, "got {got:?}");
+    }
+
     /// The two production clients put the pack request in different places, so every ranking field
     /// must be readable from either. The proxy client sends it as `record=request`; the cdylib
     /// client sends the same dict as the payload itself. Reading only the top level is what made a
@@ -6934,7 +6977,7 @@ mod tests {
         let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.08 };
         let record = [1.0_f32, 0.0];
         for query in [None, Some(&[][..])] {
-            let got = candidate_score(&onebox, query, Some(&record), 0.75, || false);
+            let got = candidate_score(&onebox, query, Some(&record), || 0.75, || false);
             assert_eq!(
                 got,
                 Some(0.75),
@@ -6954,7 +6997,7 @@ mod tests {
     fn a_candidate_with_no_vector_is_skipped_under_dense_retrieval() {
         let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.08 };
         let query = [1.0_f32, 0.0];
-        assert_eq!(candidate_score(&onebox, Some(&query), None, 0.6, || false), None);
+        assert_eq!(candidate_score(&onebox, Some(&query), None, || 0.6, || false), None);
     }
 
     /// The positive control: when BOTH vectors are present the blend really does run, so the two
@@ -6965,7 +7008,7 @@ mod tests {
         let query = [1.0_f32, 0.0];
         let record = [1.0_f32, 0.0];
         // Identical unit vectors: cosine 1.0 -> normalized 1.0, and the lexical 0.0 is ignored.
-        let got = candidate_score(&onebox, Some(&query), Some(&record), 0.0, || false)
+        let got = candidate_score(&onebox, Some(&query), Some(&record), || 0.0, || false)
             .expect("comparable");
         assert!(got > 0.99, "got {got}, expected the dense term to dominate");
     }
@@ -6975,7 +7018,7 @@ mod tests {
     fn the_lexical_path_never_evaluates_the_index_hint() {
         let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.08 };
         let mut evaluated = false;
-        let got = candidate_score(&onebox, None, None, 0.4, || {
+        let got = candidate_score(&onebox, None, None, || 0.4, || {
             evaluated = true;
             true
         });
@@ -7116,7 +7159,7 @@ mod tests {
         let query = [1.0_f32, 0.0, 0.0, 0.0];
         let older_width = [1.0_f32, 0.0, 0.0];
         assert_eq!(
-            candidate_score(&onebox, Some(&query), Some(&older_width), 0.7, || false),
+            candidate_score(&onebox, Some(&query), Some(&older_width), || 0.7, || false),
             None,
             "a vector this query cannot place must be skipped, not given the lexical score"
         );
@@ -7129,7 +7172,7 @@ mod tests {
         let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.0 };
         let query = [1.0_f32, 0.0, 0.0];
         let same = [1.0_f32, 0.0, 0.0];
-        let got = candidate_score(&onebox, Some(&query), Some(&same), 0.7, || false)
+        let got = candidate_score(&onebox, Some(&query), Some(&same), || 0.7, || false)
             .expect("the same width is comparable");
         assert!(got > 0.99, "identical vectors should score ~1.0 densely, got {got}");
     }
