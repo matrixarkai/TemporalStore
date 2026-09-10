@@ -26,10 +26,11 @@ mod record;
 
 /// Bytes a block record spends on its header, before the block's own bytes.
 ///
-/// Reachable outside the block store because a log that CARRIES a block can work out the length
-/// its address will hold, rather than being told it: the address covers the header and the
-/// payload together.
-pub(crate) const BLOCK_RECORD_HEADER_LEN: usize = record::PAGE_RECORD_HEADER_LEN;
+/// Re-exported rather than redefined. This was a second constant whose entire body was the
+/// first one, written to widen a `pub(super)` definition so a log that CARRIES a block could
+/// work out the length its address will hold. Now that both spell the record the same way, two
+/// constants of one name in two modules is a thing to trip over rather than a bridge.
+pub(crate) use record::BLOCK_RECORD_HEADER_LEN;
 
 pub(crate) use record::block_index_checksums_enabled;
 
@@ -48,7 +49,7 @@ use record::{
 use self::band_manifest::*;
 pub(crate) use slab_ids::*;
 #[cfg(test)]
-use record::{PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD};
+use record::{BLOCK_RECORD_COMPRESSION_NONE, BLOCK_RECORD_COMPRESSION_ZSTD};
 
 #[derive(Debug, Error)]
 pub enum BlockStoreError {
@@ -2658,8 +2659,8 @@ mod tests {
         let slab = fs::read(&path).unwrap();
         let start = address.offset as usize;
         let record = &slab[start..start + address.length as usize];
-        let at = record::PAGE_RECORD_CHECKSUM_OFFSET;
-        let field = &record[at..at + record::PAGE_RECORD_CHECKSUM_LEN];
+        let at = record::BLOCK_RECORD_CHECKSUM_OFFSET;
+        let field = &record[at..at + record::BLOCK_RECORD_CHECKSUM_LEN];
 
         assert_ne!(
             hex::encode(field),
@@ -2672,7 +2673,7 @@ mod tests {
             "the field is the crc32c of the payload"
         );
         assert_eq!(
-            record::PAGE_RECORD_CHECKSUM_LEN,
+            record::BLOCK_RECORD_CHECKSUM_LEN,
             4,
             "the field is the checksum and nothing else: no padding, no marker"
         );
@@ -3224,8 +3225,8 @@ mod tests {
         let second = store.append(&second_payload).unwrap();
         let raw = store.read_slab(first.block_slab_id).unwrap();
 
-        assert!(first.length < (record::PAGE_RECORD_HEADER_LEN + first_payload.len()) as u64);
-        assert!(second.length < (record::PAGE_RECORD_HEADER_LEN + second_payload.len()) as u64);
+        assert!(first.length < (record::BLOCK_RECORD_HEADER_LEN + first_payload.len()) as u64);
+        assert!(second.length < (record::BLOCK_RECORD_HEADER_LEN + second_payload.len()) as u64);
         assert_eq!(store.read(&first).unwrap(), first_payload);
         assert_eq!(store.read(&second).unwrap(), second_payload);
 
@@ -3237,7 +3238,7 @@ mod tests {
         expected.extend_from_slice(&first_payload[first_payload.len() - 3..]);
         expected.extend_from_slice(&second_payload[..9]);
         assert_eq!(logical, expected);
-        assert_eq!(record::page_record_compression_byte(&raw), PAGE_RECORD_COMPRESSION_ZSTD);
+        assert_eq!(record::page_record_compression_byte(&raw), BLOCK_RECORD_COMPRESSION_ZSTD);
 
         let stats = store.stats();
         assert_eq!(stats.writes, 2);
@@ -3498,17 +3499,17 @@ mod tests {
 
         // Stated from the values that went in, because a varint header has no fixed length: it
         // is the fixed part, one varint per number, and the compression codec.
-        let expected_header = record::PAGE_RECORD_HEADER_LEN;
+        let expected_header = record::BLOCK_RECORD_HEADER_LEN;
         assert_eq!(
             disabled_address.length,
             (expected_header + payload.len()) as u64
         );
         assert_eq!(
             expected_header,
-            record::PAGE_RECORD_HEADER_LEN,
+            record::BLOCK_RECORD_HEADER_LEN,
             "one header size, whatever the values"
         );
-        assert_eq!(record::page_record_compression_byte(&disabled_raw), PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(record::page_record_compression_byte(&disabled_raw), BLOCK_RECORD_COMPRESSION_NONE);
         assert_eq!(disabled_store.read(&disabled_address).unwrap(), payload);
         assert_eq!(disabled_store.stats().compressed_records_written, 0);
         assert_eq!(disabled_store.stats().compression_bytes_saved, 0);
@@ -3526,12 +3527,12 @@ mod tests {
             .read_slab(threshold_address.block_slab_id)
             .unwrap();
 
-        let threshold_header = record::PAGE_RECORD_HEADER_LEN;
+        let threshold_header = record::BLOCK_RECORD_HEADER_LEN;
         assert_eq!(
             threshold_address.length,
             (threshold_header + payload.len()) as u64
         );
-        assert_eq!(record::page_record_compression_byte(&threshold_raw), PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(record::page_record_compression_byte(&threshold_raw), BLOCK_RECORD_COMPRESSION_NONE);
         assert_eq!(threshold_store.read(&threshold_address).unwrap(), payload);
         assert_eq!(threshold_store.stats().compressed_records_written, 0);
         assert_eq!(threshold_store.stats().compression_bytes_saved, 0);
@@ -3564,7 +3565,7 @@ mod tests {
         // Make the block say it is far larger than the record holds. The size sits at a
         // constant offset now, so this corrupts the number itself rather than payload bytes,
         // which would only be caught by the checksum.
-        let size_at = record::PAGE_RECORD_LENGTH_OFFSET;
+        let size_at = record::BLOCK_RECORD_LENGTH_OFFSET;
         slab[size_at] = 0xFF;
         slab[size_at + 1] = 0xFF;
         slab[size_at + 2] = 0xFF;

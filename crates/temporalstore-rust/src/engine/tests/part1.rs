@@ -8054,7 +8054,7 @@ fn what_one_write_spends() {
 ///
 /// Write cost is flat at ~2 B per payload byte on both sides of a sharp step between 192 and 256
 /// bytes worth 32,535 B per write (`what_one_write_spends`). 256 is
-/// `PAGE_RECORD_COMPRESSION_MIN_BYTES`, and the encoder above it is `zstd::stream::encode_all`,
+/// `BLOCK_RECORD_COMPRESSION_MIN_BYTES`, and the encoder above it is `zstd::stream::encode_all`,
 /// which builds a compressor, uses it once and drops it. Records in the soak corpus average 1,244
 /// bytes, so essentially every real write is above the threshold and pays this.
 ///
