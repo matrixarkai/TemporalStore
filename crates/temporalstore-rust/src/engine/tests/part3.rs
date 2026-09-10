@@ -646,7 +646,29 @@ fn recovery_validates_all_timestamped_kv_page_families() {
     // timestamped page: feature 16 (8 feature + 8 sequence, now folded into the
     // feature family) + context_event/index/audit 1 each = 19.
     assert_eq!(report.feature_page_layout.indexed_timestamped_points, 19);
-    assert!(report.feature_page_layout.packed_timestamped_pages >= 10);
+    // Every page the index points at is a packed page, which is the property this is for and
+    // does not depend on how densely one packs. The count this replaced -- at least ten pages --
+    // moved when the page format did: the same 19 points, asserted just above, now occupy 6 pages
+    // because a point costs about a quarter of what it cost as JSON. Ten LEGACY pages would have
+    // satisfied the old assertion; none satisfy this one.
+    assert_eq!(
+        report.feature_page_layout.packed_timestamped_pages,
+        report.feature_page_layout.unique_timestamped_page_refs,
+        "pages landed as: {} packed, {} legacy, {} corrupt, {} unique refs; first corrupt: {:?}",
+        report.feature_page_layout.packed_timestamped_pages,
+        report.feature_page_layout.legacy_timestamped_value_pages,
+        report.feature_page_layout.corrupt_packed_feature_pages.len(),
+        report.feature_page_layout.unique_timestamped_page_refs,
+        report.feature_page_layout.corrupt_packed_feature_pages.first()
+    );
+    assert!(
+        report.feature_page_layout.packed_timestamped_pages > 0,
+        "no packed pages at all, so the assertion above proved nothing"
+    );
+    assert_eq!(
+        report.feature_page_layout.legacy_timestamped_value_pages, 0,
+        "a legacy single-value page survived where a packed one was expected"
+    );
     assert!(
         report
             .feature_page_layout
