@@ -3688,10 +3688,12 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         self._backpressure_timeout_s = max(
             0.05,
             int(
-                os.environ.get(
-                    "MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS",
-                    os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms)),
-                )
+                # `.strip() or`: a blank newer name falls through rather than handing
+                # int() the empty string.
+                os.environ.get("MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS", "").strip()
+                or os.environ.get(
+                    "MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", "").strip()
+                or str(request_timeout_ms)
             )
             / 1000.0,
         )

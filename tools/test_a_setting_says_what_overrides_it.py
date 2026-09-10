@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import ast
 import os
-import re
 import subprocess
 import sys
 import unittest
@@ -35,11 +34,6 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
 sys.path.insert(0, TOOLS)
 
-# get(SPECIFIC, get(GENERAL, ...)) -- the second name is only reached when the first is unset.
-_PAIR = re.compile(
-    r'environ\.get\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']\s*,\s*'
-    r'(?:os\.)?(?:environ\.get|getenv)\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']')
-
 # 10 pairs and 3 shadowed settings when this was written. The context-token budget was one of the
 # three: the panel field is no longer read as a fallback behind the value the agent is given, so the
 # population is 2 and the floor follows it down. Lowering a floor is only honest when an instance
@@ -48,21 +42,40 @@ EXPECTED_PAIR_FLOOR = 6
 EXPECTED_SHADOWED_FLOOR = 2
 
 
+def _precedence_pairs_shared(paths, **kwargs):
+    """The chain scanner from test_a_blank_flag_falls_through_to_the_older_spelling.
+
+    Imported rather than restated. That file owns the recognition of BOTH spellings -- the
+    two-argument form and the `or` form -- because it is the one that changed them, and a second
+    copy here would go stale the next time a chain is rewritten.
+    """
+    import importlib.util
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "test_a_blank_flag_falls_through_to_the_older_spelling.py")
+    spec = importlib.util.spec_from_file_location("_chain_scanner_for_%s" % __name__, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.precedence_pairs(paths, **kwargs)
+
+
 def _pairs() -> Dict[str, str]:
-    """fallback name -> the name preferred over it."""
+    """fallback name -> the name preferred over it.
+
+    The scope is unchanged -- every tracked non-test .py in the repository -- and so are the three
+    accepted prefixes. What changed is that the chains are now written `get(A) or get(B)` as well
+    as `get(A, get(B, ...))`, and the regex this used to carry matched only the second. Both
+    state the same
+    precedence, which is the only thing this function reports.
+    """
     listed = subprocess.run(["git", "ls-files", "*.py"], cwd=REPO,
                             capture_output=True, text=True).stdout.split()
+    paths = [path for path in listed if not os.path.basename(path).startswith("test_")]
     found: Dict[str, str] = {}
-    for path in listed:
-        if os.path.basename(path).startswith("test_"):
-            continue
-        try:
-            with open(os.path.join(REPO, path), encoding="utf-8", errors="replace") as handle:
-                source = handle.read()
-        except OSError:
-            continue
-        for match in _PAIR.finditer(source):
-            found.setdefault(match.group(2), match.group(1))
+    for winner, loser, _module, _line, _form in _precedence_pairs_shared(
+            paths, env_only=True, prefixes=("TS_", "MATRIXARK_", "TEMPORALSTORE_")):
+        found.setdefault(loser, winner)
     return found
 
 

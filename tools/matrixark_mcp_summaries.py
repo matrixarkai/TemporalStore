@@ -34,10 +34,12 @@ TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMP
 TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = env_bool("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", False)
 
 
-SUMMARY_LLM_PROVIDER = os.environ.get(
-    "MATRIXARK_SUMMARY_PROVIDER",
-    os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
-).strip().lower().replace("-", "_")
+SUMMARY_LLM_PROVIDER = (
+    os.environ.get("MATRIXARK_SUMMARY_PROVIDER", "").strip()
+    or os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip()
+    or os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "").strip()
+    or "deterministic"
+).lower().replace("-", "_")
 # The same chain matrixark_mcp_core resolves for EXTRACTION_LLM_MODEL, ending in the same
 # literal. This module imports nothing from the project on purpose, so the chain is written
 # out rather than shared -- and the last step used to say "gpt-4o-mini" here while mcp_core

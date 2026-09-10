@@ -27,8 +27,6 @@ Two shapes are excluded, and each exclusion is asserted rather than assumed:
 """
 from __future__ import annotations
 
-import ast
-import io
 import os
 import sys
 import unittest
@@ -39,36 +37,37 @@ sys.path.insert(0, TOOLS)
 import matrixark_gateway_config as cfg  # noqa: E402
 
 
-def _string(node) -> str:
-    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else ""
+def _precedence_pairs_shared(paths, **kwargs):
+    """The chain scanner from test_a_blank_flag_falls_through_to_the_older_spelling.
+
+    Imported rather than restated. That file owns the recognition of BOTH spellings -- the
+    two-argument form and the `or` form -- because it is the one that changed them, and a second
+    copy here would go stale the next time a chain is rewritten.
+    """
+    import importlib.util
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "test_a_blank_flag_falls_through_to_the_older_spelling.py")
+    spec = importlib.util.spec_from_file_location("_chain_scanner_for_%s" % __name__, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.precedence_pairs(paths, **kwargs)
 
 
 def _precedence_pairs() -> list:
-    """(winner, loser, module, line) for every `X.get(A, Y.get(B, ...))` in production code."""
-    pairs = []
-    for name in sorted(os.listdir(TOOLS)):
-        if not name.endswith(".py") or name.startswith("test_"):
-            continue
-        try:
-            with io.open(os.path.join(TOOLS, name), encoding="utf-8") as handle:
-                tree = ast.parse(handle.read())
-        except (OSError, SyntaxError):
-            continue
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "get"):
-                continue
-            if len(node.args) < 2:
-                continue
-            winner, inner = _string(node.args[0]), node.args[1]
-            if not winner:
-                continue
-            if not (isinstance(inner, ast.Call) and getattr(inner.func, "attr", "") == "get"
-                    and inner.args):
-                continue
-            loser = _string(inner.args[0])
-            if loser:
-                pairs.append((winner, loser, name, node.lineno))
-    return pairs
+    """(winner, loser, module, line) for every fallback chain in production code.
+
+    Was `X.get(A, Y.get(B, ...))` only. Those chains are now written `get(A) or get(B) or d` as
+    well, which says the same thing about precedence and a different thing about a BLANK A -- and
+    reading only the first spelling made this file stop seeing two of the overrides it lists.
+
+    Same scope as before: every non-test .py directly in tools/, with no prefix filter, because the
+    callers below do their own (`loser` declared, `winner` upper-case and not itself offered).
+    """
+    paths = ["tools/" + name for name in sorted(os.listdir(TOOLS))
+             if name.endswith(".py") and not name.startswith("test_")]
+    return [row[:4] for row in _precedence_pairs_shared(paths)]
 
 
 def _derived_overrides() -> set:

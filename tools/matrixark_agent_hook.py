@@ -225,7 +225,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
-    parser.add_argument("--rust-proxy", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_PROXY", os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", "")))
+    # `or`: a blank MATRIXARK_TEMPORALSTORE_RUST_PROXY means unset, and suppressing
+    # the MATRIXARK_TEMPORALSTORE_RUST_CLI fallback is not what clearing it says.
+    parser.add_argument("--rust-proxy", default=(
+        os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_PROXY", "").strip()
+        or os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", "").strip()
+        or ""))
     parser.add_argument("--rust-direct-sdk", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", ""))
     parser.add_argument("--rust-cli", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:agent-hook"))

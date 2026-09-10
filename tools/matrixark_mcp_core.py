@@ -305,12 +305,24 @@ ANTHROPIC_LLM_MODEL = os.environ.get("MATRIXARK_ANTHROPIC_MODEL", "claude-sonnet
 ANTHROPIC_API_BASE = os.environ.get("MATRIXARK_ANTHROPIC_API_BASE", "https://api.anthropic.com").rstrip("/")
 ANTHROPIC_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "ANTHROPIC_API_KEY")
 ANTHROPIC_API_VERSION = os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "2023-06-01")
-ANTHROPIC_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_ANTHROPIC_TIMEOUT_SEC", os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30")))
-ANTHROPIC_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_ANTHROPIC_MAX_TOKENS", os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200")))
-SUMMARY_LLM_PROVIDER = os.environ.get(
-    "MATRIXARK_SUMMARY_PROVIDER",
-    os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
-).strip().lower().replace("-", "_")
+# `.strip() or` at each step, so a newer name that is present but blank -- or whitespace --
+# falls through to the older one. With the two-argument form, MATRIXARK_ANTHROPIC_TIMEOUT_SEC=
+# handed float() the empty string at module scope and this module failed to import, with
+# MATRIXARK_EXTRACTION_TIMEOUT_SEC set correctly and never read.
+ANTHROPIC_LLM_TIMEOUT_SEC = float(
+    os.environ.get("MATRIXARK_ANTHROPIC_TIMEOUT_SEC", "").strip()
+    or os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "").strip()
+    or "30")
+ANTHROPIC_LLM_MAX_TOKENS = int(
+    os.environ.get("MATRIXARK_ANTHROPIC_MAX_TOKENS", "").strip()
+    or os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "").strip()
+    or "1200")
+SUMMARY_LLM_PROVIDER = (
+    os.environ.get("MATRIXARK_SUMMARY_PROVIDER", "").strip()
+    or os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip()
+    or os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "").strip()
+    or "deterministic"
+).lower().replace("-", "_")
 # The summary IS the extraction model. It used to be `get(MATRIXARK_SUMMARY_MODEL, ...)`, a
 # second name for a call made against the extraction endpoint with the extraction key -- so the two
 # could name models that endpoint does not both serve, and the portal offered no way to see that.
@@ -1238,7 +1250,13 @@ def understanding_provider(envelope: Json | None = None) -> str:
     provider = ""
     if envelope:
         provider = str(envelope.get("understanding_provider") or envelope.get("extraction_provider") or "")
-    provider = provider or os.getenv("MATRIXARK_UNDERSTANDING_PROVIDER", os.getenv("MATRIXARK_EXTRACTION_PROVIDER", "deterministic"))
+    # Every step with `.strip() or`. The two-argument form reached "deterministic" on a
+    # blank only via the `or` at the end of this function, having never consulted the older
+    # spelling at all.
+    provider = (provider
+                or os.getenv("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip()
+                or os.getenv("MATRIXARK_EXTRACTION_PROVIDER", "").strip()
+                or "deterministic")
     provider = provider.strip().lower().replace("-", "_")
     if provider in {"oss", "open_source", "embedding", "oss_embedding"}:
         return "oss_encoder"

@@ -352,7 +352,9 @@ SETTINGS: List[Setting] = [
             "Embedding model", "str", "", "live",
             "The encoder to use: a model name like paraphrase-multilingual-MiniLM-L12-v2, or "
             "a path to one you have downloaded -- an in-process encoder loads either, and a hosted "
-            "provider is sent the name."
+            "provider is sent the name. An in-process encoder prefers "
+            "MATRIXARK_EMBEDDING_MODEL_PATH where a launcher sets it, and then this field is not "
+            "read at all; a hosted provider ignores that variable and is sent the name from here."
             + ENCODER_SERVER_NOTE + ENCODER_CHANGE_NOTE),
     # MATRIXARK_EMBEDDING_MODEL_PATH was offered here as a second encoder field. It is not a
     # second choice: the encoder reads `MODEL_PATH or MODEL`, so it only ever overrode the field
@@ -1759,9 +1761,14 @@ def _configured_extraction_provider() -> str:
     need to know whether anything is set AT ALL, and a resolver answering "deterministic" for an
     unset deployment could not tell the two apart.
     """
-    return os.environ.get(
-        "MATRIXARK_UNDERSTANDING_PROVIDER",
-        os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
+    # `or`, not a second argument: a variable that is present and blank means the operator
+    # cleared it, not that the provider is named "". The two-argument form skipped the older
+    # spelling on a blank, so this answered "nothing is set" for a deployment that HAD set
+    # MATRIXARK_EXTRACTION_PROVIDER -- the one thing this resolver exists to report. The
+    # trailing "" is still the deliberate sentinel for "neither is set".
+    return (os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip()
+            or os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "").strip()
+            or "")
 
 
 def discover_models(target: str, timeout: float = 8.0) -> Json:
@@ -1961,10 +1968,22 @@ def config_path() -> str:
 _UNOFFERED_OVERRIDES: Dict[str, Json] = {
     "extraction.timeout_sec": {"env": "MATRIXARK_ANTHROPIC_TIMEOUT_SEC",
                                "depends_on": "extraction.provider",
-                               "effect": "anthropic"},
+                               "effect": "anthropic",
+                               "classifier": "extraction"},
     "extraction.max_tokens": {"env": "MATRIXARK_ANTHROPIC_MAX_TOKENS",
                               "depends_on": "extraction.provider",
-                              "effect": "anthropic"},
+                              "effect": "anthropic",
+                              "classifier": "extraction"},
+    # Four live reads resolve the encoder as
+    #     get("MATRIXARK_EMBEDDING_MODEL_PATH") or get("MATRIXARK_EMBEDDING_MODEL", ...)
+    # so this variable beats whatever an operator types into "Embedding model", on a page that
+    # never mentions it. Conditional like the two above: those reads sit behind
+    # `provider in _OSS_EMBEDDING_PROVIDERS`, which is what embedding_provider_effect calls
+    # "local_model", and on an API encoder the variable overrides nothing.
+    "embedding.model": {"env": "MATRIXARK_EMBEDDING_MODEL_PATH",
+                        "depends_on": "embedding.provider",
+                        "effect": "local_model",
+                        "classifier": "embedding"},
 }
 
 
@@ -1980,6 +1999,11 @@ def unoffered_override(key: str, values: Dict[str, str]) -> Optional[Json]:
     if entry is None:
         return None
     variable, depends_on, effect = entry["env"], entry["depends_on"], entry["effect"]
+    # Which classifier decides whether the override applies. Asking the extraction one about an
+    # embedding provider answers "rules" for every name it does not know, so a single hard-wired
+    # classifier silently refused to report any override outside extraction.
+    classify = (embedding_provider_effect if entry.get("classifier") == "embedding"
+                else extraction_provider_effect)
     raw = os.environ.get(variable)
     if raw is None or not str(raw).strip():
         return None
@@ -1989,7 +2013,7 @@ def unoffered_override(key: str, values: Dict[str, str]) -> Optional[Json]:
     current, _source = _effective(setting, values)
     # Through the classifier, so every name that reaches this path is covered and a new alias
     # needs no change here.
-    if extraction_provider_effect(current) != effect:
+    if classify(current) != effect:
         return None
     return {"env": variable, "value": str(raw).strip(), "depends_on": depends_on,
             "when": "%s reaches the %s path" % (depends_on, effect)}
