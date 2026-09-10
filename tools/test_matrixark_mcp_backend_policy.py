@@ -42,6 +42,22 @@ if not _scale_report_available():
     # The cost of leaving it as an ImportError was that six modules reported as ERRORS on every
     # run, indistinguishable from a genuine break, on a suite gate that is already red. A skip says
     # the same thing without spending a failure to say it.
+    #
+    # RUN IT WITH DISCOVER. A module-level SkipTest is turned into a skipped placeholder by
+    # `unittest discover`, and is NOT by `python -m unittest tools.<name>` -- there the loader
+    # imports the module by name, the exception escapes as an import failure, and the run exits 1
+    # with a traceback. Measured on a module that does nothing but raise it:
+    #
+    #     python3 -m unittest test_skipme                    exit 1, traceback
+    #     python3 -m unittest discover -p test_skipme.py     exit 0, OK (skipped=1)
+    #
+    # So a by-name runner reports this module and the four test_backend_policy_part* modules as
+    # five failures that look exactly like a genuine break, and a baseline taken that way
+    # overstates the red count by five.
+    #
+    # It cannot be moved to a class-level skipUnless instead: the body below does
+    # `from run_matrixark_rust_scale_report import (...)`, so this module cannot be imported at all
+    # while that one is absent.
     raise unittest.SkipTest(
         "run_matrixark_rust_scale_report is absent from this repository, so the backend-policy "
         "gates that import it cannot be exercised here")
