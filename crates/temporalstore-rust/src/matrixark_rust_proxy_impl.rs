@@ -271,8 +271,20 @@ struct HashReadRecord {
 #[derive(Clone, Debug)]
 struct CachedRetrieveCandidate {
     selected_ref: Value,
-    lower_text: String,
     ref_type: String,
+    /// The lowercased text, built ON FIRST USE and never under a dense-only policy.
+    ///
+    /// This was an eager `String`. The snapshot is cached behind an `Arc` and reused across
+    /// requests, so that copy was RESIDENT for the life of the cache entry, duplicating the text
+    /// already in `selected_ref` -- the largest field a serving record has. It also defeated the
+    /// dense-only skip: mx#1390 made the lexical SCORE lazy, but the string it scores was still
+    /// built for every candidate, so the one-box default still paid for it.
+    ///
+    /// Searching the original text case-insensitively instead was tried and MEASURED SLOWER --
+    /// 7.05 ms to 25.63 ms over 4,000 candidates, because `str::contains` is a SIMD-accelerated
+    /// two-way search and a hand-rolled case-folding scan is not. Deferring the copy keeps that
+    /// search and still costs nothing when it is never needed.
+    lower_text: OnceLock<String>,
     /// The record's own embedding, kept so ranking can be dense.
     ///
     /// Held on the candidate rather than re-read from the record at scoring time because the
@@ -5646,7 +5658,9 @@ fn load_retrieve_candidate_snapshot(
     let mut records = Vec::new();
     for shard in 0..shard_count {
         let key = format!("{record_hash_key}:{shard:06}");
-        for payload in hgetall_map(engine, key)?.values() {
+        // `hgetall_shared`, not `hgetall_map`: the map form clones the shard's whole payload
+        // map, and this loop only reads it. The `Arc` temporary lives for the loop.
+        for payload in hgetall_shared(engine, key)?.values() {
             if payload.trim().is_empty() {
                 continue;
             }
@@ -5654,42 +5668,57 @@ fn load_retrieve_candidate_snapshot(
         }
     }
 
+    // Built only when something is going to read them. The single consumer is the secondary-group
+    // filter below, which returns early on an empty group list -- so with no groups this was a
+    // whole extra pass over the corpus, and a `String` plus a `HashSet` insert for every
+    // `context_index` record, to produce maps nothing would look at.
     let mut index_terms_by_batch: HashMap<String, HashSet<String>> = HashMap::new();
     let mut index_terms_by_node: HashMap<u64, HashSet<String>> = HashMap::new();
     let mut index_terms_by_ref: HashMap<String, HashSet<String>> = HashMap::new();
-    for record in &records {
-        if record.get("record_type").and_then(Value::as_str) != Some("context_index") {
-            continue;
-        }
-        let Some(index_name) = record
-            .get("index_name")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        if let Some(batch) = record.get("batch_id_hash").and_then(Value::as_u64) {
-            index_terms_by_batch
-                .entry(batch.to_string())
-                .or_default()
-                .insert(index_name.to_string());
-        }
-        if let Some(ref_hash) = record_ref_hash(record) {
-            index_terms_by_ref
-                .entry(ref_hash)
-                .or_default()
-                .insert(index_name.to_string());
-        } else if let Some(node_hash) = record_node_hash(record) {
-            index_terms_by_node
-                .entry(node_hash)
-                .or_default()
-                .insert(index_name.to_string());
+    if !secondary_groups.is_empty() {
+        for record in &records {
+            if record.get("record_type").and_then(Value::as_str) != Some("context_index") {
+                continue;
+            }
+            let Some(index_name) = record
+                .get("index_name")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            if let Some(batch) = record.get("batch_id_hash").and_then(Value::as_u64) {
+                index_terms_by_batch
+                    .entry(batch.to_string())
+                    .or_default()
+                    .insert(index_name.to_string());
+            }
+            if let Some(ref_hash) = record_ref_hash(record) {
+                index_terms_by_ref
+                    .entry(ref_hash)
+                    .or_default()
+                    .insert(index_name.to_string());
+            } else if let Some(node_hash) = record_node_hash(record) {
+                index_terms_by_node
+                    .entry(node_hash)
+                    .or_default()
+                    .insert(index_name.to_string());
+            }
         }
     }
 
     let memory_inventory = native_retrieval_memory_inventory(&records, scope);
+    // Taken before the move: the snapshot reports it after the records are gone.
+    let scanned_records = records.len();
+    // `into_iter`, not `iter`: everything that needed to read the records as a set has run, so
+    // each candidate can now take what it wants out of its record instead of copying it.
     let candidates = records
-        .iter()
+        .into_iter()
+        // Cheapest and most selective first. This is one `get` and a `matches!`, and it rejects
+        // every context_index and context_embedding record -- most of the corpus -- before
+        // `scope_matches_record` builds a scope key and walks eight identity fields for each
+        // survivor. All three are pure, so the order changes the cost and not the result.
+        .filter(|record| is_serving_context_record(record))
         .filter(|record| scope_matches_record(record, scope))
         .filter(|record| {
             if secondary_groups.is_empty() {
@@ -5703,11 +5732,11 @@ fn load_retrieve_candidate_snapshot(
             );
             terms.is_empty() || passes_secondary_groups(&terms, secondary_groups)
         })
-        .filter(|record| is_serving_context_record(record))
-        .filter_map(|record| {
-            let text = context_record_text(record);
-            let lower_text = text.to_ascii_lowercase();
-            let selected_ref = selected_ref_from_record(record, &text);
+        .filter_map(|mut record| {
+            let text = context_record_text(&record);
+            // Read before the ref is built: building it takes fields out of the record.
+            let record_vector = record_vector_of(&record);
+            let selected_ref = selected_ref_from_record(&mut record, text);
             if selected_ref.is_null() {
                 None
             } else {
@@ -5716,11 +5745,11 @@ fn load_retrieve_candidate_snapshot(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                let vector = record_vector_of(&record).or_else(|| record_vector_of(&selected_ref));
+                let vector = record_vector.or_else(|| record_vector_of(&selected_ref));
                 Some(CachedRetrieveCandidate {
                     selected_ref,
-                    lower_text,
                     ref_type,
+                    lower_text: OnceLock::new(),
                     vector,
                 })
             }
@@ -5729,7 +5758,7 @@ fn load_retrieve_candidate_snapshot(
     let snapshot = Arc::new(RetrieveCandidateSnapshot {
         candidates,
         memory_inventory,
-        scanned_records: records.len(),
+        scanned_records,
         placement_partitions_touched: shard_count,
         index_postings_read: shard_count,
     });
@@ -5883,7 +5912,8 @@ fn retrieve_context_pack_output(
             query_vector.as_deref(),
             candidate.vector.as_deref(),
             // Lazy: under a dense-only policy this is never evaluated.
-            || score_lowered_text(&candidate.lower_text, &query_terms),
+            // Lazy on both counts: a dense-only policy neither scores nor lowers.
+            || score_lowered_text(candidate_lower_text(candidate), &query_terms),
             // Lazy: the lexical path must not pay for a hint lookup it will not use.
             || {
                 candidate
@@ -6226,10 +6256,14 @@ fn retrieve_context_pack_output(
     output.count = Some(selected_count);
     output.mode = "rust_proxy_native_context_pack".to_string();
     if request.top_level_response {
-        if let Some(object) = response.as_object() {
+        // `response` is taken apart rather than copied. It is local, the other branch is
+        // mutually exclusive, and nothing reads it afterwards -- while cloning each value meant
+        // deep-copying `context_pack`, the whole assembled pack with every ref and every ref's
+        // text, on every retrieve.
+        if let Value::Object(object) = response {
             for (key, value) in object {
                 if !matches!(key.as_str(), "ok" | "count") {
-                    output.extra.insert(key.clone(), value.clone());
+                    output.extra.insert(key, value);
                 }
             }
         }
@@ -6240,16 +6274,28 @@ fn retrieve_context_pack_output(
     Ok(output)
 }
 
+/// Move a payload's records into `records`, without copying any of them.
+///
+/// This used to `clone()` every item out of the bundle. `decode_matrixark_payload` -- the same
+/// operation on the append path -- was already fixed for that, and its note records why: sampling
+/// the proxy under sustained ingest put `BTreeMap::clone_subtree` and `Vec<Value>::clone` among
+/// the hottest frames. The fix reached one of the two and not the other.
+///
+/// This is the worse place to have kept paying. It runs while building the retrieve candidate
+/// snapshot, which is invalidated on every write, so an ingesting store rebuilds it on nearly
+/// every retrieve -- deep-copying the whole corpus each time, embedding vectors included, where a
+/// single 1024-dim vector is 1024 individually cloned `Value`s.
+///
+/// `decoded` is local and owned, so moving the records out of it is free and observably identical.
 fn flatten_context_payload(payload: &str, records: &mut Vec<Value>) {
-    let Ok(decoded) = serde_json::from_str::<Value>(payload) else {
+    let Ok(mut decoded) = serde_json::from_str::<Value>(payload) else {
         return;
     };
-    if let Some(bundle) = decoded.get("record_bundle").and_then(Value::as_array) {
-        for item in bundle {
-            if item.is_object() {
-                records.push(item.clone());
-            }
-        }
+    if let Some(bundle) = decoded
+        .get_mut("record_bundle")
+        .and_then(Value::as_array_mut)
+    {
+        records.extend(std::mem::take(bundle).into_iter().filter(Value::is_object));
     } else if decoded.is_object() {
         records.push(decoded);
     }
@@ -6282,40 +6328,71 @@ fn context_record_text(record: &Value) -> String {
     String::new()
 }
 
-fn selected_ref_from_record(record: &Value, text: &str) -> Value {
+/// Take a field out of a record, or build the empty value if the record does not have it.
+///
+/// Exactly what `record.get(key).cloned().unwrap_or_else(empty)` returned, without the clone.
+/// The distinction that matters is ABSENT versus explicitly `null`: `get_mut` gives `None` for the
+/// first and `Some(Null)` for the second, so a field written as `null` still arrives as `null`
+/// rather than being quietly turned into an empty list. Repairing that here would be a data change
+/// wearing an optimization's clothes -- if `null` is wrong, it is wrong on the write path.
+fn take_record_field(record: &mut Value, key: &str, empty: fn() -> Value) -> Value {
+    record.get_mut(key).map(Value::take).unwrap_or_else(empty)
+}
+
+/// Build the public ref for a record, MOVING out of it rather than copying.
+///
+/// The caller owns the record, has already read everything else it needs, and drops it
+/// immediately -- so the eight source_* collections and the text can be taken. They were being
+/// deep-cloned per candidate, and the text twice: once out of the record and once into the ref.
+///
+/// `Value::take` leaves `Null` behind, which is why the vector is read before this runs.
+fn selected_ref_from_record(record: &mut Value, text: String) -> Value {
     let record_type = record
         .get("record_type")
         .and_then(Value::as_str)
         .unwrap_or("context_record");
+    // Owned, because its fallback arm borrows the record and the takes below need it mutably.
     let public_ref_type = match record_type {
-        "context_event" | "context_compression_event" => "event",
-        "context_summary" => "summary",
-        "context_entity" => "entity",
-        "resource_chunk" => "resource",
-        "skill_section" => "skill",
-        other => other,
+        "context_event" | "context_compression_event" => "event".to_string(),
+        "context_summary" => "summary".to_string(),
+        "context_entity" => "entity".to_string(),
+        "resource_chunk" => "resource".to_string(),
+        "skill_section" => "skill".to_string(),
+        other => other.to_string(),
     };
     let ref_hash = stable_ref_hash_from_record(record);
+    let token_estimate = token_estimate(&text);
+    let memory_layer = broad_memory_layer(record, &public_ref_type);
+    // Each take is its own statement so its mutable borrow ends before the block below reads the
+    // record's remaining fields immutably.
+    let source_roles = take_record_field(record, "source_roles", || json!([]));
+    let source_role_counts = take_record_field(record, "source_role_counts", || json!({}));
+    let source_hook_types = take_record_field(record, "source_hook_types", || json!([]));
+    let source_hook_type_counts = take_record_field(record, "source_hook_type_counts", || json!({}));
+    let source_codex_events = take_record_field(record, "source_codex_events", || json!([]));
+    let source_codex_event_counts = take_record_field(record, "source_codex_event_counts", || json!({}));
+    let source_session_ids = take_record_field(record, "source_session_ids", || json!([]));
+    let source_entity_hashes = take_record_field(record, "source_entity_hashes", || json!([]));
     json!({
         "ref_type": public_ref_type,
         "ref_hash": ref_hash,
         "text": text,
-        "token_estimate": token_estimate(text),
-        "memory_layer": broad_memory_layer(record, public_ref_type),
+        "token_estimate": token_estimate,
+        "memory_layer": memory_layer,
         "memory_scope": record.get("memory_scope").and_then(Value::as_str).unwrap_or(""),
         "session_continuity": record.get("session_continuity").and_then(Value::as_str).unwrap_or(""),
         "extraction_phase": record.get("extraction_phase").and_then(Value::as_str).unwrap_or(""),
         "final_session_boundary": record.get("final_session_boundary").and_then(Value::as_bool).unwrap_or(false),
         "entity_type": record.get("entity_type").and_then(Value::as_str).unwrap_or(""),
         "entity_name": record.get("entity_name").and_then(Value::as_str).unwrap_or(""),
-        "source_roles": record.get("source_roles").cloned().unwrap_or_else(|| json!([])),
-        "source_role_counts": record.get("source_role_counts").cloned().unwrap_or_else(|| json!({})),
-        "source_hook_types": record.get("source_hook_types").cloned().unwrap_or_else(|| json!([])),
-        "source_hook_type_counts": record.get("source_hook_type_counts").cloned().unwrap_or_else(|| json!({})),
-        "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
-        "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
-        "source_session_ids": record.get("source_session_ids").cloned().unwrap_or_else(|| json!([])),
-        "source_entity_hashes": record.get("source_entity_hashes").cloned().unwrap_or_else(|| json!([])),
+        "source_roles": source_roles,
+        "source_role_counts": source_role_counts,
+        "source_hook_types": source_hook_types,
+        "source_hook_type_counts": source_hook_type_counts,
+        "source_codex_events": source_codex_events,
+        "source_codex_event_counts": source_codex_event_counts,
+        "source_session_ids": source_session_ids,
+        "source_entity_hashes": source_entity_hashes,
         "updated_at_ms": record.get("updated_at_ms").and_then(Value::as_u64).unwrap_or(0),
     })
 }
@@ -6639,6 +6716,27 @@ fn record_vector_of(record: &Value) -> Option<Vec<f32>> {
     Some(out)
 }
 
+/// The candidate's lowercased text, building it the first time it is asked for.
+///
+/// Reads through `selected_ref` rather than a second copy on the candidate, and is only ever
+/// reached from inside the lexical closure -- so a dense-only scan never calls it.
+fn candidate_lower_text(candidate: &CachedRetrieveCandidate) -> &str {
+    candidate.lower_text.get_or_init(|| {
+        candidate
+            .selected_ref
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    })
+}
+
+/// The share of query terms this LOWERED text contains.
+///
+/// The terms are ascii-lowercased when they are parsed, so the haystack has to be lowered too --
+/// and `contains` is worth the copy: matching case-insensitively over the original measured 3.6x
+/// slower on the bench, because this is a SIMD two-way search and that is a byte loop. The copy is
+/// deferred rather than removed; see `candidate_lower_text`.
 fn score_lowered_text(lowered: &str, query_terms: &[String]) -> f64 {
     if query_terms.is_empty() {
         return 0.0;
@@ -6809,6 +6907,384 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    /// What the copies removed from the retrieve path actually cost, isolated from the parse and
+    /// from the fixture that feeds them.
+    ///
+    /// The end-to-end harness cannot answer this: three ABBA rounds on this hardware spread 41%
+    /// between identical baseline arms and 350% between identical patched arms. Nothing of this
+    /// size is visible there, and more arms buy precision the machine does not have.
+    ///
+    /// Each pair writes out BOTH shapes so one binary can compare them, and both arms of a pair
+    /// build their fixture identically -- an earlier version parsed inside both arms of the bundle
+    /// pair and cloned the fixture in one arm of the response pair, so it reported the copy's
+    /// share of the parse and a move that looked slower than the clone it replaced.
+    ///
+    /// Reports rather than asserts: a timing assertion on shared hardware is a flake generator,
+    /// and the correctness of each move is pinned by its own test.
+    #[test]
+    fn what_the_copies_on_the_retrieve_path_cost() {
+        use std::time::Instant;
+
+        fn pct(before: u128, after: u128) -> f64 {
+            if before == 0 {
+                return 0.0;
+            }
+            (before as f64 - after as f64) / before as f64 * 100.0
+        }
+
+        // A shard-shaped bundle: 256 records, each carrying an embedding, which is what makes a
+        // record expensive to copy -- one 1024-dim vector is 1024 `Value`s.
+        let vector: Vec<Value> = (0..1024).map(|i| json!(i as f64 / 1024.0)).collect();
+        let records: Vec<Value> = (0..256)
+            .map(|i| {
+                json!({
+                    "record_type": "context_event",
+                    "record_id": format!("r{i}"),
+                    "text": "the storage manager reclaims the log once a durable dump completes",
+                    "vector": vector,
+                    "source_roles": ["user", "assistant"],
+                    "source_role_counts": {"user": 3, "assistant": 2},
+                    "source_session_ids": ["s1", "s2", "s3"],
+                    "source_entity_hashes": [11_u64, 22, 33],
+                })
+            })
+            .collect();
+        let payload = json!({"record_bundle": records}).to_string();
+
+        // Context first: what the PARSE costs, which neither shape avoids.
+        let started = Instant::now();
+        let mut parsed_len = 0;
+        for _ in 0..8 {
+            let decoded: Value = serde_json::from_str(&payload).expect("fixture parses");
+            parsed_len += decoded["record_bundle"].as_array().map(Vec::len).unwrap_or(0);
+        }
+        let parse_ns = started.elapsed().as_nanos();
+        assert_eq!(parsed_len, 8 * 256);
+
+        // 1. Extracting the records, with the parse OUTSIDE the timed region in both arms.
+        let mut clone_ns = 0_u128;
+        let mut move_ns = 0_u128;
+        let mut cloned_len = 0;
+        let mut moved_len = 0;
+        for _ in 0..8 {
+            let decoded: Value = serde_json::from_str(&payload).expect("fixture parses");
+            let mut out = Vec::new();
+            let started = Instant::now();
+            if let Some(bundle) = decoded.get("record_bundle").and_then(Value::as_array) {
+                for item in bundle {
+                    if item.is_object() {
+                        out.push(item.clone());
+                    }
+                }
+            }
+            clone_ns += started.elapsed().as_nanos();
+            cloned_len += out.len();
+
+            let mut decoded: Value = serde_json::from_str(&payload).expect("fixture parses");
+            let mut out2 = Vec::new();
+            let started = Instant::now();
+            if let Some(bundle) = decoded
+                .get_mut("record_bundle")
+                .and_then(Value::as_array_mut)
+            {
+                out2.extend(std::mem::take(bundle).into_iter().filter(Value::is_object));
+            }
+            move_ns += started.elapsed().as_nanos();
+            moved_len += out2.len();
+        }
+        assert_eq!(cloned_len, moved_len, "both shapes yield the same records");
+
+        // 2. Building a ref: taking the fields against cloning them. The record clone that feeds
+        // each iteration sits outside the timed region on both sides.
+        let parsed: Value = serde_json::from_str(&payload).expect("fixture parses");
+        let one: Value = parsed["record_bundle"][0].clone();
+        // The eight collections and the text, both ways, on the same record. Timing the whole
+        // `selected_ref_from_record` against a hand-written shape compares two different amounts
+        // of work: the real function fills about twenty fields.
+        let fields = [
+            "source_roles",
+            "source_role_counts",
+            "source_hook_types",
+            "source_hook_type_counts",
+            "source_codex_events",
+            "source_codex_event_counts",
+            "source_session_ids",
+            "source_entity_hashes",
+        ];
+        let mut ref_take_ns = 0_u128;
+        let mut ref_clone_ns = 0_u128;
+        for _ in 0..2000 {
+            // What it did: the text copied a second time into the ref, and every collection
+            // cloned out of a record that is dropped on the next line.
+            let record = one.clone();
+            let text = context_record_text(&record);
+            let started = Instant::now();
+            let mut copied: Vec<Value> = Vec::with_capacity(fields.len() + 1);
+            copied.push(Value::String(text.clone()));
+            for key in fields {
+                copied.push(record.get(key).cloned().unwrap_or_else(|| json!([])));
+            }
+            ref_clone_ns += started.elapsed().as_nanos();
+
+            // What it does: the text moved, and every collection taken.
+            let mut record = one.clone();
+            let text = context_record_text(&record);
+            let started = Instant::now();
+            let mut taken: Vec<Value> = Vec::with_capacity(fields.len() + 1);
+            taken.push(Value::String(text));
+            for key in fields {
+                taken.push(take_record_field(&mut record, key, || json!([])));
+            }
+            ref_take_ns += started.elapsed().as_nanos();
+
+            assert_eq!(copied, taken, "both shapes carry the same values");
+        }
+
+        // 3. Taking a response apart against copying every key and value out of it. Both arms
+        // build the response fresh, so the difference is the copy and not the fixture.
+        let pack = json!({
+            "selected_refs": (0..1000).map(|i| json!({
+                "ref_hash": format!("h{i}"),
+                "text": "the storage manager reclaims the log once a durable dump completes",
+                "token_estimate": 14,
+            })).collect::<Vec<_>>(),
+            "retrieval_metrics": {"scanned": 2954, "selected": 1000},
+        });
+        let mut response_clone_ns = 0_u128;
+        let mut response_move_ns = 0_u128;
+        let mut left = std::collections::BTreeMap::new();
+        let mut right = std::collections::BTreeMap::new();
+        for _ in 0..20 {
+            let response = json!({"ok": true, "count": 1000, "context_pack": pack});
+            left.clear();
+            let started = Instant::now();
+            if let Some(object) = response.as_object() {
+                for (key, value) in object {
+                    if !matches!(key.as_str(), "ok" | "count") {
+                        left.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            response_clone_ns += started.elapsed().as_nanos();
+
+            let response = json!({"ok": true, "count": 1000, "context_pack": pack});
+            right.clear();
+            let started = Instant::now();
+            if let Value::Object(object) = response {
+                for (key, value) in object {
+                    if !matches!(key.as_str(), "ok" | "count") {
+                        right.insert(key, value);
+                    }
+                }
+            }
+            response_move_ns += started.elapsed().as_nanos();
+        }
+        assert_eq!(left, right, "both shapes build the same response");
+
+        println!(
+            "  parse of 256 records x8:   {parse_ns} ns  (neither shape avoids this)"
+        );
+        println!(
+            "  extract 2048 records:      clone {clone_ns} ns, move {move_ns} ns, {:.1}% saved",
+            pct(clone_ns, move_ns)
+        );
+        println!(
+            "  ref fields x2000:          clone {ref_clone_ns} ns, take {ref_take_ns} ns, \
+             {:.1}% saved",
+            pct(ref_clone_ns, ref_take_ns)
+        );
+        println!(
+            "  response x20:              clone {response_clone_ns} ns, move {response_move_ns} \
+             ns, {:.1}% saved",
+            pct(response_clone_ns, response_move_ns)
+        );
+    }
+
+    /// Moving the bundle out must return exactly what cloning it returned.
+    ///
+    /// The records are now MOVED out of the parsed payload rather than deep-copied, which is a
+    /// change to how they get there and must not be a change to what arrives. The nested vector
+    /// is in the fixture on purpose: it is the largest thing a record carries and the part a
+    /// shallow move would be most likely to get wrong.
+    #[test]
+    fn moving_a_bundle_out_returns_what_cloning_it_returned() {
+        let payload = json!({
+            "record_bundle": [
+                {"record_type": "context_event", "text": "one", "vector": [0.5, 0.25, 0.125]},
+                "not an object -- must be dropped, as it always was",
+                {"record_type": "context_embedding", "nested": {"deep": {"deeper": [1, 2, 3]}}},
+            ]
+        })
+        .to_string();
+
+        // Anything already collected must survive: this appends, it does not replace.
+        let mut records = vec![json!({"record_type": "sentinel"})];
+        flatten_context_payload(&payload, &mut records);
+        assert_eq!(records.len(), 3, "sentinel plus the two objects: {records:?}");
+        assert_eq!(records[0]["record_type"], "sentinel");
+        assert_eq!(records[1]["text"], "one");
+        assert_eq!(records[1]["vector"], json!([0.5, 0.25, 0.125]));
+        assert_eq!(records[2]["nested"]["deep"]["deeper"], json!([1, 2, 3]));
+    }
+
+    /// A payload that is not a bundle, and one that is not JSON at all.
+    #[test]
+    fn a_payload_that_is_not_a_bundle_is_taken_whole_or_not_at_all() {
+        let mut records = Vec::new();
+        flatten_context_payload(&json!({"record_type": "context_event"}).to_string(), &mut records);
+        assert_eq!(records.len(), 1, "a bare object is one record");
+
+        // A non-object and a torn payload both contribute nothing, and neither may panic: a
+        // single bad shard must not cost the whole retrieve.
+        flatten_context_payload("[1, 2, 3]", &mut records);
+        flatten_context_payload("7", &mut records);
+        flatten_context_payload("{\"record_bundle\": ", &mut records);
+        flatten_context_payload("", &mut records);
+        assert_eq!(records.len(), 1, "nothing else was added: {records:?}");
+    }
+
+    /// The lowered text is built once, from the ref, and only when something asks for it.
+    ///
+    /// This is the property the whole change rests on: under the one-box weights the lexical
+    /// closure is never called, so nothing here ever runs and no candidate holds a second copy of
+    /// its text. `a_dense_only_policy_never_computes_the_lexical_score` pins the closure half.
+    #[test]
+    fn the_lowered_text_is_built_once_and_only_when_asked() {
+        let candidate = CachedRetrieveCandidate {
+            selected_ref: json!({"text": "The Storage MANAGER reclaims the log"}),
+            ref_type: "event".to_string(),
+            lower_text: OnceLock::new(),
+            vector: None,
+        };
+        assert!(
+            candidate.lower_text.get().is_none(),
+            "nothing is lowered until a lexical score asks for it"
+        );
+
+        let lowered = candidate_lower_text(&candidate);
+        assert_eq!(lowered, "the storage manager reclaims the log");
+        assert!(candidate.lower_text.get().is_some(), "and then it is kept");
+        // Same borrow on the second call: built once, not once per query.
+        assert!(std::ptr::eq(lowered, candidate_lower_text(&candidate)));
+    }
+
+    /// A record with no text still scores, rather than panicking or being dropped.
+    #[test]
+    fn a_candidate_without_text_lowers_to_nothing() {
+        let candidate = CachedRetrieveCandidate {
+            selected_ref: json!({"ref_type": "event"}),
+            ref_type: "event".to_string(),
+            lower_text: OnceLock::new(),
+            vector: None,
+        };
+        assert_eq!(candidate_lower_text(&candidate), "");
+        let terms = vec!["storage".to_string()];
+        assert_eq!(0.0, score_lowered_text(candidate_lower_text(&candidate), &terms));
+    }
+
+    /// The scorer reports the share of terms present, and an empty query scores nothing.
+    #[test]
+    fn the_lexical_score_is_the_share_of_terms_present() {
+        let terms = vec![
+            "storage".to_string(),
+            "manager".to_string(),
+            "absent".to_string(),
+        ];
+        let lowered = "the storage manager reclaims the log";
+        let scored = score_lowered_text(lowered, &terms);
+        assert!(
+            (scored - 2.0 / 3.0).abs() < 1e-9,
+            "two of three terms present, got {scored}"
+        );
+        assert_eq!(0.0, score_lowered_text(lowered, &[]));
+    }
+
+    /// What the lexical score costs a dense-only scan, measured on the function rather than on a
+    /// soak.
+    ///
+    /// The end-to-end harness cannot answer this: three identical runs spread 40.3% (gateway) and
+    /// 44.9% (proxy) in ticks per message, because the workload is time-boxed and a slower run
+    /// ingests fewer messages. Any CPU effect under ~40% is invisible there. A bench over the
+    /// function has no network, no scheduler and no store growth, so it can resolve what the soak
+    /// cannot.
+    ///
+    /// Reports rather than asserts a threshold: a timing assertion on shared CI hardware is a
+    /// flake generator. The number is for the log, and the CORRECTNESS of the skip is pinned by
+    /// `a_dense_only_policy_never_computes_the_lexical_score`.
+    #[test]
+    fn what_the_lexical_score_costs_a_dense_only_scan() {
+        use std::time::Instant;
+
+        // A candidate set shaped like a real scan: long-ish text, a query with several terms.
+        let terms: Vec<String> = ["gpu", "memory", "tuning", "storage", "manager"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let texts: Vec<String> = (0..4000)
+            .map(|i| {
+                format!(
+                    "record {i} about deployment windows and retention cursors, mentioning \
+                     storage and the write ahead log at some length so the search has work to do"
+                )
+            })
+            .collect();
+        let query = vec![1.0_f32; 64];
+        let record = vec![0.5_f32; 64];
+        let onebox = RankingWeights { dense: 1.0, sparse: 0.0, index_hint: 0.0 };
+        let blended = RankingWeights { dense: 0.72, sparse: 0.28, index_hint: 0.0 };
+
+        // Warm the caches so the first pass does not pay for both.
+        let mut sink = 0.0_f64;
+        for t in texts.iter() {
+            sink += score_lowered_text(t, &terms);
+        }
+        assert!(sink >= 0.0);
+
+        let started = Instant::now();
+        let mut dense_only = 0.0_f64;
+        for t in texts.iter() {
+            dense_only += candidate_score(
+                &onebox,
+                Some(&query),
+                Some(&record),
+                || score_lowered_text(t, &terms),
+                || false,
+            )
+            .unwrap_or(0.0);
+        }
+        let lazy_ns = started.elapsed().as_nanos();
+
+        let started = Instant::now();
+        let mut with_lexical = 0.0_f64;
+        for t in texts.iter() {
+            with_lexical += candidate_score(
+                &blended,
+                Some(&query),
+                Some(&record),
+                || score_lowered_text(t, &terms),
+                || false,
+            )
+            .unwrap_or(0.0);
+        }
+        let eager_ns = started.elapsed().as_nanos();
+
+        assert!(dense_only > 0.0 && with_lexical > 0.0, "both paths must score");
+        let saved = if eager_ns > lazy_ns {
+            (eager_ns - lazy_ns) as f64 / eager_ns as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "  lexical skip over {} candidates x {} terms: dense-only {} ns, blended {} ns, \
+             {:.1}% of the scoring pass",
+            texts.len(),
+            terms.len(),
+            lazy_ns,
+            eager_ns,
+            saved
+        );
+    }
 
     /// A dense-only policy must not pay for the lexical score at all.
     ///
