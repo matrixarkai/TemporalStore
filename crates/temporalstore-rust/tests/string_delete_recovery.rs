@@ -27,6 +27,7 @@
 
 use std::path::PathBuf;
 
+use temporalstore_rust::engine::reports::StorageManagerCycleRequest;
 use temporalstore_rust::{Command, CommandResponse, ExecuteRequest, LoadShardRequest, TemporalEngine};
 
 const SHARD_ID: u64 = 1;
@@ -100,5 +101,76 @@ fn a_deleted_string_stays_deleted_across_a_restart() {
         get(&engine, "bravo"),
         "the untouched key did not survive the restart",
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// And does it stay deleted once a maintenance round has run over it?
+///
+/// The test above restarts straight after the delete, so the tombstone is still in the bucket
+/// index when the shard reloads. A shipped server does not sit still: the storage manager runs a
+/// round every 30 seconds, and a round dumps the shard, clears the dumped buckets' dirty state
+/// and reclaims the WAL beneath the dump anchor. Measured, that round takes the tombstones out
+/// of `deleted_object_index` -- 60 deleted objects, and after one cycle the durable tombstone
+/// count is zero.
+///
+/// That is the right thing to do only if the dump that replaced them is durable and the WAL
+/// records the tombstone was protecting are gone with it. If the tombstone is dropped while a
+/// SET for the same key still sits in a replayable part of the log, the restart resurrects a
+/// deleted object -- and every test that restarts BEFORE a maintenance round would still pass.
+///
+/// This is the sequence a shipped data node actually performs, since the maintenance cycle
+/// became reachable by default.
+#[test]
+fn a_deleted_string_stays_deleted_across_a_restart_after_a_maintenance_round() {
+    let root = unique_root("maintenance");
+    let _ = std::fs::remove_dir_all(&root);
+    {
+        let engine = new_engine(&root);
+        for index in 0..40 {
+            run(
+                &engine,
+                Command::StringSet {
+                    key: format!("key-{index:03}"),
+                    value: format!("v{index}").into_bytes(),
+                },
+            );
+        }
+        for index in 0..20 {
+            run(&engine, Command::StringDelete { key: format!("key-{index:03}") });
+        }
+        // A full round: dump, clear the dumped buckets, reclaim the log beneath the anchor.
+        // Thresholds at zero so it fires here rather than waiting for pressure to build.
+        engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: SHARD_ID,
+            min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
+            ..StorageManagerCycleRequest::default()
+        });
+        for index in 0..20 {
+            assert_eq!(
+                None,
+                get(&engine, &format!("key-{index:03}")),
+                "key-{index:03} came back while the engine was still up",
+            );
+        }
+        // Dropped, not unloaded: an unload flushes the index, and the reopened engine would then
+        // read a base that already holds the delete without replaying the tail.
+    }
+
+    let engine = new_engine(&root);
+    for index in 0..20 {
+        assert_eq!(
+            None,
+            get(&engine, &format!("key-{index:03}")),
+            "key-{index:03} was resurrected by the restart after a maintenance round",
+        );
+    }
+    for index in 20..40 {
+        assert_eq!(
+            Some(format!("v{index}").into_bytes()),
+            get(&engine, &format!("key-{index:03}")),
+            "key-{index:03} was never deleted and must survive",
+        );
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
