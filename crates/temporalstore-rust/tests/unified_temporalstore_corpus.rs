@@ -3623,7 +3623,11 @@ fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
         shard_id: case.shard_id,
         selected_dump_buckets: dirty_buckets,
         max_dump_buckets_per_round: 64,
+        // Both thresholds at zero: this corpus drives the dump itself and must not be told to
+        // wait for pressure to build, or the buckets it just dirtied stay undumped and every
+        // assertion below is about the wrong state.
         min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
         purge_delayed_destroy: true,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: true,
