@@ -2639,6 +2639,74 @@ fn what_the_slab_survey_costs() {
         if survey_pages == walk_pages { "AGREE" } else { "DISAGREE" });
 }
 
+/// What does the boundary report cost, and how many pages does a whole round read? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_a_round_still_reads -- --ignored --nocapture
+#[test]
+#[ignore]
+fn what_a_round_still_reads() {
+    for records in [2_000usize, 8_000, 32_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 << 20,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            write_string(&engine, &format!("round-{index:06}"), &[b'v'; 256]);
+        }
+        let cycle = |engine: &TemporalEngine| {
+            engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 1,
+                min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
+                ..StorageManagerCycleRequest::default()
+            });
+        };
+        cycle(&engine);
+
+        let live = engine.live_page_count_for_test(1) as u64;
+
+        let before = engine.block_store().stats().reads;
+        let started = std::time::Instant::now();
+        let _ = engine.storage_recovery_boundary_report(1);
+        let boundary_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let boundary_reads = engine.block_store().stats().reads.saturating_sub(before);
+
+        let before = engine.block_store().stats().reads;
+        let started = std::time::Instant::now();
+        cycle(&engine);
+        let round_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let round_reads = engine.block_store().stats().reads.saturating_sub(before);
+
+        eprintln!(
+            "  {records:>6} records ({live} live pages):  boundary={boundary_ms:>8.2} ms \
+             / {boundary_reads} reads   whole round={round_ms:>8.2} ms / {round_reads} reads \
+             ({:.1}x the live pages)",
+            round_reads as f64 / live.max(1) as f64
+        );
+
+        // Which stage is it? The cycle reports a duration per stage.
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
+            ..StorageManagerCycleRequest::default()
+        });
+        let mut stages = report
+            .stages
+            .iter()
+            .map(|stage| (stage.duration_ms, stage.stage.clone()))
+            .collect::<Vec<_>>();
+        stages.sort_by(|left, right| right.0.cmp(&left.0));
+        for (duration_ms, stage) in stages.iter().take(5) {
+            eprintln!("        {stage:<18} {duration_ms:>8} ms");
+        }
+    }
+}
+
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,
