@@ -300,6 +300,23 @@ class _TemporalDirectWriteMixin:
         )
         if not records:
             return
+        # One batch keeps one copy of a record. Measured on a soak store: 18.5% of every
+        # record written here is byte-identical to another record in the SAME batch --
+        # 1,618 of 8,747 rows over 788 batches, context_node worst, then context_event.
+        # Serving collapses them on read (compact_latest_value_records keeps the newest per
+        # identity), so the extra copies are log bytes, scan bytes and parse time and nothing
+        # else; one event reached 6,700 copies, 45.7 MB of the 59.4 MB that each
+        # session_commit scan reads back.
+        #
+        # This runs HERE, and not only in `_apply_serving_dedup`, because the native backend
+        # deliberately skips that one -- its summary-dirty coalescing calls read_all(), an
+        # O(store) read per batch -- so a collapse placed there alone would never execute on
+        # this path. Same trap the fold comment above describes. This collapse reads nothing:
+        # it compares records already in hand, after the fold, so what it compares is exactly
+        # what would be written.
+        collapse = getattr(self, "_collapse_identical_records", None)
+        if callable(collapse):
+            records = collapse(records)
         self._ensure_backend_metric_fields()
         records = compact_latest_context_state_records(records)
         self._append_disk_fallback_records(records)
