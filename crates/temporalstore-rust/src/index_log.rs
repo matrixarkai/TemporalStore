@@ -264,15 +264,23 @@ pub struct IndexItem {
     pub kind: IndexItemKind,
     #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
     pub routing_bucket: u32,
-    /// The page handle, carried as text.
+    /// The page handle. A `String` in this struct, a NUMBER on the wire whenever it holds one.
     ///
     /// It is a `u64` everywhere else -- `BlockLookupRef::page_ref_key` is one, and the write path
-    /// stringifies it on the way in. As decimal text it is 20 bytes of a 161-byte item, 12.4%;
-    /// as a number it would be about nine.
+    /// stringifies it on the way in. As decimal text it was 20 bytes of a 161-byte item, 12.4%;
+    /// as a number it is about nine.
     ///
-    /// The reader takes either shape as of this change, which is the half that has to land first:
-    /// a writer that emitted a number today would hand it to a reader expecting a string, and
-    /// msgpack would refuse the type outright rather than degrade. Nothing writes a number yet.
+    /// Both halves have landed. `page_ref_key_as_number_when_it_is_one` parses the string and
+    /// serializes a `u64` when it parses, falling back to a string when it does not; the reader
+    /// takes either shape, because records written before the writer half exist on disk and are
+    /// not going to rewrite themselves.
+    ///
+    /// (This said "Nothing writes a number yet" while sitting directly above the serializer that
+    /// writes one. That order was right when the reader half landed alone -- a writer emitting a
+    /// number to a reader expecting a string would have been refused outright by msgpack rather
+    /// than degrading -- and the sentence outlived the sequencing it described. On a durable
+    /// format a stale claim about what is on the wire is the kind that gets acted on: the same
+    /// file's encoder comment claimed struct-as-map while calling the array form.)
     #[serde(
         rename = "pk",
         alias = "page_ref_key",
