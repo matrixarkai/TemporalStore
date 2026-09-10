@@ -33,10 +33,6 @@ pub const TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME: &str = "TS_BLOCK_SEGMENT_TAR
 
 pub const DEFAULT_CONTEXT_PAGE_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
-// Match the data-slab seal size (block_slab_target) so one slab maps to one band
-// (band_id_for_slab stays 1:1), Mirroring where group_size == zone_size
-// (specification) and a zone seals at the device zone_size (~1GiB large mode).
-pub const DEFAULT_STORAGE_BAND_SIZE: u64 = 1 << 30;
 pub const DEFAULT_STREAM_MAX_BLOB_SIZE: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;

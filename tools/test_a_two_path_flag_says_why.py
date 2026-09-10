@@ -43,6 +43,14 @@ INVENTORY = os.path.join(REPO, "docs", "ops", "temporalstore-engine-flags.md")
 
 # Every boolean whose other arm no shipped selector reaches, and why it keeps one.
 KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
+    # --- surfaced when the inventory learned to read matrixark_rust_proxy_impl.rs ---------------
+    "MATRIXARK_RUST_PROXY_HTTP_CONCURRENT":
+        "The engine states the reason beside the read: OFF reproduces exactly the serialization "
+        "the pipe had, where --serve handled one request at a time behind a daemon holding a "
+        "single lock, so nothing in this engine has ever had two requests in flight. Moving the "
+        "transport off the pipe is one change and letting requests overlap is another, and the "
+        "second is behind its own switch so it can be measured, and reverted, on its own. The "
+        "branch is what makes that separable.",
     # The arm that produces a benchmark result the project refuses to publish. Turning it on
     # scores the source text directly instead of retrieving it, and marks the run
     # rust_context_event_ingest=false; validate_benchmark_claims.py and

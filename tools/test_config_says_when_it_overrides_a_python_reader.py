@@ -47,15 +47,10 @@ _READ = re.compile(
 
 #: A shipped-config value that is NOT what the Python reader would have chosen, and why.
 KNOWN_OVERRIDES: Dict[str, str] = {
-    "MATRIXARK_RETRIEVAL_MIN_SCORE":
-        "0.05 against the reader's 0.20 -- the floor that keeps junk out of a pack as the caps "
-        "above it rise, which is the point of raising them",
     "MATRIXARK_TOP_K_PER_LAYER":
         "24 against 8, the config's own comment: raised for richer default packs",
     "MATRIXARK_MAX_GLOBAL_CANDIDATES":
         "2048 against 512, part of the same deliberate widening of the retrieval surface",
-    "MATRIXARK_MAX_SELECTED_REFS":
-        "1000 against 64, the hard cap on refs in a pack, raised with the caps that feed it",
     "MATRIXARK_CROSS_SESSION_MAX_CANDIDATES":
         "200 against 24, the config's own comment: was the main breadth limiter",
     "MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES":

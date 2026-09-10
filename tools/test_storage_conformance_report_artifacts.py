@@ -301,7 +301,9 @@ class StorageParityReportArtifactTest(unittest.TestCase):
             report_dir = root / "parity_smoke"
             report_dir.mkdir()
             report = _valid_report("rust")
-            report["effective_storage_tuning"]["TS_STORAGE_ZONE_SIZE"] = 123  # type: ignore[index]
+            # Any knob in EXPECTED_DEFAULTS drives this; it named TS_STORAGE_ZONE_SIZE until that
+            # was retired with the engine's band size, so it now names one the engine still reads.
+            report["effective_storage_tuning"]["TS_STREAM_MAX_BLOB_SIZE"] = 123  # type: ignore[index]
             (report_dir / "rust.json").write_text(json.dumps(report), encoding="utf-8")
 
             scanned, failures = validate_artifacts(root)
@@ -310,10 +312,10 @@ class StorageParityReportArtifactTest(unittest.TestCase):
         # Read from EXPECTED_DEFAULTS rather than written out: this assertion carried 10485760,
         # a value the engine has never used, so correcting the expectation broke a test that was
         # only ever checking the literal it had been given.
-        expected = EXPECTED_DEFAULTS["TS_STORAGE_ZONE_SIZE"]
+        expected = EXPECTED_DEFAULTS["TS_STREAM_MAX_BLOB_SIZE"]
         self.assertTrue(
             any(
-                f"effective storage tuning `TS_STORAGE_ZONE_SIZE` drift: expected {expected} got 123"
+                f"effective storage tuning `TS_STREAM_MAX_BLOB_SIZE` drift: expected {expected} got 123"
                 in item
                 for item in failures
             ),

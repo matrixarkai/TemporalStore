@@ -21,7 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "sdk" / "python"))
 
-from matrixark_mcp_core import stable_hash  # noqa: E402
+from matrixark_mcp_core import (  # noqa: E402
+    DIRECT_RECORD_LOG_SHARD_SIZE,
+    stable_hash,
+)
 from matrixark_mcp_temporal_adapters import MatrixArkTemporalStoreDirectAdapter  # noqa: E402
 from matrixark_raw_message_storage_contract import (  # noqa: E402
     RawMessageStorageTarget,
@@ -505,7 +508,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_RAW_BACKENDS", ""),
         help="Run a backend sweep for temporalstore, matrixkv, both, or a comma-separated subset. Empty means --raw-backend only.",
     )
-    parser.add_argument("--shard-size", type=int, default=int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "4096")))
+    # The production default, imported rather than restated. This argument used to
+    # re-read the variable with its own default of 4096 against the 256 every other
+    # reader uses, so a run that set nothing benchmarked a shard size no deployment
+    # has. Pass --shard-size to sweep it.
+    parser.add_argument("--shard-size", type=int, default=DIRECT_RECORD_LOG_SHARD_SIZE)
     parser.add_argument("--metaserver", default=os.environ.get("TEMPORALSTORE_METASERVER", "127.0.0.1:65000"))
     # The values config/temporalstore.toml declares for these two variables; see the note in
     # matrixark_context_backfill, which carried the same pair.

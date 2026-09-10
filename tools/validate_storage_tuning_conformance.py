@@ -15,7 +15,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 EXPECTED_KNOBS = {
     "TS_CONTEXT_PAGE_TARGET_BYTES",
     "TS_BLOCK_SLAB_TARGET_BYTES",
-    "TS_STORAGE_ZONE_SIZE",
     "TS_STREAM_MAX_BLOB_SIZE",
     "TS_COMPACTION_WATERMARK_BYTES",
     "TS_COLD_SCAN_NO_CACHE_FILL",
@@ -26,10 +25,6 @@ EXPECTED_KNOBS = {
 EXPECTED_DEFAULTS = {
     "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
     "TS_BLOCK_SLAB_TARGET_BYTES": 1073741824,
-    # 1 GiB. Was recorded here as 10 MiB, which never matched the engine: DEFAULT_STORAGE_ZONE_SIZE
-    # has a single commit in this repository and has been `1 << 30` since it landed. The old figure
-    # came from the launcher script this validator used to cross-check, and outlived it.
-    "TS_STORAGE_ZONE_SIZE": 1073741824,
     "TS_STREAM_MAX_BLOB_SIZE": 10485760,
     "TS_COMPACTION_WATERMARK_BYTES": 268435456,
     "TS_COLD_SCAN_NO_CACHE_FILL": True,
@@ -70,10 +65,6 @@ def extract_rust_defaults(path: pathlib.Path) -> dict[str, object]:
     constant_map = {
         "TS_CONTEXT_PAGE_TARGET_BYTES": "DEFAULT_CONTEXT_PAGE_TARGET_BYTES",
         "TS_BLOCK_SLAB_TARGET_BYTES": "DEFAULT_BLOCK_SLAB_TARGET_BYTES",
-        # The flag kept the old word and the constant took the new one: the storage
-        # vocabulary change renamed this to BAND while TS_STORAGE_ZONE_SIZE stayed as it
-        # is, so the two no longer resemble each other and only this line joins them.
-        "TS_STORAGE_ZONE_SIZE": "DEFAULT_STORAGE_BAND_SIZE",
         "TS_STREAM_MAX_BLOB_SIZE": "DEFAULT_STREAM_MAX_BLOB_SIZE",
         "TS_COMPACTION_WATERMARK_BYTES": "DEFAULT_COMPACTION_WATERMARK_BYTES",
         "TS_COLD_SCAN_NO_CACHE_FILL": "DEFAULT_COLD_SCAN_NO_CACHE_FILL",

@@ -71,7 +71,6 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _ENGINE_MINIMUMS: Dict[str, int] = {
     "TS_CONTEXT_PAGE_TARGET_BYTES": 1024,
     "TS_BLOCK_SLAB_TARGET_BYTES": 1024,
-    "TS_STORAGE_ZONE_SIZE": 1024,
     "TS_STREAM_MAX_BLOB_SIZE": 1024,
 }
 
@@ -643,9 +642,11 @@ SETTINGS: List[Setting] = [
             "not and returns the session too. auto decides per request.",
             ["auto", "local_and_remote", "remote_only"]),
     Setting("retrieval.min_score", "retrieval", "MATRIXARK_RETRIEVAL_MIN_SCORE",
-            "Minimum similarity score", "float", "0.20", "restart",
+            "Minimum similarity score", "float", "0.05", "restart",
             "Candidates scoring below this are dropped before packing. Raising it returns less but "
-            "more relevant context; lowering it fills the budget with weaker matches."),
+            "more relevant context; lowering it fills the budget with weaker matches. Declared 0.20 "
+            "until the readers were lowered to 0.05 and this was not; the panel showed a floor four "
+            "times the one being applied."),
     Setting("retrieval.budget_fill_policy", "retrieval", "MATRIXARK_BUDGET_FILL_POLICY",
             "Budget fill policy", "str", "quality_first", "restart",
             "quality_first leaves the budget underfilled rather than packing weak candidates. "
@@ -735,12 +736,6 @@ SETTINGS: List[Setting] = [
             "The unit page-slab reclaim works in. A slab is retained while any loaded shard still "
             "references it, so larger slabs mean fewer, coarser reclaims. Values below 1 KiB are "
             "raised to it."),
-    Setting("storage_engine.storage_zone_size", "storage_engine",
-            "TS_STORAGE_ZONE_SIZE",
-            "Storage zone size", "int", "1073741824", "live",
-            "The span the band and zone catalog accounts in. It sets the granularity of what "
-            "compaction and the catalog can talk about, not how much is stored. Values below 1 KiB "
-            "are raised to it."),
     Setting("storage_engine.stream_max_blob_size", "storage_engine",
             "TS_STREAM_MAX_BLOB_SIZE",
             "Largest streamed blob", "int", "10485760", "live",
@@ -1242,9 +1237,11 @@ SETTINGS.extend([
             "Direct raw ingestion queue. Off by default. Frozen when the process starts. Read by "
             "matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
     Setting("limits.direct_record_log_shard_size", "limits", "MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE",
-            "Direct record log shard size", "int", "4096", "restart",
-            "Direct record log shard size. Defaults to 4096. Frozen when the process starts. Read by "
-            "matrixark_context_backfill."),
+            "Direct record log shard size", "int", "256", "restart",
+            "Records per shard in the direct record log. Frozen when the process starts. Declared "
+            "4096 while every reader that names it -- matrixark_context_backfill, "
+            "matrixark_mcp_runtime_config and matrixark_mcp_core -- applied 256, including the one "
+            "this description used to name as its reader."),
     Setting("limits.direct_retrieval_candidate_cache_max_entries", "limits", "MATRIXARK_DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES",
             "Direct retrieval candidate cache max entries", "int", "256", "restart",
             "Direct retrieval candidate cache maximum entries. Defaults to 256. Frozen when the process "
