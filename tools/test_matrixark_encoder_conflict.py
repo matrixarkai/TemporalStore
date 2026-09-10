@@ -13,6 +13,8 @@ performs. Asserting on a store that never had a second encoder would pass with t
 """
 from __future__ import annotations
 
+import inspect
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,7 +25,36 @@ import matrixark_mcp_server as mcp  # noqa: F401  (imported for its side effect:
 # circular import. The retrieve module holds its OWN binding of embedding_model_name -- patching
 # the one in mcp_core leaves the caller untouched, which is how the first version of this file
 # passed while measuring nothing.
-import matrixark_local_adapter_retrieve as retrieve_mod
+import matrixark_local_adapter_retrieve as _retrieve_mod_by_name
+
+
+def _live_retrieve_module():
+    """The retrieve module that the adapter this file builds actually runs.
+
+    Three separate hazards stack here, and each one alone is enough to make every patch below
+    land on a binding nothing reads:
+
+    1. `matrixark_local_adapter_retrieve` and `tools.matrixark_local_adapter_retrieve` are two
+       module objects with separate globals, so a patched name in one is invisible to the other.
+    2. `matrixark_mcp_local_adapter` is ALSO two module objects, carrying two different
+       `MatrixArkLocalAdapter` classes. `build_store` instantiates `mcp.MatrixArkLocalAdapter`,
+       re-exported by the server, so the class under test is not the one an
+       `import matrixark_mcp_local_adapter` here would give you.
+    3. Which spelling of the retrieve module that class mixed in is decided by IMPORT ORDER, and
+       nothing pins the order. Measured both ways: with an unused
+       `import matrixark_mcp_local_adapter` at the top of this file the server class ran the flat
+       retrieve, and with that line deleted the same class ran the package one. So there is no
+       stable answer to write down, and any resolution that names a spelling, or walks some other
+       adapter MRO, is right only until an import moves.
+
+    Taken from the bound method of the class this file instantiates, which is the one thing that
+    cannot drift: the class says which mixin won, but only the method says which module the
+    running code reads its free names from, and that is where a patch has to land.
+    """
+    return inspect.getmodule(mcp.MatrixArkLocalAdapter.retrieve) or _retrieve_mod_by_name
+
+
+retrieve_mod = _live_retrieve_module()
 
 
 def scope():
@@ -126,6 +157,38 @@ class ModelNameTest(unittest.TestCase):
     def test_an_empty_name_is_not_the_same_as_anything(self) -> None:
         self.assertFalse(core.same_embedding_model("", ""))
         self.assertFalse(core.same_embedding_model("", "bge-m3"))
+
+
+class TheTestsPatchTheModuleTheAdapterRunsTest(unittest.TestCase):
+    """The floor under every patch in this file.
+
+    Each one replaces a binding on `retrieve_mod`. If that is not the module the adapter's retrieve
+    mixin came from, the patch lands somewhere nothing reads and every assertion here becomes a
+    statement about an unpatched system -- which is how four of these failed while the guard they
+    test was working."""
+
+    def test_retrieve_mod_is_the_module_a_built_server_dispatches_into(self) -> None:
+        """Floored against a server that has been BUILT, not against a class attribute.
+
+        The class only says which mixin won. What decides where a patch has to land is the module
+        whose globals the running function reads, and with two spellings of both the adapter and
+        the retrieve module in one process those are not the same question."""
+        _, server = build_store(turns=1)
+        running = sys.modules[type(server.adapter).retrieve.__globals__["__name__"]]
+        self.assertIs(retrieve_mod, running,
+                      "this file patches %s but the server dispatches into %s"
+                      % (getattr(retrieve_mod, "__name__", "?"), getattr(running, "__name__", "?")))
+
+    def test_the_live_module_carries_the_names_this_file_patches(self) -> None:
+        """Landing on the right module is only half of it: the names have to be READ there.
+
+        Each patch replaces a module-scope binding, which only reaches the guard if the guard
+        resolves that free name in this module namespace rather than holding an imported alias
+        of its own."""
+        for name in ("embedding_model_name", "embedding_model_conflicts"):
+            self.assertIn(name, vars(retrieve_mod),
+                          "%s is not a module-scope name in %s, so patching it reaches nothing"
+                          % (name, getattr(retrieve_mod, "__name__", "?")))
 
 
 class ServingPathTest(unittest.TestCase):
@@ -243,7 +306,7 @@ class LivePathTest(unittest.TestCase):
     def test_the_guard_is_consulted_during_a_real_retrieve(self) -> None:
         # The direct evidence, rather than an argument about which branch is reachable: count the
         # calls during an actual retrieve. Zero would mean the code is dead however good it looks.
-        import matrixark_local_adapter_retrieve as retrieve_mod
+        retrieve_mod = _live_retrieve_module()
 
         _adapter, server = build_store()
         original = retrieve_mod.embedding_model_conflicts
