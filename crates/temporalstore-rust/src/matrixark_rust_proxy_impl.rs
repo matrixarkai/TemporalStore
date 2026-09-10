@@ -304,6 +304,10 @@ struct RetrieveBuildCost {
     read_ms: f64,
     inventory_ms: f64,
     candidates_ms: f64,
+    /// Shards whose candidates were reused, and shards in total. Records are appended, so a write
+    /// should leave every shard but the newest reusable -- this says whether it does.
+    prepared_hits: usize,
+    prepared_shards: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -5511,9 +5515,11 @@ fn prepare_shard_candidates(
     key: String,
     signature: &str,
     scope: Option<&Value>,
+    reused: &mut usize,
 ) -> Result<Arc<Vec<CachedRetrieveCandidate>>, String> {
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
         if let Some(prepared) = cache.prepared_for_scope(&key, signature) {
+            *reused += 1;
             return Ok(prepared);
         }
     }
@@ -5647,6 +5653,7 @@ fn load_retrieve_candidate_snapshot(
     let inventory_ms = inventory_started.elapsed().as_secs_f64() * 1000.0;
     let scanned_records = records.len();
     let candidates_started = Instant::now();
+    let mut prepared_hits = 0usize;
     let segments: Vec<Arc<Vec<CachedRetrieveCandidate>>> = if secondary_groups.is_empty() {
         // Per shard, and cached there: records are appended, so every shard but the newest
         // produces exactly the candidates it produced before, filter for filter and ref for ref.
@@ -5654,7 +5661,13 @@ fn load_retrieve_candidate_snapshot(
         let mut segments = Vec::with_capacity(shard_count);
         for shard in 0..shard_count {
             let key = format!("{record_hash_key}:{shard:06}");
-            segments.push(prepare_shard_candidates(engine, key, &signature, scope)?);
+            segments.push(prepare_shard_candidates(
+                engine,
+                key,
+                &signature,
+                scope,
+                &mut prepared_hits,
+            )?);
         }
         segments
     } else {
@@ -5688,6 +5701,8 @@ fn load_retrieve_candidate_snapshot(
             read_ms,
             inventory_ms,
             candidates_ms,
+            prepared_hits,
+            prepared_shards: shard_count,
         },
     ));
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
@@ -6099,7 +6114,7 @@ fn retrieve_context_pack_output(
         // Phases, not just a total: a rebuild and a scoring pass are fixed by different work, and
         // "the retrieve took a second" has never been enough to tell them apart.
         eprintln!(
-            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims; query embed {:.1} ms; sweep {:.1} ms dropped {}",
+            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims; query embed {:.1} ms; sweep {:.1} ms dropped {}; shards reused {}/{}",
             snapshot.scanned_records,
             snapshot.build.read_ms,
             snapshot.build.inventory_ms,
@@ -6109,7 +6124,9 @@ fn retrieve_context_pack_output(
             widest_vector,
             query_embed_ms,
             sweep_ms,
-            swept_away
+            swept_away,
+            snapshot.build.prepared_hits,
+            snapshot.build.prepared_shards
         );
     }
     let correctness = selected_count > 0;
@@ -6595,17 +6612,44 @@ const REDUNDANT_ITEM_MIN_CHARS: usize = 8;
 /// bytes scanned are the same either way.
 const REDUNDANT_HAYSTACK_BYTES: usize = 65536;
 
+/// Every distinct trigram in a text, as a packed key.
+///
+/// Three bytes rather than two: a 64-bucket bigram summary saturates on ordinary prose -- a
+/// 400-byte sentence has about 400 bigrams and 64 buckets, so nearly every bucket is set in nearly
+/// every text and nothing is ever ruled out. Trigrams are distinctive enough to divide the pack.
+fn trigrams_of(text: &str, into: &mut Vec<u32>) {
+    into.clear();
+    let bytes = text.as_bytes();
+    if bytes.len() < 3 {
+        return;
+    }
+    for window in bytes.windows(3) {
+        into.push(
+            (u32::from(window[0]) << 16) | (u32::from(window[1]) << 8) | u32::from(window[2]),
+        );
+    }
+    into.sort_unstable();
+    into.dedup();
+}
+
 /// Drop refs whose text a LONGER ref in the same pack already carries.
 ///
 /// The reader is billed for every ref, and an entity projection of an event says the same thing
-/// twice. Only a strict containment of the value half is dropped, so a ref that adds a name, a
-/// type or a value not literally present in the kept one survives.
+/// twice. Only a strict containment of the value half is dropped, so a ref that adds a name, a type
+/// or a value not literally present in the kept one survives.
 ///
-/// Ordered longest first and searched against joined haystacks, so an item is compared only
-/// against text that could contain it, in a handful of searches rather than one per candidate.
-/// The order is free to choose because containment is transitive and carries the length condition
-/// with it: if X is inside Y and Y is inside Z then X is inside Z, so whether Y itself survives
-/// cannot change X's fate.
+/// Containers are found through a trigram index rather than by scanning every longer text. If X is
+/// inside Y then every trigram of X is in Y, including its RAREST, so only the texts on that one
+/// posting list can contain X -- and a distinctive trigram has a short list. Scanning every longer
+/// text instead measured 37-43 ms on a pack of a few hundred kilobytes, larger than the entire
+/// snapshot rebuild, because that is O(n x total) however the text is arranged.
+///
+/// The index only chooses which pairs to look at. Every pair it offers is still verified with a
+/// real substring check, so the answer is the same as comparing everything against everything.
+///
+/// Order is free to choose because containment is transitive and carries the length condition with
+/// it: if X is inside Y and Y is inside Z then X is inside Z, so whether Y survives cannot change
+/// X's fate. Longest first, so a text's candidates are exactly the postings recorded before it.
 fn drop_redundant_selected_refs(refs: Vec<Value>) -> Vec<Value> {
     if refs.len() < 2 {
         return refs;
@@ -6616,57 +6660,60 @@ fn drop_redundant_selected_refs(refs: Vec<Value>) -> Vec<Value> {
             normalized_pack_item_text(ref_value.get("text").and_then(Value::as_str).unwrap_or(""))
         })
         .collect();
-    // A text carrying the separator could let a match span two of them. Normalised pack text is
-    // collapsed prose and does not contain a NUL; if one ever does, nothing is dropped rather than
-    // something being dropped wrongly.
-    if texts.iter().any(|text| text.contains('\0')) {
-        return refs;
-    }
 
     let mut order: Vec<usize> = (0..texts.len()).collect();
     order.sort_by(|left, right| texts[*right].len().cmp(&texts[*left].len()));
 
     let mut redundant = vec![false; texts.len()];
     let mut any_redundant = false;
-    let mut sealed: Vec<String> = Vec::new();
-    // Grown by appending rather than rebuilt per group: a thousand refs have close to a thousand
-    // distinct lengths, and re-joining at each one copies the whole haystack again.
-    let mut pending_text = String::new();
+    // trigram -> positions in `order` that contain it, appended in order so each list is sorted.
+    let mut trigram_postings: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut scratch: Vec<u32> = Vec::new();
 
-    let mut position = 0usize;
-    while position < order.len() {
-        // One whole length group: an item of the same length cannot contain another.
-        let group_len = texts[order[position]].len();
-        let mut end = position;
-        while end < order.len() && texts[order[end]].len() == group_len {
-            end += 1;
-        }
+    for position in 0..order.len() {
+        let index = order[position];
+        let text = &texts[index];
+        trigrams_of(text, &mut scratch);
 
-        if group_len >= REDUNDANT_ITEM_MIN_CHARS {
-            for slot in position..end {
-                let index = order[slot];
-                let text = &texts[index];
-                if text.is_empty() {
-                    continue;
+        if text.len() >= REDUNDANT_ITEM_MIN_CHARS && !scratch.is_empty() {
+            // The rarest trigram, because its posting list is the shortest set of texts that could
+            // contain this one.
+            let mut rarest: Option<&Vec<u32>> = None;
+            for trigram in &scratch {
+                match trigram_postings.get(trigram) {
+                    None => {
+                        // A trigram no longer text has: nothing can contain this one.
+                        rarest = None;
+                        break;
+                    }
+                    Some(postings) => {
+                        if rarest.map(|best| postings.len() < best.len()).unwrap_or(true) {
+                            rarest = Some(postings);
+                        }
+                    }
                 }
-                let contained = (!pending_text.is_empty() && pending_text.contains(text.as_str()))
-                    || sealed.iter().any(|chunk| chunk.contains(text.as_str()));
-                if contained {
-                    redundant[index] = true;
-                    any_redundant = true;
+            }
+            if let Some(postings) = rarest {
+                for candidate in postings {
+                    let other = order[*candidate as usize];
+                    if texts[other].len() <= text.len() {
+                        continue; // equal length cannot contain, and nothing later is longer
+                    }
+                    if texts[other].contains(text.as_str()) {
+                        redundant[index] = true;
+                        any_redundant = true;
+                        break;
+                    }
                 }
             }
         }
 
-        for slot in position..end {
-            let text = texts[order[slot]].as_str();
-            pending_text.push_str(text);
-            pending_text.push('\0');
+        for trigram in &scratch {
+            trigram_postings
+                .entry(*trigram)
+                .or_default()
+                .push(position as u32);
         }
-        if pending_text.len() >= REDUNDANT_HAYSTACK_BYTES {
-            sealed.push(std::mem::take(&mut pending_text));
-        }
-        position = end;
     }
 
     if !any_redundant {
