@@ -26,6 +26,11 @@ MATRIXARK_ADMIN_SCOPES = {"admin:account", "admin:tenant", "admin:user", "admin:
 MATRIXARK_CONTEXT_SCOPES = {
     "context:ingest",
     "context:retrieve",
+    #: Added with the forget/delete API at 73f9ec542, 2026-08-17. It reached core's copy of this
+    #: set and not this one, which is the same miss recorded for MATRIXARK_ROLE_SCOPE_LIMITS
+    #: below -- and it is what `matrixark_forget`, `matrixark_delete` and `matrixark_reset`
+    #: require.
+    "context:forget",
     "context:feedback",
     "context:replay",
     "resource:ingest",
@@ -66,6 +71,21 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_admin_audit": {"admin:audit"},
     "matrixark_backend_ready": set(),
     "matrixark_backend_metrics": set(),
+    #: The mem0-compatible surface, added at 73f9ec542, 2026-08-17 with the forget/delete API. It
+    #: reached core's copy of this map and never this one. A tool ABSENT from the map is read by
+    #: `MATRIXARK_TOOL_SCOPES.get(name, set())` as requiring no scope at all, so the two copies did
+    #: not merely differ -- one of them gated these eleven and the other let them through.
+    "matrixark_forget": {"context:forget"},
+    "matrixark_delete": {"context:forget"},
+    "matrixark_reset": {"context:forget"},
+    "matrixark_get_all": {"context:retrieve"},
+    "matrixark_list_users": {"context:retrieve"},
+    "matrixark_get_resource_content": {"context:retrieve"},
+    "matrixark_get_memory": {"context:retrieve"},
+    "matrixark_get_memory_by_key": {"context:retrieve"},
+    "matrixark_update_memory": {"context:ingest"},
+    "matrixark_memory_history": {"context:retrieve"},
+    "matrixark_memory_feedback": {"context:ingest"},
 }
 
 #: The roles a scoped key may carry, and what each may do.

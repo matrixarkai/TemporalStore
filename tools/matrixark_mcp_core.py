@@ -407,72 +407,33 @@ DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "dialogue_batch": 0.45,
     "session": 0.45,
 }
-MATRIXARK_ADMIN_SCOPES = {"admin:account", "admin:tenant", "admin:user", "admin:api_key", "admin:sso", "admin:audit", "portal:read"}
-MATRIXARK_CONTEXT_SCOPES = {
-    "context:ingest",
-    "context:retrieve",
-    "context:forget",
-    "context:feedback",
-    "context:replay",
-    "resource:ingest",
-    "resource:read",
-    "resource:manage",
-    "skill:read",
-    "skill:manage",
-}
-MATRIXARK_ALL_SCOPES = MATRIXARK_CONTEXT_SCOPES | MATRIXARK_ADMIN_SCOPES
-MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
-    "matrixark_ingest": {"context:ingest"},
-    "matrixark_batch_extract": {"context:ingest"},
-    "matrixark_session_commit": {"context:ingest"},
-    "matrixark_refresh_summaries": {"context:ingest"},
-    "matrixark_retrieve": {"context:retrieve"},
-    "matrixark_embedding_status": {"context:retrieve"},
-    "matrixark_forget": {"context:forget"},
-    "matrixark_delete": {"context:forget"},
-    "matrixark_reset": {"context:forget"},
-    "matrixark_get_all": {"context:retrieve"},
-    "matrixark_list_users": {"context:retrieve"},
-    "matrixark_get_resource_content": {"context:retrieve"},
-    "matrixark_get_memory": {"context:retrieve"},
-    "matrixark_get_memory_by_key": {"context:retrieve"},
-    "matrixark_update_memory": {"context:ingest"},
-    "matrixark_memory_history": {"context:retrieve"},
-    # A write about a memory, so it gates like a write rather than like a read.
-    "matrixark_memory_feedback": {"context:ingest"},
-    "matrixark_ingestion_dashboard": {"context:replay"},
-    "matrixark_management_portal": {"portal:read"},
-    "matrixark_auth_sso_login": set(),
-    "matrixark_list_resources": {"resource:read"},
-    "matrixark_list_skills": {"skill:read"},
-    "matrixark_update_skill": {"skill:manage"},
-    "matrixark_feedback": {"context:feedback"},
-    "matrixark_replay": {"context:replay"},
-    "matrixark_admin_create_account": {"admin:account"},
-    "matrixark_admin_update_account": {"admin:account"},
-    "matrixark_admin_list_accounts": {"admin:account"},
-    "matrixark_admin_create_user": {"admin:user"},
-    "matrixark_admin_update_user": {"admin:user"},
-    "matrixark_admin_list_users": {"admin:user"},
-    "matrixark_admin_create_api_key": {"admin:api_key"},
-    "matrixark_admin_apply_api_key": {"admin:api_key", "admin:account", "admin:user"},
-    "matrixark_admin_list_api_keys": {"admin:api_key"},
-    "matrixark_admin_rotate_api_key": {"admin:api_key"},
-    "matrixark_admin_revoke_api_key": {"admin:api_key"},
-    "matrixark_admin_map_sso_user": {"admin:sso"},
-    "matrixark_admin_audit": {"admin:audit"},
-    "matrixark_backend_ready": set(),
-    "matrixark_backend_metrics": set(),
-}
 
-# Not defined here: `MATRIXARK_ROLE_SCOPE_LIMITS` lives in matrixark_mcp_identity, which this
-# module carried a second, drifted copy of -- see the note there. identity holds the
-# definition because it imports nothing but the standard library, so importing it from here
-# adds no edge that can close a cycle, where the reverse would.
+# Not defined here: the scope tables and `MATRIXARK_ROLE_SCOPE_LIMITS` live in
+# matrixark_mcp_identity, which this module carried second, drifted copies of -- see the note
+# there. identity holds the definitions because it imports nothing but the standard library, so
+# importing them from here adds no edge that can close a cycle, where the reverse would.
+#
+# The scope tables joined the role limits for the same reason and by the same evidence: core's
+# copies carried `context:forget` and eleven mem0-surface tools that identity's never did, all of
+# them added at 73f9ec542 on 2026-08-17 with the forget/delete API. A tool ABSENT from
+# MATRIXARK_TOOL_SCOPES is read by `.get(name, set())` as requiring no scope at all, so the two
+# copies did not merely differ -- one gated those eleven and the other did not.
 try:
-    from tools.matrixark_mcp_identity import MATRIXARK_ROLE_SCOPE_LIMITS  # noqa: F401
+    from tools.matrixark_mcp_identity import (  # noqa: F401
+        MATRIXARK_ADMIN_SCOPES,
+        MATRIXARK_ALL_SCOPES,
+        MATRIXARK_CONTEXT_SCOPES,
+        MATRIXARK_ROLE_SCOPE_LIMITS,
+        MATRIXARK_TOOL_SCOPES,
+    )
 except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_identity import MATRIXARK_ROLE_SCOPE_LIMITS  # noqa: F401
+    from matrixark_mcp_identity import (  # noqa: F401
+        MATRIXARK_ADMIN_SCOPES,
+        MATRIXARK_ALL_SCOPES,
+        MATRIXARK_CONTEXT_SCOPES,
+        MATRIXARK_ROLE_SCOPE_LIMITS,
+        MATRIXARK_TOOL_SCOPES,
+    )
 
 
 

@@ -180,13 +180,54 @@ class EmbeddingToolRegistrationTest(unittest.TestCase):
         self.assertEqual({"context:retrieve"},
                          MATRIXARK_TOOL_SCOPES["matrixark_embedding_status"])
 
-    def test_both_copies_of_the_scope_map_agree(self) -> None:
-        # The map is duplicated in matrixark_mcp_core and matrixark_mcp_identity; a tool added to
-        # one and not the other is gated differently depending on which path serves the request.
-        from matrixark_mcp_core import MATRIXARK_TOOL_SCOPES as core_map
-        from matrixark_mcp_identity import MATRIXARK_TOOL_SCOPES as identity_map
-        self.assertEqual(core_map.get("matrixark_embedding_status"),
-                         identity_map.get("matrixark_embedding_status"))
+    def test_the_scope_tables_are_defined_once(self) -> None:
+        """A tool added to one copy and not the other is gated differently depending on which path
+        serves the request -- and a missing key is not a stricter gate but an absent one, since
+        every reader does `MATRIXARK_TOOL_SCOPES.get(name, set())`.
+
+        This used to compare ONE key across the two copies. Eleven tools were diverged at the time
+        -- the whole mem0 surface, absent from identity's copy -- and the key it checked was not
+        among them. So it named the hazard and tested a fortieth of it.
+
+        The tables now have one definition each, which is the property that makes "which path" stop
+        mattering. Asserted against the source rather than against imported values, because two
+        copies that agree today would satisfy any comparison of their contents."""
+        import ast
+        import os
+        import subprocess
+
+        tools_dir = os.path.dirname(os.path.abspath(__file__))
+        repo = os.path.dirname(tools_dir)
+        listed = subprocess.run(["git", "ls-files", "tools/*.py"], cwd=repo,
+                                capture_output=True, text=True, check=False).stdout.split()
+        wanted = {"MATRIXARK_TOOL_SCOPES", "MATRIXARK_CONTEXT_SCOPES",
+                  "MATRIXARK_ADMIN_SCOPES", "MATRIXARK_ALL_SCOPES"}
+        definitions: dict[str, list[str]] = {name: [] for name in wanted}
+        for rel in listed:
+            if os.path.basename(rel).startswith("test_"):
+                continue
+            try:
+                with open(os.path.join(repo, rel), encoding="utf-8", errors="replace") as handle:
+                    tree = ast.parse(handle.read())
+            except (OSError, SyntaxError):
+                continue
+            for node in tree.body:
+                if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                    target = node.targets[0]
+                elif isinstance(node, ast.AnnAssign):
+                    target = node.target
+                else:
+                    continue
+                if isinstance(target, ast.Name) and target.id in wanted:
+                    definitions[target.id].append(os.path.basename(rel))
+
+        self.assertGreater(
+            len(listed), 200, "git ls-files returned almost nothing, so this checked no files")
+        duplicated = {name: mods for name, mods in definitions.items() if len(mods) != 1}
+        self.assertEqual(
+            {}, duplicated,
+            "each scope table must be defined exactly once in production source; found %r"
+            % (duplicated,))
 
     def test_it_is_advertised_in_the_tool_schemas(self) -> None:
         from matrixark_mcp_schemas import TOOLS
