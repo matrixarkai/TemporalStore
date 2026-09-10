@@ -2095,3 +2095,49 @@ class _CodexPipelinePart1:
         self.assertEqual(1, compact_dropped["source_role_budget"])
         self.assertEqual({"assistant": 0}, compact_dropped["source_role_budget_policy"]["selected_tokens_by_role"])
 
+    def test_serving_compaction_skipped_for_refs_that_are_already_compact(self) -> None:
+        """The skip must return what the second pass would have returned.
+
+        The engine emits the serving shape and says so per response, so the caller stops
+        rebuilding every ref. That is only sound while a ref already in the shape survives the
+        pass unchanged, which is what this pins: if the two ever diverge, the skip starts
+        serving something the compaction would have removed.
+        """
+        already_compact = [
+            compact_context_pack_ref(ref)
+            for ref in [
+                {
+                    "ref_type": "segment",
+                    "text": "the storage manager dumped the durable index",
+                    "source_locator": "notes.md#L4",
+                    "token_estimate": 12,
+                    "score": 0.83,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "metadata": {"heading": "Durability", "relative_path": "notes.md"},
+                    # Dropped by the compaction, so a ref carrying it is not yet in the shape.
+                    "matched_index_terms": ["durable", "dump"],
+                },
+            ]
+        ]
+        pack = {
+            "context_pack_id": "pack-1",
+            "selected_refs": already_compact,
+            "remote_context_refs": already_compact,
+        }
+
+        rebuilt = compact_context_pack_for_serving_flat(dict(pack))
+        skipped = compact_context_pack_for_serving_flat(dict(pack), refs_already_compact=True)
+        self.assertEqual(rebuilt, skipped)
+
+        # And the skip really skipped. Equality alone cannot show that: a pass that rebuilt
+        # every ref and returned the same values would satisfy it. So the per-ref pass is made
+        # to fail loudly, and the skip is the reason nothing raises.
+        import matrixark_mcp_core_context_pack as core_context_pack
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the per-ref compaction ran on refs already in the shape")
+
+        with mock.patch.object(core_context_pack, "compact_context_pack_refs", refuse):
+            proven = compact_context_pack_for_serving_flat(dict(pack), refs_already_compact=True)
+        self.assertEqual(rebuilt, proven)
