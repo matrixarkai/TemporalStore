@@ -43,13 +43,23 @@ impl TemporalEngine {
             latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id)
                 .map(|manifest| manifest.wal_sequence)
                 .unwrap_or_default();
-        let current_wal_sequence = self.wal_store.stats(request.shard_id).last_sequence;
+        let wal_stats = self.wal_store.stats(request.shard_id);
+        let current_wal_sequence = wal_stats.last_sequence;
         let undumped_wal_records =
             current_wal_sequence.saturating_sub(latest_dump_wal_sequence);
         let explicit_buckets = !request.selected_dump_buckets.is_empty();
-        let dump_delayed = !explicit_buckets
-            && request.min_undumped_wal_records > 0
+        // Durable bytes: what is actually on disk to be reclaimed, rather than what has been
+        // written and may not have reached it.
+        let undumped_wal_bytes = wal_stats.persistent_bytes;
+        // Each threshold can only RELEASE the dump, never hold it: a delay needs both to agree
+        // there is not enough yet. Requiring both to be CROSSED instead would let the byte
+        // threshold suppress a dump the record count had already earned, which is the opposite
+        // of bounding the log.
+        let records_say_wait = request.min_undumped_wal_records > 0
             && undumped_wal_records < request.min_undumped_wal_records;
+        let bytes_say_wait = request.min_undumped_wal_bytes == 0
+            || undumped_wal_bytes < request.min_undumped_wal_bytes;
+        let dump_delayed = !explicit_buckets && records_say_wait && bytes_say_wait;
         let mut selected_dump_buckets = if explicit_buckets {
             request.selected_dump_buckets.clone()
         } else if dump_delayed {

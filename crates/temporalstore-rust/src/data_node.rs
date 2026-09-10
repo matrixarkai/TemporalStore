@@ -824,6 +824,9 @@ pub struct StorageManagerOptions {
         default = "default_storage_manager_min_undumped_wal_records"
     )]
     pub min_undumped_wal_records: u64,
+    /// Durable write-ahead log bytes that release the dump whatever the record count says.
+    #[serde(default = "default_storage_manager_min_undumped_wal_bytes")]
+    pub min_undumped_wal_bytes: u64,
     #[serde(default)]
     #[serde(rename = "dirty_slot_pressure")]
     pub dirty_bucket_pressure: usize,
@@ -866,11 +869,24 @@ fn default_storage_manager_min_undumped_wal_records() -> u64 {
     1_000
 }
 
+/// Durable write-ahead log bytes that release the dump on their own.
+///
+/// 96 MiB, against the 128 MB the design being followed waits for. Lower because this engine runs
+/// on a box with a measured capacity wall near a 400 MB store, so a log allowed to reach an
+/// eighth of that before anything reclaims it is a large share of the budget for one file.
+///
+/// It bounds what the record threshold cannot: a thousand records says nothing about how many
+/// bytes they are. Whichever threshold is reached first releases the dump.
+fn default_storage_manager_min_undumped_wal_bytes() -> u64 {
+    96 * 1024 * 1024
+}
+
 impl Default for StorageManagerOptions {
     fn default() -> Self {
         Self {
             max_dump_buckets_per_round: default_storage_manager_max_dump_buckets_per_round(),
             min_undumped_wal_records: default_storage_manager_min_undumped_wal_records(),
+            min_undumped_wal_bytes: default_storage_manager_min_undumped_wal_bytes(),
             dirty_bucket_pressure: 1,
             stale_block_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,

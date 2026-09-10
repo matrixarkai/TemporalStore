@@ -201,6 +201,7 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                         selected_dump_buckets: Vec::new(),
                         max_dump_buckets_per_round: 0,
                         min_undumped_wal_records: 0,
+                        min_undumped_wal_bytes: 0,
                         purge_delayed_destroy: false,
                         prune_bucket_dump_manifests: false,
                         roll_forward_bucket_dump_installs: false,

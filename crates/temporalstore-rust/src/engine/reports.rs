@@ -3053,6 +3053,19 @@ pub struct StorageLifecycleRequest {
     pub max_dump_buckets_per_round: usize,
     #[serde(rename = "min_undumped_wal_records", default)]
     pub min_undumped_wal_records: u64,
+    /// Durable write-ahead log bytes that release the dump regardless of the record count.
+    ///
+    /// The record threshold beside this one does not bound the LOG. A thousand hundred-byte
+    /// records is a hundred kilobytes and a thousand megabyte records is a gigabyte, and neither
+    /// reaches the threshold sooner than the other -- so a workload with large values holds the
+    /// dump off across an arbitrarily large log, and since reclaim follows the dump, nothing
+    /// truncates it meanwhile. The design being followed delays on the undumped LENGTH in bytes
+    /// for exactly this reason.
+    ///
+    /// Either threshold releases the dump, so the log is bounded by whichever is reached first.
+    /// Zero means no byte threshold, as it does on every other bound here.
+    #[serde(default)]
+    pub min_undumped_wal_bytes: u64,
     #[serde(default)]
     pub purge_delayed_destroy: bool,
     #[serde(default)]
@@ -3117,6 +3130,19 @@ pub struct StorageManagerCycleRequest {
     pub max_dump_buckets_per_round: usize,
     #[serde(rename = "min_undumped_wal_records", default)]
     pub min_undumped_wal_records: u64,
+    /// Durable write-ahead log bytes that release the dump regardless of the record count.
+    ///
+    /// The record threshold beside this one does not bound the LOG. A thousand hundred-byte
+    /// records is a hundred kilobytes and a thousand megabyte records is a gigabyte, and neither
+    /// reaches the threshold sooner than the other -- so a workload with large values holds the
+    /// dump off across an arbitrarily large log, and since reclaim follows the dump, nothing
+    /// truncates it meanwhile. The design being followed delays on the undumped LENGTH in bytes
+    /// for exactly this reason.
+    ///
+    /// Either threshold releases the dump, so the log is bounded by whichever is reached first.
+    /// Zero means no byte threshold, as it does on every other bound here.
+    #[serde(default)]
+    pub min_undumped_wal_bytes: u64,
     #[serde(default)]
     pub warm_cache: bool,
     #[serde(default = "default_storage_manager_eviction_threshold")]
@@ -3240,6 +3266,7 @@ impl Default for StorageManagerCycleRequest {
             enable_index_gc: true,
             max_dump_buckets_per_round: 0,
             min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
             warm_cache: false,
             eviction_memory_pressure_threshold: default_storage_manager_eviction_threshold(),
             eviction_batch_limit: DEFAULT_EVICTION_BATCH_LIMIT,
