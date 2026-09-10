@@ -1095,9 +1095,16 @@ QUERY_TYPE_LABELS: dict[str, str] = {
     "fact": "question asks a direct factual answer",
 }
 
-PROFILE_MEMORY_QUERY_RE = re.compile(
-    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|identity profile|communication profile|workspace profile|mem0|memory feature parity|feature parity|feature[- ]focused memor(?:y|ies)|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality only|memory functionalit(?:y|ies)|memory algorithms?|memory algos?|no testing|no teseting|no monitoring|no debugging|no evidence|no evident|session memory|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before|from previous sessions?|across sessions?|across conversations?|between conversations?|how should (?:you|codex) (?:address|reply|respond|answer)|what (?:is|are) my (?:name|nickname|pronouns?|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)|what (?:workspace|repo|repository|branch|build|deployment|github|remote) rules? (?:do|should) (?:you|codex) remember|what (?:workflow|workflows|rules?|instructions?|preferences?) (?:do|should) (?:you|codex) follow)\b"
-)
+# PROFILE_MEMORY_QUERY_RE lives in matrixark_mcp_budget_policies. It was compiled in both, with
+# the same pattern -- which is what a pair does until one of them is extended. budget_policies owns
+# it because it is the lower module: it imports nothing but errors, runtime_config and validation,
+# and neither module reaches the other, so this edge cannot close a cycle.
+try:
+    from .matrixark_mcp_budget_policies import PROFILE_MEMORY_QUERY_RE  # noqa: F401
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_budget_policies import PROFILE_MEMORY_QUERY_RE  # noqa: F401
+
+
 
 PROFILE_MEMORY_STANDING_RULE_QUERY_RE = re.compile(
     r"\b(?:which|what|where|should|must|need)\b.{0,80}\b(?:repo|repository|folder|workspace|worktree|ubuntu|wsl|linux|windows|branch|remote|github|main branch|build|deploy|deployment|push)\b.{0,80}\b(?:use|work|build|push|commit|rebase|download|clone|store|keep|follow|prefer)\b"

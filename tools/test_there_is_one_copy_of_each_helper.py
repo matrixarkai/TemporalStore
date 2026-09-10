@@ -131,21 +131,25 @@ def _duplicate_pairs() -> set[tuple[str, tuple[str, ...]]]:
 #: definition yet. The holders are printed by the failure rather than listed here, so an entry does
 #: not go stale when a copy moves.
 STILL_COMPILED_TWICE = {
-    # The six below are identical in every holder, which is what makes them look mechanical. They
-    # are not, and it is the same obstruction for all six: the only holder that can own the name
-    # without closing an import cycle is `matrixark_mcp_core`, so consolidating means every other
-    # holder importing the aggregator. That dependence is already why
-    # `matrixark_mcp_core_scoring`, `matrixark_mcp_core_candidate_policy`,
-    # `matrixark_mcp_core_query_analysis` and `matrixark_mcp_core_codex_outcome` cannot be imported
-    # unless the aggregator is imported first. Deepening it to delete a duplicate trades a copy for
-    # a deadlock. They come off this list when the aggregator stops importing its own consumers
-    # from its body, not before.
-    "ACTIVE_MEMORY_GOAL_QUERY_RE": "consolidating needs an import of the aggregator",
-    "CODEX_OUTCOME_QUERY_RE": "consolidating needs an import of the aggregator",
-    "PROFILE_MEMORY_QUERY_RE": "consolidating needs an import of the aggregator",
-    "PROFILE_MEMORY_STANDING_RULE_QUERY_RE": "consolidating needs an import of the aggregator",
-    "FEATURE_SCOPE_EXCLUSION_RE": "same, and the hook copy differs deliberately -- see below",
-    "FEATURE_SCOPE_EXCLUDED_DIMENSION_RE": "same, and the hook copy differs deliberately",
+    # These four have exactly ONE live holder. The second copy is in a module only the tests reach
+    # -- matrixark_mcp_query, matrixark_mcp_resources -- so no request can get the other answer,
+    # and choosing a winner between a live copy and an unreachable one is how a stale copy gets
+    # promoted. The guard that owns the reachability list says the same thing in its own docstring.
+    #
+    # An earlier version of this note claimed all of these were blocked on the aggregator's import
+    # cycle. That was wrong: it is not a cycle keeping them, it is that there is nothing live to
+    # consolidate them WITH.
+    "ACTIVE_MEMORY_GOAL_QUERY_RE": "second copy is in matrixark_mcp_query, which only tests reach",
+    "CODEX_OUTCOME_QUERY_RE": "second copy is in matrixark_mcp_query, which only tests reach",
+    "PROFILE_MEMORY_STANDING_RULE_QUERY_RE":
+        "second copy is in matrixark_mcp_query, which only tests reach",
+    # Was compiled in matrixark_mcp_core as well; core now imports it from
+    # matrixark_mcp_budget_policies, so the only copy left is the unreachable one.
+    "PROFILE_MEMORY_QUERY_RE":
+        "second copy is in matrixark_mcp_query, which only tests reach",
+    # Two live holders, and they differ ON PURPOSE -- see DELIBERATELY_UNLIKE below.
+    "FEATURE_SCOPE_EXCLUSION_RE": "two live holders, deliberately different -- see below",
+    "FEATURE_SCOPE_EXCLUDED_DIMENSION_RE": "two live holders, deliberately different",
     # Both copies are live -- matrixark_mcp_core:should_extract_resource_fact and
     # matrixark_mcp_resources -- and they differ by one keyword: core matches `risk`, resources
     # matches `control_state`. Which is right depends on RESOURCE_FACT_SCHEMAS, which is ALSO
