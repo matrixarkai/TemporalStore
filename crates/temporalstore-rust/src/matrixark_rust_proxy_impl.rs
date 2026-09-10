@@ -356,6 +356,23 @@ impl RetrieveCandidateSnapshot {
         self.segments.iter().map(|segment| segment.len()).sum()
     }
 
+    /// How many candidates carry a vector, and how wide the widest is.
+    ///
+    /// The snapshot is resident for the life of its cache entry, and a 1024-dim `Vec<f32>` is
+    /// 4 KiB -- so this is the difference between a snapshot costing a few megabytes and costing
+    /// tens of them. Nothing reported it, which is why nobody could say.
+    fn candidates_holding_vectors(&self) -> (usize, usize) {
+        let mut holding = 0usize;
+        let mut widest = 0usize;
+        for candidate in self.candidates() {
+            if let Some(vector) = candidate.vector.as_ref() {
+                holding += 1;
+                widest = widest.max(vector.len());
+            }
+        }
+        (holding, widest)
+    }
+
     /// The candidate at an ordinal across every segment.
     ///
     /// The ordinal is what the scoring pass records and what the budget closures look up later, so
@@ -6507,15 +6524,25 @@ fn retrieve_context_pack_output(
         .unwrap_or(0);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let threshold = slow_retrieve_log_ms();
+    // Walked once rather than twice: counting vectors is a pass over every candidate, and the line
+    // wants two numbers from it.
+    let (vectors_held, widest_vector) = if threshold > 0 && u128::from(elapsed_ms) >= threshold {
+        snapshot.candidates_holding_vectors()
+    } else {
+        (0, 0)
+    };
     if threshold > 0 && u128::from(elapsed_ms) >= threshold {
         // Phases, not just a total: a rebuild and a scoring pass are fixed by different work, and
         // "the retrieve took a second" has never been enough to tell them apart.
         eprintln!(
-            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates",
+            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims",
             snapshot.scanned_records,
             snapshot.build.read_ms,
             snapshot.build.inventory_ms,
-            snapshot.build.candidates_ms
+            snapshot.build.candidates_ms,
+            snapshot.candidate_count(),
+            vectors_held,
+            widest_vector
         );
     }
     let correctness = selected_count > 0;
