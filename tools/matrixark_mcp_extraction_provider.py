@@ -19,6 +19,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 Json = dict[str, Any]
 
+# `.strip() or` at each step. The fall back to OPENAI_* is deliberate -- a deployment that already
+# exports those gets a working endpoint without naming it twice -- and a blank MATRIXARK_ name
+# silently cancelled exactly that arrangement. matrixark_mcp_core imports these five rather than
+# rebuilding them; this is the one definition.
 EXTRACTION_LLM_MODEL = (
     os.environ.get("MATRIXARK_EXTRACTION_MODEL", "").strip()
     or os.environ.get("OPENAI_MODEL", "").strip()

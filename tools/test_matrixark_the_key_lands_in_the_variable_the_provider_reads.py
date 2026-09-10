@@ -26,6 +26,8 @@ import matrixark_gateway_config as cfg  # noqa: E402
 
 ENCODER = "matrixark_mcp_embeddings.py"
 CORE = "matrixark_mcp_core.py"
+#: EXTRACTION_LLM_API_KEY_ENV has one definition, here, which core imports.
+EXTRACTION_PROVIDER = "matrixark_mcp_extraction_provider.py"
 SECRETS = {"embedding": "embedding.api_key", "extraction": "extraction.api_key"}
 
 
@@ -71,18 +73,32 @@ def encoder_key_variables() -> dict:
 
 
 def extraction_key_variables() -> dict:
-    """Same, for the two module constants extraction resolves its key variable through."""
-    tree = parse(CORE)
+    """Same, for the two module constants extraction resolves its key variable through.
+
+    Both modules are read, because the two constants no longer live in one. ANTHROPIC_LLM_API_KEY_ENV
+    is core's, and EXTRACTION_LLM_API_KEY_ENV has a single definition in
+    matrixark_mcp_extraction_provider that core imports -- the holder matrixark_gateway_config
+    already names, and the only direction available, since the provider module uses the key and
+    importing core from there would close a cycle.
+
+    Still parsed rather than imported: the fallback WRITTEN in the source is what says whether the
+    default pins one provider, which a resolved runtime value would hide.
+    """
     by_constant = {"ANTHROPIC_LLM_API_KEY_ENV": "anthropic", "EXTRACTION_LLM_API_KEY_ENV": None}
     found = {}
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id in by_constant:
+    for filename in (CORE, EXTRACTION_PROVIDER):
+        for node in parse(filename).body:
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if not (isinstance(target, ast.Name) and target.id in by_constant):
+                    continue
+                key = by_constant[target.id]
+                if key in found:
+                    continue          # core wins where both still define one
                 default = _environ_get_default(node, "MATRIXARK_EXTRACTION_API_KEY_ENV")
                 if default is not None:
-                    found[by_constant[target.id]] = default
+                    found[key] = default
     return found
 
 

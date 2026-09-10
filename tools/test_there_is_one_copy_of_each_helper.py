@@ -49,37 +49,29 @@ NON_PRODUCTION_PREFIXES = ("test_", "run_", "validate_")
 #: If a pair ever needs to go back on this list, put the REASON beside it. A bare name invites
 #: the next reader to redo the analysis, or to consolidate it because it looks mechanical.
 STILL_DUPLICATED = frozenset((
-    # Blocked: reads `feature_profile_memory_budget_query`, local to both hosts and different.
-    # Blocked: bodies match, but they call different implementations of
-    # `compact_context_index_postings`. matrixark_mcp_indexing buckets by `capability` and has an
-    # adopt fast path (23.755 ms -> 3.255 ms on a 2,123-row cache); the one core republishes
-    # buckets by `data_model`, has no adopt path, and reads only the singular node_hash. They
-    # emit different posting_policy strings and different rows -- a data-format decision.
-    # Blocked: reads RESOURCE_FACT_SCHEMAS, local to both hosts and different in each.
-    # Blocked: resolves `resource_fact_entity_name` to two different implementations -- one
-    # shortens with `preview_text`, the other with `summarize_text`. That changes the entity NAME
-    # written for every resource fact.
-    # Blocked: reads UNDERSTANDING_LABELS, which is a module-scope constant in BOTH hosts and
-    # the two differ. Re-exporting would relabel what the encoder classifies.
-    # Blocked: same UNDERSTANDING_LABELS divergence as oss_encoder_compact_extraction above.
-    # Blocked with the pair above -- same module, same constant, decided together or not at all.
-    # Blocked deliberately: keys its cache on `embedding_model_name()`, and the two hosts resolve
-    # that to different implementations. test_string_defaults_agree records the disagreement as a
-    # defect whose decision is open, because making the name agree relabels every vector a
-    # populated store already holds. Backfill decision first.
-    # Blocked, and the most serious of these: the two read different copies of
-    # MATRIXARK_ROLE_SCOPE_LIMITS and disagree about an ACCESS DECISION --
+    # Empty. The per-pair reasoning that used to sit here described obstructions that are gone:
+    # every pair was consolidated, and the two constants those pairs turned on --
+    # `compact_context_index_postings` and MATRIXARK_ROLE_SCOPE_LIMITS -- are one object each now,
+    # re-exported rather than copied. The role-scope note in particular claimed a live permission
+    # split (an operator MAY forget through one module and not the other); the two names resolve to
+    # the same function reading the same limits and agree on every role and scope.
     #
-    #     matrixark_mcp_identity.role_allows_scopes('operator', {'context:forget'})   False
-    #     matrixark_mcp_core_identity.role_allows_scopes(same)                        True
+    # What the notes described that is still TRUE is not an obstruction to this list. Four names
+    # still have two copies -- RESOURCE_FACT_SCHEMAS, resource_fact_entity_name,
+    # SERVING_RESOURCE_METADATA_FIELDS and UNDERSTANDING_LABELS -- and in every case the second
+    # copy is in a module only the tests reach (matrixark_mcp_resources,
+    # matrixark_mcp_oss_understanding). This file's own policy is to leave those: choosing a winner
+    # between a live copy and an unreachable one is how a stale copy gets promoted.
     #
-    # core's copy carries 'context:forget' in the operator role and identity's does not. Both
-    # live callers -- matrixark_access and matrixark_access_apikey -- reach core_identity, so an
-    # operator MAY forget today. Consolidating picks one answer for a permission.
-    # Blocked: reads SERVING_RESOURCE_METADATA_FIELDS, local to both hosts and different in each.
-    # Consolidating this one put `content_hash` back into served metadata and was caught by
-    # test_matrixark_content_hash_is_derived -- the constants, not the bodies, carry the meaning.
-    # Blocked with the pair above.
+    # SERVING_RESOURCE_METADATA_FIELDS has already been tried, and the attempt is worth more than
+    # the reasoning: consolidating it put `content_hash` back into served metadata and was caught
+    # by test_matrixark_content_hash_is_derived. The constants carry the meaning, not the bodies.
+    #
+    # One divergence IS live-vs-live and stays open: `embedding_model_name` resolves differently in
+    # matrixark_mcp_core and matrixark_mcp_embeddings, which is the e5-large / MiniLM labelling
+    # split. It is recorded in test_string_defaults_agree, with the reason it cannot simply be
+    # edited -- making the name truthful orphans every vector a populated store already holds, so
+    # it needs a backfill decision. Do not "fix" it here.
 ))
 
 

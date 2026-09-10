@@ -297,20 +297,30 @@ TIME_COMPRESSION_SUMMARY_BASE_URL = (
 TIME_COMPRESSION_SUMMARY_API_KEY_ENV = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_API_KEY_ENV", "OPENAI_API_KEY")
 TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC", "30"))
 TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = env_bool("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", False)
-# `.strip() or` at each step. The fall back to OPENAI_* is deliberate -- a deployment that
-# already exports those gets a working endpoint without naming it twice -- and a blank
-# MATRIXARK_ name silently cancelled exactly that arrangement.
-EXTRACTION_LLM_MODEL = (
-    os.environ.get("MATRIXARK_EXTRACTION_MODEL", "").strip()
-    or os.environ.get("OPENAI_MODEL", "").strip()
-    or "qwen2.5:1.5b")
-EXTRACTION_LLM_BASE_URL = (
-    os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", "").strip()
-    or os.environ.get("OPENAI_BASE_URL", "").strip()
-    or "http://127.0.0.1:8000/v1").rstrip("/")
-EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
-EXTRACTION_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"))
-EXTRACTION_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200"))
+# These five were built here AND in matrixark_mcp_extraction_provider, from the same variables
+# with the same defaults, and both modules are live. matrixark_gateway_config already names the
+# provider module as the holder in its own tables, so that is the definition and this is the copy
+# -- imported rather than rebuilt, and re-exported because matrixark_mcp_core_extraction imports
+# them from here and SUMMARY_LLM_MODEL reads one of them below.
+#
+# Safe at this point in the file: matrixark_mcp_extraction_provider imports only
+# matrixark_mcp_errors, which imports nothing from this project.
+try:
+    from .matrixark_mcp_extraction_provider import (
+        EXTRACTION_LLM_API_KEY_ENV,
+        EXTRACTION_LLM_BASE_URL,
+        EXTRACTION_LLM_MAX_TOKENS,
+        EXTRACTION_LLM_MODEL,
+        EXTRACTION_LLM_TIMEOUT_SEC,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_extraction_provider import (  # type: ignore[no-redef]
+        EXTRACTION_LLM_API_KEY_ENV,
+        EXTRACTION_LLM_BASE_URL,
+        EXTRACTION_LLM_MAX_TOKENS,
+        EXTRACTION_LLM_MODEL,
+        EXTRACTION_LLM_TIMEOUT_SEC,
+    )
 # Anthropic / Claude GENERATION provider (extraction + summary; Anthropic has no embeddings
 # API, so this is the generation side only). Mirrors the OpenAI-compatible extraction config
 # above but targets the Anthropic Messages API (POST /v1/messages; x-api-key + anthropic-version
