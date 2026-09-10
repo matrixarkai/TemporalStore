@@ -2221,6 +2221,278 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     );
 }
 
+/// The object-lifecycle snapshot answers exactly what the recovery report answers.
+///
+/// The maintenance round used to obtain this field by building a whole recovery report, which
+/// reads every live page off the block store to count the readable ones and then discards all
+/// of that. The snapshot computes the same field from the shard's maps and the slab reports.
+/// "Same" has to be checked rather than argued: this drives a workload that moves each of its
+/// parts -- writes, overwrites, deletes, a maintenance cycle, a rolled slab -- and compares the
+/// whole struct after every stage.
+#[test]
+fn object_lifecycle_snapshot_matches_the_recovery_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let mut stages = 0usize;
+    let mut check = |engine: &TemporalEngine, what: &str| {
+        let from_report = engine.storage_recovery_report(1).object_lifecycle;
+        let snapshot = engine.storage_object_lifecycle_snapshot_for_test(1);
+        assert_eq!(
+            snapshot, from_report,
+            "after {what}: the snapshot and the recovery report disagree"
+        );
+        stages += 1;
+    };
+
+    check(&engine, "an empty shard");
+
+    for index in 0..120 {
+        write_string(&engine, &format!("life-{index:04}"), b"value");
+    }
+    check(&engine, "120 writes");
+
+    for index in 0..60 {
+        write_string(&engine, &format!("life-{index:04}"), b"a longer replacement value");
+    }
+    check(&engine, "60 overwrites leaving stale pages");
+
+    for index in 0..30 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete {
+                key: format!("life-{index:04}"),
+            },
+        });
+    }
+    check(&engine, "30 deletes");
+
+    engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        ..StorageManagerCycleRequest::default()
+    });
+    check(&engine, "a maintenance cycle");
+
+    // A rolled slab separates the slab reports from the live refs, which is what
+    // stale_object_ids measures.
+    engine.block_store().roll_slab().unwrap();
+    for index in 120..160 {
+        write_string(&engine, &format!("life-{index:04}"), b"value");
+    }
+    check(&engine, "a rolled slab and 40 more writes");
+
+    assert_eq!(stages, 6, "every stage must have been compared");
+}
+
+/// Planning and applying a maintenance round reads no pages at all.
+///
+/// Both phases used to build a whole `StorageRecoveryReport`, which reads EVERY live page off
+/// the block store so it can count the readable ones -- and then kept one field: the planner
+/// kept a per-slab byte tally, the apply kept `object_lifecycle`. Neither field needs a page.
+///
+/// This is the property that regresses silently: a caller reaching for the recovery report
+/// again still passes `object_lifecycle_snapshot_matches_the_recovery_report`, because the
+/// answer would be right -- it would just cost a full-store read on a loop that runs every
+/// thirty seconds. Counting the reads is the only thing that shows it.
+#[test]
+fn planning_a_maintenance_round_reads_no_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..400 {
+        write_string(&engine, &format!("round-{index:04}"), b"value");
+    }
+    let lifecycle = StorageLifecycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 64,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        purge_delayed_destroy: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
+        follower_replay_cursors: Vec::new(),
+        page_gc_shared_store_cursors: Vec::new(),
+        page_gc_raft_snapshot_refs: Vec::new(),
+        page_gc_checkpoint_floor_slab_id: None,
+        page_gc_raft_install_floor_slab_id: None,
+        page_gc_delayed_destroy_grace_ms: 0,
+        invalidate_cache: false,
+        warm_cache: false,
+    };
+    // Settle first: the fixture's own dump is not what this measures.
+    engine.apply_storage_lifecycle(lifecycle.clone());
+
+    let live_pages = engine.live_page_count_for_test(1);
+    assert!(
+        live_pages >= 300,
+        "the fixture must hold pages worth reading: {live_pages}"
+    );
+
+    let before = engine.block_store().stats().reads;
+    let plan = engine.storage_lifecycle_plan(lifecycle.clone());
+    let planned = engine.block_store().stats().reads.saturating_sub(before);
+    assert_eq!(
+        planned, 0,
+        "planning read {planned} pages with {live_pages} live -- it is scanning the store"
+    );
+    assert!(
+        !plan.bucket_summaries.is_empty(),
+        "the plan must have surveyed something, or the count above proves nothing"
+    );
+
+    let before = engine.block_store().stats().reads;
+    engine.apply_storage_lifecycle(lifecycle);
+    let applied = engine.block_store().stats().reads.saturating_sub(before);
+    assert_eq!(
+        applied, 0,
+        "applying read {applied} pages with {live_pages} live -- it is scanning the store"
+    );
+}
+
+/// What one plan phase costs, at several store sizes. Prints; run it with --ignored.
+///
+///   cargo test --release -p temporalstore-rust --lib what_the_plan_phase_costs -- --ignored --nocapture
+///
+/// This is the measurement the narrow reclaim view was made for. Before it, the plan built a
+/// whole StorageRecoveryReport -- 50.04 / 219.92 / 978.02 ms at 2k / 8k / 32k live pages, and
+/// one read of every live page. After: 2.31 / 17.40 / 82.84 ms, and no reads at all.
+#[test]
+#[ignore]
+fn what_the_plan_phase_costs() {
+    for records in [2_000usize, 8_000, 32_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 << 20,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            write_string(&engine, &format!("survey-{index:06}"), b"0123456789abcdef");
+        }
+        let started = std::time::Instant::now();
+        let rounds = 5;
+        for _ in 0..rounds {
+            let _ = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id: 1,
+                selected_dump_buckets: Vec::new(),
+                max_dump_buckets_per_round: 64,
+                min_undumped_wal_records: 1_000,
+                min_undumped_wal_bytes: 96 * 1024 * 1024,
+                purge_delayed_destroy: false,
+                prune_bucket_dump_manifests: false,
+                roll_forward_bucket_dump_installs: false,
+                follower_replay_cursors: Vec::new(),
+                page_gc_shared_store_cursors: Vec::new(),
+                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_checkpoint_floor_slab_id: None,
+                page_gc_raft_install_floor_slab_id: None,
+                page_gc_delayed_destroy_grace_ms: 0,
+                invalidate_cache: false,
+                warm_cache: false,
+            });
+        }
+        let each = started.elapsed().as_secs_f64() * 1000.0 / rounds as f64;
+        eprintln!(
+            "  {records:>6} records: {each:>8.2} ms per plan phase ({:.3}% of a 30 s round)",
+            each / 30_000.0 * 100.0
+        );
+    }
+}
+
+/// The reclaim planner picks the same slabs from the narrow view as from the full report.
+///
+/// This is the other half of the change that removed the whole-store scan from the plan phase.
+/// `storage_reclaim_slab_reports` leaves the three read-dependent fields at zero, so if the
+/// selection had ever consulted one of them the two lists would separate here -- which is
+/// exactly the claim being made, and not one to take on inspection.
+///
+/// The fixture rolls slabs so the stale/live split is real: a slab whose pages have all been
+/// overwritten is the case the planner exists to find.
+#[test]
+fn the_reclaim_planner_sees_the_same_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let mut stages = 0usize;
+    let mut check = |engine: &TemporalEngine, what: &str| {
+        let (narrow, full) = engine.reclaim_candidates_two_ways_for_test(1);
+        assert_eq!(
+            narrow, full,
+            "after {what}: the planner's view and the report disagree on what to reclaim"
+        );
+        stages += 1;
+    };
+
+    check(&engine, "an empty shard");
+
+    for index in 0..200 {
+        write_string(&engine, &format!("reclaim-{index:04}"), b"first value");
+    }
+    check(&engine, "200 writes");
+
+    // Roll, then overwrite every key: slab 0 is now entirely stale, which is the candidate the
+    // planner must find and score.
+    engine.block_store().roll_slab().unwrap();
+    for index in 0..200 {
+        write_string(&engine, &format!("reclaim-{index:04}"), b"second value, longer");
+    }
+    check(&engine, "a rolled slab and 200 overwrites");
+    let (narrow, _) = engine.reclaim_candidates_two_ways_for_test(1);
+    assert!(
+        !narrow.is_empty(),
+        "the fixture must produce a candidate, or the comparisons prove nothing"
+    );
+
+    // Partially stale: roll again, overwrite half.
+    engine.block_store().roll_slab().unwrap();
+    for index in 0..100 {
+        write_string(&engine, &format!("reclaim-{index:04}"), b"third value");
+    }
+    check(&engine, "a partially stale slab");
+
+    for index in 0..50 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete {
+                key: format!("reclaim-{index:04}"),
+            },
+        });
+    }
+    check(&engine, "50 deletes");
+
+    engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        ..StorageManagerCycleRequest::default()
+    });
+    check(&engine, "a maintenance cycle");
+
+    assert_eq!(stages, 6, "every stage must have been compared");
+}
+
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,

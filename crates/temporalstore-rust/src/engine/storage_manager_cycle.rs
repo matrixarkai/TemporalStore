@@ -1095,8 +1095,7 @@ impl TemporalEngine {
                 install_roll_forward_reports: self
                     .bucket_dump_install_roll_forward_reports(lifecycle_request.shard_id),
                 object_lifecycle: self
-                    .storage_recovery_report_without_boundary(lifecycle_request.shard_id)
-                    .object_lifecycle,
+                    .storage_object_lifecycle_snapshot(lifecycle_request.shard_id),
                 ..StorageLifecycleReport::default()
             }
         };
