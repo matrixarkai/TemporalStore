@@ -213,7 +213,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_agent"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_agent"))
-    parser.add_argument("--user-id", default=os.environ.get("MATRIXARK_USER_ID", os.environ.get("USERNAME", "agent_user")))
+    # `.strip() or`: a blank MATRIXARK_USER_ID would otherwise attribute every record to
+    # the empty string rather than falling back to USERNAME.
+    parser.add_argument("--user-id", default=(
+        os.environ.get("MATRIXARK_USER_ID", "").strip()
+        or os.environ.get("USERNAME", "").strip()
+        or "agent_user"))
     parser.add_argument("--session-id", default=os.environ.get("MATRIXARK_SESSION_ID"))
     parser.add_argument("--session-state-dir", type=Path, default=Path(os.environ.get("MATRIXARK_AGENT_SESSION_STATE_DIR", "/tmp/matrixark-agent-sessions")))
     parser.add_argument("--team", default=os.environ.get("MATRIXARK_TEAM", "agent"))

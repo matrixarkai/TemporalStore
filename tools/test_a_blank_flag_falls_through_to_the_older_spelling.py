@@ -54,9 +54,10 @@ import unittest
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TOOLS_DIR)
 
-#: Six pairs when this was written. A floor, so a scanner that stops recognising the chain shape
-#: fails here rather than passing with nothing to look at.
-EXPECTED_CHAIN_FLOOR = 6
+#: Eleven pairs when this was written -- six between two flags this project owns, five falling
+#: back to a variable it does not (OPENAI_BASE_URL, OPENAI_MODEL, USERNAME). A floor, so a scanner
+#: that stops recognising the chain shape fails here rather than passing with nothing to look at.
+EXPECTED_CHAIN_FLOOR = 10
 
 _READERS = {"get", "getenv", "_env"}
 
@@ -175,7 +176,15 @@ def live_sources() -> list:
 
 
 def _chains() -> tuple:
-    rows = precedence_pairs(live_sources(), env_only=True, prefixes=("MATRIXARK_", "TS_"))
+    """Chains whose OUTER name is a flag this project owns, whatever it falls back to.
+
+    No prefix filter on the second name. A fall back to OPENAI_BASE_URL or USERNAME is the same
+    arrangement -- "use mine if set, otherwise the one your deployment already exports" -- and a
+    blank outer name cancels it identically. Filtering both names would have left seven of those
+    unguarded, which is exactly where they were found.
+    """
+    rows = [row for row in precedence_pairs(live_sources(), env_only=True)
+            if row[0].startswith(("MATRIXARK_", "TS_"))]
     return ([row for row in rows if row[4] == "two_arg"],
             [row for row in rows if row[4] == "or"])
 

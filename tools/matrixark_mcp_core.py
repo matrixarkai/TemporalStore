@@ -286,13 +286,28 @@ TIME_COMPRESSION_MIN_EVENT_AGE_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSI
 TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS", str(30 * 24 * 60 * 60 * 1000)))
 TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS", str(30 * 24 * 60 * 60 * 1000)))
 TIME_COMPRESSION_SUMMARY_PROVIDER = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER", "deterministic").strip().lower()
-TIME_COMPRESSION_SUMMARY_MODEL = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
-TIME_COMPRESSION_SUMMARY_BASE_URL = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+TIME_COMPRESSION_SUMMARY_MODEL = (
+    os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_MODEL", "").strip()
+    or os.environ.get("OPENAI_MODEL", "").strip()
+    or "gpt-4o-mini")
+TIME_COMPRESSION_SUMMARY_BASE_URL = (
+    os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_BASE_URL", "").strip()
+    or os.environ.get("OPENAI_BASE_URL", "").strip()
+    or "https://api.openai.com/v1").rstrip("/")
 TIME_COMPRESSION_SUMMARY_API_KEY_ENV = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_API_KEY_ENV", "OPENAI_API_KEY")
 TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC", "30"))
 TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = env_bool("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", False)
-EXTRACTION_LLM_MODEL = os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "qwen2.5:1.5b"))
-EXTRACTION_LLM_BASE_URL = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")).rstrip("/")
+# `.strip() or` at each step. The fall back to OPENAI_* is deliberate -- a deployment that
+# already exports those gets a working endpoint without naming it twice -- and a blank
+# MATRIXARK_ name silently cancelled exactly that arrangement.
+EXTRACTION_LLM_MODEL = (
+    os.environ.get("MATRIXARK_EXTRACTION_MODEL", "").strip()
+    or os.environ.get("OPENAI_MODEL", "").strip()
+    or "qwen2.5:1.5b")
+EXTRACTION_LLM_BASE_URL = (
+    os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", "").strip()
+    or os.environ.get("OPENAI_BASE_URL", "").strip()
+    or "http://127.0.0.1:8000/v1").rstrip("/")
 EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
 EXTRACTION_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"))
 EXTRACTION_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200"))
