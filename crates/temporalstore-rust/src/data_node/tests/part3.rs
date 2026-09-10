@@ -160,6 +160,189 @@ fn a_dump_fires_under_the_shipped_default_once_the_threshold_is_crossed() {
     );
 }
 
+/// A big log dumps on its SIZE, while the record count is still saying wait.
+///
+/// The record threshold cannot bound a log. A thousand hundred-byte records is a hundred
+/// kilobytes and a thousand megabyte records is a gigabyte, and neither reaches 1000 records any
+/// sooner than the other -- so a workload with large values holds the dump off across an
+/// arbitrarily large log, and reclaim only follows a dump.
+///
+/// The fixture is the case the record count is blind to: FAR fewer records than the record
+/// threshold, but past the byte threshold. If the byte threshold did nothing, the record count
+/// alone would still be delaying, which is what the first assertion states.
+#[test]
+fn a_large_log_dumps_on_bytes_while_the_record_count_still_says_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // A byte threshold small enough to reach in a test, and a record threshold far out of reach,
+    // so only the byte one can release the dump.
+    let options = StorageManagerOptions {
+        min_undumped_wal_records: 1_000_000,
+        min_undumped_wal_bytes: 64 * 1024,
+        ..StorageManagerOptions::default()
+    };
+
+    let records = 48;
+    for index in 0..records {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("fat-{index:03}"),
+                value: vec![b'v'; 4 * 1024],
+            },
+        });
+    }
+    assert!(
+        (records as u64) < options.min_undumped_wal_records,
+        "the fixture must stay far below the record threshold, or it proves nothing"
+    );
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let report = runtime.run_storage_manager_once(1, options.clone());
+
+    assert!(
+        !report.lifecycle_plan.dump_delayed,
+        "the log is past {} bytes and still delayed, so the byte threshold did nothing",
+        options.min_undumped_wal_bytes
+    );
+    assert!(
+        !report.lifecycle_plan.selected_dump_buckets.is_empty(),
+        "released, but no bucket was selected, so nothing would be written"
+    );
+
+    // The control: the same store, the same records, with only the byte threshold taken away.
+    // Now nothing can release the dump and it must be delayed -- which is what proves the first
+    // assertion was the BYTE threshold's doing and not the record count quietly being satisfied.
+    let without_bytes = StorageManagerOptions {
+        min_undumped_wal_bytes: 0,
+        ..options
+    };
+    let control = runtime.run_storage_manager_once(1, without_bytes);
+    assert!(
+        control.lifecycle_plan.dump_delayed,
+        "with no byte threshold the record count alone must still be delaying this dump"
+    );
+}
+
+/// The log's size threshold is set in the options a server actually starts with.
+///
+/// The test that proves the byte threshold WORKS passes its own options, so it cannot see the
+/// shipped default at all -- zeroing that default left it green. This is the half that watches
+/// production: a threshold nothing sets is a threshold that does not exist, which is the exact
+/// shape of the seven round bounds that were implemented, enforced, tested and left at zero.
+#[test]
+fn the_shipped_default_bounds_the_log_by_size() {
+    let options = StorageManagerOptions::default();
+    assert_eq!(options.min_undumped_wal_bytes, 96 * 1024 * 1024);
+    assert!(
+        options.min_undumped_wal_bytes > 0,
+        "with no byte threshold the record count alone decides, and a record count does not \
+         bound a file"
+    );
+    // Both thresholds are set, because each bounds something the other cannot: records bound how
+    // much replay a restart faces, bytes bound the file.
+    assert!(options.min_undumped_wal_records > 0);
+}
+
+/// Switching WAL reclaim off stops the reclaim, however large the log is.
+///
+/// The two thresholds are alternatives for WHEN to dump, not for WHETHER to reclaim. With the
+/// byte threshold crossed and reclaim disabled, no WAL reclaim may run.
+///
+/// Each arm gets its OWN store, because a round changes what the next round sees. Sharing one
+/// failed twice, in opposite directions: with the disabled arm second it inherited an
+/// already-reclaimed log and declined for want of work, so deleting the flag check changed
+/// nothing; with it first, its own prepare consumed the dump pressure -- the dump is not gated
+/// by this flag on this path -- and the control then had nothing left to reclaim. Two
+/// experiments, two fixtures.
+#[test]
+fn switching_reclaim_off_stops_the_reclaim_however_large_the_log() {
+    fn store_past_the_byte_threshold(
+        dir: &tempfile::TempDir,
+    ) -> DataNodeRuntime {
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..48 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("suppressed-{index:03}"),
+                    value: vec![b'v'; 4 * 1024],
+                },
+            });
+        }
+        DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        )
+    }
+
+    // Past the byte threshold and far short of the record one, so only the byte threshold can
+    // release the dump that reclaim follows.
+    let reclaiming = StorageManagerOptions {
+        min_undumped_wal_records: 1_000_000,
+        min_undumped_wal_bytes: 64 * 1024,
+        ..StorageManagerOptions::default()
+    };
+    let not_reclaiming = StorageManagerOptions {
+        enable_wal_reclaim: false,
+        ..reclaiming.clone()
+    };
+
+    let control_dir = tempfile::tempdir().unwrap();
+    let control = store_past_the_byte_threshold(&control_dir)
+        .run_storage_manager_once(1, reclaiming);
+    assert!(
+        !control.lifecycle_plan.dump_delayed,
+        "the byte threshold must release this dump, or nothing below is demonstrated"
+    );
+    assert!(
+        control.executed_stages.iter().any(|stage| stage == "reclaim_wal"),
+        "the control must actually reclaim: {:?}",
+        control.executed_stages
+    );
+
+    let suppressed_dir = tempfile::tempdir().unwrap();
+    let suppressed = store_past_the_byte_threshold(&suppressed_dir)
+        .run_storage_manager_once(1, not_reclaiming);
+    assert!(
+        !suppressed.executed_stages.iter().any(|stage| stage == "reclaim_wal"),
+        "reclaim is off, so no WAL reclaim may run however large the log: {:?}",
+        suppressed.executed_stages
+    );
+    assert!(
+        suppressed
+            .skipped_stages
+            .iter()
+            .any(|stage| stage == "reclaim_wal_disabled"),
+        "and it must say it was disabled rather than silently doing nothing: {:?}",
+        suppressed.skipped_stages
+    );
+}
+
 #[test]
 fn runtime_enforces_authorized_lifecycle_token_when_installed() {
     let runtime = DataNodeRuntime::new_without_workers_with_options(
@@ -1164,6 +1347,7 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,
             min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
             purge_delayed_destroy: false,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
