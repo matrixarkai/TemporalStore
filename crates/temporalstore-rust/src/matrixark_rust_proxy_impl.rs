@@ -1464,12 +1464,17 @@ fn retrieve_candidate_cache_key(
     count: usize,
     scope: Option<&Value>,
     secondary_groups: &[Vec<String>],
+    keep_vectors: bool,
 ) -> String {
     let scope_key = scope
         .and_then(|value| serde_json::to_string(value).ok())
         .unwrap_or_default();
     let secondary_key = serde_json::to_string(secondary_groups).unwrap_or_default();
-    format!("{storage_prefix}:candidate_snapshot:{count}:{scope_key}:{secondary_key}")
+    // `keep_vectors` is part of the key, not a detail of the value: a lexical snapshot and a
+    // dense one hold different candidates, and handing a dense request the lexical snapshot would
+    // silently rank it without vectors -- the one failure this cannot be allowed to have.
+    let vectors = if keep_vectors { "v" } else { "-" };
+    format!("{storage_prefix}:candidate_snapshot:{count}:{scope_key}:{secondary_key}:{vectors}")
 }
 
 fn storage_prefix_from_key(key: &str) -> Option<String> {
@@ -5518,6 +5523,7 @@ fn prepare_shard_candidates(
     key: String,
     signature: &str,
     scope: Option<&Value>,
+    keep_vectors: bool,
     reused: &mut usize,
 ) -> Result<Arc<Vec<CachedRetrieveCandidate>>, String> {
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
@@ -5531,7 +5537,7 @@ fn prepare_shard_candidates(
         .iter()
         .filter(|record| is_serving_context_record(record))
         .filter(|record| scope_matches_record(record, scope))
-        .filter_map(|record| candidate_from_record(record))
+        .filter_map(|record| candidate_from_record(record, keep_vectors))
         .collect();
     let candidates = Arc::new(candidates);
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
@@ -5544,9 +5550,18 @@ fn prepare_shard_candidates(
 ///
 /// Extracted so the per-shard path and the whole-corpus path cannot drift: they differ in which
 /// records they are given, and must not differ in what a candidate is.
-fn candidate_from_record(record: &Value) -> Option<CachedRetrieveCandidate> {
+fn candidate_from_record(record: &Value, keep_vectors: bool) -> Option<CachedRetrieveCandidate> {
     let text = context_record_text(record);
-    let record_vector = record_vector_of(record);
+    // A 1,024-dimension vector is 4 KB, and the snapshot holds every candidate for the life of the
+    // shard entry -- so on a deployment that ranks lexically this was the largest thing resident
+    // per candidate and nothing ever read it. It is read in exactly two places, both scoring, and
+    // scoring only reaches them when a query vector exists. Which it does is decided BEFORE the
+    // snapshot is built, and travels in its cache key.
+    let record_vector = if keep_vectors {
+        record_vector_of(record)
+    } else {
+        None
+    };
     let selected_ref = selected_ref_from_record(record, text);
     if selected_ref.is_null() {
         return None;
@@ -5556,7 +5571,11 @@ fn candidate_from_record(record: &Value) -> Option<CachedRetrieveCandidate> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let vector = record_vector.or_else(|| record_vector_of(&selected_ref));
+    let vector = if keep_vectors {
+        record_vector.or_else(|| record_vector_of(&selected_ref))
+    } else {
+        None
+    };
     Some(CachedRetrieveCandidate {
         selected_ref,
         ref_type,
@@ -5587,8 +5606,10 @@ fn load_retrieve_candidate_snapshot(
     count: usize,
     scope: Option<&Value>,
     secondary_groups: &[Vec<String>],
+    keep_vectors: bool,
 ) -> Result<(Arc<RetrieveCandidateSnapshot>, bool), String> {
-    let cache_key = retrieve_candidate_cache_key(storage_prefix, count, scope, secondary_groups);
+    let cache_key =
+        retrieve_candidate_cache_key(storage_prefix, count, scope, secondary_groups, keep_vectors);
     if let Ok(cache) = retrieve_candidate_cache().lock() {
         if let Some(snapshot) = cache.get(&cache_key) {
             return Ok((Arc::clone(snapshot), true));
@@ -5669,7 +5690,14 @@ fn load_retrieve_candidate_snapshot(
     let segments: Vec<Arc<Vec<CachedRetrieveCandidate>>> = if secondary_groups.is_empty() {
         // Per shard, and cached there: records are appended, so every shard but the newest
         // produces exactly the candidates it produced before, filter for filter and ref for ref.
-        let signature = shard_scope_signature(scope);
+        // The signature keys the PER-SHARD entry, so it carries the same distinction the
+        // snapshot key does: a shard prepared without vectors must not be handed to a dense
+        // request.
+        let signature = format!(
+            "{}|{}",
+            shard_scope_signature(scope),
+            if keep_vectors { "v" } else { "-" }
+        );
         scope_digest = scope_signature_digest(&signature);
         let mut segments = Vec::with_capacity(shard_count);
         for shard in 0..shard_count {
@@ -5679,6 +5707,7 @@ fn load_retrieve_candidate_snapshot(
                 key,
                 &signature,
                 scope,
+                keep_vectors,
                 &mut prepared_hits,
             )?);
         }
@@ -5700,7 +5729,7 @@ fn load_retrieve_candidate_snapshot(
                 );
                 terms.is_empty() || passes_secondary_groups(&terms, secondary_groups)
             })
-            .filter_map(candidate_from_record)
+            .filter_map(|record| candidate_from_record(record, keep_vectors))
             .collect::<Vec<_>>();
         vec![Arc::new(whole)]
     };
@@ -5778,6 +5807,34 @@ fn retrieve_context_pack_output(
     // Timed because it is the other half of a retrieve, and the pack could not say so: it
     // reports the scoring pass and a total, with the rebuild -- every shard read, and every
     // record parsed on a miss -- invisible between them.
+    let query = if request.query.trim().is_empty() {
+        request_record
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    } else {
+        request.query.clone()
+    };
+    // Resolved here, ahead of the snapshot, because the snapshot's contents depend on it: a
+    // lexical retrieve keeps no vectors, and 4 KB per candidate is the difference. It used to be
+    // resolved after, which is why the snapshot could not know. Nothing in it reads the snapshot.
+    let mut query_embed_ms = 0.0_f64;
+    let query_vector = ranking_field_from(
+        request.query_vector.clone(),
+        &request_record,
+        "query_vector",
+    )
+    .filter(|v: &Vec<f32>| !v.is_empty())
+    .or_else(|| {
+        // Only when the caller sent none: a caller that embedded the query itself keeps its own
+        // vector, and which model ranked the store stays its decision.
+        let started = Instant::now();
+        let embedded = embed_query_text(&query);
+        query_embed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        embedded
+    });
+    let ranking_uses_vectors = query_vector.is_some();
     let snapshot_started = Instant::now();
     let (snapshot, candidate_cache_hit) = load_retrieve_candidate_snapshot(
         engine,
@@ -5786,6 +5843,7 @@ fn retrieve_context_pack_output(
         count,
         scope,
         &secondary_groups,
+        ranking_uses_vectors,
     )?;
     let snapshot_ms = snapshot_started.elapsed().as_secs_f64() * 1000.0;
 
@@ -5805,15 +5863,6 @@ fn retrieve_context_pack_output(
         requested_max_selected_refs
     }
     .max(1);
-    let query = if request.query.trim().is_empty() {
-        request_record
-            .get("query")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    } else {
-        request.query.clone()
-    };
     let query_terms = query_terms(&query);
     let inferred_question_type;
     let question_type = if let Some(explicit) = request_record
@@ -5833,22 +5882,6 @@ fn retrieve_context_pack_output(
     let has_event_candidate = snapshot
         .candidates()
         .any(|candidate| candidate.ref_type == "event");
-    let mut query_embed_ms = 0.0_f64;
-    let query_vector = ranking_field_from(
-        request.query_vector.clone(),
-        &request_record,
-        "query_vector",
-    )
-    .filter(|v: &Vec<f32>| !v.is_empty())
-    .or_else(|| {
-        // Only when the caller sent none: a caller that embedded the query itself keeps its own
-        // vector, and which model ranked the store stays its decision.
-        let started = Instant::now();
-        let embedded = embed_query_text(&query);
-        query_embed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        embedded
-    });
-    let ranking_uses_vectors = query_vector.is_some();
     let weights = ranking_field_from(
         request.ranking_weights,
         &request_record,
