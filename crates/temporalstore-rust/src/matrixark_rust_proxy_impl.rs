@@ -1420,6 +1420,7 @@ fn render_prometheus_metrics(
     ));
     // The engine's own series, which include the page-cache counters. Appended rather than
     // re-rendered: see engine_prometheus_metrics.
+    output.push_str(&serving_cache_prometheus_metrics());
     output.push_str(&engine_prometheus_metrics());
     output
 }
@@ -4844,6 +4845,41 @@ fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, RecordStore>> {
 /// series with identical labels -- which is a malformed scrape rather than more information. One
 /// engine is the onebox case this exists for; a proxy fanned out over several record-log prefixes
 /// keeps the request counters it always had.
+
+/// What this process is holding, beside the engine's own counters.
+///
+/// Without these the proxy's RSS is one number and four possible explanations. They are gauges
+/// rather than counters: each is a current size, and the budgets are rendered beside the sizes so
+/// a reading says how close to its bound each cache is without needing the configuration.
+fn serving_cache_prometheus_metrics() -> String {
+    let (entries, payload_bytes, derived_bytes, payload_budget, derived_budget) =
+        serving_cache_gauges();
+    let (candidate_entries, scan_entries) = serving_derived_cache_entries();
+    format!(
+        "# HELP matrixark_proxy_snapshot_cache_entries Shards held in the serving snapshot cache.\n\
+         # TYPE matrixark_proxy_snapshot_cache_entries gauge\n\
+         matrixark_proxy_snapshot_cache_entries {entries}\n\
+         # HELP matrixark_proxy_snapshot_cache_payload_bytes Shard payload bytes held.\n\
+         # TYPE matrixark_proxy_snapshot_cache_payload_bytes gauge\n\
+         matrixark_proxy_snapshot_cache_payload_bytes {payload_bytes}\n\
+         # HELP matrixark_proxy_snapshot_cache_derived_bytes Parsed records and prepared candidates held.\n\
+         # TYPE matrixark_proxy_snapshot_cache_derived_bytes gauge\n\
+         matrixark_proxy_snapshot_cache_derived_bytes {derived_bytes}\n\
+         # HELP matrixark_proxy_snapshot_cache_payload_budget_bytes Budget for shard payloads.\n\
+         # TYPE matrixark_proxy_snapshot_cache_payload_budget_bytes gauge\n\
+         matrixark_proxy_snapshot_cache_payload_budget_bytes {payload_budget}\n\
+         # HELP matrixark_proxy_snapshot_cache_derived_budget_bytes Budget for derived data.\n\
+         # TYPE matrixark_proxy_snapshot_cache_derived_budget_bytes gauge\n\
+         matrixark_proxy_snapshot_cache_derived_budget_bytes {derived_budget}\n\
+         # HELP matrixark_proxy_candidate_snapshot_entries Candidate snapshots held, cleared per store on write.\n\
+         # TYPE matrixark_proxy_candidate_snapshot_entries gauge\n\
+         matrixark_proxy_candidate_snapshot_entries {candidate_entries}\n\
+         # HELP matrixark_proxy_scan_cache_entries Scan results held.\n\
+         # TYPE matrixark_proxy_scan_cache_entries gauge\n\
+         matrixark_proxy_scan_cache_entries {scan_entries}\n"
+    )
+}
+
 fn engine_prometheus_metrics() -> String {
     let cache = match engine_cache().lock() {
         Ok(cache) => cache,

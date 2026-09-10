@@ -365,6 +365,46 @@ fn total_memory_bytes() -> usize {
     0
 }
 
+
+/// What the serving caches are holding, for the process to report about itself.
+///
+/// The proxy's resident set has been optimised twice this week against readings that could not say
+/// which part of it was which: the payload cache, the derived cache, the candidate snapshots and
+/// the engine this process holds open are all in the same RSS, and only the last of them reported
+/// anything. Returned as a tuple rather than a struct because it has exactly one caller, the
+/// metrics render, and a struct here would be a type nothing else names.
+///
+/// `(entries, payload bytes, derived bytes, payload budget, derived budget)`.
+fn serving_cache_gauges() -> (usize, usize, usize, usize, usize) {
+    match hgetall_snapshot_cache().lock() {
+        Ok(cache) => (
+            cache.entries.len(),
+            cache.bytes,
+            cache.decoded_bytes,
+            cache.budget,
+            cache.decoded_budget,
+        ),
+        // A poisoned lock must not cost the rest of the response.
+        Err(_) => (0, 0, 0, 0, 0),
+    }
+}
+
+/// How many candidate snapshots are held, and how many scan results.
+///
+/// Both are cleared per store when it is written, so a number that keeps climbing here means
+/// writes are not reaching the invalidation, not that the cache is unbounded.
+fn serving_derived_cache_entries() -> (usize, usize) {
+    let candidates = retrieve_candidate_cache()
+        .lock()
+        .map(|cache| cache.len())
+        .unwrap_or(0);
+    let scans = matrixark_scan_cache()
+        .lock()
+        .map(|cache| cache.len())
+        .unwrap_or(0);
+    (candidates, scans)
+}
+
 fn hgetall_snapshot_cache() -> &'static Mutex<SnapshotCache> {
     static HGETALL_SNAPSHOT_CACHE: OnceLock<Mutex<SnapshotCache>> = OnceLock::new();
     HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(SnapshotCache::new()))
