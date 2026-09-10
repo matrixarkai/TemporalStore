@@ -6,6 +6,160 @@
 use super::*;
 use super::helpers::*;
 
+/// Every maintenance phase is on under the options a server actually starts with.
+///
+/// The server passes `StorageManagerOptions::default()` and prints a banner naming seven phases.
+/// The banner is a string; this checks the report.
+///
+/// Asserted on the SUFFIX rather than against a list of names, because the failure this guards
+/// against is a default going quiet, and the worst version of that is a phase added later whose
+/// default is off -- which a fixed list would not mention. Any stage the runtime records as
+/// `<name>_disabled` fails this, including one that does not exist yet.
+///
+/// The second half is the other way to be wrong: a phase that stops reporting at all. A stage
+/// missing from both lists is not "off", it is absent, and the first assertion cannot see it.
+#[test]
+fn every_maintenance_phase_is_enabled_under_the_shipped_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // Real content, so a phase that declines for want of work is distinguishable from one that
+    // declines because it is switched off.
+    for index in 0..64 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("phase-{index:03}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+
+    let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+
+    let disabled = report
+        .skipped_stages
+        .iter()
+        .filter(|stage| stage.ends_with("_disabled"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        disabled.is_empty(),
+        "phases switched off under the options the server ships with: {disabled:?} \
+         (executed: {:?}, skipped: {:?})",
+        report.executed_stages,
+        report.skipped_stages
+    );
+
+    // Every phase must have reported SOMETHING -- ran, or declined for a reason that is not
+    // "disabled". A phase in neither list has gone missing from the cycle.
+    for phase in [
+        "prepare",
+        "reclaim_wal",
+        "reclaim_memory",
+        "expire",
+        "reclaim_page",
+        "compact_pages",
+        "reclaim_index",
+        "reap_metrics",
+    ] {
+        let ran = report.executed_stages.iter().any(|stage| stage == phase);
+        let declined = report
+            .skipped_stages
+            .iter()
+            .any(|stage| stage.starts_with(phase));
+        assert!(
+            ran || declined,
+            "{phase} appears in neither list, so the cycle no longer reports it \
+             (executed: {:?}, skipped: {:?})",
+            report.executed_stages,
+            report.skipped_stages
+        );
+    }
+}
+
+/// A dump actually happens under the shipped default, once enough has accumulated to be worth
+/// one.
+///
+/// Being ENABLED is not being REACHED. The default holds a dump back until
+/// `min_undumped_wal_records` = 1000 records are undumped, so a handful of writes produces no
+/// dump at all -- correctly, because the delay exists to let repeated writes to the same bucket
+/// coalesce into one dumped generation. A guard that only checked the phase flags would pass on
+/// a store that never dumps, which is the state this whole line of work started from.
+///
+/// So: write past the threshold, run one round with the options a server ships with, and require
+/// that buckets were actually selected and a manifest written.
+#[test]
+fn a_dump_fires_under_the_shipped_default_once_the_threshold_is_crossed() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let options = StorageManagerOptions::default();
+    // Past the coalescing delay, and not by one: the threshold counts UNDUMPED records, so a
+    // round that dumps resets it, and a fixture sitting exactly on the line would be deciding
+    // the test on an off-by-one in the counter rather than on whether a dump happens.
+    let writes = options.min_undumped_wal_records as usize + 256;
+    for index in 0..writes {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dumped-{index:05}"),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let report = runtime.run_storage_manager_once(1, options);
+
+    assert!(
+        !report.lifecycle_plan.dump_delayed,
+        "past {writes} writes the dump is still being delayed: {:?}",
+        report.lifecycle_plan.undumped_wal_records
+    );
+    assert!(
+        !report.lifecycle_plan.selected_dump_buckets.is_empty(),
+        "the round selected no buckets to dump, so nothing was going to be written"
+    );
+    let lifecycle = report
+        .lifecycle_report
+        .as_ref()
+        .expect("a round that selected buckets must report what it did with them");
+    let manifest = lifecycle
+        .dump_manifest
+        .as_ref()
+        .expect("selected buckets must produce a dump manifest");
+    assert!(
+        !manifest.bucket_ids.is_empty(),
+        "the manifest names no buckets, so the dump captured nothing"
+    );
+}
+
 #[test]
 fn runtime_enforces_authorized_lifecycle_token_when_installed() {
     let runtime = DataNodeRuntime::new_without_workers_with_options(
