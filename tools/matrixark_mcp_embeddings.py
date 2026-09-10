@@ -311,12 +311,20 @@ def _deterministic_embedding_for_text(text: str) -> list[float]:
 def _api_embedding_config(provider: str) -> tuple[str, str, str, str]:
     """(endpoint, api_key, model, key_env) for the selected API provider. Base URL + key env are
     overridable so the same path serves OpenAI, Azure, Voyage, and self-hosted OpenAI-compatible servers."""
+    # The same chain the two reporting paths use. Reading only the newer name sent a
+    # deployment that configured `extraction.embed_base_url` -- the shipped config's name for
+    # this endpoint, and the one the engine reads -- to the public host instead, while the
+    # portal reported the configured one.
     if provider == "voyage":
-        base = os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "https://api.voyageai.com/v1")
+        base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
+                or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip()
+                or "https://api.voyageai.com/v1")
         key_env = os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "VOYAGE_API_KEY")
         default_model = "voyage-3"
     else:  # openai / openai_compatible / azure_openai / api
-        base = os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "https://api.openai.com/v1")
+        base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
+                or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip()
+                or "https://api.openai.com/v1")
         key_env = os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "OPENAI_API_KEY")
         default_model = "text-embedding-3-large"
     model = os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)

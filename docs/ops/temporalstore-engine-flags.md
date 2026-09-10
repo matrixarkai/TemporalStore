@@ -322,7 +322,7 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_CONTEXT_EVENT_SCAN_CAP` | 64 | nothing | 1 | — |
 | `MATRIXARK_EMBEDDING_MODEL` | — | config, launch, script, test, portal | 1 | — |
 | `MATRIXARK_EMBED_API_KEY_ENV` | — | nothing | 1 | — |
-| `MATRIXARK_EMBED_BASE_URL` | — | config, script | 1 | — |
+| `MATRIXARK_EMBED_BASE_URL` | — | config, script, test | 1 | — |
 | `MATRIXARK_EMBED_DRAINER` | off | config, launch, test, portal | 1 | — |
 | `MATRIXARK_EMBED_DRAINER_BATCH` | — | config, portal | 1 | — |
 | `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | 40000 | launch, portal | 1 | — |
