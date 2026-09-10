@@ -515,7 +515,9 @@ def _shadow_compare_enabled() -> bool:
     again after a diagnosis.
     """
     import os as _os
-    return _os.environ.get("MATRIXARK_SHADOW_COMPARE", "").strip() not in {
+    # `.lower()` as well as `.strip()`: without it "OFF" and "False" are not the words they
+    # look like and read as TRUE, which is a false spelling switching the flag on.
+    return _os.environ.get("MATRIXARK_SHADOW_COMPARE", "").strip().lower() not in {
         "", "0", "false", "no", "off"
     }
 
@@ -4910,7 +4912,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._dedicated_proxy_clients_enabled = os.environ.get(
             "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS",
             "0",
-        ).strip().lower() in {"1", "true", "yes"}
+        ).strip().lower() in {"1", "true", "yes", "on"}
         # Read through env_bool, like MatrixArkRustProxyClient reads the same variable. The
         # hand-rolled set here was {"1", "true", "yes"} and env_bool's TRUE_VALUES are
         # {"1", "true", "yes", "on"}, so `=on` enabled dedicated pack lanes in the client and not
@@ -4921,7 +4923,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             os.environ.get("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_AFTER_FLUSH")
             or os.environ.get("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH")
             or "0"
-        ).strip().lower() in {"1", "true", "yes"}
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._rust_proxy_path = proxy_path
         self._rust_request_timeout_ms = request_timeout_ms
         self._rust_io_timeout_ms = io_timeout_ms

@@ -78,7 +78,7 @@ def _declared_bool_settings() -> dict:
     return out
 
 
-def _hand_rolled_reads() -> list:
+def _hand_rolled_reads(declared_only: bool = True) -> list:
     """(variable, module, line, accepted, negated, folded) for each hand-written boolean read.
 
     `folded` is whether the value passes through .strip() and .lower() before the comparison --
@@ -116,7 +116,11 @@ def _hand_rolled_reads() -> list:
                 variable = ast.literal_eval(node.args[0])
             except (ValueError, SyntaxError):
                 continue
-            if not isinstance(variable, str) or variable not in declared:
+            if not isinstance(variable, str):
+                continue
+            if not variable.startswith(("MATRIXARK_", "TS_")):
+                continue
+            if declared_only and variable not in declared:
                 continue
 
             cursor, folded, compare = node, set(), None
@@ -193,6 +197,46 @@ class APortalBoolAcceptsTheWordsABoolIsWrittenWithTest(unittest.TestCase):
                            "would look compliant")
         self.assertGreater(len(_unreachable_modules()), 30,
                            "the reachability list came back nearly empty")
+
+
+class EveryFlagReadAsABooleanAcceptsTheSameWordsTest(unittest.TestCase):
+    """The same rule, for flags the portal never offers.
+
+    Nothing about it depends on a setting being declared. A flag set in a deploy script or by hand
+    is written with the same words, and `MATRIXARK_SHADOW_COMPARE=OFF` read TRUE because only the
+    case fold was missing -- a false spelling switching a flag on, with no screen involved."""
+
+    def test_every_hand_rolled_read_names_every_spelling_of_its_side(self) -> None:
+        short = []
+        for variable, module, line, members, negated, _folded in _hand_rolled_reads(False):
+            wanted = FALSE_VALUES if negated else TRUE_VALUES
+            missing = sorted(wanted - members)
+            if missing:
+                short.append("%s (%s:%d) misses %s" % (variable, module, line, ",".join(missing)))
+        self.assertEqual(
+            [], short,
+            "these flags are read as booleans and ignore a spelling of the side they test, so "
+            "that value means the OPPOSITE of what it says")
+
+    def test_every_hand_rolled_read_folds_case_and_strips_space(self) -> None:
+        raw = []
+        for variable, module, line, _members, _negated, folded in _hand_rolled_reads(False):
+            if not folded:
+                raw.append("%s (%s:%d)" % (variable, module, line))
+        self.assertEqual(
+            [], raw,
+            "these flags compare the environment value without .strip().lower(), so a capital or "
+            "a stray space changes the answer")
+
+    def test_the_wider_scan_sees_more_than_the_declared_one(self) -> None:
+        """A floor with a direction. The two assertions above are only worth having if the wider
+        scan actually reaches flags the portal does not declare; if it collapsed to the declared
+        set they would be a copy of the tests above."""
+        declared = len(_hand_rolled_reads(True))
+        every = len(_hand_rolled_reads(False))
+        self.assertGreater(
+            every, declared,
+            "the wider scan found no more reads than the declared-only one, so it is not wider")
 
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: s
     cache_key = f"{target}:{max_new_tokens}"
     cached = _OSS_SEGMENT_MODEL_CACHE.get(cache_key)
     if cached is None:
-        local_only = bool(local_only) or bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").lower() in {"1", "true", "yes"}
+        local_only = bool(local_only) or bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
         tokenizer = AutoTokenizer.from_pretrained(target, local_files_only=local_only)
         model_obj = AutoModelForCausalLM.from_pretrained(target, local_files_only=local_only)
         device = "cuda" if torch.cuda.is_available() else "cpu"

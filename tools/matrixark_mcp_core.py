@@ -756,7 +756,7 @@ def detect_memory_segments(messages: list[Json], envelope: Json | None = None) -
             "fallback_used": False,
         }
 
-    fallback_enabled = bool(envelope.get("segment_provider_fallback", False)) or provider in {"oss-fallback", "oss_with_fallback"} or os.getenv("MATRIXARK_SEGMENT_PROVIDER_FALLBACK", "").lower() in {"1", "true", "yes"}
+    fallback_enabled = bool(envelope.get("segment_provider_fallback", False)) or provider in {"oss-fallback", "oss_with_fallback"} or os.getenv("MATRIXARK_SEGMENT_PROVIDER_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
     if provider in {"oss", "oss-fallback", "oss_with_fallback"}:
         model = str(envelope.get("segment_model") or os.getenv("MATRIXARK_SEGMENT_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"))
         model_path = str(envelope.get("segment_model_path") or os.getenv("MATRIXARK_SEGMENT_MODEL_PATH", ""))
@@ -821,7 +821,7 @@ def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: s
     cache_key = f"{target}:{max_new_tokens}"
     cached = _OSS_SEGMENT_MODEL_CACHE.get(cache_key)
     if cached is None:
-        local_only = bool(local_only) or bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").lower() in {"1", "true", "yes"}
+        local_only = bool(local_only) or bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
         tokenizer = AutoTokenizer.from_pretrained(target, local_files_only=local_only)
         model_obj = AutoModelForCausalLM.from_pretrained(target, local_files_only=local_only)
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1124,13 +1124,25 @@ ACTIVE_MEMORY_GOAL_QUERY_RE = re.compile(
     r"|\b(?:memory|retrieval|extraction|ingestion|context)\b.{0,80}\b(?:goal|focus|priority|feature|functionality|implementation|direction)\b.{0,80}\b(?:active|current|latest|next|ongoing|standing|persistent)\b"
 )
 
-FEATURE_SCOPE_EXCLUSION_RE = re.compile(
-    r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
-    r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
+# The dimension list, once. It appears in both patterns below and in both of them again in
+# matrixark_codex_hook, which imports the two PATTERN strings from here rather than restating them.
+#
+# The hook compiles them with re.IGNORECASE and this module does not, and that is per-site and
+# correct: the hook matches text it has only whitespace-normalised, while every reader here
+# lowercases first. Sharing the compiled objects would have made one of the two sites wrong, so
+# what is shared is the pattern and not the compilation.
+_FEATURE_SCOPE_DIMENSIONS = (
+    r"testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation"
+    r"|benchmarks?"
 )
-FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(
-    r"\b(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
+FEATURE_SCOPE_EXCLUDED_DIMENSION_PATTERN = r"\b(?:%s)\b" % _FEATURE_SCOPE_DIMENSIONS
+FEATURE_SCOPE_EXCLUSION_PATTERN = (
+    r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+(?:%s)\b"
+    % _FEATURE_SCOPE_DIMENSIONS
 )
+
+FEATURE_SCOPE_EXCLUSION_RE = re.compile(FEATURE_SCOPE_EXCLUSION_PATTERN)
+FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(FEATURE_SCOPE_EXCLUDED_DIMENSION_PATTERN)
 FEATURE_SCOPE_ONLY_RE = re.compile(
     r"\b(?:just|only|pure(?:ly)?|focus(?:ed)? on|prioriti[sz]e)\s+"
     r"(?:feature parity|features?|functionalit(?:y|ies)|implementation|algorithms?|algos?)\b"
@@ -1219,7 +1231,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
 
 
 def require_oss_understanding() -> bool:
-    return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes"}
+    return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def understanding_provider(envelope: Json | None = None) -> str:

@@ -53,7 +53,7 @@ def _core_runtime() -> Any:
 
 
 def require_oss_understanding() -> bool:
-    return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes"}
+    return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Not defined here: the implementation lives in matrixark_mcp_core and this module carried an

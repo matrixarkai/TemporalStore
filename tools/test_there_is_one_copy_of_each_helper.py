@@ -147,9 +147,18 @@ STILL_COMPILED_TWICE = {
     # matrixark_mcp_budget_policies, so the only copy left is the unreachable one.
     "PROFILE_MEMORY_QUERY_RE":
         "second copy is in matrixark_mcp_query, which only tests reach",
-    # Two live holders, and they differ ON PURPOSE -- see DELIBERATELY_UNLIKE below.
-    "FEATURE_SCOPE_EXCLUSION_RE": "two live holders, deliberately different -- see below",
-    "FEATURE_SCOPE_EXCLUDED_DIMENSION_RE": "two live holders, deliberately different",
+    # Was two live holders differing on purpose. The live pair -- matrixark_mcp_core and
+    # matrixark_codex_hook -- now compile one shared pattern string instead of two copies of the
+    # word list, each with its own flags, so neither is a literal compile any more and this scan
+    # no longer sees them. The IGNORECASE difference is unchanged and is recorded at both sites.
+    #
+    # What is left is the same case as the four above: two copies, both in modules only the tests
+    # reach, identical to each other, with nothing live to consolidate them with.
+    "FEATURE_SCOPE_EXCLUSION_RE":
+        "the two copies left are in matrixark_mcp_query and matrixark_mcp_extraction_"
+        "normalization, which only tests reach",
+    # FEATURE_SCOPE_EXCLUDED_DIMENSION_RE is not listed: those two modules never defined it, so
+    # after the consolidation it has no literal copy anywhere.
     # Both copies are live -- matrixark_mcp_core:should_extract_resource_fact and
     # matrixark_mcp_resources -- and they differ by one keyword: core matches `risk`, resources
     # matches `control_state`. Which is right depends on RESOURCE_FACT_SCHEMAS, which is ALSO
@@ -168,13 +177,13 @@ STILL_COMPILED_TWICE = {
 #: obstruction above because the agreement check below is what would otherwise force them to be
 #: made the same -- and making them the same would be the defect.
 #:
-#: `matrixark_codex_hook` searches text that has been whitespace-normalised but not lowered
-#: (`feature_scope_memory_only_policy`), so its copies carry re.IGNORECASE. Every other holder
-#: searches a string the caller already lowered, where the flag changes nothing. Same rule, two
-#: call conventions.
+#: The two FEATURE_SCOPE_* names used to be listed here, because `matrixark_codex_hook` searches
+#: text that has been whitespace-normalised but not lowered (`feature_scope_memory_only_policy`)
+#: and so needs re.IGNORECASE, while every other holder searches a string the caller already
+#: lowered. That is still true and still deliberate -- but the two live holders now share one
+#: pattern string and apply their own flags to it, so the difference is no longer carried by two
+#: copies of a ten-word list, and it is written at both sites rather than only here.
 DELIBERATELY_UNLIKE = frozenset((
-    "FEATURE_SCOPE_EXCLUSION_RE",
-    "FEATURE_SCOPE_EXCLUDED_DIMENSION_RE",
     "RESOURCE_FACT_KEYWORDS",
     "WORD_RE",
 ))

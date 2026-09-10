@@ -47,6 +47,8 @@ try:
         embedding_for_text,
         embedding_model_name,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        FEATURE_SCOPE_EXCLUDED_DIMENSION_PATTERN,
+        FEATURE_SCOPE_EXCLUSION_PATTERN,
         infer_query_type,
         local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
@@ -75,6 +77,8 @@ except ModuleNotFoundError:
         embedding_for_text,
         embedding_model_name,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        FEATURE_SCOPE_EXCLUDED_DIMENSION_PATTERN,
+        FEATURE_SCOPE_EXCLUSION_PATTERN,
         infer_query_type,
         local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
@@ -2965,15 +2969,11 @@ ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS = [
 ]
 
 
-FEATURE_SCOPE_EXCLUSION_RE = re.compile(
-    r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
-    r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
-    re.IGNORECASE,
-)
+# IGNORECASE here and not in matrixark_mcp_core, because this side matches `compact`, which is
+# whitespace-normalised but NOT lowercased. The word list itself is imported rather than restated.
+FEATURE_SCOPE_EXCLUSION_RE = re.compile(FEATURE_SCOPE_EXCLUSION_PATTERN, re.IGNORECASE)
 FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(
-    r"\b(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
-    re.IGNORECASE,
-)
+    FEATURE_SCOPE_EXCLUDED_DIMENSION_PATTERN, re.IGNORECASE)
 
 FEATURE_MEMORY_POLICY_RE = re.compile(
     r"\b(?:mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|long[- ]term memory|session memory|profile memory|cross[- ]session memory|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b",
@@ -4017,13 +4017,10 @@ def codex_retrieve_question_type(query: str) -> str:
 
 
 def codex_feature_scope_excludes_audit(query: str) -> bool:
-    return bool(
-        re.search(
-            r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
-            r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
-            str(query or "").lower(),
-        )
-    )
+    # The same rule as FEATURE_SCOPE_EXCLUSION_RE, which is that pattern compiled with IGNORECASE.
+    # The input is lowercased first, so the two match identically -- and the word list is no longer
+    # written out a third time in this module.
+    return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(query or "").lower()))
 
 
 def codex_retrieve_audit_options(query: str) -> Json:
