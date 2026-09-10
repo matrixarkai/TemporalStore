@@ -2561,7 +2561,14 @@ fn encode_wal_proto_frame(
         items: entry
             .outcomes
             .iter()
-            .map(|item| crate::wal_proto::item_to_proto(item, entry.shard_id, implied_length))
+            .map(|item| {
+                crate::wal_proto::item_to_proto(
+                    item,
+                    entry.shard_id,
+                    implied_length,
+                    crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
+                )
+            })
             .collect(),
     };
     let mut encoded = frame.encode_to_vec();
@@ -2646,6 +2653,8 @@ fn decode_wal_proto_frame_exact(
     } else {
         None
     };
+    // Worked out before the command is moved into the record, and once rather than per item.
+    let command_key = crate::wal_proto::command_object_key(Some(&command));
     Ok(SharedStoreWalEntry {
         shard_id: frame.shard_id,
         wal_index: frame.wal_index,
@@ -2653,7 +2662,14 @@ fn decode_wal_proto_frame_exact(
         outcomes: frame
             .items
             .into_iter()
-            .map(|item| crate::wal_proto::item_from_proto(item, frame.shard_id, implied_length))
+            .map(|item| {
+                crate::wal_proto::item_from_proto(
+                    item,
+                    frame.shard_id,
+                    implied_length,
+                    command_key.as_deref(),
+                )
+            })
             .collect(),
         staged_pages: frame
             .staged_pages
