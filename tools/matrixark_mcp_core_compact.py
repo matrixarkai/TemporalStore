@@ -13,32 +13,36 @@ _record_debug_ref) for total re-export.
 import json
 from typing import Any
 
+# Imported from the modules that DEFINE these, not from matrixark_mcp_core, which only
+# republishes them. core star-imports this module, so taking them from there closed a cycle:
+# importing either module by its flat name failed part-way with "cannot import name
+# 'canonical_scope_key' from partially initialized module", and four suites could not load.
+#
+# Each name was compared against core's view before being moved: eight resolve to the same
+# definition either way. `canonical_storage_route` does NOT -- core's honours `durability` and
+# matrixark_mcp_storage_options' returns a `read_preference` core's does not, with neither a
+# superset -- so that one still comes from core, at its single call site below, and the choice of
+# implementation is unchanged.
+Json = dict[str, Any]
+
 try:  # package path
-    from .matrixark_mcp_core import (
-        ENABLE_CONTEXT_DEBUG_RECORDS,
-        Json,
+    from .matrixark_mcp_identity import canonical_scope_key, now_ms, stable_hash
+    from .matrixark_mcp_indexing import (
         SECONDARY_INDEX_POSTING_BUCKET_MS,
-        canonical_scope_key,
-        canonical_storage_route,
         compact_context_index_postings,
-        embedding_model_ref_for_name,
         non_default_classification,
-        now_ms,
-        stable_hash,
     )
+    from .matrixark_mcp_models import embedding_model_ref_for_name
+    from .matrixark_mcp_runtime_config import ENABLE_CONTEXT_DEBUG_RECORDS
 except ImportError:  # top-level path
-    from matrixark_mcp_core import (
-        ENABLE_CONTEXT_DEBUG_RECORDS,
-        Json,
+    from matrixark_mcp_identity import canonical_scope_key, now_ms, stable_hash
+    from matrixark_mcp_indexing import (
         SECONDARY_INDEX_POSTING_BUCKET_MS,
-        canonical_scope_key,
-        canonical_storage_route,
         compact_context_index_postings,
-        embedding_model_ref_for_name,
         non_default_classification,
-        now_ms,
-        stable_hash,
     )
+    from matrixark_mcp_models import embedding_model_ref_for_name
+    from matrixark_mcp_runtime_config import ENABLE_CONTEXT_DEBUG_RECORDS
 
 __all__ = ['HOT_SERVING_RECORD_TYPES', 'COMPACT_SCOPE_RECORD_TYPES', 'COMPACT_TIMESTAMP_RECORD_TYPES', 'TOPOLOGY_DERIVED_PATH_RECORD_TYPES', 'NODE_PATH_HEAVY_RECORD_TYPES', 'EVENT_DEBUG_FIELDS', 'ENTITY_DEBUG_FIELDS', 'EMBEDDING_LINEAGE_DEBUG_FIELDS', 'HOT_EMBEDDING_COMPACT_TYPES', 'HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES', 'HOT_EMBEDDING_LINEAGE_FIELDS', 'compact_hot_context_embedding_record', 'legacy_hook_type_from_codex_event', 'CONTEXT_TIMELINE_FANOUT', 'COMPACT_DERIVED_SCOPE_FIELDS', 'COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES', 'COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS', 'compact_record_scope', '_record_debug_ref', 'context_event_timestamp_ms', 'context_event_time_key', 'attach_context_event_time_key', 'attach_storage_route', 'context_placement_key', 'attach_context_placement', 'compact_record_lifecycle_fields', 'compact_storage_record', 'materialize_serving_records', 'context_index_timestamp_key', 'context_index_posting_bucket', 'context_index_data_model', 'context_index_ref_hashes', 'materialize_serving_record_batch', 'latest_context_state_key', 'compact_latest_context_state_records']
 
@@ -245,6 +249,13 @@ def attach_storage_route(record: Json) -> Json:
         route_source = envelope.get("storage_options", {})
     if "storage_route" not in record or not isinstance(record.get("storage_route"), dict):
         if route_source:
+            # From core deliberately: see the note on the imports above. The copy in
+            # matrixark_mcp_storage_options answers differently and choosing between them is not
+            # this change's to make, so this keeps the one that has always run here.
+            try:  # package path
+                from .matrixark_mcp_core import canonical_storage_route
+            except ImportError:  # top-level path
+                from matrixark_mcp_core import canonical_storage_route
             record = {**record, "storage_route": canonical_storage_route(route_source)}
     return record
 

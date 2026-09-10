@@ -17,18 +17,18 @@ import socket
 import time
 from typing import Any
 
-try:  # package import: from tools.matrixark_mcp_core (dominant, 110 importers)
-    from .matrixark_mcp_core import (
-        BACKEND_READINESS_CONNECT_TIMEOUT_MS,
-        Json,
-        MATRIXARK_ROLE_SCOPE_LIMITS,
-    )
-except ImportError:  # top-level import: PYTHONPATH=tools, import matrixark_mcp_core
-    from matrixark_mcp_core import (
-        BACKEND_READINESS_CONNECT_TIMEOUT_MS,
-        Json,
-        MATRIXARK_ROLE_SCOPE_LIMITS,
-    )
+# From the modules that DEFINE these rather than from matrixark_mcp_core, which republishes
+# them and star-imports this module back -- a cycle that made `import matrixark_mcp_core_identity`
+# fail part-way. BACKEND_READINESS_CONNECT_TIMEOUT_MS is written out identically in core and in
+# matrixark_mcp_runtime_config, so this reads the same value from the module that owns it.
+Json = dict[str, Any]
+
+try:  # package path
+    from .matrixark_mcp_identity import MATRIXARK_ROLE_SCOPE_LIMITS
+    from .matrixark_mcp_runtime_config import BACKEND_READINESS_CONNECT_TIMEOUT_MS
+except ImportError:  # top-level path
+    from matrixark_mcp_identity import MATRIXARK_ROLE_SCOPE_LIMITS
+    from matrixark_mcp_runtime_config import BACKEND_READINESS_CONNECT_TIMEOUT_MS
 
 # mem0-compat scope alias folding lives in the leaf validation module (single
 # source of truth) and is re-exported here via core's `import *` so

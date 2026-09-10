@@ -9,30 +9,26 @@ import-time cycle; same core module reused under both import paths.
 """
 from typing import Any
 
+# From the modules that DEFINE these, not from matrixark_mcp_core, which republishes them.
+# core star-imports this module, so taking them from there closed a cycle and importing either
+# module by its flat name failed part-way. The two constants are written out identically in core
+# and in matrixark_mcp_runtime_config, so reading the topic module's is the same value.
+Json = dict[str, Any]
+
 try:  # package path
-    from .matrixark_mcp_core import (
-        Json,
-        MAX_PRIOR_CHARS,
-        MAX_PRIOR_MESSAGES,
-        MatrixArkError,
-        identity_hashes,
-        optional_object,
-        require_string,
-        scope_from_serving_record,
-        scope_matches,
-    )
+    from .matrixark_mcp_access_scope import scope_matches
+    from .matrixark_mcp_core_identity import require_string
+    from .matrixark_mcp_errors import MatrixArkError
+    from .matrixark_mcp_identity import identity_hashes, scope_from_serving_record
+    from .matrixark_mcp_runtime_config import MAX_PRIOR_CHARS, MAX_PRIOR_MESSAGES
+    from .matrixark_mcp_validation import optional_object
 except ImportError:  # top-level path
-    from matrixark_mcp_core import (
-        Json,
-        MAX_PRIOR_CHARS,
-        MAX_PRIOR_MESSAGES,
-        MatrixArkError,
-        identity_hashes,
-        optional_object,
-        require_string,
-        scope_from_serving_record,
-        scope_matches,
-    )
+    from matrixark_mcp_access_scope import scope_matches
+    from matrixark_mcp_core_identity import require_string
+    from matrixark_mcp_errors import MatrixArkError
+    from matrixark_mcp_identity import identity_hashes, scope_from_serving_record
+    from matrixark_mcp_runtime_config import MAX_PRIOR_CHARS, MAX_PRIOR_MESSAGES
+    from matrixark_mcp_validation import optional_object
 
 __all__ = ['enrich_scope_with_identity', 'validate_hook', 'adapter_ensure_backend_ready', 'has_confirmation_context', 'explicit_context_pack_id', 'session_key', 'user_key', 'context_node_key', 'session_buffer_key_from_scope', 'session_buffer_key', 'messages_from_event_record', 'message_from_event_record', 'session_summary_for_events', 'collect_prior_context', 'prior_context_payload']
 
