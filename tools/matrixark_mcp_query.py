@@ -729,14 +729,3 @@ def candidate_index_terms(
         terms.update(metadata_index_terms(record.get("metadata", {})))
     return {term for term in terms if term}
 
-
-try:  # the implementation lives in matrixark_mcp_core_scoring; this module re-exports it
-    from .matrixark_mcp_core_scoring import passes_secondary_index_filters
-except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_core_scoring import passes_secondary_index_filters
-
-
-try:  # the implementation lives in matrixark_mcp_core_scoring; this module re-exports it
-    from .matrixark_mcp_core_scoring import passes_applicable_secondary_index_filters
-except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_core_scoring import passes_applicable_secondary_index_filters

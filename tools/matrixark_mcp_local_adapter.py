@@ -2449,9 +2449,10 @@ AUTO_BUDGET_QUERY_TYPES = {
     "benchmark_quality",
 }
 
-FEATURE_MEMORY_BUDGET_QUERY_RE = re.compile(
-    r"\b(?:mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|session memory|profile memory|cross[- ]session memory|long[- ]term memory|threshold|idle batch|batch extraction)\b"
-)
+try:  # the pattern lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it
+    from .matrixark_mcp_retrieve_pre_refresh import FEATURE_MEMORY_BUDGET_QUERY_RE
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import FEATURE_MEMORY_BUDGET_QUERY_RE
 
 
 try:  # the implementation lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it

@@ -127,6 +127,99 @@ def _duplicate_pairs() -> set[tuple[str, tuple[str, ...]]]:
     return pairs
 
 
+#: Names still compiled in more than one production module, each with the reason it is not one
+#: definition yet. The holders are printed by the failure rather than listed here, so an entry does
+#: not go stale when a copy moves.
+STILL_COMPILED_TWICE = {
+    # The six below are identical in every holder, which is what makes them look mechanical. They
+    # are not, and it is the same obstruction for all six: the only holder that can own the name
+    # without closing an import cycle is `matrixark_mcp_core`, so consolidating means every other
+    # holder importing the aggregator. That dependence is already why
+    # `matrixark_mcp_core_scoring`, `matrixark_mcp_core_candidate_policy`,
+    # `matrixark_mcp_core_query_analysis` and `matrixark_mcp_core_codex_outcome` cannot be imported
+    # unless the aggregator is imported first. Deepening it to delete a duplicate trades a copy for
+    # a deadlock. They come off this list when the aggregator stops importing its own consumers
+    # from its body, not before.
+    "ACTIVE_MEMORY_GOAL_QUERY_RE": "consolidating needs an import of the aggregator",
+    "CODEX_OUTCOME_QUERY_RE": "consolidating needs an import of the aggregator",
+    "PROFILE_MEMORY_QUERY_RE": "consolidating needs an import of the aggregator",
+    "PROFILE_MEMORY_STANDING_RULE_QUERY_RE": "consolidating needs an import of the aggregator",
+    "FEATURE_SCOPE_EXCLUSION_RE": "same, and the hook copy differs deliberately -- see below",
+    "FEATURE_SCOPE_EXCLUDED_DIMENSION_RE": "same, and the hook copy differs deliberately",
+    # Both copies are live -- matrixark_mcp_core:should_extract_resource_fact and
+    # matrixark_mcp_resources -- and they differ by one keyword: core matches `risk`, resources
+    # matches `control_state`. Which is right depends on RESOURCE_FACT_SCHEMAS, which is ALSO
+    # different in each host and is already recorded as a blocker in STILL_DUPLICATED above. The
+    # keyword set and the schema set have to be settled together or a fact starts being extracted
+    # with no schema to classify it.
+    "RESOURCE_FACT_KEYWORDS": "diverged by one keyword; blocked on the same RESOURCE_FACT_SCHEMAS "
+                              "split already recorded in STILL_DUPLICATED",
+    # Two standalone scripts, neither importing the other, each tokenising its own input: one folds
+    # case by matching lowercase only, the other keeps it. Not a shared rule that drifted -- a
+    # short local constant that happens to share a name.
+    "WORD_RE": "two unrelated scripts with their own tokenisers, not a shared rule",
+}
+
+#: Duplicates whose copies are MEANT to differ, with the reason. Listed separately from the
+#: obstruction above because the agreement check below is what would otherwise force them to be
+#: made the same -- and making them the same would be the defect.
+#:
+#: `matrixark_codex_hook` searches text that has been whitespace-normalised but not lowered
+#: (`feature_scope_memory_only_policy`), so its copies carry re.IGNORECASE. Every other holder
+#: searches a string the caller already lowered, where the flag changes nothing. Same rule, two
+#: call conventions.
+DELIBERATELY_UNLIKE = frozenset((
+    "FEATURE_SCOPE_EXCLUSION_RE",
+    "FEATURE_SCOPE_EXCLUDED_DIMENSION_RE",
+    "RESOURCE_FACT_KEYWORDS",
+    "WORD_RE",
+))
+
+
+def _compiled_patterns() -> dict:
+    """name -> {module: (pattern source, flag source)} for every module-scope `X = re.compile(...)`.
+
+    Compared on SOURCE, not on the compiled object. `re.compile` caches on (pattern, flags), so two
+    modules compiling the same text are handed the SAME object back -- identity here would report
+    every duplicate as one shared definition and see nothing at all.
+
+    Flags are read from the keyword form as well as the positional one. `re.compile(p, re.I)` and
+    `re.compile(p, flags=re.I)` are the same call, and reading only the first would have compared a
+    case-insensitive copy equal to a case-sensitive one -- which is precisely the divergence this
+    is for.
+    """
+    found: dict = {}
+    for rel in _tracked_production_modules():
+        try:
+            with open(os.path.join(REPO_ROOT, rel), encoding="utf-8", errors="replace") as handle:
+                tree = ast.parse(handle.read())
+        except (SyntaxError, OSError):
+            continue
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target, call = node.targets[0], node.value
+            if not isinstance(target, ast.Name):
+                continue
+            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "compile" and call.args):
+                continue
+            try:
+                pattern = ast.literal_eval(call.args[0])
+            except (ValueError, SyntaxError):
+                continue                  # built at runtime: not a constant to duplicate
+            flags = "|".join(
+                sorted([ast.dump(a, include_attributes=False) for a in call.args[1:]]
+                       + [ast.dump(k.value, include_attributes=False) for k in call.keywords
+                          if k.arg == "flags"]))
+            found.setdefault(target.id, {})[os.path.basename(rel)[:-3]] = (pattern, flags)
+    return found
+
+
+def _patterns_with_several_copies() -> dict:
+    return {name: holders for name, holders in _compiled_patterns().items() if len(holders) > 1}
+
+
 def _parameters(node) -> dict:
     """name -> default source text (None when the parameter is required)."""
     args = node.args
@@ -278,6 +371,87 @@ class OneCopyOfEachHelperTest(unittest.TestCase):
             "a delegation's parameter list has drifted from the implementation it forwards to. "
             "A caller that relies on a default the wrapper dropped raises TypeError, and nothing "
             "about the wrapper looks wrong:\n  " + "\n  ".join(wrong))
+
+    def test_no_rule_is_compiled_in_a_module_that_is_not_listed(self) -> None:
+        """The ratchet direction: a new second copy of a pattern fails here.
+
+        A rule copied into a second module is the shape that already produced a live defect.
+        `FEATURE_MEMORY_QUERY_RE` was compiled twice, one copy matching thirty topics and the
+        other nineteen, and the function ratchet next door could not see it -- a compiled pattern
+        is an assignment, not a body, so a rule can drift by eleven alternatives without a single
+        duplicate function existing."""
+        several = _patterns_with_several_copies()
+        unlisted = sorted(set(several) - set(STILL_COMPILED_TWICE))
+        detail = ["%s in %s" % (name, ", ".join(sorted(several[name]))) for name in unlisted]
+        self.assertEqual(
+            [], detail,
+            "a pattern is now compiled in more than one module; import it from the one that owns "
+            "it, or add it to STILL_COMPILED_TWICE with the reason it cannot be")
+
+    def test_the_list_does_not_claim_a_copy_that_is_gone(self) -> None:
+        """Tight in the other direction too. A list that keeps names after they are fixed stops
+        being a record of what is left and becomes a place entries go to be forgotten."""
+        several = _patterns_with_several_copies()
+        stale = sorted(name for name in STILL_COMPILED_TWICE if name not in several)
+        self.assertEqual(
+            [], stale,
+            "these names have one definition now; strike them from STILL_COMPILED_TWICE")
+
+    def test_a_tolerated_duplicate_has_not_quietly_drifted(self) -> None:
+        """The copies above are tolerated because they agree. Drift is the actual hazard, so if one
+        stops agreeing the reason it is tolerated has stopped holding -- and nothing else in the
+        tree would say so."""
+        several = _patterns_with_several_copies()
+        drifted = []
+        for name in sorted(set(STILL_COMPILED_TWICE) - DELIBERATELY_UNLIKE):
+            holders = several.get(name, {})
+            if len(set(holders.values())) > 1:
+                drifted.append("%s: %s" % (name, ", ".join(sorted(holders))))
+        self.assertEqual(
+            [], drifted,
+            "a tolerated duplicate has diverged; its copies now answer differently, which is the "
+            "fault this list exists to bound")
+
+    def test_the_deliberate_differences_are_still_deliberate(self) -> None:
+        """The other half of the check above. A name is excused from agreeing only while it really
+        does differ -- once the copies converge the excuse is stale, and leaving it in place would
+        silently exempt a name that has rejoined the rule."""
+        several = _patterns_with_several_copies()
+        converged = []
+        for name in sorted(DELIBERATELY_UNLIKE):
+            holders = several.get(name, {})
+            if holders and len(set(holders.values())) == 1:
+                converged.append(name)
+        self.assertEqual(
+            [], converged,
+            "these copies are identical now, so listing them as deliberately unlike is wrong; "
+            "strike them from DELIBERATELY_UNLIKE and consolidate them")
+
+    def test_the_pattern_scan_actually_finds_things(self) -> None:
+        """A floor under the four above. If the scan stopped matching `re.compile`, every one of
+        them would pass against an empty result."""
+        found = _compiled_patterns()
+        self.assertGreater(
+            len(found), 25,
+            "the pattern scan came back nearly empty, so an empty duplicate set says nothing")
+        self.assertIn(
+            "PROFILE_MEMORY_QUERY_RE", found,
+            "a name known to be compiled in several modules is missing from the scan")
+
+    def test_the_scan_reads_flags_passed_by_keyword(self) -> None:
+        """A floor under the drift checks specifically.
+
+        `re.compile(p, flags=re.IGNORECASE)` and `re.compile(p, re.IGNORECASE)` are the same call.
+        An earlier version of this scan read positional arguments only, so a case-insensitive copy
+        compared EQUAL to a case-sensitive one and the drift checks passed over the divergence they
+        exist to find."""
+        found = _compiled_patterns()
+        keyword_form = found.get("RESOURCE_FACT_KEYWORDS", {}).get("matrixark_mcp_resources")
+        self.assertIsNotNone(keyword_form, "the keyword-flag sample is gone; pick another")
+        self.assertTrue(
+            keyword_form[1],
+            "a pattern compiled with `flags=` came back with no flags recorded, so a difference "
+            "in case sensitivity would read as identical")
 
     def test_the_scan_actually_finds_things(self) -> None:
         """A floor. If the scan stopped parsing, or git ls-files returned nothing, every assertion

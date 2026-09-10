@@ -203,22 +203,20 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_indexing import normalized_index_value
 
 
-CODEX_OUTCOME_CHANGE_RE = re.compile(
-    r"\b(?:changed|updated|implemented|added|removed|fixed|configured|enabled|disabled|installed|upgraded|downgraded|migrated|recovered|restored|cleaned|deleted|moved|renamed|wired|integrated|extracted|promoted|indexed|budgeted|ranked|batched|flushed|synced|consumed|hooked|captured)\b",
-    re.IGNORECASE,
-)
-CODEX_OUTCOME_PUBLISH_RE = re.compile(
-    r"\b(?:outcome|pushed|published|deployed|released|uploaded|merged|rebased|fast[- ]?forward(?:ed)?|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b",
-    re.IGNORECASE,
-)
-CODEX_OUTCOME_VALIDATION_RE = re.compile(
-    r"\b(?:validation|validated|verified|tests?|py_compile|unittest|pytest|cargo test|cargo check|build(?: succeeded)?|built|compiled|syntax check)\b",
-    re.IGNORECASE,
-)
-CODEX_OUTCOME_BENCHMARK_RE = re.compile(
-    r"\b(?:benchmark|benchmarked|p50|p99|throughput|latency|qps|ops/sec|requests/sec)\b",
-    re.IGNORECASE,
-)
+try:  # the four patterns live in matrixark_mcp_core_codex_outcome; this module re-exports them
+    from .matrixark_mcp_core_codex_outcome import (
+        CODEX_OUTCOME_BENCHMARK_RE,
+        CODEX_OUTCOME_CHANGE_RE,
+        CODEX_OUTCOME_PUBLISH_RE,
+        CODEX_OUTCOME_VALIDATION_RE,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import (
+        CODEX_OUTCOME_BENCHMARK_RE,
+        CODEX_OUTCOME_CHANGE_RE,
+        CODEX_OUTCOME_PUBLISH_RE,
+        CODEX_OUTCOME_VALIDATION_RE,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
@@ -233,14 +231,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_codex_outcome import codex_outcome_entity_type
 
 
-CODEX_OUTCOME_ENTITY_TYPES = {
-    "codex_next_action",
-    "codex_blocker",
-    "codex_validation",
-    "codex_publish_outcome",
-    "codex_code_change",
-    "codex_benchmark_result",
-}
+try:  # the set lives in matrixark_mcp_core_codex_outcome; this module re-exports it
+    from .matrixark_mcp_core_codex_outcome import CODEX_OUTCOME_ENTITY_TYPES
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import CODEX_OUTCOME_ENTITY_TYPES
 
 
 def codex_outcome_fact_entities(
