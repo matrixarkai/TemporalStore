@@ -99,8 +99,23 @@ UNREACHABLE = {
         "matrixark_mcp_local_ingest",
         "matrixark_mcp_resource_import_task",
     ),
-    # The proxy caching and coalescing layer, ~2,244 lines, unwired. The orphan check next door
-    # lists `matrixark_mcp_rust_proxy_client` alone; these are the nine it cannot see behind it.
+    # The proxy caching and coalescing layer, ~2,244 lines, unwired.
+    #
+    # The orphan check next door used to list `matrixark_mcp_rust_proxy_client` alone, with the
+    # reason it is kept. It cannot any more -- test_the_lane_has_one_decoder imports `_lane_loads`
+    # from it, so by that check's definition it is no longer an orphan -- and the reason is worth
+    # more than the entry was, so it moved here with the module:
+    #
+    #   Not dead by accident. It is the pre-split proxy client and heads this cluster:
+    #   matrixark_mcp_rust_proxy_cache_mixin and matrixark_mcp_rust_proxy_coalesce are imported by
+    #   NOTHING ELSE, so they go with it. Between them they implement a string cache, a scan-hash
+    #   cache, a context-pack response cache, and coalescing for batch hset, batch hget and record
+    #   append. The live MatrixArkRustProxyClient in matrixark_mcp_temporal_adapters -- the one
+    #   matrixark_mcp_server imports -- has NONE of that: no base class, and no member whose name
+    #   contains cache or coalesce. The live one is richer where it counts for correctness
+    #   (__init__ 69 lines against 23, _record_call_metrics 88 against 2, _call_json 66 against 51)
+    #   and has no performance layer at all. Removing this settles that difference permanently;
+    #   wiring it up is a product decision. Either is a choice somebody should make on purpose.
     "rust_proxy": (
         "matrixark_mcp_rust_proxy_cache",
         "matrixark_mcp_rust_proxy_cache_mixin",
