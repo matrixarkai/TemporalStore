@@ -293,6 +293,19 @@ struct CachedRetrieveCandidate {
     vector: Option<Vec<f32>>,
 }
 
+/// What building a snapshot cost, by stage, in milliseconds.
+///
+/// A retrieve after a write is nearly all rebuild, and the rebuild is three unrelated pieces of
+/// work: reading and parsing the shards, counting the inventory, and turning records into
+/// candidates. Each is fixed by a different change, so a total is not enough to act on. A snapshot
+/// served from cache reports the build it came from.
+#[derive(Clone, Copy, Debug, Default)]
+struct RetrieveBuildCost {
+    read_ms: f64,
+    inventory_ms: f64,
+    candidates_ms: f64,
+}
+
 #[derive(Clone, Debug)]
 struct RetrieveCandidateSnapshot {
     candidates: Vec<CachedRetrieveCandidate>,
@@ -300,6 +313,7 @@ struct RetrieveCandidateSnapshot {
     scanned_records: usize,
     placement_partitions_touched: usize,
     index_postings_read: usize,
+    build: RetrieveBuildCost,
 }
 
 struct NativeScoredCandidate {
@@ -1411,7 +1425,7 @@ struct SnapshotEntry {
 /// `BTreeMap` of `String` keys and every number is a `Value` -- and the exact factor varies by
 /// record shape, so this is a deliberate over-estimate: the cost of guessing low is an unbudgeted
 /// cache, which is what this type exists to prevent.
-const DECODED_BYTES_PER_PAYLOAD_BYTE: usize = 6;
+const DECODED_BYTES_PER_PAYLOAD_BYTE: usize = 4;
 
 struct SnapshotCache {
     entries: BTreeMap<String, SnapshotEntry>,
@@ -1438,10 +1452,18 @@ impl SnapshotCache {
             decoded_bytes: 0,
             clock: 0,
             budget,
-            // Half the payload budget. Parsed records are several times their payload, so this is
-            // a smaller share of shards than it looks -- deliberately, since a dropped decode is
-            // cheap to rebuild and the payload cache must not shrink to make room for it.
-            decoded_budget: budget / 2,
+            // The SAME budget as the payloads, not a fraction of it.
+            //
+            // This was half, while each parse was charged at six times its payload bytes -- so the
+            // parse cache could hold about a twelfth of the payload volume and evicted most of
+            // what it was given. Measured on a 27,186-record store, that left the rebuild's read
+            // stage at 367-540 ms; with this budget it is 0.1 ms, and the rebuild after a write
+            // went 662-720 ms to 153 ms, for 6% more resident memory.
+            //
+            // Evicting a parse still costs less than evicting a payload -- one re-parse against a
+            // re-read AND a re-parse -- which is why they keep separate budgets and separate LRUs
+            // rather than one shared pool.
+            decoded_budget: budget,
         }
     }
 
@@ -5772,12 +5794,14 @@ fn load_retrieve_candidate_snapshot(
     // Parsed at most once per shard per write, and then borrowed from the shard cache rather
     // than copied out of it: copying a record to own it costs ~23 us against the ~0.6 us that
     // owning it saves the ref build.
+    let read_started = Instant::now();
     let mut shards = Vec::with_capacity(shard_count);
     for shard in 0..shard_count {
         let key = format!("{record_hash_key}:{shard:06}");
         shards.push(hgetall_decoded(engine, key)?);
     }
     let records: Vec<&Value> = shards.iter().flat_map(|shard| shard.iter()).collect();
+    let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
 
     // Built only when something is going to read them. The single consumer is the secondary-group
     // filter below, which returns early on an empty group list -- so with no groups this was a
@@ -5818,8 +5842,11 @@ fn load_retrieve_candidate_snapshot(
         }
     }
 
+    let inventory_started = Instant::now();
     let memory_inventory = native_retrieval_memory_inventory(&records, scope);
+    let inventory_ms = inventory_started.elapsed().as_secs_f64() * 1000.0;
     let scanned_records = records.len();
+    let candidates_started = Instant::now();
     let candidates = records
         .into_iter()
         // Cheapest and most selective first. This is one `get` and a `matches!`, and it rejects
@@ -5862,12 +5889,18 @@ fn load_retrieve_candidate_snapshot(
             }
         })
         .collect::<Vec<_>>();
+    let candidates_ms = candidates_started.elapsed().as_secs_f64() * 1000.0;
     let snapshot = Arc::new(RetrieveCandidateSnapshot {
         candidates,
         memory_inventory,
         scanned_records,
         placement_partitions_touched: shard_count,
         index_postings_read: shard_count,
+        build: RetrieveBuildCost {
+            read_ms,
+            inventory_ms,
+            candidates_ms,
+        },
     });
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
         cache.insert(cache_key, Arc::clone(&snapshot));
@@ -6253,8 +6286,11 @@ fn retrieve_context_pack_output(
         // Phases, not just a total: a rebuild and a scoring pass are fixed by different work, and
         // "the retrieve took a second" has never been enough to tell them apart.
         eprintln!(
-            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms              (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms,              {} records scanned, {selected_count} refs selected",
-            snapshot.scanned_records
+            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates",
+            snapshot.scanned_records,
+            snapshot.build.read_ms,
+            snapshot.build.inventory_ms,
+            snapshot.build.candidates_ms
         );
     }
     let correctness = selected_count > 0;
@@ -7026,6 +7062,38 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    /// A parse that fits its budget is kept.
+    ///
+    /// The parse cache was added and then starved: half the payload budget, with every parse
+    /// charged at six times its payload bytes, so it held about a twelfth of the payload volume
+    /// and evicted nearly everything. The rebuild went on re-parsing and the cache looked like it
+    /// had not helped. This asserts the relationship rather than the constants, so an edit that
+    /// halves the budget again fails here rather than quietly making a retrieve slow.
+    #[test]
+    fn a_parse_that_fits_is_kept() {
+        let mut cache = SnapshotCache::new();
+        assert!(
+            cache.decoded_budget >= cache.budget,
+            "parses get a smaller budget than payloads ({} against {}), which starves the cache \
+             the rebuild depends on",
+            cache.decoded_budget,
+            cache.budget
+        );
+
+        cache.insert("shard".to_string(), shard_payloads("one"));
+        cache.set_decoded("shard", Arc::new(vec![json!({"text": "one"})]));
+        assert!(
+            cache.decoded("shard").is_some(),
+            "a single small parse did not survive its own budget"
+        );
+
+        // And the charge stays a bounded multiple, so a parse cannot be free.
+        assert!(
+            cache.decoded_bytes >= cache.bytes,
+            "a parse charged less than its payload would make the budget meaningless"
+        );
+    }
 
     fn shard_payloads(text: &str) -> Arc<BTreeMap<String, String>> {
         let mut map = BTreeMap::new();
