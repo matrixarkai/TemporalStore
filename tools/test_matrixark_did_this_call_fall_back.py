@@ -24,6 +24,8 @@ rather than permanent, and therefore much harder to see.
 """
 from __future__ import annotations
 
+import importlib
+import inspect
 import itertools
 import os
 import sys
@@ -189,6 +191,84 @@ class OneThreadDoesNotAnswerForAnotherTest(unittest.TestCase):
         finally:
             if had:
                 state.fallback_used = previous
+
+
+class TheRetrievePathAsksThisModuleTest(unittest.TestCase):
+    """Everything above imports `matrixark_mcp_embeddings` and asks it directly. That is not where
+    a retrieve gets its answer, and for as long as this file has existed it was not getting the
+    answer this file pins.
+
+    `matrixark_mcp_core` imported these three names and then DEFINED them again below the import,
+    so its definitions won, and the serving modules reach core through `from matrixark_mcp_core
+    import *`. core's `embedding_fallback_used` read a module global that only core's own
+    `oss_embedding_for_text` ever set -- and nothing calls that -- so on the retrieve path it
+    answered False for the life of the process. Measured on main, with the openai provider and no
+    key, after a call that fell back:
+
+        embedding_fallback_used   False
+        embedding_execution_mode  openai_embedding_api
+
+    Both go into every context pack. A retrieve served by the token-hash fallback reported that the
+    API had served it.
+
+    So this asserts about the modules a request actually goes through, not about the module that
+    holds the implementation.
+    """
+
+    SERVING_MODULES = ("matrixark_local_adapter_retrieve", "matrixark_temporal_direct_read")
+    #: `embedding_model_name` is NOT here. core keeps its own on purpose -- the two disagree, and
+    #: test_string_defaults_agree holds that disagreement as a defect whose decision is open,
+    #: because making the name agree relabels every vector a populated store already holds.
+    NAMES = ("embedding_fallback_used", "embedding_execution_mode_name")
+
+    @staticmethod
+    def _import(name):
+        """Flat name first, which is how this file already imports the encoder module.
+
+        The two spellings are two module OBJECTS with separate state: importing the encoder as
+        `matrixark_mcp_embeddings` here and the retrieve module as `tools.matrixark_...` would give
+        the retrieve path a different thread-local than the one the probe above just set, and the
+        assertion would fail for a reason that has nothing to do with what it is checking.
+        """
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            return importlib.import_module("tools." + name)
+
+    def test_the_serving_modules_reach_this_implementation(self) -> None:
+        for module_name in self.SERVING_MODULES:
+            module = self._import(module_name)
+            for attribute in self.NAMES:
+                with self.subTest(module=module_name, attribute=attribute):
+                    reached = inspect.getmodule(getattr(module, attribute))
+                    self.assertEqual(
+                        "matrixark_mcp_embeddings",
+                        getattr(reached, "__name__", "").rsplit(".", 1)[-1],
+                        "%s.%s is not this module's -- a second copy is answering for the retrieve "
+                        "path again, and the pack it fills in will be wrong rather than absent"
+                        % (module_name, attribute))
+
+    def test_a_fallback_is_visible_from_the_retrieve_path(self) -> None:
+        """The same question as `test_a_call_that_fell_back_says_so`, asked where it matters. That
+        one passed throughout; this one is what was false."""
+        retrieve = self._import("matrixark_local_adapter_retrieve")
+        with _Env(**FELL_BACK):
+            # Driven through the RETRIEVE module's own bindings, both the encode and the read.
+            #
+            # `matrixark_mcp_embeddings` and `tools.matrixark_mcp_embeddings` are two module
+            # objects with separate thread-local state and separate vector caches, and which one a
+            # module gets depends on the spelling it imported with. Encoding through the flat one
+            # here and reading through the retrieve path's would compare two different answers and
+            # fail for a reason that has nothing to do with the fallback.
+            #
+            # _fresh_text for the reason it exists: a cached vector never reaches the provider, so
+            # it cannot fall back, and this would measure a cache hit rather than the encoder.
+            retrieve.embedding_for_text(_fresh_text())
+            self.assertTrue(
+                retrieve.embedding_fallback_used(),
+                "the retrieve path cannot see a fallback that just happened")
+            self.assertEqual(
+                "local_hash_embedding_fallback", retrieve.embedding_execution_mode_name())
 
 
 if __name__ == "__main__":

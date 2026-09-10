@@ -341,11 +341,9 @@ SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900
 # ENABLE_LLM_MERGE_OPERATOR comes from matrixark_mcp_runtime_config, above.
 DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
-_OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
 _EMBEDDING_VECTOR_CACHE: dict[tuple[str, str], list[float]] = {}
 _EMBEDDING_VECTOR_CACHE_LOCK = threading.RLock()
-_EMBEDDING_FALLBACK_USED = False
 _DIRECT_RECORD_CACHE: dict[str, tuple[int, list[Json]]] = {}
 _DIRECT_RECORD_CACHE_LOCK = threading.RLock()
 _DIRECT_RECORD_CACHE_MAX_PREFIXES = 64
@@ -3341,17 +3339,84 @@ except ImportError:  # top-level path (direct tools/ execution)
 # and adding the query/passage role there produced a TypeError at the call site, which is how the
 # duplication was found at all.
 #
+# `embedding_model_name` is here for the same reason, and it is the same bug caught later: this
+# module carried its own copy, and under an OSS provider the two disagreed --
+#
+#     core        -> sentence-transformers/all-MiniLM-L6-v2
+#     embeddings  -> intfloat/multilingual-e5-large
+#
+# with the API branch hardcoding "voyage-3"/"text-embedding-3-large" rather than resolving through
+# _api_embedding_config. `matrixark_mcp_ingest_resource_records` imports the name from HERE and
+# stamps it on the record it writes, so an OSS deployment labelled every record with a model that
+# had not produced its vectors. `prototype_vectors` above keys its cache on the same string, so the
+# two copies of THAT cached under different keys as well.
+#
+# `embedding_fallback_used`, `embedding_execution_mode_name` and `oss_embedding_for_text` are here
+# for the same reason and were the same bug still running. They were IMPORTED above and then
+# DEFINED again below, so the definitions won and every serving module reaching this one through
+# `import *` got them:
+#
+#   embedding_fallback_used        read a module global here that only this module's own
+#                                  oss_embedding_for_text ever set, and nothing calls that -- so it
+#                                  answered False for the life of the process. The version in
+#                                  matrixark_mcp_embeddings reads per-call, per-thread state, which
+#                                  is what test_matrixark_did_this_call_fall_back was written to
+#                                  pin -- and that suite imports only matrixark_mcp_embeddings, so
+#                                  it passed while the copy the retrieve path used stayed broken.
+#   embedding_execution_mode_name  calls the above, so it could never return
+#                                  local_hash_embedding_fallback.
+#   oss_embedding_for_text         hardcoded the superseded OSS default.
+#
+# Both values are reported in every context pack, so a retrieve served by a silently degraded
+# encoder said it had not degraded.
+#
 # One implementation, imported here, so a fix applies once.
 try:  # package path
     from tools.matrixark_mcp_embeddings import (  # noqa: F401
+        embedding_execution_mode_name,
+        embedding_fallback_used,
         embedding_for_text,
         embeddings_for_texts,
+        oss_embedding_for_text,
     )
 except ImportError:  # top-level path (direct tools/ execution)
     from matrixark_mcp_embeddings import (  # noqa: F401
+        embedding_execution_mode_name,
+        embedding_fallback_used,
         embedding_for_text,
         embeddings_for_texts,
+        oss_embedding_for_text,
     )
+
+def embedding_model_name() -> str:
+    """NOT delegated to matrixark_mcp_embeddings, unlike its neighbours above, and deliberately.
+
+    The two disagree -- this returns sentence-transformers/all-MiniLM-L6-v2 for an OSS provider
+    where that one returns intfloat/multilingual-e5-large -- and `test_string_defaults_agree`
+    carries the disagreement as a recorded defect whose decision is still open. It is open for a
+    reason, quoted from there:
+
+        mcp_embeddings is the module that LOADS the encoder -- so vectors are produced by e5-large
+        while thirteen modules label them MiniLM. Making the name truthful changes
+        embedding_model_ref_for_name and orphans every embedding a populated store already holds.
+
+    So the fix is a backfill, not an import. Deleting this copy would relabel every stored vector
+    by editing one line, which is why it stays until that decision is made -- and why the three
+    names above, which report what THIS call did and touch nothing stored, could go.
+    """
+    from matrixark_mcp_embeddings import embedding_provider_name
+
+    provider = embedding_provider_name()
+    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+        return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
+            "MATRIXARK_EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+    if provider in _API_EMBEDDING_PROVIDERS:
+        default_model = "voyage-3" if provider == "voyage" else "text-embedding-3-large"
+        return os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
+    return "matrixark-local-token-hash-v1"
+
 
 def _env_int(name: str, default: int) -> int:
     """Read an integer env var, treating empty or unparseable as unset.
@@ -3570,70 +3635,6 @@ def compact_embedding_vector(vector: list[float]) -> list[float]:
     if EMBEDDING_VECTOR_DECIMALS <= 0:
         return vector
     return [round(value, EMBEDDING_VECTOR_DECIMALS) for value in vector]
-
-
-def embedding_model_name() -> str:
-    from matrixark_mcp_embeddings import embedding_provider_name
-
-    provider = embedding_provider_name()
-    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-            "MATRIXARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        )
-    if provider in _API_EMBEDDING_PROVIDERS:
-        default_model = "voyage-3" if provider == "voyage" else "text-embedding-3-large"
-        return os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
-    return "matrixark-local-token-hash-v1"
-
-
-def embedding_execution_mode_name() -> str:
-    from matrixark_mcp_embeddings import embedding_provider_name
-
-    provider = embedding_provider_name()
-    if embedding_fallback_used():
-        return "local_hash_embedding_fallback"
-    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        return "oss_embedding_model"
-    if provider in _API_EMBEDDING_PROVIDERS:
-        return "voyage_embedding_api" if provider == "voyage" else "openai_embedding_api"
-    if provider == "hash":
-        return "hashing-local"
-    return "deterministic-token-hash"
-
-
-def embedding_fallback_used() -> bool:
-    return _EMBEDDING_FALLBACK_USED
-
-
-def oss_embedding_for_text(text: str) -> list[float]:
-    global _EMBEDDING_FALLBACK_USED
-    model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-        "MATRIXARK_EMBEDDING_MODEL",
-        "sentence-transformers/all-MiniLM-L6-v2",
-    )
-    try:
-        encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
-        if encoder is None:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-
-            encoder = SentenceTransformer(model_ref)
-            _OSS_EMBEDDING_MODEL_CACHE[model_ref] = encoder
-        vector = encoder.encode([text], normalize_embeddings=True, show_progress_bar=False)[0]
-        return [round(float(value), 6) for value in vector]
-    except Exception as exc:  # pragma: no cover - depends on optional local model packages.
-        if env_bool("MATRIXARK_REQUIRE_OSS_EMBEDDINGS", False):
-            raise MatrixArkError(f"OSS embedding model is required but unavailable: {model_ref}: {exc}") from exc
-        _EMBEDDING_FALLBACK_USED = True
-        previous = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER")
-        try:
-            os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = "deterministic"
-            return embedding_for_text(text)
-        finally:
-            if previous is None:
-                os.environ.pop("MATRIXARK_EMBEDDING_PROVIDER", None)
-            else:
-                os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = previous
 
 
 # `cosine` is not defined here. It was, and it returned the bare dot product without dividing by

@@ -200,7 +200,11 @@ SCAN_COVERAGE_FLOOR = 40
 # Modules that name a setting's variable and never write `os.environ` themselves: they hand the
 # read to a helper. If the admission above is removed, these fall out of the scan entirely and
 # every live label that rests on them silently stops being checked.
-DELEGATED_READERS = ("matrixark_mcp_budget_policies.py", "matrixark_mcp_core_scoring.py")
+# `matrixark_mcp_budget_policies.py` was here until its last `live_*` call left with
+# build_shared_context_policy, which now delegates whole. It names no setting and reads none, so it
+# is not a delegated reader any more -- it is not a reader at all. `matrixark_mcp_core_scoring.py`
+# holds both policies and both reads.
+DELEGATED_READERS = ("matrixark_mcp_core_scoring.py",)
 
 
 class TheScanSeesADelegatedReadTest(unittest.TestCase):
