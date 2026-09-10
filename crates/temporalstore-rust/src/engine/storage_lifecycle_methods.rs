@@ -48,9 +48,11 @@ impl TemporalEngine {
         let undumped_wal_records =
             current_wal_sequence.saturating_sub(latest_dump_wal_sequence);
         let explicit_buckets = !request.selected_dump_buckets.is_empty();
-        // Durable bytes: what is actually on disk to be reclaimed, rather than what has been
-        // written and may not have reached it.
-        let undumped_wal_bytes = wal_stats.persistent_bytes;
+        // Durable bytes that are UNDUMPED, not the log's size. `persistent_bytes` is the whole
+        // log across every segment, so a log that is large but fully dumped cleared this
+        // threshold on every round: a shard that had written one record since its last dump
+        // earned another whole-index serialize, which is the cost this cadence exists to avoid.
+        let undumped_wal_bytes = self.wal_store.undumped_len_since_dump(request.shard_id);
         // Each threshold can only RELEASE the dump, never hold it: a delay needs both to agree
         // there is not enough yet. Requiring both to be CROSSED instead would let the byte
         // threshold suppress a dump the record count had already earned, which is the opposite

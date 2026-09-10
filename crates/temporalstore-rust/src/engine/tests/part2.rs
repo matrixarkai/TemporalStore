@@ -2493,6 +2493,80 @@ fn the_reclaim_planner_sees_the_same_candidates() {
     assert_eq!(stages, 6, "every stage must have been compared");
 }
 
+/// The write-ahead log's byte threshold measures what is UNDUMPED, not the whole file.
+///
+/// The threshold exists to let a shard that is writing hard dump before its record count says
+/// so. Measuring it against the log's total size on disk breaks that in both directions: a log
+/// that is large but fully dumped clears the threshold on every round, so a shard that has
+/// written one record since its last dump dumps again -- and a whole-index serialize per round
+/// is the cost this cadence exists to avoid.
+///
+/// The index log already draws the distinction, in `undumped_len_since_dump`: current length
+/// minus the length at the last dump. This holds the write-ahead log to the same meaning.
+#[test]
+fn the_wal_byte_threshold_measures_undumped_bytes_not_the_whole_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let lifecycle = |min_records: u64, min_bytes: u64| StorageLifecycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 0,
+        min_undumped_wal_records: min_records,
+        min_undumped_wal_bytes: min_bytes,
+        purge_delayed_destroy: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
+        follower_replay_cursors: Vec::new(),
+        page_gc_shared_store_cursors: Vec::new(),
+        page_gc_raft_snapshot_refs: Vec::new(),
+        page_gc_checkpoint_floor_slab_id: None,
+        page_gc_raft_install_floor_slab_id: None,
+        page_gc_delayed_destroy_grace_ms: 0,
+        invalidate_cache: false,
+        warm_cache: false,
+    };
+
+    // Enough writes that the log is comfortably past any threshold this test uses.
+    for index in 0..400 {
+        write_string(&engine, &format!("wal-{index:04}"), &[b'v'; 256]);
+    }
+    // Dump everything, so nothing after this point is undumped except what we write next.
+    engine.apply_storage_lifecycle(lifecycle(0, 0));
+
+    let log_bytes = engine.write_ahead_log_store().stats(1).persistent_bytes;
+    assert!(
+        log_bytes > 4_096,
+        "the fixture needs a log bigger than the threshold below: {log_bytes}"
+    );
+
+    // One small write. Against the UNDUMPED bytes that is far under 4 KiB, so with a record
+    // threshold that also says wait, the round must delay the dump.
+    write_string(&engine, "wal-after-the-dump", b"one small record");
+    let plan = engine.storage_lifecycle_plan(lifecycle(1_000, 4_096));
+    assert!(
+        plan.dump_delayed,
+        "one record and a few bytes after a dump must not earn another dump; \
+         the threshold is reading the whole {log_bytes}-byte log instead of what is undumped"
+    );
+
+    // And the threshold must still RELEASE a dump once real work has piled up: write past it.
+    for index in 0..400 {
+        write_string(&engine, &format!("wal-more-{index:04}"), &[b'v'; 256]);
+    }
+    let plan = engine.storage_lifecycle_plan(lifecycle(1_000, 4_096));
+    assert!(
+        !plan.dump_delayed,
+        "past the byte threshold the dump must fire even though the record count says wait"
+    );
+}
+
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,

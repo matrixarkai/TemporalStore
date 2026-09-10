@@ -912,6 +912,14 @@ struct WriteAheadLogInner {
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
     stats: WriteAheadLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
+    /// Bytes appended for each shard since its last durable dump.
+    ///
+    /// A COUNTER, not a mark against the file's length. The obvious version -- remember the
+    /// length at the dump, subtract it later -- is wrong here because reclaim TRUNCATES the log
+    /// right after a dump: the file then sits below its own watermark and the subtraction
+    /// saturates to zero, so the threshold never fires again. Counting growth is immune to that,
+    /// and growth is what the threshold is about.
+    undumped_bytes_by_shard: HashMap<ShardId, u64>,
     /// Per shard: how far the ACTIVE segment has actually been made durable, and the highest
     /// sequence covered by that barrier.
     ///
@@ -974,6 +982,7 @@ impl LocalWriteAheadLogStore {
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
+                undumped_bytes_by_shard: HashMap::new(),
                 durable_active_bytes_by_shard: HashMap::new(),
                 block_last_record_by_shard: HashMap::new(),
                 block_mode_by_shard: HashMap::new(),
@@ -2224,6 +2233,39 @@ impl LocalWriteAheadLogStore {
         })
     }
 
+    /// How many bytes this shard's log has taken since its last dump.
+    ///
+    /// This is the figure the dump cadence wants, and it is not the log's size. A log that is
+    /// large but fully dumped has nothing undumped in it: measuring the whole file instead made
+    /// a shard that had written one record since its last dump clear the byte threshold on every
+    /// round, and a whole-index serialize per round is exactly what the cadence exists to avoid.
+    ///
+    /// Counted rather than derived from the file, because reclaim truncates the log immediately
+    /// after a dump -- any watermark held against the file's length is stranded above it.
+    ///
+    /// A shard that has not dumped in this process reports what it has appended since start-up,
+    /// which is 0 for one that has not written. That under-reports where the file-length version
+    /// over-reported, and it is the safer direction to be wrong in only because the RECORD
+    /// threshold is anchored on the durable manifest sequence and so survives a restart intact;
+    /// the two are read together and either can release the dump.
+    pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner
+            .undumped_bytes_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Record that a dump captured this shard's log, resetting its undumped growth to 0.
+    ///
+    /// Called only once the dump manifest is durably written, so the counter never clears past
+    /// state a crash could lose -- a restart mid-dump re-dumps rather than skipping.
+    pub fn mark_dumped(&self, shard_id: ShardId) {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner.undumped_bytes_by_shard.insert(shard_id, 0);
+    }
+
     pub fn stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         inner.stats.stats_full_scans = inner.stats.stats_full_scans.saturating_add(1);
@@ -3469,6 +3511,12 @@ fn append_record_locked_on(
         *durable_sequence = (*durable_sequence).max(record.sequence);
     }
     let size = bytes.len() as u64;
+    // Every append path funnels through here, so this is the one place the undumped growth has
+    // to be counted for all of them.
+    *inner
+        .undumped_bytes_by_shard
+        .entry(record.shard_id)
+        .or_default() += size;
     // Give the buffer back with its capacity, which is the whole reason it was borrowed. An early
     // return above simply drops it and the next append allocates once -- correct either way, just
     // not free that once.
