@@ -2438,16 +2438,15 @@ def codex_session_identity_policy(session_id_source: str) -> Json:
     }
 
 
-AUTO_BUDGET_QUERY_TYPES = {
-    "current_state",
-    "latest",
-    "profile_memory",
-    "multi_hop",
-    "date",
-    "broad_exploration",
-    "evidence",
-    "benchmark_quality",
-}
+# AUTO_BUDGET_QUERY_TYPES lives in matrixark_mcp_retrieve_pre_refresh, which this module already
+# imports from and which does not reach back -- at module scope it imports nothing from here. It
+# was declared in both with the same value; a pair agrees until one of them is extended.
+try:
+    from .matrixark_mcp_retrieve_pre_refresh import AUTO_BUDGET_QUERY_TYPES  # noqa: F401
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import AUTO_BUDGET_QUERY_TYPES  # noqa: F401
+
+
 
 try:  # the pattern lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it
     from .matrixark_mcp_retrieve_pre_refresh import FEATURE_MEMORY_BUDGET_QUERY_RE

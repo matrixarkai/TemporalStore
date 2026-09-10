@@ -237,12 +237,6 @@ LIVE_DUPLICATE_CONSTANTS = frozenset((
     # was tried and backed out -- it makes that mirror test compare a set with itself.
     "_API_EMBEDDING_PROVIDERS",
     "_OSS_EMBEDDING_PROVIDERS",
-    # Blocked, not overlooked. matrixark_mcp_local_adapter and
-    # matrixark_mcp_retrieve_pre_refresh import EACH OTHER, so neither is below the other
-    # and there is no owner to point at: whichever way it moved, which copy a module saw
-    # would depend on which spelling loaded first. It comes off this list when that pair
-    # stops being mutual.
-    "AUTO_BUDGET_QUERY_TYPES",
 ))
 
 
