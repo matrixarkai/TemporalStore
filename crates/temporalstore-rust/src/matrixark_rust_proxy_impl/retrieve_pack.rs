@@ -645,7 +645,9 @@ fn retrieve_context_pack_native(
         "extraction_phase_budget_dropped": extraction_phase_budget_dropped_class_counts
     });
     let memory_layer_budget = selected_ref_layer_budget(&selected);
-    let serving_selected_refs = native_serving_refs(&selected);
+    // This packer keeps the shape it always sent: the serving-shape ask is carried on the
+    // other path's request and does not reach here.
+    let serving_selected_refs = native_serving_refs(&selected, false);
     let selected_profile_ref_count = selected
         .iter()
         .filter(|item| {

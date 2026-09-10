@@ -6130,7 +6130,13 @@ fn retrieve_context_pack_output(
         );
     }
     let correctness = selected_count > 0;
-    let serving_selected_refs = native_serving_refs(&selected_refs);
+    // The caller asks for the serving shape; it knows whether this retrieve wants debug refs and
+    // the engine does not. Absent, the answer is no, so an older caller keeps the shape it expects.
+    let compact_serving = request_record
+        .get("serving_refs_compact")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let serving_selected_refs = native_serving_refs(&selected_refs, compact_serving);
     let serving_dropped_refs = native_serving_dropped_refs(json!({
         "refs": dropped_ref_details,
         "native_summary": true,
@@ -6143,6 +6149,9 @@ fn retrieve_context_pack_output(
         // Says the refs have already had the redundancy sweep applied, so a caller that carries
         // its own copy of that filter can skip it rather than scan the pack again to find nothing.
         "redundant_items_dropped": swept_redundant_items,
+        // Says the refs are already in the serving shape, so a caller that carries its own
+        // compaction can skip it rather than rebuild every ref to the same thing.
+        "serving_refs_compact": compact_serving && engine_compact_serving_refs_allowed(),
         "dropped_refs": serving_dropped_refs,
         "memory_inventory": memory_inventory.clone(),
         "recall_policy": {

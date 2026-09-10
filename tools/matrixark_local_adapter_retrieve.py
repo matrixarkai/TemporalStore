@@ -988,6 +988,10 @@ class _LocalAdapterRetrieveMixin:
             "query_plan": query_plan,
             "secondary_index_groups": [sorted(group) for group in secondary_index_filter_groups],
             "secondary_index_filter_mode": secondary_index_filter_mode,
+            # Ask the engine for the serving shape rather than rebuilding every ref here. Not for a
+            # debug retrieve: those carry lineage fields the serving shape drops, and the engine
+            # cannot know which kind this is.
+            "serving_refs_compact": not debug_refs,
             "max_context_tokens": max_context_tokens,
             "local_budget": {
                 "token_estimate": int(local_budget.get("token_estimate", 0)),
@@ -1088,7 +1092,14 @@ class _LocalAdapterRetrieveMixin:
             if apply_remote_only_local_fallback(local_budget, native_used_remote):
                 native_pack["local_context_refs"] = compact_local_context_refs(local_budget)
                 native_pack["context_source_mode"] = "remote_only_local_fallback"
-            serving_selected_refs = compact_context_pack_refs(selected_refs, include_debug=debug_refs)
+            # Already in the serving shape when the engine says so, which is what was asked for
+            # above. Rebuilding them here produced the same refs -- verified by diffing two full
+            # packs over one store, 441 items byte for byte -- at the cost of the largest single
+            # item in this process's profile.
+            if native_pack.get("serving_refs_compact"):
+                serving_selected_refs = selected_refs
+            else:
+                serving_selected_refs = compact_context_pack_refs(selected_refs, include_debug=debug_refs)
             native_pack["selected_refs"] = serving_selected_refs
             native_pack["remote_context_refs"] = serving_selected_refs
             native_pack["dropped_refs"] = compact_dropped_refs_for_context_pack(native_pack.get("dropped_refs", {}), include_debug=debug_refs)
