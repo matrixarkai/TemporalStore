@@ -1848,6 +1848,329 @@ mod address_size_tests {
 #[cfg(test)]
 mod tests {
 
+    /// A rename may not quietly drop a durable name.
+    ///
+    /// The vocabulary migration -- page to block, zone to band, slot to bucket -- is deliberate and
+    /// only half done, and what keeps it safe is that every historical spelling survives as a serde
+    /// alias, so a store written by an older build still loads. `BlockAddressWire` states the rule
+    /// directly: every short name carries every spelling the field has ever had.
+    ///
+    /// Nothing checked it. A rename that changed a field AND its alias would compile, pass every
+    /// other test, and make existing data unreadable -- with the symptom appearing at load, on
+    /// someone else's machine, later.
+    ///
+    /// The check runs one way. ADDING a durable name is free, which is what keeps this quiet while
+    /// the migration proceeds; removing or respelling one fails here with the name in the message.
+    /// If a removal is genuinely intended -- a field that no store in the world still carries --
+    /// delete it from the list below in the same change, so the decision is written down.
+    #[test]
+    fn a_durable_name_is_never_quietly_dropped() {
+        // Every serde `rename`/`alias` in the crate that carries the old vocabulary, as of the
+        // change that added this test.
+        const DURABLE_NAMES: &[&str] = &[
+        "active_page_segment_ids",
+        "active_page_slab_ids",
+        "active_storage_zones",
+        "active_zones",
+        "actual_routing_slot",
+        "block_segment_id",
+        "block_segment_target_bytes",
+        "block_store_segment_api_ready",
+        "block_store_zones",
+        "blocked_page_segment_ids",
+        "blocked_page_slab_ids",
+        "bounded_max_dump_slots_per_round",
+        "cache_slot_entry_count",
+        "candidate_page_segment_ids",
+        "candidate_page_slab_ids",
+        "cold_slots_scanned",
+        "compact_segment_address",
+        "compact_segment_id",
+        "compact_segment_offset",
+        "compacted_page_segment_id",
+        "compacted_page_slab_id",
+        "configured_page_gc_raft_install_floor_segment_id",
+        "corrupt_page_index_wal_snapshot_evidence_ready",
+        "corrupt_page_segment_count",
+        "corrupt_page_segment_ids",
+        "corrupt_page_slab_count",
+        "corrupt_page_slab_ids",
+        "covered_slot_count",
+        "delayed_destroy_page_segment_ids",
+        "delayed_destroy_page_slab_ids",
+        "delayed_destroy_purged_segments",
+        "delayed_destroy_segment_count",
+        "delayed_destroy_zones",
+        "deleted_slot_count",
+        "dirty_slot_count",
+        "dirty_slot_pressure",
+        "dirty_slots",
+        "dirty_slots_committed_before_truncate",
+        "discovered_page_segment_count",
+        "discovered_page_slab_count",
+        "dumped_slot_count",
+        "durable_slot_generation_frontier_index_log_sequence",
+        "durable_slot_generation_frontier_wal_sequence",
+        "empty_slots",
+        "end_routing_slot",
+        "end_slot",
+        "expected_routing_slot",
+        "expired_slot_object_scan_debt",
+        "extent_count",
+        "extent_id",
+        "extent_manifest_ready",
+        "extents",
+        "fanout_segment_count",
+        "first_class_slot_object_page_index_evidence",
+        "first_class_slot_object_page_index_ready",
+        "first_routing_slot",
+        "hot_slots_scanned",
+        "in_memory_slot_count",
+        "index_gc_commit_dirty_slots_before_truncation",
+        "indexed_page_segment_count",
+        "indexed_page_slab_count",
+        "installed_slot_dump_install_count",
+        "interrupted_slot_dump_install_count",
+        "interrupted_slot_dump_installs",
+        "last_compacted_zone",
+        "last_routing_slot",
+        "last_selected_slots",
+        "live_page_segment_count",
+        "live_page_segment_ids",
+        "live_page_slab_count",
+        "live_page_slab_ids",
+        "live_routing_slot_count",
+        "load_cold_slots",
+        "load_cold_slots_for_expire",
+        "loading_slot_count",
+        "manifest_page_segment_ids",
+        "manifest_page_slab_ids",
+        "manifest_slot_ids",
+        "max_cold_slots_per_round",
+        "max_destroy_segments",
+        "max_dirty_slots",
+        "max_dump_slots_per_round",
+        "max_expire_cold_slots_per_round",
+        "max_expire_hot_slots_per_round",
+        "max_hot_slots_per_round",
+        "max_orphan_page_segments",
+        "max_orphan_page_slabs",
+        "max_stale_page_segments",
+        "max_stale_page_slabs",
+        "metrics_slot_count",
+        "missing_dump_slot_ids",
+        "missing_page_segment_ids",
+        "missing_page_slab_ids",
+        "missing_routing_slot_count",
+        "missing_slot_generations",
+        "multi_object_slots",
+        "multi_page_object_slots",
+        "native_packed_slot_node_hex",
+        "native_packed_slot_node_len",
+        "native_packed_slot_node_size",
+        "native_slot_store_layout_transition_evidence",
+        "native_slot_store_layout_transition_ready",
+        "new_page_segment_id",
+        "new_page_slab_id",
+        "oldest_known_zone_age_ms",
+        "oldest_known_zone_unix_ms",
+        "oldest_live_zone_age_ms",
+        "oldest_live_zone_unix_ms",
+        "oldest_reclaimable_zone_age_ms",
+        "oldest_reclaimable_zone_unix_ms",
+        "orphan_page_segment_count",
+        "orphan_page_segment_ids",
+        "orphan_page_slab_count",
+        "orphan_page_slab_ids",
+        "page",
+        "page_gc_checkpoint_floor_segment_id",
+        "page_gc_raft_install_floor_segment_id",
+        "page_id",
+        "page_in_log",
+        "page_index_count",
+        "page_index_entries",
+        "page_ref_key",
+        "page_refs",
+        "page_segment_id",
+        "page_segment_ids",
+        "page_segment_live_reports",
+        "page_segment_manifest_ready",
+        "page_segment_reports",
+        "page_segment_stale_density_basis_points",
+        "page_segments",
+        "page_segments_reclaimed",
+        "page_segments_removed",
+        "page_segments_removed_physical_bytes",
+        "page_segments_retained_live",
+        "page_segments_retained_live_physical_bytes",
+        "page_segments_retained_physical_bytes",
+        "page_size",
+        "page_slab_count",
+        "page_slab_id",
+        "page_slab_ids",
+        "page_slab_live_reports",
+        "page_slab_manifest_ready",
+        "page_slab_reports",
+        "page_slab_stale_density_basis_points",
+        "page_slabs",
+        "page_slabs_reclaimed",
+        "page_slabs_removed",
+        "page_slabs_removed_physical_bytes",
+        "page_slabs_retained_live",
+        "page_slabs_retained_live_physical_bytes",
+        "page_slabs_retained_physical_bytes",
+        "page_store_bytes_written",
+        "prepared_slot_dump_install_count",
+        "previous_page_segment_id",
+        "previous_page_slab_id",
+        "prune_slot_dump_manifests",
+        "purged_page_segment_ids",
+        "purged_page_slab_ids",
+        "purged_zones",
+        "reclaimable_page_segment_ids",
+        "reclaimable_page_slab_ids",
+        "reclaimable_stale_page_segment_count",
+        "reclaimable_stale_page_slab_count",
+        "removed_page_segment_ids",
+        "removed_page_slab_ids",
+        "require_slot_dump_manifest",
+        "retain_from_page_segment_id",
+        "retain_from_page_slab_id",
+        "retain_page_segments_from_id",
+        "retain_page_slabs_from_id",
+        "retained_current_page_segment_ids",
+        "retained_current_page_slab_ids",
+        "retained_live_page_segment_ids",
+        "retained_live_page_slab_ids",
+        "retained_page_segment_ids",
+        "retained_page_slab_ids",
+        "roll_forward_slot_dump_installs",
+        "routing_slot",
+        "routing_slot_count",
+        "routing_slots_embedded",
+        "sealed_segment_count",
+        "sealed_storage_zones",
+        "sealed_zones",
+        "secondary_views_reconciled_from_slot_index",
+        "segment",
+        "segment_count",
+        "segment_fields",
+        "segment_id",
+        "segment_integrity",
+        "segment_open_count",
+        "segment_samples",
+        "segment_sealed_count",
+        "segments",
+        "selected_dirty_slot_count",
+        "selected_dump_slots",
+        "selected_page_segment_ids",
+        "selected_page_slab_ids",
+        "selected_routing_slots",
+        "selected_slots",
+        "single_object_slots",
+        "single_page_object_slots",
+        "slot",
+        "slot_count",
+        "slot_dump_manifest",
+        "slot_dump_manifest_block_count",
+        "slot_dump_manifest_count",
+        "slot_dump_manifest_id",
+        "slot_entries",
+        "slot_fields",
+        "slot_first",
+        "slot_id",
+        "slot_ids",
+        "slot_index",
+        "slot_index_authority",
+        "slot_index_entry_count",
+        "slot_layout_states_after",
+        "slot_layout_transition_count",
+        "slot_map",
+        "slot_nodes",
+        "slot_object_page_authority_ready",
+        "slot_object_ref_count",
+        "slot_page_ref_count",
+        "slot_samples",
+        "slot_store_layout_api_ready",
+        "slot_store_runtime_module",
+        "slot_summaries",
+        "slot_warmup_ready",
+        "slots",
+        "source_manifest_slot_ids",
+        "source_slot_coverage_missing_slot_ids",
+        "staged_pages",
+        "stale_page_segment_count",
+        "stale_page_segment_ids",
+        "stale_page_segment_pressure",
+        "stale_page_slab_count",
+        "stale_page_slab_ids",
+        "stale_page_slab_pressure",
+        "start_routing_slot",
+        "start_slot",
+        "storage_segment_id",
+        "storage_zone_count",
+        "storage_zone_id",
+        "storage_zone_stale_bytes",
+        "storage_zone_total_bytes",
+        "storage_zone_used_bytes",
+        "stream_segment_count",
+        "stream_segment_id",
+        "total_segment_pages",
+        "ttl_slot_count",
+        "uncovered_slot_count",
+        "unknown_slot_dump_install_count",
+        "zone_count",
+        "zone_descriptors",
+        "zone_id",
+        "zone_manifest_ready",
+        "zone_stats_ready",
+        "zone_summary",
+        "zone_usage",
+        "zone_version",
+        "zones",
+        ];
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sources = String::new();
+        let mut pending = vec![root];
+        while let Some(path) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    pending.push(entry_path);
+                } else if entry_path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    if let Ok(text) = std::fs::read_to_string(&entry_path) {
+                        sources.push_str(&text);
+                        sources.push('\n');
+                    }
+                }
+            }
+        }
+        assert!(
+            sources.len() > 100_000,
+            "the source walk found almost nothing ({} bytes); the guard would pass vacuously",
+            sources.len()
+        );
+
+        let mut missing = Vec::new();
+        for name in DURABLE_NAMES {
+            let quoted = format!("\"{name}\"");
+            if !sources.contains(&quoted) {
+                missing.push(*name);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "durable name(s) no longer written anywhere: {missing:?}\n\
+             A store written by an older build still carries these. If a rename is intended, keep \
+             the old spelling as a `serde(alias = ...)` rather than replacing it; if the name is \
+             genuinely dead, remove it from DURABLE_NAMES in the same change."
+        );
+    }
+
     #[test]
     fn an_address_written_with_any_older_field_name_still_loads() {
         // Every spelling this wire form has ever used, in one record: the original names, the
