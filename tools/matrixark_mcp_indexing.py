@@ -168,11 +168,25 @@ def benchmark_quality_index_terms(*values: Any) -> list[str]:
     return _ordered_unique(terms)
 
 
+# Every priority prefix is exactly "<kind>:", and every index term is exactly f"{kind}:{value}",
+# so priority is decided by the term's kind alone. Built once here rather than rediscovered by a
+# 23-way startswith scan on each of the ~36,000 terms a document emits. This mapping and the
+# function below came from matrixark_mcp_core, which had a second copy of the prefix tuple missing
+# `benchmark:`, `metric:` and `workload:` -- and it was core's copy the live ingest and retrieve
+# paths used, so those three answered the same as an unrecognised term and were the first dropped
+# by `limited_index_terms`.
+_SECONDARY_INDEX_PRIORITY_BY_KIND = {
+    prefix[:-1]: index
+    for index, prefix in enumerate(SECONDARY_INDEX_PRIORITY_PREFIXES)
+}
+_SECONDARY_INDEX_PRIORITY_DEFAULT = len(SECONDARY_INDEX_PRIORITY_PREFIXES)
+
+
 def secondary_index_priority(term: str) -> int:
-    for index, prefix in enumerate(SECONDARY_INDEX_PRIORITY_PREFIXES):
-        if term.startswith(prefix):
-            return index
-    return len(SECONDARY_INDEX_PRIORITY_PREFIXES)
+    kind, separator, _ = term.partition(":")
+    if not separator:
+        return _SECONDARY_INDEX_PRIORITY_DEFAULT
+    return _SECONDARY_INDEX_PRIORITY_BY_KIND.get(kind, _SECONDARY_INDEX_PRIORITY_DEFAULT)
 
 
 def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:

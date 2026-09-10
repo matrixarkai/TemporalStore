@@ -167,28 +167,6 @@ MAX_SECONDARY_INDEX_REFS_PER_POSTING = int(os.environ.get("MATRIXARK_MAX_SECONDA
 SECONDARY_INDEX_TIME_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_TIME_BUCKET_MS", "60000"))
 DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
 HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
-SECONDARY_INDEX_PRIORITY_PREFIXES = (
-    "source_type:",
-    "resource_type:",
-    "unit_kind:",
-    "entity_type:",
-    "event_type:",
-    "classification:",
-    "status:",
-    "memory_scope:",
-    "session_continuity:",
-    "extraction_phase:",
-    "memory_selection_policy:",
-    "memory_selection_quality:",
-    "profile_promotion_policy:",
-    "skill_name:",
-    "skill_trigger:",
-    "skill_tool:",
-    "relative_path:",
-    "heading_slug:",
-    "segment_topic:",
-    "keyword:",
-)
 # ------------------------------------------------------------------------------------------------
 # Secondary-index dimension pruning (Lever 2).
 #
@@ -2274,21 +2252,22 @@ def metadata_index_terms(metadata: Json, *, keyword_limit: int = MAX_METADATA_KE
     return ordered_unique(terms)
 
 
-# Every priority prefix is exactly "<kind>:", and every index term is exactly
-# f"{kind}:{value}", so priority is decided by the term's kind alone. Built once here rather
-# than rediscovered by a 20-way startswith scan on each of the ~36,000 terms a document emits.
-_SECONDARY_INDEX_PRIORITY_BY_KIND = {
-    prefix[:-1]: index
-    for index, prefix in enumerate(SECONDARY_INDEX_PRIORITY_PREFIXES)
-}
-_SECONDARY_INDEX_PRIORITY_DEFAULT = len(SECONDARY_INDEX_PRIORITY_PREFIXES)
-
-
-def secondary_index_priority(term: str) -> int:
-    kind, separator, _ = term.partition(":")
-    if not separator:
-        return _SECONDARY_INDEX_PRIORITY_DEFAULT
-    return _SECONDARY_INDEX_PRIORITY_BY_KIND.get(kind, _SECONDARY_INDEX_PRIORITY_DEFAULT)
+# Not defined here: the prefix table and `secondary_index_priority` live in
+# matrixark_mcp_indexing, which owns index naming and imports nothing -- the same reason
+# `ordered_unique` and the index-name character class are taken from it above. This module carried
+# a second copy of the tuple that never received `benchmark:`, `metric:` and `workload:` (added to
+# indexing at 4add70e25, 2026-07-30), and it was THIS copy the live ingest and retrieve paths used,
+# so those three kinds answered the same as an unrecognised term.
+try:
+    from tools.matrixark_mcp_indexing import (  # noqa: F401
+        SECONDARY_INDEX_PRIORITY_PREFIXES,
+        secondary_index_priority,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import (  # noqa: F401
+        SECONDARY_INDEX_PRIORITY_PREFIXES,
+        secondary_index_priority,
+    )
 
 
 def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:
