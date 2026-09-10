@@ -183,9 +183,15 @@ fn a_large_log_dumps_on_bytes_while_the_record_count_still_says_wait() {
 
     // A byte threshold small enough to reach in a test, and a record threshold far out of reach,
     // so only the byte one can release the dump.
+    //
+    // 2 KiB, not the 64 KiB this asked for originally. The threshold now counts the bytes the
+    // log has TAKEN since its last dump; it used to read `persistent_bytes`, which on a
+    // preallocated segment is 262,144 from the very first record and never moves. So the old
+    // 64 KiB was cleared by the preallocation, not by anything written -- the fixture below
+    // holds about 3.7 KiB of records, and would have passed with no writes at all.
     let options = StorageManagerOptions {
         min_undumped_wal_records: 1_000_000,
-        min_undumped_wal_bytes: 64 * 1024,
+        min_undumped_wal_bytes: 2 * 1024,
         ..StorageManagerOptions::default()
     };
 
@@ -235,6 +241,21 @@ fn a_large_log_dumps_on_bytes_while_the_record_count_still_says_wait() {
     assert!(
         control.lifecycle_plan.dump_delayed,
         "with no byte threshold the record count alone must still be delaying this dump"
+    );
+
+    // And the half that was missing: the threshold must track HOW MUCH, not merely that a log
+    // exists. Set it above what this fixture wrote and the dump has to go back to being delayed.
+    // Without this the test passes on any reading that is large for an unrelated reason -- which
+    // is exactly how the preallocated segment size passed it before.
+    let above_what_was_written = StorageManagerOptions {
+        min_undumped_wal_bytes: 64 * 1024,
+        ..options
+    };
+    let still_delayed = runtime.run_storage_manager_once(1, above_what_was_written);
+    assert!(
+        still_delayed.lifecycle_plan.dump_delayed,
+        "a threshold above what the log has taken must delay the dump; releasing here means the \
+         byte reading is not measuring this shard's log growth"
     );
 }
 
@@ -302,9 +323,12 @@ fn switching_reclaim_off_stops_the_reclaim_however_large_the_log() {
 
     // Past the byte threshold and far short of the record one, so only the byte threshold can
     // release the dump that reclaim follows.
+    // 2 KiB for the same reason as the test above: the byte threshold counts what the log has
+    // taken since its last dump, and this fixture writes about 3.7 KiB of records. The 64 KiB
+    // this asked for originally was cleared by the segment's preallocated size, not by writes.
     let reclaiming = StorageManagerOptions {
         min_undumped_wal_records: 1_000_000,
-        min_undumped_wal_bytes: 64 * 1024,
+        min_undumped_wal_bytes: 2 * 1024,
         ..StorageManagerOptions::default()
     };
     let not_reclaiming = StorageManagerOptions {

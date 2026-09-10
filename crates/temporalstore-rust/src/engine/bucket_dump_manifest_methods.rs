@@ -131,6 +131,13 @@ impl TemporalEngine {
         manifest.checksum = bucket_dump_manifest_checksum(&manifest)?;
         self.persist_bucket_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        // The manifest is durable from here, so this shard's log is dumped up to its current
+        // durable length. Marked AFTER the write and behind its `?`, never before: a watermark
+        // that ran ahead of the manifest would let a restart mid-dump skip records the failed
+        // dump never captured. Only this path marks it -- a MERGED manifest consolidates
+        // existing dumps and its coverage is bounded by its sources, so it makes nothing newer
+        // dumped and must not reset the growth counter.
+        self.wal_store.mark_dumped(shard_id);
         // The index-log is bounded by the storage-manager's consumer-aware index GC (see
         // `storage_wal_reclaim_plan` / `run_storage_manager_cycle`), which retains from the
         // durable dump frontier -- the min anchor across durable manifests, held back by any
