@@ -343,6 +343,101 @@ fn switching_reclaim_off_stops_the_reclaim_however_large_the_log() {
     );
 }
 
+/// The RUNNING scheduler reaches every maintenance phase, not just one round of it.
+///
+/// The guard beside this one proves a single round enables every phase. That is not the same
+/// claim: a loop that ran once, or only ever visited its first shard, or died on the first error,
+/// would satisfy it. This starts the scheduler the server starts, lets it tick, and requires that
+/// every per-phase counter moved.
+///
+/// Asserted as "at least once each" rather than "once per loop". Measured over four loops:
+/// prepare 4, reclaim_wal 1, reclaim_memory 3, expire 4, reclaim_page 4, compact 4, index_gc 4 --
+/// reclaim_wal ran once because after it reclaimed there was nothing left, and reclaim_memory is
+/// pressure-dependent. Pinning either to the loop count would pin this fixture's luck.
+#[test]
+fn the_running_scheduler_reaches_every_phase() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        256 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let options = StorageManagerOptions::default();
+    // Pressure of several kinds, so a phase that declines for want of work is distinguishable
+    // from one the loop never reaches: volume for the dump threshold, overwrites for stale
+    // pages, deletes for tombstones, and a small cache so memory pressure is reachable.
+    let writes = options.min_undumped_wal_records as usize + 256;
+    for index in 0..writes {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("periodic-{index:05}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    for index in 0..(writes / 2) {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("periodic-{index:05}"),
+                value: vec![b'w'; 96],
+            },
+        });
+    }
+    for index in 0..(writes / 4) {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete { key: format!("periodic-{index:05}") },
+        });
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let scheduler = runtime.start_storage_manager_scheduler_for_all_shards(
+        std::time::Duration::from_millis(5),
+        options,
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        if runtime.stats().storage_manager_loops >= 4 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let stats = runtime.stats();
+    drop(scheduler);
+
+    assert!(
+        stats.storage_manager_loops >= 4,
+        "the scheduler only completed {} rounds, so nothing below is about periodic behaviour",
+        stats.storage_manager_loops
+    );
+    for (phase, runs) in [
+        ("prepare", stats.storage_manager_prepare_runs),
+        ("reclaim_wal", stats.storage_manager_reclaim_wal_runs),
+        ("reclaim_memory", stats.storage_manager_reclaim_memory_runs),
+        ("expire", stats.storage_manager_expire_runs),
+        ("reclaim_page", stats.storage_manager_reclaim_page_runs),
+        ("compact", stats.storage_manager_compact_runs),
+        ("index_gc", stats.storage_manager_index_gc_runs),
+    ] {
+        assert!(
+            runs > 0,
+            "{phase} never ran across {} scheduler rounds",
+            stats.storage_manager_loops
+        );
+    }
+}
+
 #[test]
 fn runtime_enforces_authorized_lifecycle_token_when_installed() {
     let runtime = DataNodeRuntime::new_without_workers_with_options(
