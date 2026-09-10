@@ -168,6 +168,15 @@ pub struct DataNodeRuntimeStats {
     pub storage_manager_runs: u64,
     #[serde(default)]
     pub storage_manager_loops: u64,
+    /// The shard the last maintenance round ran for.
+    ///
+    /// `storage_manager_loops` counts rounds and cannot say WHICH shard a round chose, so a
+    /// server whose loop only ever reached one of its shards looked identical to one reaching
+    /// them all. That is a thing an operator needs to be able to tell, and it is also the only
+    /// way to test the all-shards loop -- a counter that climbs with the interval proves nothing
+    /// about coverage.
+    #[serde(default)]
+    pub storage_manager_last_shard_id: Option<ShardId>,
     #[serde(default)]
     pub storage_manager_prepare_runs: u64,
     #[serde(rename = "storage_manager_reclaim_wal_runs", default)]
@@ -1351,6 +1360,7 @@ struct MutableRuntimeStats {
     storage_lifecycle_runs: u64,
     storage_manager_runs: u64,
     storage_manager_loops: u64,
+    storage_manager_last_shard_id: Option<ShardId>,
     storage_manager_prepare_runs: u64,
     storage_manager_reclaim_wal_runs: u64,
     storage_manager_reclaim_memory_runs: u64,

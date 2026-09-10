@@ -1643,6 +1643,26 @@ impl LocalWriteAheadLogStore {
         )
     }
 
+    /// How many records the log holds, without building them.
+    ///
+    /// The caller that wanted this asked `scan(.., u64::MAX, u64::MAX)` and took `.len()` of the
+    /// result -- so it read every record of the whole log into a vector, to learn how many there
+    /// were. On a shard whose log has not been reclaimed that is the entire write-ahead log in
+    /// memory, for a number.
+    ///
+    /// This is the same walk, through the same `scan_collect`, projecting to `()` instead of to
+    /// the bytes. A zero-sized element costs nothing per record, so peak memory is one record
+    /// rather than all of them, and the count cannot drift from what a scan would have returned
+    /// because it IS the scan.
+    ///
+    /// The tail is not verified. A count is a diagnostic, and a torn tail is the recovery path's
+    /// business; refusing to count because the last record is half-written would make a
+    /// diagnostic fail exactly when it is most wanted.
+    pub fn record_count(&self, shard_id: ShardId) -> Result<usize, WriteAheadLogError> {
+        self.scan_collect(shard_id, 0, u64::MAX, u64::MAX, false, |_, _, _| Some(()))
+            .map(|(records, _truncated, _resume_at)| records.len())
+    }
+
     /// The one walk both scans share, so they cannot drift about what a window contains.
     fn scan_collect<T>(
         &self,

@@ -44,6 +44,7 @@ use temporalstore_rust::{
     handle_authenticated_raft_http, production_raft_security_from_env, production_readiness_report,
     BlockStoreOptions, CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse,
     CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
+
     DistributedRaftProposeRequest, DistributedRaftReadRequest, DumpShardRequest, GcRequest,
     LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind, ProductionRaftNode,
     ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest,
@@ -240,6 +241,40 @@ fn main() {
             max_background_queue_depth: env_usize("TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH", 128),
         },
     );
+
+    // Background storage maintenance. Dump, WAL and index-log reclaim, expiry, eviction, page
+    // GC, compaction and index GC -- the same phases the cycle endpoint runs, run without anyone
+    // having to ask for them.
+    //
+    // Nothing asked. The runtime has shipped a scheduler for this the whole time and its only
+    // caller was a test, and no script, tool or doc in this repo ever posted
+    // /storage_manager/cycle either. A server started as shipped therefore never reclaimed
+    // anything: its write-ahead log and index log grew until the disk did. The embedded proxy
+    // avoided this by spawning a reclaim thread of its own, which is why it had not been felt
+    // here.
+    //
+    // Thirty seconds, where the design being followed loops every thirty MILLISECONDS. That is
+    // three orders of magnitude apart and deliberate: their prepare phase does almost nothing,
+    // while ours builds its plan by reading every live page in the shard. One such pass every
+    // thirty seconds is a few milliseconds of work; thirty-three per second would be the
+    // dominant cost of running the server. The interval is what makes the survey affordable, and
+    // it is the survey that would have to change before this could go faster.
+    //
+    // Zero disables it, for a deployment whose control plane drives maintenance itself.
+    let storage_manager_interval_ms = std::env::var("MATRIXARK_STORAGE_MANAGER_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(30_000);
+    let _storage_manager_scheduler = (storage_manager_interval_ms > 0).then(|| {
+        eprintln!(
+            "matrixark_storage_manager_scheduler interval_ms={storage_manager_interval_ms} \
+             phases=prepare,reclaim,evict,expire,page_gc,compaction,index_gc"
+        );
+        runtime.start_storage_manager_scheduler_for_all_shards(
+            std::time::Duration::from_millis(storage_manager_interval_ms),
+            temporalstore_rust::data_node::StorageManagerOptions::default(),
+        )
+    });
 
     // Async embedding drainer (gated by MATRIXARK_EMBED_DRAINER, default off).
     // Attaches vectors to nodes left embedding-dirty by raw-first bulk ingest or a
