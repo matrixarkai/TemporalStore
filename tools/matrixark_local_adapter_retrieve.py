@@ -1109,7 +1109,14 @@ class _LocalAdapterRetrieveMixin:
                 "dropped_ref_details": "audit_only" if not debug_refs else "included",
                 "enable_debug_refs_with": "include_debug_refs=true or MATRIXARK_CONTEXT_PACK_DEBUG_REFS=1",
             }
-            return compact_context_pack_for_serving(native_pack, include_debug=debug_refs)
+            # The refs above are already the serving shape -- either the engine emitted it, or
+            # this function just built it. Compacting them a second time here was two passes over
+            # every ref (selected and remote) for a result that cannot differ.
+            return compact_context_pack_for_serving(
+                native_pack,
+                include_debug=debug_refs,
+                refs_already_compact=True,
+            )
         if self.native_context_pack_required():
             raise MatrixArkError(
                 "backend-native ContextPack assembly is required for TemporalStore serving, "

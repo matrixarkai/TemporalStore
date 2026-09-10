@@ -294,8 +294,15 @@ def compact_context_pack_refs(refs: list[Json], *, include_debug: bool = False) 
     return [compact_context_pack_ref(ref, include_debug=include_debug) for ref in refs]
 
 
-def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = False) -> Json:
-    """Strip non-answer-bearing routing details from normal ContextPack output."""
+def compact_context_pack_for_serving_flat(
+    pack: Json, *, include_debug: bool = False, refs_already_compact: bool = False
+) -> Json:
+    """Strip non-answer-bearing routing details from normal ContextPack output.
+
+    ``refs_already_compact`` says the caller handed over refs that are already in this
+    shape, so the per-ref pass is skipped. It is the caller's assertion and not a guess:
+    the engine states it per response, and the caller checks that statement.
+    """
     compact = dict(pack)
     serving_aliases = {
         "context_pack_id": "pack_id",
@@ -304,8 +311,14 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
         if compact.get(source) not in (None, "", [], {}):
             compact[target] = compact.get(source)
         compact.pop(source, None)
-    compact["selected_refs"] = compact_context_pack_refs(list(compact.get("selected_refs", [])), include_debug=include_debug)
-    remote_refs = compact_context_pack_refs(list(compact.get("remote_context_refs", compact.get("selected_refs", []))), include_debug=include_debug)
+    selected_refs = list(compact.get("selected_refs", []))
+    remote_source_refs = list(compact.get("remote_context_refs", compact.get("selected_refs", [])))
+    if refs_already_compact:
+        compact["selected_refs"] = selected_refs
+        remote_refs = remote_source_refs
+    else:
+        compact["selected_refs"] = compact_context_pack_refs(selected_refs, include_debug=include_debug)
+        remote_refs = compact_context_pack_refs(remote_source_refs, include_debug=include_debug)
     if remote_refs and remote_refs != compact["selected_refs"]:
         compact["remote_context_refs"] = remote_refs
     else:
