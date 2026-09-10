@@ -82,6 +82,14 @@ impl TemporalEngine {
             } else {
                 u64::MAX
             },
+            // Unreachable when reclaim is off, exactly as the record threshold is. A byte
+            // threshold left live here would release a dump the operator switched off -- the
+            // two thresholds are alternatives for WHEN to dump, not for WHETHER to.
+            min_undumped_wal_bytes: if request.enable_wal_reclaim {
+                request.min_undumped_wal_bytes
+            } else {
+                u64::MAX
+            },
             purge_delayed_destroy: request.enable_page_reclaim,
             prune_bucket_dump_manifests: request.enable_index_gc,
             roll_forward_bucket_dump_installs: request.enable_index_gc,
@@ -1087,8 +1095,7 @@ impl TemporalEngine {
                 install_roll_forward_reports: self
                     .bucket_dump_install_roll_forward_reports(lifecycle_request.shard_id),
                 object_lifecycle: self
-                    .storage_recovery_report_without_boundary(lifecycle_request.shard_id)
-                    .object_lifecycle,
+                    .storage_object_lifecycle_snapshot(lifecycle_request.shard_id),
                 ..StorageLifecycleReport::default()
             }
         };

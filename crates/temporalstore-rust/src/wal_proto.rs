@@ -451,6 +451,49 @@ fn numeric_component_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -> O
 /// Dropped only when the derivation AGREES with what the item holds. An id that came from
 /// anywhere else is written out, so being wrong here costs bytes rather than correctness -- the
 /// same rule the address, the key handle and the size already follow.
+/// The key a record's own command already names, if it names one.
+///
+/// `command_object_keys` is the authoritative extractor -- the same one the write barrier and
+/// dirty tracking delegate to -- so this cannot drift from what the engine considers a command's
+/// key. It returns several for the commands that touch associated records; the first is the
+/// primary, and a mismatch simply means nothing is stripped.
+pub(crate) fn command_object_key(command: Option<&crate::types::Command>) -> Option<String> {
+    command.and_then(|command| {
+        crate::engine::command_object_keys(command)
+            .into_iter()
+            .next()
+    })
+}
+
+/// The key a record's items may omit, which is only when the record carries ONE of them.
+///
+/// Measured, because the obvious version is wrong. Eight outcomes sharing a key encode to 88
+/// bytes unstripped and 119 stripped, with compression on: zstd collapses the repeated key to
+/// almost nothing, and removing the repetition takes away the redundancy it was feeding on. One
+/// outcome gives compression nothing to find, and there the strip is 19 bytes off 57.
+///
+/// So the same "exactly one" rule the implied block length and the implied object id use here,
+/// arrived at from the other direction: not because more than one is ambiguous, but because more
+/// than one is already cheap.
+fn strippable_command_key(record: &WriteAheadLogRecord) -> Option<String> {
+    (record.outcomes.len() == 1)
+        .then(|| command_object_key(record.command.as_ref()))
+        .flatten()
+}
+
+/// The object key to put on the wire: absent when the record's command already says it.
+///
+/// A write stages its outcomes against the key the command names, so on the ordinary path these
+/// are the same string and the item can stop repeating it. They are NOT always the same -- an
+/// outcome staged against an associated record carries its own key -- so this compares rather
+/// than assumes, and being wrong costs bytes instead of correctness.
+fn item_object_key_to_write<'a>(
+    item: &'a WalOutcomeItem,
+    command_key: Option<&str>,
+) -> Option<&'a str> {
+    (command_key != Some(item.object_key.as_str())).then_some(item.object_key.as_str())
+}
+
 fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardId) -> Option<u64> {
     let numeric = numeric_component(&item.kind, item.component.as_deref());
     // Both as the reader will see them: a coded kind comes back through the code table, and a
@@ -474,6 +517,7 @@ pub(crate) fn item_to_proto(
     item: &WalOutcomeItem,
     shard_id: crate::types::ShardId,
     implied_length: Option<u64>,
+    command_key: Option<&str>,
 ) -> v1::EngineWalItem {
     let block = item.address.as_ref().map(|address| {
         let mut encoded = address_to_proto(address, implied_length);
@@ -487,7 +531,7 @@ pub(crate) fn item_to_proto(
     v1::EngineWalItem {
         item_kind: 0,
         model: 0,
-        object_key: Some(item.object_key.clone()),
+        object_key: item_object_key_to_write(item, command_key).map(str::to_string),
         bucket_id: None,
         object_id: item_object_id_to_write(item, shard_id),
         block_id: None,
@@ -531,7 +575,7 @@ pub(crate) fn item_to_proto(
 /// which means a false is omitted. The helpers in `raft::wal_proto` implement the plain rule, so
 /// they are deliberately not used for the optional fields.
 fn wal_item_body_len(item: &WalOutcomeItem, derived: &DerivedItem<'_>) -> usize {
-    let mut len = optional_bytes_len(3, Some(item.object_key.len()))
+    let mut len = optional_bytes_len(3, derived.object_key.map(str::len))
         + optional_fixed64_len(5, derived.object_id)
         + optional_varint_len(7, item.ttl)
         + plain_bool_len(8, item.deleted)
@@ -557,7 +601,7 @@ fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out:
     prost::encoding::encode_varint(body as u64, out);
 
     // Ascending field order, because that is the order prost writes them in.
-    put_optional_bytes(3, Some(item.object_key.as_bytes()), out);
+    put_optional_bytes(3, derived.object_key.map(str::as_bytes), out);
     put_optional_fixed64(5, derived.object_id, out);
     put_optional_varint(7, item.ttl, out);
     put_plain_bool(8, item.deleted, out);
@@ -579,6 +623,7 @@ fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out:
 
 /// What `item_to_proto` derives, computed once instead of three times.
 struct DerivedItem<'a> {
+    object_key: Option<&'a str>,
     object_id: Option<u64>,
     component: Option<&'a str>,
     kind_name: Option<&'a str>,
@@ -589,15 +634,17 @@ struct DerivedItem<'a> {
     block: Option<v1::WalBlockAddress>,
 }
 
-fn derive_item(
-    item: &WalOutcomeItem,
+fn derive_item<'a>(
+    item: &'a WalOutcomeItem,
     shard_id: crate::types::ShardId,
     implied_length: Option<u64>,
-) -> DerivedItem<'_> {
+    command_key: Option<&str>,
+) -> DerivedItem<'a> {
     // `item_to_proto` calls this three times for three fields; it is one answer.
     let numeric = numeric_component(&item.kind, item.component.as_deref());
     let code = kind_code(&item.kind);
     DerivedItem {
+        object_key: item_object_key_to_write(item, command_key),
         object_id: item_object_id_to_write(item, shard_id),
         component: match numeric {
             Some(_) => None,
@@ -687,6 +734,7 @@ pub(crate) fn item_from_proto(
     item: v1::EngineWalItem,
     shard_id: crate::types::ShardId,
     implied_length: Option<u64>,
+    command_key: Option<&str>,
 ) -> WalOutcomeItem {
     let kind = item
         .kind_code
@@ -694,7 +742,14 @@ pub(crate) fn item_from_proto(
         .map(str::to_string)
         .or(item.kind_name)
         .unwrap_or_default();
-    let object_key = item.object_key.unwrap_or_default();
+    // Absent means the record's own command says it, which is the only thing it can mean:
+    // the writer omits it exactly when the two agree. This stays FIRST because `object_id` is
+    // derived from it below -- restoring later would derive an id against an empty key, which is
+    // the same ordering trap the id itself documents.
+    let object_key = item
+        .object_key
+        .or_else(|| command_key.map(str::to_string))
+        .unwrap_or_default();
     // Prefer the numeric fields; fall back to the string a record written before this carries.
     let component = numeric_component_text(item.timestamp_ms, item.entry_id).or(item.component);
     // Absent means the item's own fields say it, which is the only thing it can mean: the writer
@@ -846,10 +901,11 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
         staged_blocks: Vec::new(),
     };
     let implied_length = implied_block_length(record);
+    let command_key = strippable_command_key(record);
     let items = record
         .outcomes
         .iter()
-        .map(|item| derive_item(item, record.shard_id, implied_length))
+        .map(|item| derive_item(item, record.shard_id, implied_length, command_key.as_deref()))
         .collect::<Vec<_>>();
     let items_len = record
         .outcomes
@@ -1063,10 +1119,15 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     } else {
         None
     };
+    // The command is decoded above, so a key an item did not write is available here. Same
+    // shape as `implied_length`: read off the record, handed to every item.
+    let command_key = command_object_key(command.as_ref());
     let outcomes = message
         .items
         .into_iter()
-        .map(|item| item_from_proto(item, message.shard_id, implied_length))
+        .map(|item| {
+            item_from_proto(item, message.shard_id, implied_length, command_key.as_deref())
+        })
         .collect::<Vec<_>>();
     // A block with no object id of its own takes it from the outcome it belongs to. The writer
     // drops it only when there is exactly one of each, so there is never a question of which
@@ -1099,6 +1160,168 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
 
 
 #[cfg(test)]
+mod command_key_tests {
+    use super::*;
+    use crate::types::Command;
+    use crate::wal::{WalOutcomeItem, WriteAheadLogRecord};
+
+    fn outcome(key: &str, component: Option<&str>) -> WalOutcomeItem {
+        WalOutcomeItem {
+            kind: "string".to_string(),
+            object_key: key.to_string(),
+            component: component.map(str::to_string),
+            object_id: crate::engine::hashing::stable_page_object_id(
+                7,
+                "string",
+                key,
+                component,
+            ),
+            routing_bucket: 11,
+            address: None,
+            value: None,
+            ttl: None,
+            deleted: false,
+            meta: false,
+        }
+    }
+
+    fn record(command: Option<Command>, outcomes: Vec<WalOutcomeItem>) -> WriteAheadLogRecord {
+        WriteAheadLogRecord {
+            shard_id: 7,
+            sequence: 3,
+            command,
+            metadata: None,
+            staged_pages: Vec::new(),
+            outcomes,
+        }
+    }
+
+    /// An outcome staged against its own command's key stops repeating it, and comes back whole.
+    ///
+    /// The round trip is the point, not the saving: `object_id` is DERIVED from `object_key`, so
+    /// a key restored after the derivation would produce a different id and a silently wrong
+    /// index. Comparing the decoded item field for field is what catches that.
+    #[test]
+    fn an_outcome_drops_the_key_its_command_already_names() {
+        let key = "tenant/1/object/9";
+        let with_command = record(
+            Some(Command::StringSet {
+                key: key.to_string(),
+                value: b"v".to_vec(),
+            }),
+            vec![outcome(key, None)],
+        );
+        // Premise first: the extractor has to return the very string the outcome carries, or
+        // nothing is stripped and every byte figure below is measuring something else.
+        assert_eq!(
+            command_object_key(with_command.command.as_ref()).as_deref(),
+            Some(key),
+            "the command-key extractor does not return the outcome's key"
+        );
+        let encoded = encode(&with_command).expect("encodes");
+
+        // The control differs in ONE thing: the outcome names a key the command does not, so the
+        // strip cannot fire. Same command, same key LENGTH. A record with no command at all
+        // would have measured the command's absence, which is larger than the key it saves --
+        // that was the first version of this fixture, and it compared two differences at once.
+        let unstripped = record(
+            Some(Command::StringSet {
+                key: key.to_string(),
+                value: b"v".to_vec(),
+            }),
+            vec![outcome("tenant/1/object/8", None)],
+        );
+        let bare = encode(&unstripped).expect("encodes");
+        assert!(
+            encoded.len() < bare.len(),
+            "stripping saved nothing: {} bytes against {}",
+            encoded.len(),
+            bare.len()
+        );
+        eprintln!(
+            "\n  one outcome: {} B when the command names the key, {} B when it does not \
+             ({} B saved)\n",
+            encoded.len(),
+            bare.len(),
+            bare.len() - encoded.len()
+        );
+
+        let decoded = decode(&encoded).expect("record round-trips");
+        assert_eq!(decoded.outcomes.len(), 1);
+        assert_eq!(decoded.outcomes[0].object_key, key, "the key must come back");
+        assert_eq!(
+            decoded.outcomes[0].object_id, with_command.outcomes[0].object_id,
+            "the id derives from the key, so a late restore changes it"
+        );
+    }
+
+    /// An outcome whose key is NOT the command's still carries it.
+    ///
+    /// The rule compares rather than assumes, so a staged outcome against an associated record
+    /// keeps its own key. Without this the strip would be a guess that silently rewrote keys.
+    #[test]
+    fn an_outcome_with_a_different_key_still_writes_it() {
+        let with_command = record(
+            Some(Command::StringSet {
+                key: "tenant/1/object/9".to_string(),
+                value: b"v".to_vec(),
+            }),
+            vec![outcome("tenant/1/object/OTHER", None)],
+        );
+        let encoded = encode(&with_command).expect("encodes");
+        let decoded = decode(&encoded).expect("record round-trips");
+        assert_eq!(
+            decoded.outcomes[0].object_key, "tenant/1/object/OTHER",
+            "an outcome that names a different key must keep it"
+        );
+        assert_eq!(
+            decoded.outcomes[0].object_id, with_command.outcomes[0].object_id
+        );
+    }
+
+    /// A record with several outcomes KEEPS its keys, because stripping them costs more.
+    ///
+    /// This is the opposite of what the change set out to do, and the measurement is why. A
+    /// packed write stages one outcome per component, all naming the same key, and with
+    /// compression on those repeats cost almost nothing: eight of them encode to 88 bytes
+    /// unstripped and 119 stripped. Removing the repetition takes away exactly the redundancy
+    /// zstd was feeding on.
+    ///
+    /// So the strip is limited to single-outcome records, and this pins that boundary from the
+    /// other side: the keys must still be on the wire here, and the record must still round-trip.
+    #[test]
+    fn a_record_with_several_outcomes_keeps_its_keys() {
+        let key = "tenant/1/object/9";
+        let outcomes = (0..8)
+            .map(|index| outcome(key, Some(&format!("c{index}"))))
+            .collect::<Vec<_>>();
+        let record = record(
+            Some(Command::StringSet {
+                key: key.to_string(),
+                value: b"v".to_vec(),
+            }),
+            outcomes,
+        );
+        assert!(
+            strippable_command_key(&record).is_none(),
+            "a record with more than one outcome must not strip: compression already has it"
+        );
+
+        let encoded = encode(&record).expect("encodes");
+        let decoded = decode(&encoded).expect("round-trips");
+        assert_eq!(decoded.outcomes.len(), 8);
+        for (index, item) in decoded.outcomes.iter().enumerate() {
+            assert_eq!(item.object_key, key, "outcome {index} lost its key");
+            assert_eq!(
+                item.object_id, record.outcomes[index].object_id,
+                "outcome {index} came back with a different id"
+            );
+        }
+    }
+
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::Command;
@@ -1126,7 +1349,14 @@ mod tests {
             items: record
                 .outcomes
                 .iter()
-                .map(|item| item_to_proto(item, record.shard_id, implied_block_length(record)))
+                .map(|item| {
+                    item_to_proto(
+                        item,
+                        record.shard_id,
+                        implied_block_length(record),
+                        strippable_command_key(record).as_deref(),
+                    )
+                })
                 .collect(),
             staged_blocks: record
                 .staged_pages
@@ -1410,8 +1640,8 @@ mod tests {
                                             };
 
                                             let expected_body =
-                                                item_to_proto(&item, SHARD, None).encode_to_vec();
-                                            let derived = derive_item(&item, SHARD, None);
+                                                item_to_proto(&item, SHARD, None, None).encode_to_vec();
+                                            let derived = derive_item(&item, SHARD, None, None);
 
                                             assert_eq!(
                                                 wal_item_body_len(&item, &derived),
@@ -1442,7 +1672,7 @@ mod tests {
                                             // absent is exactly what `wal_replay_outcome_refused`
                                             // reports, with the component intact beside it.
                                             let decoded =
-                                                item_from_proto(item_to_proto(&item, SHARD, None), SHARD, None);
+                                                item_from_proto(item_to_proto(&item, SHARD, None, None), SHARD, None, None);
                                             assert_eq!(
                                                 decoded.address.is_some(),
                                                 item.address.is_some(),

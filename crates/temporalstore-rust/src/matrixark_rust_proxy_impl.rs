@@ -293,13 +293,106 @@ struct CachedRetrieveCandidate {
     vector: Option<Vec<f32>>,
 }
 
+/// What building a snapshot cost, by stage, in milliseconds.
+///
+/// A retrieve after a write is nearly all rebuild, and the rebuild is three unrelated pieces of
+/// work: reading and parsing the shards, counting the inventory, and turning records into
+/// candidates. Each is fixed by a different change, so a total is not enough to act on. A snapshot
+/// served from cache reports the build it came from.
+#[derive(Clone, Copy, Debug, Default)]
+struct RetrieveBuildCost {
+    read_ms: f64,
+    inventory_ms: f64,
+    candidates_ms: f64,
+    /// Shards whose candidates were reused, and shards in total. Records are appended, so a write
+    /// should leave every shard but the newest reusable -- this says whether it does.
+    prepared_hits: usize,
+    prepared_shards: usize,
+    /// Which scope this snapshot's candidates were prepared for. If it moves between rebuilds, the
+    /// per-shard candidate cache cannot hit however well it works.
+    scope_digest: u64,
+}
+
 #[derive(Clone, Debug)]
 struct RetrieveCandidateSnapshot {
-    candidates: Vec<CachedRetrieveCandidate>,
+    /// The candidates, as one list per shard rather than one list.
+    ///
+    /// A shard's candidates are cached and shared, and a candidate costs about 4.6 us to clone --
+    /// concatenating them here would hand back most of what caching them saves. `first_of_segment`
+    /// holds each segment's starting ordinal so a candidate can still be addressed by one number,
+    /// which is what the scoring pass and the budget closures use.
+    segments: Vec<Arc<Vec<CachedRetrieveCandidate>>>,
+    first_of_segment: Vec<usize>,
     memory_inventory: Value,
     scanned_records: usize,
     placement_partitions_touched: usize,
     index_postings_read: usize,
+    build: RetrieveBuildCost,
+}
+
+impl RetrieveCandidateSnapshot {
+    fn from_segments(
+        segments: Vec<Arc<Vec<CachedRetrieveCandidate>>>,
+        memory_inventory: Value,
+        scanned_records: usize,
+        shard_count: usize,
+        build: RetrieveBuildCost,
+    ) -> Self {
+        let mut first_of_segment = Vec::with_capacity(segments.len());
+        let mut running = 0usize;
+        for segment in &segments {
+            first_of_segment.push(running);
+            running = running.saturating_add(segment.len());
+        }
+        Self {
+            segments,
+            first_of_segment,
+            memory_inventory,
+            scanned_records,
+            placement_partitions_touched: shard_count,
+            index_postings_read: shard_count,
+            build,
+        }
+    }
+
+    fn candidates(&self) -> impl Iterator<Item = &CachedRetrieveCandidate> {
+        self.segments.iter().flat_map(|segment| segment.iter())
+    }
+
+    fn candidate_count(&self) -> usize {
+        self.segments.iter().map(|segment| segment.len()).sum()
+    }
+
+    /// How many candidates carry a vector, and how wide the widest is.
+    ///
+    /// The snapshot is resident for the life of its cache entry, and a 1024-dim `Vec<f32>` is
+    /// 4 KiB -- so this is the difference between a snapshot costing a few megabytes and costing
+    /// tens of them. Nothing reported it, which is why nobody could say.
+    fn candidates_holding_vectors(&self) -> (usize, usize) {
+        let mut holding = 0usize;
+        let mut widest = 0usize;
+        for candidate in self.candidates() {
+            if let Some(vector) = candidate.vector.as_ref() {
+                holding += 1;
+                widest = widest.max(vector.len());
+            }
+        }
+        (holding, widest)
+    }
+
+    /// The candidate at an ordinal across every segment.
+    ///
+    /// The ordinal is what the scoring pass records and what the budget closures look up later, so
+    /// it has to mean the same thing whether the candidates came from one list or twenty.
+    fn candidate(&self, ordinal: usize) -> Option<&CachedRetrieveCandidate> {
+        let segment = match self.first_of_segment.binary_search(&ordinal) {
+            Ok(exact) => exact,
+            Err(0) => return None,
+            Err(after) => after - 1,
+        };
+        let within = ordinal - self.first_of_segment[segment];
+        self.segments.get(segment)?.get(within)
+    }
 }
 
 struct NativeScoredCandidate {
@@ -1327,6 +1420,7 @@ fn render_prometheus_metrics(
     ));
     // The engine's own series, which include the page-cache counters. Appended rather than
     // re-rendered: see engine_prometheus_metrics.
+    output.push_str(&serving_cache_prometheus_metrics());
     output.push_str(&engine_prometheus_metrics());
     output
 }
@@ -1363,395 +1457,25 @@ fn required_option(value: Option<String>, name: &str) -> Result<String, String> 
         .ok_or_else(|| format!("missing {name}"))
 }
 
-/// Shard and index snapshots, shared rather than copied.
-///
-/// The map used to hold the `BTreeMap` itself, which meant a deep copy of the whole snapshot
-/// twice: once to store it and once on every hit. For a record shard the values ARE the payloads,
-/// so a retrieve touching three shards copied three shards' worth of records to read the handful
-/// of fields its index named -- paid in CPU, in allocator traffic, and in a transient doubling of
-/// the proxy's resident set at exactly its high-water mark. The copy also grows with the store,
-/// which is the shape the soak showed: latency climbing steadily from the first sample on a
-/// FRESH store, with no failures and no memory pressure to blame it on.
-///
-/// `Arc` makes a hit a refcount bump. The write side still patches snapshots in place through
-/// `Arc::make_mut`, which copies only while a reader is actually holding one; readers hold theirs
-/// for the length of a single call, so in practice it does not copy at all.
-/// One cached hash, with what it costs and when it was last wanted.
-struct SnapshotEntry {
-    map: Arc<BTreeMap<String, String>>,
-    /// The shard's records, already parsed, or `None` if nothing has asked for them yet.
-    ///
-    /// Kept HERE rather than in a cache of its own so that it is dropped by the same call that
-    /// makes it stale: the write path patches and removes these entries, and a patched payload
-    /// map with a stale decode beside it is the one shape that must not exist.
-    decoded: Option<Arc<Vec<Value>>>,
-    /// The payload bytes. `decoded` is charged separately, so this stays comparable to `weigh`.
-    bytes: usize,
-    /// What the decoded records are charged at, or 0 when there are none.
-    decoded_bytes: usize,
-    used: u64,
-}
+include!("matrixark_rust_proxy_impl/serving_caches.rs");
 
-/// Cached shard and index snapshots under a byte budget.
-///
-/// This cache had NO bound of any kind: it kept a full in-memory copy of every record shard it
-/// ever read, and for a record shard the values are the payloads themselves. That is why the
-/// proxy's resident set tracked the corpus at roughly ten times durable and ended in an OOM kill
-/// at 4.5-5.2 GB rather than settling anywhere.
-///
-/// The budget is in BYTES, deliberately. A cap on the NUMBER of entries says nothing about memory
-/// when the entries are whole shards of variable-size records -- an entry-count cap tried here
-/// before changed the resident set by nothing at all, because the count was never what was large.
-///
-/// Eviction is always safe: this is a read-through cache and a miss re-reads from the engine, the
-/// same path a key that was never cached takes. Least-recently-used, found by scanning, because
-/// an eviction frees a whole shard and so happens far too rarely to be worth an index.
-/// What a shard's parsed records are charged at, as a multiple of the payload bytes they came
-/// from. A `serde_json::Value` tree is several times the text it was parsed from -- every map is a
-/// `BTreeMap` of `String` keys and every number is a `Value` -- and the exact factor varies by
-/// record shape, so this is a deliberate over-estimate: the cost of guessing low is an unbudgeted
-/// cache, which is what this type exists to prevent.
-const DECODED_BYTES_PER_PAYLOAD_BYTE: usize = 6;
-
-struct SnapshotCache {
-    entries: BTreeMap<String, SnapshotEntry>,
-    bytes: usize,
-    /// Charged parsed-record bytes, budgeted SEPARATELY from the payloads.
-    ///
-    /// Sharing one budget would cut the number of shards the payload cache can hold to about a
-    /// seventh, and every shard that stopped fitting would be re-READ as well as re-parsed --
-    /// a change meant to remove parsing causing more work than it saves, on exactly the large
-    /// stores that need it most. Evicting a decode costs a parse; evicting a payload costs a
-    /// read too, so they are worth keeping on different terms.
-    decoded_bytes: usize,
-    clock: u64,
-    budget: usize,
-    decoded_budget: usize,
-}
-
-impl SnapshotCache {
-    fn new() -> Self {
-        let budget = default_snapshot_cache_bytes();
-        Self {
-            entries: BTreeMap::new(),
-            bytes: 0,
-            decoded_bytes: 0,
-            clock: 0,
-            budget,
-            // Half the payload budget. Parsed records are several times their payload, so this is
-            // a smaller share of shards than it looks -- deliberately, since a dropped decode is
-            // cheap to rebuild and the payload cache must not shrink to make room for it.
-            decoded_budget: budget / 2,
-        }
-    }
-
-    fn weigh(map: &BTreeMap<String, String>) -> usize {
-        // The strings dominate; per-node overhead is a rounding error beside a payload and would
-        // only make the budget pessimistic in a way that varies by allocator.
-        map.iter()
-            .map(|(field, value)| field.len() + value.len())
-            .sum()
-    }
-
-    fn get(&mut self, key: &str) -> Option<Arc<BTreeMap<String, String>>> {
-        self.clock += 1;
-        let clock = self.clock;
-        let entry = self.entries.get_mut(key)?;
-        entry.used = clock;
-        Some(Arc::clone(&entry.map))
-    }
-
-    fn contains_key(&self, key: &str) -> bool {
-        self.entries.contains_key(key)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.bytes = 0;
-    }
-
-    fn remove(&mut self, key: &str) {
-        if let Some(entry) = self.entries.remove(key) {
-            self.bytes = self.bytes.saturating_sub(entry.bytes);
-            self.decoded_bytes = self.decoded_bytes.saturating_sub(entry.decoded_bytes);
-        }
-    }
-
-    /// The shard's parsed records, if this entry still has them.
-    fn decoded(&mut self, key: &str) -> Option<Arc<Vec<Value>>> {
-        self.clock += 1;
-        let clock = self.clock;
-        let entry = self.entries.get_mut(key)?;
-        entry.used = clock;
-        entry.decoded.clone()
-    }
-
-    /// Attach parsed records to an entry that is still present, and charge them.
-    ///
-    /// Does nothing when the key is gone: the entry was patched or evicted while the parse was
-    /// running, so these records describe a payload map the cache no longer holds.
-    fn set_decoded(&mut self, key: &str, records: Arc<Vec<Value>>) {
-        let Some(entry) = self.entries.get_mut(key) else {
-            return;
-        };
-        let charged = entry.bytes.saturating_mul(DECODED_BYTES_PER_PAYLOAD_BYTE);
-        self.decoded_bytes = self.decoded_bytes.saturating_sub(entry.decoded_bytes) + charged;
-        entry.decoded = Some(records);
-        entry.decoded_bytes = charged;
-        self.evict_decoded_to_budget();
-    }
-
-    fn insert(&mut self, key: String, map: Arc<BTreeMap<String, String>>) {
-        self.remove(&key);
-        let bytes = Self::weigh(&map);
-        // A single snapshot larger than the whole budget is not cached rather than being cached
-        // and immediately evicting everything else to make room for itself.
-        if bytes > self.budget {
-            return;
-        }
-        self.clock += 1;
-        self.entries.insert(
-            key,
-            SnapshotEntry {
-                map,
-                decoded: None,
-                bytes,
-                decoded_bytes: 0,
-                used: self.clock,
-            },
-        );
-        self.bytes += bytes;
-        self.evict_to_budget();
-    }
-
-    /// Apply `patch` to a cached snapshot in place, re-weighing it afterwards.
-    ///
-    /// The write side keeps snapshots current rather than dropping them, so this is how a
-    /// patched snapshot stays accounted for; a patch that grew a shard and did not re-weigh it
-    /// would let the budget drift upward silently, which is the bug this whole type exists to
-    /// prevent. `patch` returns false to say the snapshot should be dropped instead.
-    fn patch<F>(&mut self, key: &str, patch: F)
-    where
-        F: FnOnce(&mut BTreeMap<String, String>) -> bool,
-    {
-        let Some(entry) = self.entries.get_mut(key) else {
-            return;
-        };
-        let keep = patch(Arc::make_mut(&mut entry.map));
-        if !keep || entry.map.is_empty() {
-            self.remove(key);
-            return;
-        }
-        // The payloads just changed, so anything parsed from them describes the shard as it WAS.
-        // Dropped here, in the same call that changed them, rather than invalidated from outside.
-        let dropped = entry.decoded_bytes;
-        entry.decoded = None;
-        entry.decoded_bytes = 0;
-        let was = entry.bytes;
-        let now = Self::weigh(&entry.map);
-        entry.bytes = now;
-        self.decoded_bytes = self.decoded_bytes.saturating_sub(dropped);
-        self.bytes = self.bytes.saturating_sub(was) + now;
-        self.evict_to_budget();
-    }
-
-    /// Drop the least recently used DECODES until they fit their budget, leaving the payloads.
-    fn evict_decoded_to_budget(&mut self) {
-        while self.decoded_bytes > self.decoded_budget {
-            let Some(victim) = self
-                .entries
-                .iter()
-                .filter(|(_, entry)| entry.decoded.is_some())
-                .min_by_key(|(_, entry)| entry.used)
-                .map(|(key, _)| key.clone())
-            else {
-                return;
-            };
-            let Some(entry) = self.entries.get_mut(&victim) else {
-                return;
-            };
-            self.decoded_bytes = self.decoded_bytes.saturating_sub(entry.decoded_bytes);
-            entry.decoded = None;
-            entry.decoded_bytes = 0;
-        }
-    }
-
-    fn evict_to_budget(&mut self) {
-        while self.bytes > self.budget {
-            let Some(victim) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.used)
-                .map(|(key, _)| key.clone())
-            else {
-                return;
-            };
-            self.remove(&victim);
-        }
-    }
-}
-
-/// The snapshot budget: a sixteenth of RAM, held between 64 MiB and 512 MiB.
-///
-/// Same shape as the engine's own cache sizing, so a small box does not hand this cache a budget
-/// its RAM cannot back. `MATRIXARK_PROXY_SNAPSHOT_CACHE_BYTES` overrides it; a zero or unparsable
-/// value falls back to the derived default rather than disabling the cache, because a cache of
-/// size zero turns every sweep back into per-field reads.
-fn default_snapshot_cache_bytes() -> usize {
-    const FLOOR: usize = 64 * 1024 * 1024;
-    const CEILING: usize = 512 * 1024 * 1024;
-    if let Some(raw) = std::env::var("MATRIXARK_PROXY_SNAPSHOT_CACHE_BYTES")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-    {
-        if raw > 0 {
-            return raw;
-        }
-    }
-    let total = total_memory_bytes();
-    if total == 0 {
-        return FLOOR;
-    }
-    (total / 16).clamp(FLOOR, CEILING)
-}
-
-/// Total RAM in bytes, or 0 when it cannot be read.
-fn total_memory_bytes() -> usize {
-    let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") else {
-        return 0;
-    };
-    for line in meminfo.lines() {
-        if let Some(rest) = line.strip_prefix("MemTotal:") {
-            if let Some(kb) = rest.split_whitespace().next() {
-                if let Ok(kb) = kb.parse::<usize>() {
-                    return kb * 1024;
-                }
-            }
-        }
-    }
-    0
-}
-
-fn hgetall_snapshot_cache() -> &'static Mutex<SnapshotCache> {
-    static HGETALL_SNAPSHOT_CACHE: OnceLock<Mutex<SnapshotCache>> = OnceLock::new();
-    HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(SnapshotCache::new()))
-}
-
-fn hgetall_snapshot_cache_has_entries() -> bool {
-    hgetall_snapshot_cache()
-        .lock()
-        .map(|cache| !cache.is_empty())
-        .unwrap_or(false)
-}
-
-fn record_count_cache() -> &'static Mutex<BTreeMap<String, String>> {
-    static RECORD_COUNT_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-    RECORD_COUNT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-fn retrieve_candidate_cache() -> &'static Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>> {
-    static RETRIEVE_CANDIDATE_CACHE: OnceLock<
-        Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>>,
-    > = OnceLock::new();
-    RETRIEVE_CANDIDATE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-fn matrixark_scan_cache() -> &'static Mutex<BTreeMap<String, Value>> {
-    static MATRIXARK_SCAN_CACHE: OnceLock<Mutex<BTreeMap<String, Value>>> = OnceLock::new();
-    MATRIXARK_SCAN_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-fn clear_matrixark_scan_cache() {
-    if let Ok(mut cache) = matrixark_scan_cache().lock() {
-        cache.clear();
-    }
-}
-
-fn is_record_count_key(key: &str) -> bool {
-    key.ends_with(":record_count")
-}
-
-fn update_record_count_cache(key: &str, value: &[u8]) {
-    if !is_record_count_key(key) {
-        return;
-    }
-    if let Ok(text) = std::str::from_utf8(value) {
-        if let Ok(mut cache) = record_count_cache().lock() {
-            cache.insert(key.to_string(), text.to_string());
-        }
-    }
-}
-
-fn invalidate_record_count_cache(key: &str) {
-    if !is_record_count_key(key) {
-        return;
-    }
-    if let Ok(mut cache) = record_count_cache().lock() {
-        cache.remove(key);
-    }
-}
-
-// TemporalStore conformance with the native storage engine: the storage engine's
-// record/serving SEQUENCE is an engine-owned MONOTONIC log id, taken from the append
-// log's own iterator id and exposed read-only. It is advanced only by the append log /
-// commit and is never a client
-// read-modify-write of a stored count, so a stale read can never make it regress.
-//
-// The MatrixArk serving record-log counter (`{prefix}:record_count`) is instead computed
-// client-side (Python `_get_count()` + `_record_location(sequence)`), a read-modify-write.
-// Under SYNCHRONOUS commit a stale/low counter read makes a subsequent write REGRESS the
-// stored counter; that cascades (later turns read low, replay low sequences and OVERWRITE
-// earlier serving records -> fact records clobbered -> sync retrieval collapses to 0/14,
-// while async stays 14/14). Mirror the contract at the engine boundary: a record_count
-// write can only ADVANCE the stored counter, never lower it -> the client always reads a
-// correct high sequence -> placement never regresses. Gated (default on;
-// MATRIXARK_MONOTONIC_RECORD_COUNT=0 restores prior behavior). Inert for async, whose
-// counter already advances monotonically (the clamp only ever raises a low write).
-fn clamp_record_count_value(engine: &RecordStore, key: &str, value: Vec<u8>) -> Vec<u8> {
-    if !is_record_count_key(key) {
-        return value;
-    }
-    let Some(new_count) = std::str::from_utf8(&value)
-        .ok()
-        .and_then(|text| text.trim().parse::<u64>().ok())
-    else {
-        return value;
-    };
-    let existing = read_record_count(engine, key)
-        .ok()
-        .and_then(|text| text.trim().parse::<u64>().ok())
-        .unwrap_or(0);
-    if existing > new_count {
-        return existing.to_string().into_bytes();
-    }
-    value
-}
-
-fn clamp_record_count_command(engine: &RecordStore, command: Command) -> Command {
-    match command {
-        Command::StringSet { key, value } if is_record_count_key(&key) => {
-            let value = clamp_record_count_value(engine, &key, value);
-            Command::StringSet { key, value }
-        }
-        other => other,
-    }
-}
 
 fn retrieve_candidate_cache_key(
     storage_prefix: &str,
     count: usize,
     scope: Option<&Value>,
     secondary_groups: &[Vec<String>],
+    keep_vectors: bool,
 ) -> String {
     let scope_key = scope
         .and_then(|value| serde_json::to_string(value).ok())
         .unwrap_or_default();
     let secondary_key = serde_json::to_string(secondary_groups).unwrap_or_default();
-    format!("{storage_prefix}:candidate_snapshot:{count}:{scope_key}:{secondary_key}")
+    // `keep_vectors` is part of the key, not a detail of the value: a lexical snapshot and a
+    // dense one hold different candidates, and handing a dense request the lexical snapshot would
+    // silently rank it without vectors -- the one failure this cannot be allowed to have.
+    let vectors = if keep_vectors { "v" } else { "-" };
+    format!("{storage_prefix}:candidate_snapshot:{count}:{scope_key}:{secondary_key}:{vectors}")
 }
 
 fn storage_prefix_from_key(key: &str) -> Option<String> {
@@ -5121,6 +4845,41 @@ fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, RecordStore>> {
 /// series with identical labels -- which is a malformed scrape rather than more information. One
 /// engine is the onebox case this exists for; a proxy fanned out over several record-log prefixes
 /// keeps the request counters it always had.
+
+/// What this process is holding, beside the engine's own counters.
+///
+/// Without these the proxy's RSS is one number and four possible explanations. They are gauges
+/// rather than counters: each is a current size, and the budgets are rendered beside the sizes so
+/// a reading says how close to its bound each cache is without needing the configuration.
+fn serving_cache_prometheus_metrics() -> String {
+    let (entries, payload_bytes, derived_bytes, payload_budget, derived_budget) =
+        serving_cache_gauges();
+    let (candidate_entries, scan_entries) = serving_derived_cache_entries();
+    format!(
+        "# HELP matrixark_proxy_snapshot_cache_entries Shards held in the serving snapshot cache.\n\
+         # TYPE matrixark_proxy_snapshot_cache_entries gauge\n\
+         matrixark_proxy_snapshot_cache_entries {entries}\n\
+         # HELP matrixark_proxy_snapshot_cache_payload_bytes Shard payload bytes held.\n\
+         # TYPE matrixark_proxy_snapshot_cache_payload_bytes gauge\n\
+         matrixark_proxy_snapshot_cache_payload_bytes {payload_bytes}\n\
+         # HELP matrixark_proxy_snapshot_cache_derived_bytes Parsed records and prepared candidates held.\n\
+         # TYPE matrixark_proxy_snapshot_cache_derived_bytes gauge\n\
+         matrixark_proxy_snapshot_cache_derived_bytes {derived_bytes}\n\
+         # HELP matrixark_proxy_snapshot_cache_payload_budget_bytes Budget for shard payloads.\n\
+         # TYPE matrixark_proxy_snapshot_cache_payload_budget_bytes gauge\n\
+         matrixark_proxy_snapshot_cache_payload_budget_bytes {payload_budget}\n\
+         # HELP matrixark_proxy_snapshot_cache_derived_budget_bytes Budget for derived data.\n\
+         # TYPE matrixark_proxy_snapshot_cache_derived_budget_bytes gauge\n\
+         matrixark_proxy_snapshot_cache_derived_budget_bytes {derived_budget}\n\
+         # HELP matrixark_proxy_candidate_snapshot_entries Candidate snapshots held, cleared per store on write.\n\
+         # TYPE matrixark_proxy_candidate_snapshot_entries gauge\n\
+         matrixark_proxy_candidate_snapshot_entries {candidate_entries}\n\
+         # HELP matrixark_proxy_scan_cache_entries Scan results held.\n\
+         # TYPE matrixark_proxy_scan_cache_entries gauge\n\
+         matrixark_proxy_scan_cache_entries {scan_entries}\n"
+    )
+}
+
 fn engine_prometheus_metrics() -> String {
     let cache = match engine_cache().lock() {
         Ok(cache) => cache,
@@ -5749,6 +5508,133 @@ fn read_record_count(engine: &RecordStore, key: &str) -> Result<String, String> 
     Ok(value)
 }
 
+/// One shard's inventory counts, built at most once per shard per write.
+///
+/// Scope-free, so unlike the candidates there is one entry per shard rather than one per scope.
+fn shard_inventory_counts(engine: &RecordStore, key: String) -> Result<Value, String> {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        if let Some(counts) = cache.counts_for(&key) {
+            return Ok(counts);
+        }
+    }
+    let records = hgetall_decoded(engine, key.clone())?;
+    let borrowed: Vec<&Value> = records.iter().collect();
+    let mut counts = empty_inventory_counts();
+    count_records_into(&mut counts, &borrowed);
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        cache.set_counts(&key, counts.clone());
+    }
+    Ok(counts)
+}
+
+/// Add one shard's counts into a running total.
+///
+/// The buckets are fixed and their leaves are integers, so this walks the two objects in step
+/// rather than trying to be general: anything that is not an integer under a known bucket is a
+/// shape change, and silently ignoring it would hide it.
+fn merge_inventory_counts(into: &mut Value, from: &Value) {
+    for bucket in ["session", "profile", "shared"] {
+        let Some(source) = from.get(bucket).and_then(Value::as_object).cloned() else {
+            continue;
+        };
+        let Some(target) = into.get_mut(bucket).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for (field, value) in source {
+            let added = value.as_u64().unwrap_or(0);
+            let running = target.get(&field).and_then(Value::as_u64).unwrap_or(0);
+            target.insert(field, json!(running.saturating_add(added)));
+        }
+    }
+}
+
+/// One shard's candidates for a scope, built at most once per shard per write.
+///
+/// The filters are the same three the whole-corpus path applies, in the same order and for the
+/// same reasons: the cheap selective one first, then the scope, and the secondary groups are not
+/// handled here at all -- a caller that asked for them takes the other path, because those terms
+/// are collected across every shard and a shard cannot be filtered without the rest.
+fn prepare_shard_candidates(
+    engine: &RecordStore,
+    key: String,
+    signature: &str,
+    scope: Option<&Value>,
+    keep_vectors: bool,
+    reused: &mut usize,
+) -> Result<Arc<Vec<CachedRetrieveCandidate>>, String> {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        if let Some(prepared) = cache.prepared_for_scope(&key, signature) {
+            *reused += 1;
+            return Ok(prepared);
+        }
+    }
+    let records = hgetall_decoded(engine, key.clone())?;
+    let candidates: Vec<CachedRetrieveCandidate> = records
+        .iter()
+        .filter(|record| is_serving_context_record(record))
+        .filter(|record| scope_matches_record(record, scope))
+        .filter_map(|record| candidate_from_record(record, keep_vectors))
+        .collect();
+    let candidates = Arc::new(candidates);
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        cache.set_prepared(&key, signature, Arc::clone(&candidates));
+    }
+    Ok(candidates)
+}
+
+/// Turn one record into a candidate, or nothing when it has no ref to serve.
+///
+/// Extracted so the per-shard path and the whole-corpus path cannot drift: they differ in which
+/// records they are given, and must not differ in what a candidate is.
+fn candidate_from_record(record: &Value, keep_vectors: bool) -> Option<CachedRetrieveCandidate> {
+    let text = context_record_text(record);
+    // A 1,024-dimension vector is 4 KB, and the snapshot holds every candidate for the life of the
+    // shard entry -- so on a deployment that ranks lexically this was the largest thing resident
+    // per candidate and nothing ever read it. It is read in exactly two places, both scoring, and
+    // scoring only reaches them when a query vector exists. Which it does is decided BEFORE the
+    // snapshot is built, and travels in its cache key.
+    let record_vector = if keep_vectors {
+        record_vector_of(record)
+    } else {
+        None
+    };
+    let selected_ref = selected_ref_from_record(record, text);
+    if selected_ref.is_null() {
+        return None;
+    }
+    let ref_type = selected_ref
+        .get("ref_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let vector = if keep_vectors {
+        record_vector.or_else(|| record_vector_of(&selected_ref))
+    } else {
+        None
+    };
+    Some(CachedRetrieveCandidate {
+        selected_ref,
+        ref_type,
+        lower_text: OnceLock::new(),
+        vector,
+    })
+}
+
+/// A short digest of a scope signature, for a log line.
+///
+/// Hashed rather than printed: whether the signature MOVED is the whole question, and a scope
+/// carries tenant and user identity that has no business in a log.
+fn scope_signature_digest(signature: &str) -> u64 {
+    stable_hash64(signature) % 1_000_000
+}
+
+/// The scope a shard's candidates were filtered for, as a cache key.
+fn shard_scope_signature(scope: Option<&Value>) -> String {
+    scope
+        .and_then(|value| serde_json::to_string(value).ok())
+        .unwrap_or_default()
+}
+
 fn load_retrieve_candidate_snapshot(
     engine: &RecordStore,
     storage_prefix: &str,
@@ -5756,8 +5642,10 @@ fn load_retrieve_candidate_snapshot(
     count: usize,
     scope: Option<&Value>,
     secondary_groups: &[Vec<String>],
+    keep_vectors: bool,
 ) -> Result<(Arc<RetrieveCandidateSnapshot>, bool), String> {
-    let cache_key = retrieve_candidate_cache_key(storage_prefix, count, scope, secondary_groups);
+    let cache_key =
+        retrieve_candidate_cache_key(storage_prefix, count, scope, secondary_groups, keep_vectors);
     if let Ok(cache) = retrieve_candidate_cache().lock() {
         if let Some(snapshot) = cache.get(&cache_key) {
             return Ok((Arc::clone(snapshot), true));
@@ -5772,12 +5660,14 @@ fn load_retrieve_candidate_snapshot(
     // Parsed at most once per shard per write, and then borrowed from the shard cache rather
     // than copied out of it: copying a record to own it costs ~23 us against the ~0.6 us that
     // owning it saves the ref build.
+    let read_started = Instant::now();
     let mut shards = Vec::with_capacity(shard_count);
     for shard in 0..shard_count {
         let key = format!("{record_hash_key}:{shard:06}");
         shards.push(hgetall_decoded(engine, key)?);
     }
     let records: Vec<&Value> = shards.iter().flat_map(|shard| shard.iter()).collect();
+    let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
 
     // Built only when something is going to read them. The single consumer is the secondary-group
     // filter below, which returns early on an empty group list -- so with no groups this was a
@@ -5818,57 +5708,82 @@ fn load_retrieve_candidate_snapshot(
         }
     }
 
-    let memory_inventory = native_retrieval_memory_inventory(&records, scope);
+    let inventory_started = Instant::now();
+    // Summed from per-shard counts rather than counted over every record again. The counters are
+    // scope-free, so a shard's are the same until that shard is written to; only the finishing
+    // step sees the scope.
+    let mut counts = empty_inventory_counts();
+    for shard in 0..shard_count {
+        let key = format!("{record_hash_key}:{shard:06}");
+        merge_inventory_counts(&mut counts, &shard_inventory_counts(engine, key)?);
+    }
+    let memory_inventory = finish_inventory(counts, scope);
+    let inventory_ms = inventory_started.elapsed().as_secs_f64() * 1000.0;
     let scanned_records = records.len();
-    let candidates = records
-        .into_iter()
-        // Cheapest and most selective first. This is one `get` and a `matches!`, and it rejects
-        // every context_index and context_embedding record -- most of the corpus -- before
-        // `scope_matches_record` builds a scope key and walks eight identity fields for each
-        // survivor. All three are pure, so the order changes the cost and not the result.
-        .filter(|record| is_serving_context_record(record))
-        .filter(|record| scope_matches_record(record, scope))
-        .filter(|record| {
-            if secondary_groups.is_empty() {
-                return true;
-            }
-            let terms = record_index_terms(
-                record,
-                &index_terms_by_batch,
-                &index_terms_by_node,
-                &index_terms_by_ref,
-            );
-            terms.is_empty() || passes_secondary_groups(&terms, secondary_groups)
-        })
-        .filter_map(|record| {
-            let text = context_record_text(record);
-            let record_vector = record_vector_of(record);
-            let selected_ref = selected_ref_from_record(record, text);
-            if selected_ref.is_null() {
-                None
-            } else {
-                let ref_type = selected_ref
-                    .get("ref_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let vector = record_vector.or_else(|| record_vector_of(&selected_ref));
-                Some(CachedRetrieveCandidate {
-                    selected_ref,
-                    ref_type,
-                    lower_text: OnceLock::new(),
-                    vector,
-                })
-            }
-        })
-        .collect::<Vec<_>>();
-    let snapshot = Arc::new(RetrieveCandidateSnapshot {
-        candidates,
+    let candidates_started = Instant::now();
+    let mut prepared_hits = 0usize;
+    let mut scope_digest = 0u64;
+    let segments: Vec<Arc<Vec<CachedRetrieveCandidate>>> = if secondary_groups.is_empty() {
+        // Per shard, and cached there: records are appended, so every shard but the newest
+        // produces exactly the candidates it produced before, filter for filter and ref for ref.
+        // The signature keys the PER-SHARD entry, so it carries the same distinction the
+        // snapshot key does: a shard prepared without vectors must not be handed to a dense
+        // request.
+        let signature = format!(
+            "{}|{}",
+            shard_scope_signature(scope),
+            if keep_vectors { "v" } else { "-" }
+        );
+        scope_digest = scope_signature_digest(&signature);
+        let mut segments = Vec::with_capacity(shard_count);
+        for shard in 0..shard_count {
+            let key = format!("{record_hash_key}:{shard:06}");
+            segments.push(prepare_shard_candidates(
+                engine,
+                key,
+                &signature,
+                scope,
+                keep_vectors,
+                &mut prepared_hits,
+            )?);
+        }
+        segments
+    } else {
+        // Secondary groups are matched against index terms gathered across EVERY shard, so a
+        // shard cannot be filtered on its own. This is the path the builder always took, wrapped
+        // in one segment so everything downstream sees the same shape.
+        let whole = records
+            .into_iter()
+            .filter(|record| is_serving_context_record(record))
+            .filter(|record| scope_matches_record(record, scope))
+            .filter(|record| {
+                let terms = record_index_terms(
+                    record,
+                    &index_terms_by_batch,
+                    &index_terms_by_node,
+                    &index_terms_by_ref,
+                );
+                terms.is_empty() || passes_secondary_groups(&terms, secondary_groups)
+            })
+            .filter_map(|record| candidate_from_record(record, keep_vectors))
+            .collect::<Vec<_>>();
+        vec![Arc::new(whole)]
+    };
+    let candidates_ms = candidates_started.elapsed().as_secs_f64() * 1000.0;
+    let snapshot = Arc::new(RetrieveCandidateSnapshot::from_segments(
+        segments,
         memory_inventory,
         scanned_records,
-        placement_partitions_touched: shard_count,
-        index_postings_read: shard_count,
-    });
+        shard_count,
+        RetrieveBuildCost {
+            read_ms,
+            inventory_ms,
+            candidates_ms,
+            prepared_hits,
+            prepared_shards: shard_count,
+            scope_digest,
+        },
+    ));
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
         cache.insert(cache_key, Arc::clone(&snapshot));
     }
@@ -5928,6 +5843,34 @@ fn retrieve_context_pack_output(
     // Timed because it is the other half of a retrieve, and the pack could not say so: it
     // reports the scoring pass and a total, with the rebuild -- every shard read, and every
     // record parsed on a miss -- invisible between them.
+    let query = if request.query.trim().is_empty() {
+        request_record
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    } else {
+        request.query.clone()
+    };
+    // Resolved here, ahead of the snapshot, because the snapshot's contents depend on it: a
+    // lexical retrieve keeps no vectors, and 4 KB per candidate is the difference. It used to be
+    // resolved after, which is why the snapshot could not know. Nothing in it reads the snapshot.
+    let mut query_embed_ms = 0.0_f64;
+    let query_vector = ranking_field_from(
+        request.query_vector.clone(),
+        &request_record,
+        "query_vector",
+    )
+    .filter(|v: &Vec<f32>| !v.is_empty())
+    .or_else(|| {
+        // Only when the caller sent none: a caller that embedded the query itself keeps its own
+        // vector, and which model ranked the store stays its decision.
+        let started = Instant::now();
+        let embedded = embed_query_text(&query);
+        query_embed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        embedded
+    });
+    let ranking_uses_vectors = query_vector.is_some();
     let snapshot_started = Instant::now();
     let (snapshot, candidate_cache_hit) = load_retrieve_candidate_snapshot(
         engine,
@@ -5936,6 +5879,7 @@ fn retrieve_context_pack_output(
         count,
         scope,
         &secondary_groups,
+        ranking_uses_vectors,
     )?;
     let snapshot_ms = snapshot_started.elapsed().as_secs_f64() * 1000.0;
 
@@ -5955,15 +5899,6 @@ fn retrieve_context_pack_output(
         requested_max_selected_refs
     }
     .max(1);
-    let query = if request.query.trim().is_empty() {
-        request_record
-            .get("query")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    } else {
-        request.query.clone()
-    };
     let query_terms = query_terms(&query);
     let inferred_question_type;
     let question_type = if let Some(explicit) = request_record
@@ -5981,16 +5916,8 @@ fn retrieve_context_pack_output(
         "broad" | "broad_exploration" | "exploration" | "profile_memory"
     );
     let has_event_candidate = snapshot
-        .candidates
-        .iter()
+        .candidates()
         .any(|candidate| candidate.ref_type == "event");
-    let query_vector = ranking_field_from(
-        request.query_vector.clone(),
-        &request_record,
-        "query_vector",
-    )
-    .filter(|v: &Vec<f32>| !v.is_empty());
-    let ranking_uses_vectors = query_vector.is_some();
     let weights = ranking_field_from(
         request.ranking_weights,
         &request_record,
@@ -6010,8 +5937,8 @@ fn retrieve_context_pack_output(
     let score_started = Instant::now();
     let mut skipped_unscoreable = 0_u64;
     let mut skipped_below_threshold = 0_u64;
-    let mut candidates = Vec::with_capacity(snapshot.candidates.len());
-    for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
+    let mut candidates = Vec::with_capacity(snapshot.candidate_count());
+    for (ordinal, candidate) in snapshot.candidates().enumerate() {
         if candidate.ref_type == "summary" && has_event_candidate && !summary_allowed_for_question {
             continue;
         }
@@ -6090,8 +6017,7 @@ fn retrieve_context_pack_output(
         let snapshot_for_layer = Arc::clone(&snapshot);
         let layer_of = move |ordinal: usize| -> String {
             snapshot_for_layer
-                .candidates
-                .get(ordinal)
+                .candidate(ordinal)
                 .and_then(|candidate| {
                     candidate
                         .selected_ref
@@ -6104,8 +6030,7 @@ fn retrieve_context_pack_output(
         let snapshot_for_tokens = Arc::clone(&snapshot);
         let tokens_of = move |ordinal: usize| -> u64 {
             snapshot_for_tokens
-                .candidates
-                .get(ordinal)
+                .candidate(ordinal)
                 .map(|candidate| {
                     candidate
                         .selected_ref
@@ -6140,12 +6065,14 @@ fn retrieve_context_pack_output(
         question_type,
         "current_state" | "latest" | "profile_memory"
     );
-    let all_candidate_refs: Vec<Value> = snapshot
-        .candidates
-        .iter()
-        .map(|candidate| candidate.selected_ref.clone())
-        .collect();
+    // Built inside the branch, and borrowed rather than copied: the consumer only reads them, and
+    // only sometimes. This used to clone the `selected_ref` of every candidate in the snapshot --
+    // the whole corpus -- before asking whether the one caller wanted them.
     let (profile_by_entity, profile_by_source_entity_hash) = if current_state_query {
+        let all_candidate_refs: Vec<&Value> = snapshot
+            .candidates()
+            .map(|candidate| &candidate.selected_ref)
+            .collect();
         profile_shadow_maps_from_selected_refs(&all_candidate_refs)
     } else {
         (HashMap::new(), HashMap::new())
@@ -6170,7 +6097,7 @@ fn retrieve_context_pack_output(
         if budget_governs && !budget_keep.contains(&ordinal) {
             continue;
         }
-        let Some(candidate) = snapshot.candidates.get(ordinal) else {
+        let Some(candidate) = snapshot.candidate(ordinal) else {
             continue;
         };
         let selected_ref = &candidate.selected_ref;
@@ -6204,6 +6131,19 @@ fn retrieve_context_pack_output(
         }
         selected_refs.push(selected_ref.clone());
     }
+    // Dropped here, where the refs are chosen, rather than by the caller reading them all again:
+    // this was the last substantial piece of retrieval still done in Python, and the profiler put
+    // it at about a third of the gateway's CPU.
+    let swept_redundant_items = pack_drop_redundant_items();
+    let sweep_started = Instant::now();
+    let before_sweep = selected_refs.len();
+    let selected_refs = if swept_redundant_items {
+        drop_redundant_selected_refs(selected_refs)
+    } else {
+        selected_refs
+    };
+    let sweep_ms = sweep_started.elapsed().as_secs_f64() * 1000.0;
+    let swept_away = before_sweep.saturating_sub(selected_refs.len());
     let selected_count = selected_refs.len();
     let mut memory_inventory = snapshot.memory_inventory.clone();
     let selected_profile_ref_count = selected_refs
@@ -6246,16 +6186,41 @@ fn retrieve_context_pack_output(
         .unwrap_or(0);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let threshold = slow_retrieve_log_ms();
+    // Walked once rather than twice: counting vectors is a pass over every candidate, and the line
+    // wants two numbers from it.
+    let (vectors_held, widest_vector) = if threshold > 0 && u128::from(elapsed_ms) >= threshold {
+        snapshot.candidates_holding_vectors()
+    } else {
+        (0, 0)
+    };
     if threshold > 0 && u128::from(elapsed_ms) >= threshold {
         // Phases, not just a total: a rebuild and a scoring pass are fixed by different work, and
         // "the retrieve took a second" has never been enough to tell them apart.
         eprintln!(
-            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms              (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms,              {} records scanned, {selected_count} refs selected",
-            snapshot.scanned_records
+            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims; query embed {:.1} ms; sweep {:.1} ms dropped {}; shards reused {}/{} for scope {}",
+            snapshot.scanned_records,
+            snapshot.build.read_ms,
+            snapshot.build.inventory_ms,
+            snapshot.build.candidates_ms,
+            snapshot.candidate_count(),
+            vectors_held,
+            widest_vector,
+            query_embed_ms,
+            sweep_ms,
+            swept_away,
+            snapshot.build.prepared_hits,
+            snapshot.build.prepared_shards,
+            snapshot.build.scope_digest
         );
     }
     let correctness = selected_count > 0;
-    let serving_selected_refs = native_serving_refs(&selected_refs);
+    // The caller asks for the serving shape; it knows whether this retrieve wants debug refs and
+    // the engine does not. Absent, the answer is no, so an older caller keeps the shape it expects.
+    let compact_serving = request_record
+        .get("serving_refs_compact")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let serving_selected_refs = native_serving_refs(&selected_refs, compact_serving);
     let serving_dropped_refs = native_serving_dropped_refs(json!({
         "refs": dropped_ref_details,
         "native_summary": true,
@@ -6265,6 +6230,12 @@ fn retrieve_context_pack_output(
         "context_pack_assembly": "native_rust_proxy",
         "native_context_pack": true,
         "selected_refs": serving_selected_refs,
+        // Says the refs have already had the redundancy sweep applied, so a caller that carries
+        // its own copy of that filter can skip it rather than scan the pack again to find nothing.
+        "redundant_items_dropped": swept_redundant_items,
+        // Says the refs are already in the serving shape, so a caller that carries its own
+        // compaction can skip it rather than rebuild every ref to the same thing.
+        "serving_refs_compact": compact_serving && engine_compact_serving_refs_allowed(),
         "dropped_refs": serving_dropped_refs,
         "memory_inventory": memory_inventory.clone(),
         "recall_policy": {
@@ -6309,7 +6280,7 @@ fn retrieve_context_pack_output(
             "native_candidate_cache_payload": "compact_struct",
             "serving_memory_cache_layer": "rust_proxy_retrieve_candidate_snapshot",
             "serving_memory_promoted": true,
-            "serving_memory_promoted_record_count": snapshot.candidates.len(),
+            "serving_memory_promoted_record_count": snapshot.candidate_count(),
             "native_pack_assembly": true,
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
@@ -6706,6 +6677,199 @@ const DEFAULT_MAX_SELECTED_REFS: usize = 1000;
 /// silences the line entirely for a deployment that does not want it.
 const SLOW_RETRIEVE_LOG_MS: u128 = 250;
 
+/// Whether the retrieve embeds its own query when the caller sent no vector.
+///
+/// On by default: ranking is dense, and a retrieve that cannot embed its query ranks lexically.
+/// `MATRIXARK_PROXY_EMBED_QUERY=0` turns it off for a deployment that would rather its caller own
+/// the embedding entirely.
+/// A pack item's text, normalised the way the redundancy rule compares it.
+///
+/// An entity item is a projection of the event it came from -- `preference = drink is matcha`
+/// against `user: I live in Kyoto and my favorite drink is matcha.` -- so only the value half,
+/// after the `=`, is compared. Whitespace is collapsed, case is folded, and trailing full stops go,
+/// because a projection and its source routinely differ by exactly those.
+fn normalized_pack_item_text(text: &str) -> String {
+    let value_half = match text.split_once('=') {
+        Some((_, rest)) => rest,
+        None => text,
+    };
+    let collapsed = value_half.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.to_lowercase().trim_end_matches('.').to_string()
+}
+
+/// Text shorter than this is never treated as redundant: a label or a stub would match inside
+/// almost anything, and dropping an item for that reason loses content nothing else carries.
+const REDUNDANT_ITEM_MIN_CHARS: usize = 8;
+
+/// How much text to seal into one haystack. Fewer, larger searches beat many small ones; the
+/// bytes scanned are the same either way.
+const REDUNDANT_HAYSTACK_BYTES: usize = 65536;
+
+/// Every distinct trigram in a text, as a packed key.
+///
+/// Three bytes rather than two: a 64-bucket bigram summary saturates on ordinary prose -- a
+/// 400-byte sentence has about 400 bigrams and 64 buckets, so nearly every bucket is set in nearly
+/// every text and nothing is ever ruled out. Trigrams are distinctive enough to divide the pack.
+fn trigrams_of(text: &str, into: &mut Vec<u32>) {
+    into.clear();
+    let bytes = text.as_bytes();
+    if bytes.len() < 3 {
+        return;
+    }
+    for window in bytes.windows(3) {
+        into.push(
+            (u32::from(window[0]) << 16) | (u32::from(window[1]) << 8) | u32::from(window[2]),
+        );
+    }
+    into.sort_unstable();
+    into.dedup();
+}
+
+/// Drop refs whose text a LONGER ref in the same pack already carries.
+///
+/// The reader is billed for every ref, and an entity projection of an event says the same thing
+/// twice. Only a strict containment of the value half is dropped, so a ref that adds a name, a type
+/// or a value not literally present in the kept one survives.
+///
+/// Containers are found through a trigram index rather than by scanning every longer text. If X is
+/// inside Y then every trigram of X is in Y, including its RAREST, so only the texts on that one
+/// posting list can contain X -- and a distinctive trigram has a short list. Scanning every longer
+/// text instead measured 37-43 ms on a pack of a few hundred kilobytes, larger than the entire
+/// snapshot rebuild, because that is O(n x total) however the text is arranged.
+///
+/// The index only chooses which pairs to look at. Every pair it offers is still verified with a
+/// real substring check, so the answer is the same as comparing everything against everything.
+///
+/// Order is free to choose because containment is transitive and carries the length condition with
+/// it: if X is inside Y and Y is inside Z then X is inside Z, so whether Y survives cannot change
+/// X's fate. Longest first, so a text's candidates are exactly the postings recorded before it.
+fn drop_redundant_selected_refs(refs: Vec<Value>) -> Vec<Value> {
+    if refs.len() < 2 {
+        return refs;
+    }
+    let texts: Vec<String> = refs
+        .iter()
+        .map(|ref_value| {
+            normalized_pack_item_text(ref_value.get("text").and_then(Value::as_str).unwrap_or(""))
+        })
+        .collect();
+
+    let mut order: Vec<usize> = (0..texts.len()).collect();
+    order.sort_by(|left, right| texts[*right].len().cmp(&texts[*left].len()));
+
+    let mut redundant = vec![false; texts.len()];
+    let mut any_redundant = false;
+    // trigram -> positions in `order` that contain it, appended in order so each list is sorted.
+    let mut trigram_postings: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut scratch: Vec<u32> = Vec::new();
+
+    for position in 0..order.len() {
+        let index = order[position];
+        let text = &texts[index];
+        trigrams_of(text, &mut scratch);
+
+        if text.len() >= REDUNDANT_ITEM_MIN_CHARS && !scratch.is_empty() {
+            // The rarest trigram, because its posting list is the shortest set of texts that could
+            // contain this one.
+            let mut rarest: Option<&Vec<u32>> = None;
+            for trigram in &scratch {
+                match trigram_postings.get(trigram) {
+                    None => {
+                        // A trigram no longer text has: nothing can contain this one.
+                        rarest = None;
+                        break;
+                    }
+                    Some(postings) => {
+                        if rarest.map(|best| postings.len() < best.len()).unwrap_or(true) {
+                            rarest = Some(postings);
+                        }
+                    }
+                }
+            }
+            if let Some(postings) = rarest {
+                for candidate in postings {
+                    let other = order[*candidate as usize];
+                    if texts[other].len() <= text.len() {
+                        continue; // equal length cannot contain, and nothing later is longer
+                    }
+                    if texts[other].contains(text.as_str()) {
+                        redundant[index] = true;
+                        any_redundant = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        for trigram in &scratch {
+            trigram_postings
+                .entry(*trigram)
+                .or_default()
+                .push(position as u32);
+        }
+    }
+
+    if !any_redundant {
+        return refs;
+    }
+    refs.into_iter()
+        .enumerate()
+        .filter(|(index, _)| !redundant[*index])
+        .map(|(_, ref_value)| ref_value)
+        .collect()
+}
+
+/// Whether the engine drops refs another ref already carries.
+///
+/// On by default, matching the Python filter this replaces, and
+/// `MATRIXARK_PACK_DROP_REDUNDANT_ITEMS=0` turns it off -- the same variable that turned the
+/// Python one off, so a deployment that disabled it stays disabled.
+fn pack_drop_redundant_items() -> bool {
+    !matches!(
+        std::env::var("MATRIXARK_PACK_DROP_REDUNDANT_ITEMS")
+            .unwrap_or_default()
+            .trim(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
+fn embed_query_here() -> bool {
+    !matches!(
+        std::env::var("MATRIXARK_PROXY_EMBED_QUERY")
+            .unwrap_or_default()
+            .trim(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
+/// Embed one query, or return `None` and let the retrieve rank lexically.
+///
+/// Never an error: an encoder that is down, misconfigured or slow must not take retrieval with it.
+/// The caller reports how long this took, so a model call on the retrieve path is visible rather
+/// than hidden inside a total.
+fn embed_query_text(query: &str) -> Option<Vec<f32>> {
+    if query.trim().is_empty() || !embed_query_here() {
+        return None;
+    }
+    let provider = temporalstore_rust::context_provider_from_env();
+    // A provider with no endpoint is deterministic, and a deterministic vector is not a ranking
+    // signal -- it would score every candidate against noise, which is worse than ranking
+    // lexically.
+    if provider.mock_mode {
+        return None;
+    }
+    match temporalstore_rust::context_backfill_embeddings(&provider, &[query]) {
+        Ok(vectors) => vectors.into_iter().next().filter(|vector| !vector.is_empty()),
+        Err(status) => {
+            eprintln!(
+                "query embedding unavailable ({}): ranking lexically for this retrieve",
+                status.message
+            );
+            None
+        }
+    }
+}
+
 fn slow_retrieve_log_ms() -> u128 {
     std::env::var("MATRIXARK_SLOW_RETRIEVE_LOG_MS")
         .ok()
@@ -7024,6 +7188,340 @@ fn _request_shape_for_docs() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
 
+    fn swept(texts: &[&str]) -> Vec<String> {
+        let refs: Vec<Value> = texts.iter().map(|text| json!({"text": text})).collect();
+        drop_redundant_selected_refs(refs)
+            .into_iter()
+            .map(|item| item["text"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// An entity projection of a kept event is dropped: one fact, billed once.
+    #[test]
+    fn an_entity_projection_of_a_kept_event_is_dropped() {
+        let kept = swept(&[
+            "user: I live in Kyoto and my favorite drink is matcha.",
+            "preference: preference = drink is matcha",
+        ]);
+        assert_eq!(kept, vec!["user: I live in Kyoto and my favorite drink is matcha."]);
+    }
+
+    /// An entity that adds content of its own survives.
+    #[test]
+    fn an_entity_with_content_of_its_own_survives() {
+        let kept = swept(&[
+            "user: I live in Kyoto.",
+            "relationship: sister = Rin visits on Tuesday",
+        ]);
+        assert_eq!(kept.len(), 2, "an entity adding new content must not be dropped");
+    }
+
+    /// A short fragment is never redundant: a label matches inside almost anything.
+    #[test]
+    fn short_fragments_are_never_treated_as_redundant() {
+        let kept = swept(&[
+            "user: I live in Kyoto and my favorite drink is matcha.",
+            "tag = tea",
+        ]);
+        assert_eq!(kept.len(), 2);
+    }
+
+    /// Equal-length duplicates are both kept: neither is longer, so neither carries more context.
+    #[test]
+    fn two_identical_items_are_both_kept() {
+        let kept = swept(&[
+            "user: I live in Kyoto and my favorite drink is matcha.",
+            "user: I live in Kyoto and my favorite drink is matcha.",
+        ]);
+        assert_eq!(kept.len(), 2);
+    }
+
+    /// Nothing redundant leaves the refs untouched, in order.
+    #[test]
+    fn nothing_redundant_leaves_the_refs_alone() {
+        let texts = ["user: one thing entirely", "topic: subject = something else entirely"];
+        assert_eq!(swept(&texts), texts.to_vec());
+    }
+
+    /// X inside Y inside Z leaves only Z, whatever order they arrive in.
+    ///
+    /// The sweep skips a container that is itself redundant, which would matter if containment
+    /// were not transitive. It is, so the answer cannot depend on the order.
+    #[test]
+    fn a_chain_of_containments_keeps_only_the_longest() {
+        let short = "drink is matcha";
+        let middle = "my favorite drink is matcha and i live in kyoto";
+        let longest = "user: my favorite drink is matcha and i live in kyoto, noted at step 4";
+        for arrangement in [
+            [short, middle, longest],
+            [longest, middle, short],
+            [middle, longest, short],
+        ] {
+            assert_eq!(
+                swept(&arrangement),
+                vec![longest.to_string()],
+                "order {arrangement:?} changed the answer"
+            );
+        }
+    }
+
+    /// The sweep agrees with the plain definition over packs nobody chose by hand.
+    ///
+    /// The length ordering and the joined haystacks are both optimisations, and neither may change
+    /// which refs survive. A hand-written table tests the cases the author thought of; the risk in
+    /// a pruning change is the case they did not.
+    #[test]
+    fn the_sweep_agrees_with_the_plain_definition() {
+        let words = ["storage", "manager", "log", "kyoto", "matcha", "window", "cursor", "page"];
+        let mut seed = 12345u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..60 {
+            let count = 4 + next() % 20;
+            let texts: Vec<String> = (0..count)
+                .map(|index| {
+                    let length = 1 + next() % 9;
+                    let body = (0..length)
+                        .map(|_| words[next() % words.len()])
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if index % 3 == 0 {
+                        format!("k = {body}")
+                    } else {
+                        body
+                    }
+                })
+                .collect();
+
+            let normalized: Vec<String> = texts
+                .iter()
+                .map(|text| normalized_pack_item_text(text))
+                .collect();
+            let expected: Vec<String> = texts
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    let mine = &normalized[*index];
+                    if mine.len() < REDUNDANT_ITEM_MIN_CHARS {
+                        return true;
+                    }
+                    !normalized.iter().enumerate().any(|(other, other_text)| {
+                        other != *index
+                            && other_text.len() > mine.len()
+                            && other_text.contains(mine.as_str())
+                    })
+                })
+                .map(|(_, text)| text.clone())
+                .collect();
+
+            let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
+            assert_eq!(swept(&borrowed), expected, "disagreed on {texts:?}");
+        }
+    }
+
+    /// An unconfigured encoder yields NO vector, not a deterministic one.
+    ///
+    /// With no endpoint the provider is deterministic, and a deterministic vector is not a ranking
+    /// signal: it scores every candidate against noise. Returning one would rank worse than
+    /// lexical scoring while looking like dense ranking was working.
+    #[test]
+    fn an_unconfigured_encoder_yields_no_query_vector() {
+        let _guard = env_guard();
+        let previous = std::env::var("MATRIXARK_EMBEDDING_API_BASE").ok();
+        std::env::remove_var("MATRIXARK_EMBEDDING_API_BASE");
+
+        assert!(
+            embed_query_text("the storage manager reclaims the log").is_none(),
+            "an unconfigured encoder produced a vector"
+        );
+
+        if let Some(value) = previous {
+            std::env::set_var("MATRIXARK_EMBEDDING_API_BASE", value);
+        }
+    }
+
+    /// An unreachable encoder yields no vector, and does not fail the retrieve.
+    ///
+    /// An encoder outage must cost dense ranking for the duration, not retrieval itself.
+    #[test]
+    fn an_unreachable_encoder_yields_no_query_vector() {
+        let _guard = env_guard();
+        let previous = std::env::var("MATRIXARK_EMBEDDING_API_BASE").ok();
+        // A port nothing is listening on, so the call fails rather than hanging on a real service.
+        std::env::set_var("MATRIXARK_EMBEDDING_API_BASE", "http://127.0.0.1:1/v1");
+
+        assert!(
+            embed_query_text("the storage manager reclaims the log").is_none(),
+            "an unreachable encoder produced a vector"
+        );
+
+        match previous {
+            Some(value) => std::env::set_var("MATRIXARK_EMBEDDING_API_BASE", value),
+            None => std::env::remove_var("MATRIXARK_EMBEDDING_API_BASE"),
+        }
+    }
+
+    /// An empty query is never sent to the encoder.
+    #[test]
+    fn an_empty_query_is_not_embedded() {
+        let _guard = env_guard();
+        assert!(embed_query_text("").is_none());
+        assert!(embed_query_text("   ").is_none());
+    }
+
+    /// Summing per-shard counts equals counting every record at once.
+    ///
+    /// A miscounted inventory does not fail, it changes which memory layers a retrieve believes
+    /// exist -- `available_layers` and the `has_*` flags are derived from these numbers. The
+    /// fixture puts records in all three buckets and includes a shard that contributes nothing,
+    /// which a shard of pure index records does.
+    #[test]
+    fn summing_shard_counts_equals_counting_them_together() {
+        let shard_one = vec![
+            json!({"record_type": "context_event", "memory_scope": "session"}),
+            json!({"record_type": "context_event", "session_continuity": "same_session"}),
+            json!({"record_type": "skill_section", "sharing_scope": "tenant_shared"}),
+        ];
+        let shard_two = vec![
+            json!({"record_type": "context_entity", "memory_scope": "user_profile"}),
+            json!({"record_type": "context_summary", "session_continuity": "cross_session"}),
+            json!({"record_type": "resource_chunk"}),
+        ];
+        // A shard the inventory takes nothing from.
+        let shard_three: Vec<Value> = vec![
+            json!({"record_type": "context_embedding"}),
+            json!({"record_type": "context_node"}),
+        ];
+
+        let mut summed = empty_inventory_counts();
+        for shard in [&shard_one, &shard_two, &shard_three] {
+            let borrowed: Vec<&Value> = shard.iter().collect();
+            let mut counts = empty_inventory_counts();
+            count_records_into(&mut counts, &borrowed);
+            merge_inventory_counts(&mut summed, &counts);
+        }
+
+        let everything: Vec<&Value> = shard_one
+            .iter()
+            .chain(shard_two.iter())
+            .chain(shard_three.iter())
+            .collect();
+        let mut at_once = empty_inventory_counts();
+        count_records_into(&mut at_once, &everything);
+
+        assert_eq!(summed, at_once, "summed counts differ from counting together");
+
+        // And the finished inventories agree, which is what a retrieve actually reads.
+        let scope = json!({"user_id": "u", "session_id": "s"});
+        assert_eq!(
+            finish_inventory(summed, Some(&scope)),
+            finish_inventory(at_once, Some(&scope)),
+            "the finished inventories differ"
+        );
+    }
+
+
+    fn candidate_named(name: &str) -> CachedRetrieveCandidate {
+        CachedRetrieveCandidate {
+            selected_ref: json!({"ref_type": "event", "text": name}),
+            ref_type: "event".to_string(),
+            lower_text: OnceLock::new(),
+            vector: None,
+        }
+    }
+
+    /// An ordinal means the same candidate however the segments are shaped.
+    ///
+    /// The scoring pass records an ordinal and the budget closures resolve it later. If those
+    /// disagree a retrieve scores one candidate and bills another, and nothing fails -- it just
+    /// serves the wrong refs. Empty segments are in the fixture on purpose: a shard whose records
+    /// are all filtered out contributes one, and it can appear anywhere.
+    #[test]
+    fn an_ordinal_means_the_same_candidate_whatever_the_segments() {
+        let shapes: Vec<Vec<Vec<&str>>> = vec![
+            vec![],
+            vec![vec![]],
+            vec![vec!["a"]],
+            vec![vec![], vec!["a"], vec![]],
+            vec![vec!["a", "b"], vec![], vec!["c"], vec!["d", "e", "f"]],
+            vec![vec![], vec![], vec!["only"]],
+            vec![vec!["first"], vec![], vec![]],
+        ];
+        for shape in shapes {
+            let flat: Vec<&str> = shape.iter().flat_map(|s| s.iter().copied()).collect();
+            let segments: Vec<Arc<Vec<CachedRetrieveCandidate>>> = shape
+                .iter()
+                .map(|names| {
+                    Arc::new(names.iter().map(|name| candidate_named(name)).collect::<Vec<_>>())
+                })
+                .collect();
+            let snapshot = RetrieveCandidateSnapshot::from_segments(
+                segments,
+                json!({}),
+                0,
+                shape.len(),
+                RetrieveBuildCost::default(),
+            );
+
+            assert_eq!(snapshot.candidate_count(), flat.len(), "count for {shape:?}");
+
+            let iterated: Vec<String> = snapshot
+                .candidates()
+                .map(|candidate| candidate.selected_ref["text"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(iterated, flat, "iteration order for {shape:?}");
+
+            for (ordinal, expected) in flat.iter().enumerate() {
+                let got = snapshot
+                    .candidate(ordinal)
+                    .unwrap_or_else(|| panic!("ordinal {ordinal} missing for {shape:?}"));
+                assert_eq!(
+                    got.selected_ref["text"].as_str(),
+                    Some(*expected),
+                    "ordinal {ordinal} for {shape:?}"
+                );
+            }
+            assert!(
+                snapshot.candidate(flat.len()).is_none(),
+                "one past the end resolved for {shape:?}"
+            );
+        }
+    }
+
+    /// A parse that fits its budget is kept.
+    ///
+    /// The parse cache was added and then starved: half the payload budget, with every parse
+    /// charged at six times its payload bytes, so it held about a twelfth of the payload volume
+    /// and evicted nearly everything. The rebuild went on re-parsing and the cache looked like it
+    /// had not helped. This asserts the relationship rather than the constants, so an edit that
+    /// halves the budget again fails here rather than quietly making a retrieve slow.
+    #[test]
+    fn a_parse_that_fits_is_kept() {
+        let mut cache = SnapshotCache::new();
+        assert!(
+            cache.decoded_budget >= cache.budget,
+            "parses get a smaller budget than payloads ({} against {}), which starves the cache \
+             the rebuild depends on",
+            cache.decoded_budget,
+            cache.budget
+        );
+
+        cache.insert("shard".to_string(), shard_payloads("one"));
+        cache.set_decoded("shard", Arc::new(vec![json!({"text": "one"})]));
+        assert!(
+            cache.decoded("shard").is_some(),
+            "a single small parse did not survive its own budget"
+        );
+
+        // And the charge stays a bounded multiple, so a parse cannot be free.
+        assert!(
+            cache.decoded_bytes >= cache.bytes,
+            "a parse charged less than its payload would make the budget meaningless"
+        );
+    }
+
     fn shard_payloads(text: &str) -> Arc<BTreeMap<String, String>> {
         let mut map = BTreeMap::new();
         map.insert(
@@ -7252,8 +7750,48 @@ mod tests {
         }
         assert_eq!(left, right, "both shapes build the same response");
 
+        // 4. Copying every candidate's ref, against borrowing them. A retrieve built the copy
+        // unconditionally for a consumer that runs only on a current-state query.
+        let refs: Vec<Value> = (0..20_000)
+            .map(|i| {
+                json!({
+                    "ref_type": "event",
+                    "ref_hash": format!("h{i}"),
+                    "text": "the storage manager reclaims the log once a durable dump completes",
+                    "token_estimate": 14,
+                    "memory_layer": "session",
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "source_roles": ["user", "assistant"],
+                    "source_session_ids": ["s1", "s2"],
+                })
+            })
+            .collect();
+
+        let started = Instant::now();
+        let mut copied_len = 0usize;
+        for _ in 0..5 {
+            let copied: Vec<Value> = refs.iter().cloned().collect();
+            copied_len = copied.len();
+        }
+        let refs_clone_ns = started.elapsed().as_nanos();
+
+        let started = Instant::now();
+        let mut borrowed_len = 0usize;
+        for _ in 0..5 {
+            let borrowed: Vec<&Value> = refs.iter().collect();
+            borrowed_len = borrowed.len();
+        }
+        let refs_borrow_ns = started.elapsed().as_nanos();
+        assert_eq!(copied_len, borrowed_len);
+
         println!(
             "  parse of 256 records x8:   {parse_ns} ns  (neither shape avoids this)"
+        );
+        println!(
+            "  candidate refs x5 over 20,000: clone {refs_clone_ns} ns, borrow {refs_borrow_ns} \
+             ns, {:.1}% saved",
+            pct(refs_clone_ns, refs_borrow_ns)
         );
         println!(
             "  extract 2048 records:      clone {clone_ns} ns, move {move_ns} ns, {:.1}% saved",

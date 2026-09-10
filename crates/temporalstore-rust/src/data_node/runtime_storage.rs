@@ -26,6 +26,7 @@ impl DataNodeRuntime {
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: options.max_dump_buckets_per_round,
                 min_undumped_wal_records: options.min_undumped_wal_records,
+                min_undumped_wal_bytes: options.min_undumped_wal_bytes,
                 purge_delayed_destroy: options.enable_page_gc,
                 prune_bucket_dump_manifests: options.enable_index_gc,
                 roll_forward_bucket_dump_installs: options.enable_index_gc,
@@ -187,6 +188,7 @@ impl DataNodeRuntime {
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: options.max_dump_buckets_per_round,
                 min_undumped_wal_records: options.min_undumped_wal_records,
+                min_undumped_wal_bytes: options.min_undumped_wal_bytes,
                 purge_delayed_destroy: false,
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
@@ -289,6 +291,7 @@ impl DataNodeRuntime {
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: 0,
                 min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
                 purge_delayed_destroy: false,
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
@@ -527,6 +530,7 @@ impl DataNodeRuntime {
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: 0,
                 min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
                 purge_delayed_destroy: true,
                 prune_bucket_dump_manifests: true,
                 roll_forward_bucket_dump_installs: true,
@@ -632,11 +636,13 @@ impl DataNodeRuntime {
             (!options.enable_metrics_reap).then(|| "reap_metrics_disabled".to_string()),
         ));
 
-        self.inner
-            .stats
-            .lock()
-            .expect("runtime stats lock poisoned")
-            .storage_manager_loops += 1;
+        {
+            // Recorded beside the round counter, so every caller gets it: the per-shard
+            // scheduler, the all-shards scheduler, and the cycle endpoint.
+            let mut stats = self.inner.stats.lock().expect("runtime stats lock poisoned");
+            stats.storage_manager_loops += 1;
+            stats.storage_manager_last_shard_id = Some(shard_id);
+        }
 
         StorageManagerLoopReport {
             shard_id,
@@ -651,6 +657,46 @@ impl DataNodeRuntime {
             compaction_report,
             gc_report,
             status,
+        }
+    }
+
+    /// Run a maintenance cycle for EVERY loaded shard, forever, on an interval.
+    ///
+    /// The per-shard scheduler below needs to be told which shard it serves, so a server that
+    /// does not know its shards up front could not start one -- which is why nothing started
+    /// one. This asks the engine each tick instead, so a shard loaded later is picked up without
+    /// restarting anything and a shard unloaded in between is simply not visited.
+    ///
+    /// A cycle that fails is not fatal to the loop. The failure is already recorded in the
+    /// report the cycle returns and in the runtime's stats; stopping the loop over one bad round
+    /// would turn a transient error into a store that never reclaims again, which is the state
+    /// this exists to end.
+    pub fn start_storage_manager_scheduler_for_all_shards(
+        &self,
+        interval: Duration,
+        options: StorageManagerOptions,
+    ) -> StorageLifecycleScheduler {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let scheduler_stop = Arc::clone(&stop);
+        let sleep_interval = interval.max(Duration::from_millis(1));
+        let handle = thread::spawn(move || {
+            while !scheduler_stop.load(Ordering::Relaxed) {
+                thread::sleep(sleep_interval);
+                if scheduler_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                for shard_id in runtime.inner.engine.loaded_shard_ids() {
+                    if scheduler_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    runtime.run_storage_manager_once(shard_id, options.clone());
+                }
+            }
+        });
+        StorageLifecycleScheduler {
+            stop,
+            handle: Some(handle),
         }
     }
 

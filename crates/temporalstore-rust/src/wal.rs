@@ -912,6 +912,14 @@ struct WriteAheadLogInner {
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
     stats: WriteAheadLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
+    /// Bytes appended for each shard since its last durable dump.
+    ///
+    /// A COUNTER, not a mark against the file's length. The obvious version -- remember the
+    /// length at the dump, subtract it later -- is wrong here because reclaim TRUNCATES the log
+    /// right after a dump: the file then sits below its own watermark and the subtraction
+    /// saturates to zero, so the threshold never fires again. Counting growth is immune to that,
+    /// and growth is what the threshold is about.
+    undumped_bytes_by_shard: HashMap<ShardId, u64>,
     /// Per shard: how far the ACTIVE segment has actually been made durable, and the highest
     /// sequence covered by that barrier.
     ///
@@ -974,6 +982,7 @@ impl LocalWriteAheadLogStore {
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
+                undumped_bytes_by_shard: HashMap::new(),
                 durable_active_bytes_by_shard: HashMap::new(),
                 block_last_record_by_shard: HashMap::new(),
                 block_mode_by_shard: HashMap::new(),
@@ -1643,6 +1652,26 @@ impl LocalWriteAheadLogStore {
         )
     }
 
+    /// How many records the log holds, without building them.
+    ///
+    /// The caller that wanted this asked `scan(.., u64::MAX, u64::MAX)` and took `.len()` of the
+    /// result -- so it read every record of the whole log into a vector, to learn how many there
+    /// were. On a shard whose log has not been reclaimed that is the entire write-ahead log in
+    /// memory, for a number.
+    ///
+    /// This is the same walk, through the same `scan_collect`, projecting to `()` instead of to
+    /// the bytes. A zero-sized element costs nothing per record, so peak memory is one record
+    /// rather than all of them, and the count cannot drift from what a scan would have returned
+    /// because it IS the scan.
+    ///
+    /// The tail is not verified. A count is a diagnostic, and a torn tail is the recovery path's
+    /// business; refusing to count because the last record is half-written would make a
+    /// diagnostic fail exactly when it is most wanted.
+    pub fn record_count(&self, shard_id: ShardId) -> Result<usize, WriteAheadLogError> {
+        self.scan_collect(shard_id, 0, u64::MAX, u64::MAX, false, |_, _, _| Some(()))
+            .map(|(records, _truncated, _resume_at)| records.len())
+    }
+
     /// The one walk both scans share, so they cannot drift about what a window contains.
     fn scan_collect<T>(
         &self,
@@ -2202,6 +2231,39 @@ impl LocalWriteAheadLogStore {
             dropped_segments,
             dropped_segment_bytes: dropped_bytes,
         })
+    }
+
+    /// How many bytes this shard's log has taken since its last dump.
+    ///
+    /// This is the figure the dump cadence wants, and it is not the log's size. A log that is
+    /// large but fully dumped has nothing undumped in it: measuring the whole file instead made
+    /// a shard that had written one record since its last dump clear the byte threshold on every
+    /// round, and a whole-index serialize per round is exactly what the cadence exists to avoid.
+    ///
+    /// Counted rather than derived from the file, because reclaim truncates the log immediately
+    /// after a dump -- any watermark held against the file's length is stranded above it.
+    ///
+    /// A shard that has not dumped in this process reports what it has appended since start-up,
+    /// which is 0 for one that has not written. That under-reports where the file-length version
+    /// over-reported, and it is the safer direction to be wrong in only because the RECORD
+    /// threshold is anchored on the durable manifest sequence and so survives a restart intact;
+    /// the two are read together and either can release the dump.
+    pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner
+            .undumped_bytes_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Record that a dump captured this shard's log, resetting its undumped growth to 0.
+    ///
+    /// Called only once the dump manifest is durably written, so the counter never clears past
+    /// state a crash could lose -- a restart mid-dump re-dumps rather than skipping.
+    pub fn mark_dumped(&self, shard_id: ShardId) {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner.undumped_bytes_by_shard.insert(shard_id, 0);
     }
 
     pub fn stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
@@ -3449,6 +3511,12 @@ fn append_record_locked_on(
         *durable_sequence = (*durable_sequence).max(record.sequence);
     }
     let size = bytes.len() as u64;
+    // Every append path funnels through here, so this is the one place the undumped growth has
+    // to be counted for all of them.
+    *inner
+        .undumped_bytes_by_shard
+        .entry(record.shard_id)
+        .or_default() += size;
     // Give the buffer back with its capacity, which is the whole reason it was borrowed. An early
     // return above simply drops it and the next append allocates once -- correct either way, just
     // not free that once.

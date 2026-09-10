@@ -2095,3 +2095,162 @@ class _CodexPipelinePart1:
         self.assertEqual(1, compact_dropped["source_role_budget"])
         self.assertEqual({"assistant": 0}, compact_dropped["source_role_budget_policy"]["selected_tokens_by_role"])
 
+    def test_serving_compaction_skipped_for_refs_that_are_already_compact(self) -> None:
+        """The skip must return what the second pass would have returned.
+
+        The engine emits the serving shape and says so per response, so the caller stops
+        rebuilding every ref. That is only sound while a ref already in the shape survives the
+        pass unchanged, which is what this pins: if the two ever diverge, the skip starts
+        serving something the compaction would have removed.
+        """
+        already_compact = [
+            compact_context_pack_ref(ref)
+            for ref in [
+                {
+                    "ref_type": "segment",
+                    "text": "the storage manager dumped the durable index",
+                    "source_locator": "notes.md#L4",
+                    "token_estimate": 12,
+                    "score": 0.83,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "metadata": {"heading": "Durability", "relative_path": "notes.md"},
+                    # Dropped by the compaction, so a ref carrying it is not yet in the shape.
+                    "matched_index_terms": ["durable", "dump"],
+                },
+            ]
+        ]
+        pack = {
+            "context_pack_id": "pack-1",
+            "selected_refs": already_compact,
+            "remote_context_refs": already_compact,
+        }
+
+        rebuilt = compact_context_pack_for_serving_flat(dict(pack))
+        skipped = compact_context_pack_for_serving_flat(dict(pack), refs_already_compact=True)
+        self.assertEqual(rebuilt, skipped)
+
+        # And the skip really skipped. Equality alone cannot show that: a pass that rebuilt
+        # every ref and returned the same values would satisfy it. So the per-ref pass is made
+        # to fail loudly, and the skip is the reason nothing raises.
+        import matrixark_mcp_core_context_pack as core_context_pack
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the per-ref compaction ran on refs already in the shape")
+
+        with mock.patch.object(core_context_pack, "compact_context_pack_refs", refuse):
+            proven = compact_context_pack_for_serving_flat(dict(pack), refs_already_compact=True)
+        self.assertEqual(rebuilt, proven)
+
+    def test_metadata_answers_only_when_the_ref_does_not_carry_the_field(self) -> None:
+        """The metadata fallback is a fallback, and an explicit None is an answer.
+
+        The alias loop stopped reading metadata eagerly, and the difference between the two forms
+        shows up in exactly one case: a ref that CARRIES the field with a null value. Reading the
+        metadata as a `dict.get` default returns null there, so pinning it keeps the rewrite from
+        quietly promoting metadata over the ref's own word.
+        """
+        from matrixark_mcp_context_pack import serving_ref_for_pack
+
+        absent = serving_ref_for_pack(
+            {"ref_type": "segment", "text": "t", "metadata": {"heading": "From metadata"}}
+        )
+        self.assertEqual("From metadata", absent.get("heading"))
+
+        explicit_null = serving_ref_for_pack(
+            {
+                "ref_type": "segment",
+                "text": "t",
+                "heading": None,
+                "metadata": {"heading": "From metadata"},
+            }
+        )
+        self.assertIsNone(
+            explicit_null.get("heading"),
+            "a ref carrying the field with no value is not overridden by metadata",
+        )
+
+        own = serving_ref_for_pack(
+            {
+                "ref_type": "segment",
+                "text": "t",
+                "heading": "From the ref",
+                "metadata": {"heading": "From metadata"},
+            }
+        )
+        self.assertEqual("From the ref", own.get("heading"))
+
+    def test_the_pack_defaults_and_counts_come_from_one_count(self) -> None:
+        """One tie rule, and the default is the counts read one way.
+
+        The two defaults used to ask for their own count of the whole pack, and each carried its
+        own copy of `max(..., key=(count, name))`. The tie case is what a drifted copy would get
+        wrong, and it is not cosmetic: the winner decides which value is left off every item.
+        """
+        from matrixark_mcp_context_pack import (
+            _most_common_counted_name,
+            default_session_continuity_for_pack,
+        )
+
+        self.assertEqual("", _most_common_counted_name({}))
+        self.assertEqual("beta", _most_common_counted_name({"alpha": 2, "beta": 2}))
+        self.assertEqual("alpha", _most_common_counted_name({"alpha": 3, "beta": 2}))
+
+        refs = [
+            {"ref_type": "event", "text": "a", "session_continuity": "alpha"},
+            {"ref_type": "event", "text": "b", "session_continuity": "beta"},
+        ]
+        self.assertEqual("beta", default_session_continuity_for_pack(refs))
+
+        served = compact_context_pack_for_serving(
+            {"context_pack_id": "p", "selected_refs": refs, "redundant_items_dropped": True}
+        )
+        self.assertEqual("beta", served["defaults"]["session_continuity"])
+        self.assertEqual({"alpha": 1, "beta": 1}, served["counts"]["session_continuity"])
+
+    def test_the_serving_request_carries_a_score_floor(self) -> None:
+        """The deployment's declared floor has to reach the engine to be a floor at all.
+
+        `DEFAULT_RETRIEVAL_MIN_SCORE` has existed with a portal setting behind it, and the serving
+        request never carried it -- so the engine fell to its own 0.0, which excludes only what
+        scores exactly zero. Sweeping the value through the gateway changed nothing at any setting:
+        123 refs at 0.01 and 123 at 0.4.
+        """
+        from matrixark_mcp_runtime_config import retrieval_min_score
+
+        self.assertEqual(0.25, retrieval_min_score({"min_score": 0.25}, {}))
+        self.assertEqual(0.4, retrieval_min_score({}, {"min_score": 0.4}))
+        self.assertEqual(
+            0.25,
+            retrieval_min_score({"min_score": 0.25}, {"min_score": 0.4}),
+            "the request wins over the deployment, as every other ranking decision does",
+        )
+        # Junk is ignored rather than raising: a bad value must not be the reason a retrieve fails.
+        self.assertGreaterEqual(retrieval_min_score({"min_score": "x"}, {}), 0.0)
+        # And it is never negative, which would admit what the engine excludes at zero.
+        self.assertGreaterEqual(retrieval_min_score({"min_score": -5}, {}), 0.0)
+
+    def test_serving_does_not_send_secondary_index_groups(self) -> None:
+        """One-box serving carries no secondary index, and can be given one back.
+
+        The engine reads the groups as an admission filter over terms gathered across every shard,
+        so a request carrying them cannot be prepared per shard: 930.9 ms against 87.0 ms on one
+        store, shards reused 0/6 against 4/7, 448 items served where the same query without them
+        served 757 -- all 448 among the 757, so the groups only removed.
+        """
+        import os
+
+        from matrixark_mcp_runtime_config import serving_secondary_index_enabled
+
+        previous = os.environ.get("MATRIXARK_SERVING_SECONDARY_INDEX")
+        try:
+            os.environ.pop("MATRIXARK_SERVING_SECONDARY_INDEX", None)
+            self.assertFalse(serving_secondary_index_enabled(), "off unless asked for")
+            os.environ["MATRIXARK_SERVING_SECONDARY_INDEX"] = "1"
+            self.assertTrue(serving_secondary_index_enabled(), "and a deployment can have it back")
+            os.environ["MATRIXARK_SERVING_SECONDARY_INDEX"] = "0"
+            self.assertFalse(serving_secondary_index_enabled())
+        finally:
+            os.environ.pop("MATRIXARK_SERVING_SECONDARY_INDEX", None)
+            if previous is not None:
+                os.environ["MATRIXARK_SERVING_SECONDARY_INDEX"] = previous

@@ -11,6 +11,7 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_env import env_bool
 
 
+import bisect
 import os as _os
 
 import os
@@ -1116,11 +1117,20 @@ def _memory_layer_counts(refs: list[Json]) -> Json:
     return counts
 
 
-def _default_memory_layer_for_pack(refs: list[Json]) -> str:
-    counts = _memory_layer_counts(refs)
+def _most_common_counted_name(counts: Json) -> str:
+    """The name a pack leaves off its items: most common, ties broken by the larger name.
+
+    One copy of the tie rule. It used to be written out twice, once per default, and it is not a
+    detail either copy could drift on quietly: a different winner does not rename a default, it
+    moves the field onto or off every item in the pack.
+    """
     if not counts:
         return ""
     return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def _default_memory_layer_for_pack(refs: list[Json]) -> str:
+    return _most_common_counted_name(_memory_layer_counts(refs))
 
 
 def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> Json:
@@ -1157,8 +1167,15 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         ("resource_version", "version"),
         ("version_state", "version_state"),
     ]
+    # `ref.get(field, metadata.get(field))` reads the metadata FIRST, every time, to build a
+    # default the ref usually overrides -- sixteen lookups into a dict that on the serving path is
+    # empty on every ref. The fallback is kept exactly: metadata answers only when the ref does not
+    # carry the field at all, so a ref holding an explicit None still resolves to None.
+    metadata_field = metadata.get if metadata else None
     for field, alias in optional_field_aliases:
-        value = ref.get(field, metadata.get(field))
+        value = ref.get(field)
+        if value is None and metadata_field is not None and field not in ref:
+            value = metadata_field(field)
         if value not in (None, "", [], {}):
             item[alias] = value
     session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
@@ -1246,10 +1263,7 @@ def session_continuity_counts(refs: list[Json]) -> Json:
 
 
 def default_session_continuity_for_pack(refs: list[Json]) -> str:
-    counts = session_continuity_counts(refs)
-    if not counts:
-        return ""
-    return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+    return _most_common_counted_name(session_continuity_counts(refs))
 
 
 def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> list[Json]:
@@ -1366,6 +1380,60 @@ def _normalized_item_text(item: Json) -> str:
     return " ".join(text.split()).strip().lower().rstrip(".")
 
 
+# Joined between pack texts so a match cannot span two of them. Normalized record text is
+# whitespace-collapsed lowercase prose and never contains a NUL.
+_PACK_TEXT_SEPARATOR = "\x00"
+
+# How much text to seal into one haystack. Larger means fewer searches per item and more bytes
+# rescanned by each; 64 KiB keeps a full 1,000-ref pack to a handful of searches per item.
+_PACK_HAYSTACK_BYTES = 65536
+
+
+def _drop_redundant_pairwise(
+    groups: list[Json],
+    items: list[Json],
+    texts: list[str],
+    lengths: list[int],
+    order: list[int],
+) -> list[Json]:
+    """The one-text-at-a-time sweep, for a pack that cannot use a joined haystack.
+
+    Same answer, and the same length pruning; it simply compares against each longer text on its
+    own instead of against several joined together.
+    """
+    count = len(items)
+    negated = [-lengths[index] for index in order]
+    redundant = [False] * count
+    any_redundant = False
+    for index in range(count):
+        text = texts[index]
+        length = lengths[index]
+        if not text or length < 8:
+            continue
+        longer = bisect.bisect_left(negated, -length)
+        for position in range(longer):
+            other = order[position]
+            if redundant[other]:
+                continue
+            if text in texts[other]:
+                redundant[index] = True
+                any_redundant = True
+                break
+    if not any_redundant:
+        return groups
+    dropped = {id(items[index]) for index in range(count) if redundant[index]}
+    surviving: list[Json] = []
+    for group in groups:
+        kept = [item for item in (group.get("items") or []) if id(item) not in dropped]
+        if not kept:
+            continue
+        trimmed = dict(group)
+        trimmed["items"] = kept
+        trimmed["n"] = len(kept)
+        surviving.append(trimmed)
+    return surviving
+
+
 def drop_redundant_pack_items(groups: list[Json]) -> list[Json]:
     """Remove items whose content a LONGER item elsewhere in the pack already carries.
 
@@ -1378,54 +1446,95 @@ def drop_redundant_pack_items(groups: list[Json]) -> list[Json]:
     literally present in the kept item survives. The longer item wins because it carries the
     surrounding context that makes the fact usable.
 
-    Group ``n`` is recomputed, and a group emptied by the sweep is dropped entirely."""
-    surviving: list[tuple[Json, list[Json]]] = []
-    everything: list[tuple[str, Json]] = []
+    Group ``n`` is recomputed, and a group emptied by the sweep is dropped entirely.
+
+    Only STRICTLY LONGER items are examined, which is what keeps a full pack affordable: this ran
+    over every pair of items, and a pack carries up to ``max_selected_refs`` of them -- 1,000 by
+    default, so a million comparisons. Sampling the gateway under retrieve load put this one
+    function at 76.8% of its on-CPU time; ordering by length and scanning only the longer prefix
+    measured 98.4 ms to 27.4 ms on a 1,000-ref pack, with identical output.
+
+    The visit order is free, and that is worth saying because the pruning depends on it. This used
+    to skip a container that was itself already marked redundant, which makes the outcome look
+    order-dependent. It is not: containment is TRANSITIVE and carries the length condition with it,
+    so if X is inside Y and Y is inside Z then X is inside Z and ``len(Z) > len(X)``. "Contained in
+    some longer item that is not itself redundant" and "contained in some longer item" select
+    exactly the same items, so that check only ever saved work."""
+    items: list[Json] = []
+    texts: list[str] = []
     for group in groups:
         for item in group.get("items") or []:
-            everything.append((_normalized_item_text(item), item))
-    if not everything:
+            items.append(item)
+            texts.append(_normalized_item_text(item))
+    if not items:
         return groups
 
-    # Sorted by length once, so each item looks only at the items that could possibly contain it
-    # and stops at the first that cannot. The previous form walked EVERY other item and rejected
-    # the shorter ones inside the loop, paying the length test per PAIR rather than using it to
-    # avoid the pair -- a full n x n pass on a list that grows with the corpus.
-    #
-    # Visiting the pairs in a different order is safe because the rule is order-independent: an
-    # item is redundant when some strictly longer item contains it. The old loop also skipped
-    # absorbers already marked redundant, and that skip cannot change the answer either -- if the
-    # only item containing X is redundant, something strictly longer contains THAT, and substring
-    # containment is transitive, so it contains X as well.
-    #
-    # Measured on packs of the shape a retrieve produces, identical results at every size:
-    # 60 items 0.70ms -> 0.37ms, 300 17.55 -> 7.89, 1200 296.04 -> 109.90.
-    by_length = sorted(everything, key=lambda pair: len(pair[0]), reverse=True)
-    redundant: set[int] = set()
-    for text, item in everything:
-        if not text or len(text) < 8:
-            continue
-        size = len(text)
-        for other_text, other in by_length:
-            if len(other_text) <= size:
-                break
-            if other is item:
-                continue
-            if text in other_text:
-                redundant.add(id(item))
-                break
-    if not redundant:
+    count = len(items)
+    lengths = [len(text) for text in texts]
+    # Longest first. Everything already in the haystack is then strictly longer than whatever is
+    # being tested, which is the only thing that can contain it.
+    order = sorted(range(count), key=lambda index: -lengths[index])
+
+    # A text carrying the separator could let a match span two of them, which would drop an item
+    # nothing actually contains. Normalized record text does not contain a NUL; if one ever does,
+    # the pack takes the pairwise path rather than the risk.
+    if any(_PACK_TEXT_SEPARATOR in text for text in texts):
+        return _drop_redundant_pairwise(groups, items, texts, lengths, order)
+
+    redundant = [False] * count
+    any_redundant = False
+    sealed: list[str] = []          # joined haystacks, each ~_PACK_HAYSTACK_BYTES
+    pending: list[str] = []         # not yet sealed
+    pending_text = ""               # pending, joined once per length group rather than per item
+    pending_bytes = 0
+
+    position = 0
+    while position < count:
+        # One whole length group at a time: an item of the same length cannot contain another.
+        group_length = lengths[order[position]]
+        end = position
+        while end < count and lengths[order[end]] == group_length:
+            end += 1
+
+        if group_length >= 8:
+            for slot in range(position, end):
+                index = order[slot]
+                text = texts[index]
+                if not text:
+                    continue
+                if (pending_text and text in pending_text) or any(
+                    text in chunk for chunk in sealed
+                ):
+                    redundant[index] = True
+                    any_redundant = True
+
+        for slot in range(position, end):
+            text = texts[order[slot]]
+            pending.append(text)
+            pending_bytes += len(text) + 1
+        if pending_bytes >= _PACK_HAYSTACK_BYTES:
+            sealed.append(_PACK_TEXT_SEPARATOR.join(pending))
+            pending = []
+            pending_text = ""
+            pending_bytes = 0
+        else:
+            pending_text = _PACK_TEXT_SEPARATOR.join(pending)
+        position = end
+
+    if not any_redundant:
         return groups
 
+    dropped = {id(items[index]) for index in range(count) if redundant[index]}
+    surviving: list[Json] = []
     for group in groups:
-        kept = [item for item in (group.get("items") or []) if id(item) not in redundant]
+        kept = [item for item in (group.get("items") or []) if id(item) not in dropped]
         if not kept:
             continue
         trimmed = dict(group)
         trimmed["items"] = kept
         trimmed["n"] = len(kept)
-        surviving.append((trimmed, kept))
-    return [group for group, _kept in surviving]
+        surviving.append(trimmed)
+    return surviving
 
 
 def _pack_redundancy_filter_enabled() -> bool:
@@ -1447,7 +1556,7 @@ def _pack_redundancy_filter_enabled() -> bool:
     return bool(pack_drop_redundant_items_enabled(None))
 
 
-def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> list[Json]:
+def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False, already_dropped: bool = False) -> list[Json]:
     groups: dict[tuple[str, str], Json] = {}
     order: list[tuple[str, str]] = []
     for ref in refs:
@@ -1470,7 +1579,10 @@ def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity:
         groups[key]["items"].append(item)
         groups[key]["n"] += 1
     built = [groups[key] for key in order]
-    if _pack_redundancy_filter_enabled():
+    # `already_dropped` means the engine applied this filter when it selected the refs, so running
+    # it here would scan the whole pack to find nothing. Default false, so a pack from an engine
+    # that did not sweep is still swept here.
+    if not already_dropped and _pack_redundancy_filter_enabled():
         built = drop_redundant_pack_items(built)
     return built
 
@@ -1549,21 +1661,25 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     compact: Json = {"context_pack_id": pack.get("context_pack_id") or pack.get("pack_id") or ""}
     selected_refs = pack.get("selected_refs", [])
     if isinstance(selected_refs, list) and (selected_refs or not isinstance(pack.get("groups"), list)):
-        default_session_continuity = default_session_continuity_for_pack(selected_refs)
-        default_memory_layer = _default_memory_layer_for_pack(selected_refs)
+        # Counted once. The defaults ARE these counts read one way, and asking for them through
+        # the two `*_for_pack` helpers counted the whole pack a second time for each -- four walks
+        # where two do, and three calls to `_memory_layer_for_ref` per ref rather than two.
+        continuity_counts = session_continuity_counts(selected_refs)
+        layer_counts = _memory_layer_counts(selected_refs)
+        default_session_continuity = _most_common_counted_name(continuity_counts)
+        default_memory_layer = _most_common_counted_name(layer_counts)
         compact["groups"] = serving_ref_groups_for_pack(
             selected_refs,
             default_session_continuity=default_session_continuity,
             default_memory_layer=default_memory_layer,
             include_debug=include_debug,
+            already_dropped=bool(pack.get("redundant_items_dropped")),
         )
         if pack.get("selected_ref_counts"):
             compact.setdefault("counts", {})["refs"] = pack.get("selected_ref_counts", {})
-        continuity_counts = session_continuity_counts(selected_refs)
         if continuity_counts:
             compact.setdefault("defaults", {})["session_continuity"] = default_session_continuity
             compact.setdefault("counts", {})["session_continuity"] = continuity_counts
-        layer_counts = _memory_layer_counts(selected_refs)
         if layer_counts:
             compact.setdefault("defaults", {})["memory_layer"] = default_memory_layer
             compact.setdefault("counts", {})["memory_layer"] = layer_counts

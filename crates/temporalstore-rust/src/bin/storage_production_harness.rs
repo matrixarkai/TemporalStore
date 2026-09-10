@@ -182,7 +182,11 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
         shard_id: case.shard_id,
         selected_dump_buckets: dirty_buckets,
         max_dump_buckets_per_round: 64,
+        // Both thresholds at zero: this harness drives the dump itself and must not be told to
+        // wait for pressure to build. A delay here would leave the buckets it just dirtied
+        // undumped and every assertion after this line would be about the wrong state.
         min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
         purge_delayed_destroy: true,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: true,

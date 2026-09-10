@@ -3053,6 +3053,19 @@ pub struct StorageLifecycleRequest {
     pub max_dump_buckets_per_round: usize,
     #[serde(rename = "min_undumped_wal_records", default)]
     pub min_undumped_wal_records: u64,
+    /// Durable write-ahead log bytes that release the dump regardless of the record count.
+    ///
+    /// The record threshold beside this one does not bound the LOG. A thousand hundred-byte
+    /// records is a hundred kilobytes and a thousand megabyte records is a gigabyte, and neither
+    /// reaches the threshold sooner than the other -- so a workload with large values holds the
+    /// dump off across an arbitrarily large log, and since reclaim follows the dump, nothing
+    /// truncates it meanwhile. The design being followed delays on the undumped LENGTH in bytes
+    /// for exactly this reason.
+    ///
+    /// Either threshold releases the dump, so the log is bounded by whichever is reached first.
+    /// Zero means no byte threshold, as it does on every other bound here.
+    #[serde(default)]
+    pub min_undumped_wal_bytes: u64,
     #[serde(default)]
     pub purge_delayed_destroy: bool,
     #[serde(default)]
@@ -3117,10 +3130,26 @@ pub struct StorageManagerCycleRequest {
     pub max_dump_buckets_per_round: usize,
     #[serde(rename = "min_undumped_wal_records", default)]
     pub min_undumped_wal_records: u64,
+    /// Durable write-ahead log bytes that release the dump regardless of the record count.
+    ///
+    /// The record threshold beside this one does not bound the LOG. A thousand hundred-byte
+    /// records is a hundred kilobytes and a thousand megabyte records is a gigabyte, and neither
+    /// reaches the threshold sooner than the other -- so a workload with large values holds the
+    /// dump off across an arbitrarily large log, and since reclaim follows the dump, nothing
+    /// truncates it meanwhile. The design being followed delays on the undumped LENGTH in bytes
+    /// for exactly this reason.
+    ///
+    /// Either threshold releases the dump, so the log is bounded by whichever is reached first.
+    /// Zero means no byte threshold, as it does on every other bound here.
+    #[serde(default)]
+    pub min_undumped_wal_bytes: u64,
     #[serde(default)]
     pub warm_cache: bool,
     #[serde(default = "default_storage_manager_eviction_threshold")]
     pub eviction_memory_pressure_threshold: u64,
+    /// Buckets evicted per round. **Zero means no limit**, as it does on every other bound in
+    /// this request -- not "evict nothing", which is what the sampled selection used to read it
+    /// as while the exhaustive selection read it as "evict everything".
     #[serde(default)]
     pub eviction_batch_limit: usize,
     #[serde(default)]
@@ -3177,6 +3206,51 @@ pub struct StorageManagerCycleRequest {
     pub page_gc_min_band_garbage_basis_points: u64,
 }
 
+/// Per-round bounds for the background storage cycle.
+///
+/// Every one of these was 0, and 0 means "no bound" in each of the places it is read: the expiry
+/// window walks the whole deadline map, the eviction sampler keeps every victim it finds, the
+/// index-log sweep removes every removable record, and both index-GC triggers fire whatever the
+/// log looks like. The enforcement was there and tested the whole time; nothing set it, so a
+/// cycle did as much work as there was work to do.
+///
+/// The values are the same order as the design being followed, deliberately not identical --
+/// they are our bounds, chosen against our own costs, not copied numbers:
+///
+/// | bound | theirs | ours | why ours differs |
+/// |---|---|---|---|
+/// | index-log records per round | 200 | 256 | the same order; a round number here |
+/// | index-log size before a sweep | 1 MiB | 768 KiB | agrees with the post-dump sweep's own threshold |
+/// | removable share before a sweep | 50% | 40% | our sweep rewrites a log, theirs rewrites a zone's live pages -- ours is the cheaper one, so it can fire sooner |
+/// | hot buckets expired per round | 100 | 128 | the same order |
+/// | cold buckets expired per round | 5 | 8 | small on purpose either way: a cold bucket has to be loaded before it can be expired |
+/// | eviction victims per round | 10 | 16 | the same order |
+/// | band garbage before reclaim | 50% | 40% | see the note on the constant |
+pub const DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND: usize = 256;
+/// Index-log size below which a sweep is not worth running. Matches the post-dump sweep's
+/// reclaimable-bytes threshold, so the two things that rewrite this log agree about when it is
+/// too small to bother with.
+pub const DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD: u64 = 768 * 1024;
+/// Share of the log's records that must be removable before a sweep runs, in basis points.
+pub const DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS: u64 = 4_000;
+/// Buckets whose deadlines are examined per expiry round, in memory and on the store.
+///
+/// Cold is much smaller than hot because a cold bucket has to be LOADED before its records can
+/// be expired, so a cold round costs I/O a hot one does not. That is the same reason the design
+/// being followed scans 5 on-store slots against 100 in-memory ones.
+pub const DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND: usize = 128;
+pub const DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND: usize = 8;
+/// Buckets evicted per round once the cache is over its memory pressure threshold.
+pub const DEFAULT_EVICTION_BATCH_LIMIT: usize = 16;
+/// Garbage share a band must carry before GC will reclaim it, in basis points.
+///
+/// Expected to be INERT today, and set anyway so the policy is stated rather than implied: our
+/// GC only destroys bands with no live refs at all, and a band with no live refs is 10 000 basis
+/// points of garbage, which clears any threshold below it. It binds only if a future GC starts
+/// offering partially-live bands as candidates -- which is exactly when a threshold should
+/// already be in place rather than being added in a hurry.
+pub const DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS: u64 = 4_000;
+
 impl Default for StorageManagerCycleRequest {
     fn default() -> Self {
         Self {
@@ -3192,13 +3266,14 @@ impl Default for StorageManagerCycleRequest {
             enable_index_gc: true,
             max_dump_buckets_per_round: 0,
             min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
             warm_cache: false,
             eviction_memory_pressure_threshold: default_storage_manager_eviction_threshold(),
-            eviction_batch_limit: 0,
+            eviction_batch_limit: DEFAULT_EVICTION_BATCH_LIMIT,
             eviction_dump_before_evict: false,
             eviction_delete_drop: false,
-            max_expire_hot_buckets_per_round: 0,
-            max_expire_cold_buckets_per_round: 0,
+            max_expire_hot_buckets_per_round: DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND,
+            max_expire_cold_buckets_per_round: DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND,
             expire_hot_cursor: None,
             expire_cold_cursor: None,
             load_cold_buckets_for_expire: false,
@@ -3208,11 +3283,13 @@ impl Default for StorageManagerCycleRequest {
             page_gc_checkpoint_floor_slab_id: None,
             page_gc_raft_install_floor_slab_id: None,
             page_gc_delayed_destroy_grace_ms: 0,
-            index_gc_index_log_bytes_threshold: 0,
-            index_gc_usage_ratio_trigger_basis_points: 0,
-            index_gc_max_entries_per_round: 0,
+            index_gc_index_log_bytes_threshold: DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD,
+            index_gc_usage_ratio_trigger_basis_points:
+                DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS,
+            index_gc_max_entries_per_round: DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
             index_gc_commit_dirty_buckets_before_truncation: true,
-            page_gc_min_band_garbage_basis_points: 0,
+            page_gc_min_band_garbage_basis_points:
+                DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS,
         }
     }
 }

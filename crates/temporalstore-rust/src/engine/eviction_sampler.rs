@@ -197,12 +197,24 @@ pub(super) fn select_victims<S: BucketSource>(
     batch_limit: usize,
     source: S,
 ) -> EvictionSampleOutcome {
-    if batch_limit == 0 || source.bucket_count() == 0 {
+    if source.bucket_count() == 0 {
         return EvictionSampleOutcome {
             pool_size_after: state.pool.len(),
             ..EvictionSampleOutcome::default()
         };
     }
+    // A zero limit means NO limit, the same thing it means to the exhaustive path, which reads
+    // it as "do not truncate" and returns every eligible bucket. This read it as "take none" and
+    // returned immediately, so the one value a caller uses to say "everything" produced opposite
+    // answers depending on which path was running -- and which path runs is a default.
+    //
+    // Unlimited here is the whole bucket count: scan them all, keep them all. That makes the two
+    // paths agree at the boundary rather than agreeing only in the middle.
+    let batch_limit = if batch_limit == 0 {
+        source.bucket_count()
+    } else {
+        batch_limit
+    };
 
     let samples = config.samples.max(1);
     let scan_turns = config.scan_turns.max(1);
@@ -289,6 +301,73 @@ pub(super) fn select_victims<S: BucketSource>(
 
 #[cfg(test)]
 mod tests {
+    /// A zero batch limit means "no limit" here, because it means that to the path this one
+    /// replaced.
+    ///
+    /// The exhaustive path reads a zero as "do not truncate" and hands back every eligible
+    /// bucket. This one used to read the same zero as "take none" and return before scanning.
+    /// One value, two opposite answers, and which one a caller got depended on a default it
+    /// never set -- which is exactly how a caller asking for everything got nothing.
+    #[test]
+    fn a_zero_batch_limit_takes_everything_rather_than_nothing() {
+        use super::*;
+
+        struct AllEligible(usize);
+        impl BucketSource for AllEligible {
+            fn bucket_count(&self) -> usize {
+                self.0
+            }
+            fn scan(
+                &self,
+                _cursor: Option<u32>,
+                budget: usize,
+                visit: &mut dyn FnMut(&BucketSample) -> bool,
+            ) -> ScanResult {
+                let mut scanned = 0usize;
+                for routing_bucket in 0..self.0 as u32 {
+                    if scanned >= budget {
+                        break;
+                    }
+                    scanned += 1;
+                    let sample = BucketSample {
+                        routing_bucket,
+                        eligible: true,
+                        last_used_ms: routing_bucket as u64,
+                    };
+                    if !visit(&sample) {
+                        break;
+                    }
+                }
+                ScanResult {
+                    scanned,
+                    next_cursor: None,
+                    wrapped: true,
+                }
+            }
+            fn lookup(&self, routing_bucket: u32) -> Option<BucketSample> {
+                (routing_bucket < self.0 as u32).then(|| BucketSample {
+                    routing_bucket,
+                    eligible: true,
+                    last_used_ms: routing_bucket as u64,
+                })
+            }
+        }
+
+        let config = EvictionSamplerConfig::default();
+        let mut state = EvictionSamplerState::default();
+        let unlimited = select_victims(&mut state, config, 0, AllEligible(6));
+        assert_eq!(
+            unlimited.victims.len(),
+            6,
+            "a zero limit must take every eligible bucket, not none"
+        );
+
+        // And a real limit still limits, or the fix would just have removed the bound.
+        let mut state = EvictionSamplerState::default();
+        let limited = select_victims(&mut state, config, 2, AllEligible(6));
+        assert_eq!(limited.victims.len(), 2, "a stated limit must still be a limit");
+    }
+
     use super::*;
 
     fn buckets(count: u32) -> Vec<BucketSample> {
@@ -454,17 +533,26 @@ mod tests {
         assert_eq!(outcome.victims, vec![5, 6, 7]);
     }
 
+    /// An empty store yields no victims, whatever the limit.
+    ///
+    /// This used to assert a second thing: that a ZERO limit also yields nothing. It no longer
+    /// does, and the change is deliberate. The exhaustive path this sampler replaced reads a
+    /// zero as "do not truncate" and returns every eligible bucket, and so does every other
+    /// bound in this engine -- the dump round, the index-GC round, the dump interval, the
+    /// sweep threshold. The sampler was the one place where zero meant the opposite, and the
+    /// caller that asked for everything got nothing.
+    ///
+    /// `a_zero_batch_limit_takes_everything_rather_than_nothing` now owns that half.
     #[test]
-    fn an_empty_store_or_zero_batch_selects_nothing() {
+    fn an_empty_store_selects_nothing() {
         let mut state = EvictionSamplerState::default();
         let empty: Vec<BucketSample> = Vec::new();
         assert!(select_victims(&mut state, EvictionSamplerConfig::default(), 3, empty.as_slice())
             .victims
             .is_empty());
-        assert!(
-            select_victims(&mut state, EvictionSamplerConfig::default(), 0, buckets(10).as_slice())
-                .victims
-                .is_empty()
-        );
+        // Zero limit, still nothing -- because there is nothing, not because the limit is zero.
+        assert!(select_victims(&mut state, EvictionSamplerConfig::default(), 0, empty.as_slice())
+            .victims
+            .is_empty());
     }
 }

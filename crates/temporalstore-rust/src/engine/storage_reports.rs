@@ -17,9 +17,7 @@ impl TemporalEngine {
             StorageLifecycleReport {
                 shard_id: request.shard_id,
                 plan,
-                object_lifecycle: self
-                    .storage_recovery_report_without_boundary(request.shard_id)
-                    .object_lifecycle,
+                object_lifecycle: self.storage_object_lifecycle_snapshot(request.shard_id),
                 ..StorageLifecycleReport::default()
             }
         };
@@ -193,6 +191,7 @@ impl TemporalEngine {
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,
             min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
             purge_delayed_destroy: false,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
@@ -355,16 +354,12 @@ impl TemporalEngine {
     ) -> StorageLogCompatibilityReport {
         let wal_stats = self.wal_store.stats(shard_id);
         let index_log_stats = self.index_log_store.stats(shard_id);
-        let wal_records = self
-            .wal_store
-            .scan(shard_id, 0, u64::MAX, u64::MAX)
-            .map(|records| records.len())
-            .unwrap_or_default();
-        let index_log_records = self
-            .index_log_store
-            .scan(shard_id, 0, u64::MAX, u64::MAX)
-            .map(|records| records.len())
-            .unwrap_or_default();
+        // Counted, not collected -- the twin of the pair in the recovery report. This one is
+        // reached through `storage_manager_pressure_snapshot`, so it is on the SAME maintenance
+        // round as that pair: fixing only the other would have left every round still reading
+        // both logs in full, from a second site.
+        let wal_records = self.wal_store.record_count(shard_id).unwrap_or_default();
+        let index_log_records = self.index_log_store.record_count(shard_id).unwrap_or_default();
         StorageLogCompatibilityReport {
             shard_id,
             wal_format: "rust-jsonl-command-v1".to_string(),

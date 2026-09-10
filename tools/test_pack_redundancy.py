@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import unittest
 
-from matrixark_mcp_context_pack import drop_redundant_pack_items
+from matrixark_mcp_context_pack import (
+    _normalized_item_text,
+    drop_redundant_pack_items,
+)
 
 
 def group(kind, *texts):
@@ -82,6 +85,101 @@ class PackRedundancyCase(unittest.TestCase):
                          "equal-length duplicates are left alone: neither is longer, so neither "
                          "is the one carrying more context")
 
+
+    def test_a_chain_of_containments_keeps_only_the_longest(self):
+        """X inside Y inside Z leaves only Z, whatever order they arrive in.
+
+        The sweep skips a container that is itself redundant, which would matter if containment
+        were not transitive: Y is dropped, so if Y were X's only container, X's fate would depend
+        on whether Y had been examined yet. Because X is inside Y and Y is inside Z, X is also
+        inside Z, and the answer does not depend on the order.
+        """
+        short = "drink is matcha"
+        middle = "my favorite drink is matcha and i live in kyoto"
+        longest = "user: my favorite drink is matcha and i live in kyoto, noted at step 4"
+        for arrangement in (
+            (short, middle, longest),
+            (longest, middle, short),
+            (middle, longest, short),
+        ):
+            kept = drop_redundant_pack_items([group("event", *arrangement)])
+            texts = [item["text"] for g in kept for item in g["items"]]
+            self.assertEqual(texts, [longest], "order %r changed the answer" % (arrangement,))
+
+    def test_it_agrees_with_the_plain_definition_on_random_packs(self):
+        """Agree with "contained in some longer item", over packs nobody chose by hand.
+
+        The sweep prunes by length and skips containers already dropped. Neither may change which
+        items survive, so this compares against the definition itself rather than an expectation.
+        """
+        import random
+
+        def plainly_redundant(groups):
+            everything = [
+                item for g in groups for item in (g.get("items") or [])
+            ]
+            texts = [_normalized_item_text(item) for item in everything]
+            dropped = set()
+            for index, text in enumerate(texts):
+                if not text or len(text) < 8:
+                    continue
+                for other, other_text in enumerate(texts):
+                    if other == index:
+                        continue
+                    if len(other_text) > len(text) and text in other_text:
+                        dropped.add(id(everything[index]))
+                        break
+            return dropped
+
+        words = ["storage", "manager", "log", "kyoto", "matcha", "window", "cursor", "page"]
+        for seed in range(60):
+            rng = random.Random(seed)
+            def sentence():
+                return " ".join(rng.choice(words) for _ in range(rng.randint(1, 9)))
+            events = [{"text": sentence()} for _ in range(rng.randint(0, 14))]
+            entities = [{"text": "k = %s" % sentence()} for _ in range(rng.randint(0, 14))]
+            packed = [group("event", *[e["text"] for e in events]),
+                      group("entity", *[e["text"] for e in entities])]
+            # The ids the sweep keeps, against the ids the definition would keep.
+            expected_dropped = plainly_redundant(packed)
+            all_items = [item for g in packed for item in (g.get("items") or [])]
+            expected_kept = [
+                item["text"] for item in all_items if id(item) not in expected_dropped
+            ]
+            got = drop_redundant_pack_items(packed)
+            got_kept = [item["text"] for g in got for item in g["items"]]
+            self.assertEqual(
+                sorted(got_kept), sorted(expected_kept), "disagreed at seed %d" % seed
+            )
+
+    def test_a_text_carrying_the_separator_still_gets_the_plain_answer(self):
+        """A NUL in a text sends the pack down the pairwise path, with the same result.
+
+        The joined haystack is only sound while no text contains the separator -- a match could
+        otherwise span two texts and drop an item nothing actually carries. The guard prevents its
+        own hazard, which means nothing else will ever exercise it.
+        """
+        contained = "drink is matcha"
+        container = "user: my favorite drink is matcha, noted at step 9"
+        packed = [group("event", container, "unrelated sentence about a page cache"),
+                  group("entity", "k = %s" % contained)]
+        without_nul = drop_redundant_pack_items(packed)
+
+        # The same pack, with a NUL riding along in one text.
+        packed_with_nul = [
+            group("event", container + "\x00tail", "unrelated sentence about a page cache"),
+            group("entity", "k = %s" % contained),
+        ]
+        with_nul = drop_redundant_pack_items(packed_with_nul)
+
+        kept_without = sorted(i["text"] for g in without_nul for i in g["items"])
+        kept_with = sorted(i["text"].replace("\x00tail", "") for g in with_nul for i in g["items"])
+        self.assertEqual(kept_with, kept_without)
+        self.assertNotIn(
+            "k = %s" % contained,
+            [i["text"] for g in with_nul for i in g["items"]],
+            "the projection is still dropped on the fallback path",
+        )
 
 if __name__ == "__main__":
     unittest.main()

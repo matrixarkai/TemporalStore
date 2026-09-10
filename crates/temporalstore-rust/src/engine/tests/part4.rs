@@ -7673,8 +7673,13 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
             });
         }
 
+        // Both sides say what they mean. The default moved to the sampled path, so the
+        // full-scan arm has to ask for the exhaustive scan -- if it did not, both arms would
+        // sample and the comparison would compare one path against itself.
         if sampled {
             engine.use_sampled_eviction_for_test();
+        } else {
+            engine.use_full_scan_eviction_for_test();
         }
         crate::engine::reset_live_page_scan_entries();
         // Threshold 0 so the pressure gate always admits and the selection path actually runs.
@@ -9059,6 +9064,99 @@ fn what_one_expiry_round_costs_as_deadlines_accumulate() {
             per_round / (keys as f64 / 1000.0)
         );
     }
+}
+
+/// Every per-round bound on the background cycle is set, and none of them is zero.
+///
+/// Zero is not a small bound in any of these, it is NO bound: the expiry window walks the whole
+/// deadline map, the eviction sampler keeps every victim it finds, the index-log sweep removes
+/// every removable record, and both index-GC triggers fire whatever the log looks like. They were
+/// all zero, with the enforcement written and tested around them, so a cycle did as much work as
+/// there was work to do.
+///
+/// Asserted as exact values AND as non-zero. The exact values keep the numbers deliberate; the
+/// non-zero assertions say what the test is really defending, which is that none of these
+/// silently goes back to meaning "unbounded" -- the state they were all in.
+#[test]
+fn every_maintenance_round_is_bounded_by_default() {
+    let request = StorageManagerCycleRequest::default();
+
+    assert_eq!(request.index_gc_max_entries_per_round, 256);
+    assert_eq!(request.index_gc_index_log_bytes_threshold, 768 * 1024);
+    assert_eq!(request.index_gc_usage_ratio_trigger_basis_points, 4_000);
+    assert_eq!(request.max_expire_hot_buckets_per_round, 128);
+    assert_eq!(request.max_expire_cold_buckets_per_round, 8);
+    assert_eq!(request.eviction_batch_limit, 16);
+    assert_eq!(request.page_gc_min_band_garbage_basis_points, 4_000);
+
+    for (name, bound) in [
+        ("index_gc_max_entries_per_round", request.index_gc_max_entries_per_round as u64),
+        ("index_gc_index_log_bytes_threshold", request.index_gc_index_log_bytes_threshold),
+        (
+            "index_gc_usage_ratio_trigger_basis_points",
+            request.index_gc_usage_ratio_trigger_basis_points,
+        ),
+        ("max_expire_hot_buckets_per_round", request.max_expire_hot_buckets_per_round as u64),
+        ("max_expire_cold_buckets_per_round", request.max_expire_cold_buckets_per_round as u64),
+        ("eviction_batch_limit", request.eviction_batch_limit as u64),
+        (
+            "page_gc_min_band_garbage_basis_points",
+            request.page_gc_min_band_garbage_basis_points,
+        ),
+    ] {
+        assert!(bound > 0, "{name} is zero, which is not a bound at all");
+    }
+
+    // Cold is deliberately much smaller than hot: a cold bucket has to be LOADED before its
+    // records can be expired, so a cold round costs I/O a hot one does not.
+    assert!(
+        request.max_expire_cold_buckets_per_round < request.max_expire_hot_buckets_per_round,
+        "a cold expiry round must stay smaller than a hot one"
+    );
+}
+
+/// The default hot-expiry bound actually truncates a round, and the round after it resumes.
+///
+/// Pinning the constant proves the number; this proves the number reaches the mechanism. A bound
+/// that is set but never read is the state this whole change is about, so asserting the value
+/// alone would assert exactly the thing that was already true.
+#[test]
+fn the_default_expiry_bound_truncates_a_round_and_the_next_one_resumes() {
+    use std::collections::BTreeMap;
+
+    let request = StorageManagerCycleRequest::default();
+    let limit = request.max_expire_hot_buckets_per_round;
+    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    for index in 0..(limit as u64 * 3) {
+        deadlines.insert(format!("key-{index:05}"), index);
+    }
+
+    let (first, cursor) = crate::engine::expiry_window(
+        &deadlines,
+        None,
+        limit,
+        limit.saturating_mul(8).max(64),
+        |_| true,
+    );
+    assert_eq!(first.len(), limit, "the round must stop at the bound");
+    assert!(
+        first.len() < deadlines.len(),
+        "and the bound must be smaller than the work, or this proves nothing"
+    );
+    let cursor = cursor.expect("an unfinished round must hand back where to resume");
+
+    let (second, _) = crate::engine::expiry_window(
+        &deadlines,
+        Some(cursor.as_str()),
+        limit,
+        limit.saturating_mul(8).max(64),
+        |_| true,
+    );
+    assert_eq!(second.len(), limit, "the next round takes another full window");
+    assert!(
+        second[0].0 > first[first.len() - 1].0,
+        "and it resumes past the first round rather than re-walking it"
+    );
 }
 
 /// Paging by cursor reaches every deadline exactly once.

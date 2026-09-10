@@ -43,13 +43,25 @@ impl TemporalEngine {
             latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id)
                 .map(|manifest| manifest.wal_sequence)
                 .unwrap_or_default();
-        let current_wal_sequence = self.wal_store.stats(request.shard_id).last_sequence;
+        let wal_stats = self.wal_store.stats(request.shard_id);
+        let current_wal_sequence = wal_stats.last_sequence;
         let undumped_wal_records =
             current_wal_sequence.saturating_sub(latest_dump_wal_sequence);
         let explicit_buckets = !request.selected_dump_buckets.is_empty();
-        let dump_delayed = !explicit_buckets
-            && request.min_undumped_wal_records > 0
+        // Durable bytes that are UNDUMPED, not the log's size. `persistent_bytes` is the whole
+        // log across every segment, so a log that is large but fully dumped cleared this
+        // threshold on every round: a shard that had written one record since its last dump
+        // earned another whole-index serialize, which is the cost this cadence exists to avoid.
+        let undumped_wal_bytes = self.wal_store.undumped_len_since_dump(request.shard_id);
+        // Each threshold can only RELEASE the dump, never hold it: a delay needs both to agree
+        // there is not enough yet. Requiring both to be CROSSED instead would let the byte
+        // threshold suppress a dump the record count had already earned, which is the opposite
+        // of bounding the log.
+        let records_say_wait = request.min_undumped_wal_records > 0
             && undumped_wal_records < request.min_undumped_wal_records;
+        let bytes_say_wait = request.min_undumped_wal_bytes == 0
+            || undumped_wal_bytes < request.min_undumped_wal_bytes;
+        let dump_delayed = !explicit_buckets && records_say_wait && bytes_say_wait;
         let mut selected_dump_buckets = if explicit_buckets {
             request.selected_dump_buckets.clone()
         } else if dump_delayed {
@@ -74,13 +86,15 @@ impl TemporalEngine {
             .into_iter()
             .filter(|id| !live_block_slab_set.contains(id))
             .collect::<Vec<_>>();
-        let recovery = self.storage_recovery_report_without_boundary(request.shard_id);
+        let reclaim_slab_reports = self.storage_reclaim_slab_reports(request.shard_id);
         let stale_block_slab_set = stale_block_slab_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let mut reclaim_candidates =
-            storage_reclaim_candidates_from_recovery(&recovery, &stale_block_slab_set);
+        let mut reclaim_candidates = storage_reclaim_candidates_from_slab_reports(
+            &reclaim_slab_reports,
+            &stale_block_slab_set,
+        );
         let delayed_destroy_reports = self
             .page_store
             .delayed_destroy_slab_reports()
@@ -540,9 +554,7 @@ impl TemporalEngine {
                 request.follower_replay_cursors.clone(),
             )
         });
-        let object_lifecycle = self
-            .storage_recovery_report_without_boundary(request.shard_id)
-            .object_lifecycle;
+        let object_lifecycle = self.storage_object_lifecycle_snapshot(request.shard_id);
         let mut report = StorageLifecycleReport {
             shard_id: request.shard_id,
             public_storage_contract: Default::default(),
@@ -662,6 +674,34 @@ impl TemporalEngine {
             })
             .collect::<Vec<_>>();
 
+        // Index each manifest's bucket summaries BY ROUTING BUCKET, once.
+        //
+        // The loop below asked `manifest.bucket_summaries.iter().any(..)` per bucket, so a shard
+        // with N buckets and a manifest carrying N of them ran N*N comparisons -- and
+        // `bucket_dump_summary_matches_current_generation` CLONES AND SORTS both slab vectors on
+        // every call. At 32,000 buckets that is about a billion of them: measured, reclaim_wal
+        // was 21,448 ms of a 23,310 ms round, on a loop whose period is 30 s.
+        //
+        // Equivalent by construction: the predicate's FIRST condition is
+        // `manifest_summary.routing_bucket == current_summary.routing_bucket`, so only summaries
+        // sharing a routing bucket could ever match. Duplicates under one bucket are kept in a
+        // vector and still tried with `any`, so a manifest carrying two summaries for one bucket
+        // behaves as it did.
+        let manifest_summaries_by_bucket = manifests
+            .iter()
+            .map(|manifest| {
+                let mut by_bucket =
+                    std::collections::HashMap::<u32, Vec<&BucketStorageSummary>>::new();
+                for manifest_summary in &manifest.bucket_summaries {
+                    by_bucket
+                        .entry(manifest_summary.routing_bucket)
+                        .or_default()
+                        .push(manifest_summary);
+                }
+                by_bucket
+            })
+            .collect::<Vec<_>>();
+
         for summary in &bucket_summaries {
             let matching_manifest = manifests
                 .iter()
@@ -675,14 +715,18 @@ impl TemporalEngine {
                     else {
                         return false;
                     };
-                    manifest.bucket_summaries.iter().any(|manifest_summary| {
-                        bucket_dump_summary_matches_current_generation(
-                            manifest_summary,
-                            summary,
-                            manifest_bucket_fingerprints,
-                            &current_bucket_fingerprints,
-                        )
-                    })
+                    manifest_summaries_by_bucket[*manifest_index]
+                        .get(&summary.routing_bucket)
+                        .is_some_and(|candidates| {
+                            candidates.iter().any(|manifest_summary| {
+                                bucket_dump_summary_matches_current_generation(
+                                    manifest_summary,
+                                    summary,
+                                    manifest_bucket_fingerprints,
+                                    &current_bucket_fingerprints,
+                                )
+                            })
+                        })
                 })
                 .map(|(_, manifest)| manifest);
             let Some(manifest) = matching_manifest else {

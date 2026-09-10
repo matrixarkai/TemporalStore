@@ -6,6 +6,462 @@
 use super::*;
 use super::helpers::*;
 
+/// Every maintenance phase is on under the options a server actually starts with.
+///
+/// The server passes `StorageManagerOptions::default()` and prints a banner naming seven phases.
+/// The banner is a string; this checks the report.
+///
+/// Asserted on the SUFFIX rather than against a list of names, because the failure this guards
+/// against is a default going quiet, and the worst version of that is a phase added later whose
+/// default is off -- which a fixed list would not mention. Any stage the runtime records as
+/// `<name>_disabled` fails this, including one that does not exist yet.
+///
+/// The second half is the other way to be wrong: a phase that stops reporting at all. A stage
+/// missing from both lists is not "off", it is absent, and the first assertion cannot see it.
+#[test]
+fn every_maintenance_phase_is_enabled_under_the_shipped_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // Real content, so a phase that declines for want of work is distinguishable from one that
+    // declines because it is switched off.
+    for index in 0..64 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("phase-{index:03}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+
+    let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+
+    let disabled = report
+        .skipped_stages
+        .iter()
+        .filter(|stage| stage.ends_with("_disabled"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        disabled.is_empty(),
+        "phases switched off under the options the server ships with: {disabled:?} \
+         (executed: {:?}, skipped: {:?})",
+        report.executed_stages,
+        report.skipped_stages
+    );
+
+    // Every phase must have reported SOMETHING -- ran, or declined for a reason that is not
+    // "disabled". A phase in neither list has gone missing from the cycle.
+    for phase in [
+        "prepare",
+        "reclaim_wal",
+        "reclaim_memory",
+        "expire",
+        "reclaim_page",
+        "compact_pages",
+        "reclaim_index",
+        "reap_metrics",
+    ] {
+        let ran = report.executed_stages.iter().any(|stage| stage == phase);
+        let declined = report
+            .skipped_stages
+            .iter()
+            .any(|stage| stage.starts_with(phase));
+        assert!(
+            ran || declined,
+            "{phase} appears in neither list, so the cycle no longer reports it \
+             (executed: {:?}, skipped: {:?})",
+            report.executed_stages,
+            report.skipped_stages
+        );
+    }
+}
+
+/// A dump actually happens under the shipped default, once enough has accumulated to be worth
+/// one.
+///
+/// Being ENABLED is not being REACHED. The default holds a dump back until
+/// `min_undumped_wal_records` = 1000 records are undumped, so a handful of writes produces no
+/// dump at all -- correctly, because the delay exists to let repeated writes to the same bucket
+/// coalesce into one dumped generation. A guard that only checked the phase flags would pass on
+/// a store that never dumps, which is the state this whole line of work started from.
+///
+/// So: write past the threshold, run one round with the options a server ships with, and require
+/// that buckets were actually selected and a manifest written.
+#[test]
+fn a_dump_fires_under_the_shipped_default_once_the_threshold_is_crossed() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let options = StorageManagerOptions::default();
+    // Past the coalescing delay, and not by one: the threshold counts UNDUMPED records, so a
+    // round that dumps resets it, and a fixture sitting exactly on the line would be deciding
+    // the test on an off-by-one in the counter rather than on whether a dump happens.
+    let writes = options.min_undumped_wal_records as usize + 256;
+    for index in 0..writes {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dumped-{index:05}"),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let report = runtime.run_storage_manager_once(1, options);
+
+    assert!(
+        !report.lifecycle_plan.dump_delayed,
+        "past {writes} writes the dump is still being delayed: {:?}",
+        report.lifecycle_plan.undumped_wal_records
+    );
+    assert!(
+        !report.lifecycle_plan.selected_dump_buckets.is_empty(),
+        "the round selected no buckets to dump, so nothing was going to be written"
+    );
+    let lifecycle = report
+        .lifecycle_report
+        .as_ref()
+        .expect("a round that selected buckets must report what it did with them");
+    let manifest = lifecycle
+        .dump_manifest
+        .as_ref()
+        .expect("selected buckets must produce a dump manifest");
+    assert!(
+        !manifest.bucket_ids.is_empty(),
+        "the manifest names no buckets, so the dump captured nothing"
+    );
+}
+
+/// A big log dumps on its SIZE, while the record count is still saying wait.
+///
+/// The record threshold cannot bound a log. A thousand hundred-byte records is a hundred
+/// kilobytes and a thousand megabyte records is a gigabyte, and neither reaches 1000 records any
+/// sooner than the other -- so a workload with large values holds the dump off across an
+/// arbitrarily large log, and reclaim only follows a dump.
+///
+/// The fixture is the case the record count is blind to: FAR fewer records than the record
+/// threshold, but past the byte threshold. If the byte threshold did nothing, the record count
+/// alone would still be delaying, which is what the first assertion states.
+#[test]
+fn a_large_log_dumps_on_bytes_while_the_record_count_still_says_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // A byte threshold small enough to reach in a test, and a record threshold far out of reach,
+    // so only the byte one can release the dump.
+    //
+    // 2 KiB, not the 64 KiB this asked for originally. The threshold now counts the bytes the
+    // log has TAKEN since its last dump; it used to read `persistent_bytes`, which on a
+    // preallocated segment is 262,144 from the very first record and never moves. So the old
+    // 64 KiB was cleared by the preallocation, not by anything written -- the fixture below
+    // holds about 3.7 KiB of records, and would have passed with no writes at all.
+    let options = StorageManagerOptions {
+        min_undumped_wal_records: 1_000_000,
+        min_undumped_wal_bytes: 2 * 1024,
+        ..StorageManagerOptions::default()
+    };
+
+    let records = 48;
+    for index in 0..records {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("fat-{index:03}"),
+                value: vec![b'v'; 4 * 1024],
+            },
+        });
+    }
+    assert!(
+        (records as u64) < options.min_undumped_wal_records,
+        "the fixture must stay far below the record threshold, or it proves nothing"
+    );
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let report = runtime.run_storage_manager_once(1, options.clone());
+
+    assert!(
+        !report.lifecycle_plan.dump_delayed,
+        "the log is past {} bytes and still delayed, so the byte threshold did nothing",
+        options.min_undumped_wal_bytes
+    );
+    assert!(
+        !report.lifecycle_plan.selected_dump_buckets.is_empty(),
+        "released, but no bucket was selected, so nothing would be written"
+    );
+
+    // The control: the same store, the same records, with only the byte threshold taken away.
+    // Now nothing can release the dump and it must be delayed -- which is what proves the first
+    // assertion was the BYTE threshold's doing and not the record count quietly being satisfied.
+    let without_bytes = StorageManagerOptions {
+        min_undumped_wal_bytes: 0,
+        ..options
+    };
+    let control = runtime.run_storage_manager_once(1, without_bytes);
+    assert!(
+        control.lifecycle_plan.dump_delayed,
+        "with no byte threshold the record count alone must still be delaying this dump"
+    );
+
+    // And the half that was missing: the threshold must track HOW MUCH, not merely that a log
+    // exists. Set it above what this fixture wrote and the dump has to go back to being delayed.
+    // Without this the test passes on any reading that is large for an unrelated reason -- which
+    // is exactly how the preallocated segment size passed it before.
+    let above_what_was_written = StorageManagerOptions {
+        min_undumped_wal_bytes: 64 * 1024,
+        ..options
+    };
+    let still_delayed = runtime.run_storage_manager_once(1, above_what_was_written);
+    assert!(
+        still_delayed.lifecycle_plan.dump_delayed,
+        "a threshold above what the log has taken must delay the dump; releasing here means the \
+         byte reading is not measuring this shard's log growth"
+    );
+}
+
+/// The log's size threshold is set in the options a server actually starts with.
+///
+/// The test that proves the byte threshold WORKS passes its own options, so it cannot see the
+/// shipped default at all -- zeroing that default left it green. This is the half that watches
+/// production: a threshold nothing sets is a threshold that does not exist, which is the exact
+/// shape of the seven round bounds that were implemented, enforced, tested and left at zero.
+#[test]
+fn the_shipped_default_bounds_the_log_by_size() {
+    let options = StorageManagerOptions::default();
+    assert_eq!(options.min_undumped_wal_bytes, 96 * 1024 * 1024);
+    assert!(
+        options.min_undumped_wal_bytes > 0,
+        "with no byte threshold the record count alone decides, and a record count does not \
+         bound a file"
+    );
+    // Both thresholds are set, because each bounds something the other cannot: records bound how
+    // much replay a restart faces, bytes bound the file.
+    assert!(options.min_undumped_wal_records > 0);
+}
+
+/// Switching WAL reclaim off stops the reclaim, however large the log is.
+///
+/// The two thresholds are alternatives for WHEN to dump, not for WHETHER to reclaim. With the
+/// byte threshold crossed and reclaim disabled, no WAL reclaim may run.
+///
+/// Each arm gets its OWN store, because a round changes what the next round sees. Sharing one
+/// failed twice, in opposite directions: with the disabled arm second it inherited an
+/// already-reclaimed log and declined for want of work, so deleting the flag check changed
+/// nothing; with it first, its own prepare consumed the dump pressure -- the dump is not gated
+/// by this flag on this path -- and the control then had nothing left to reclaim. Two
+/// experiments, two fixtures.
+#[test]
+fn switching_reclaim_off_stops_the_reclaim_however_large_the_log() {
+    fn store_past_the_byte_threshold(
+        dir: &tempfile::TempDir,
+    ) -> DataNodeRuntime {
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..48 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("suppressed-{index:03}"),
+                    value: vec![b'v'; 4 * 1024],
+                },
+            });
+        }
+        DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        )
+    }
+
+    // Past the byte threshold and far short of the record one, so only the byte threshold can
+    // release the dump that reclaim follows.
+    // 2 KiB for the same reason as the test above: the byte threshold counts what the log has
+    // taken since its last dump, and this fixture writes about 3.7 KiB of records. The 64 KiB
+    // this asked for originally was cleared by the segment's preallocated size, not by writes.
+    let reclaiming = StorageManagerOptions {
+        min_undumped_wal_records: 1_000_000,
+        min_undumped_wal_bytes: 2 * 1024,
+        ..StorageManagerOptions::default()
+    };
+    let not_reclaiming = StorageManagerOptions {
+        enable_wal_reclaim: false,
+        ..reclaiming.clone()
+    };
+
+    let control_dir = tempfile::tempdir().unwrap();
+    let control = store_past_the_byte_threshold(&control_dir)
+        .run_storage_manager_once(1, reclaiming);
+    assert!(
+        !control.lifecycle_plan.dump_delayed,
+        "the byte threshold must release this dump, or nothing below is demonstrated"
+    );
+    assert!(
+        control.executed_stages.iter().any(|stage| stage == "reclaim_wal"),
+        "the control must actually reclaim: {:?}",
+        control.executed_stages
+    );
+
+    let suppressed_dir = tempfile::tempdir().unwrap();
+    let suppressed = store_past_the_byte_threshold(&suppressed_dir)
+        .run_storage_manager_once(1, not_reclaiming);
+    assert!(
+        !suppressed.executed_stages.iter().any(|stage| stage == "reclaim_wal"),
+        "reclaim is off, so no WAL reclaim may run however large the log: {:?}",
+        suppressed.executed_stages
+    );
+    assert!(
+        suppressed
+            .skipped_stages
+            .iter()
+            .any(|stage| stage == "reclaim_wal_disabled"),
+        "and it must say it was disabled rather than silently doing nothing: {:?}",
+        suppressed.skipped_stages
+    );
+}
+
+/// The RUNNING scheduler reaches every maintenance phase, not just one round of it.
+///
+/// The guard beside this one proves a single round enables every phase. That is not the same
+/// claim: a loop that ran once, or only ever visited its first shard, or died on the first error,
+/// would satisfy it. This starts the scheduler the server starts, lets it tick, and requires that
+/// every per-phase counter moved.
+///
+/// Asserted as "at least once each" rather than "once per loop". Measured over four loops:
+/// prepare 4, reclaim_wal 1, reclaim_memory 3, expire 4, reclaim_page 4, compact 4, index_gc 4 --
+/// reclaim_wal ran once because after it reclaimed there was nothing left, and reclaim_memory is
+/// pressure-dependent. Pinning either to the loop count would pin this fixture's luck.
+#[test]
+fn the_running_scheduler_reaches_every_phase() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        256 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let options = StorageManagerOptions::default();
+    // Pressure of several kinds, so a phase that declines for want of work is distinguishable
+    // from one the loop never reaches: volume for the dump threshold, overwrites for stale
+    // pages, deletes for tombstones, and a small cache so memory pressure is reachable.
+    let writes = options.min_undumped_wal_records as usize + 256;
+    for index in 0..writes {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("periodic-{index:05}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    for index in 0..(writes / 2) {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("periodic-{index:05}"),
+                value: vec![b'w'; 96],
+            },
+        });
+    }
+    for index in 0..(writes / 4) {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete { key: format!("periodic-{index:05}") },
+        });
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let scheduler = runtime.start_storage_manager_scheduler_for_all_shards(
+        std::time::Duration::from_millis(5),
+        options,
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        if runtime.stats().storage_manager_loops >= 4 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let stats = runtime.stats();
+    drop(scheduler);
+
+    assert!(
+        stats.storage_manager_loops >= 4,
+        "the scheduler only completed {} rounds, so nothing below is about periodic behaviour",
+        stats.storage_manager_loops
+    );
+    for (phase, runs) in [
+        ("prepare", stats.storage_manager_prepare_runs),
+        ("reclaim_wal", stats.storage_manager_reclaim_wal_runs),
+        ("reclaim_memory", stats.storage_manager_reclaim_memory_runs),
+        ("expire", stats.storage_manager_expire_runs),
+        ("reclaim_page", stats.storage_manager_reclaim_page_runs),
+        ("compact", stats.storage_manager_compact_runs),
+        ("index_gc", stats.storage_manager_index_gc_runs),
+    ] {
+        assert!(
+            runs > 0,
+            "{phase} never ran across {} scheduler rounds",
+            stats.storage_manager_loops
+        );
+    }
+}
+
 #[test]
 fn runtime_enforces_authorized_lifecycle_token_when_installed() {
     let runtime = DataNodeRuntime::new_without_workers_with_options(
@@ -1010,6 +1466,7 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,
             min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
             purge_delayed_destroy: false,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
@@ -1338,6 +1795,80 @@ fn runtime_storage_manager_scale_repeats_style_pressure_stages() {
     );
     assert_eq!(stats.storage_manager_compact_runs, reports.len() as u64);
     assert_eq!(stats.storage_manager_index_gc_runs, reports.len() as u64);
+}
+
+/// The all-shards loop visits EVERY loaded shard, and picks up one loaded after it started.
+///
+/// The per-shard scheduler beside this one has to be told which shard it serves, which is why
+/// nothing in the server ever started one -- a server does not know its shards up front. This
+/// asks the engine each tick, so the thing worth asserting is not that it ran, but that it
+/// reached a shard nobody named when it was started.
+///
+/// Asserted through the SHARD ID the last round recorded, not through a loop counter. The first
+/// version of this counted `storage_manager_loops` and waited for it to climb, which at a 5 ms
+/// interval it does whatever the loop visits -- so it measured the clock, and BOTH mutations
+/// (visit only the first shard; snapshot the shard list at startup) passed it. A count per tick
+/// cannot see which shard a tick chose. The report's shard id can.
+#[test]
+fn the_all_shards_scheduler_reaches_a_shard_loaded_after_it_started() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new(
+        engine.clone(),
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    let response = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "all-shards-1".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+
+    let scheduler = runtime.start_storage_manager_scheduler_for_all_shards(
+        Duration::from_millis(5),
+        StorageManagerOptions::default(),
+    );
+    wait_until(Duration::from_secs(2), || {
+        runtime.stats().storage_manager_last_shard_id == Some(1)
+    });
+    assert_eq!(
+        runtime.stats().storage_manager_last_shard_id,
+        Some(1),
+        "the loop never ran for the shard it started with"
+    );
+
+    // A shard the scheduler was never told about, loaded while it is already running.
+    engine.load_shard(2);
+    let response = runtime.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringSet {
+            key: "all-shards-2".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+    assert!(
+        engine.loaded_shard_ids().contains(&2),
+        "the engine must be holding the second shard for this to prove anything"
+    );
+
+    // The report has to name shard 2 at some point, which only happens if a tick chose it.
+    wait_until(Duration::from_secs(5), || {
+        runtime.stats().storage_manager_last_shard_id == Some(2)
+    });
+    let reached = runtime.stats().storage_manager_last_shard_id;
+    scheduler.stop();
+    assert_eq!(
+        reached,
+        Some(2),
+        "the loop never reached the shard loaded after it started; last report was for {reached:?}"
+    );
 }
 
 #[test]

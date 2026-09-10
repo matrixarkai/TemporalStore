@@ -78,6 +78,8 @@ try:  # package path
     from tools.matrixark_mcp_runtime_config import (
         apply_remote_only_local_fallback,
         resolve_context_source_mode,
+        retrieval_min_score,
+        serving_secondary_index_enabled,
         QUERY_REWRITE_ENABLED,
         QUERY_REWRITE_WINDOW,
         PACK_PRECISION_EXPAND_ENABLED,
@@ -89,6 +91,8 @@ except ImportError:
     from matrixark_mcp_runtime_config import (  # noqa: F401
         apply_remote_only_local_fallback,
         resolve_context_source_mode,
+        retrieval_min_score,
+        serving_secondary_index_enabled,
         QUERY_REWRITE_ENABLED,
         QUERY_REWRITE_WINDOW,
         PACK_PRECISION_EXPAND_ENABLED,
@@ -474,10 +478,12 @@ class _LocalAdapterRetrieveMixin:
             retrieval_session_scope = "only"
         retrieval_scope = {**scope, "_session_scope": retrieval_session_scope}
         secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
-        # Resolved here because the scan is about to start and both are read per request. The
-        # secondary-index groups are deliberately LEFT ALONE: on this path they are not an
-        # admission filter, they add 0.08 to a node's score, so clearing them changed nothing on
-        # two fixtures -- including one built from a query that does produce groups.
+        # Resolved here because the scan is about to start and both are read per request.
+        #
+        # On THIS path the groups are not an admission filter: they add 0.08 to a node's score, so
+        # clearing them changed nothing on two fixtures -- including one built from a query that
+        # does produce groups. The ENGINE reads the same groups differently, and that is why they
+        # are no longer sent to it: see `serving_secondary_index_enabled`.
         retrieval_return_all = _return_all_candidates(scope)
         retrieval_return_all_threshold = _return_all_candidate_threshold(scope)
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
@@ -986,8 +992,33 @@ class _LocalAdapterRetrieveMixin:
             "scope": retrieval_scope,
             "question_type": question_type,
             "query_plan": query_plan,
-            "secondary_index_groups": [sorted(group) for group in secondary_index_filter_groups],
+            # A one-box serving retrieve sends NO secondary index groups. The engine treats them
+            # as an admission filter over terms gathered across every shard, so a request carrying
+            # them cannot be prepared per shard: measured on one store, 930.9 ms against 87.0 ms,
+            # shards reused 0/6 against 4/7, and 448 items served against 757 -- the same items,
+            # 309 fewer. The caller's own use of them, three lines above, is a 0.08 score nudge.
+            #
+            # It is also inferring them wrongly: "storage manager durable dump" produces
+            # entity_type:family_profile and entity_type:relationship, and then pays whole-corpus
+            # for that. Redesigning the inference is a separate piece of work; serving does not
+            # wait for it.
+            "secondary_index_groups": (
+                [sorted(group) for group in secondary_index_filter_groups]
+                if serving_secondary_index_enabled()
+                else []
+            ),
             "secondary_index_filter_mode": secondary_index_filter_mode,
+            # The engine has always had a score floor and this path never sent one, so it fell to
+            # its own default of 0.0 -- which its comment describes accurately as excluding only
+            # what scores EXACTLY zero. Sweeping the knob through the gateway changed nothing at
+            # any value, because nothing was carrying it: 123 refs at 0.01 and 123 at 0.4.
+            #
+            # Sent from the caller's ranking policy, like every other ranking decision here.
+            "min_score": retrieval_min_score(args, ranking),
+            # Ask the engine for the serving shape rather than rebuilding every ref here. Not for a
+            # debug retrieve: those carry lineage fields the serving shape drops, and the engine
+            # cannot know which kind this is.
+            "serving_refs_compact": not debug_refs,
             "max_context_tokens": max_context_tokens,
             "local_budget": {
                 "token_estimate": int(local_budget.get("token_estimate", 0)),
@@ -1088,7 +1119,14 @@ class _LocalAdapterRetrieveMixin:
             if apply_remote_only_local_fallback(local_budget, native_used_remote):
                 native_pack["local_context_refs"] = compact_local_context_refs(local_budget)
                 native_pack["context_source_mode"] = "remote_only_local_fallback"
-            serving_selected_refs = compact_context_pack_refs(selected_refs, include_debug=debug_refs)
+            # Already in the serving shape when the engine says so, which is what was asked for
+            # above. Rebuilding them here produced the same refs -- verified by diffing two full
+            # packs over one store, 441 items byte for byte -- at the cost of the largest single
+            # item in this process's profile.
+            if native_pack.get("serving_refs_compact"):
+                serving_selected_refs = selected_refs
+            else:
+                serving_selected_refs = compact_context_pack_refs(selected_refs, include_debug=debug_refs)
             native_pack["selected_refs"] = serving_selected_refs
             native_pack["remote_context_refs"] = serving_selected_refs
             native_pack["dropped_refs"] = compact_dropped_refs_for_context_pack(native_pack.get("dropped_refs", {}), include_debug=debug_refs)
@@ -1098,7 +1136,14 @@ class _LocalAdapterRetrieveMixin:
                 "dropped_ref_details": "audit_only" if not debug_refs else "included",
                 "enable_debug_refs_with": "include_debug_refs=true or MATRIXARK_CONTEXT_PACK_DEBUG_REFS=1",
             }
-            return compact_context_pack_for_serving(native_pack, include_debug=debug_refs)
+            # The refs above are already the serving shape -- either the engine emitted it, or
+            # this function just built it. Compacting them a second time here was two passes over
+            # every ref (selected and remote) for a result that cannot differ.
+            return compact_context_pack_for_serving(
+                native_pack,
+                include_debug=debug_refs,
+                refs_already_compact=True,
+            )
         if self.native_context_pack_required():
             raise MatrixArkError(
                 "backend-native ContextPack assembly is required for TemporalStore serving, "

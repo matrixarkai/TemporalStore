@@ -55,6 +55,7 @@ impl DataNodeRuntime {
             storage_lifecycle_runs: stats.storage_lifecycle_runs,
             storage_manager_runs: stats.storage_manager_runs,
             storage_manager_loops: stats.storage_manager_loops,
+            storage_manager_last_shard_id: stats.storage_manager_last_shard_id,
             storage_manager_prepare_runs: stats.storage_manager_prepare_runs,
             storage_manager_reclaim_wal_runs: stats.storage_manager_reclaim_wal_runs,
             storage_manager_reclaim_memory_runs: stats.storage_manager_reclaim_memory_runs,
