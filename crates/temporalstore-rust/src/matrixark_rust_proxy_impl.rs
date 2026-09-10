@@ -308,12 +308,67 @@ struct RetrieveBuildCost {
 
 #[derive(Clone, Debug)]
 struct RetrieveCandidateSnapshot {
-    candidates: Vec<CachedRetrieveCandidate>,
+    /// The candidates, as one list per shard rather than one list.
+    ///
+    /// A shard's candidates are cached and shared, and a candidate costs about 4.6 us to clone --
+    /// concatenating them here would hand back most of what caching them saves. `first_of_segment`
+    /// holds each segment's starting ordinal so a candidate can still be addressed by one number,
+    /// which is what the scoring pass and the budget closures use.
+    segments: Vec<Arc<Vec<CachedRetrieveCandidate>>>,
+    first_of_segment: Vec<usize>,
     memory_inventory: Value,
     scanned_records: usize,
     placement_partitions_touched: usize,
     index_postings_read: usize,
     build: RetrieveBuildCost,
+}
+
+impl RetrieveCandidateSnapshot {
+    fn from_segments(
+        segments: Vec<Arc<Vec<CachedRetrieveCandidate>>>,
+        memory_inventory: Value,
+        scanned_records: usize,
+        shard_count: usize,
+        build: RetrieveBuildCost,
+    ) -> Self {
+        let mut first_of_segment = Vec::with_capacity(segments.len());
+        let mut running = 0usize;
+        for segment in &segments {
+            first_of_segment.push(running);
+            running = running.saturating_add(segment.len());
+        }
+        Self {
+            segments,
+            first_of_segment,
+            memory_inventory,
+            scanned_records,
+            placement_partitions_touched: shard_count,
+            index_postings_read: shard_count,
+            build,
+        }
+    }
+
+    fn candidates(&self) -> impl Iterator<Item = &CachedRetrieveCandidate> {
+        self.segments.iter().flat_map(|segment| segment.iter())
+    }
+
+    fn candidate_count(&self) -> usize {
+        self.segments.iter().map(|segment| segment.len()).sum()
+    }
+
+    /// The candidate at an ordinal across every segment.
+    ///
+    /// The ordinal is what the scoring pass records and what the budget closures look up later, so
+    /// it has to mean the same thing whether the candidates came from one list or twenty.
+    fn candidate(&self, ordinal: usize) -> Option<&CachedRetrieveCandidate> {
+        let segment = match self.first_of_segment.binary_search(&ordinal) {
+            Ok(exact) => exact,
+            Err(0) => return None,
+            Err(after) => after - 1,
+        };
+        let within = ordinal - self.first_of_segment[segment];
+        self.segments.get(segment)?.get(within)
+    }
 }
 
 struct NativeScoredCandidate {
@@ -1399,9 +1454,20 @@ struct SnapshotEntry {
     /// makes it stale: the write path patches and removes these entries, and a patched payload
     /// map with a stale decode beside it is the one shape that must not exist.
     decoded: Option<Arc<Vec<Value>>>,
+    /// The shard's candidates, per scope signature, or empty until something asks.
+    ///
+    /// Beside the payloads for the same reason `decoded` is: the write path patches and removes
+    /// these entries, so a stale candidate list is dropped by the call that made it stale.
+    ///
+    /// Keyed by scope because the filter is: one caller means one key, and a second scope pays its
+    /// own build once per shard per write rather than on every retrieve.
+    prepared: BTreeMap<String, Arc<Vec<CachedRetrieveCandidate>>>,
     /// The payload bytes. `decoded` is charged separately, so this stays comparable to `weigh`.
     bytes: usize,
-    /// What the decoded records are charged at, or 0 when there are none.
+    /// What the decoded records and the prepared candidates are charged at, or 0 for none.
+    ///
+    /// Both are derived from the payloads and both are rebuilt by re-reading them, so they share
+    /// one budget: what matters is how much derived data the process holds, not which kind.
     decoded_bytes: usize,
     used: u64,
 }
@@ -1512,6 +1578,38 @@ impl SnapshotCache {
         entry.decoded.clone()
     }
 
+    /// The shard's candidates for a scope, if this entry still has them.
+    fn prepared_for_scope(&mut self, key: &str, signature: &str) -> Option<Arc<Vec<CachedRetrieveCandidate>>> {
+        self.clock += 1;
+        let clock = self.clock;
+        let entry = self.entries.get_mut(key)?;
+        entry.used = clock;
+        entry.prepared.get(signature).cloned()
+    }
+
+    /// Attach a shard's candidates for a scope, and charge them.
+    ///
+    /// Charged at the payload bytes rather than a multiple: the candidates are a filtered subset
+    /// of the records, holding a ref of roughly a record's size for the ones that survive. Like
+    /// `set_decoded`, this does nothing when the key is gone -- the entry was patched or evicted
+    /// while the build ran, so these candidates describe a shard the cache no longer holds.
+    fn set_prepared(
+        &mut self,
+        key: &str,
+        signature: &str,
+        candidates: Arc<Vec<CachedRetrieveCandidate>>,
+    ) {
+        let Some(entry) = self.entries.get_mut(key) else {
+            return;
+        };
+        let charged = entry.bytes;
+        if entry.prepared.insert(signature.to_string(), candidates).is_none() {
+            self.decoded_bytes = self.decoded_bytes.saturating_add(charged);
+            entry.decoded_bytes = entry.decoded_bytes.saturating_add(charged);
+        }
+        self.evict_decoded_to_budget();
+    }
+
     /// Attach parsed records to an entry that is still present, and charge them.
     ///
     /// Does nothing when the key is gone: the entry was patched or evicted while the parse was
@@ -1541,6 +1639,7 @@ impl SnapshotCache {
             SnapshotEntry {
                 map,
                 decoded: None,
+                prepared: BTreeMap::new(),
                 bytes,
                 decoded_bytes: 0,
                 used: self.clock,
@@ -1570,8 +1669,11 @@ impl SnapshotCache {
         }
         // The payloads just changed, so anything parsed from them describes the shard as it WAS.
         // Dropped here, in the same call that changed them, rather than invalidated from outside.
+        // The payloads just changed, so the candidates built from them describe the shard as it
+        // WAS, exactly as the parse does.
         let dropped = entry.decoded_bytes;
         entry.decoded = None;
+        entry.prepared.clear();
         entry.decoded_bytes = 0;
         let was = entry.bytes;
         let now = Self::weigh(&entry.map);
@@ -1587,7 +1689,7 @@ impl SnapshotCache {
             let Some(victim) = self
                 .entries
                 .iter()
-                .filter(|(_, entry)| entry.decoded.is_some())
+                .filter(|(_, entry)| entry.decoded.is_some() || !entry.prepared.is_empty())
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(key, _)| key.clone())
             else {
@@ -1598,6 +1700,7 @@ impl SnapshotCache {
             };
             self.decoded_bytes = self.decoded_bytes.saturating_sub(entry.decoded_bytes);
             entry.decoded = None;
+            entry.prepared.clear();
             entry.decoded_bytes = 0;
         }
     }
@@ -5771,6 +5874,69 @@ fn read_record_count(engine: &RecordStore, key: &str) -> Result<String, String> 
     Ok(value)
 }
 
+/// One shard's candidates for a scope, built at most once per shard per write.
+///
+/// The filters are the same three the whole-corpus path applies, in the same order and for the
+/// same reasons: the cheap selective one first, then the scope, and the secondary groups are not
+/// handled here at all -- a caller that asked for them takes the other path, because those terms
+/// are collected across every shard and a shard cannot be filtered without the rest.
+fn prepare_shard_candidates(
+    engine: &RecordStore,
+    key: String,
+    signature: &str,
+    scope: Option<&Value>,
+) -> Result<Arc<Vec<CachedRetrieveCandidate>>, String> {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        if let Some(prepared) = cache.prepared_for_scope(&key, signature) {
+            return Ok(prepared);
+        }
+    }
+    let records = hgetall_decoded(engine, key.clone())?;
+    let candidates: Vec<CachedRetrieveCandidate> = records
+        .iter()
+        .filter(|record| is_serving_context_record(record))
+        .filter(|record| scope_matches_record(record, scope))
+        .filter_map(|record| candidate_from_record(record))
+        .collect();
+    let candidates = Arc::new(candidates);
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        cache.set_prepared(&key, signature, Arc::clone(&candidates));
+    }
+    Ok(candidates)
+}
+
+/// Turn one record into a candidate, or nothing when it has no ref to serve.
+///
+/// Extracted so the per-shard path and the whole-corpus path cannot drift: they differ in which
+/// records they are given, and must not differ in what a candidate is.
+fn candidate_from_record(record: &Value) -> Option<CachedRetrieveCandidate> {
+    let text = context_record_text(record);
+    let record_vector = record_vector_of(record);
+    let selected_ref = selected_ref_from_record(record, text);
+    if selected_ref.is_null() {
+        return None;
+    }
+    let ref_type = selected_ref
+        .get("ref_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let vector = record_vector.or_else(|| record_vector_of(&selected_ref));
+    Some(CachedRetrieveCandidate {
+        selected_ref,
+        ref_type,
+        lower_text: OnceLock::new(),
+        vector,
+    })
+}
+
+/// The scope a shard's candidates were filtered for, as a cache key.
+fn shard_scope_signature(scope: Option<&Value>) -> String {
+    scope
+        .and_then(|value| serde_json::to_string(value).ok())
+        .unwrap_or_default()
+}
+
 fn load_retrieve_candidate_snapshot(
     engine: &RecordStore,
     storage_prefix: &str,
@@ -5847,61 +6013,49 @@ fn load_retrieve_candidate_snapshot(
     let inventory_ms = inventory_started.elapsed().as_secs_f64() * 1000.0;
     let scanned_records = records.len();
     let candidates_started = Instant::now();
-    let candidates = records
-        .into_iter()
-        // Cheapest and most selective first. This is one `get` and a `matches!`, and it rejects
-        // every context_index and context_embedding record -- most of the corpus -- before
-        // `scope_matches_record` builds a scope key and walks eight identity fields for each
-        // survivor. All three are pure, so the order changes the cost and not the result.
-        .filter(|record| is_serving_context_record(record))
-        .filter(|record| scope_matches_record(record, scope))
-        .filter(|record| {
-            if secondary_groups.is_empty() {
-                return true;
-            }
-            let terms = record_index_terms(
-                record,
-                &index_terms_by_batch,
-                &index_terms_by_node,
-                &index_terms_by_ref,
-            );
-            terms.is_empty() || passes_secondary_groups(&terms, secondary_groups)
-        })
-        .filter_map(|record| {
-            let text = context_record_text(record);
-            let record_vector = record_vector_of(record);
-            let selected_ref = selected_ref_from_record(record, text);
-            if selected_ref.is_null() {
-                None
-            } else {
-                let ref_type = selected_ref
-                    .get("ref_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let vector = record_vector.or_else(|| record_vector_of(&selected_ref));
-                Some(CachedRetrieveCandidate {
-                    selected_ref,
-                    ref_type,
-                    lower_text: OnceLock::new(),
-                    vector,
-                })
-            }
-        })
-        .collect::<Vec<_>>();
+    let segments: Vec<Arc<Vec<CachedRetrieveCandidate>>> = if secondary_groups.is_empty() {
+        // Per shard, and cached there: records are appended, so every shard but the newest
+        // produces exactly the candidates it produced before, filter for filter and ref for ref.
+        let signature = shard_scope_signature(scope);
+        let mut segments = Vec::with_capacity(shard_count);
+        for shard in 0..shard_count {
+            let key = format!("{record_hash_key}:{shard:06}");
+            segments.push(prepare_shard_candidates(engine, key, &signature, scope)?);
+        }
+        segments
+    } else {
+        // Secondary groups are matched against index terms gathered across EVERY shard, so a
+        // shard cannot be filtered on its own. This is the path the builder always took, wrapped
+        // in one segment so everything downstream sees the same shape.
+        let whole = records
+            .into_iter()
+            .filter(|record| is_serving_context_record(record))
+            .filter(|record| scope_matches_record(record, scope))
+            .filter(|record| {
+                let terms = record_index_terms(
+                    record,
+                    &index_terms_by_batch,
+                    &index_terms_by_node,
+                    &index_terms_by_ref,
+                );
+                terms.is_empty() || passes_secondary_groups(&terms, secondary_groups)
+            })
+            .filter_map(candidate_from_record)
+            .collect::<Vec<_>>();
+        vec![Arc::new(whole)]
+    };
     let candidates_ms = candidates_started.elapsed().as_secs_f64() * 1000.0;
-    let snapshot = Arc::new(RetrieveCandidateSnapshot {
-        candidates,
+    let snapshot = Arc::new(RetrieveCandidateSnapshot::from_segments(
+        segments,
         memory_inventory,
         scanned_records,
-        placement_partitions_touched: shard_count,
-        index_postings_read: shard_count,
-        build: RetrieveBuildCost {
+        shard_count,
+        RetrieveBuildCost {
             read_ms,
             inventory_ms,
             candidates_ms,
         },
-    });
+    ));
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
         cache.insert(cache_key, Arc::clone(&snapshot));
     }
@@ -6014,8 +6168,7 @@ fn retrieve_context_pack_output(
         "broad" | "broad_exploration" | "exploration" | "profile_memory"
     );
     let has_event_candidate = snapshot
-        .candidates
-        .iter()
+        .candidates()
         .any(|candidate| candidate.ref_type == "event");
     let query_vector = ranking_field_from(
         request.query_vector.clone(),
@@ -6043,8 +6196,8 @@ fn retrieve_context_pack_output(
     let score_started = Instant::now();
     let mut skipped_unscoreable = 0_u64;
     let mut skipped_below_threshold = 0_u64;
-    let mut candidates = Vec::with_capacity(snapshot.candidates.len());
-    for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
+    let mut candidates = Vec::with_capacity(snapshot.candidate_count());
+    for (ordinal, candidate) in snapshot.candidates().enumerate() {
         if candidate.ref_type == "summary" && has_event_candidate && !summary_allowed_for_question {
             continue;
         }
@@ -6123,8 +6276,7 @@ fn retrieve_context_pack_output(
         let snapshot_for_layer = Arc::clone(&snapshot);
         let layer_of = move |ordinal: usize| -> String {
             snapshot_for_layer
-                .candidates
-                .get(ordinal)
+                .candidate(ordinal)
                 .and_then(|candidate| {
                     candidate
                         .selected_ref
@@ -6137,8 +6289,7 @@ fn retrieve_context_pack_output(
         let snapshot_for_tokens = Arc::clone(&snapshot);
         let tokens_of = move |ordinal: usize| -> u64 {
             snapshot_for_tokens
-                .candidates
-                .get(ordinal)
+                .candidate(ordinal)
                 .map(|candidate| {
                     candidate
                         .selected_ref
@@ -6178,8 +6329,7 @@ fn retrieve_context_pack_output(
     // the whole corpus -- before asking whether the one caller wanted them.
     let (profile_by_entity, profile_by_source_entity_hash) = if current_state_query {
         let all_candidate_refs: Vec<&Value> = snapshot
-            .candidates
-            .iter()
+            .candidates()
             .map(|candidate| &candidate.selected_ref)
             .collect();
         profile_shadow_maps_from_selected_refs(&all_candidate_refs)
@@ -6206,7 +6356,7 @@ fn retrieve_context_pack_output(
         if budget_governs && !budget_keep.contains(&ordinal) {
             continue;
         }
-        let Some(candidate) = snapshot.candidates.get(ordinal) else {
+        let Some(candidate) = snapshot.candidate(ordinal) else {
             continue;
         };
         let selected_ref = &candidate.selected_ref;
@@ -6348,7 +6498,7 @@ fn retrieve_context_pack_output(
             "native_candidate_cache_payload": "compact_struct",
             "serving_memory_cache_layer": "rust_proxy_retrieve_candidate_snapshot",
             "serving_memory_promoted": true,
-            "serving_memory_promoted_record_count": snapshot.candidates.len(),
+            "serving_memory_promoted_record_count": snapshot.candidate_count(),
             "native_pack_assembly": true,
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
@@ -7062,6 +7212,73 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    fn candidate_named(name: &str) -> CachedRetrieveCandidate {
+        CachedRetrieveCandidate {
+            selected_ref: json!({"ref_type": "event", "text": name}),
+            ref_type: "event".to_string(),
+            lower_text: OnceLock::new(),
+            vector: None,
+        }
+    }
+
+    /// An ordinal means the same candidate however the segments are shaped.
+    ///
+    /// The scoring pass records an ordinal and the budget closures resolve it later. If those
+    /// disagree a retrieve scores one candidate and bills another, and nothing fails -- it just
+    /// serves the wrong refs. Empty segments are in the fixture on purpose: a shard whose records
+    /// are all filtered out contributes one, and it can appear anywhere.
+    #[test]
+    fn an_ordinal_means_the_same_candidate_whatever_the_segments() {
+        let shapes: Vec<Vec<Vec<&str>>> = vec![
+            vec![],
+            vec![vec![]],
+            vec![vec!["a"]],
+            vec![vec![], vec!["a"], vec![]],
+            vec![vec!["a", "b"], vec![], vec!["c"], vec!["d", "e", "f"]],
+            vec![vec![], vec![], vec!["only"]],
+            vec![vec!["first"], vec![], vec![]],
+        ];
+        for shape in shapes {
+            let flat: Vec<&str> = shape.iter().flat_map(|s| s.iter().copied()).collect();
+            let segments: Vec<Arc<Vec<CachedRetrieveCandidate>>> = shape
+                .iter()
+                .map(|names| {
+                    Arc::new(names.iter().map(|name| candidate_named(name)).collect::<Vec<_>>())
+                })
+                .collect();
+            let snapshot = RetrieveCandidateSnapshot::from_segments(
+                segments,
+                json!({}),
+                0,
+                shape.len(),
+                RetrieveBuildCost::default(),
+            );
+
+            assert_eq!(snapshot.candidate_count(), flat.len(), "count for {shape:?}");
+
+            let iterated: Vec<String> = snapshot
+                .candidates()
+                .map(|candidate| candidate.selected_ref["text"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(iterated, flat, "iteration order for {shape:?}");
+
+            for (ordinal, expected) in flat.iter().enumerate() {
+                let got = snapshot
+                    .candidate(ordinal)
+                    .unwrap_or_else(|| panic!("ordinal {ordinal} missing for {shape:?}"));
+                assert_eq!(
+                    got.selected_ref["text"].as_str(),
+                    Some(*expected),
+                    "ordinal {ordinal} for {shape:?}"
+                );
+            }
+            assert!(
+                snapshot.candidate(flat.len()).is_none(),
+                "one past the end resolved for {shape:?}"
+            );
+        }
+    }
 
     /// A parse that fits its budget is kept.
     ///
