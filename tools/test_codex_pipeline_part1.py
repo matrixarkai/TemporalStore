@@ -2141,3 +2141,69 @@ class _CodexPipelinePart1:
         with mock.patch.object(core_context_pack, "compact_context_pack_refs", refuse):
             proven = compact_context_pack_for_serving_flat(dict(pack), refs_already_compact=True)
         self.assertEqual(rebuilt, proven)
+
+    def test_metadata_answers_only_when_the_ref_does_not_carry_the_field(self) -> None:
+        """The metadata fallback is a fallback, and an explicit None is an answer.
+
+        The alias loop stopped reading metadata eagerly, and the difference between the two forms
+        shows up in exactly one case: a ref that CARRIES the field with a null value. Reading the
+        metadata as a `dict.get` default returns null there, so pinning it keeps the rewrite from
+        quietly promoting metadata over the ref's own word.
+        """
+        from matrixark_mcp_context_pack import serving_ref_for_pack
+
+        absent = serving_ref_for_pack(
+            {"ref_type": "segment", "text": "t", "metadata": {"heading": "From metadata"}}
+        )
+        self.assertEqual("From metadata", absent.get("heading"))
+
+        explicit_null = serving_ref_for_pack(
+            {
+                "ref_type": "segment",
+                "text": "t",
+                "heading": None,
+                "metadata": {"heading": "From metadata"},
+            }
+        )
+        self.assertIsNone(
+            explicit_null.get("heading"),
+            "a ref carrying the field with no value is not overridden by metadata",
+        )
+
+        own = serving_ref_for_pack(
+            {
+                "ref_type": "segment",
+                "text": "t",
+                "heading": "From the ref",
+                "metadata": {"heading": "From metadata"},
+            }
+        )
+        self.assertEqual("From the ref", own.get("heading"))
+
+    def test_the_pack_defaults_and_counts_come_from_one_count(self) -> None:
+        """One tie rule, and the default is the counts read one way.
+
+        The two defaults used to ask for their own count of the whole pack, and each carried its
+        own copy of `max(..., key=(count, name))`. The tie case is what a drifted copy would get
+        wrong, and it is not cosmetic: the winner decides which value is left off every item.
+        """
+        from matrixark_mcp_context_pack import (
+            _most_common_counted_name,
+            default_session_continuity_for_pack,
+        )
+
+        self.assertEqual("", _most_common_counted_name({}))
+        self.assertEqual("beta", _most_common_counted_name({"alpha": 2, "beta": 2}))
+        self.assertEqual("alpha", _most_common_counted_name({"alpha": 3, "beta": 2}))
+
+        refs = [
+            {"ref_type": "event", "text": "a", "session_continuity": "alpha"},
+            {"ref_type": "event", "text": "b", "session_continuity": "beta"},
+        ]
+        self.assertEqual("beta", default_session_continuity_for_pack(refs))
+
+        served = compact_context_pack_for_serving(
+            {"context_pack_id": "p", "selected_refs": refs, "redundant_items_dropped": True}
+        )
+        self.assertEqual("beta", served["defaults"]["session_continuity"])
+        self.assertEqual({"alpha": 1, "beta": 1}, served["counts"]["session_continuity"])
