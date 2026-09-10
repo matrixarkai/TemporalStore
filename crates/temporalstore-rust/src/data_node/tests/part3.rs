@@ -1340,6 +1340,80 @@ fn runtime_storage_manager_scale_repeats_style_pressure_stages() {
     assert_eq!(stats.storage_manager_index_gc_runs, reports.len() as u64);
 }
 
+/// The all-shards loop visits EVERY loaded shard, and picks up one loaded after it started.
+///
+/// The per-shard scheduler beside this one has to be told which shard it serves, which is why
+/// nothing in the server ever started one -- a server does not know its shards up front. This
+/// asks the engine each tick, so the thing worth asserting is not that it ran, but that it
+/// reached a shard nobody named when it was started.
+///
+/// Asserted through the SHARD ID the last round recorded, not through a loop counter. The first
+/// version of this counted `storage_manager_loops` and waited for it to climb, which at a 5 ms
+/// interval it does whatever the loop visits -- so it measured the clock, and BOTH mutations
+/// (visit only the first shard; snapshot the shard list at startup) passed it. A count per tick
+/// cannot see which shard a tick chose. The report's shard id can.
+#[test]
+fn the_all_shards_scheduler_reaches_a_shard_loaded_after_it_started() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new(
+        engine.clone(),
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    let response = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "all-shards-1".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+
+    let scheduler = runtime.start_storage_manager_scheduler_for_all_shards(
+        Duration::from_millis(5),
+        StorageManagerOptions::default(),
+    );
+    wait_until(Duration::from_secs(2), || {
+        runtime.stats().storage_manager_last_shard_id == Some(1)
+    });
+    assert_eq!(
+        runtime.stats().storage_manager_last_shard_id,
+        Some(1),
+        "the loop never ran for the shard it started with"
+    );
+
+    // A shard the scheduler was never told about, loaded while it is already running.
+    engine.load_shard(2);
+    let response = runtime.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringSet {
+            key: "all-shards-2".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+    assert!(
+        engine.loaded_shard_ids().contains(&2),
+        "the engine must be holding the second shard for this to prove anything"
+    );
+
+    // The report has to name shard 2 at some point, which only happens if a tick chose it.
+    wait_until(Duration::from_secs(5), || {
+        runtime.stats().storage_manager_last_shard_id == Some(2)
+    });
+    let reached = runtime.stats().storage_manager_last_shard_id;
+    scheduler.stop();
+    assert_eq!(
+        reached,
+        Some(2),
+        "the loop never reached the shard loaded after it started; last report was for {reached:?}"
+    );
+}
+
 #[test]
 // rust-internal: validates periodic runtime scheduling for the storage-manager loop
 fn runtime_storage_manager_scheduler_runs_continuous_loop() {

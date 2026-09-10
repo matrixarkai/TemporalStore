@@ -355,16 +355,12 @@ impl TemporalEngine {
     ) -> StorageLogCompatibilityReport {
         let wal_stats = self.wal_store.stats(shard_id);
         let index_log_stats = self.index_log_store.stats(shard_id);
-        let wal_records = self
-            .wal_store
-            .scan(shard_id, 0, u64::MAX, u64::MAX)
-            .map(|records| records.len())
-            .unwrap_or_default();
-        let index_log_records = self
-            .index_log_store
-            .scan(shard_id, 0, u64::MAX, u64::MAX)
-            .map(|records| records.len())
-            .unwrap_or_default();
+        // Counted, not collected -- the twin of the pair in the recovery report. This one is
+        // reached through `storage_manager_pressure_snapshot`, so it is on the SAME maintenance
+        // round as that pair: fixing only the other would have left every round still reading
+        // both logs in full, from a second site.
+        let wal_records = self.wal_store.record_count(shard_id).unwrap_or_default();
+        let index_log_records = self.index_log_store.record_count(shard_id).unwrap_or_default();
         StorageLogCompatibilityReport {
             shard_id,
             wal_format: "rust-jsonl-command-v1".to_string(),

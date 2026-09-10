@@ -39,16 +39,10 @@ impl TemporalEngine {
         } else {
             base_index_bytes
         };
-        let wal_records = self
-            .wal_store
-            .scan(shard_id, 0, u64::MAX, u64::MAX)
-            .map(|records| records.len())
-            .unwrap_or_default();
-        let index_log_records = self
-            .index_log_store
-            .scan(shard_id, 0, u64::MAX, u64::MAX)
-            .map(|records| records.len())
-            .unwrap_or_default();
+        // Counted, not collected. Both of these used to read their whole log into a vector
+        // and take its length -- on the plan path of every maintenance round.
+        let wal_records = self.wal_store.record_count(shard_id).unwrap_or_default();
+        let index_log_records = self.index_log_store.record_count(shard_id).unwrap_or_default();
         let active_block_slab_ids = self.page_store.slab_ids().unwrap_or_default();
         let band_descriptors = self.page_store.band_descriptors();
         let band_summary = self.page_store.band_summary();

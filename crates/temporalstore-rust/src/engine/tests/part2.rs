@@ -2344,6 +2344,63 @@ fn a_catalog_dump_waits_out_the_interval_before_the_next_one() {
     );
 }
 
+/// Counting a log's records agrees with scanning it, exactly, on both logs.
+///
+/// The recovery report used to learn these two numbers by scanning each log in full and taking
+/// the length of the result -- reading every record of both logs into memory, on the plan path
+/// of every maintenance round. The counts now walk without collecting.
+///
+/// The property that matters is not "the count is plausible", it is "the count is what the scan
+/// would have said". So this asserts them equal on a log with real content, rather than pinning
+/// a number that would drift with anything that changes how much a write logs.
+#[test]
+fn counting_a_logs_records_agrees_with_scanning_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &page_dir, &index_dir);
+    engine.load_shard(1);
+
+    // Empty first: a log with no file at all must count zero rather than fail.
+    assert_eq!(engine.write_ahead_log_store().record_count(1).unwrap(), 0);
+    assert_eq!(engine.index_log_store().record_count(1).unwrap(), 0);
+
+    for index in 0..64 {
+        write_string(&engine, &format!("counted-{index:03}"), b"value");
+    }
+    engine.flush_shard_index(1);
+
+    let wal_scanned = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .len();
+    let wal_counted = engine.write_ahead_log_store().record_count(1).unwrap();
+    assert_eq!(
+        wal_counted, wal_scanned,
+        "the write-ahead log counted {wal_counted} records where a scan found {wal_scanned}"
+    );
+    assert!(wal_scanned > 0, "the log must have records for this to prove anything");
+
+    let index_scanned = engine
+        .index_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .len();
+    let index_counted = engine.index_log_store().record_count(1).unwrap();
+    assert_eq!(
+        index_counted, index_scanned,
+        "the index log counted {index_counted} records where a scan found {index_scanned}"
+    );
+    assert!(index_scanned > 0, "the index log must have records too");
+
+    // And the report that drove this reads the same numbers.
+    let report = engine.storage_recovery_report(1);
+    assert_eq!(report.wal_records, wal_scanned);
+    assert_eq!(report.index_log_records, index_scanned);
+}
+
 #[test]
 fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     // Embedded-path log reclaim: once a threshold dump durably captures the shard, the

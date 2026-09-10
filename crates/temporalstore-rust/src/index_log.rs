@@ -1612,6 +1612,36 @@ impl LocalIndexLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<(Vec<(u64, Vec<u8>)>, bool), IndexLogError> {
+        self.scan_collect(shard_id, start_offset, end_offset, max_bytes, |offset, raw| {
+            (offset, raw)
+        })
+    }
+
+    /// How many records the log holds, without building them.
+    ///
+    /// The caller that wanted this asked `scan(.., u64::MAX, u64::MAX)` and took `.len()` of the
+    /// result, so it read the whole log into a vector to learn how many records were in it --
+    /// on the plan path of every maintenance round.
+    ///
+    /// The same walk, projecting to `()`. A zero-sized element costs nothing per record, so peak
+    /// memory is one record rather than all of them, and the count cannot drift from what a scan
+    /// would have returned because it IS the scan. The write-ahead log store has the twin of
+    /// this, for the same caller.
+    pub fn record_count(&self, shard_id: ShardId) -> Result<usize, IndexLogError> {
+        self.scan_collect(shard_id, 0, u64::MAX, u64::MAX, |_offset, _raw| ())
+            .map(|(records, _truncated)| records.len())
+    }
+
+    /// The one walk every scan of this log shares, so they cannot drift about what a window
+    /// contains. Mirrors `scan_collect` on the write-ahead log store.
+    fn scan_collect<T>(
+        &self,
+        shard_id: ShardId,
+        start_offset: u64,
+        end_offset: u64,
+        max_bytes: u64,
+        mut take: impl FnMut(u64, Vec<u8>) -> T,
+    ) -> Result<(Vec<T>, bool), IndexLogError> {
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         let path = index_log_path(&inner.root, shard_id);
         if !path.exists() {
@@ -1644,7 +1674,7 @@ impl LocalIndexLogStore {
                 truncated = true;
                 break;
             }
-            records.push((offset, raw));
+            records.push(take(offset, raw));
             offset = next_offset;
             total += read;
         }
