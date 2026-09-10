@@ -145,11 +145,19 @@ def passes_applicable_secondary_index_filters(
 
 
 
-def hybrid_origin_score(query_terms: set[str], text: str, embedding_score: float, node_score: float) -> float:
-    dense = normalized_dense_score(embedding_score)
-    sparse = sparse_lexical_score(query_terms, text)
-    node = normalized_dense_score(node_score)
-    return round(clamp01(0.55 * dense + 0.35 * sparse + 0.10 * node), 6)
+# Not defined here: the implementation lives in matrixark_mcp_scoring and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_scoring import (
+        hybrid_origin_score,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import (
+        hybrid_origin_score,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it

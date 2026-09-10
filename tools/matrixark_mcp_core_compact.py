@@ -221,24 +221,21 @@ def context_event_time_key(timestamp_ms: int, event_id_hash: Any) -> int:
     return int(timestamp_ms) * CONTEXT_TIMELINE_FANOUT + (disambiguator % CONTEXT_TIMELINE_FANOUT)
 
 
-def attach_context_event_time_key(record: Json) -> Json:
-    if str(record.get("record_type") or "") != "context_event":
-        return record
-    enriched = dict(record)
-    event_hash = enriched.get("event_id_hash") or stable_hash(json.dumps(enriched, sort_keys=True, separators=(",", ":")))
-    timestamp_ms = context_event_timestamp_ms(enriched)
-    time_key = context_event_time_key(timestamp_ms, event_hash)
-    enriched.setdefault("event_id_hash", event_hash)
-    enriched.setdefault("timestamp_key_ms", timestamp_ms)
-    enriched.setdefault("context_event_key", f"{time_key:020d}:{event_hash}")
-    segment_hash = enriched.get("segment_hash")
-    if segment_hash:
-        enriched.setdefault("context_event_parent_type", "context_segment")
-        enriched.setdefault("context_event_parent_hash", segment_hash)
-    else:
-        enriched.setdefault("context_event_parent_type", "context_node")
-        enriched.setdefault("context_event_parent_hash", enriched.get("node_hash") or 0)
-    return enriched
+# Not defined here: the implementation lives in matrixark_mcp_event_keys and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_event_keys import (
+        attach_context_event_time_key,
+        attach_context_placement,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_event_keys import (
+        attach_context_event_time_key,
+        attach_context_placement,
+    )
 
 
 def attach_storage_route(record: Json) -> Json:
@@ -256,24 +253,6 @@ try:  # the implementation lives in matrixark_mcp_event_keys; this module re-exp
     from .matrixark_mcp_event_keys import context_placement_key
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_event_keys import context_placement_key
-
-
-def attach_context_placement(record: Json, *, scope_key: str = "", node_hash: Any = None) -> Json:
-    placement_key = context_placement_key(record, scope_key=scope_key, node_hash=node_hash)
-    if not placement_key:
-        return record
-    placement_hash = stable_hash(placement_key)
-    route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
-    route = dict(route)
-    route["placement_key"] = placement_key
-    route["placement_hash"] = placement_hash
-    route.setdefault("routing_key", placement_key)
-    route.setdefault("partition_key", placement_key)
-    route.setdefault("colocation_group", "matrixark_context")
-    record["placement_key"] = placement_key
-    record["placement_hash"] = placement_hash
-    record["storage_route"] = route
-    return record
 
 
 try:  # the implementation lives in matrixark_mcp_serving_records; this module re-exports it
@@ -420,34 +399,19 @@ def context_index_data_model(record: Json) -> str:
     return "context"
 
 
-def context_index_ref_hashes(record: Json) -> list[int]:
-    values: list[Any] = []
-    raw_refs = record.get("ref_hashes")
-    if isinstance(raw_refs, list):
-        values.extend(raw_refs)
-    for field in (
-        "ref_hash",
-        "event_id_hash",
-        "chunk_hash",
-        "section_hash",
-        "skill_hash",
-        "resource_hash",
-        "summary_hash",
-        "batch_id_hash",
-    ):
-        if record.get(field) is not None:
-            values.append(record.get(field))
-    refs: list[int] = []
-    seen: set[int] = set()
-    for value in values:
-        try:
-            ref_hash = int(value)
-        except (TypeError, ValueError):
-            continue
-        if ref_hash and ref_hash not in seen:
-            seen.add(ref_hash)
-            refs.append(ref_hash)
-    return refs
+# Not defined here: the implementation lives in matrixark_mcp_indexing and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_indexing import (
+        context_index_ref_hashes,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import (
+        context_index_ref_hashes,
+    )
 
 
 def materialize_serving_record_batch(records: list[Json]) -> list[Json]:

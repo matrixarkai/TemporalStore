@@ -36,39 +36,59 @@ MIN_BODY_STATEMENTS = 4
 #: helper that exists to bootstrap importing cannot itself be imported from a shared module.
 NON_PRODUCTION_PREFIXES = ("test_", "run_", "validate_")
 
-#: Pairs that exist today. Delete a line when you consolidate it; the suite fails if a line here is
-#: no longer duplicated, so the list cannot rot into a set of claims nobody has checked.
+#: Pairs that exist today, each with the reason it is still two copies. Delete a line when you
+#: consolidate it; the suite fails if a line here is no longer duplicated, so the list cannot rot
+#: into a set of claims nobody has checked.
+#:
+#: NONE of these is a copy to delete. Every one was tried: the two bodies are identical, but they
+#: READ a name -- usually a module-scope constant -- that resolves to different code in each host,
+#: so re-exporting swaps behaviour instead of removing a duplicate. The differing name is written
+#: against each entry; that name is the decision, not the function.
+#:
+#: The constants are where the meaning sits, and comparing bodies alone does not see them. Two of
+#: these were consolidated and reverted after the suite caught the change.
 STILL_DUPLICATED = frozenset((
-    ('_aws_cli_s3_cp', ('matrixark_mcp_core_resource_io', 'matrixark_mcp_resources')),
-    ('_context_memory_source_ref_is_debug_only', ('matrixark_mcp_context_pack', 'matrixark_mcp_core_context_pack')),
+    # Blocked: reads `feature_profile_memory_budget_query`, local to both hosts and different.
     ('_default_memory_budget_mode', ('matrixark_mcp_local_adapter', 'matrixark_mcp_retrieve_pre_refresh')),
-    ('apply_statistical_operator', ('matrixark_mcp_core_candidate_policy', 'matrixark_mcp_scoring')),
-    ('attach_context_event_time_key', ('matrixark_mcp_core_compact', 'matrixark_mcp_event_keys')),
-    ('attach_context_placement', ('matrixark_mcp_core_compact', 'matrixark_mcp_event_keys')),
+    # Blocked: bodies match, but they call different implementations of
+    # `compact_context_index_postings`. matrixark_mcp_indexing buckets by `capability` and has an
+    # adopt fast path (23.755 ms -> 3.255 ms on a 2,123-row cache); the one core republishes
+    # buckets by `data_model`, has no adopt path, and reads only the singular node_hash. They
+    # emit different posting_policy strings and different rows -- a data-format decision.
     ('compact_latest_context_state_records', ('matrixark_mcp_core_compact', 'matrixark_mcp_serving_records')),
-    ('context_index_ref_hashes', ('matrixark_mcp_core_compact', 'matrixark_mcp_indexing')),
-    ('diversify_for_question_type', ('matrixark_mcp_core_ref_selection', 'matrixark_mcp_recall_scoring')),
-    ('hybrid_origin_score', ('matrixark_mcp_core_scoring', 'matrixark_mcp_scoring')),
-    ('identity_hashes', ('matrixark_mcp_core_identity', 'matrixark_mcp_identity')),
-    ('lane_record_payload', ('matrixark_temporal_direct_read', 'matrixark_temporal_direct_retrieve')),
-    ('local_identity_defaults', ('matrixark_mcp_core_identity', 'matrixark_mcp_identity')),
+    # Blocked: reads RESOURCE_FACT_SCHEMAS, local to both hosts and different in each.
     ('matched_resource_fact_schemas', ('matrixark_mcp_core', 'matrixark_mcp_resources')),
-    ('merge_ranked_paths', ('matrixark_mcp_core_candidate_policy', 'matrixark_mcp_recall_scoring')),
-    ('node_l1_generation_policy', ('matrixark_mcp_core_node_tree', 'matrixark_mcp_summaries')),
+    # Blocked: resolves `resource_fact_entity_name` to two different implementations -- one
+    # shortens with `preview_text`, the other with `summarize_text`. That changes the entity NAME
+    # written for every resource fact.
     ('normalize_extracted_facts', ('matrixark_mcp_core_extraction', 'matrixark_mcp_extraction_normalization')),
-    ('optional_string', ('matrixark_mcp_core_identity', 'matrixark_mcp_validation')),
-    ('optional_string_list', ('matrixark_mcp_core_identity', 'matrixark_mcp_validation')),
-    ('ordered_unique_any', ('matrixark_mcp_core', 'matrixark_mcp_indexing')),
+    # Blocked: reads UNDERSTANDING_LABELS, which is a module-scope constant in BOTH hosts and
+    # the two differ. Re-exporting would relabel what the encoder classifies.
     ('oss_encoder_compact_extraction', ('matrixark_mcp_core', 'matrixark_mcp_oss_understanding')),
+    # Blocked: same UNDERSTANDING_LABELS divergence as oss_encoder_compact_extraction above.
     ('oss_encoder_event_type', ('matrixark_mcp_core', 'matrixark_mcp_oss_understanding')),
+    # Blocked with the pair above -- same module, same constant, decided together or not at all.
     ('oss_encoder_rank_labels', ('matrixark_mcp_core', 'matrixark_mcp_oss_understanding')),
+    # Blocked deliberately: keys its cache on `embedding_model_name()`, and the two hosts resolve
+    # that to different implementations. test_string_defaults_agree records the disagreement as a
+    # defect whose decision is open, because making the name agree relabels every vector a
+    # populated store already holds. Backfill decision first.
     ('prototype_vectors', ('matrixark_mcp_core', 'matrixark_mcp_oss_understanding')),
-    ('resource_storage_mode_from_args', ('matrixark_mcp_core_resource_io', 'matrixark_mcp_resources')),
+    # Blocked, and the most serious of these: the two read different copies of
+    # MATRIXARK_ROLE_SCOPE_LIMITS and disagree about an ACCESS DECISION --
+    #
+    #     matrixark_mcp_identity.role_allows_scopes('operator', {'context:forget'})   False
+    #     matrixark_mcp_core_identity.role_allows_scopes(same)                        True
+    #
+    # core's copy carries 'context:forget' in the operator role and identity's does not. Both
+    # live callers -- matrixark_access and matrixark_access_apikey -- reach core_identity, so an
+    # operator MAY forget today. Consolidating picks one answer for a permission.
     ('role_allows_scopes', ('matrixark_mcp_core_identity', 'matrixark_mcp_identity')),
-    ('scope_key_prefix_for_query', ('matrixark_mcp_core_identity', 'matrixark_mcp_identity')),
-    ('selected_ref_count_from_pack', ('matrixark_mcp_context_pack', 'matrixark_mcp_core_packing')),
+    # Blocked: reads SERVING_RESOURCE_METADATA_FIELDS, local to both hosts and different in each.
+    # Consolidating this one put `content_hash` back into served metadata and was caught by
+    # test_matrixark_content_hash_is_derived -- the constants, not the bodies, carry the meaning.
     ('serving_resource_metadata', ('matrixark_mcp_core', 'matrixark_mcp_resources')),
-    ('session_continuity_status', ('matrixark_mcp_access_scope', 'matrixark_mcp_core')),
+    # Blocked with the pair above.
     ('understanding_provider', ('matrixark_mcp_core', 'matrixark_mcp_oss_understanding')),
 ))
 

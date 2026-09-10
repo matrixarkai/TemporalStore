@@ -547,29 +547,19 @@ def serving_ref_groups_for_pack(
     return built
 
 
-def selected_ref_count_from_pack(pack: Json) -> int:
-    refs = pack.get("selected_refs")
-    if isinstance(refs, list):
-        return len(refs)
-    groups = pack.get("selected_ref_groups")
-    if isinstance(groups, list):
-        total = 0
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            refs_in_group = group.get("refs", group.get("items", []))
-            total += int(group.get("count") or group.get("n") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
-        return total
-    groups = pack.get("groups")
-    if isinstance(groups, list):
-        total = 0
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            refs_in_group = group.get("items", group.get("refs", []))
-            total += int(group.get("n") or group.get("count") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
-        return total
-    return 0
+# Not defined here: the implementation lives in matrixark_mcp_context_pack and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_context_pack import (
+        selected_ref_count_from_pack,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_context_pack import (
+        selected_ref_count_from_pack,
+    )
 
 
 def is_resource_or_skill_candidate(candidate: Json) -> bool:

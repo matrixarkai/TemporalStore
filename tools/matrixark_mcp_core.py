@@ -2472,18 +2472,19 @@ except ImportError:  # Direct script execution from tools/.
     )
 
 
-def ordered_unique_any(values: list[Any]) -> list[Any]:
-    output: list[Any] = []
-    seen: set[str] = set()
-    for value in values:
-        if value is None:
-            continue
-        key = str(value)
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(value)
-    return output
+# Not defined here: the implementation lives in matrixark_mcp_indexing and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_indexing import (
+        ordered_unique_any,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import (
+        ordered_unique_any,
+    )
 
 
 def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:
@@ -4813,20 +4814,19 @@ def access_scope_matches_before_scoring(record: Json, query_scope: Json) -> bool
     return scope_matches(record_scope, query_scope)
 
 
-def session_continuity_status(record_scope: Json, query_scope: Json) -> str:
-    query_session = str(query_scope.get("session_id") or "")
-    if not query_session:
-        return "unscoped"
-    record_session = str(record_scope.get("session_id") or "")
-    if record_session == query_session:
-        return "same_session"
-    record_key = str(record_scope.get("scope_key") or "")
-    query_session_hash = int(query_scope.get("session_hash") or 0)
-    if record_key and query_session_hash and parse_scope_key(record_key).get("s") == query_session_hash:
-        return "same_session"
-    if record_session or record_key:
-        return "cross_session"
-    return "unscoped"
+# Not defined here: the implementation lives in matrixark_mcp_access_scope and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_access_scope import (
+        session_continuity_status,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_access_scope import (
+        session_continuity_status,
+    )
 
 
 def session_continuity_boost(candidate: Json, question_type: str) -> float:
