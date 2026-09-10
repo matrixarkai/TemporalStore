@@ -5769,14 +5769,15 @@ fn load_retrieve_candidate_snapshot(
     } else {
         (count + DIRECT_RECORD_LOG_SHARD_SIZE - 1) / DIRECT_RECORD_LOG_SHARD_SIZE
     };
-    let mut records = Vec::new();
+    // Parsed at most once per shard per write, and then borrowed from the shard cache rather
+    // than copied out of it: copying a record to own it costs ~23 us against the ~0.6 us that
+    // owning it saves the ref build.
+    let mut shards = Vec::with_capacity(shard_count);
     for shard in 0..shard_count {
         let key = format!("{record_hash_key}:{shard:06}");
-        // Parsed at most once per shard per write. The clone that follows is what lets the
-        // candidate build keep taking fields out of records it owns; it costs ~23 us per record
-        // against ~429 us to parse one, so it buys the 18x and gives up nothing.
-        records.extend(hgetall_decoded(engine, key)?.iter().cloned());
+        shards.push(hgetall_decoded(engine, key)?);
     }
+    let records: Vec<&Value> = shards.iter().flat_map(|shard| shard.iter()).collect();
 
     // Built only when something is going to read them. The single consumer is the secondary-group
     // filter below, which returns early on an empty group list -- so with no groups this was a
@@ -5786,7 +5787,7 @@ fn load_retrieve_candidate_snapshot(
     let mut index_terms_by_node: HashMap<u64, HashSet<String>> = HashMap::new();
     let mut index_terms_by_ref: HashMap<String, HashSet<String>> = HashMap::new();
     if !secondary_groups.is_empty() {
-        for record in &records {
+        for record in records.iter().copied() {
             if record.get("record_type").and_then(Value::as_str) != Some("context_index") {
                 continue;
             }
@@ -5818,10 +5819,7 @@ fn load_retrieve_candidate_snapshot(
     }
 
     let memory_inventory = native_retrieval_memory_inventory(&records, scope);
-    // Taken before the move: the snapshot reports it after the records are gone.
     let scanned_records = records.len();
-    // `into_iter`, not `iter`: everything that needed to read the records as a set has run, so
-    // each candidate can now take what it wants out of its record instead of copying it.
     let candidates = records
         .into_iter()
         // Cheapest and most selective first. This is one `get` and a `matches!`, and it rejects
@@ -5842,11 +5840,10 @@ fn load_retrieve_candidate_snapshot(
             );
             terms.is_empty() || passes_secondary_groups(&terms, secondary_groups)
         })
-        .filter_map(|mut record| {
-            let text = context_record_text(&record);
-            // Read before the ref is built: building it takes fields out of the record.
-            let record_vector = record_vector_of(&record);
-            let selected_ref = selected_ref_from_record(&mut record, text);
+        .filter_map(|record| {
+            let text = context_record_text(record);
+            let record_vector = record_vector_of(record);
+            let selected_ref = selected_ref_from_record(record, text);
             if selected_ref.is_null() {
                 None
             } else {
@@ -5928,6 +5925,10 @@ fn retrieve_context_pack_output(
                 })
         })
         .unwrap_or_default();
+    // Timed because it is the other half of a retrieve, and the pack could not say so: it
+    // reports the scoring pass and a total, with the rebuild -- every shard read, and every
+    // record parsed on a miss -- invisible between them.
+    let snapshot_started = Instant::now();
     let (snapshot, candidate_cache_hit) = load_retrieve_candidate_snapshot(
         engine,
         &storage_prefix,
@@ -5936,6 +5937,7 @@ fn retrieve_context_pack_output(
         scope,
         &secondary_groups,
     )?;
+    let snapshot_ms = snapshot_started.elapsed().as_secs_f64() * 1000.0;
 
     let requested_max_selected_refs = request.max_selected_refs.max(
         request_record
@@ -6243,6 +6245,15 @@ fn retrieve_context_pack_output(
         .map(|cache| cache.len())
         .unwrap_or(0);
     let elapsed_ms = started.elapsed().as_millis() as u64;
+    let threshold = slow_retrieve_log_ms();
+    if threshold > 0 && u128::from(elapsed_ms) >= threshold {
+        // Phases, not just a total: a rebuild and a scoring pass are fixed by different work, and
+        // "the retrieve took a second" has never been enough to tell them apart.
+        eprintln!(
+            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms              (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms,              {} records scanned, {selected_count} refs selected",
+            snapshot.scanned_records
+        );
+    }
     let correctness = selected_count > 0;
     let serving_selected_refs = native_serving_refs(&selected_refs);
     let serving_dropped_refs = native_serving_dropped_refs(json!({
@@ -6277,6 +6288,9 @@ fn retrieve_context_pack_output(
             "index_prefilter_ms": 0.0,
             "candidate_fetch_ms": elapsed_ms,
             "score_ms": score_ms,
+            // Zero-ish on a cache hit; on a miss this is every shard read and every changed
+            // shard parsed, and it is usually the larger half.
+            "snapshot_ms": snapshot_ms,
             "pack_ms": 0.0,
             "audit_ms": 0.0,
             "append_queue_wait_ms": 0.0,
@@ -6438,51 +6452,30 @@ fn context_record_text(record: &Value) -> String {
     String::new()
 }
 
-/// Take a field out of a record, or build the empty value if the record does not have it.
+/// Build the public ref for a record the caller does not own.
 ///
-/// Exactly what `record.get(key).cloned().unwrap_or_else(empty)` returned, without the clone.
-/// The distinction that matters is ABSENT versus explicitly `null`: `get_mut` gives `None` for the
-/// first and `Some(Null)` for the second, so a field written as `null` still arrives as `null`
-/// rather than being quietly turned into an empty list. Repairing that here would be a data change
-/// wearing an optimization's clothes -- if `null` is wrong, it is wrong on the write path.
-fn take_record_field(record: &mut Value, key: &str, empty: fn() -> Value) -> Value {
-    record.get_mut(key).map(Value::take).unwrap_or_else(empty)
-}
-
-/// Build the public ref for a record, MOVING out of it rather than copying.
-///
-/// The caller owns the record, has already read everything else it needs, and drops it
-/// immediately -- so the eight source_* collections and the text can be taken. They were being
-/// deep-cloned per candidate, and the text twice: once out of the record and once into the ref.
-///
-/// `Value::take` leaves `Null` behind, which is why the vector is read before this runs.
-fn selected_ref_from_record(record: &mut Value, text: String) -> Value {
+/// This briefly took the eight `source_*` collections out of the record instead of copying them,
+/// which was free while the records were freshly parsed and dropped immediately. Once the parse
+/// was cached the records belonged to the cache, and owning one to take from it meant cloning a
+/// whole record -- ~23 us with its embedding -- to save the ~0.6 us the takes were worth. The
+/// copies are back and the record is borrowed again; the text is still moved, since the caller
+/// built it and has no further use for it.
+fn selected_ref_from_record(record: &Value, text: String) -> Value {
     let record_type = record
         .get("record_type")
         .and_then(Value::as_str)
         .unwrap_or("context_record");
-    // Owned, because its fallback arm borrows the record and the takes below need it mutably.
     let public_ref_type = match record_type {
-        "context_event" | "context_compression_event" => "event".to_string(),
-        "context_summary" => "summary".to_string(),
-        "context_entity" => "entity".to_string(),
-        "resource_chunk" => "resource".to_string(),
-        "skill_section" => "skill".to_string(),
-        other => other.to_string(),
+        "context_event" | "context_compression_event" => "event",
+        "context_summary" => "summary",
+        "context_entity" => "entity",
+        "resource_chunk" => "resource",
+        "skill_section" => "skill",
+        other => other,
     };
     let ref_hash = stable_ref_hash_from_record(record);
     let token_estimate = token_estimate(&text);
-    let memory_layer = broad_memory_layer(record, &public_ref_type);
-    // Each take is its own statement so its mutable borrow ends before the block below reads the
-    // record's remaining fields immutably.
-    let source_roles = take_record_field(record, "source_roles", || json!([]));
-    let source_role_counts = take_record_field(record, "source_role_counts", || json!({}));
-    let source_hook_types = take_record_field(record, "source_hook_types", || json!([]));
-    let source_hook_type_counts = take_record_field(record, "source_hook_type_counts", || json!({}));
-    let source_codex_events = take_record_field(record, "source_codex_events", || json!([]));
-    let source_codex_event_counts = take_record_field(record, "source_codex_event_counts", || json!({}));
-    let source_session_ids = take_record_field(record, "source_session_ids", || json!([]));
-    let source_entity_hashes = take_record_field(record, "source_entity_hashes", || json!([]));
+    let memory_layer = broad_memory_layer(record, public_ref_type);
     json!({
         "ref_type": public_ref_type,
         "ref_hash": ref_hash,
@@ -6495,14 +6488,14 @@ fn selected_ref_from_record(record: &mut Value, text: String) -> Value {
         "final_session_boundary": record.get("final_session_boundary").and_then(Value::as_bool).unwrap_or(false),
         "entity_type": record.get("entity_type").and_then(Value::as_str).unwrap_or(""),
         "entity_name": record.get("entity_name").and_then(Value::as_str).unwrap_or(""),
-        "source_roles": source_roles,
-        "source_role_counts": source_role_counts,
-        "source_hook_types": source_hook_types,
-        "source_hook_type_counts": source_hook_type_counts,
-        "source_codex_events": source_codex_events,
-        "source_codex_event_counts": source_codex_event_counts,
-        "source_session_ids": source_session_ids,
-        "source_entity_hashes": source_entity_hashes,
+        "source_roles": record.get("source_roles").cloned().unwrap_or_else(|| json!([])),
+        "source_role_counts": record.get("source_role_counts").cloned().unwrap_or_else(|| json!({})),
+        "source_hook_types": record.get("source_hook_types").cloned().unwrap_or_else(|| json!([])),
+        "source_hook_type_counts": record.get("source_hook_type_counts").cloned().unwrap_or_else(|| json!({})),
+        "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
+        "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
+        "source_session_ids": record.get("source_session_ids").cloned().unwrap_or_else(|| json!([])),
+        "source_entity_hashes": record.get("source_entity_hashes").cloned().unwrap_or_else(|| json!([])),
         "updated_at_ms": record.get("updated_at_ms").and_then(Value::as_u64).unwrap_or(0),
     })
 }
@@ -6706,6 +6699,19 @@ fn blended_candidate_score(
 /// a token budget -- the fill is then bounded by tokens and this is never consulted -- or enables
 /// `MATRIXARK_RETURN_ALL_CANDIDATES`, which lifts the limit to the candidate count.
 const DEFAULT_MAX_SELECTED_REFS: usize = 1000;
+
+/// A retrieve slower than this says why, once, when it finishes.
+///
+/// The ONE place this threshold lives. `MATRIXARK_SLOW_RETRIEVE_LOG_MS` overrides it, and 0
+/// silences the line entirely for a deployment that does not want it.
+const SLOW_RETRIEVE_LOG_MS: u128 = 250;
+
+fn slow_retrieve_log_ms() -> u128 {
+    std::env::var("MATRIXARK_SLOW_RETRIEVE_LOG_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u128>().ok())
+        .unwrap_or(SLOW_RETRIEVE_LOG_MS)
+}
 
 /// Records per shard, mirroring DIRECT_RECORD_LOG_SHARD_SIZE on the writing side.
 ///
@@ -7183,46 +7189,26 @@ mod tests {
         // each iteration sits outside the timed region on both sides.
         let parsed: Value = serde_json::from_str(&payload).expect("fixture parses");
         let one: Value = parsed["record_bundle"][0].clone();
-        // The eight collections and the text, both ways, on the same record. Timing the whole
-        // `selected_ref_from_record` against a hand-written shape compares two different amounts
-        // of work: the real function fills about twenty fields.
-        let fields = [
-            "source_roles",
-            "source_role_counts",
-            "source_hook_types",
-            "source_hook_type_counts",
-            "source_codex_events",
-            "source_codex_event_counts",
-            "source_session_ids",
-            "source_entity_hashes",
-        ];
+        // Own it, then take, against borrowing it and copying the fields. This is the choice
+        // the code faces now that the records belong to the shard cache: taking requires
+        // ownership, and ownership requires a clone of the whole record, embedding included.
         let mut ref_take_ns = 0_u128;
         let mut ref_clone_ns = 0_u128;
         for _ in 0..2000 {
-            // What it did: the text copied a second time into the ref, and every collection
-            // cloned out of a record that is dropped on the next line.
-            let record = one.clone();
-            let text = context_record_text(&record);
+            // Owning it to take from it.
             let started = Instant::now();
-            let mut copied: Vec<Value> = Vec::with_capacity(fields.len() + 1);
-            copied.push(Value::String(text.clone()));
-            for key in fields {
-                copied.push(record.get(key).cloned().unwrap_or_else(|| json!([])));
-            }
+            let owned = one.clone();
+            let text = context_record_text(&owned);
+            let from_owned = selected_ref_from_record(&owned, text);
             ref_clone_ns += started.elapsed().as_nanos();
 
-            // What it does: the text moved, and every collection taken.
-            let mut record = one.clone();
-            let text = context_record_text(&record);
+            // Borrowing it, which is what the rebuild does.
             let started = Instant::now();
-            let mut taken: Vec<Value> = Vec::with_capacity(fields.len() + 1);
-            taken.push(Value::String(text));
-            for key in fields {
-                taken.push(take_record_field(&mut record, key, || json!([])));
-            }
+            let text = context_record_text(&one);
+            let from_borrow = selected_ref_from_record(&one, text);
             ref_take_ns += started.elapsed().as_nanos();
 
-            assert_eq!(copied, taken, "both shapes carry the same values");
+            assert_eq!(from_owned, from_borrow, "both shapes build the same ref");
         }
 
         // 3. Taking a response apart against copying every key and value out of it. Both arms
@@ -7274,7 +7260,8 @@ mod tests {
             pct(clone_ns, move_ns)
         );
         println!(
-            "  ref fields x2000:          clone {ref_clone_ns} ns, take {ref_take_ns} ns, \
+            "  ref build x2000:           own-then-build {ref_clone_ns} ns, borrow-then-build \
+             {ref_take_ns} ns, \
              {:.1}% saved",
             pct(ref_clone_ns, ref_take_ns)
         );
