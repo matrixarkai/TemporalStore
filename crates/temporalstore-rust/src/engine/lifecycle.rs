@@ -75,7 +75,16 @@ impl TemporalEngine {
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             compaction_rounds: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            evict_sampled_lru: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            // Sampled by default. The exhaustive alternative calls `bucket_storage_summaries`,
+            // which reads EVERY live page in the shard to rank every bucket, and then keeps at
+            // most `eviction_batch_limit` of them -- so the cost of choosing grew with the store
+            // while the work done stayed fixed. The sampler walks a bounded window from a cursor
+            // (`samples * batch_limit * scan_turns`) and resumes where it stopped, so a store
+            // twice the size costs the same to choose from.
+            //
+            // The sampled path was written, tested and measured, and the only thing that ever
+            // turned it on was a #[cfg(test)] helper.
+            evict_sampled_lru: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             eager_cache_warm: Arc::new(std::sync::atomic::AtomicBool::new(
                 crate::engine::eager_cache_warm_on_load(),
             )),
@@ -115,11 +124,23 @@ impl TemporalEngine {
     /// Take the durable WAL barrier UNDER the `shards` write lock, for a test measuring what
     /// the other side of the lock costs. Scoped to this engine.
     #[cfg(test)]
-    /// Pick eviction victims by a sampled scan, for the test that measures what that costs.
+    /// Pick eviction victims by a sampled scan. The default, kept so a test can say it means
+    /// the sampled path rather than relying on what the default happens to be.
     #[cfg(test)]
     pub(crate) fn use_sampled_eviction_for_test(&self) {
         self.evict_sampled_lru
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Rank every bucket by reading every live page, instead of sampling a window.
+    ///
+    /// No longer the default. Kept because the measurement that justifies the default needs
+    /// something to measure against: a test that cannot produce the exhaustive scan cannot show
+    /// that the sampled one is cheaper.
+    #[cfg(test)]
+    pub(crate) fn use_full_scan_eviction_for_test(&self) {
+        self.evict_sampled_lru
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub(crate) fn commit_under_lock_for_test(&self) {

@@ -7673,8 +7673,13 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
             });
         }
 
+        // Both sides say what they mean. The default moved to the sampled path, so the
+        // full-scan arm has to ask for the exhaustive scan -- if it did not, both arms would
+        // sample and the comparison would compare one path against itself.
         if sampled {
             engine.use_sampled_eviction_for_test();
+        } else {
+            engine.use_full_scan_eviction_for_test();
         }
         crate::engine::reset_live_page_scan_entries();
         // Threshold 0 so the pressure gate always admits and the selection path actually runs.
