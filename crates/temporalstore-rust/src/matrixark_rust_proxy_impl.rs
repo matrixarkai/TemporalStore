@@ -6262,12 +6262,21 @@ fn retrieve_context_pack_output(
     let has_event_candidate = snapshot
         .candidates()
         .any(|candidate| candidate.ref_type == "event");
+    let mut query_embed_ms = 0.0_f64;
     let query_vector = ranking_field_from(
         request.query_vector.clone(),
         &request_record,
         "query_vector",
     )
-    .filter(|v: &Vec<f32>| !v.is_empty());
+    .filter(|v: &Vec<f32>| !v.is_empty())
+    .or_else(|| {
+        // Only when the caller sent none: a caller that embedded the query itself keeps its own
+        // vector, and which model ranked the store stays its decision.
+        let started = Instant::now();
+        let embedded = embed_query_text(&query);
+        query_embed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        embedded
+    });
     let ranking_uses_vectors = query_vector.is_some();
     let weights = ranking_field_from(
         request.ranking_weights,
@@ -6535,14 +6544,15 @@ fn retrieve_context_pack_output(
         // Phases, not just a total: a rebuild and a scoring pass are fixed by different work, and
         // "the retrieve took a second" has never been enough to tell them apart.
         eprintln!(
-            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims",
+            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims; query embed {:.1} ms",
             snapshot.scanned_records,
             snapshot.build.read_ms,
             snapshot.build.inventory_ms,
             snapshot.build.candidates_ms,
             snapshot.candidate_count(),
             vectors_held,
-            widest_vector
+            widest_vector,
+            query_embed_ms
         );
     }
     let correctness = selected_count > 0;
@@ -6997,6 +7007,48 @@ const DEFAULT_MAX_SELECTED_REFS: usize = 1000;
 /// silences the line entirely for a deployment that does not want it.
 const SLOW_RETRIEVE_LOG_MS: u128 = 250;
 
+/// Whether the retrieve embeds its own query when the caller sent no vector.
+///
+/// On by default: ranking is dense, and a retrieve that cannot embed its query ranks lexically.
+/// `MATRIXARK_PROXY_EMBED_QUERY=0` turns it off for a deployment that would rather its caller own
+/// the embedding entirely.
+fn embed_query_here() -> bool {
+    !matches!(
+        std::env::var("MATRIXARK_PROXY_EMBED_QUERY")
+            .unwrap_or_default()
+            .trim(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
+/// Embed one query, or return `None` and let the retrieve rank lexically.
+///
+/// Never an error: an encoder that is down, misconfigured or slow must not take retrieval with it.
+/// The caller reports how long this took, so a model call on the retrieve path is visible rather
+/// than hidden inside a total.
+fn embed_query_text(query: &str) -> Option<Vec<f32>> {
+    if query.trim().is_empty() || !embed_query_here() {
+        return None;
+    }
+    let provider = temporalstore_rust::context_provider_from_env();
+    // A provider with no endpoint is deterministic, and a deterministic vector is not a ranking
+    // signal -- it would score every candidate against noise, which is worse than ranking
+    // lexically.
+    if provider.mock_mode {
+        return None;
+    }
+    match temporalstore_rust::context_backfill_embeddings(&provider, &[query]) {
+        Ok(vectors) => vectors.into_iter().next().filter(|vector| !vector.is_empty()),
+        Err(status) => {
+            eprintln!(
+                "query embedding unavailable ({}): ranking lexically for this retrieve",
+                status.message
+            );
+            None
+        }
+    }
+}
+
 fn slow_retrieve_log_ms() -> u128 {
     std::env::var("MATRIXARK_SLOW_RETRIEVE_LOG_MS")
         .ok()
@@ -7314,6 +7366,56 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    /// An unconfigured encoder yields NO vector, not a deterministic one.
+    ///
+    /// With no endpoint the provider is deterministic, and a deterministic vector is not a ranking
+    /// signal: it scores every candidate against noise. Returning one would rank worse than
+    /// lexical scoring while looking like dense ranking was working.
+    #[test]
+    fn an_unconfigured_encoder_yields_no_query_vector() {
+        let _guard = env_guard();
+        let previous = std::env::var("MATRIXARK_EMBEDDING_API_BASE").ok();
+        std::env::remove_var("MATRIXARK_EMBEDDING_API_BASE");
+
+        assert!(
+            embed_query_text("the storage manager reclaims the log").is_none(),
+            "an unconfigured encoder produced a vector"
+        );
+
+        if let Some(value) = previous {
+            std::env::set_var("MATRIXARK_EMBEDDING_API_BASE", value);
+        }
+    }
+
+    /// An unreachable encoder yields no vector, and does not fail the retrieve.
+    ///
+    /// An encoder outage must cost dense ranking for the duration, not retrieval itself.
+    #[test]
+    fn an_unreachable_encoder_yields_no_query_vector() {
+        let _guard = env_guard();
+        let previous = std::env::var("MATRIXARK_EMBEDDING_API_BASE").ok();
+        // A port nothing is listening on, so the call fails rather than hanging on a real service.
+        std::env::set_var("MATRIXARK_EMBEDDING_API_BASE", "http://127.0.0.1:1/v1");
+
+        assert!(
+            embed_query_text("the storage manager reclaims the log").is_none(),
+            "an unreachable encoder produced a vector"
+        );
+
+        match previous {
+            Some(value) => std::env::set_var("MATRIXARK_EMBEDDING_API_BASE", value),
+            None => std::env::remove_var("MATRIXARK_EMBEDDING_API_BASE"),
+        }
+    }
+
+    /// An empty query is never sent to the encoder.
+    #[test]
+    fn an_empty_query_is_not_embedded() {
+        let _guard = env_guard();
+        assert!(embed_query_text("").is_none());
+        assert!(embed_query_text("   ").is_none());
+    }
 
     /// Summing per-shard counts equals counting every record at once.
     ///

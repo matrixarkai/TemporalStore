@@ -86,6 +86,70 @@ pub(crate) fn context_summaries_for_extract(
     }
 }
 
+/// The embedding provider a deployment has configured, read from the environment.
+///
+/// The engine could already call a real embedding endpoint, but only a caller holding a
+/// `ContextModelProviderConfig` could reach it -- and the proxy had none, which is why a query
+/// vector had to be computed elsewhere and sent in.
+///
+/// It reads the variables the rest of the deployment already sets rather than a second set of its
+/// own: `MATRIXARK_EMBEDDING_API_BASE`, `MATRIXARK_EMBEDDING_MODEL`, and
+/// `MATRIXARK_EMBEDDING_API_KEY_ENV` for the NAME of the variable holding a key, so a key is never
+/// read from a value that might be logged.
+///
+/// With no base URL the provider stays deterministic, exactly as it was: a deployment that has not
+/// configured an encoder does not silently acquire one, and one that requires a real model still
+/// gets the error `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` exists to raise.
+pub fn context_provider_from_env() -> ContextModelProviderConfig {
+    // Two names for one endpoint, because two paths grew their own: the serving side and the
+    // Python side read `MATRIXARK_EMBEDDING_API_BASE`, the embed drainer read
+    // `MATRIXARK_EMBED_BASE_URL`. Both are honoured here so there is one constructor rather than
+    // two spellings of the same deployment, and the newer name wins when both are set.
+    let base_url = std::env::var("MATRIXARK_EMBEDDING_API_BASE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("MATRIXARK_EMBED_BASE_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let embedding_model = std::env::var("MATRIXARK_EMBEDDING_MODEL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let api_key_env = std::env::var("MATRIXARK_EMBEDDING_API_KEY_ENV")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("MATRIXARK_EMBED_API_KEY_ENV")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let mut provider = ContextModelProviderConfig {
+        base_url: base_url.clone(),
+        api_key_env,
+        // An endpoint that answers without a key is the local, self-hosted case, and it is the
+        // configuration this is most often pointed at.
+        mock_mode: base_url.is_empty(),
+        ..ContextModelProviderConfig::default()
+    };
+    if !base_url.is_empty() {
+        provider.provider_kind = ContextProviderKind::OpenAiCompatible;
+    }
+    if let Some(model) = embedding_model {
+        provider.embedding_model = model;
+    }
+    provider
+}
+
 /// Backfill helper: compute REAL model embeddings for a batch of already-stored
 /// context node/event texts, reusing the exact provider path the live extract
 /// path uses -- request batching, `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS`

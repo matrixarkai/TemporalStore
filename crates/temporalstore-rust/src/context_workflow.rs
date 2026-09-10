@@ -60,7 +60,7 @@ pub use ingest::{
     validate_resource_skill_secondary_indexes,
 };
 pub(crate) use model_provider::*;
-pub use model_provider::context_backfill_embeddings;
+pub use model_provider::{context_backfill_embeddings, context_provider_from_env};
 pub use query::context_embedding_ref_hash;
 pub use embed_drainer::{
     drain_embedding_dirty_once, embed_drainer_config_from_env, embed_drainer_enabled,
