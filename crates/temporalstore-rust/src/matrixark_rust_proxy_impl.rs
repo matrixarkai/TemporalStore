@@ -6140,12 +6140,15 @@ fn retrieve_context_pack_output(
         question_type,
         "current_state" | "latest" | "profile_memory"
     );
-    let all_candidate_refs: Vec<Value> = snapshot
-        .candidates
-        .iter()
-        .map(|candidate| candidate.selected_ref.clone())
-        .collect();
+    // Built inside the branch, and borrowed rather than copied: the consumer only reads them, and
+    // only sometimes. This used to clone the `selected_ref` of every candidate in the snapshot --
+    // the whole corpus -- before asking whether the one caller wanted them.
     let (profile_by_entity, profile_by_source_entity_hash) = if current_state_query {
+        let all_candidate_refs: Vec<&Value> = snapshot
+            .candidates
+            .iter()
+            .map(|candidate| &candidate.selected_ref)
+            .collect();
         profile_shadow_maps_from_selected_refs(&all_candidate_refs)
     } else {
         (HashMap::new(), HashMap::new())
@@ -7252,8 +7255,48 @@ mod tests {
         }
         assert_eq!(left, right, "both shapes build the same response");
 
+        // 4. Copying every candidate's ref, against borrowing them. A retrieve built the copy
+        // unconditionally for a consumer that runs only on a current-state query.
+        let refs: Vec<Value> = (0..20_000)
+            .map(|i| {
+                json!({
+                    "ref_type": "event",
+                    "ref_hash": format!("h{i}"),
+                    "text": "the storage manager reclaims the log once a durable dump completes",
+                    "token_estimate": 14,
+                    "memory_layer": "session",
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "source_roles": ["user", "assistant"],
+                    "source_session_ids": ["s1", "s2"],
+                })
+            })
+            .collect();
+
+        let started = Instant::now();
+        let mut copied_len = 0usize;
+        for _ in 0..5 {
+            let copied: Vec<Value> = refs.iter().cloned().collect();
+            copied_len = copied.len();
+        }
+        let refs_clone_ns = started.elapsed().as_nanos();
+
+        let started = Instant::now();
+        let mut borrowed_len = 0usize;
+        for _ in 0..5 {
+            let borrowed: Vec<&Value> = refs.iter().collect();
+            borrowed_len = borrowed.len();
+        }
+        let refs_borrow_ns = started.elapsed().as_nanos();
+        assert_eq!(copied_len, borrowed_len);
+
         println!(
             "  parse of 256 records x8:   {parse_ns} ns  (neither shape avoids this)"
+        );
+        println!(
+            "  candidate refs x5 over 20,000: clone {refs_clone_ns} ns, borrow {refs_borrow_ns} \
+             ns, {:.1}% saved",
+            pct(refs_clone_ns, refs_borrow_ns)
         );
         println!(
             "  extract 2048 records:      clone {clone_ns} ns, move {move_ns} ns, {:.1}% saved",
