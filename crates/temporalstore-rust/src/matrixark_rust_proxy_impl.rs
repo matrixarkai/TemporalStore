@@ -308,6 +308,9 @@ struct RetrieveBuildCost {
     /// should leave every shard but the newest reusable -- this says whether it does.
     prepared_hits: usize,
     prepared_shards: usize,
+    /// Which scope this snapshot's candidates were prepared for. If it moves between rebuilds, the
+    /// per-shard candidate cache cannot hit however well it works.
+    scope_digest: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -5562,6 +5565,14 @@ fn candidate_from_record(record: &Value) -> Option<CachedRetrieveCandidate> {
     })
 }
 
+/// A short digest of a scope signature, for a log line.
+///
+/// Hashed rather than printed: whether the signature MOVED is the whole question, and a scope
+/// carries tenant and user identity that has no business in a log.
+fn scope_signature_digest(signature: &str) -> u64 {
+    stable_hash64(signature) % 1_000_000
+}
+
 /// The scope a shard's candidates were filtered for, as a cache key.
 fn shard_scope_signature(scope: Option<&Value>) -> String {
     scope
@@ -5654,10 +5665,12 @@ fn load_retrieve_candidate_snapshot(
     let scanned_records = records.len();
     let candidates_started = Instant::now();
     let mut prepared_hits = 0usize;
+    let mut scope_digest = 0u64;
     let segments: Vec<Arc<Vec<CachedRetrieveCandidate>>> = if secondary_groups.is_empty() {
         // Per shard, and cached there: records are appended, so every shard but the newest
         // produces exactly the candidates it produced before, filter for filter and ref for ref.
         let signature = shard_scope_signature(scope);
+        scope_digest = scope_signature_digest(&signature);
         let mut segments = Vec::with_capacity(shard_count);
         for shard in 0..shard_count {
             let key = format!("{record_hash_key}:{shard:06}");
@@ -5703,6 +5716,7 @@ fn load_retrieve_candidate_snapshot(
             candidates_ms,
             prepared_hits,
             prepared_shards: shard_count,
+            scope_digest,
         },
     ));
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
@@ -6114,7 +6128,7 @@ fn retrieve_context_pack_output(
         // Phases, not just a total: a rebuild and a scoring pass are fixed by different work, and
         // "the retrieve took a second" has never been enough to tell them apart.
         eprintln!(
-            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims; query embed {:.1} ms; sweep {:.1} ms dropped {}; shards reused {}/{}",
+            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims; query embed {:.1} ms; sweep {:.1} ms dropped {}; shards reused {}/{} for scope {}",
             snapshot.scanned_records,
             snapshot.build.read_ms,
             snapshot.build.inventory_ms,
@@ -6126,7 +6140,8 @@ fn retrieve_context_pack_output(
             sweep_ms,
             swept_away,
             snapshot.build.prepared_hits,
-            snapshot.build.prepared_shards
+            snapshot.build.prepared_shards,
+            snapshot.build.scope_digest
         );
     }
     let correctness = selected_count > 0;
