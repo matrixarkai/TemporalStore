@@ -220,6 +220,101 @@ def _patterns_with_several_copies() -> dict:
     return {name: holders for name, holders in _compiled_patterns().items() if len(holders) > 1}
 
 
+#: Constants defined at module scope in more than one LIVE module, whose copies AGREE today.
+#: A copy too many, not a split -- listed so a NEW one has to be looked at rather than joining a
+#: count nobody reads.
+LIVE_DUPLICATE_CONSTANTS = frozenset((
+    "AUTO_BUDGET_QUERY_TYPES",
+    "COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS",
+    "COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES",
+    "DEFAULT_BUSINESS_TYPE_WEIGHTS",
+    "EMBEDDING_LINEAGE_DEBUG_FIELDS",
+    "ENTITY_DEBUG_FIELDS",
+    "EVENT_DEBUG_FIELDS",
+    "HOT_EMBEDDING_COMPACT_TYPES",
+    "HOT_EMBEDDING_LINEAGE_FIELDS",
+    "HOT_SERVING_RECORD_TYPES",
+    "NODE_PATH_HEAVY_RECORD_TYPES",
+    "RESOURCE_EVENTS",
+    "RESOURCE_TYPE_BY_SUFFIX",
+    "STORAGE_ROUTE_PRESETS",
+    "_API_EMBEDDING_PROVIDERS",
+    "_OSS_EMBEDDING_PROVIDERS",
+))
+
+
+def _unreachable_modules() -> set:
+    """The modules only the tests reach, taken from the guard that maintains that list.
+
+    Imported rather than copied. A second list of forty-three module names would be the exact
+    fault this file exists to bound, and the two would drift the way everything else here did.
+    """
+    import importlib.util
+
+    path = os.path.join(TOOLS_DIR, "test_a_module_only_tests_reach_is_not_live.py")
+    spec = importlib.util.spec_from_file_location("_reachability_list", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    out: set = set()
+    for members in module.UNREACHABLE.values():
+        out.update(members)
+    return out
+
+
+def _data_constants() -> dict:
+    """name -> {module: repr of the value} for module-scope container literals.
+
+    Containers only, and only those with more than one member: a scalar or a one-item container is
+    shorter to repeat than to import, and reporting those would bury the rules in noise. Values are
+    compared as evaluated literals, so key order and formatting do not count as a difference.
+    """
+    found: dict = {}
+    for rel in _tracked_production_modules():
+        try:
+            with open(os.path.join(REPO_ROOT, rel), encoding="utf-8", errors="replace") as handle:
+                tree = ast.parse(handle.read())
+        except (OSError, SyntaxError):
+            continue
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target, value = node.targets[0], node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                target, value = node.target, node.value
+            else:
+                continue
+            if not isinstance(target, ast.Name) or not target.id.isupper():
+                continue
+            if isinstance(value, ast.Call):
+                func = value.func
+                builder = getattr(func, "id", getattr(func, "attr", ""))
+                if builder not in ("frozenset", "set", "dict", "tuple", "list") \
+                        or len(value.args) != 1:
+                    continue
+                value = value.args[0]
+            elif not isinstance(value, (ast.Dict, ast.Set, ast.List, ast.Tuple)):
+                continue
+            try:
+                literal = ast.literal_eval(value)
+            except (ValueError, SyntaxError, TypeError):
+                continue
+            if len(literal) < 2:
+                continue
+            shape = sorted(literal) if isinstance(literal, (set, frozenset)) else literal
+            found.setdefault(target.id, {})[os.path.basename(rel)[:-3]] = repr(shape)
+    return found
+
+
+def _constants_duplicated_between_live_modules() -> dict:
+    """name -> {module: value} for constants held by more than one module a request can reach."""
+    unreachable = _unreachable_modules()
+    out = {}
+    for name, holders in _data_constants().items():
+        live = {mod: value for mod, value in holders.items() if mod not in unreachable}
+        if len(live) > 1:
+            out[name] = live
+    return out
+
+
 def _parameters(node) -> dict:
     """name -> default source text (None when the parameter is required)."""
     args = node.args
@@ -452,6 +547,61 @@ class OneCopyOfEachHelperTest(unittest.TestCase):
             keyword_form[1],
             "a pattern compiled with `flags=` came back with no flags recorded, so a difference "
             "in case sensitivity would read as identical")
+
+    def test_no_constant_disagrees_with_itself_between_live_modules(self) -> None:
+        """The sharp one. Two live modules holding one name with DIFFERENT values is two answers to
+        one question, with a caller on each.
+
+        Every instance found so far was silent, and two of them changed what a request got:
+        MATRIXARK_TOOL_SCOPES was missing eleven tools in one copy -- and a tool absent from that
+        map has NO scope requirement, not a stricter one -- and
+        SECONDARY_INDEX_PRIORITY_PREFIXES was missing three kinds the indexer emits, so on the
+        live path they sorted as unrecognised and were dropped first when the term limit bit.
+
+        Constants whose second copy is in a module only tests reach are out of scope here: that is
+        a different problem, already recorded by the guard that owns the reachability list, and
+        picking a winner between a live copy and an unreachable one is how a stale copy gets
+        promoted."""
+        split = {}
+        for name, live in _constants_duplicated_between_live_modules().items():
+            if len(set(live.values())) > 1:
+                split[name] = sorted(live)
+        self.assertEqual(
+            {}, split,
+            "these constants are defined in two live modules with different values, so which "
+            "answer a request gets depends on which module served it: %r" % (split,))
+
+    def test_no_new_constant_is_duplicated_between_live_modules(self) -> None:
+        """The ratchet direction. A second copy in another live module agrees on the day it is
+        written; that is what makes it look harmless."""
+        duplicated = set(_constants_duplicated_between_live_modules())
+        unlisted = sorted(duplicated - LIVE_DUPLICATE_CONSTANTS)
+        self.assertEqual(
+            [], unlisted,
+            "these constants are now defined in more than one live module; import from the one "
+            "that owns the rule, or add them to LIVE_DUPLICATE_CONSTANTS")
+
+    def test_the_constant_list_does_not_claim_a_copy_that_is_gone(self) -> None:
+        """Tight in the other direction, so the list stays a record of what is left."""
+        duplicated = set(_constants_duplicated_between_live_modules())
+        stale = sorted(LIVE_DUPLICATE_CONSTANTS - duplicated)
+        self.assertEqual(
+            [], stale,
+            "these have one live definition now; strike them from LIVE_DUPLICATE_CONSTANTS")
+
+    def test_the_constant_scan_actually_finds_things(self) -> None:
+        """A floor under the three above, and under the reachability list they lean on."""
+        found = _data_constants()
+        self.assertGreater(
+            len(found), 150,
+            "the constant scan came back nearly empty, so an empty split set says nothing")
+        self.assertGreater(
+            len(_unreachable_modules()), 30,
+            "the reachability list came back nearly empty, so every duplicate would count as "
+            "live-vs-live and the split check would be about the wrong set")
+        self.assertIn(
+            "STORAGE_ROUTE_PRESETS", found,
+            "a constant known to be duplicated between live modules is missing from the scan")
 
     def test_the_scan_actually_finds_things(self) -> None:
         """A floor. If the scan stopped parsing, or git ls-files returned nothing, every assertion
