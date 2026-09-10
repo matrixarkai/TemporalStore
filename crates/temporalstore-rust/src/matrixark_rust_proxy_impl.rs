@@ -1379,7 +1379,16 @@ fn required_option(value: Option<String>, name: &str) -> Result<String, String> 
 /// One cached hash, with what it costs and when it was last wanted.
 struct SnapshotEntry {
     map: Arc<BTreeMap<String, String>>,
+    /// The shard's records, already parsed, or `None` if nothing has asked for them yet.
+    ///
+    /// Kept HERE rather than in a cache of its own so that it is dropped by the same call that
+    /// makes it stale: the write path patches and removes these entries, and a patched payload
+    /// map with a stale decode beside it is the one shape that must not exist.
+    decoded: Option<Arc<Vec<Value>>>,
+    /// The payload bytes. `decoded` is charged separately, so this stays comparable to `weigh`.
     bytes: usize,
+    /// What the decoded records are charged at, or 0 when there are none.
+    decoded_bytes: usize,
     used: u64,
 }
 
@@ -1397,20 +1406,42 @@ struct SnapshotEntry {
 /// Eviction is always safe: this is a read-through cache and a miss re-reads from the engine, the
 /// same path a key that was never cached takes. Least-recently-used, found by scanning, because
 /// an eviction frees a whole shard and so happens far too rarely to be worth an index.
+/// What a shard's parsed records are charged at, as a multiple of the payload bytes they came
+/// from. A `serde_json::Value` tree is several times the text it was parsed from -- every map is a
+/// `BTreeMap` of `String` keys and every number is a `Value` -- and the exact factor varies by
+/// record shape, so this is a deliberate over-estimate: the cost of guessing low is an unbudgeted
+/// cache, which is what this type exists to prevent.
+const DECODED_BYTES_PER_PAYLOAD_BYTE: usize = 6;
+
 struct SnapshotCache {
     entries: BTreeMap<String, SnapshotEntry>,
     bytes: usize,
+    /// Charged parsed-record bytes, budgeted SEPARATELY from the payloads.
+    ///
+    /// Sharing one budget would cut the number of shards the payload cache can hold to about a
+    /// seventh, and every shard that stopped fitting would be re-READ as well as re-parsed --
+    /// a change meant to remove parsing causing more work than it saves, on exactly the large
+    /// stores that need it most. Evicting a decode costs a parse; evicting a payload costs a
+    /// read too, so they are worth keeping on different terms.
+    decoded_bytes: usize,
     clock: u64,
     budget: usize,
+    decoded_budget: usize,
 }
 
 impl SnapshotCache {
     fn new() -> Self {
+        let budget = default_snapshot_cache_bytes();
         Self {
             entries: BTreeMap::new(),
             bytes: 0,
+            decoded_bytes: 0,
             clock: 0,
-            budget: default_snapshot_cache_bytes(),
+            budget,
+            // Half the payload budget. Parsed records are several times their payload, so this is
+            // a smaller share of shards than it looks -- deliberately, since a dropped decode is
+            // cheap to rebuild and the payload cache must not shrink to make room for it.
+            decoded_budget: budget / 2,
         }
     }
 
@@ -1446,7 +1477,32 @@ impl SnapshotCache {
     fn remove(&mut self, key: &str) {
         if let Some(entry) = self.entries.remove(key) {
             self.bytes = self.bytes.saturating_sub(entry.bytes);
+            self.decoded_bytes = self.decoded_bytes.saturating_sub(entry.decoded_bytes);
         }
+    }
+
+    /// The shard's parsed records, if this entry still has them.
+    fn decoded(&mut self, key: &str) -> Option<Arc<Vec<Value>>> {
+        self.clock += 1;
+        let clock = self.clock;
+        let entry = self.entries.get_mut(key)?;
+        entry.used = clock;
+        entry.decoded.clone()
+    }
+
+    /// Attach parsed records to an entry that is still present, and charge them.
+    ///
+    /// Does nothing when the key is gone: the entry was patched or evicted while the parse was
+    /// running, so these records describe a payload map the cache no longer holds.
+    fn set_decoded(&mut self, key: &str, records: Arc<Vec<Value>>) {
+        let Some(entry) = self.entries.get_mut(key) else {
+            return;
+        };
+        let charged = entry.bytes.saturating_mul(DECODED_BYTES_PER_PAYLOAD_BYTE);
+        self.decoded_bytes = self.decoded_bytes.saturating_sub(entry.decoded_bytes) + charged;
+        entry.decoded = Some(records);
+        entry.decoded_bytes = charged;
+        self.evict_decoded_to_budget();
     }
 
     fn insert(&mut self, key: String, map: Arc<BTreeMap<String, String>>) {
@@ -1462,7 +1518,9 @@ impl SnapshotCache {
             key,
             SnapshotEntry {
                 map,
+                decoded: None,
                 bytes,
+                decoded_bytes: 0,
                 used: self.clock,
             },
         );
@@ -1488,11 +1546,38 @@ impl SnapshotCache {
             self.remove(key);
             return;
         }
+        // The payloads just changed, so anything parsed from them describes the shard as it WAS.
+        // Dropped here, in the same call that changed them, rather than invalidated from outside.
+        let dropped = entry.decoded_bytes;
+        entry.decoded = None;
+        entry.decoded_bytes = 0;
         let was = entry.bytes;
         let now = Self::weigh(&entry.map);
         entry.bytes = now;
+        self.decoded_bytes = self.decoded_bytes.saturating_sub(dropped);
         self.bytes = self.bytes.saturating_sub(was) + now;
         self.evict_to_budget();
+    }
+
+    /// Drop the least recently used DECODES until they fit their budget, leaving the payloads.
+    fn evict_decoded_to_budget(&mut self) {
+        while self.decoded_bytes > self.decoded_budget {
+            let Some(victim) = self
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.decoded.is_some())
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| key.clone())
+            else {
+                return;
+            };
+            let Some(entry) = self.entries.get_mut(&victim) else {
+                return;
+            };
+            self.decoded_bytes = self.decoded_bytes.saturating_sub(entry.decoded_bytes);
+            entry.decoded = None;
+            entry.decoded_bytes = 0;
+        }
     }
 
     fn evict_to_budget(&mut self) {
@@ -1995,6 +2080,35 @@ fn fetch_shard_fields(
 /// An OWNED snapshot, for callers that consume or mutate what they get.
 ///
 /// Prefer `hgetall_shared` wherever the caller only reads: this one exists to copy.
+/// A shard's records, parsed once and kept beside the payloads they came from.
+///
+/// The rebuild that calls this re-reads every shard on every write, and parsing dominates it --
+/// 429 us per record against 23 us to copy one. Records are appended, so every shard but the
+/// newest parses to exactly what it parsed last time.
+///
+/// An uncached shard (an empty read is deliberately not cached) simply parses every time, which is
+/// what it did before.
+fn hgetall_decoded(engine: &RecordStore, key: String) -> Result<Arc<Vec<Value>>, String> {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        if let Some(decoded) = cache.decoded(&key) {
+            return Ok(decoded);
+        }
+    }
+    let payloads = hgetall_shared(engine, key.clone())?;
+    let mut records = Vec::new();
+    for payload in payloads.values() {
+        if payload.trim().is_empty() {
+            continue;
+        }
+        flatten_context_payload(payload, &mut records);
+    }
+    let records = Arc::new(records);
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        cache.set_decoded(&key, Arc::clone(&records));
+    }
+    Ok(records)
+}
+
 fn hgetall_map(engine: &RecordStore, key: String) -> Result<BTreeMap<String, String>, String> {
     Ok((*hgetall_shared(engine, key)?).clone())
 }
@@ -5658,14 +5772,10 @@ fn load_retrieve_candidate_snapshot(
     let mut records = Vec::new();
     for shard in 0..shard_count {
         let key = format!("{record_hash_key}:{shard:06}");
-        // `hgetall_shared`, not `hgetall_map`: the map form clones the shard's whole payload
-        // map, and this loop only reads it. The `Arc` temporary lives for the loop.
-        for payload in hgetall_shared(engine, key)?.values() {
-            if payload.trim().is_empty() {
-                continue;
-            }
-            flatten_context_payload(payload, &mut records);
-        }
+        // Parsed at most once per shard per write. The clone that follows is what lets the
+        // candidate build keep taking fields out of records it owns; it costs ~23 us per record
+        // against ~429 us to parse one, so it buys the 18x and gives up nothing.
+        records.extend(hgetall_decoded(engine, key)?.iter().cloned());
     }
 
     // Built only when something is going to read them. The single consumer is the secondary-group
@@ -6907,6 +7017,80 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    fn shard_payloads(text: &str) -> Arc<BTreeMap<String, String>> {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "00000000000000000000".to_string(),
+            json!({"record_type": "context_event", "text": text}).to_string(),
+        );
+        Arc::new(map)
+    }
+
+    /// A patched shard must not keep what was parsed from it.
+    ///
+    /// This is the single reason the decoded records live in the payload entry rather than in a
+    /// cache of their own: the write path already patches these entries, so the stale parse is
+    /// dropped by the same call that made it stale. A separate cache would need its own
+    /// invalidation, and every cheap identity test available to one is wrong here -- `Arc::ptr_eq`
+    /// cannot see a patch, because `Arc::make_mut` mutates in place at refcount one.
+    #[test]
+    fn patching_a_shard_drops_what_was_parsed_from_it() {
+        let mut cache = SnapshotCache::new();
+        cache.insert("shard".to_string(), shard_payloads("before"));
+        cache.set_decoded("shard", Arc::new(vec![json!({"text": "before"})]));
+        assert!(cache.decoded("shard").is_some(), "the parse was attached");
+
+        cache.patch("shard", |snapshot| {
+            snapshot.insert(
+                "00000000000000000001".to_string(),
+                json!({"record_type": "context_event", "text": "after"}).to_string(),
+            );
+            true
+        });
+        assert!(
+            cache.decoded("shard").is_none(),
+            "a patched shard kept a parse of the payloads it no longer has"
+        );
+        assert_eq!(cache.decoded_bytes, 0, "and stopped being charged for it");
+    }
+
+    /// Removing a shard un-charges its parse, and a parse for a shard that is gone is dropped.
+    #[test]
+    fn a_parse_is_only_kept_for_a_shard_the_cache_still_has() {
+        let mut cache = SnapshotCache::new();
+        cache.insert("shard".to_string(), shard_payloads("one"));
+        cache.set_decoded("shard", Arc::new(vec![json!({"text": "one"})]));
+        assert!(cache.decoded_bytes > 0);
+
+        cache.remove("shard");
+        assert_eq!(cache.decoded_bytes, 0, "removing a shard un-charges its parse");
+
+        // The entry can go while a parse is in flight; the result then belongs to nothing.
+        cache.set_decoded("shard", Arc::new(vec![json!({"text": "one"})]));
+        assert!(cache.decoded("shard").is_none());
+        assert_eq!(cache.decoded_bytes, 0);
+    }
+
+    /// Parses are evicted on their OWN budget, and evicting one leaves its payloads behind.
+    ///
+    /// Sharing the payload budget would shrink the payload cache to about a seventh, and a shard
+    /// that stopped fitting would be re-READ as well as re-parsed -- more work than the parsing
+    /// this exists to avoid.
+    #[test]
+    fn a_parse_is_evicted_without_taking_its_payloads_with_it() {
+        let mut cache = SnapshotCache::new();
+        cache.decoded_budget = 1; // anything charged is over budget
+        cache.insert("shard".to_string(), shard_payloads("one"));
+        let payload_bytes = cache.bytes;
+        assert!(payload_bytes > 0);
+
+        cache.set_decoded("shard", Arc::new(vec![json!({"text": "one"})]));
+        assert!(cache.decoded("shard").is_none(), "over budget, so not kept");
+        assert_eq!(cache.decoded_bytes, 0);
+        assert_eq!(cache.bytes, payload_bytes, "the payloads stayed");
+        assert!(cache.get("shard").is_some(), "and are still served");
+    }
 
     /// What the copies removed from the retrieve path actually cost, isolated from the parse and
     /// from the fixture that feeds them.
