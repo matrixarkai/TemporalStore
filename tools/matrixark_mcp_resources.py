@@ -95,33 +95,6 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import sanitize_resource_metadata
 
 
-def serving_resource_metadata(metadata: Json) -> Json:
-    sanitized = sanitize_resource_metadata(metadata)
-    serving = {
-        key: sanitized[key]
-        for key in SERVING_RESOURCE_METADATA_FIELDS
-        if key in sanitized and sanitized[key] not in (None, "", [], {})
-    }
-    # `raw_storage_policy` is not carried per chunk: it is a document fact, identical on every
-    # chunk, and no reader takes it from a stored chunk. The dashboard reads the TOP-level
-    # field on manifest rows, ingest reads the live storage_resolution, and resource IO reads
-    # the ENVELOPE metadata while deciding where raw bytes go. 93.1 KB per 1 MB skill.
-    #
-    # `resource_version` stays, though it is the same shape: the retrieve path reads it from a
-    # stored record to decide version_state, falling back to a top-level field sections do not
-    # carry, so dropping it would make every chunk look current.
-    # `raw_bytes_stored` is a per-document fact and a constant False on every chunk of a
-    # document, 27 B a row -- 66.2 KB per 1 MB skill. It is not carried here because
-    # nothing reads it from a chunk: every mention inside a metadata dict is an
-    # ASSIGNMENT, and every read takes the top-level field with a False default, which
-    # the manifest record supplies.
-    parse_warnings = normalize_parse_warnings(sanitized)
-    if parse_warnings:
-        serving["parse_warning_count"] = len(parse_warnings)
-        serving["has_parse_warnings"] = True
-    return serving
-
-
 def debug_resource_metadata(metadata: Json) -> Json:
     sanitized = sanitize_resource_metadata(metadata)
     debug = {
@@ -462,18 +435,18 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import should_extract_resource_fact
 
 
-def matched_resource_fact_schemas(text: str, metadata: Json) -> list[Json]:
-    lower = text.lower()
-    matches = [
-        schema
-        for schema in RESOURCE_FACT_SCHEMAS
-        if any(keyword in lower for keyword in schema["keywords"])
-    ]
-    if matches:
-        return matches[: max(0, MAX_RESOURCE_FACTS_PER_CHUNK)]
-    if ENABLE_GENERIC_RESOURCE_FACTS and should_extract_resource_fact(text, metadata):
-        return [{"fact_type": "resource_fact", "entity_type": "resource_fact", "entity_prefix": "fact", "keywords": []}]
-    return []
+# Not defined here: the implementation lives in matrixark_mcp_core and this module carried an
+# identical second copy of each.
+try:
+    from tools.matrixark_mcp_core import (
+        matched_resource_fact_schemas,
+        serving_resource_metadata,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import (
+        matched_resource_fact_schemas,
+        serving_resource_metadata,
+    )
 
 
 def extract_resource_fact_value(text: str, fact_type: str) -> str:

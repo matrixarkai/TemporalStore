@@ -462,26 +462,15 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
     return delegate(record)
 
 
-def compact_latest_context_state_records(records: list[Json]) -> list[Json]:
-    """Collapse append-log state into compact serving records.
-
-    The physical log can retain older writes for durability/debug, but serving,
-    retrieval, and normal debug tables should see ContextSummary L0/L1 as state
-    and ContextIndex as Feature-style timestamped posting rows.
-    """
-    records = compact_context_index_postings(records)
-    latest: dict[tuple[Any, ...], tuple[int, Json]] = {}
-    passthrough: list[tuple[int, Json]] = []
-    for index, record in enumerate(records):
-        key = latest_context_state_key(record)
-        if key is None:
-            passthrough.append((index, record))
-            continue
-        compacted = dict(record)
-        compacted.pop("summary_version_hash", None)
-        latest[key] = (index, compacted)
-    combined = passthrough + list(latest.values())
-    combined.sort(key=lambda item: item[0])
-    return [record for _index, record in combined]
+# Not defined here: the implementation lives in matrixark_mcp_serving_records and this module carried an
+# identical second copy of each.
+try:
+    from tools.matrixark_mcp_serving_records import (
+        compact_latest_context_state_records,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_serving_records import (
+        compact_latest_context_state_records,
+    )
 
 

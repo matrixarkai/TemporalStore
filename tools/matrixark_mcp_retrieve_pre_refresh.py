@@ -80,33 +80,40 @@ def _explicit_cross_session_requested(args: Json, ranking: Json) -> bool:
 
 
 def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, question_type: str) -> str:
-    mode = str(args.get(field) or ranking.get(field) or "").strip().lower()
-    if mode:
-        return mode
-    normalized_question_type = str(question_type or "fact").strip().lower()
-    if (
-        normalized_question_type in AUTO_BUDGET_QUERY_TYPES
-        or feature_profile_memory_budget_query(args, ranking, question_type=question_type)
-        or _explicit_cross_session_requested(args, ranking)
-    ):
-        return "auto"
-    return ""
+    """Delegates to the one implementation, in matrixark_mcp_local_adapter.
+
+    This module carried an identical second copy. It delegates rather than
+    re-exporting at module scope because importing matrixark_mcp_local_adapter here would close an
+    import cycle.
+    """
+    try:  # package path
+        from tools.matrixark_mcp_local_adapter import _default_memory_budget_mode as _impl  # type: ignore
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_local_adapter import _default_memory_budget_mode as _impl  # type: ignore
+    return _impl(args, ranking, field=field, question_type=question_type)
 
 
-def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
-    normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type == "profile_memory":
-        return True
-    query = str(args.get("query") or ranking.get("query") or "").strip()
-    if not query:
-        return False
-    lower = query.lower()
-    return bool(
-        PROFILE_MEMORY_QUERY_RE.search(lower)
-        or FEATURE_MEMORY_BUDGET_QUERY_RE.search(lower)
-        or profile_entity_type_for_memory_text(query) == "memory_feature_profile"
-        or (FEATURE_SCOPE_EXCLUSION_RE.search(lower) and "feature" in lower)
-    )
+def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_type: str) -> bool:
+    """Delegates to the one implementation, in matrixark_mcp_local_adapter.
+
+    This module carried its own, and the two had drifted into different predicates: this one had no
+    handling for a standing-rule query (`PROFILE_MEMORY_STANDING_RULE_QUERY_RE`), which the other
+    has matched since 2026-09-01. So a query that names a standing rule was given the feature-profile
+    budget by the retrieve and not by the refresh that runs just before it.
+
+    The other copy is the current one -- last changed 2026-09-06 against 2026-08-01 here -- and it is
+    the one the live retrieve path uses. Imported at call time: matrixark_mcp_local_adapter imports
+    this module, so a module-scope import would close that cycle.
+    """
+    try:  # package path
+        from tools.matrixark_mcp_local_adapter import (  # type: ignore
+            feature_profile_memory_budget_query as _impl,
+        )
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_local_adapter import (  # type: ignore
+            feature_profile_memory_budget_query as _impl,
+        )
+    return _impl(args, ranking, question_type=question_type)
 
 
 def codex_user_goal_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:

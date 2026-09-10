@@ -45,12 +45,16 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import normalize_matrixark_role
 
 
-def role_allows_scopes(role: str, scopes: set[str]) -> bool:
-    normalized = normalize_matrixark_role(role)
-    if normalized not in MATRIXARK_ROLE_SCOPE_LIMITS:
-        return False
-    limits = MATRIXARK_ROLE_SCOPE_LIMITS[normalized]
-    return limits is None or scopes.issubset(limits)
+# Not defined here: the implementation lives in matrixark_mcp_identity and this module carried an
+# identical second copy of each.
+try:
+    from tools.matrixark_mcp_identity import (
+        role_allows_scopes,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import (
+        role_allows_scopes,
+    )
 
 
 def stable_hash(value: str) -> int:

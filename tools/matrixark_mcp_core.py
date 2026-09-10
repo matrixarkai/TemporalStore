@@ -465,41 +465,14 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_backend_metrics": set(),
 }
 
-MATRIXARK_ROLE_SCOPE_LIMITS: dict[str, set[str] | None] = {
-    "owner": None,
-    "admin": None,
-    "operator": {
-        "portal:read",
-        "admin:audit",
-        "context:ingest",
-        "context:retrieve",
-        "context:forget",
-        "context:feedback",
-        "context:replay",
-        "resource:ingest",
-        "resource:read",
-        "resource:manage",
-        "skill:read",
-        "skill:manage",
-    },
-    "developer": {
-        "portal:read",
-        "context:ingest",
-        "context:retrieve",
-        "context:feedback",
-        "context:replay",
-        "resource:ingest",
-        "resource:read",
-        "skill:read",
-    },
-    "viewer": {"portal:read", "context:retrieve", "context:replay", "resource:read", "skill:read"},
-    # Scoped service keys are capability-limited by their explicit scopes and
-    # optional user/session allow-lists. They may be used by Codex, Claude,
-    # Cursor, CI, or backend agents without forcing a human role name.
-    "service": None,
-    "local_agent": None,
-    "dev_admin": None,
-}
+# Not defined here: `MATRIXARK_ROLE_SCOPE_LIMITS` lives in matrixark_mcp_identity, which this
+# module carried a second, drifted copy of -- see the note there. identity holds the
+# definition because it imports nothing but the standard library, so importing it from here
+# adds no edge that can close a cycle, where the reverse would.
+try:
+    from tools.matrixark_mcp_identity import MATRIXARK_ROLE_SCOPE_LIMITS  # noqa: F401
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import MATRIXARK_ROLE_SCOPE_LIMITS  # noqa: F401
 
 
 
@@ -2547,174 +2520,21 @@ def _core_already_folded_postings(records: list[Json]):
     return helper(records, _CORE_POSTING_POLICY, _core_posting_bucket_key, ("index_hash",))
 
 
-def compact_context_index_postings(records: list[Json]) -> list[Json]:
-    """Group ContextIndex writes into Feature-style timestamped posting rows.
-
-    ContextIndex is an index data model. It should not produce one row per
-    indexed object when many objects share the same term, model, scope, node, and
-    timestamp bucket. Grouping keeps index rows bounded by terms and buckets,
-    while ref_hashes carries the posting list.
-    """
-    unchanged = _core_already_folded_postings(records)
-    if unchanged is not None:
-        return unchanged
-    scalar_lineage_fields = [
-        "memory_scope",
-        "session_continuity",
-        "profile_memory_class",
-        "profile_memory_kind",
-        "profile_entity_current",
-        "profile_revision",
-        "promoted_from_memory_scope",
-        "extraction_phase",
-        "final_session_boundary",
-    ]
-    list_lineage_fields = [
-        "source_session_ids",
-        "source_entity_hashes",
-        "source_memory_scopes",
-        "source_session_continuities",
-        "source_profile_memory_classes",
-        "source_profile_memory_kinds",
-    ]
-    grouped: dict[tuple[Any, ...], Json] = {}
-    grouped_scalar_values: dict[tuple[Any, ...], dict[str, set[str]]] = {}
-    grouped_list_values: dict[tuple[Any, ...], dict[str, list[Any]]] = {}
-    passthrough: list[Json] = []
-    order: list[tuple[Any, ...]] = []
-    for record in records:
-        if str(record.get("record_type") or "") != "context_index":
-            passthrough.append(record)
-            continue
-        index_name = str(record.get("index_name") or "")
-        data_model = str(record.get("data_model") or "")
-        if not index_name or not data_model:
-            passthrough.append(record)
-            continue
-        bucket_ms = context_index_time_bucket(record.get("timestamp_key_ms") or record.get("updated_at_ms"))
-        key = (
-            str(record.get("scope_key") or ""),
-            data_model,
-            index_name,
-            str(record.get("ref_type") or ""),
-            bucket_ms,
-        )
-        if key not in grouped:
-            grouped[key] = {
-                "record_type": "context_index",
-                "index_name": index_name,
-                "data_model": data_model,
-                "timestamp_key_ms": bucket_ms,
-                "updated_at_ms": bucket_ms,
-                "ref_hashes": [],
-                "node_hashes": [],
-                "batch_id_hashes": [],
-                "posting_count": 0,
-                "posting_policy": "bucketed_by_scope_data_model_index_time",
-            }
-            for field in ("scope_key", "ref_type", "storage_route"):
-                value = record.get(field)
-                if value not in (None, "", [], {}):
-                    grouped[key][field] = value
-            grouped_scalar_values[key] = {field: set() for field in scalar_lineage_fields}
-            grouped_list_values[key] = {field: [] for field in list_lineage_fields}
-            order.append(key)
-        posting = grouped[key]
-        for field in scalar_lineage_fields:
-            value = record.get(field)
-            if value not in (None, "", [], {}):
-                grouped_scalar_values[key][field].add(str(value))
-        for field in list_lineage_fields:
-            values = record.get(field)
-            if not isinstance(values, list):
-                value = record.get(field)
-                values = [value] if value not in (None, "", [], {}) else []
-            for value in values:
-                if value not in (None, "", [], {}) and str(value) not in {str(item) for item in grouped_list_values[key][field]}:
-                    grouped_list_values[key][field].append(value)
-        node_hash = record.get("node_hash")
-        if node_hash is not None and str(node_hash) not in {str(item) for item in posting.get("node_hashes", [])}:
-            posting["node_hashes"].append(node_hash)
-        batch_id_hash = record.get("batch_id_hash")
-        if batch_id_hash is not None and str(batch_id_hash) not in {str(item) for item in posting.get("batch_id_hashes", [])}:
-            posting["batch_id_hashes"].append(batch_id_hash)
-        existing = {str(ref) for ref in posting.get("ref_hashes", [])}
-        for ref in context_index_record_ref_hashes(record):
-            if ref is None or str(ref) in existing:
-                continue
-            posting["ref_hashes"].append(ref)
-            existing.add(str(ref))
-        if record.get("source_ref") and not posting.get("sample_source_ref"):
-            posting["sample_source_ref"] = record.get("source_ref")
-        try:
-            posting["posting_count"] += max(1, int(record.get("posting_count") or len(context_index_record_ref_hashes(record)) or 1))
-        except (TypeError, ValueError):
-            posting["posting_count"] += 1
-    compacted_indexes: list[Json] = []
-    for key in order:
-        base = grouped[key]
-        for field, values in grouped_scalar_values.get(key, {}).items():
-            if len(values) == 1:
-                raw_value = next(iter(values))
-                if raw_value == "True":
-                    base[field] = True
-                elif raw_value == "False":
-                    base[field] = False
-                elif field == "profile_revision":
-                    try:
-                        base[field] = int(raw_value)
-                    except (TypeError, ValueError):
-                        base[field] = raw_value
-                else:
-                    base[field] = raw_value
-        for field, values in grouped_list_values.get(key, {}).items():
-            if values:
-                base[field] = values
-        refs = []
-        seen_ref_keys: set[str] = set()
-        for ref in base.get("ref_hashes", []):
-            ref_key = str(ref)
-            if ref_key in seen_ref_keys:
-                continue
-            seen_ref_keys.add(ref_key)
-            refs.append(ref)
-        for part, ref_chunk in enumerate(_chunked_refs(refs, limit=MAX_SECONDARY_INDEX_REFS_PER_POSTING)):
-            record = dict(base)
-            record["ref_hashes"] = ref_chunk
-            record["posting_part"] = part
-            # `ref_hashes` is the one place a posting names what it points at. The singular
-            # `ref_hash` restated it on every single-ref row, and `chunk_hash` restated it again;
-            # the serving accessor reads neither when the list is present, and `index_hash` is
-            # derived from the list, so both are dropped rather than written three ways. Older
-            # rows still resolve -- the fallbacks that read them are unchanged.
-            record.pop("ref_hash", None)
-            record.pop("chunk_hash", None)
-            if len(record.get("node_hashes", [])) == 1:
-                record["node_hash"] = record["node_hashes"][0]
-            else:
-                record.pop("node_hash", None)
-            if len(record.get("batch_id_hashes", [])) == 1:
-                record["batch_id_hash"] = record["batch_id_hashes"][0]
-            else:
-                record.pop("batch_id_hash", None)
-            if not record.get("node_hashes"):
-                record.pop("node_hashes", None)
-            if not record.get("batch_id_hashes"):
-                record.pop("batch_id_hashes", None)
-            identity = {
-                "scope_key": record.get("scope_key"),
-                "index_name": record.get("index_name"),
-                "data_model": record.get("data_model"),
-                "timestamp_key_ms": record.get("timestamp_key_ms"),
-                "node_hashes": record.get("node_hashes") or ([record.get("node_hash")] if record.get("node_hash") is not None else []),
-                "batch_id_hashes": record.get("batch_id_hashes") or ([record.get("batch_id_hash")] if record.get("batch_id_hash") is not None else []),
-                "ref_type": record.get("ref_type"),
-                "posting_part": part,
-                "ref_hashes": ref_chunk,
-            }
-            record["index_hash"] = stable_hash(json.dumps(identity, sort_keys=True, separators=(",", ":")))
-            compacted_indexes.append(record)
-    return passthrough + compacted_indexes
+# Not defined here. `compact_context_index_postings` lives in matrixark_mcp_indexing, and this
+# module kept the copy that the 2026-08-05 split ("split compact/context-record helpers out of
+# matrixark_mcp_core.py") was supposed to remove. The two diverged for a month afterwards: the one
+# over there buckets by `capability`, gained an adopt fast path measured at 23.755 ms against
+# 3.255 ms on a 2,123-row cache, reads node_hashES rather than only the singular node_hash, and had
+# its give-up path fixed in #1307. This copy buckets by `data_model`, has none of that, and stamps
+# a different `posting_policy` on every row it folds.
+#
+# Both shapes were already being written: matrixark_mcp_serving_records reaches the one in
+# matrixark_mcp_indexing while matrixark_temporal_direct_read and _write reached this one, so the
+# same records compacted differently depending on which entry point asked. One implementation now.
+try:
+    from tools.matrixark_mcp_indexing import compact_context_index_postings  # noqa: F401
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import compact_context_index_postings  # noqa: F401
 
 
 RESOURCE_FACT_KEYWORDS = re.compile(
