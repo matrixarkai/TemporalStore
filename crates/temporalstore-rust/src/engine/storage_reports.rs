@@ -17,9 +17,7 @@ impl TemporalEngine {
             StorageLifecycleReport {
                 shard_id: request.shard_id,
                 plan,
-                object_lifecycle: self
-                    .storage_recovery_report_without_boundary(request.shard_id)
-                    .object_lifecycle,
+                object_lifecycle: self.storage_object_lifecycle_snapshot(request.shard_id),
                 ..StorageLifecycleReport::default()
             }
         };

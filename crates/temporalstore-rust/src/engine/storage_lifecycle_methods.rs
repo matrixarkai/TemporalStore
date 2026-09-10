@@ -84,13 +84,15 @@ impl TemporalEngine {
             .into_iter()
             .filter(|id| !live_block_slab_set.contains(id))
             .collect::<Vec<_>>();
-        let recovery = self.storage_recovery_report_without_boundary(request.shard_id);
+        let reclaim_slab_reports = self.storage_reclaim_slab_reports(request.shard_id);
         let stale_block_slab_set = stale_block_slab_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let mut reclaim_candidates =
-            storage_reclaim_candidates_from_recovery(&recovery, &stale_block_slab_set);
+        let mut reclaim_candidates = storage_reclaim_candidates_from_slab_reports(
+            &reclaim_slab_reports,
+            &stale_block_slab_set,
+        );
         let delayed_destroy_reports = self
             .page_store
             .delayed_destroy_slab_reports()
@@ -550,9 +552,7 @@ impl TemporalEngine {
                 request.follower_replay_cursors.clone(),
             )
         });
-        let object_lifecycle = self
-            .storage_recovery_report_without_boundary(request.shard_id)
-            .object_lifecycle;
+        let object_lifecycle = self.storage_object_lifecycle_snapshot(request.shard_id);
         let mut report = StorageLifecycleReport {
             shard_id: request.shard_id,
             public_storage_contract: Default::default(),

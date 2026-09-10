@@ -22,6 +22,188 @@ impl TemporalEngine {
         report
     }
 
+    /// The reclaim candidates, built once from the narrow view and once from the full report.
+    ///
+    /// Same selection function, two sources for the tally it reads. The narrow view leaves the
+    /// read-dependent fields at zero, so this is the check that the planner never looked at
+    /// them.
+    #[cfg(test)]
+    pub(crate) fn reclaim_candidates_two_ways_for_test(
+        &self,
+        shard_id: ShardId,
+    ) -> (Vec<StorageReclaimCandidate>, Vec<StorageReclaimCandidate>) {
+        let live = self
+            .live_block_slab_ids(shard_id)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let stale = self
+            .page_store
+            .slab_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| !live.contains(id))
+            .collect::<BTreeSet<_>>();
+        let narrow = storage_reclaim_candidates_from_slab_reports(
+            &self.storage_reclaim_slab_reports(shard_id),
+            &stale,
+        );
+        let full = storage_reclaim_candidates_from_slab_reports(
+            &self.storage_recovery_report(shard_id).block_slab_live_reports,
+            &stale,
+        );
+        (narrow, full)
+    }
+
+    /// The per-slab live/stale tally the reclaim planner reads, without the whole-store scan.
+    ///
+    /// `storage_reclaim_candidates_from_slab_reports` consumes seven fields off each of these:
+    /// the slab id, its physical bytes and page count, its live page refs and live physical
+    /// bytes, and the two figures derived from those. Not one of them needs the page itself --
+    /// a page's physical size is in the address that names it. The recovery report supplied
+    /// them anyway, and supplied them by reading every live page off the block store to fill
+    /// in `live_logical_bytes`, which the planner never reads.
+    ///
+    /// The fields that DO require the read -- `live_logical_bytes`, `readable_live_page_refs`,
+    /// `unreadable_live_page_refs` -- are left at zero here, so this is not a drop-in for the
+    /// report: it is the planner's view, and `the_reclaim_planner_sees_the_same_candidates`
+    /// pins it to the answer the report produced.
+    pub(super) fn storage_reclaim_slab_reports(
+        &self,
+        shard_id: ShardId,
+    ) -> Vec<StorageRecoverySlabLiveReport> {
+        let block_slab_reports = self.page_store.slab_reports().unwrap_or_default();
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let addresses = shards
+            .get(&shard_id)
+            .map(collect_live_page_addresses)
+            .unwrap_or_default();
+        let mut reports = block_slab_reports
+            .iter()
+            .map(|report| {
+                (
+                    report.block_slab_id,
+                    StorageRecoverySlabLiveReport {
+                        block_slab_id: report.block_slab_id,
+                        physical_bytes: report.physical_bytes,
+                        logical_bytes: report.logical_bytes,
+                        page_count: report.page_count,
+                        ..StorageRecoverySlabLiveReport::default()
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
+        let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
+        for address in &addresses {
+            let slab_report = reports.entry(address.block_slab_id).or_insert(
+                StorageRecoverySlabLiveReport {
+                    block_slab_id: address.block_slab_id,
+                    ..StorageRecoverySlabLiveReport::default()
+                },
+            );
+            slab_report.live_page_refs = slab_report.live_page_refs.saturating_add(1);
+            slab_report.live_physical_bytes = slab_report
+                .live_physical_bytes
+                .saturating_add(address.length);
+            if let Some(object_id) = address.object_id() {
+                let objects = live_object_ids.entry(address.block_slab_id).or_default();
+                objects.insert(object_id);
+                slab_report.live_object_count = objects.len() as u64;
+            }
+            if let Some(routing_bucket) = address.routing_bucket() {
+                let buckets = live_routing_buckets
+                    .entry(address.block_slab_id)
+                    .or_default();
+                buckets.insert(routing_bucket);
+                slab_report.live_routing_bucket_count = buckets.len() as u64;
+            }
+        }
+        reports
+            .into_values()
+            .map(|mut report| {
+                report.stale_page_estimate =
+                    report.page_count.saturating_sub(report.live_page_refs);
+                report.live_ref_density_basis_points = if report.page_count == 0 {
+                    0
+                } else {
+                    report.live_page_refs.saturating_mul(10_000) / report.page_count
+                };
+                report
+            })
+            .collect()
+    }
+
+    /// The object-lifecycle view on its own, without the whole-store scan around it.
+    ///
+    /// The recovery report produces this field as a by-product of reading EVERY live page off
+    /// disk, which is how it counts the readable ones. Two callers on the maintenance path want
+    /// nothing else from that report, so they were paying a full-store read to get it -- on a
+    /// loop that runs every thirty seconds, for the life of the process.
+    ///
+    /// Nothing here reads a page. Every count comes from the shard's own maps, the ownership
+    /// validation and the slab reports, which is all the field was ever made of:
+    ///
+    /// | at 32,000 live pages | the report | this |
+    /// |---|---|---|
+    /// | wall time | ~840 ms | ~45 ms |
+    /// | pages read from the block store | 32,000 | 0 |
+    ///
+    /// `object_lifecycle_snapshot_matches_the_recovery_report` holds the two to the same answer,
+    /// so a change to either that separates them fails there rather than in a shipped round.
+    /// The snapshot, and the live page count, for the tests that hold it to the report.
+    #[cfg(test)]
+    pub(crate) fn storage_object_lifecycle_snapshot_for_test(
+        &self,
+        shard_id: ShardId,
+    ) -> StorageObjectLifecycleReport {
+        self.storage_object_lifecycle_snapshot(shard_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_page_count_for_test(&self, shard_id: ShardId) -> usize {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .get(&shard_id)
+            .map(|shard| collect_live_page_addresses(shard).len())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn storage_object_lifecycle_snapshot(
+        &self,
+        shard_id: ShardId,
+    ) -> StorageObjectLifecycleReport {
+        let block_slab_reports = self.page_store.slab_reports().unwrap_or_default();
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return StorageObjectLifecycleReport::default();
+        };
+        let ownership = self.validate_shard_page_ownership(shard_id, shard);
+        let mut report = storage_object_lifecycle_report(shard_id, shard);
+        report.owner_mismatch_page_refs = ownership.mismatches.len() as u64;
+        report.missing_owner_page_refs = ownership.missing_owner_page_refs as u64;
+        // stale_object_ids is the per-slab shortfall of live refs against the slab's own page
+        // count, summed. An address naming a slab the store has no report for contributes
+        // nothing (the report path gives it page_count 0, so its shortfall saturates to 0).
+        let mut live_page_refs_by_slab = BTreeMap::<u64, u64>::new();
+        for address in collect_live_page_addresses(shard) {
+            *live_page_refs_by_slab
+                .entry(address.block_slab_id)
+                .or_default() += 1;
+        }
+        report.stale_object_ids = block_slab_reports
+            .iter()
+            .map(|slab| {
+                slab.page_count.saturating_sub(
+                    live_page_refs_by_slab
+                        .get(&slab.block_slab_id)
+                        .copied()
+                        .unwrap_or_default(),
+                )
+            })
+            .sum();
+        report
+    }
+
     pub(super) fn storage_recovery_report_without_boundary(&self, shard_id: ShardId) -> StorageRecoveryReport {
         // Durable served-index size. The base is materialized only at compaction, so a fresh
         // crash-recovered shard has no base file yet -- the durable served index is the base

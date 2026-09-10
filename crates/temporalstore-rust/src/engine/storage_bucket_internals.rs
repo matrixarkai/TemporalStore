@@ -50,12 +50,16 @@ pub(super) fn storage_slab_integrity_report(
     }
 }
 
-pub(super) fn storage_reclaim_candidates_from_recovery(
-    recovery: &StorageRecoveryReport,
+/// The slabs worth reclaiming, chosen from the per-slab live/stale tally.
+///
+/// This took a whole `StorageRecoveryReport` and read one field off it. Taking that field
+/// directly is what lets the planner build the tally without the report's whole-store page
+/// scan -- see `storage_reclaim_slab_reports`.
+pub(super) fn storage_reclaim_candidates_from_slab_reports(
+    block_slab_live_reports: &[StorageRecoverySlabLiveReport],
     fully_stale_slab_ids: &BTreeSet<u64>,
 ) -> Vec<StorageReclaimCandidate> {
-    let mut candidates = recovery
-        .block_slab_live_reports
+    let mut candidates = block_slab_live_reports
         .iter()
         .filter_map(|report| {
             let fully_stale = fully_stale_slab_ids.contains(&report.block_slab_id);
