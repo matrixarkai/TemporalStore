@@ -12,12 +12,29 @@ creates by ceasing to write them, and it is the only way to know step 3 is safe 
 """
 from __future__ import annotations
 
+import inspect
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import matrixark_mcp_server as mcp
+
+
+def _live_retrieve_module():
+    """The retrieve module the adapter this file builds actually runs.
+
+    `matrixark_local_adapter_retrieve` and `tools.matrixark_local_adapter_retrieve` are two module
+    objects with separate globals, and `cosine` is called as a FREE NAME inside the scan -- so it
+    resolves in the namespace of the module the running function was defined in. Replacing it on
+    the other spelling replaces a binding nothing calls, and the watcher below then reports that
+    scoring saw no vector, which reads as a missing mechanism rather than a missed patch.
+
+    Taken from the bound method rather than by importing a spelling: which spelling a class mixed
+    in depends on import order, and nothing here pins that.
+    """
+    return inspect.getmodule(mcp.MatrixArkLocalAdapter.retrieve)
 
 SCOPE = {"account_id": "acct_local", "tenant_id": "dualread", "user_id": "u",
          "session_id": "s0", "agent_name": "t"}
@@ -53,6 +70,28 @@ class InlineVectorDualReadTest(unittest.TestCase):
                                           {"scope": SCOPE, "query": "what is my job?"}))
         self.assertIn("robotics", out.lower())
 
+    def test_the_watcher_goes_on_the_module_the_retrieve_runs(self) -> None:
+        """The floor under the rehearsal above.
+
+        It replaces `cosine` on one module object and concludes from the calls it sees. If that is
+        not the object the retrieve reads, the watcher is never called and the conclusion is about
+        an unpatched system -- which is exactly how this file reported that dual-read was not
+        supplying a vector while it was supplying two."""
+        live = _live_retrieve_module()
+        self.assertIsNotNone(live, "the adapter has no retrieve mixin, so this file tests nothing")
+
+        _, server = corpus(strip_embeddings=False)
+        running = sys.modules[type(server.adapter).retrieve.__globals__["__name__"]]
+        self.assertIs(
+            live, running,
+            "the watcher goes on %s but the server dispatches into %s"
+            % (getattr(live, "__name__", "?"), getattr(running, "__name__", "?")))
+
+        self.assertIn(
+            "cosine", vars(running),
+            "cosine is not a module-scope name in %s, so replacing it reaches no caller"
+            % getattr(running, "__name__", "?"))
+
     def test_scoring_still_receives_a_vector_without_the_separate_rows(self):
         """The step-3 rehearsal, asserted on the MECHANISM rather than the answer.
 
@@ -65,7 +104,7 @@ class InlineVectorDualReadTest(unittest.TestCase):
         This instead observes what cosine() is handed: with the separate rows gone, the event's
         vector must still reach scoring from the owner record.
         """
-        import matrixark_local_adapter_retrieve as retrieve_module
+        retrieve_module = _live_retrieve_module()
 
         adapter, server = corpus(strip_embeddings=True)
         self.assertEqual(
