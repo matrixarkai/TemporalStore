@@ -16,6 +16,26 @@ use super::*;
 /// relocates pages that have not moved yet rather than re-moving the last round's work.
 pub(super) const COMPACTION_ROUND_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Blocks per slab, counted by header walk.
+///
+/// Both callers below read `page_count` and nothing else off a slab report, and `slab_reports()`
+/// reaches that by calling `decode_page_record` on every record in the store -- a CRC32C verify
+/// and a decompress each. The compaction phase builds a utility report and a model-layout report
+/// BEFORE and AFTER the relocation, so that was four whole-store decodes per round to populate a
+/// before/after figure. `count_slab_blocks` walks headers instead: measured 35x cheaper at 32,000
+/// records, with identical counts.
+///
+/// The relocation itself was never the problem -- it has a 256 MiB budget and resumes. This is
+/// the survey around it.
+fn slab_block_counts_by_slab(page_store: &LocalBlockStore) -> BTreeMap<u64, u64> {
+    page_store
+        .slab_block_counts()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(block_slab_id, _physical_bytes, block_count)| (block_slab_id, block_count))
+        .collect()
+}
+
 pub(super) fn compaction_utility_report(
     page_store: &LocalBlockStore,
     shard: &ShardState,
@@ -30,12 +50,7 @@ pub(super) fn compaction_utility_report(
         .iter()
         .map(|address| address.block_slab_id)
         .collect::<BTreeSet<_>>();
-    let slab_page_counts = page_store
-        .slab_reports()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|report| (report.block_slab_id, report.page_count))
-        .collect::<BTreeMap<_, _>>();
+    let slab_page_counts = slab_block_counts_by_slab(page_store);
     let total_page_count = live_block_slab_ids
         .iter()
         .map(|block_slab_id| {
@@ -332,12 +347,7 @@ pub(super) fn compaction_model_layout_reports(
     page_store: &LocalBlockStore,
     shard: &ShardState,
 ) -> Vec<ShardCompactionModelLayoutReport> {
-    let slab_page_counts = page_store
-        .slab_reports()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|report| (report.block_slab_id, report.page_count))
-        .collect::<BTreeMap<_, _>>();
+    let slab_page_counts = slab_block_counts_by_slab(page_store);
     let mut reports = Vec::new();
     reports.push(compaction_layout_from_addresses(
         "string",
