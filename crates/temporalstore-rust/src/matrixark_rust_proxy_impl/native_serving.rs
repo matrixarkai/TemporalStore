@@ -86,7 +86,11 @@ fn inventory_layer_available(inventory: &Value, layer: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Value>) -> Value {
+/// Count what each layer holds.
+///
+/// Takes BORROWED records: the caller reads them out of the shard cache, and counting has never
+/// needed to own them.
+fn native_retrieval_memory_inventory(records: &[&Value], query_scope: Option<&Value>) -> Value {
     let mut inventory = json!({
         "session": {
             "context_events": 0,
@@ -132,7 +136,7 @@ fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Val
         "profile_records_available_but_not_selected": false
     });
 
-    for record in records {
+    for record in records.iter().copied() {
         let record_type = string_field(record, "record_type");
         let memory_scope = string_field(record, "memory_scope")
             .trim()

@@ -100,8 +100,11 @@ fn retrieve_context_pack_native(
         .cloned()
         .unwrap_or_default();
     let scope_for_continuity = scan_command.scope.clone();
+    // A borrow view: this path owns its records and goes on using them, and the inventory only
+    // reads. One pointer per record, and nothing about this packer changes.
+    let inventory_view: Vec<&Value> = records.iter().collect();
     let mut memory_inventory =
-        native_retrieval_memory_inventory(&records, scope_for_continuity.as_ref());
+        native_retrieval_memory_inventory(&inventory_view, scope_for_continuity.as_ref());
     let cross_policy = parse_cross_session_policy(
         &request,
         scope_for_continuity.as_ref(),
