@@ -1453,6 +1453,27 @@ impl LocalBlockStore {
     }
 
 
+    /// Per-slab size and block count, without decoding any block.
+    ///
+    /// What the reclaim planner needs out of `slab_reports()`, at the cost of a header walk
+    /// instead of a CRC-and-decompress of every record in the store.
+    pub fn slab_block_counts(&self) -> Result<Vec<(u64, u64, u64)>, BlockStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("block store lock poisoned")
+            .root
+            .clone();
+        let mut out = Vec::new();
+        for block_slab_id in slab_ids_at(&root)? {
+            let bytes = fs::read(slab_path(&root, block_slab_id))?;
+            let (block_count, physical_bytes) =
+                crate::block_store::record::count_slab_blocks(&bytes, block_slab_id);
+            out.push((block_slab_id, physical_bytes, block_count));
+        }
+        Ok(out)
+    }
+
     pub fn slab_reports(&self) -> Result<Vec<BlockStoreSlabReport>, BlockStoreError> {
         let root = self
             .inner

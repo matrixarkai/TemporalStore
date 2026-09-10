@@ -749,6 +749,60 @@ pub(crate) fn block_index_checksums_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Count the blocks in a slab, and its size, WITHOUT decoding any of them.
+///
+/// `inspect_slab` calls `decode_page_record` on every record, which verifies its CRC32C and
+/// decompresses it. That is a full integrity pass over the whole store, and the reclaim planner --
+/// which is what puts `slab_reports()` on every maintenance round -- reads only two fields out of
+/// the result: the slab's size and how many blocks it holds.
+///
+/// Stepping between records needs the header alone: `header_len + stored_len` is the record's
+/// length. So this walks headers and stops at the first one that will not parse, reporting the
+/// count up to there.
+///
+/// **This is not `inspect_slab`'s count on a corrupt slab, and must not be used where that
+/// matters.** `inspect_slab` stops when `decode_page_record` fails, which includes a record whose
+/// HEADER is intact and whose BODY fails its checksum; this walk steps over that record and keeps
+/// counting. So a slab with a corrupted body reports MORE blocks here than there.
+///
+/// That is tolerable for the one caller -- the reclaim planner, which turns the count into a
+/// garbage estimate and a sort key. Over-counting makes such a slab sort earlier as a reclaim
+/// candidate, and reclaim still removes a slab only when nothing references it, so the effect is
+/// bounded to ordering. Anything that needs corruption DETECTED (the recovery report, the boundary
+/// report) must keep calling `inspect_slab`, which is why this did not replace it.
+pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64) -> (u64, u64) {
+    let physical_bytes = slab.len() as u64;
+    if slab.is_empty() {
+        return (0, 0);
+    }
+    if slab.len() < BLOCK_RECORD_HEADER_LEN || !slab.starts_with(BLOCK_RECORD_MAGIC) {
+        // Unframed bytes: `inspect_slab` calls this one block, and so does this.
+        return (1, physical_bytes);
+    }
+    let mut block_count = 0u64;
+    let mut physical_offset = 0usize;
+    while physical_offset < slab.len() {
+        let remaining = &slab[physical_offset..];
+        if remaining.len() < BLOCK_RECORD_SMALLEST_HEADER_LEN
+            || !remaining.starts_with(BLOCK_RECORD_MAGIC)
+        {
+            break;
+        }
+        let address =
+            BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None);
+        let Ok(header) = parse_page_record_header(remaining, &address) else {
+            break;
+        };
+        let record_len = header.header_len.saturating_add(header.stored_len);
+        if record_len == 0 || remaining.len() < record_len {
+            break;
+        }
+        block_count = block_count.saturating_add(1);
+        physical_offset = physical_offset.saturating_add(record_len);
+    }
+    (block_count, physical_bytes)
+}
+
 pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabReport {
     let mut report = BlockStoreSlabReport {
         block_slab_id,

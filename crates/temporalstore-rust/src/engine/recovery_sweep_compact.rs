@@ -71,22 +71,30 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Vec<StorageRecoverySlabLiveReport> {
-        let block_slab_reports = self.page_store.slab_reports().unwrap_or_default();
+        // Counted by header walk, not `slab_reports()`. That function calls
+        // `decode_page_record` on every record in every slab -- a CRC32C verify and a
+        // decompress each -- which is a full integrity pass over the whole store, and the
+        // selection below reads two fields out of it: the slab's size and its block count.
+        // Measured at 32,000 records: 12.95 ms against 0.37 ms, 35x, with identical counts.
+        //
+        // `logical_bytes` is left at zero here for the same reason as the read-dependent
+        // fields: `storage_reclaim_candidates_from_slab_reports` does not read it, and
+        // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
+        let block_slab_counts = self.page_store.slab_block_counts().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         let addresses = shards
             .get(&shard_id)
             .map(collect_live_page_addresses)
             .unwrap_or_default();
-        let mut reports = block_slab_reports
+        let mut reports = block_slab_counts
             .iter()
-            .map(|report| {
+            .map(|(block_slab_id, physical_bytes, block_count)| {
                 (
-                    report.block_slab_id,
+                    *block_slab_id,
                     StorageRecoverySlabLiveReport {
-                        block_slab_id: report.block_slab_id,
-                        physical_bytes: report.physical_bytes,
-                        logical_bytes: report.logical_bytes,
-                        page_count: report.page_count,
+                        block_slab_id: *block_slab_id,
+                        physical_bytes: *physical_bytes,
+                        page_count: *block_count,
                         ..StorageRecoverySlabLiveReport::default()
                     },
                 )
@@ -172,7 +180,9 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> StorageObjectLifecycleReport {
-        let block_slab_reports = self.page_store.slab_reports().unwrap_or_default();
+        // Header walk, not a full decode of every record -- see `storage_reclaim_slab_reports`.
+        // Only the per-slab block count is read below.
+        let block_slab_counts = self.page_store.slab_block_counts().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
             return StorageObjectLifecycleReport::default();
@@ -190,12 +200,12 @@ impl TemporalEngine {
                 .entry(address.block_slab_id)
                 .or_default() += 1;
         }
-        report.stale_object_ids = block_slab_reports
+        report.stale_object_ids = block_slab_counts
             .iter()
-            .map(|slab| {
-                slab.page_count.saturating_sub(
+            .map(|(block_slab_id, _physical_bytes, block_count)| {
+                block_count.saturating_sub(
                     live_page_refs_by_slab
-                        .get(&slab.block_slab_id)
+                        .get(block_slab_id)
                         .copied()
                         .unwrap_or_default(),
                 )
