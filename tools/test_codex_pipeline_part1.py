@@ -2207,3 +2207,50 @@ class _CodexPipelinePart1:
         )
         self.assertEqual("beta", served["defaults"]["session_continuity"])
         self.assertEqual({"alpha": 1, "beta": 1}, served["counts"]["session_continuity"])
+
+    def test_the_serving_request_carries_a_score_floor(self) -> None:
+        """The deployment's declared floor has to reach the engine to be a floor at all.
+
+        `DEFAULT_RETRIEVAL_MIN_SCORE` has existed with a portal setting behind it, and the serving
+        request never carried it -- so the engine fell to its own 0.0, which excludes only what
+        scores exactly zero. Sweeping the value through the gateway changed nothing at any setting:
+        123 refs at 0.01 and 123 at 0.4.
+        """
+        from matrixark_mcp_runtime_config import retrieval_min_score
+
+        self.assertEqual(0.25, retrieval_min_score({"min_score": 0.25}, {}))
+        self.assertEqual(0.4, retrieval_min_score({}, {"min_score": 0.4}))
+        self.assertEqual(
+            0.25,
+            retrieval_min_score({"min_score": 0.25}, {"min_score": 0.4}),
+            "the request wins over the deployment, as every other ranking decision does",
+        )
+        # Junk is ignored rather than raising: a bad value must not be the reason a retrieve fails.
+        self.assertGreaterEqual(retrieval_min_score({"min_score": "x"}, {}), 0.0)
+        # And it is never negative, which would admit what the engine excludes at zero.
+        self.assertGreaterEqual(retrieval_min_score({"min_score": -5}, {}), 0.0)
+
+    def test_serving_does_not_send_secondary_index_groups(self) -> None:
+        """One-box serving carries no secondary index, and can be given one back.
+
+        The engine reads the groups as an admission filter over terms gathered across every shard,
+        so a request carrying them cannot be prepared per shard: 930.9 ms against 87.0 ms on one
+        store, shards reused 0/6 against 4/7, 448 items served where the same query without them
+        served 757 -- all 448 among the 757, so the groups only removed.
+        """
+        import os
+
+        from matrixark_mcp_runtime_config import serving_secondary_index_enabled
+
+        previous = os.environ.get("MATRIXARK_SERVING_SECONDARY_INDEX")
+        try:
+            os.environ.pop("MATRIXARK_SERVING_SECONDARY_INDEX", None)
+            self.assertFalse(serving_secondary_index_enabled(), "off unless asked for")
+            os.environ["MATRIXARK_SERVING_SECONDARY_INDEX"] = "1"
+            self.assertTrue(serving_secondary_index_enabled(), "and a deployment can have it back")
+            os.environ["MATRIXARK_SERVING_SECONDARY_INDEX"] = "0"
+            self.assertFalse(serving_secondary_index_enabled())
+        finally:
+            os.environ.pop("MATRIXARK_SERVING_SECONDARY_INDEX", None)
+            if previous is not None:
+                os.environ["MATRIXARK_SERVING_SECONDARY_INDEX"] = previous

@@ -92,6 +92,43 @@ def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
 
 DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "500000"))
 
+
+def retrieval_min_score(args: Any = None, ranking: Any = None) -> float:
+    """The score floor for this retrieve: the request's, else the deployment's.
+
+    Read in the same order as every other ranking decision -- per-request first, then the
+    deployment default -- so a caller can lower it for a broad question without the deployment
+    losing its floor for everything else.
+    """
+    for source in (args, ranking):
+        if isinstance(source, dict):
+            value = source.get("min_score")
+            if value not in (None, ""):
+                try:
+                    return max(0.0, float(value))
+                except (TypeError, ValueError):
+                    continue
+    return max(0.0, DEFAULT_RETRIEVAL_MIN_SCORE)
+
+
+def serving_secondary_index_enabled() -> bool:
+    """Whether a serving retrieve sends secondary index groups to the engine.
+
+    OFF, and the default is the decision rather than caution. The engine reads the groups as an
+    admission filter over index terms gathered across EVERY shard, so a request carrying them
+    cannot be prepared per shard and gives up the candidate cache entirely: measured on one store,
+    930.9 ms against 87.0 ms with shards reused 0/6 against 4/7, serving 448 items where the same
+    query without them served 757 -- every one of the 448 among the 757, so the groups only
+    removed. The caller that computes them documents its own use as a 0.08 score nudge.
+
+    `MATRIXARK_SERVING_SECONDARY_INDEX=1` sends them again, for a deployment that wants the old
+    behaviour back without a code change. Nothing about the INDEX ITSELF is decided here -- this is
+    only whether serving filters on it.
+    """
+    return os.environ.get("MATRIXARK_SERVING_SECONDARY_INDEX", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
 # Context-source policy: which context the agent's prompt is assembled from.
 #   auto (default)   -> synthetic/debug requests (retrieve arg synthetic=true) use the
 #                       remote TemporalStore pack ONLY; real Codex/Claude sessions keep
