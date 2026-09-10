@@ -90,8 +90,22 @@ fn inventory_layer_available(inventory: &Value, layer: &str) -> bool {
 ///
 /// Takes BORROWED records: the caller reads them out of the shard cache, and counting has never
 /// needed to own them.
-fn native_retrieval_memory_inventory(records: &[&Value], query_scope: Option<&Value>) -> Value {
-    let mut inventory = json!({
+fn native_retrieval_memory_inventory(
+    records: &[&Value],
+    query_scope: Option<&Value>,
+) -> Value {
+    let mut counts = empty_inventory_counts();
+    count_records_into(&mut counts, records);
+    finish_inventory(counts, query_scope)
+}
+
+/// The zeroed buckets a count starts from.
+///
+/// Separate from the finishing step because the counters do not depend on the query scope -- only
+/// the `query_scope` block and the derived flags do -- so counts for one shard can be built once,
+/// kept, and summed with another shard's.
+fn empty_inventory_counts() -> Value {
+    json!({
         "session": {
             "context_events": 0,
             "context_segments": 0,
@@ -114,28 +128,12 @@ fn native_retrieval_memory_inventory(records: &[&Value], query_scope: Option<&Va
             "context_entities": 0,
             "context_indexes": 0
         },
-        "available_layers": [],
-        "query_scope": {
-            "session_scope": query_scope.map(session_scope_mode).unwrap_or("prefer"),
-            "has_session_id": query_scope
-                .and_then(|scope| scope.get("session_id"))
-                .and_then(Value::as_str)
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false),
-            "has_user_id": query_scope
-                .and_then(|scope| scope.get("user_id"))
-                .and_then(Value::as_str)
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false),
-            "has_tenant_id": query_scope
-                .and_then(|scope| scope.get("tenant_id"))
-                .and_then(Value::as_str)
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-        },
         "profile_records_available_but_not_selected": false
-    });
+    })
+}
 
+/// Add a set of records to a counts object.
+fn count_records_into(inventory: &mut Value, records: &[&Value]) {
     for record in records.iter().copied() {
         let record_type = string_field(record, "record_type");
         let memory_scope = string_field(record, "memory_scope")
@@ -173,14 +171,14 @@ fn native_retrieval_memory_inventory(records: &[&Value], query_scope: Option<&Va
 
         if is_shared {
             match record_type {
-                "resource_chunk" => increment_inventory_count(&mut inventory, "shared", "resource_chunks"),
-                "resource_manifest" => increment_inventory_count(&mut inventory, "shared", "resource_manifests"),
-                "skill_section" => increment_inventory_count(&mut inventory, "shared", "skill_sections"),
+                "resource_chunk" => increment_inventory_count(inventory, "shared", "resource_chunks"),
+                "resource_manifest" => increment_inventory_count(inventory, "shared", "resource_manifests"),
+                "skill_section" => increment_inventory_count(inventory, "shared", "skill_sections"),
                 "skill_manifest" | "skill_registry_update" => {
-                    increment_inventory_count(&mut inventory, "shared", "skill_manifests")
+                    increment_inventory_count(inventory, "shared", "skill_manifests")
                 }
-                "context_entity" => increment_inventory_count(&mut inventory, "shared", "context_entities"),
-                "context_index" => increment_inventory_count(&mut inventory, "shared", "context_indexes"),
+                "context_entity" => increment_inventory_count(inventory, "shared", "context_entities"),
+                "context_index" => increment_inventory_count(inventory, "shared", "context_indexes"),
                 _ => {}
             }
             continue;
@@ -188,11 +186,11 @@ fn native_retrieval_memory_inventory(records: &[&Value], query_scope: Option<&Va
 
         if is_profile {
             match record_type {
-                "context_entity" => increment_inventory_count(&mut inventory, "profile", "context_entities"),
-                "context_index" => increment_inventory_count(&mut inventory, "profile", "context_indexes"),
-                "context_summary" => increment_inventory_count(&mut inventory, "profile", "context_summaries"),
+                "context_entity" => increment_inventory_count(inventory, "profile", "context_entities"),
+                "context_index" => increment_inventory_count(inventory, "profile", "context_indexes"),
+                "context_summary" => increment_inventory_count(inventory, "profile", "context_summaries"),
                 "context_summary_dirty" => {
-                    increment_inventory_count(&mut inventory, "profile", "summary_dirty_markers")
+                    increment_inventory_count(inventory, "profile", "summary_dirty_markers")
                 }
                 _ => {}
             }
@@ -201,19 +199,46 @@ fn native_retrieval_memory_inventory(records: &[&Value], query_scope: Option<&Va
 
         if is_session || matches!(record_type, "context_event" | "context_segment") {
             match record_type {
-                "context_event" => increment_inventory_count(&mut inventory, "session", "context_events"),
-                "context_segment" => increment_inventory_count(&mut inventory, "session", "context_segments"),
-                "context_entity" => increment_inventory_count(&mut inventory, "session", "context_entities"),
-                "context_index" => increment_inventory_count(&mut inventory, "session", "context_indexes"),
-                "context_summary" => increment_inventory_count(&mut inventory, "session", "context_summaries"),
+                "context_event" => increment_inventory_count(inventory, "session", "context_events"),
+                "context_segment" => increment_inventory_count(inventory, "session", "context_segments"),
+                "context_entity" => increment_inventory_count(inventory, "session", "context_entities"),
+                "context_index" => increment_inventory_count(inventory, "session", "context_indexes"),
+                "context_summary" => increment_inventory_count(inventory, "session", "context_summaries"),
                 "context_summary_dirty" => {
-                    increment_inventory_count(&mut inventory, "session", "summary_dirty_markers")
+                    increment_inventory_count(inventory, "session", "summary_dirty_markers")
                 }
                 _ => {}
             }
         }
     }
 
+}
+
+/// Turn counts into the inventory a request is served, which is where the scope comes in.
+fn finish_inventory(mut inventory: Value, query_scope: Option<&Value>) -> Value {
+    if let Some(object) = inventory.as_object_mut() {
+        object.insert(
+            "query_scope".to_string(),
+            json!({
+                "session_scope": query_scope.map(session_scope_mode).unwrap_or("prefer"),
+                "has_session_id": query_scope
+                    .and_then(|scope| scope.get("session_id"))
+                    .and_then(Value::as_str)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false),
+                "has_user_id": query_scope
+                    .and_then(|scope| scope.get("user_id"))
+                    .and_then(Value::as_str)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false),
+                "has_tenant_id": query_scope
+                    .and_then(|scope| scope.get("tenant_id"))
+                    .and_then(Value::as_str)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+            }),
+        );
+    }
     let mut available_layers = Vec::new();
     for layer in ["session", "profile", "shared"] {
         if inventory_layer_available(&inventory, layer) {

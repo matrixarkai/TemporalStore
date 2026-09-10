@@ -1462,6 +1462,11 @@ struct SnapshotEntry {
     /// Keyed by scope because the filter is: one caller means one key, and a second scope pays its
     /// own build once per shard per write rather than on every retrieve.
     prepared: BTreeMap<String, Arc<Vec<CachedRetrieveCandidate>>>,
+    /// The shard's inventory counts, or `None` until something asks.
+    ///
+    /// No scope key, unlike `prepared`: the counters are scope-free, and the scope only enters
+    /// when counts are finished into an inventory, once per rebuild rather than once per shard.
+    counts: Option<Value>,
     /// The payload bytes. `decoded` is charged separately, so this stays comparable to `weigh`.
     bytes: usize,
     /// What the decoded records and the prepared candidates are charged at, or 0 for none.
@@ -1587,6 +1592,23 @@ impl SnapshotCache {
         entry.prepared.get(signature).cloned()
     }
 
+    /// The shard's inventory counts, if this entry still has them.
+    fn counts_for(&mut self, key: &str) -> Option<Value> {
+        self.clock += 1;
+        let clock = self.clock;
+        let entry = self.entries.get_mut(key)?;
+        entry.used = clock;
+        entry.counts.clone()
+    }
+
+    /// Attach a shard's inventory counts. Not charged: this is a fixed handful of integers per
+    /// shard, and charging it would cost more in bookkeeping than it accounts for.
+    fn set_counts(&mut self, key: &str, counts: Value) {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.counts = Some(counts);
+        }
+    }
+
     /// Attach a shard's candidates for a scope, and charge them.
     ///
     /// Charged at the payload bytes rather than a multiple: the candidates are a filtered subset
@@ -1640,6 +1662,7 @@ impl SnapshotCache {
                 map,
                 decoded: None,
                 prepared: BTreeMap::new(),
+                counts: None,
                 bytes,
                 decoded_bytes: 0,
                 used: self.clock,
@@ -1674,6 +1697,7 @@ impl SnapshotCache {
         let dropped = entry.decoded_bytes;
         entry.decoded = None;
         entry.prepared.clear();
+        entry.counts = None;
         entry.decoded_bytes = 0;
         let was = entry.bytes;
         let now = Self::weigh(&entry.map);
@@ -1701,6 +1725,9 @@ impl SnapshotCache {
             self.decoded_bytes = self.decoded_bytes.saturating_sub(entry.decoded_bytes);
             entry.decoded = None;
             entry.prepared.clear();
+            // The counts are a handful of integers; they are dropped with the rest so an evicted
+            // shard has nothing derived left behind, not because they are large.
+            entry.counts = None;
             entry.decoded_bytes = 0;
         }
     }
@@ -5874,6 +5901,46 @@ fn read_record_count(engine: &RecordStore, key: &str) -> Result<String, String> 
     Ok(value)
 }
 
+/// One shard's inventory counts, built at most once per shard per write.
+///
+/// Scope-free, so unlike the candidates there is one entry per shard rather than one per scope.
+fn shard_inventory_counts(engine: &RecordStore, key: String) -> Result<Value, String> {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        if let Some(counts) = cache.counts_for(&key) {
+            return Ok(counts);
+        }
+    }
+    let records = hgetall_decoded(engine, key.clone())?;
+    let borrowed: Vec<&Value> = records.iter().collect();
+    let mut counts = empty_inventory_counts();
+    count_records_into(&mut counts, &borrowed);
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        cache.set_counts(&key, counts.clone());
+    }
+    Ok(counts)
+}
+
+/// Add one shard's counts into a running total.
+///
+/// The buckets are fixed and their leaves are integers, so this walks the two objects in step
+/// rather than trying to be general: anything that is not an integer under a known bucket is a
+/// shape change, and silently ignoring it would hide it.
+fn merge_inventory_counts(into: &mut Value, from: &Value) {
+    for bucket in ["session", "profile", "shared"] {
+        let Some(source) = from.get(bucket).and_then(Value::as_object).cloned() else {
+            continue;
+        };
+        let Some(target) = into.get_mut(bucket).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for (field, value) in source {
+            let added = value.as_u64().unwrap_or(0);
+            let running = target.get(&field).and_then(Value::as_u64).unwrap_or(0);
+            target.insert(field, json!(running.saturating_add(added)));
+        }
+    }
+}
+
 /// One shard's candidates for a scope, built at most once per shard per write.
 ///
 /// The filters are the same three the whole-corpus path applies, in the same order and for the
@@ -6009,7 +6076,15 @@ fn load_retrieve_candidate_snapshot(
     }
 
     let inventory_started = Instant::now();
-    let memory_inventory = native_retrieval_memory_inventory(&records, scope);
+    // Summed from per-shard counts rather than counted over every record again. The counters are
+    // scope-free, so a shard's are the same until that shard is written to; only the finishing
+    // step sees the scope.
+    let mut counts = empty_inventory_counts();
+    for shard in 0..shard_count {
+        let key = format!("{record_hash_key}:{shard:06}");
+        merge_inventory_counts(&mut counts, &shard_inventory_counts(engine, key)?);
+    }
+    let memory_inventory = finish_inventory(counts, scope);
     let inventory_ms = inventory_started.elapsed().as_secs_f64() * 1000.0;
     let scanned_records = records.len();
     let candidates_started = Instant::now();
@@ -7212,6 +7287,58 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    /// Summing per-shard counts equals counting every record at once.
+    ///
+    /// A miscounted inventory does not fail, it changes which memory layers a retrieve believes
+    /// exist -- `available_layers` and the `has_*` flags are derived from these numbers. The
+    /// fixture puts records in all three buckets and includes a shard that contributes nothing,
+    /// which a shard of pure index records does.
+    #[test]
+    fn summing_shard_counts_equals_counting_them_together() {
+        let shard_one = vec![
+            json!({"record_type": "context_event", "memory_scope": "session"}),
+            json!({"record_type": "context_event", "session_continuity": "same_session"}),
+            json!({"record_type": "skill_section", "sharing_scope": "tenant_shared"}),
+        ];
+        let shard_two = vec![
+            json!({"record_type": "context_entity", "memory_scope": "user_profile"}),
+            json!({"record_type": "context_summary", "session_continuity": "cross_session"}),
+            json!({"record_type": "resource_chunk"}),
+        ];
+        // A shard the inventory takes nothing from.
+        let shard_three: Vec<Value> = vec![
+            json!({"record_type": "context_embedding"}),
+            json!({"record_type": "context_node"}),
+        ];
+
+        let mut summed = empty_inventory_counts();
+        for shard in [&shard_one, &shard_two, &shard_three] {
+            let borrowed: Vec<&Value> = shard.iter().collect();
+            let mut counts = empty_inventory_counts();
+            count_records_into(&mut counts, &borrowed);
+            merge_inventory_counts(&mut summed, &counts);
+        }
+
+        let everything: Vec<&Value> = shard_one
+            .iter()
+            .chain(shard_two.iter())
+            .chain(shard_three.iter())
+            .collect();
+        let mut at_once = empty_inventory_counts();
+        count_records_into(&mut at_once, &everything);
+
+        assert_eq!(summed, at_once, "summed counts differ from counting together");
+
+        // And the finished inventories agree, which is what a retrieve actually reads.
+        let scope = json!({"user_id": "u", "session_id": "s"});
+        assert_eq!(
+            finish_inventory(summed, Some(&scope)),
+            finish_inventory(at_once, Some(&scope)),
+            "the finished inventories differ"
+        );
+    }
+
 
     fn candidate_named(name: &str) -> CachedRetrieveCandidate {
         CachedRetrieveCandidate {
