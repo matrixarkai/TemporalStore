@@ -2360,7 +2360,7 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
         write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
     }
     let report = engine
-        .maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0)
+        .maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0, 0)
         .expect("past the gap, the dump + reclaim must fire");
     assert!(
         report.index_log_bytes_after < report.index_log_bytes_before,
@@ -2388,12 +2388,12 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     // The watermark was re-marked at the post-reclaim length: no immediate re-dump, and the
     // cadence fires again once new writes regrow the gap (it must not wait for the file to
     // regrow past its PRE-reclaim size).
-    assert!(engine.maybe_dump_and_reclaim_with_gap_for_test(1, u64::MAX, 0).is_none());
+    assert!(engine.maybe_dump_and_reclaim_with_gap_for_test(1, u64::MAX, 0, 0).is_none());
     for i in 60..70 {
         write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
     }
     assert!(
-        engine.maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0).is_some(),
+        engine.maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0, 0).is_some(),
         "the cadence must keep firing after a reclaim shrank the log"
     );
     drop(engine);
@@ -2449,7 +2449,7 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_pages() {
         write_string(&engine, &format!("sync-{i}"), format!("val-{i}").as_bytes());
     }
     let report = engine
-        .maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0)
+        .maybe_dump_and_reclaim_with_gap_for_test(1, 1, 0, 0)
         .expect("dump + reclaim must fire");
     let floor = report
         .wal_retention_floor

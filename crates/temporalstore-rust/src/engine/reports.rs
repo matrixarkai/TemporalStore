@@ -2888,6 +2888,11 @@ pub struct CatalogDumpReclaimReport {
     pub index_log_records_removed: usize,
     pub index_log_bytes_before: u64,
     pub index_log_bytes_after: u64,
+    /// The index-log sweep read the log and left it alone: nothing was reclaimable, or too
+    /// little was to be worth the rewrite. Without this a caller cannot tell a log that had
+    /// nothing to give from one that was rewritten for nothing -- they report identical bytes.
+    #[serde(default)]
+    pub index_log_rewrite_skipped: bool,
     pub wal_records_removed: usize,
     pub wal_bytes_before: u64,
     pub wal_bytes_after: u64,

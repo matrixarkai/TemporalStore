@@ -1015,6 +1015,15 @@ pub struct IndexLogGcReport {
     pub budget_exhausted: bool,
     pub bytes_before: u64,
     pub bytes_after: u64,
+    /// On-disk bytes the sweep found reclaimable, whether or not it rewrote the log for them.
+    #[serde(default)]
+    pub reclaimable_bytes: u64,
+    /// The sweep read the log, decided what was reclaimable, and did NOT rewrite it -- because
+    /// nothing was reclaimable, or too little was to be worth the barrier. Distinguishes a log
+    /// that had nothing to give from one that was rewritten and gave nothing, which otherwise
+    /// look identical: both report zero records removed and the same bytes before and after.
+    #[serde(default)]
+    pub rewrite_skipped: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1672,9 +1681,10 @@ impl LocalIndexLogStore {
         let mut removed_this_round = 0usize;
         let mut removable_records_before_budget = 0usize;
         let mut retained = Vec::new();
+        let mut reclaimable_bytes = 0u64;
         // By frame, not by line: see the fold path above.
         let mut reader = reader;
-        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
+        while let Some((frame_bytes, payload)) = crate::log_framing::read_frame(&mut reader)? {
             if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                 continue;
             }
@@ -1697,6 +1707,7 @@ impl LocalIndexLogStore {
                 retained.push(payload);
             } else {
                 removed_this_round = removed_this_round.saturating_add(1);
+                reclaimable_bytes = reclaimable_bytes.saturating_add(frame_bytes as u64);
             }
         }
 
@@ -1725,6 +1736,10 @@ impl LocalIndexLogStore {
                 && removable_records_before_budget > max_entries_per_round,
             bytes_before,
             bytes_after,
+            reclaimable_bytes,
+            // This sweep is only reached once a caller has decided it is worth taking; the
+            // threshold that can decline one lives on the post-dump sweep.
+            rewrite_skipped: false,
         })
     }
 
@@ -1747,11 +1762,15 @@ impl LocalIndexLogStore {
     /// load-time catalog seed always survives. Position (`sequence < meta_sequence`) still
     /// bounds the sweep so a record appended AFTER the dump with a stale-looking anchor is never
     /// touched.
+    /// `min_reclaimable_bytes` is the least the sweep must be able to reclaim before it will
+    /// rewrite the log. Below it -- and always when nothing at all is reclaimable -- the log is
+    /// left exactly as it is and the report says so.
     pub fn gc_reflected_before_anchor(
         &self,
         shard_id: ShardId,
         wal_anchor: u64,
         meta_sequence: u64,
+        min_reclaimable_bytes: u64,
     ) -> Result<IndexLogGcReport, IndexLogError> {
         // A SECOND reader of the same on-disk record, so it has to know every spelling the
         // record has ever used. It previously named the long forms only; when those were
@@ -1783,7 +1802,11 @@ impl LocalIndexLogStore {
         let mut retained = Vec::new();
         // By frame, not by line: see the fold path above.
         let mut reader = reader;
-        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
+        // `read_frame` hands back how many bytes the record OCCUPIED, which this loop used to
+        // discard. It is the exact on-disk size of what a rewrite would drop, so the threshold
+        // below is measured in the same bytes the file is measured in rather than in payloads.
+        let mut reclaimable_bytes = 0u64;
+        while let Some((frame_bytes, payload)) = crate::log_framing::read_frame(&mut reader)? {
             if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                 continue;
             }
@@ -1794,7 +1817,30 @@ impl LocalIndexLogStore {
             let reflected = probe.applied_wal_sequence.unwrap_or(0) <= wal_anchor;
             if probe.sequence >= meta_sequence || !reflected {
                 retained.push(payload);
+            } else {
+                reclaimable_bytes = reclaimable_bytes.saturating_add(frame_bytes as u64);
             }
+        }
+
+        // Rewriting while retaining every record writes the file back byte for byte, so the
+        // barrier and the rename buy nothing at all -- that half is arithmetic, not policy. The
+        // threshold is the policy: a rewrite that reclaims a handful of bytes still costs a full
+        // read, a full write and an fsync, and the post-dump sweep runs on every dump.
+        let removable = records_before.saturating_sub(retained.len());
+        if removable == 0 || reclaimable_bytes < min_reclaimable_bytes {
+            return Ok(IndexLogGcReport {
+                shard_id,
+                retain_from_sequence: meta_sequence,
+                records_before,
+                records_after: records_before,
+                records_removed: 0,
+                removable_records_before_budget: removable,
+                bytes_before,
+                bytes_after: bytes_before,
+                reclaimable_bytes,
+                rewrite_skipped: true,
+                ..IndexLogGcReport::default()
+            });
         }
 
         let temp_path = path.with_extension("jsonl.tmp");
@@ -1821,6 +1867,8 @@ impl LocalIndexLogStore {
             budget_exhausted: false,
             bytes_before,
             bytes_after,
+            reclaimable_bytes,
+            rewrite_skipped: false,
         })
     }
 
@@ -2397,6 +2445,91 @@ mod tests {
         assert_eq!(records[1].meta.as_ref().unwrap().start_wal_sequence, 42);
     }
 
+    /// The sweep only rewrites the log when the rewrite is worth taking.
+    ///
+    /// The middle pair carries the weight: the SAME log, with the same records reclaimable, is
+    /// left alone one byte above what it can give and rewritten at exactly what it can give.
+    /// Without that pairing, "it did not rewrite" could just as well mean "there was nothing to
+    /// remove" -- which is the last state, and is asserted on its own terms -- and "enough"
+    /// could quietly mean "more than enough", which a mutation to a strict comparison survived
+    /// until those two thresholds sat either side of the boundary.
+    ///
+    /// The first two states are proved by the log itself and not only by the report: a rewrite
+    /// there removes three of four records, so the surviving count and the byte total say
+    /// plainly whether it happened. The third cannot be proved that way -- a rewrite retaining
+    /// every record writes the file back byte for byte -- which is why the field exists.
+    #[test]
+    fn a_sweep_rewrites_the_log_only_when_the_rewrite_is_worth_taking() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for key in ["a", "b", "c"] {
+            store
+                .append_delta(9, vec![page_item(1, key, false)], Vec::new(), Some(2), None, false, true)
+                .unwrap();
+        }
+        let meta_sequence = store
+            .append_delta(9, Vec::new(), Vec::new(), Some(2), Some(MetaItem::default()), false, true)
+            .unwrap();
+
+        // 1. Reclaimable, but nowhere near a megabyte of it: the log is left exactly as it is.
+        let held = store
+            .gc_reflected_before_anchor(9, 2, meta_sequence, 1 << 20)
+            .unwrap();
+        assert!(held.rewrite_skipped, "a sweep this small must not rewrite the log");
+        assert_eq!(held.records_removed, 0);
+        assert_eq!(
+            held.removable_records_before_budget, 3,
+            "and it must still report what it COULD have removed, or the skip is unreadable"
+        );
+        assert!(
+            held.reclaimable_bytes > 0,
+            "the bytes it declined to reclaim are the reason it declined"
+        );
+        assert_eq!(held.bytes_after, held.bytes_before);
+        assert_eq!(
+            store.read_delta_records(9, 0).unwrap().len(),
+            4,
+            "every record is still there"
+        );
+
+        // 1b. One byte more than it can reclaim is still too much to ask: the near side of the
+        //     boundary, without which "enough" could quietly mean "strictly more than enough".
+        let short = store
+            .gc_reflected_before_anchor(9, 2, meta_sequence, held.reclaimable_bytes + 1)
+            .unwrap();
+        assert!(
+            short.rewrite_skipped,
+            "one byte short of the threshold is short of the threshold"
+        );
+
+        // 2. The same log, the same records reclaimable, and a threshold it meets EXACTLY: it
+        //    rewrites. Reaching the threshold is enough; it does not have to be exceeded.
+        let swept = store
+            .gc_reflected_before_anchor(9, 2, meta_sequence, held.reclaimable_bytes)
+            .unwrap();
+        assert!(
+            !swept.rewrite_skipped,
+            "a sweep that meets the threshold exactly must rewrite"
+        );
+        assert_eq!(swept.records_removed, 3);
+        assert!(swept.bytes_after < swept.bytes_before);
+        assert_eq!(
+            swept.reclaimable_bytes, held.reclaimable_bytes,
+            "the same log offers the same bytes either way -- only the decision changed"
+        );
+        assert_eq!(store.read_delta_records(9, 0).unwrap().len(), 1);
+
+        // 3. Nothing left to reclaim: skipped even with the threshold turned off, because a
+        //    rewrite that retains every record writes the file back byte for byte.
+        let empty = store.gc_reflected_before_anchor(9, 2, meta_sequence, 0).unwrap();
+        assert!(
+            empty.rewrite_skipped,
+            "a sweep with nothing to remove must not take a barrier for it"
+        );
+        assert_eq!(empty.removable_records_before_budget, 0);
+        assert_eq!(empty.reclaimable_bytes, 0);
+    }
+
     #[test]
     fn gc_reflected_before_anchor_keeps_unreflected_deltas_and_the_catalog_anchor() {
         // Content-based post-dump sweep: records whose WAL anchor the durable base already
@@ -2426,7 +2559,7 @@ mod tests {
             .append_delta(7, Vec::new(), Vec::new(), Some(2), Some(meta), false, true)
             .unwrap();
 
-        let report = store.gc_reflected_before_anchor(7, 2, meta_sequence).unwrap();
+        let report = store.gc_reflected_before_anchor(7, 2, meta_sequence, 0).unwrap();
         assert_eq!(report.records_before, 4);
         assert_eq!(report.records_removed, 2, "the whole-index line and the covered delta go");
         assert!(report.bytes_after < report.bytes_before);
