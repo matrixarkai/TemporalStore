@@ -2387,14 +2387,6 @@ def take_secondary_index_terms(terms: list[str], budget: Json) -> list[str]:
     return selected
 
 
-def secondary_index_budget_summary(budget: Json) -> Json:
-    return {
-        "index_total_cap": max(0, int(budget.get("limit", 0))),
-        "index_emitted_count": max(0, int(budget.get("emitted", 0))),
-        "index_dropped_by_total_cap_count": max(0, int(budget.get("dropped", 0))),
-    }
-
-
 def context_index_posting_record(
     *,
     index_name: str,
@@ -2460,20 +2452,26 @@ def context_index_posting_record(
     return record
 
 
-def context_index_record_ref_hashes(record: Json) -> list[Any]:
-    refs = record.get("ref_hashes")
-    if isinstance(refs, list):
-        return [ref for ref in refs if ref is not None]
-    legacy = record.get("ref_hash")
-    return [legacy] if legacy is not None else []
-
-
-def context_index_record_node_hashes(record: Json) -> list[Any]:
-    node_hashes = record.get("node_hashes")
-    if isinstance(node_hashes, list) and node_hashes:
-        return [node_hash for node_hash in node_hashes if node_hash is not None]
-    node_hash = record.get("node_hash")
-    return [node_hash] if node_hash is not None else []
+# These four are not defined here either, for the reason `ordered_unique` above is not: the
+# implementations live in matrixark_mcp_indexing and this module kept a second, identical copy of
+# each. Identical today -- `context_index_ref_hashes` next door in matrixark_mcp_core_compact is
+# the same function again and has NOT stayed identical, which is what a second copy turns into.
+# Every caller importing these names from here is unaffected: the behaviour is what these
+# definitions did, because it is the same code.
+try:
+    from tools.matrixark_mcp_indexing import (
+        context_index_record_node_hashes,
+        context_index_record_ref_hashes,
+        context_index_time_bucket,
+        secondary_index_budget_summary,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import (
+        context_index_record_node_hashes,
+        context_index_record_ref_hashes,
+        context_index_time_bucket,
+        secondary_index_budget_summary,
+    )
 
 
 def ordered_unique_any(values: list[Any]) -> list[Any]:
@@ -2488,15 +2486,6 @@ def ordered_unique_any(values: list[Any]) -> list[Any]:
         seen.add(key)
         output.append(value)
     return output
-
-
-def context_index_time_bucket(timestamp_ms: Any) -> int:
-    try:
-        timestamp = int(timestamp_ms)
-    except (TypeError, ValueError):
-        timestamp = now_ms()
-    bucket_ms = max(1, int(SECONDARY_INDEX_TIME_BUCKET_MS))
-    return (timestamp // bucket_ms) * bucket_ms
 
 
 def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:

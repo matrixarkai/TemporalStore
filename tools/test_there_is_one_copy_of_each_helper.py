@@ -46,8 +46,6 @@ STILL_DUPLICATED = frozenset((
     ('attach_context_event_time_key', ('matrixark_mcp_core_compact', 'matrixark_mcp_event_keys')),
     ('attach_context_placement', ('matrixark_mcp_core_compact', 'matrixark_mcp_event_keys')),
     ('compact_latest_context_state_records', ('matrixark_mcp_core_compact', 'matrixark_mcp_serving_records')),
-    ('context_index_record_node_hashes', ('matrixark_mcp_core', 'matrixark_mcp_indexing')),
-    ('context_index_record_ref_hashes', ('matrixark_mcp_core', 'matrixark_mcp_indexing')),
     ('context_index_ref_hashes', ('matrixark_mcp_core_compact', 'matrixark_mcp_indexing')),
     ('diversify_for_question_type', ('matrixark_mcp_core_ref_selection', 'matrixark_mcp_recall_scoring')),
     ('hybrid_origin_score', ('matrixark_mcp_core_scoring', 'matrixark_mcp_scoring')),
