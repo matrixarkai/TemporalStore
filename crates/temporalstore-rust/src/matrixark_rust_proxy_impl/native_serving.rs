@@ -66,7 +66,94 @@ fn native_serving_ref(mut item: Value) -> Value {
     item
 }
 
-fn native_serving_refs(refs: &[Value]) -> Vec<Value> {
+/// What a served ref carries when the engine shapes it, rather than the caller.
+///
+/// The caller's allow-list, intersected with what a selected ref actually holds. `citation`,
+/// `source_ref`, `resource_type` and their kin are in that allow-list and are never set on an
+/// engine-built ref, so they cannot be lost by keeping this list -- and `memory_layer` is added
+/// alongside, which the caller also does.
+const COMPACT_SERVING_REF_FIELDS: &[&str] = &[
+    "ref_type",
+    "text",
+    "text_preview",
+    "citation",
+    "resource_type",
+    "sharing_scope",
+    "event_type",
+    "source_role",
+    "entity_type",
+    "entity_name",
+    "summary_type",
+    "operator",
+    "memory_scope",
+    "session_continuity",
+    "profile_memory_kind",
+    "profile_memory_class",
+    "profile_entity_current",
+    "profile_summary_current",
+    "profile_current_state_representative",
+    "memory_layer",
+];
+
+/// Whether a deployment permits the engine to emit the serving shape.
+///
+/// A kill switch, not the decision: the decision is the caller's, because only the caller knows
+/// whether this retrieve wants debug refs, which carry lineage the serving shape drops.
+/// `MATRIXARK_ENGINE_COMPACT_SERVING_REFS=0` returns every deployment to the old behaviour without
+/// touching its callers.
+fn engine_compact_serving_refs_allowed() -> bool {
+    !matches!(
+        std::env::var("MATRIXARK_ENGINE_COMPACT_SERVING_REFS")
+            .unwrap_or_default()
+            .trim(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
+/// Keep only the fields a served ref is allowed to carry.
+///
+/// An empty value is dropped rather than sent, matching the caller: it tests
+/// `value not in (None, "", [], {})`, so a zero or a `false` is KEPT and an empty string, list or
+/// map is not.
+fn compact_serving_ref(item: &Value) -> Value {
+    let mut compact = serde_json::Map::new();
+    let Some(object) = item.as_object() else {
+        return item.clone();
+    };
+    for field in COMPACT_SERVING_REF_FIELDS {
+        let Some(value) = object.get(*field) else {
+            continue;
+        };
+        let empty = match value {
+            Value::Null => true,
+            Value::String(text) => text.is_empty(),
+            Value::Array(items) => items.is_empty(),
+            Value::Object(map) => map.is_empty(),
+            _ => false,
+        };
+        if empty {
+            continue;
+        }
+        // The caller lowercases and trims this one on its way out; matching it here keeps the two
+        // shapes byte-identical.
+        if *field == "memory_layer" {
+            if let Some(text) = value.as_str() {
+                compact.insert(
+                    (*field).to_string(),
+                    Value::String(text.trim().to_lowercase()),
+                );
+                continue;
+            }
+        }
+        compact.insert((*field).to_string(), value.clone());
+    }
+    Value::Object(compact)
+}
+
+fn native_serving_refs(refs: &[Value], compact: bool) -> Vec<Value> {
+    if compact && engine_compact_serving_refs_allowed() {
+        return refs.iter().map(compact_serving_ref).collect();
+    }
     refs.iter().cloned().map(native_serving_ref).collect()
 }
 
