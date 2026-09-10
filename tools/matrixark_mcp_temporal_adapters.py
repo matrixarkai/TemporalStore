@@ -4908,10 +4908,12 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS",
             "0",
         ).strip().lower() in {"1", "true", "yes"}
-        self._dedicated_pack_lanes_enabled = os.environ.get(
-            "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
-            "0",
-        ).strip().lower() in {"1", "true", "yes"}
+        # Read through env_bool, like MatrixArkRustProxyClient reads the same variable. The
+        # hand-rolled set here was {"1", "true", "yes"} and env_bool's TRUE_VALUES are
+        # {"1", "true", "yes", "on"}, so `=on` enabled dedicated pack lanes in the client and not
+        # in this adapter -- one component configured and the other not, with nothing saying so.
+        self._dedicated_pack_lanes_enabled = env_bool(
+            "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", False)
         self._publish_visibility_after_flush = (
             os.environ.get("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_AFTER_FLUSH")
             or os.environ.get("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH")
