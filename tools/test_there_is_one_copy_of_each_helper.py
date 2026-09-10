@@ -227,13 +227,18 @@ def _patterns_with_several_copies() -> dict:
 #: matrixark_mcp_serving_records both declared are gone from here: serving_records owns them
 #: now and core_compact re-exports, so the list is shorter by exactly what was consolidated.
 LIVE_DUPLICATE_CONSTANTS = frozenset((
-    "AUTO_BUDGET_QUERY_TYPES",
-    "DEFAULT_BUSINESS_TYPE_WEIGHTS",
-    "RESOURCE_EVENTS",
-    "RESOURCE_TYPE_BY_SUFFIX",
-    "STORAGE_ROUTE_PRESETS",
+    # DELIBERATE, and the note is in matrixark_gateway_config above the sets: the connection
+    # probe keeps its own copy so it exercises the dispatch the deployment really uses, and a
+    # test parses matrixark_mcp_embeddings and fails if the two drift. Importing them instead
+    # was tried and backed out -- it makes that mirror test compare a set with itself.
     "_API_EMBEDDING_PROVIDERS",
     "_OSS_EMBEDDING_PROVIDERS",
+    # Blocked, not overlooked. matrixark_mcp_local_adapter and
+    # matrixark_mcp_retrieve_pre_refresh import EACH OTHER, so neither is below the other
+    # and there is no owner to point at: whichever way it moved, which copy a module saw
+    # would depend on which spelling loaded first. It comes off this list when that pair
+    # stops being mutual.
+    "AUTO_BUDGET_QUERY_TYPES",
 ))
 
 

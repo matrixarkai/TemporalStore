@@ -151,21 +151,22 @@ COMMIT_EVENTS = {
     "sessionidle",
     "session_idle",
 }
-RESOURCE_EVENTS = {
-    "resourceadded",
-    "resource_added",
-    "addresource",
-    "add_resource",
-    "resource",
-    "fileadded",
-    "file_added",
-    "documentadded",
-    "document_added",
-    "resourceimport",
-    "resource_import",
-    "skilladded",
-    "skill_added",
-}
+# RESOURCE_EVENTS and RESOURCE_TYPE_BY_SUFFIX live in matrixark_codex_hook, which this module already imports and which imports nothing from
+# here. They were declared in both and agreed -- which is what a pair does until one of them is
+# extended, and three constants elsewhere in this tree disagreed exactly that way, on the copy the
+# live path used.
+try:
+    from .matrixark_codex_hook import (  # noqa: F401
+        RESOURCE_EVENTS,
+        RESOURCE_TYPE_BY_SUFFIX,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_codex_hook import (  # noqa: F401
+        RESOURCE_EVENTS,
+        RESOURCE_TYPE_BY_SUFFIX,
+    )
+
+
 FEEDBACK_EVENTS = {
     "feedback",
     "userfeedback",
@@ -182,28 +183,6 @@ FEEDBACK_EVENTS = {
     "correction",
 }
 
-RESOURCE_TYPE_BY_SUFFIX = {
-    ".md": "md",
-    ".markdown": "md",
-    ".txt": "txt",
-    ".log": "log",
-    ".html": "html",
-    ".htm": "html",
-    ".pdf": "pdf",
-    ".docx": "docx",
-    ".pptx": "pptx",
-    ".xlsx": "xlsx",
-    ".csv": "csv",
-    ".tsv": "tsv",
-    ".json": "json",
-    ".jsonl": "jsonl",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".png": "image",
-    ".jpg": "image",
-    ".jpeg": "image",
-    ".webp": "image",
-}
 
 
 def norm(value: str) -> str:

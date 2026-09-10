@@ -365,26 +365,20 @@ def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
         return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
     return backend_label != "local"
 
-DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
-    "confirmation": 1.0,
-    "correction": 1.0,
-    "approval_budget": 0.95,
-    "approval": 0.95,
-    "approval_state": 0.95,
-    "budget": 0.9,
-    "preference_update": 0.82,
-    "plan_update": 0.78,
-    "status_update": 0.76,
-    "job_status": 0.76,
-    "relationship": 0.74,
-    "location": 0.7,
-    "current_plan": 0.78,
-    "family_profile": 0.72,
-    "skill": 0.84,
-    "resource": 0.68,
-    "dialogue_batch": 0.45,
-    "session": 0.45,
-}
+# DEFAULT_BUSINESS_TYPE_WEIGHTS lives in matrixark_mcp_runtime_config, which this module already imports and which imports nothing from
+# here. They were declared in both and agreed -- which is what a pair does until one of them is
+# extended, and three constants elsewhere in this tree disagreed exactly that way, on the copy the
+# live path used.
+try:
+    from .matrixark_mcp_runtime_config import (  # noqa: F401
+        DEFAULT_BUSINESS_TYPE_WEIGHTS,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_runtime_config import (  # noqa: F401
+        DEFAULT_BUSINESS_TYPE_WEIGHTS,
+    )
+
+
 
 # Not defined here: the scope tables and `MATRIXARK_ROLE_SCOPE_LIMITS` live in
 # matrixark_mcp_identity, which this module carried second, drifted copies of -- see the note
@@ -2826,40 +2820,20 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     return envelope
 
 
-STORAGE_ROUTE_PRESETS: dict[str, Json] = {
-    "shared_store_async": {
-        "storage_family": "shared_store",
-        "write_mode": "async",
-        "storage_mode": "shared_store",
-        "replication_mode": "shared_store",
-        "oplog_mode": "async",
-        "raft_mode": False,
-    },
-    "shared_store_sync": {
-        "storage_family": "shared_store",
-        "write_mode": "sync",
-        "storage_mode": "shared_store",
-        "replication_mode": "shared_store",
-        "oplog_mode": "sync",
-        "raft_mode": False,
-    },
-    "raft_async": {
-        "storage_family": "raft",
-        "write_mode": "async",
-        "storage_mode": "raft",
-        "replication_mode": "raft",
-        "oplog_mode": "async",
-        "raft_mode": True,
-    },
-    "raft_sync": {
-        "storage_family": "raft",
-        "write_mode": "sync",
-        "storage_mode": "raft",
-        "replication_mode": "raft",
-        "oplog_mode": "sync",
-        "raft_mode": True,
-    },
-}
+# STORAGE_ROUTE_PRESETS lives in matrixark_mcp_storage_options, which this module already imports and which imports nothing from
+# here. They were declared in both and agreed -- which is what a pair does until one of them is
+# extended, and three constants elsewhere in this tree disagreed exactly that way, on the copy the
+# live path used.
+try:
+    from .matrixark_mcp_storage_options import (  # noqa: F401
+        STORAGE_ROUTE_PRESETS,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_storage_options import (  # noqa: F401
+        STORAGE_ROUTE_PRESETS,
+    )
+
+
 
 
 def entity_ref_text(record: Json) -> str:
