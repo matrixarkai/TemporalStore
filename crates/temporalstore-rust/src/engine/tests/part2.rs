@@ -2567,6 +2567,78 @@ fn the_wal_byte_threshold_measures_undumped_bytes_not_the_whole_log() {
     );
 }
 
+/// What does `slab_reports()` cost, and how much does it read? Prints; run with --ignored.
+///
+///   sync; echo 3 > /proc/sys/vm/drop_caches
+///   cargo test --release -p temporalstore-rust --lib what_the_slab_survey_costs -- --ignored --nocapture
+///
+/// It is on the plan path of every maintenance round (the reclaim slab view, the recovery report
+/// and the boundary report all call it), and it `fs::read`s every slab file in full. The figure
+/// that matters is the COLD one: a warm run measures the page cache, not the work.
+#[test]
+#[ignore]
+fn what_the_slab_survey_costs() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let records = 32_000usize;
+    for index in 0..records {
+        write_string(&engine, &format!("slab-{index:06}"), &[b'v'; 512]);
+    }
+
+    let store = engine.block_store();
+    let slabs = store.slab_ids().unwrap_or_default();
+    let on_disk: u64 = store
+        .slab_reports()
+        .unwrap_or_default()
+        .iter()
+        .map(|report| report.physical_bytes)
+        .sum();
+
+    // First call after the writes: whatever the page cache happens to hold.
+    let started = std::time::Instant::now();
+    let first = store.slab_reports().unwrap_or_default().len();
+    let first_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    // Five more, fully warm.
+    let started = std::time::Instant::now();
+    let rounds = 5;
+    for _ in 0..rounds {
+        std::hint::black_box(store.slab_reports().unwrap_or_default().len());
+    }
+    let warm_ms = started.elapsed().as_secs_f64() * 1000.0 / rounds as f64;
+
+    eprintln!(
+        "  {records} records, {} slabs, {on_disk} bytes on disk ({:.1} MiB)",
+        slabs.len(),
+        on_disk as f64 / (1024.0 * 1024.0)
+    );
+    eprintln!("    slab_reports() first={first_ms:.2} ms  warm={warm_ms:.2} ms  (reports={first})");
+    // And the same two fields, by header walk, decoding nothing.
+    let started = std::time::Instant::now();
+    let mut counts = Vec::new();
+    for _ in 0..rounds {
+        counts = store.slab_block_counts().unwrap_or_default();
+    }
+    let walk_ms = started.elapsed().as_secs_f64() * 1000.0 / rounds as f64;
+    eprintln!("    header walk   warm={walk_ms:.2} ms  (slabs={})", counts.len());
+    eprintln!("    => slab_reports is {:.1}x the header walk", warm_ms / walk_ms.max(0.0001));
+    let survey_pages: u64 = store
+        .slab_reports()
+        .unwrap_or_default()
+        .iter()
+        .map(|report| report.page_count)
+        .sum();
+    let walk_pages: u64 = counts.iter().map(|entry| entry.2).sum();
+    eprintln!("    page_count: slab_reports={survey_pages} header_walk={walk_pages} {}",
+        if survey_pages == walk_pages { "AGREE" } else { "DISAGREE" });
+}
+
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,
