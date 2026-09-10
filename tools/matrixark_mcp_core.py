@@ -3209,7 +3209,10 @@ EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 10000)
 #
 # int8 remains legitimate where ranking does not matter -- bulk archival, or a coarse
 # prefilter re-scored at full precision.
-EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0") not in {"0", "false", "False", ""}
+#: `.strip().lower()` and the full FALSE_VALUES vocabulary. It was
+#: `not in {"0", "false", "False", ""}` with neither, so `=off`, `=no` and `=FALSE` read as
+#: TRUE and switched the flag ON. The empty string stays false, as it was here.
+EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0").strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 def _int8_scale(dims: int) -> float:

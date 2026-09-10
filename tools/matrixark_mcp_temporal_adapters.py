@@ -3045,7 +3045,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._direct_write_queue_autostart = True
         self._native_side_index_assume_fresh = env_bool("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", False)
         self._direct_raw_ingestion_queue_enabled = env_bool("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", False)
-        self._direct_raw_ingestion_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION", "0").strip().lower() in {"1", "true", "yes"}
+        # "on" added: the set accepted "yes" and not "on", so `=on` left this off. Its
+        # neighbour on the line above reads the queue flag through env_bool, which accepts
+        # both.
+        self._direct_raw_ingestion_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION", "0").strip().lower() in {"1", "true", "yes", "on"}
         self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
         self._direct_write_queue_done_key = f"{self._storage_prefix}:direct_write_queue_done"
         self._direct_write_queue_dead_key = f"{self._storage_prefix}:direct_write_queue_dead"

@@ -118,7 +118,9 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES  # noqa: F401
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
-LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+#: "off" added: the set accepted "no" and not "off", so `=off` left this default-ON cache on.
+#: The empty string is NOT in the set, so `X=` still means on here -- unchanged deliberately.
+LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 # Records the tail file may hold before the base is folded back in. Bounds both the
 # delta file and the work a load does stitching it onto the base.
 # 250 rather than 2000, because the tail is now on the COLD path: a load stitches the delta onto the
