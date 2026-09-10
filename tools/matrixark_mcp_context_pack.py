@@ -1543,7 +1543,7 @@ def _pack_redundancy_filter_enabled() -> bool:
     return bool(pack_drop_redundant_items_enabled(None))
 
 
-def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> list[Json]:
+def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False, already_dropped: bool = False) -> list[Json]:
     groups: dict[tuple[str, str], Json] = {}
     order: list[tuple[str, str]] = []
     for ref in refs:
@@ -1566,7 +1566,10 @@ def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity:
         groups[key]["items"].append(item)
         groups[key]["n"] += 1
     built = [groups[key] for key in order]
-    if _pack_redundancy_filter_enabled():
+    # `already_dropped` means the engine applied this filter when it selected the refs, so running
+    # it here would scan the whole pack to find nothing. Default false, so a pack from an engine
+    # that did not sweep is still swept here.
+    if not already_dropped and _pack_redundancy_filter_enabled():
         built = drop_redundant_pack_items(built)
     return built
 
@@ -1652,6 +1655,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
             default_session_continuity=default_session_continuity,
             default_memory_layer=default_memory_layer,
             include_debug=include_debug,
+            already_dropped=bool(pack.get("redundant_items_dropped")),
         )
         if pack.get("selected_ref_counts"):
             compact.setdefault("counts", {})["refs"] = pack.get("selected_ref_counts", {})

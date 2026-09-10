@@ -507,6 +507,7 @@ def serving_ref_groups_for_pack(
     *,
     default_session_continuity: str = "",
     default_memory_layer: str = "",
+    already_dropped: bool = False,
 ) -> list[Json]:
     groups: dict[tuple[str, str], Json] = {}
     order: list[tuple[str, str]] = []
@@ -542,7 +543,11 @@ def serving_ref_groups_for_pack(
     # Imported on first use rather than at module level: this module already imports
     # matrixark_mcp_core, and matrixark_mcp_core star-imports this module, so the order in which
     # the three settle is not something to add a fourth edge to.
-    if _redundancy_filter_enabled():
+    #
+    # `already_dropped` means the engine applied it when it selected the refs -- it does that now --
+    # so running it again scans the whole pack to find nothing. Default false, so a pack from an
+    # engine that did not sweep is still swept here.
+    if not already_dropped and _redundancy_filter_enabled():
         built = _drop_redundant_pack_items(built)
     return built
 

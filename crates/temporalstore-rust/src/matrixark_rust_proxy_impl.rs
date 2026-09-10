@@ -6033,6 +6033,19 @@ fn retrieve_context_pack_output(
         }
         selected_refs.push(selected_ref.clone());
     }
+    // Dropped here, where the refs are chosen, rather than by the caller reading them all again:
+    // this was the last substantial piece of retrieval still done in Python, and the profiler put
+    // it at about a third of the gateway's CPU.
+    let swept_redundant_items = pack_drop_redundant_items();
+    let sweep_started = Instant::now();
+    let before_sweep = selected_refs.len();
+    let selected_refs = if swept_redundant_items {
+        drop_redundant_selected_refs(selected_refs)
+    } else {
+        selected_refs
+    };
+    let sweep_ms = sweep_started.elapsed().as_secs_f64() * 1000.0;
+    let swept_away = before_sweep.saturating_sub(selected_refs.len());
     let selected_count = selected_refs.len();
     let mut memory_inventory = snapshot.memory_inventory.clone();
     let selected_profile_ref_count = selected_refs
@@ -6086,7 +6099,7 @@ fn retrieve_context_pack_output(
         // Phases, not just a total: a rebuild and a scoring pass are fixed by different work, and
         // "the retrieve took a second" has never been enough to tell them apart.
         eprintln!(
-            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims; query embed {:.1} ms",
+            "slow retrieve: {elapsed_ms} ms total, snapshot {snapshot_ms:.1} ms (cache_hit={candidate_cache_hit}), score {score_ms:.1} ms, {} records scanned, {selected_count} refs selected; rebuild {:.1} read / {:.1} inventory / {:.1} candidates; snapshot holds {} candidates, {} with vectors up to {} dims; query embed {:.1} ms; sweep {:.1} ms dropped {}",
             snapshot.scanned_records,
             snapshot.build.read_ms,
             snapshot.build.inventory_ms,
@@ -6094,7 +6107,9 @@ fn retrieve_context_pack_output(
             snapshot.candidate_count(),
             vectors_held,
             widest_vector,
-            query_embed_ms
+            query_embed_ms,
+            sweep_ms,
+            swept_away
         );
     }
     let correctness = selected_count > 0;
@@ -6108,6 +6123,9 @@ fn retrieve_context_pack_output(
         "context_pack_assembly": "native_rust_proxy",
         "native_context_pack": true,
         "selected_refs": serving_selected_refs,
+        // Says the refs have already had the redundancy sweep applied, so a caller that carries
+        // its own copy of that filter can skip it rather than scan the pack again to find nothing.
+        "redundant_items_dropped": swept_redundant_items,
         "dropped_refs": serving_dropped_refs,
         "memory_inventory": memory_inventory.clone(),
         "recall_policy": {
@@ -6554,6 +6572,127 @@ const SLOW_RETRIEVE_LOG_MS: u128 = 250;
 /// On by default: ranking is dense, and a retrieve that cannot embed its query ranks lexically.
 /// `MATRIXARK_PROXY_EMBED_QUERY=0` turns it off for a deployment that would rather its caller own
 /// the embedding entirely.
+/// A pack item's text, normalised the way the redundancy rule compares it.
+///
+/// An entity item is a projection of the event it came from -- `preference = drink is matcha`
+/// against `user: I live in Kyoto and my favorite drink is matcha.` -- so only the value half,
+/// after the `=`, is compared. Whitespace is collapsed, case is folded, and trailing full stops go,
+/// because a projection and its source routinely differ by exactly those.
+fn normalized_pack_item_text(text: &str) -> String {
+    let value_half = match text.split_once('=') {
+        Some((_, rest)) => rest,
+        None => text,
+    };
+    let collapsed = value_half.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.to_lowercase().trim_end_matches('.').to_string()
+}
+
+/// Text shorter than this is never treated as redundant: a label or a stub would match inside
+/// almost anything, and dropping an item for that reason loses content nothing else carries.
+const REDUNDANT_ITEM_MIN_CHARS: usize = 8;
+
+/// How much text to seal into one haystack. Fewer, larger searches beat many small ones; the
+/// bytes scanned are the same either way.
+const REDUNDANT_HAYSTACK_BYTES: usize = 65536;
+
+/// Drop refs whose text a LONGER ref in the same pack already carries.
+///
+/// The reader is billed for every ref, and an entity projection of an event says the same thing
+/// twice. Only a strict containment of the value half is dropped, so a ref that adds a name, a
+/// type or a value not literally present in the kept one survives.
+///
+/// Ordered longest first and searched against joined haystacks, so an item is compared only
+/// against text that could contain it, in a handful of searches rather than one per candidate.
+/// The order is free to choose because containment is transitive and carries the length condition
+/// with it: if X is inside Y and Y is inside Z then X is inside Z, so whether Y itself survives
+/// cannot change X's fate.
+fn drop_redundant_selected_refs(refs: Vec<Value>) -> Vec<Value> {
+    if refs.len() < 2 {
+        return refs;
+    }
+    let texts: Vec<String> = refs
+        .iter()
+        .map(|ref_value| {
+            normalized_pack_item_text(ref_value.get("text").and_then(Value::as_str).unwrap_or(""))
+        })
+        .collect();
+    // A text carrying the separator could let a match span two of them. Normalised pack text is
+    // collapsed prose and does not contain a NUL; if one ever does, nothing is dropped rather than
+    // something being dropped wrongly.
+    if texts.iter().any(|text| text.contains('\0')) {
+        return refs;
+    }
+
+    let mut order: Vec<usize> = (0..texts.len()).collect();
+    order.sort_by(|left, right| texts[*right].len().cmp(&texts[*left].len()));
+
+    let mut redundant = vec![false; texts.len()];
+    let mut any_redundant = false;
+    let mut sealed: Vec<String> = Vec::new();
+    // Grown by appending rather than rebuilt per group: a thousand refs have close to a thousand
+    // distinct lengths, and re-joining at each one copies the whole haystack again.
+    let mut pending_text = String::new();
+
+    let mut position = 0usize;
+    while position < order.len() {
+        // One whole length group: an item of the same length cannot contain another.
+        let group_len = texts[order[position]].len();
+        let mut end = position;
+        while end < order.len() && texts[order[end]].len() == group_len {
+            end += 1;
+        }
+
+        if group_len >= REDUNDANT_ITEM_MIN_CHARS {
+            for slot in position..end {
+                let index = order[slot];
+                let text = &texts[index];
+                if text.is_empty() {
+                    continue;
+                }
+                let contained = (!pending_text.is_empty() && pending_text.contains(text.as_str()))
+                    || sealed.iter().any(|chunk| chunk.contains(text.as_str()));
+                if contained {
+                    redundant[index] = true;
+                    any_redundant = true;
+                }
+            }
+        }
+
+        for slot in position..end {
+            let text = texts[order[slot]].as_str();
+            pending_text.push_str(text);
+            pending_text.push('\0');
+        }
+        if pending_text.len() >= REDUNDANT_HAYSTACK_BYTES {
+            sealed.push(std::mem::take(&mut pending_text));
+        }
+        position = end;
+    }
+
+    if !any_redundant {
+        return refs;
+    }
+    refs.into_iter()
+        .enumerate()
+        .filter(|(index, _)| !redundant[*index])
+        .map(|(_, ref_value)| ref_value)
+        .collect()
+}
+
+/// Whether the engine drops refs another ref already carries.
+///
+/// On by default, matching the Python filter this replaces, and
+/// `MATRIXARK_PACK_DROP_REDUNDANT_ITEMS=0` turns it off -- the same variable that turned the
+/// Python one off, so a deployment that disabled it stays disabled.
+fn pack_drop_redundant_items() -> bool {
+    !matches!(
+        std::env::var("MATRIXARK_PACK_DROP_REDUNDANT_ITEMS")
+            .unwrap_or_default()
+            .trim(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
 fn embed_query_here() -> bool {
     !matches!(
         std::env::var("MATRIXARK_PROXY_EMBED_QUERY")
@@ -6908,6 +7047,139 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+
+    fn swept(texts: &[&str]) -> Vec<String> {
+        let refs: Vec<Value> = texts.iter().map(|text| json!({"text": text})).collect();
+        drop_redundant_selected_refs(refs)
+            .into_iter()
+            .map(|item| item["text"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// An entity projection of a kept event is dropped: one fact, billed once.
+    #[test]
+    fn an_entity_projection_of_a_kept_event_is_dropped() {
+        let kept = swept(&[
+            "user: I live in Kyoto and my favorite drink is matcha.",
+            "preference: preference = drink is matcha",
+        ]);
+        assert_eq!(kept, vec!["user: I live in Kyoto and my favorite drink is matcha."]);
+    }
+
+    /// An entity that adds content of its own survives.
+    #[test]
+    fn an_entity_with_content_of_its_own_survives() {
+        let kept = swept(&[
+            "user: I live in Kyoto.",
+            "relationship: sister = Rin visits on Tuesday",
+        ]);
+        assert_eq!(kept.len(), 2, "an entity adding new content must not be dropped");
+    }
+
+    /// A short fragment is never redundant: a label matches inside almost anything.
+    #[test]
+    fn short_fragments_are_never_treated_as_redundant() {
+        let kept = swept(&[
+            "user: I live in Kyoto and my favorite drink is matcha.",
+            "tag = tea",
+        ]);
+        assert_eq!(kept.len(), 2);
+    }
+
+    /// Equal-length duplicates are both kept: neither is longer, so neither carries more context.
+    #[test]
+    fn two_identical_items_are_both_kept() {
+        let kept = swept(&[
+            "user: I live in Kyoto and my favorite drink is matcha.",
+            "user: I live in Kyoto and my favorite drink is matcha.",
+        ]);
+        assert_eq!(kept.len(), 2);
+    }
+
+    /// Nothing redundant leaves the refs untouched, in order.
+    #[test]
+    fn nothing_redundant_leaves_the_refs_alone() {
+        let texts = ["user: one thing entirely", "topic: subject = something else entirely"];
+        assert_eq!(swept(&texts), texts.to_vec());
+    }
+
+    /// X inside Y inside Z leaves only Z, whatever order they arrive in.
+    ///
+    /// The sweep skips a container that is itself redundant, which would matter if containment
+    /// were not transitive. It is, so the answer cannot depend on the order.
+    #[test]
+    fn a_chain_of_containments_keeps_only_the_longest() {
+        let short = "drink is matcha";
+        let middle = "my favorite drink is matcha and i live in kyoto";
+        let longest = "user: my favorite drink is matcha and i live in kyoto, noted at step 4";
+        for arrangement in [
+            [short, middle, longest],
+            [longest, middle, short],
+            [middle, longest, short],
+        ] {
+            assert_eq!(
+                swept(&arrangement),
+                vec![longest.to_string()],
+                "order {arrangement:?} changed the answer"
+            );
+        }
+    }
+
+    /// The sweep agrees with the plain definition over packs nobody chose by hand.
+    ///
+    /// The length ordering and the joined haystacks are both optimisations, and neither may change
+    /// which refs survive. A hand-written table tests the cases the author thought of; the risk in
+    /// a pruning change is the case they did not.
+    #[test]
+    fn the_sweep_agrees_with_the_plain_definition() {
+        let words = ["storage", "manager", "log", "kyoto", "matcha", "window", "cursor", "page"];
+        let mut seed = 12345u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..60 {
+            let count = 4 + next() % 20;
+            let texts: Vec<String> = (0..count)
+                .map(|index| {
+                    let length = 1 + next() % 9;
+                    let body = (0..length)
+                        .map(|_| words[next() % words.len()])
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if index % 3 == 0 {
+                        format!("k = {body}")
+                    } else {
+                        body
+                    }
+                })
+                .collect();
+
+            let normalized: Vec<String> = texts
+                .iter()
+                .map(|text| normalized_pack_item_text(text))
+                .collect();
+            let expected: Vec<String> = texts
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    let mine = &normalized[*index];
+                    if mine.len() < REDUNDANT_ITEM_MIN_CHARS {
+                        return true;
+                    }
+                    !normalized.iter().enumerate().any(|(other, other_text)| {
+                        other != *index
+                            && other_text.len() > mine.len()
+                            && other_text.contains(mine.as_str())
+                    })
+                })
+                .map(|(_, text)| text.clone())
+                .collect();
+
+            let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
+            assert_eq!(swept(&borrowed), expected, "disagreed on {texts:?}");
+        }
+    }
 
     /// An unconfigured encoder yields NO vector, not a deterministic one.
     ///
