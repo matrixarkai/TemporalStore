@@ -674,6 +674,34 @@ impl TemporalEngine {
             })
             .collect::<Vec<_>>();
 
+        // Index each manifest's bucket summaries BY ROUTING BUCKET, once.
+        //
+        // The loop below asked `manifest.bucket_summaries.iter().any(..)` per bucket, so a shard
+        // with N buckets and a manifest carrying N of them ran N*N comparisons -- and
+        // `bucket_dump_summary_matches_current_generation` CLONES AND SORTS both slab vectors on
+        // every call. At 32,000 buckets that is about a billion of them: measured, reclaim_wal
+        // was 21,448 ms of a 23,310 ms round, on a loop whose period is 30 s.
+        //
+        // Equivalent by construction: the predicate's FIRST condition is
+        // `manifest_summary.routing_bucket == current_summary.routing_bucket`, so only summaries
+        // sharing a routing bucket could ever match. Duplicates under one bucket are kept in a
+        // vector and still tried with `any`, so a manifest carrying two summaries for one bucket
+        // behaves as it did.
+        let manifest_summaries_by_bucket = manifests
+            .iter()
+            .map(|manifest| {
+                let mut by_bucket =
+                    std::collections::HashMap::<u32, Vec<&BucketStorageSummary>>::new();
+                for manifest_summary in &manifest.bucket_summaries {
+                    by_bucket
+                        .entry(manifest_summary.routing_bucket)
+                        .or_default()
+                        .push(manifest_summary);
+                }
+                by_bucket
+            })
+            .collect::<Vec<_>>();
+
         for summary in &bucket_summaries {
             let matching_manifest = manifests
                 .iter()
@@ -687,14 +715,18 @@ impl TemporalEngine {
                     else {
                         return false;
                     };
-                    manifest.bucket_summaries.iter().any(|manifest_summary| {
-                        bucket_dump_summary_matches_current_generation(
-                            manifest_summary,
-                            summary,
-                            manifest_bucket_fingerprints,
-                            &current_bucket_fingerprints,
-                        )
-                    })
+                    manifest_summaries_by_bucket[*manifest_index]
+                        .get(&summary.routing_bucket)
+                        .is_some_and(|candidates| {
+                            candidates.iter().any(|manifest_summary| {
+                                bucket_dump_summary_matches_current_generation(
+                                    manifest_summary,
+                                    summary,
+                                    manifest_bucket_fingerprints,
+                                    &current_bucket_fingerprints,
+                                )
+                            })
+                        })
                 })
                 .map(|(_, manifest)| manifest);
             let Some(manifest) = matching_manifest else {
