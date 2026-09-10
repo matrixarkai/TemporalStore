@@ -21,6 +21,7 @@ file sets its module constant to False below to isolate one lever from the other
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import time
 import unittest
@@ -29,6 +30,47 @@ from pathlib import Path
 import matrixark_mcp_server as mcp
 import matrixark_mcp_local_adapter as A
 import matrixark_mcp_core as C
+
+
+#: The two flags this file drives, and the module that DECLARES each one.
+_FLAG_HOME = {
+    "INTERN_RECORD_METADATA": "matrixark_mcp_local_adapter",
+    "PRUNE_INTERNAL_INDEX_DIMENSIONS": "matrixark_mcp_core",
+}
+
+
+def _set_flag(attr, value):
+    """Set a module-level flag on EVERY loaded spelling of the module that declares it.
+
+    `X` and `tools.X` are two module objects with separate globals. Both spellings of both modules
+    here are live in one process, and a function reads a module-level flag as a free name in the
+    namespace of the module it was DEFINED in -- so setting the flat one while the adapter runs the
+    package one changes a name nothing reads. The assertions still run; they just stop being about
+    a flag that was turned off.
+
+    Which spelling any given call chain reaches depends on which was imported first, and nothing
+    pins that, so this does not try to pick the live one -- it sets all of them.
+    """
+    home = _FLAG_HOME[attr]
+    touched = []
+    for name, module in list(sys.modules.items()):
+        if module is None or name.rsplit(".", 1)[-1] != home:
+            continue
+        if hasattr(module, attr):
+            setattr(module, attr, value)
+            touched.append(name)
+    if not touched:
+        raise AssertionError(
+            "%s was not found on any loaded spelling of %s, so this set nothing" % (attr, home))
+    return touched
+
+
+def _read_flag(attr):
+    """What every loaded spelling currently holds, as {module name: value}."""
+    home = _FLAG_HOME[attr]
+    return {name: getattr(module, attr)
+            for name, module in list(sys.modules.items())
+            if module is not None and name.rsplit(".", 1)[-1] == home and hasattr(module, attr)}
 
 
 def _scope(user: str = "carol", *, tenant: str = "tenant_mem", session: str = "s1") -> dict:
@@ -62,6 +104,52 @@ def _log_lines(path):
     return [line for line in _iter_shard_lines(path) if line.strip()]
 
 
+class TheFlagsReachTheModuleTheAdapterRunsTest(unittest.TestCase):
+    """The floor under every flag change in this file.
+
+    Each one is only meaningful if it reaches the module object the running code reads its globals
+    from. Two spellings mean two objects, and setting the wrong one is invisible -- which is how
+    the interning tests below failed while the interning itself worked."""
+
+    def test_a_write_that_reaches_nothing_is_an_error_not_a_silent_pass(self) -> None:
+        """The property that makes the helper safe to rely on.
+
+        A flag write landing on no module at all is this file's original defect in its worst form:
+        every assertion still runs and not one of them is about a flag that was set. It has to be
+        loud, so that a renamed flag, or a module that stopped carrying it, cannot pass as a
+        successful write."""
+        _FLAG_HOME["A_FLAG_NO_MODULE_DECLARES"] = "matrixark_mcp_local_adapter"
+        try:
+            with self.assertRaises(AssertionError):
+                _set_flag("A_FLAG_NO_MODULE_DECLARES", True)
+        finally:
+            _FLAG_HOME.pop("A_FLAG_NO_MODULE_DECLARES", None)
+
+    def test_setting_a_flag_reaches_every_spelling(self) -> None:
+        """The helper's own contract: after a set, no loaded spelling still holds the old value.
+        A single missed one is exactly the failure this replaces."""
+        before = _read_flag("INTERN_RECORD_METADATA")
+        try:
+            _set_flag("INTERN_RECORD_METADATA", False)
+            after = _read_flag("INTERN_RECORD_METADATA")
+            self.assertEqual(
+                {False}, set(after.values()),
+                "a loaded spelling of the adapter still holds the old value: %r" % (after,))
+        finally:
+            for name, value in before.items():
+                setattr(sys.modules[name], "INTERN_RECORD_METADATA", value)
+
+    def test_the_adapter_the_server_builds_is_one_of_them(self) -> None:
+        """The set is only worth making if the module the adapter actually runs is among the ones
+        it reaches."""
+        import matrixark_mcp_server as server_mod
+
+        adapter_module = server_mod.MatrixArkLocalAdapter.__module__
+        self.assertIn(
+            adapter_module, _read_flag("INTERN_RECORD_METADATA"),
+            "the module the server's adapter class lives in does not carry the interning flag")
+
+
 class _FlagGuard(unittest.TestCase):
     """Save/restore the two module-global flags so each test controls them in isolation."""
 
@@ -71,8 +159,8 @@ class _FlagGuard(unittest.TestCase):
         self.addCleanup(self._restore)
 
     def _restore(self) -> None:
-        A.INTERN_RECORD_METADATA = self._intern0
-        C.PRUNE_INTERNAL_INDEX_DIMENSIONS = self._prune0
+        _set_flag('INTERN_RECORD_METADATA', self._intern0)
+        _set_flag('PRUNE_INTERNAL_INDEX_DIMENSIONS', self._prune0)
 
     def _server(self, tmp: str):
         adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
@@ -126,8 +214,8 @@ class _FlagGuard(unittest.TestCase):
 class InterningCase(_FlagGuard):
     def test_interning_reduces_bytes_by_at_least_half(self):
         """On-disk metadata bytes for identical logical content drop >=50% with interning ON vs OFF."""
-        C.PRUNE_INTERNAL_INDEX_DIMENSIONS = False  # isolate lever 1 on the full metadata-heavy corpus
-        A.INTERN_RECORD_METADATA = True
+        _set_flag('PRUNE_INTERNAL_INDEX_DIMENSIONS', False)  # isolate lever 1 on the full metadata-heavy corpus
+        _set_flag('INTERN_RECORD_METADATA', True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "events.jsonl"
             adapter = mcp.MatrixArkLocalAdapter(path)
@@ -173,8 +261,8 @@ class InterningCase(_FlagGuard):
 
     def test_codec_roundtrip_is_byte_identical(self):
         """encode -> expand returns the EXACT original records (no token ever escapes)."""
-        C.PRUNE_INTERNAL_INDEX_DIMENSIONS = False
-        A.INTERN_RECORD_METADATA = True
+        _set_flag('PRUNE_INTERNAL_INDEX_DIMENSIONS', False)
+        _set_flag('INTERN_RECORD_METADATA', True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter, server = self._server(tmp)
             self._ingest_turns(server, 40)
@@ -196,7 +284,7 @@ class InterningCase(_FlagGuard):
 
     def test_read_all_is_fully_expanded(self):
         """The adapter read path never surfaces a token or a dict record; metadata is full-form."""
-        A.INTERN_RECORD_METADATA = True
+        _set_flag('INTERN_RECORD_METADATA', True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter, server = self._server(tmp)
             self._ingest_turns(server, 30)
@@ -212,7 +300,7 @@ class InterningCase(_FlagGuard):
 
     def test_disk_lines_are_actually_interned(self):
         """Prove the on-disk representation is compressed (tokens present) while reads expand it."""
-        A.INTERN_RECORD_METADATA = True
+        _set_flag('INTERN_RECORD_METADATA', True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "events.jsonl"
             adapter = mcp.MatrixArkLocalAdapter(path)
@@ -242,7 +330,7 @@ class InterningCase(_FlagGuard):
 
     def test_flag_off_is_byte_identical_to_today(self):
         """With interning OFF, no dict records and no token key are ever written."""
-        A.INTERN_RECORD_METADATA = False
+        _set_flag('INTERN_RECORD_METADATA', False)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "events.jsonl"
             adapter = mcp.MatrixArkLocalAdapter(path)
@@ -256,7 +344,7 @@ class InterningCase(_FlagGuard):
     def test_reload_fidelity(self):
         """A fresh, server-less adapter over the frozen durable log reproduces exactly the independent
         expansion of the on-disk bytes -- proving the reload read path re-expands correctly."""
-        A.INTERN_RECORD_METADATA = True
+        _set_flag('INTERN_RECORD_METADATA', True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "events.jsonl"
             adapter = mcp.MatrixArkLocalAdapter(path)
@@ -280,7 +368,7 @@ class InterningCase(_FlagGuard):
         """An old log written flag-OFF (inline fields) reads correctly with the flag ON (no-op expand)."""
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "events.jsonl"
-            A.INTERN_RECORD_METADATA = False
+            _set_flag('INTERN_RECORD_METADATA', False)
             adapter = mcp.MatrixArkLocalAdapter(path)
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self._ingest_turns(server, 25)
@@ -291,7 +379,7 @@ class InterningCase(_FlagGuard):
             self.assertFalse(any(A.INTERN_TOKEN_KEY in r for r in raw), "inline log must carry no token key")
             # Reopen with interning ON via a bare adapter: the inline log must read through unchanged
             # (expansion is a no-op when nothing is interned).
-            A.INTERN_RECORD_METADATA = True
+            _set_flag('INTERN_RECORD_METADATA', True)
             reloaded = mcp.MatrixArkLocalAdapter(path)._read_raw_records()
             # `_read_raw_records` expands interned fields AND unpacks the vector storage form, while
             # `_raw_disk_records` is the durable bytes and does neither. Those were the same thing
@@ -302,7 +390,7 @@ class InterningCase(_FlagGuard):
 
     def test_retrieve_delete_get_all_work_with_interning(self):
         """The mem0 surface behaves identically with interning ON: recall, then delete leaves nothing."""
-        A.INTERN_RECORD_METADATA = True
+        _set_flag('INTERN_RECORD_METADATA', True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter, server = self._server(tmp)
             anchor = server.call_tool("matrixark_ingest", {
@@ -326,15 +414,15 @@ class InterningCase(_FlagGuard):
 class PruneDimensionsCase(_FlagGuard):
     def test_prune_reduces_posting_count(self):
         """Over the SAME records, pruning drops the posting count substantially (~65%)."""
-        A.INTERN_RECORD_METADATA = True
-        C.PRUNE_INTERNAL_INDEX_DIMENSIONS = True
+        _set_flag('INTERN_RECORD_METADATA', True)
+        _set_flag('PRUNE_INTERNAL_INDEX_DIMENSIONS', True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter, server = self._server(tmp)
             self._ingest_turns(server, 50)
             records = adapter._read_raw_records()
 
         def count(prune_on: bool):
-            C.PRUNE_INTERNAL_INDEX_DIMENSIONS = prune_on
+            _set_flag('PRUNE_INTERNAL_INDEX_DIMENSIONS', prune_on)
             total, dims = 0, set()
             for r in records:
                 terms = C.candidate_index_terms(r, {}, {})
@@ -357,12 +445,12 @@ class PruneDimensionsCase(_FlagGuard):
 
     def test_flag_off_reproduces_internal_dimensions(self):
         """With pruning OFF, the internal dimensions are emitted again (byte-for-byte prior behaviour)."""
-        A.INTERN_RECORD_METADATA = True
+        _set_flag('INTERN_RECORD_METADATA', True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter, server = self._server(tmp)
             self._ingest_turns(server, 25)
             records = adapter._read_raw_records()
-        C.PRUNE_INTERNAL_INDEX_DIMENSIONS = False
+        _set_flag('PRUNE_INTERNAL_INDEX_DIMENSIONS', False)
         dims = set()
         for r in records:
             dims |= {t.split(":", 1)[0] for t in C.candidate_index_terms(r, {}, {})}
@@ -380,8 +468,8 @@ class PruneDimensionsCase(_FlagGuard):
         }
 
         def recall_count(prune_on: bool) -> int:
-            A.INTERN_RECORD_METADATA = True
-            C.PRUNE_INTERNAL_INDEX_DIMENSIONS = prune_on
+            _set_flag('INTERN_RECORD_METADATA', True)
+            _set_flag('PRUNE_INTERNAL_INDEX_DIMENSIONS', prune_on)
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
                 adapter, server = self._server(tmp)
                 facts = [v[0] for v in distinctive.values()]
