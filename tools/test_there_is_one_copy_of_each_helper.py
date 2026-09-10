@@ -223,18 +223,12 @@ def _patterns_with_several_copies() -> dict:
 #: Constants defined at module scope in more than one LIVE module, whose copies AGREE today.
 #: A copy too many, not a split -- listed so a NEW one has to be looked at rather than joining a
 #: count nobody reads.
+#: The nine record-shape constants that matrixark_mcp_core_compact and
+#: matrixark_mcp_serving_records both declared are gone from here: serving_records owns them
+#: now and core_compact re-exports, so the list is shorter by exactly what was consolidated.
 LIVE_DUPLICATE_CONSTANTS = frozenset((
     "AUTO_BUDGET_QUERY_TYPES",
-    "COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS",
-    "COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES",
     "DEFAULT_BUSINESS_TYPE_WEIGHTS",
-    "EMBEDDING_LINEAGE_DEBUG_FIELDS",
-    "ENTITY_DEBUG_FIELDS",
-    "EVENT_DEBUG_FIELDS",
-    "HOT_EMBEDDING_COMPACT_TYPES",
-    "HOT_EMBEDDING_LINEAGE_FIELDS",
-    "HOT_SERVING_RECORD_TYPES",
-    "NODE_PATH_HEAVY_RECORD_TYPES",
     "RESOURCE_EVENTS",
     "RESOURCE_TYPE_BY_SUFFIX",
     "STORAGE_ROUTE_PRESETS",

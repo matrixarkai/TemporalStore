@@ -46,15 +46,44 @@ except ImportError:  # top-level path
 
 __all__ = ['HOT_SERVING_RECORD_TYPES', 'COMPACT_SCOPE_RECORD_TYPES', 'COMPACT_TIMESTAMP_RECORD_TYPES', 'TOPOLOGY_DERIVED_PATH_RECORD_TYPES', 'NODE_PATH_HEAVY_RECORD_TYPES', 'EVENT_DEBUG_FIELDS', 'ENTITY_DEBUG_FIELDS', 'EMBEDDING_LINEAGE_DEBUG_FIELDS', 'HOT_EMBEDDING_COMPACT_TYPES', 'HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES', 'HOT_EMBEDDING_LINEAGE_FIELDS', 'compact_hot_context_embedding_record', 'legacy_hook_type_from_codex_event', 'CONTEXT_TIMELINE_FANOUT', 'COMPACT_DERIVED_SCOPE_FIELDS', 'COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES', 'COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS', 'compact_record_scope', '_record_debug_ref', 'context_event_timestamp_ms', 'context_event_time_key', 'attach_context_event_time_key', 'attach_storage_route', 'context_placement_key', 'attach_context_placement', 'compact_record_lifecycle_fields', 'compact_storage_record', 'materialize_serving_records', 'context_index_timestamp_key', 'context_index_posting_bucket', 'context_index_data_model', 'context_index_ref_hashes', 'materialize_serving_record_batch', 'latest_context_state_key', 'compact_latest_context_state_records']
 
-HOT_SERVING_RECORD_TYPES = {
-    "context_event",
-    "context_entity",
-    "context_segment",
-    "resource_chunk",
-    "skill_section",
-    "context_index",
-    "context_embedding",
-}
+# These record-shape constants live in matrixark_mcp_serving_records, and did so here as a second
+# copy: which record types are hot, which fields are debug-only, which carry a heavy node path,
+# which topology scope fields are strings. The two agreed -- which is what a pair does until one of
+# them is extended, and three constants elsewhere in this tree disagreed exactly that way, on the
+# copy the live path used.
+#
+# serving_records owns them because the dependency already runs that way: it imports nothing from
+# here, and `compact_hot_context_embedding_record` has been taken from it for some time.
+#
+# Imported HERE rather than beside that function further down, because module-scope code in between
+# reads these names -- COMPACT_SCOPE_RECORD_TYPES is built from HOT_SERVING_RECORD_TYPES two lines
+# below. Appending to the lower block broke this module with a NameError at import.
+try:
+    from .matrixark_mcp_serving_records import (  # noqa: F401
+        COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS,
+        COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES,
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        ENTITY_DEBUG_FIELDS,
+        EVENT_DEBUG_FIELDS,
+        HOT_EMBEDDING_COMPACT_TYPES,
+        HOT_EMBEDDING_LINEAGE_FIELDS,
+        HOT_SERVING_RECORD_TYPES,
+        NODE_PATH_HEAVY_RECORD_TYPES,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_serving_records import (  # noqa: F401
+        COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS,
+        COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES,
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        ENTITY_DEBUG_FIELDS,
+        EVENT_DEBUG_FIELDS,
+        HOT_EMBEDDING_COMPACT_TYPES,
+        HOT_EMBEDDING_LINEAGE_FIELDS,
+        HOT_SERVING_RECORD_TYPES,
+        NODE_PATH_HEAVY_RECORD_TYPES,
+    )
+
+
 COMPACT_SCOPE_RECORD_TYPES = HOT_SERVING_RECORD_TYPES | {
     "context_node",
     "context_child_ref",
@@ -73,56 +102,7 @@ COMPACT_TIMESTAMP_RECORD_TYPES = COMPACT_SCOPE_RECORD_TYPES | {
     "matrixark_async_pipeline_task",
 }
 TOPOLOGY_DERIVED_PATH_RECORD_TYPES = {"context_child_ref"}
-NODE_PATH_HEAVY_RECORD_TYPES = {
-    "context_event",
-    "context_entity",
-    "context_segment",
-    "resource_chunk",
-    "skill_section",
-    "context_index",
-}
-EVENT_DEBUG_FIELDS = {"envelope", "internal_extraction", "prior_context", "agent_hook", "storage_options"}
-ENTITY_DEBUG_FIELDS = {"previous_state", "field_patches", "patch_results"}
-EMBEDDING_LINEAGE_DEBUG_FIELDS = {
-    "source_event_ids",
-    "source_entity_hashes",
-    "source_summary_hashes",
-    "source_segment_hashes",
-    "source_session_ids",
-    "supersedes_session_entity_hash",
-    "supersedes_session_entity_hashes",
-    "previous_profile_revision",
-    "previous_profile_updated_at_ms",
-    "extraction_context_event_ids",
-    "summary_generation_policy",
-    "dirty_hash",
-}
-HOT_EMBEDDING_COMPACT_TYPES = {"event_text", "entity_state", "profile_entity_state", "segment_text"}
 HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES = {"batch_l0"}
-HOT_EMBEDDING_LINEAGE_FIELDS = {
-    "source_roles",
-    "source_role_counts",
-    "source_hook_types",
-    "source_hook_type_counts",
-    "source_codex_events",
-    "source_codex_event_counts",
-    "source_memory_selection_policies",
-    "source_memory_selection_policy_counts",
-    "source_memory_selection_lossy_count",
-    "source_memory_selection_complete_count",
-    "source_memory_selection_dropped_text_chars",
-    "source_memory_selection_dropped_line_count",
-    "source_memory_selection_retained_text_ratio_avg",
-    "source_memory_selection_retained_line_ratio_avg",
-    "source_memory_scopes",
-    "source_session_continuities",
-    "source_extraction_phases",
-    "source_profile_promotion_policies",
-    "source_profile_promotion_blockers",
-    "promoted_from_memory_scope",
-    "extraction_phase",
-    "final_session_boundary",
-}
 
 
 try:  # the implementation lives in matrixark_mcp_serving_records; this module re-exports it
@@ -153,23 +133,6 @@ CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 # scope_key, event_time_key, node_path, or ContextEmbedding metadata. Keep them
 # out of hot serving records unless the caller explicitly asks for debug data.
 COMPACT_DERIVED_SCOPE_FIELDS = {"_explicit_scope_keys"}
-COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES = {
-    "context_node",
-    "context_child_ref",
-    "context_summary",
-    "context_summary_dirty",
-}
-COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS = {
-    "account_id",
-    "account_hash",
-    "tenant_id",
-    "tenant_hash",
-    "user_id",
-    "user_hash",
-    "session_id",
-    "session_hash",
-    "agent_name",
-}
 
 
 def compact_record_scope(record: Json) -> Json:
