@@ -17,6 +17,9 @@ pub const TS_INDEX_DUMP_GAP_BYTES_PREVIOUS_NAME: &str = "TS_INDEX_DUMP_OPLOG_GAP
 /// Shortest time between two catalog dumps of the same shard. The byte gap says a dump is
 /// WORTH doing; this says it is not worth doing AGAIN yet.
 pub const TS_INDEX_DUMP_MIN_INTERVAL_MS: &str = "TS_INDEX_DUMP_MIN_INTERVAL_MS";
+/// How many reclaimable bytes the index log must be carrying before the post-dump sweep is worth
+/// rewriting it for.
+pub const TS_INDEX_GC_MIN_RECLAIMABLE_BYTES: &str = "TS_INDEX_GC_MIN_RECLAIMABLE_BYTES";
 
 /// Previous name for [`TS_BLOCK_SLAB_TARGET_BYTES`], still honoured so a deployment that sets it
 /// keeps working. Read only when the current name is unset.
@@ -62,6 +65,20 @@ pub const DEFAULT_INDEX_DUMP_WAL_GAP_BYTES: u64 = 1024 * 1024;
 /// theirs writes one meta record -- and because 1.5 s still bounds the extra log growth this
 /// costs to one and a half seconds of writes.
 pub const DEFAULT_INDEX_DUMP_MIN_INTERVAL_MS: u64 = 1_500;
+/// Reclaimable bytes the index log must hold before the post-dump sweep rewrites it.
+///
+/// The sweep reads the whole log, decides which records the durable base already reflects, and
+/// writes the survivors to a temp file which it fsyncs and renames over the original. The READ
+/// is what decides; the write, the barrier and the rename are what it costs. When little is
+/// reclaimable that cost buys almost nothing, and it is paid on every dump.
+///
+/// 768 KiB, against the 1 MiB the design being followed requires before its index GC runs. Below
+/// its own threshold that design skips the round entirely, for the same reason.
+///
+/// A zero disables the threshold, so any reclaimable byte at all triggers a rewrite. Nothing
+/// reclaimable NEVER triggers one regardless: rewriting a log while retaining every record
+/// produces the same bytes it started with, so that is arithmetic rather than policy.
+pub const DEFAULT_INDEX_GC_MIN_RECLAIMABLE_BYTES: u64 = 768 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTuningConfig {
@@ -75,6 +92,7 @@ pub struct StorageTuningConfig {
     pub block_index_cache_bytes: u64,
     pub index_dump_wal_gap_bytes: u64,
     pub index_dump_min_interval_ms: u64,
+    pub index_gc_min_reclaimable_bytes: u64,
 }
 
 impl Default for StorageTuningConfig {
@@ -89,6 +107,7 @@ impl Default for StorageTuningConfig {
             block_index_cache_bytes: DEFAULT_BLOCK_INDEX_CACHE_BYTES,
             index_dump_wal_gap_bytes: DEFAULT_INDEX_DUMP_WAL_GAP_BYTES,
             index_dump_min_interval_ms: DEFAULT_INDEX_DUMP_MIN_INTERVAL_MS,
+            index_gc_min_reclaimable_bytes: DEFAULT_INDEX_GC_MIN_RECLAIMABLE_BYTES,
         }
     }
 }
@@ -142,6 +161,10 @@ impl StorageTuningConfig {
                 get(TS_INDEX_DUMP_MIN_INTERVAL_MS),
                 defaults.index_dump_min_interval_ms,
             ),
+            index_gc_min_reclaimable_bytes: parse_u64(
+                get(TS_INDEX_GC_MIN_RECLAIMABLE_BYTES),
+                defaults.index_gc_min_reclaimable_bytes,
+            ),
         }
     }
 
@@ -155,7 +178,7 @@ impl StorageTuningConfig {
             .max(self.stream_max_blob_size)
     }
 
-    pub fn env_names() -> [&'static str; 11] {
+    pub fn env_names() -> [&'static str; 12] {
         [
             TS_CONTEXT_PAGE_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES,
@@ -168,6 +191,7 @@ impl StorageTuningConfig {
             TS_INDEX_DUMP_WAL_GAP_BYTES,
             TS_INDEX_DUMP_GAP_BYTES_PREVIOUS_NAME,
             TS_INDEX_DUMP_MIN_INTERVAL_MS,
+            TS_INDEX_GC_MIN_RECLAIMABLE_BYTES,
         ]
     }
 }
@@ -192,6 +216,12 @@ pub fn index_dump_wal_gap_bytes() -> u64 {
 /// which is what every test that is not exercising the timer passes.
 pub fn index_dump_min_interval_ms() -> u64 {
     StorageTuningConfig::from_env().index_dump_min_interval_ms
+}
+
+/// Reclaimable bytes the index log must hold before the post-dump sweep rewrites it. A zero
+/// disables the threshold, which is what a test that is not exercising it passes.
+pub fn index_gc_min_reclaimable_bytes() -> u64 {
+    StorageTuningConfig::from_env().index_gc_min_reclaimable_bytes
 }
 
 fn parse_u64(value: Option<String>, default: u64) -> u64 {
@@ -253,6 +283,7 @@ mod tests {
         );
         assert_eq!(config.index_dump_wal_gap_bytes, 1024 * 1024);
         assert_eq!(config.index_dump_min_interval_ms, 1_500);
+        assert_eq!(config.index_gc_min_reclaimable_bytes, 768 * 1024);
     }
 
     #[test]
@@ -272,6 +303,7 @@ mod tests {
                 "TS_INDEX_DUMP_WAL_GAP_BYTES",
                 "TS_INDEX_DUMP_OPLOG_GAP_BYTES",
                 "TS_INDEX_DUMP_MIN_INTERVAL_MS",
+                "TS_INDEX_GC_MIN_RECLAIMABLE_BYTES",
             ]
         );
     }

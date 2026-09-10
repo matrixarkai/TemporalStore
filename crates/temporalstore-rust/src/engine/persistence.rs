@@ -539,13 +539,31 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
+        self.dump_and_reclaim_index_logs_with_min_reclaimable(
+            shard_id,
+            crate::storage_config::index_gc_min_reclaimable_bytes(),
+        )
+    }
+
+    /// [`dump_and_reclaim_index_logs`](Self::dump_and_reclaim_index_logs) with the index-log
+    /// sweep's threshold given rather than read from configuration.
+    ///
+    /// A threshold that only ever comes from the environment cannot be varied by a test without
+    /// writing to the environment of the whole process, which is shared with every other test in
+    /// the binary. Passing it makes "this test is not exercising the threshold" something the
+    /// test says rather than something it assumes.
+    pub(crate) fn dump_and_reclaim_index_logs_with_min_reclaimable(
+        &self,
+        shard_id: ShardId,
+        min_reclaimable_bytes: u64,
+    ) -> Option<super::reports::CatalogDumpReclaimReport> {
         let (wal_anchor, meta_sequence) = self.dump_index_catalog_anchored(shard_id)?;
         // Index-log first: drop every record the durable base already reflects (per-record WAL
         // anchor at or below the dump's), keeping the folded catalog anchor and any delta a
         // concurrent writer landed after the dump serialized.
         let index_gc = self
             .index_log_store
-            .gc_reflected_before_anchor(shard_id, wal_anchor, meta_sequence)
+            .gc_reflected_before_anchor(shard_id, wal_anchor, meta_sequence, min_reclaimable_bytes)
             .ok();
         // The sweep rewrote (shrank) the log file; re-mark the dumped watermark so the next
         // threshold measures growth from the POST-reclaim length. Without this the gap signal
@@ -599,6 +617,10 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.bytes_after)
                 .unwrap_or_default(),
+            index_log_rewrite_skipped: index_gc
+                .as_ref()
+                .map(|report| report.rewrite_skipped)
+                .unwrap_or_default(),
             wal_records_removed: wal_gc
                 .as_ref()
                 .map(|report| report.records_removed)
@@ -624,6 +646,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         gap_bytes: u64,
         min_interval_ms: u64,
+        min_reclaimable_bytes: u64,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog_now(
@@ -634,7 +657,7 @@ impl TemporalEngine {
         ) {
             return None;
         }
-        self.dump_and_reclaim_index_logs(shard_id)
+        self.dump_and_reclaim_index_logs_with_min_reclaimable(shard_id, min_reclaimable_bytes)
     }
 
     pub(super) fn persist_index_bytes(
