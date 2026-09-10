@@ -26,6 +26,33 @@ sys.path.insert(0, TOOLS)
 
 import matrixark_gateway_config as cfg  # noqa: E402
 import matrixark_mcp_budget_policies as policies  # noqa: E402
+
+
+def _modules_implementing(name: str) -> list[str]:
+    """Modules under tools/ that DEFINE `name` rather than delegate to it.
+
+    A delegation is still a `def`, so counting definitions would report two forever and the floor
+    would never be able to pass. The discriminator is the body: a delegation is an import and a
+    return, an implementation is everything else.
+    """
+    found: list[str] = []
+    for entry in sorted(os.listdir(TOOLS)):
+        if not entry.endswith(".py") or entry.startswith("test_"):
+            continue
+        try:
+            source = open(os.path.join(TOOLS, entry), encoding="utf-8", errors="replace").read()
+            tree = ast.parse(source)
+        except (SyntaxError, OSError):
+            continue
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != name:
+                continue
+            body = [s for s in node.body
+                    if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+            if len(body) > 3:
+                found.append(entry[:-3])
+    return sorted(found)
+
 # Reached through `matrixark_mcp_core`, which re-exports it: importing the split module directly
 # hits a circular import, and it is the core module every caller uses anyway.
 import matrixark_mcp_core as core  # noqa: E402
@@ -81,9 +108,9 @@ class Case(unittest.TestCase):
             else:
                 os.environ[name] = value
 
-    # The shared-context policy exists in TWO modules. Driving one and not the other is how half a
-    # deployment honours a setting -- and a mutation reverting only the second copy passed until
-    # this took both.
+    # Two module attributes, one implementation: matrixark_mcp_budget_policies delegates to
+    # matrixark_mcp_core_scoring. Both names are still driven, because a caller reaching either
+    # one is what has to keep working -- that is what would break if a copy came back.
     def copies(self):
         scoring = sys.modules["matrixark_mcp_core_scoring"]
         return {"budget_policies": policies.build_shared_context_policy,
@@ -104,9 +131,9 @@ class Case(unittest.TestCase):
 class TheCeilingIsReadPerPackTest(Case):
 
     def test_both_copies_of_the_shared_policy_are_live(self) -> None:
-        """`matrixark_mcp_budget_policies` and `matrixark_mcp_core_scoring` each carry one. Which
-        one runs depends on the caller, so a ceiling honoured by one of them is a setting that works
-        on some requests."""
+        """`matrixark_mcp_budget_policies` and `matrixark_mcp_core_scoring` both expose the name.
+        Which one a caller reaches depends on the caller, so a ceiling honoured through one name
+        and not the other is a setting that works on some requests."""
         for which in self.copies():
             for section, variable in (("skill", "MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS"),
                                       ("resource", "MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS")):
@@ -118,10 +145,28 @@ class TheCeilingIsReadPerPackTest(Case):
                     self.assertNotEqual(before, 2048)
                     os.environ.pop(variable, None)
 
-    def test_there_are_still_two_copies_to_check(self) -> None:
-        """The floor: if they were ever consolidated, the loop above would silently cover one
-        module twice, and the test would keep passing while covering less."""
-        self.assertEqual(2, len({id(fn) for fn in self.copies().values()}))
+    def test_one_implementation_behind_both_names(self) -> None:
+        """Was: a floor asserting there were still TWO copies, so the loop above could not quietly
+        come to cover one module twice while appearing to cover both.
+
+        There is one implementation now. `matrixark_mcp_budget_policies` DELEGATES to
+        `matrixark_mcp_core_scoring` rather than re-exporting it at module scope, because
+        core_scoring imports `matrixark_mcp_core`, which re-exports core_scoring back -- importing
+        it from here would hand that partially-initialised cycle to every gateway that imports this
+        module. So the two names stay two function OBJECTS, and identity is the wrong floor to
+        write: it would fail on a correct delegation.
+
+        What has to hold instead is what the duplication actually cost: exactly one module carries
+        the logic, and both names answer alike. The loop above keeps its value and changes meaning
+        -- it no longer proves two implementations agree, it proves both names still reach the one.
+        """
+        self.assertEqual(
+            ["matrixark_mcp_core_scoring"], _modules_implementing("build_shared_context_policy"),
+            "the shared-context policy is implemented in more than one module again; delegate to "
+            "the one in matrixark_mcp_core_scoring instead of reimplementing it")
+        os.environ["MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS"] = "2048"
+        self.assertEqual(self.shared("skill", "budget_policies"),
+                         self.shared("skill", "core_scoring"))
 
     def test_lowering_one_takes_effect_without_a_restart(self) -> None:
         """The whole change, from the operator's side: set it, and the next pack is smaller."""

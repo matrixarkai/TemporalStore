@@ -28,6 +28,33 @@ sys.path.insert(0, TOOLS)
 
 import matrixark_gateway_config as cfg  # noqa: E402
 import matrixark_mcp_budget_policies as policies  # noqa: E402
+
+
+def _modules_implementing(name: str) -> list[str]:
+    """Modules under tools/ that DEFINE `name` rather than delegate to it.
+
+    A delegation is still a `def`, so counting definitions would report two forever and the floor
+    would never be able to pass. The discriminator is the body: a delegation is an import and a
+    return, an implementation is everything else.
+    """
+    found: list[str] = []
+    for entry in sorted(os.listdir(TOOLS)):
+        if not entry.endswith(".py") or entry.startswith("test_"):
+            continue
+        try:
+            source = open(os.path.join(TOOLS, entry), encoding="utf-8", errors="replace").read()
+            tree = ast.parse(source)
+        except (SyntaxError, OSError):
+            continue
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != name:
+                continue
+            body = [s for s in node.body
+                    if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+            if len(body) > 3:
+                found.append(entry[:-3])
+    return sorted(found)
+
 import matrixark_mcp_core as core  # noqa: E402
 import matrixark_mcp_runtime_config as runtime  # noqa: E402
 import matrixark_v1_gateway as gateway  # noqa: E402
@@ -103,7 +130,9 @@ class Case(unittest.TestCase):
     def total(self) -> int:
         return runtime.DEFAULT_MAX_CONTEXT_TOKENS
 
-    # The shared-context policy exists in two modules and which one runs depends on the caller.
+    # Two module attributes, one implementation: matrixark_mcp_budget_policies delegates to
+    # matrixark_mcp_core_scoring. Both names are still driven, because a caller reaching either
+    # one is what has to keep working.
     def copies(self):
         scoring = sys.modules["matrixark_mcp_core_scoring"]
         return {"budget_policies": policies.build_shared_context_policy,
@@ -162,10 +191,28 @@ class TheShareCanBeRaisedTest(Case):
             with self.subTest(copy=which):
                 self.assertAlmostEqual(0.30, self.shared("skill", which)[0], places=6)
 
-    def test_there_are_still_two_copies_to_check(self) -> None:
-        """The floor: consolidating them would make the loop above cover one module twice and keep
-        passing while covering less."""
-        self.assertEqual(2, len({id(fn) for fn in self.copies().values()}))
+    def test_one_implementation_behind_both_names(self) -> None:
+        """Was: a floor asserting there were still TWO copies, so the loop above could not quietly
+        come to cover one module twice while appearing to cover both.
+
+        There is one implementation now. `matrixark_mcp_budget_policies` DELEGATES to
+        `matrixark_mcp_core_scoring` rather than re-exporting it at module scope, because
+        core_scoring imports `matrixark_mcp_core`, which re-exports core_scoring back -- importing
+        it from here would hand that partially-initialised cycle to every gateway that imports this
+        module. So the two names stay two function OBJECTS, and identity is the wrong floor to
+        write: it would fail on a correct delegation.
+
+        What has to hold instead is what the duplication actually cost: exactly one module carries
+        the logic, and both names answer alike. The loop above keeps its value and changes meaning
+        -- it no longer proves two implementations agree, it proves both names still reach the one.
+        """
+        self.assertEqual(
+            ["matrixark_mcp_core_scoring"], _modules_implementing("build_shared_context_policy"),
+            "the shared-context policy is implemented in more than one module again; delegate to "
+            "the one in matrixark_mcp_core_scoring instead of reimplementing it")
+        os.environ["MATRIXARK_SHARED_SKILL_BUDGET_RATIO"] = "0.30"
+        self.assertEqual(self.shared("skill", "budget_policies"),
+                         self.shared("skill", "core_scoring"))
 
 
 class EveryLimitIsClearOfTheOneBelowItTest(Case):

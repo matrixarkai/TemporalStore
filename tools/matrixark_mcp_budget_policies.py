@@ -153,102 +153,30 @@ def build_cross_session_policy(
 
 
 def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_tokens: int) -> Json:
-    raw = args.get("shared_context", ranking.get("shared_context", {}))
-    if isinstance(raw, bool):
-        config: Json = {"enabled": raw}
-    elif raw is None:
-        config = {}
-    elif isinstance(raw, dict):
-        config = raw
-    else:
-        raise MatrixArkError("shared_context must be an object or boolean")
-    enabled = bool(config.get("enabled", True)) and remote_budget_tokens > 0
-    # Read per pack, like the ceilings below: a share of the next pack is decided when the next
-    # pack is built. The constants are the fallback, not the answer.
-    resource_max_budget_ratio = float_arg(
-        config,
-        "resource_max_budget_ratio",
-        live_float("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO",
-                   DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO),
-        minimum=0.0,
-        maximum=1.0,
-    )
-    skill_max_budget_ratio = float_arg(
-        config,
-        "skill_max_budget_ratio",
-        live_float("MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO",
-                   DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO),
-        minimum=0.0,
-        maximum=1.0,
-    )
-    resource_budget_ratio = float_arg(
-        config,
-        "resource_budget_ratio",
-        min(live_float("MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
-                       DEFAULT_SHARED_RESOURCE_BUDGET_RATIO),
-            resource_max_budget_ratio),
-        minimum=0.0,
-        maximum=resource_max_budget_ratio,
-    )
-    skill_budget_ratio = float_arg(
-        config,
-        "skill_budget_ratio",
-        min(live_float("MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
-                       DEFAULT_SHARED_SKILL_BUDGET_RATIO),
-            skill_max_budget_ratio),
-        minimum=0.0,
-        maximum=skill_max_budget_ratio,
-    )
-    resource_budget_tokens = int(remote_budget_tokens * resource_budget_ratio)
-    skill_budget_tokens = int(remote_budget_tokens * skill_budget_ratio)
-    if "resource_budget_tokens" in config:
-        resource_budget_tokens = integer_arg(config, "resource_budget_tokens", resource_budget_tokens, minimum=0)
-    if "skill_budget_tokens" in config:
-        skill_budget_tokens = integer_arg(config, "skill_budget_tokens", skill_budget_tokens, minimum=0)
-    # Read per pack rather than per process: the constants above are the fallback, not the answer.
-    resource_max = integer_arg(
-        config, "resource_max_budget_tokens",
-        live_int("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS",
-                 DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS),
-        minimum=0)
-    skill_max = integer_arg(
-        config, "skill_max_budget_tokens",
-        live_int("MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS",
-                 DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS),
-        minimum=0)
-    resource_ratio_cap = int(remote_budget_tokens * resource_max_budget_ratio) if resource_max_budget_ratio > 0 else 0
-    skill_ratio_cap = int(remote_budget_tokens * skill_max_budget_ratio) if skill_max_budget_ratio > 0 else 0
-    if resource_ratio_cap == 0 and remote_budget_tokens > 0 and resource_max_budget_ratio > 0:
-        resource_ratio_cap = 1
-    if skill_ratio_cap == 0 and remote_budget_tokens > 0 and skill_max_budget_ratio > 0:
-        skill_ratio_cap = 1
-    resource_budget_tokens = min(
-        remote_budget_tokens,
-        resource_budget_tokens,
-        resource_ratio_cap if resource_ratio_cap > 0 else remote_budget_tokens,
-        resource_max if resource_max > 0 else remote_budget_tokens,
-    )
-    skill_budget_tokens = min(
-        remote_budget_tokens,
-        skill_budget_tokens,
-        skill_ratio_cap if skill_ratio_cap > 0 else remote_budget_tokens,
-        skill_max if skill_max > 0 else remote_budget_tokens,
-    )
-    min_score = float_arg(config, "min_score", DEFAULT_SHARED_CONTEXT_MIN_SCORE, minimum=0.0, maximum=1.0)
-    return {
-        "enabled": enabled,
-        "mode": "bounded_shared_context" if enabled else "disabled",
-        "decision": "tenant_or_global_shared_resources_and_skills_visible_after_access_scope_then_quota_bounded" if enabled else "disabled_by_budget_or_config",
-        "resource_budget_ratio": round(resource_budget_ratio, 6),
-        "resource_max_budget_ratio": round(resource_max_budget_ratio, 6),
-        "skill_budget_ratio": round(skill_budget_ratio, 6),
-        "skill_max_budget_ratio": round(skill_max_budget_ratio, 6),
-        "resource_budget_tokens": resource_budget_tokens if enabled else 0,
-        "skill_budget_tokens": skill_budget_tokens if enabled else 0,
-        "resource_max_budget_tokens": resource_max,
-        "skill_max_budget_tokens": skill_max,
-        "remote_budget_tokens": remote_budget_tokens,
-        "min_score": min_score if enabled else 0.0,
-        "visibility_labels": ["tenant_shared", "global_shared"],
-        "strategy": "shared_resources_and_skills_live_outside_sessions_and_are_bounded_before_final_pack",
-    }
+    """Delegates to the one implementation, in matrixark_mcp_core_scoring.
+
+    This module carried a hundred-line copy. The two were identical statement for statement, and
+    differed only in a comment -- one that already said what the risk was: making one of the two
+    live and not the other is how a setting comes to work on some requests and not others. Two
+    copies kept honest by a test that runs both is more machinery than one copy.
+
+    No binding is passed through, unlike build_cross_session_policy above, and that is checked
+    rather than assumed: every free name this body reads -- the DEFAULT_SHARED_* constants,
+    live_float, live_int, float_arg, integer_arg, MatrixArkError -- is imported by BOTH modules
+    from the same two places (matrixark_mcp_runtime_config, matrixark_mcp_validation). Resolving
+    them in the other module's namespace therefore returns the same objects and every share comes
+    out unchanged. A constant that had drifted between the two would have needed passing through.
+
+    Imported here rather than at module scope, for the reason given above: neither module imports
+    the other at module scope, and keeping it that way avoids a new edge between two modules that
+    both sit low in the import graph.
+    """
+    try:  # package path
+        from tools.matrixark_mcp_core_scoring import (  # type: ignore
+            build_shared_context_policy as _build,
+        )
+    except ImportError:
+        from matrixark_mcp_core_scoring import (  # type: ignore
+            build_shared_context_policy as _build,
+        )
+    return _build(args, ranking, remote_budget_tokens=remote_budget_tokens)
