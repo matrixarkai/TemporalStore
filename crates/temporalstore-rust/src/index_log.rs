@@ -952,6 +952,27 @@ pub struct IndexDeltaRecord {
     /// write produced, so reconstruction from physical pages cannot resurrect evicted data.
     #[serde(rename = "ks", alias = "key_states", default)]
     pub key_states: Vec<serde_json::Value>,
+    /// The one object key every item carries, when they all carry the same one.
+    ///
+    /// A timestamped write stages ONE ITEM PER REF -- all for the same object, differing only in
+    /// their component -- so a feature append of thirty-two points wrote that key thirty-two
+    /// times. Measured on a record of that shape: 21 bytes per item, 24-31% of the record.
+    ///
+    /// Set only when every item agrees, and then each item's own `object_key` is written empty
+    /// and this is what the reader puts back.
+    ///
+    /// Deliberately NOT a "same as the previous item" marker. That has to read an empty key as
+    /// "repeat", and an item whose key really is empty cannot be ruled out here: the empty-key
+    /// guards live in the HTTP handlers and the proxy, not in the engine. This is unambiguous in
+    /// every case instead -- keys that differ leave it `None` and are all written, and a record
+    /// whose items all share the empty string sets it to `Some(String::new())` and restores
+    /// exactly that.
+    ///
+    /// No `skip_serializing_if`. The encoding is POSITIONAL, so a skipped field shifts every
+    /// field after it; `None` goes on the wire as nil. Appended at the END, which is the only
+    /// safe place to add to a positional record.
+    #[serde(rename = "sk", alias = "shared_object_key", default)]
+    pub shared_object_key: Option<String>,
 }
 
 /// The key a page is written under, from its parts.
@@ -1425,6 +1446,22 @@ impl LocalIndexLogStore {
             item.strip_address_repeats();
             item.strip_object_id_repeat(shard_id);
         }
+        // Hoist the object key when every item names the same one, and blank the copies.
+        //
+        // LAST, after the strips above. `strip_page_ref_key_repeat` DERIVES the page handle from
+        // the item's own fields and `object_key` is one of them, so blanking the key first would
+        // derive a different handle and the strip would decline -- costing more than this saves.
+        let shared_object_key = match items.split_first() {
+            Some((first, rest)) if rest.iter().all(|item| item.object_key == first.object_key) => {
+                Some(first.object_key.clone())
+            }
+            _ => None,
+        };
+        if shared_object_key.is_some() {
+            for item in items.iter_mut() {
+                item.object_key.clear();
+            }
+        }
         let record = IndexDeltaRecord {
             shard_id,
             sequence: next_sequence,
@@ -1433,6 +1470,7 @@ impl LocalIndexLogStore {
             applied_wal_sequence,
             key_states,
             upsert,
+            shared_object_key,
         };
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
         // value-preserving bit-flip (e.g. a flipped `deleted` flag or page address) in this
@@ -1540,6 +1578,14 @@ impl LocalIndexLogStore {
             let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
             // Put back what the writer left out because the item already stated it. A record
             // written before that stripping carries both already, and this leaves those alone.
+            // The hoisted key FIRST. Everything below derives from the item's own fields and
+            // `object_key` is one of them, so restoring it after would derive against an empty
+            // key and put back the wrong handle.
+            if let Some(shared) = record.shared_object_key.clone() {
+                for item in record.items.iter_mut() {
+                    item.object_key = shared.clone();
+                }
+            }
             for item in record.items.iter_mut() {
                 // The item's id first: the address is restored FROM it.
                 item.restore_object_id_repeat(record.shard_id);
@@ -2326,6 +2372,7 @@ mod tests {
             applied_wal_sequence: Some(2),
             upsert: true,
             key_states: Vec::new(),
+            shared_object_key: None,
         };
         let encoded = serde_json::to_string(&record).unwrap();
         assert!(encoded.contains("\"items\""), "the discriminator must survive: {encoded}");
@@ -2935,6 +2982,166 @@ mod tests {
         assert!(!should_dump_index_catalog_now(512, 1024, Some(9_000), 1_500));
     }
 
+    /// A record whose items share one object key writes it once, and reads back identical.
+    ///
+    /// All four corners, because three of them are the ways this could be wrong rather than
+    /// merely unhelpful:
+    ///
+    /// - items that SHARE a key: hoisted, and every item gets it back
+    /// - items that share the EMPTY key: hoisted as `Some("")` and restored as empty, which is
+    ///   why this is a record-level key and not a "same as the previous item" marker -- that
+    ///   marker cannot tell a repeat from a genuinely empty key
+    /// - items that DIFFER: not hoisted, every key written and returned unchanged
+    /// - a single item: hoisted (it trivially agrees with itself) and restored
+    ///
+    /// The round-trip goes through the real writer and the real reader, so it also proves the
+    /// ORDER holds: `page_ref_key` is derived from `object_key` among other fields, so a reader
+    /// that restored the key after the handle would put back a handle derived against an empty
+    /// key.
+    #[test]
+    fn a_record_whose_items_share_an_object_key_writes_it_once() {
+        // Carries an ADDRESS, so `page_ref_key` is really derived from `object_key` and the
+        // restore ORDER is exercised. With no address the derive returns early and a reader that
+        // restored the key too late would still pass -- which is what the first version of this
+        // test did.
+        fn item(key: &str, component: &str) -> IndexItem {
+            let address = crate::block_store::BlockAddress::from_parts(
+                7,
+                4096,
+                832,
+                None,
+                None,
+                None,
+                None,
+            );
+            let page_ref_key = page_ref_key_from_parts(
+                "feature",
+                key,
+                Some(component),
+                address.block_slab_id,
+                address.offset,
+                address.length,
+                address.page_id().unwrap_or_default(),
+                address.generation().unwrap_or_default(),
+            );
+            IndexItem {
+                kind: IndexItemKind::Page,
+                routing_bucket: 1024,
+                page_ref_key,
+                object_key: key.to_string(),
+                model_id: "feature".to_string(),
+                component: Some(component.to_string()),
+                object_id: 0,
+                page_id: 0,
+                address: Some(address),
+                size: 832,
+                in_log: false,
+                deleted: false,
+            }
+        }
+
+        let cases: Vec<(&str, Vec<IndexItem>)> = vec![
+            ("shared", vec![item("ctx:event:41", "a"), item("ctx:event:41", "b"), item("ctx:event:41", "c")]),
+            ("shared-empty", vec![item("", "a"), item("", "b")]),
+            ("differing", vec![item("ctx:event:41", "a"), item("ctx:event:99", "b")]),
+            ("single", vec![item("ctx:event:41", "a")]),
+        ];
+
+        for (label, items) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalIndexLogStore::new(dir.path());
+            let expected: Vec<String> = items.iter().map(|item| item.object_key.clone()).collect();
+            let expected_handles: Vec<String> =
+                items.iter().map(|item| item.page_ref_key.clone()).collect();
+            store
+                .append_delta(11, items.clone(), Vec::new(), Some(1), None, false, true)
+                .unwrap();
+
+            let read = store.read_delta_records(11, 0).unwrap();
+            assert_eq!(read.len(), 1, "{label}: expected one record");
+            let back: Vec<String> = read[0].items.iter().map(|item| item.object_key.clone()).collect();
+            assert_eq!(back, expected, "{label}: object keys did not round-trip");
+            // The derived handle too: it is derived FROM the object key, so a key restored after
+            // it would have produced a handle derived against an empty key.
+            let handles: Vec<String> =
+                read[0].items.iter().map(|item| item.page_ref_key.clone()).collect();
+            assert_eq!(handles, expected_handles, "{label}: page handles did not round-trip");
+
+            let distinct = expected.iter().collect::<std::collections::BTreeSet<_>>().len();
+            let hoisted = read[0].shared_object_key.is_some();
+            assert_eq!(
+                hoisted,
+                distinct == 1,
+                "{label}: hoisted={hoisted} with {distinct} distinct key(s)"
+            );
+        }
+    }
+
+    /// What hoisting the key is worth, on a record shaped like a timestamped write.
+    #[test]
+    fn hoisting_a_shared_object_key_shrinks_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let items: Vec<IndexItem> = (0..32)
+            .map(|index| IndexItem {
+                kind: IndexItemKind::Page,
+                routing_bucket: 1024,
+                page_ref_key: String::new(),
+                object_key: "ctx:event:41:tenant-7".to_string(),
+                model_id: "feature".to_string(),
+                component: Some((1_787_429_651_961u64 + index).to_string()),
+                object_id: 0,
+                page_id: index,
+                address: None,
+                size: 832,
+                in_log: false,
+                deleted: false,
+            })
+            .collect();
+
+        let mut hoisted = items.clone();
+        let shared = hoisted[0].object_key.clone();
+        for item in hoisted.iter_mut() {
+            item.object_key.clear();
+        }
+        let before = encode_index_payload(
+            &IndexDeltaRecord {
+                shard_id: 11,
+                sequence: 1,
+                items,
+                meta: None,
+                applied_wal_sequence: Some(1),
+                upsert: true,
+                key_states: Vec::new(),
+                shared_object_key: None,
+            },
+            INDEX_LOG_SHAPE_DELTA,
+        )
+        .unwrap()
+        .len();
+        let after = encode_index_payload(
+            &IndexDeltaRecord {
+                shard_id: 11,
+                sequence: 1,
+                items: hoisted,
+                meta: None,
+                applied_wal_sequence: Some(1),
+                upsert: true,
+                key_states: Vec::new(),
+                shared_object_key: Some(shared),
+            },
+            INDEX_LOG_SHAPE_DELTA,
+        )
+        .unwrap()
+        .len();
+        eprintln!(
+            "\n  32 items sharing one object key: {before} B -> {after} B ({:.1}% smaller)\n",
+            100.0 * (before - after) as f64 / before as f64
+        );
+        assert!(after < before, "hoisting must shrink the record: {before} -> {after}");
+        let _ = &store;
+    }
+
     #[test]
     fn should_dump_index_catalog_fires_only_past_the_gap() {
         assert!(!should_dump_index_catalog(0, 1024));
@@ -3138,6 +3345,7 @@ mod tests {
             applied_wal_sequence: Some(1),
             upsert: false,
             key_states: Vec::new(),
+            shared_object_key: None,
         };
         let binary_record = IndexDeltaRecord {
             sequence: 2,
@@ -3193,6 +3401,7 @@ mod tests {
             applied_wal_sequence: Some(31),
             upsert: true,
             key_states: Vec::new(),
+            shared_object_key: None,
         };
         let mut packed = Vec::new();
         let mut ser = rmp_serde::Serializer::new(&mut packed).with_struct_map();
@@ -3615,6 +3824,7 @@ mod tests {
             applied_wal_sequence: Some(2),
             upsert: true,
             key_states: Vec::new(),
+            shared_object_key: None,
         };
         let path = append_binary_framed(dir.path(), &record);
         let on_disk = std::fs::read(&path).unwrap();
@@ -3650,6 +3860,7 @@ mod tests {
             applied_wal_sequence: Some(2),
             upsert: true,
             key_states: Vec::new(),
+            shared_object_key: None,
         };
         let path = append_binary_framed(dir.path(), &record);
         let before = std::fs::metadata(&path).unwrap().len();
@@ -3683,6 +3894,7 @@ mod tests {
             applied_wal_sequence: Some(2),
             upsert: true,
             key_states: Vec::new(),
+            shared_object_key: None,
         };
         append_binary_framed(dir.path(), &record);
 
@@ -3720,6 +3932,7 @@ mod tests {
             applied_wal_sequence: Some(2),
             upsert: true,
             key_states: Vec::new(),
+            shared_object_key: None,
         };
         let path = append_binary_framed(dir.path(), &record);
         let whole = std::fs::metadata(&path).unwrap().len();
