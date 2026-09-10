@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use temporalstore_rust::env_flag::env_bool;
 use temporalstore_rust::context_workflow::{
     context_pipeline_manage_report, context_workflow_state_report, default_context_model_providers,
-    embed_drainer_config_from_env, embed_drainer_enabled, extract_context, ingest_extract_context,
+    context_provider_from_env, embed_drainer_config_from_env, embed_drainer_enabled,
+    extract_context, ingest_extract_context,
     inject_context, retrieve_context, run_embed_drainer_loop, ContextExtractRequest,
     ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
     ContextRetrieveRequest,
@@ -247,22 +248,13 @@ fn main() {
     // (O(pending)); the interval is a short idle fallback (MATRIXARK_EMBED_DRAINER_INTERVAL_MS).
     if embed_drainer_enabled() {
         let drainer_engine = engine.clone();
-        // Provider: a configured OpenAI-compatible embed server (MATRIXARK_EMBED_BASE_URL)
-        // else the default deterministic provider (safe offline; real vectors need a
-        // real server + MATRIXARK_REQUIRE_MODEL_EMBEDDINGS).
-        let provider = match std::env::var("MATRIXARK_EMBED_BASE_URL").ok() {
-            Some(base_url) if !base_url.trim().is_empty() => ContextModelProviderConfig {
-                provider_name: "embed-drainer".to_string(),
-                provider_kind: ContextProviderKind::OpenAiCompatible,
-                base_url,
-                api_key_env: std::env::var("MATRIXARK_EMBED_API_KEY_ENV").unwrap_or_default(),
-                embedding_model: std::env::var("MATRIXARK_EMBEDDING_MODEL")
-                    .unwrap_or_else(|_| "all-MiniLM-L6-v2".to_string()),
-                mock_mode: false,
-                ..ContextModelProviderConfig::default()
-            },
-            _ => ContextModelProviderConfig::default(),
-        };
+        // One constructor, shared with the serving path, rather than a second inline provider.
+        // It reads the endpoint from `MATRIXARK_EMBEDDING_API_BASE` and still accepts the older
+        // `MATRIXARK_EMBED_BASE_URL` this used to read on its own, so a deployment setting either
+        // gets real vectors on BOTH paths instead of one. With neither set it stays deterministic,
+        // which is what it did before.
+        let mut provider = context_provider_from_env();
+        provider.provider_name = "embed-drainer".to_string();
         let drainer_config = embed_drainer_config_from_env(shard_id, 0, provider);
         println!(
             "embed drainer enabled: shard {shard_id}, batch {}, interval {}ms",
