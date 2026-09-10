@@ -1117,11 +1117,20 @@ def _memory_layer_counts(refs: list[Json]) -> Json:
     return counts
 
 
-def _default_memory_layer_for_pack(refs: list[Json]) -> str:
-    counts = _memory_layer_counts(refs)
+def _most_common_counted_name(counts: Json) -> str:
+    """The name a pack leaves off its items: most common, ties broken by the larger name.
+
+    One copy of the tie rule. It used to be written out twice, once per default, and it is not a
+    detail either copy could drift on quietly: a different winner does not rename a default, it
+    moves the field onto or off every item in the pack.
+    """
     if not counts:
         return ""
     return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def _default_memory_layer_for_pack(refs: list[Json]) -> str:
+    return _most_common_counted_name(_memory_layer_counts(refs))
 
 
 def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> Json:
@@ -1158,8 +1167,15 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         ("resource_version", "version"),
         ("version_state", "version_state"),
     ]
+    # `ref.get(field, metadata.get(field))` reads the metadata FIRST, every time, to build a
+    # default the ref usually overrides -- sixteen lookups into a dict that on the serving path is
+    # empty on every ref. The fallback is kept exactly: metadata answers only when the ref does not
+    # carry the field at all, so a ref holding an explicit None still resolves to None.
+    metadata_field = metadata.get if metadata else None
     for field, alias in optional_field_aliases:
-        value = ref.get(field, metadata.get(field))
+        value = ref.get(field)
+        if value is None and metadata_field is not None and field not in ref:
+            value = metadata_field(field)
         if value not in (None, "", [], {}):
             item[alias] = value
     session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
@@ -1247,10 +1263,7 @@ def session_continuity_counts(refs: list[Json]) -> Json:
 
 
 def default_session_continuity_for_pack(refs: list[Json]) -> str:
-    counts = session_continuity_counts(refs)
-    if not counts:
-        return ""
-    return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+    return _most_common_counted_name(session_continuity_counts(refs))
 
 
 def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> list[Json]:
@@ -1648,8 +1661,13 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     compact: Json = {"context_pack_id": pack.get("context_pack_id") or pack.get("pack_id") or ""}
     selected_refs = pack.get("selected_refs", [])
     if isinstance(selected_refs, list) and (selected_refs or not isinstance(pack.get("groups"), list)):
-        default_session_continuity = default_session_continuity_for_pack(selected_refs)
-        default_memory_layer = _default_memory_layer_for_pack(selected_refs)
+        # Counted once. The defaults ARE these counts read one way, and asking for them through
+        # the two `*_for_pack` helpers counted the whole pack a second time for each -- four walks
+        # where two do, and three calls to `_memory_layer_for_ref` per ref rather than two.
+        continuity_counts = session_continuity_counts(selected_refs)
+        layer_counts = _memory_layer_counts(selected_refs)
+        default_session_continuity = _most_common_counted_name(continuity_counts)
+        default_memory_layer = _most_common_counted_name(layer_counts)
         compact["groups"] = serving_ref_groups_for_pack(
             selected_refs,
             default_session_continuity=default_session_continuity,
@@ -1659,11 +1677,9 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         )
         if pack.get("selected_ref_counts"):
             compact.setdefault("counts", {})["refs"] = pack.get("selected_ref_counts", {})
-        continuity_counts = session_continuity_counts(selected_refs)
         if continuity_counts:
             compact.setdefault("defaults", {})["session_continuity"] = default_session_continuity
             compact.setdefault("counts", {})["session_continuity"] = continuity_counts
-        layer_counts = _memory_layer_counts(selected_refs)
         if layer_counts:
             compact.setdefault("defaults", {})["memory_layer"] = default_memory_layer
             compact.setdefault("counts", {})["memory_layer"] = layer_counts
