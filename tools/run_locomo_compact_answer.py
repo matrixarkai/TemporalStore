@@ -37,7 +37,6 @@ try:  # package path (tools.run_locomo_ingest_once)
         relative_time_arithmetic_answer,
         should_try_early_aggregation,
         social_platform_answer,
-        source_layer_identity,
         special_memory_answer,
         temporal_ordering_answer,
         wake_time_answer,
@@ -75,7 +74,6 @@ except ImportError:  # top-level path (run_locomo_ingest_once)
         relative_time_arithmetic_answer,
         should_try_early_aggregation,
         social_platform_answer,
-        source_layer_identity,
         special_memory_answer,
         temporal_ordering_answer,
         wake_time_answer,
@@ -234,6 +232,15 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
 
 
 def preferred_date_texts(blocks: list[dict[str, str]]) -> list[str]:
+    # Taken at call time from the module that defines it. `run_locomo_ingest_once` only ever has
+    # this name via its star-import of `run_locomo_ranking` at the end of its body, so whenever
+    # ranking is the module imported FIRST that star-import takes nothing and importing the name
+    # here -- during module construction -- fails. By call time both modules are fully built.
+    try:  # package path (tools.run_locomo_ranking)
+        from .run_locomo_ranking import source_layer_identity
+    except ImportError:  # Direct script execution from tools/.
+        from run_locomo_ranking import source_layer_identity
+
     raw_turn_texts = []
     for block in blocks:
         title_body = f"{block.get('title', '')} {block.get('body', '')}"
