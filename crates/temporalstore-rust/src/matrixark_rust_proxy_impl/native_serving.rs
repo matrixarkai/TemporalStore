@@ -666,12 +666,14 @@ fn profile_shadow_for_candidate(
         .map(|(_, profile_hash)| (profile_hash.clone(), "same_entity_identity"))
 }
 
+/// Takes BORROWED refs: it reads a handful of fields off each and never keeps one, and its caller
+/// holds them inside a snapshot that outlives the call.
 fn profile_shadow_maps_from_selected_refs(
-    selected_refs: &[Value],
+    selected_refs: &[&Value],
 ) -> (HashMap<String, (u64, String)>, HashMap<String, (u64, String)>) {
     let mut by_entity: HashMap<String, (u64, String)> = HashMap::new();
     let mut by_source_entity_hash: HashMap<String, (u64, String)> = HashMap::new();
-    for selected_ref in selected_refs {
+    for selected_ref in selected_refs.iter().copied() {
         if string_field(selected_ref, "memory_scope") != "user_profile"
             || string_field(selected_ref, "session_continuity") != "cross_session"
         {
