@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matrixark_mcp_local_adapter as adapter_module
 import matrixark_local_adapter_ingest as ingest_module
+import matrixark_mcp_serving_records as serving_records
 
 _BLANK = chr(10) + chr(10)
 
@@ -73,15 +74,31 @@ class DebugRecordsHonourTheirGate(unittest.TestCase):
 
     def test_the_gate_actually_turns_them_on(self):
         """Off-by-default is only meaningful if ON still works -- otherwise this test would
-        pass just as well against a writer that was deleted."""
-        original = ingest_module._context_debug_records_enabled
-        ingest_module._context_debug_records_enabled = lambda: True
+        pass just as well against a writer that was deleted.
+
+        Driven through `matrixark_mcp_serving_records`, because that is the switch.
+        `matrixark_local_adapter_ingest._context_debug_records_enabled` decides nothing -- it
+        delegates here -- so patching it turned the two ingest WRITERS on and left the serving
+        side off: the rows were written and then stripped during materialisation, and this
+        assertion saw none of them. Setting the one gate turns on both halves.
+        """
+        original = serving_records.ENABLE_CONTEXT_DEBUG_RECORDS
+        serving_records.ENABLE_CONTEXT_DEBUG_RECORDS = True
         try:
             _, _, records = _ingest()
         finally:
-            ingest_module._context_debug_records_enabled = original
+            serving_records.ENABLE_CONTEXT_DEBUG_RECORDS = original
         self.assertGreater(len(_debug_rows(records)), 0,
                            "the gate cannot turn the rows back on")
+
+    def test_the_ingest_helper_is_a_delegate_and_not_a_second_gate(self):
+        """The floor under the test above. If that helper ever grew a decision of its own there
+        would be two gates for one flag, and driving either alone would prove nothing about the
+        other -- which is exactly the state this test was in."""
+        self.assertIs(
+            ingest_module._context_debug_records_enabled(),
+            serving_records.context_debug_records_enabled(),
+            "the ingest helper no longer answers what the serving gate answers")
 
     def test_retrieval_is_unchanged_without_them(self):
         """An ANSWER test: the queries must return something, and the same something."""
