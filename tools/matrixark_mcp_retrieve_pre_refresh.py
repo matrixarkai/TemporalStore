@@ -93,7 +93,7 @@ def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, questi
     return _impl(args, ranking, field=field, question_type=question_type)
 
 
-def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_type: str) -> bool:
+def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
     """Delegates to the one implementation, in matrixark_mcp_local_adapter.
 
     This module carried its own, and the two had drifted into different predicates: this one had no

@@ -127,6 +127,68 @@ def _duplicate_pairs() -> set[tuple[str, tuple[str, ...]]]:
     return pairs
 
 
+def _parameters(node) -> dict:
+    """name -> default source text (None when the parameter is required)."""
+    args = node.args
+    positional = args.posonlyargs + args.args
+    out: dict = {}
+    pad = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    for arg, default in zip(positional, pad):
+        out[arg.arg] = None if default is None else " ".join(ast.unparse(default).split())
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+        out[arg.arg] = None if default is None else " ".join(ast.unparse(default).split())
+    return out
+
+
+def _keywords_forwarded(node) -> set:
+    """Keyword names the delegation passes explicitly in its forwarding call."""
+    supplied = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            for kw in sub.keywords:
+                if kw.arg:
+                    supplied.add(kw.arg)
+            if any(kw.arg is None for kw in sub.keywords):
+                supplied.add("**")
+    return supplied
+
+
+def _delegation_target(node):
+    """The module a function forwards to, or None if it is an implementation.
+
+    Same shape the floor above draws: an import and a return, plus the `global`/cache lines a
+    memoised delegation adds. Anything longer is a body of its own.
+    """
+    body = [b for b in node.body
+            if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))]
+    if not body or len(body) > 6:
+        return None
+    if not any(isinstance(b, ast.Return) for b in body):
+        return None
+    if any(isinstance(b, (ast.For, ast.While, ast.With)) for b in body):
+        return None
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.ImportFrom) and sub.module:
+            for alias in sub.names:
+                if alias.name == node.name:
+                    return sub.module.rsplit(".", 1)[-1]
+    return None
+
+
+def _parameters_of(module: str, name: str):
+    """The parameters of `name` as `module` defines it, or None if it does not define it."""
+    path = os.path.join(TOOLS_DIR, module + ".py")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            tree = ast.parse(fh.read())
+    except (SyntaxError, OSError):
+        return None
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return _parameters(node)
+    return None
+
+
 class OneCopyOfEachHelperTest(unittest.TestCase):
 
     def test_no_new_duplicate_appears(self) -> None:
@@ -162,6 +224,60 @@ class OneCopyOfEachHelperTest(unittest.TestCase):
             set(), _duplicate_pairs(),
             "a production helper is written twice again:\n  " + "\n  ".join(
                 "%s in %s" % (n, " + ".join(m)) for n, m in sorted(_duplicate_pairs())))
+
+    def test_a_delegation_keeps_the_signature_it_stands_in_front_of(self) -> None:
+        """A delegation is a hand-written signature in front of someone else's.
+
+        Consolidating replaces a body with a forwarding call, and the parameter list has to be
+        copied across. `feature_profile_memory_budget_query` lost `question_type: str = "fact"`
+        that way: the wrapper imported cleanly, forwarded correctly and read as obviously right,
+        and every caller that relied on the default raised TypeError instead.
+
+        Compared as text after normalising whitespace, because a default that is a call or a
+        literal cannot be compared by value without importing both modules -- and importing every
+        module in tools/ is what this suite is careful not to need.
+        """
+        wrong = []
+        for rel in _tracked_production_modules():
+            try:
+                with open(os.path.join(REPO_ROOT, rel), encoding="utf-8", errors="replace") as fh:
+                    source = fh.read()
+                tree = ast.parse(source)
+            except (SyntaxError, OSError):
+                continue
+            for node in tree.body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                target = _delegation_target(node)
+                if target is None:
+                    continue
+                theirs = _parameters_of(target, node.name)
+                if theirs is None:
+                    continue
+                mine = _parameters(node)
+                supplied = _keywords_forwarded(node)
+                for name, default in mine.items():
+                    if name not in theirs:
+                        wrong.append("%s.%s exposes `%s`, which %s does not take"
+                                     % (os.path.basename(rel)[:-3], node.name, name, target))
+                    elif theirs[name] != default:
+                        wrong.append(
+                            "%s.%s declares `%s=%s` where %s declares `%s=%s` -- a caller "
+                            "relying on the default gets a different value, or none"
+                            % (os.path.basename(rel)[:-3], node.name, name, default,
+                               target, name, theirs[name]))
+                for name, default in theirs.items():
+                    if name in mine or name in supplied or default is not None:
+                        continue
+                    wrong.append(
+                        "%s.%s neither exposes nor supplies `%s`, which %s requires -- the "
+                        "forward raises TypeError"
+                        % (os.path.basename(rel)[:-3], node.name, name, target))
+        self.assertEqual(
+            [], wrong,
+            "a delegation's parameter list has drifted from the implementation it forwards to. "
+            "A caller that relies on a default the wrapper dropped raises TypeError, and nothing "
+            "about the wrapper looks wrong:\n  " + "\n  ".join(wrong))
 
     def test_the_scan_actually_finds_things(self) -> None:
         """A floor. If the scan stopped parsing, or git ls-files returned nothing, every assertion
