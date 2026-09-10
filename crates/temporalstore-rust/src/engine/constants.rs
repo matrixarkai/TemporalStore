@@ -5,6 +5,10 @@ use std::sync::atomic::AtomicU64;
 
 pub(super) const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
 pub(super) const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
+
+/// The byte format. Distinct from the JSON magic so a page written before it still identifies
+/// itself, rather than being read as a length that happens to parse.
+pub(super) const FEATURE_PAGE_BINARY_MAGIC: &[u8] = b"TSFPB1\n";
 #[cfg(test)]
 pub(super) const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize =
     crate::storage_config::DEFAULT_CONTEXT_PAGE_TARGET_BYTES;
