@@ -1367,6 +1367,60 @@ def _normalized_item_text(item: Json) -> str:
     return " ".join(text.split()).strip().lower().rstrip(".")
 
 
+# Joined between pack texts so a match cannot span two of them. Normalized record text is
+# whitespace-collapsed lowercase prose and never contains a NUL.
+_PACK_TEXT_SEPARATOR = "\x00"
+
+# How much text to seal into one haystack. Larger means fewer searches per item and more bytes
+# rescanned by each; 64 KiB keeps a full 1,000-ref pack to a handful of searches per item.
+_PACK_HAYSTACK_BYTES = 65536
+
+
+def _drop_redundant_pairwise(
+    groups: list[Json],
+    items: list[Json],
+    texts: list[str],
+    lengths: list[int],
+    order: list[int],
+) -> list[Json]:
+    """The one-text-at-a-time sweep, for a pack that cannot use a joined haystack.
+
+    Same answer, and the same length pruning; it simply compares against each longer text on its
+    own instead of against several joined together.
+    """
+    count = len(items)
+    negated = [-lengths[index] for index in order]
+    redundant = [False] * count
+    any_redundant = False
+    for index in range(count):
+        text = texts[index]
+        length = lengths[index]
+        if not text or length < 8:
+            continue
+        longer = bisect.bisect_left(negated, -length)
+        for position in range(longer):
+            other = order[position]
+            if redundant[other]:
+                continue
+            if text in texts[other]:
+                redundant[index] = True
+                any_redundant = True
+                break
+    if not any_redundant:
+        return groups
+    dropped = {id(items[index]) for index in range(count) if redundant[index]}
+    surviving: list[Json] = []
+    for group in groups:
+        kept = [item for item in (group.get("items") or []) if id(item) not in dropped]
+        if not kept:
+            continue
+        trimmed = dict(group)
+        trimmed["items"] = kept
+        trimmed["n"] = len(kept)
+        surviving.append(trimmed)
+    return surviving
+
+
 def drop_redundant_pack_items(groups: list[Json]) -> list[Json]:
     """Remove items whose content a LONGER item elsewhere in the pack already carries.
 
@@ -1404,29 +1458,56 @@ def drop_redundant_pack_items(groups: list[Json]) -> list[Json]:
 
     count = len(items)
     lengths = [len(text) for text in texts]
-    # Longest first, and negated so the same ordering is ascending for ``bisect``: the scan for an
-    # item of length L covers exactly the entries whose length exceeds L.
+    # Longest first. Everything already in the haystack is then strictly longer than whatever is
+    # being tested, which is the only thing that can contain it.
     order = sorted(range(count), key=lambda index: -lengths[index])
-    negated = [-lengths[index] for index in order]
+
+    # A text carrying the separator could let a match span two of them, which would drop an item
+    # nothing actually contains. Normalized record text does not contain a NUL; if one ever does,
+    # the pack takes the pairwise path rather than the risk.
+    if any(_PACK_TEXT_SEPARATOR in text for text in texts):
+        return _drop_redundant_pairwise(groups, items, texts, lengths, order)
 
     redundant = [False] * count
     any_redundant = False
-    for index in range(count):
-        text = texts[index]
-        length = lengths[index]
-        if not text or length < 8:
-            continue
-        longer = bisect.bisect_left(negated, -length)
-        for position in range(longer):
-            other = order[position]
-            # A container that is redundant itself cannot change the answer (see the note above);
-            # skipping it is only cheaper than searching its text.
-            if redundant[other]:
-                continue
-            if text in texts[other]:
-                redundant[index] = True
-                any_redundant = True
-                break
+    sealed: list[str] = []          # joined haystacks, each ~_PACK_HAYSTACK_BYTES
+    pending: list[str] = []         # not yet sealed
+    pending_text = ""               # pending, joined once per length group rather than per item
+    pending_bytes = 0
+
+    position = 0
+    while position < count:
+        # One whole length group at a time: an item of the same length cannot contain another.
+        group_length = lengths[order[position]]
+        end = position
+        while end < count and lengths[order[end]] == group_length:
+            end += 1
+
+        if group_length >= 8:
+            for slot in range(position, end):
+                index = order[slot]
+                text = texts[index]
+                if not text:
+                    continue
+                if (pending_text and text in pending_text) or any(
+                    text in chunk for chunk in sealed
+                ):
+                    redundant[index] = True
+                    any_redundant = True
+
+        for slot in range(position, end):
+            text = texts[order[slot]]
+            pending.append(text)
+            pending_bytes += len(text) + 1
+        if pending_bytes >= _PACK_HAYSTACK_BYTES:
+            sealed.append(_PACK_TEXT_SEPARATOR.join(pending))
+            pending = []
+            pending_text = ""
+            pending_bytes = 0
+        else:
+            pending_text = _PACK_TEXT_SEPARATOR.join(pending)
+        position = end
+
     if not any_redundant:
         return groups
 
