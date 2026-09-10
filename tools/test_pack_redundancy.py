@@ -152,5 +152,34 @@ class PackRedundancyCase(unittest.TestCase):
                 sorted(got_kept), sorted(expected_kept), "disagreed at seed %d" % seed
             )
 
+    def test_a_text_carrying_the_separator_still_gets_the_plain_answer(self):
+        """A NUL in a text sends the pack down the pairwise path, with the same result.
+
+        The joined haystack is only sound while no text contains the separator -- a match could
+        otherwise span two texts and drop an item nothing actually carries. The guard prevents its
+        own hazard, which means nothing else will ever exercise it.
+        """
+        contained = "drink is matcha"
+        container = "user: my favorite drink is matcha, noted at step 9"
+        packed = [group("event", container, "unrelated sentence about a page cache"),
+                  group("entity", "k = %s" % contained)]
+        without_nul = drop_redundant_pack_items(packed)
+
+        # The same pack, with a NUL riding along in one text.
+        packed_with_nul = [
+            group("event", container + "\x00tail", "unrelated sentence about a page cache"),
+            group("entity", "k = %s" % contained),
+        ]
+        with_nul = drop_redundant_pack_items(packed_with_nul)
+
+        kept_without = sorted(i["text"] for g in without_nul for i in g["items"])
+        kept_with = sorted(i["text"].replace("\x00tail", "") for g in with_nul for i in g["items"])
+        self.assertEqual(kept_with, kept_without)
+        self.assertNotIn(
+            "k = %s" % contained,
+            [i["text"] for g in with_nul for i in g["items"]],
+            "the projection is still dropped on the fallback path",
+        )
+
 if __name__ == "__main__":
     unittest.main()
