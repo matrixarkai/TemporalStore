@@ -797,7 +797,11 @@ impl TemporalEngine {
             };
             let storage = crate::control::ShardCanonicalStorageStats {
                 page_index_entries: object_manager.page_ref_count as u64,
-                block_index_entries: page_store.writes,
+                // Live refs, NOT `page_store.writes`: that counter only ever increases, so
+                // publishing it as an entry count meant the number could never fall after a GC
+                // or a compaction reclaimed anything. `block_*` mirrors `page_*` here the same
+                // way `block_reads` mirrors `page_reads`.
+                block_index_entries: object_manager.page_ref_count as u64,
                 object_index_entries: object_manager.object_count as u64,
                 bucket_entries: object_manager.routing_bucket_count as u64,
                 // `bucket_entries` above is the routing RANGE (the hash modulus), which is
