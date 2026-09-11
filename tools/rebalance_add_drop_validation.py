@@ -126,7 +126,12 @@ def main():
     start("dnb", "matrixark_rust_datanode", DNB,
           dn_env(2, f"{BASE}/dnb/pages", f"{BASE}/dnb/idx", f"{BASE}/dnb/cache",
                  {"TS_SERVER_BIND_ADDR": DNB, "TS_SERVER_ADVERTISE_ADDR": DNB}))
-    assert wait_port(DNA) and wait_port(DNB), "datanodes did not start"
+    # Both waits hoisted: `python -O` drops the assert and every call inside it. Note the
+    # `and` -- the first pass of this fix looked for an assert whose test IS a call and
+    # walked straight past this one.
+    dna_ready = wait_port(DNA)
+    dnb_ready = wait_port(DNB)
+    assert dna_ready and dnb_ready, "datanodes did not start"
     time.sleep(2)
 
     print("== write 3 keys per shard ==")
