@@ -114,7 +114,10 @@ def main():
         "TS_META_AUTO_REBALANCE": "1",
         "TS_META_AUTO_REBALANCE_INTERVAL_MS": "1000",
     })
-    assert wait_port(META), "metaserver did not start"
+    # Hoisted out of the assert: `python -O` removes an assert statement entirely, and the
+    # wait would go with it -- the run would continue against a metaserver still starting.
+    meta_ready = wait_port(META)
+    assert meta_ready, "metaserver did not start"
 
     print("== start dn-a (shard 1), dn-b (shard 2) ==")
     start("dna", "matrixark_rust_datanode", DNA,
@@ -166,7 +169,8 @@ def main():
           dn_env(9, f"{BASE}/dnc/pages", f"{BASE}/dnc/idx", f"{BASE}/dnc/cache",
                  {"TS_SERVER_BIND_ADDR": DNC, "TS_SERVER_ADVERTISE_ADDR": DNC,
                   "TS_SERVER_JOIN_EMPTY": "1"}))
-    assert wait_port(DNC), "dn-c did not start"
+    dnc_ready = wait_port(DNC)
+    assert dnc_ready, "dn-c did not start"
     time.sleep(9)
     o1, o2 = shard_owner(1), shard_owner(2)
     print(f"   after add: /shards/1 -> {o1}   /shards/2 -> {o2}   servers: {server_states()}")
