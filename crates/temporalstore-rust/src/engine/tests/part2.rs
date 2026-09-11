@@ -2707,6 +2707,134 @@ fn what_a_round_still_reads() {
     }
 }
 
+/// The dump cap a server ships with still lets the log be reclaimed.
+///
+/// Reclaim frees the log below a floor, and that floor is the oldest sequence any bucket still
+/// needs. A bucket that is dirty and has no durable dump manifest is captured nowhere, so it
+/// holds the floor at 0 -- and a round that dumps at most `max_dump_buckets_per_round` buckets
+/// leaves every other dirty bucket in exactly that state.
+///
+/// So a shard that dirties more buckets per round than the cap allows never advances the floor at
+/// all -- not slowly, at all -- and the log grows for ever while every round reports success.
+/// Measured, 500 dirty buckets per round over 12 rounds and 6,000 writes:
+///
+/// | cap | floor after 12 rounds | log |
+/// |---|---|---|
+/// | 0 (no cap) | reaches the head | one segment |
+/// | 64 | **0, every round** | rolled a second segment |
+/// | 128, 256 | **0, every round** | rolled a second segment |
+/// | 512 (above the dirty count) | reaches the head | one segment |
+///
+/// At the default routing range every key gets its own bucket, so "more than the cap in a round"
+/// is every real workload. This is the other half of the symptom
+/// `the_data_node_server_never_runs_a_maintenance_cycle` named: the cycle runs now, and still
+/// could not reclaim.
+///
+/// A capped dump only becomes safe once a bucket records the log sequence at which it FIRST went
+/// dirty -- then an undumped bucket holds the floor at its own oldest write rather than at 0,
+/// and the floor advances as far as the dumped buckets allow. Until that exists the cap has to
+/// be off, which is what this pins.
+#[test]
+fn the_shipped_dump_cap_still_lets_the_log_be_reclaimed() {
+    let shipped_cap = crate::data_node::StorageManagerOptions::default().max_dump_buckets_per_round;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // Many more dirty buckets in one round than a small cap would cover.
+    for index in 0..500 {
+        write_string(&engine, &format!("floor-{index:04}"), &[b'v'; 256]);
+    }
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: shipped_cap,
+        ..StorageManagerCycleRequest::default()
+    });
+    let last_sequence = engine.write_ahead_log_store().stats(1).last_sequence;
+    let wal = report
+        .wal_reclaim_report
+        .as_ref()
+        .expect("the round must run WAL reclaim");
+    assert!(
+        wal.plan.retain_from_wal_sequence > 0,
+        "the shipped dump cap ({shipped_cap}) left the reclaim floor at 0 with {last_sequence} \
+         records written, so this log can never be reclaimed: blockers={:?}",
+        wal.plan.blocker_reasons,
+    );
+}
+
+/// The write-ahead log stays bounded under continuous writing, round after round.
+///
+/// This is the production symptom the maintenance work started from: a data node whose logs grew
+/// until the disk did. Making the cycle run was the fix; this is the guard that it KEEPS working.
+///
+/// Reclaim can only free the log below its floor, and the floor is held by the oldest bucket that
+/// has not been dumped. The dump selects buckets ordered by `last_dump_sequence` -- a proxy for
+/// "most overdue". If that proxy ever starves a bucket, the floor stops advancing and the log
+/// grows for ever while every round still reports success. Nothing else here would notice: the
+/// cycle completes, the stages report applied, and only the disk fills.
+///
+/// So this writes the same working set every round and requires the floor to reach the head each
+/// time. Twelve rounds and 6,000 writes: every round removes exactly what that round wrote, the
+/// floor advances to `last_sequence + 1`, and the log's on-disk size never moves off the
+/// preallocated segment.
+#[test]
+fn the_log_stays_bounded_under_continuous_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let mut bytes_seen: Vec<u64> = Vec::new();
+    for round in 1..=12u64 {
+        // The same 500 keys every round, so everything written is superseded and the whole log
+        // below the floor is reclaimable. A shard that cannot free THIS cannot free anything.
+        for index in 0..500 {
+            write_string(&engine, &format!("bound-{index:04}"), &[b'v'; 256]);
+        }
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
+            ..StorageManagerCycleRequest::default()
+        });
+        let stats = engine.write_ahead_log_store().stats(1);
+        let wal = report
+            .wal_reclaim_report
+            .as_ref()
+            .expect("the round must run WAL reclaim");
+        assert_eq!(
+            wal.plan.retain_from_wal_sequence,
+            stats.last_sequence.saturating_add(1),
+            "round {round}: the reclaim floor did not reach the head, so a bucket is starving \
+             the log: last_sequence={} retain_from={}",
+            stats.last_sequence,
+            wal.plan.retain_from_wal_sequence,
+        );
+        assert!(
+            wal.wal_records_removed > 0,
+            "round {round}: nothing was reclaimed, though 500 records were written into it"
+        );
+        bytes_seen.push(stats.persistent_bytes);
+    }
+
+    let first = bytes_seen[0];
+    assert!(
+        bytes_seen.iter().all(|bytes| *bytes == first),
+        "the log grew across rounds while the same keys were rewritten: {bytes_seen:?}"
+    );
+}
+
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,

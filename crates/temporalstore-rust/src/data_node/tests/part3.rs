@@ -112,7 +112,19 @@ fn a_dump_fires_under_the_shipped_default_once_the_threshold_is_crossed() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    let options = StorageManagerOptions::default();
+    // Every default except the dump cap, which this fixture pins on purpose.
+    //
+    // A data-node round calls `apply_storage_lifecycle` more than once, and only the first one
+    // that finds undumped records dumps -- the rest correctly see a threshold the dump reset.
+    // So WHICH apply carries `dump_manifest` depends on how many buckets the first one covered,
+    // and with the cap off the first one covers them all and the reported apply has nothing
+    // left to do. Pinning the cap keeps this a test of the RECORD THRESHOLD, which is what its
+    // name is about; `the_shipped_dump_cap_still_lets_the_log_be_reclaimed` is where the cap's
+    // own behaviour is pinned.
+    let options = StorageManagerOptions {
+        max_dump_buckets_per_round: 64,
+        ..StorageManagerOptions::default()
+    };
     // Past the coalescing delay, and not by one: the threshold counts UNDUMPED records, so a
     // round that dumps resets it, and a fixture sitting exactly on the line would be deciding
     // the test on an off-by-one in the counter rather than on whether a dump happens.
