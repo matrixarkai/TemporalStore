@@ -2803,6 +2803,39 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_slab_descriptor_carries_the_same_number_twice() {
+        // `band_id_for_slab` is the identity function, so a descriptor's `band_id` and its
+        // `block_slab_id` are ONE value under two names. Every construction site says so:
+        // band_id_for_slab(inner.block_slab_id), band_id_for_slab(band.block_slab_id),
+        // band_id_for_slab(new_slab_id).
+        //
+        // `rolled_slabs_stamp_new_band_ids` above pins that for an ADDRESS. This pins it for the
+        // DESCRIPTOR, which is the struct that actually stores both, and where a caller picks
+        // whichever name is nearer without it mattering today.
+        //
+        // Removing either field is a wire change -- both serialize and the compat corpora carry
+        // them -- so the duplication stays. What must not happen is the two diverging quietly.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.append(b"first").unwrap();
+        store.roll_slab().unwrap();
+        store.append(b"second").unwrap();
+
+        let descriptors = store.band_descriptors();
+        assert!(
+            descriptors.len() >= 2,
+            "the roll should give at least two descriptors, got {}",
+            descriptors.len()
+        );
+        for descriptor in &descriptors {
+            assert_eq!(
+                descriptor.band_id, descriptor.block_slab_id,
+                "a band IS a slab: band_id and block_slab_id must never diverge"
+            );
+        }
+    }
+
     fn rolled_slabs_stamp_new_band_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
