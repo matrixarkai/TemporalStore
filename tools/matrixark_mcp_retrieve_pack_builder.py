@@ -882,7 +882,6 @@ def build_context_pack(
         "requested_max_context_tokens": max_context_tokens,
         "local_context_safety_margin_tokens": safety_margin_tokens,
         "budget_source": budget_source,
-        "pre_retrieval_idle_commit": pre_retrieval_idle_commit or {"enabled": False, "status": "disabled"},
         "local_context_policy": {
             "mode": "shared_budget_dedupe",
             "local_context_count": len(local_budget["items"]),
