@@ -1325,12 +1325,16 @@ SETTINGS.extend([
             'Rust proxy startup warmup timeout milliseconds. Defaults to 120000. Read by matrixark_rust_proxy_daemon.'),
     Setting("retrieval.allow_python_retrieval_fallback", "retrieval", "MATRIXARK_ALLOW_PYTHON_RETRIEVAL_FALLBACK",
             "Allow python retrieval fallback", "bool", "0", "restart",
-            "Allow python retrieval fallback. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_retrieval."),
+            "Lets a retrieve leave the native serving path and finish in Python, for every "
+            "request. Off, a request may still ask for it per call by setting one of the "
+            "retrieval fallback arguments -- this turns that per-request choice into a "
+            "deployment-wide permission."),
     Setting("retrieval.audit_debug_payload", "retrieval", "MATRIXARK_AUDIT_DEBUG_PAYLOAD",
             "Audit debug payload", "bool", "0", "restart",
-            "Audit debug payload. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_context_pack, matrixark_mcp_core, matrixark_mcp_runtime_config."),
+            "Stores the WHOLE context-pack audit record instead of the compact subset -- "
+            "record type, pack id, query, summary text and the deadline fields. A single "
+            "replay can ask for the same per call with include_debug_records=true; this keeps "
+            "every audit verbose, which is a durable size cost on every retrieve."),
     Setting("retrieval.audit_workers", "retrieval", "MATRIXARK_AUDIT_WORKERS",
             "Audit workers", "int", "2", "restart",
             "Audit workers. Defaults to 2. Frozen when the process starts. Read by matrixark_mcp_server."),
@@ -1363,8 +1367,10 @@ SETTINGS.extend([
             'Context pack cache time to live seconds. Defaults to 30.0. Read by matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters.'),
     Setting("retrieval.context_pack_debug_refs", "retrieval", "MATRIXARK_CONTEXT_PACK_DEBUG_REFS",
             "Context pack debug refs", "bool", "0", "restart",
-            "Context pack debug refs. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+            "Serves the full ref detail rather than the compact form: hashes and matched "
+            "indexes, and the dropped-ref details, move from audit-only into the pack the "
+            "caller receives. A request can ask for the same per call with "
+            "include_debug_refs=true."),
     Setting("retrieval.cross_session_broad_budget_ratio", "retrieval", "MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO",
             "Cross session broad budget ratio", "float", "0.15", "restart",
             "Cross session broad budget ratio. Defaults to 0.15. Frozen when the process starts. Read by "
@@ -1398,7 +1404,10 @@ SETTINGS.extend([
             'Direct write queue allow sync context. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("retrieval.disable_native_context_pack", "retrieval", "MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK",
             "Disable native context pack", "bool", "0", "live",
-            'Disable native context pack. Off by default. Read by matrixark_temporal_direct_read.'),
+            "Skips native ContextPack assembly so the retrieve falls back to the Python path, "
+            "even where the backend supports the native one. An escape hatch for a native "
+            "backend answering wrongly: the Python path does the same work in this process "
+            "instead of in the engine."),
     Setting("retrieval.hard_max_children_scored_per_parent", "retrieval", "MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT",
             "Hard max children scored per parent", "int", "100000", "restart",
             "Hard maximum children scored per parent. Defaults to 100000. Frozen when the process starts. "
