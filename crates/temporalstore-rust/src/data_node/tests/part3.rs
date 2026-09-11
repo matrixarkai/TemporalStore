@@ -3467,8 +3467,23 @@ fn the_periodic_expire_stage_takes_a_bounded_window_and_resumes_past_it() {
         )
     }
 
-    // CONTROL: the shipped default is unbounded and must still clear every expired key in one
-    // round. This is what says the change is opt-in, not a silent slowdown of expiry.
+    // CONTROL: the shipped default clears this fixture in one round -- because its bound is
+    // LARGER than the fixture, not because it is unbounded.
+    //
+    // This wording is deliberate. When this test was written the default WAS 0, meaning no bound,
+    // and the assertion below read as "the default is unbounded". It is not any more: the default
+    // is now the cycle's 128 hot / 8 cold. The assertion still passes, but for a different reason
+    // than it used to, and a control that passes for a reason it does not state is worth nothing.
+    //
+    // What it pins now is that the shipped bound comfortably exceeds a small store, so ordinary
+    // expiry is not slowed by it -- which is the property that actually matters to a deployment,
+    // and which a too-small default would break loudly here.
+    let default_bound = StorageManagerOptions::default().max_expire_hot_buckets_per_round;
+    assert!(
+        default_bound > EXPIRED,
+        "this control only means something while the default bound ({default_bound}) exceeds \
+         the fixture ({EXPIRED}); raise the fixture or rewrite the control"
+    );
     let unbounded = runtime_with_a_live_prefix();
     let cleared = unbounded.run_storage_manager_once(1, StorageManagerOptions::default());
     assert!(
@@ -3479,7 +3494,7 @@ fn the_periodic_expire_stage_takes_a_bounded_window_and_resumes_past_it() {
     assert_eq!(
         unbounded.stats().expired_records_removed,
         EXPIRED as u64,
-        "the shipped default must still clear every expired key in one round"
+        "the shipped default must clear a store smaller than its own per-round bound"
     );
 
     // Bounded: each round takes a window of live-but-not-due keys and RESUMES past them, so it

@@ -951,12 +951,24 @@ impl Default for StorageManagerOptions {
             // from the periodic loop; enabling it by default is a separate decision.
             enable_evict: false,
             eviction_memory_pressure_threshold: 0,
-            eviction_batch_limit: 0,
+            // The CYCLE's value, not 0. Both pipelines run the same stages, and where they
+            // disagree on a bound the periodic one -- the loop a server actually starts -- was
+            // the unbounded side. 0 here was mine (#1467) and I justified it as "preserve current
+            // behaviour", which was the weaker reading: the choice was never change-vs-no-change,
+            // it was between a considered value that already existed next door and an accidental
+            // one. Only reachable when `enable_evict` is on, which is still off by default.
+            eviction_batch_limit: crate::engine::reports::DEFAULT_EVICTION_BATCH_LIMIT,
             eviction_dump_before_evict: false,
             eviction_delete_drop: false,
             // 0 = unbounded, the behaviour this loop has always had. See the field docs.
-            max_expire_hot_buckets_per_round: 0,
-            max_expire_cold_buckets_per_round: 0,
+            // Likewise the cycle's values. 0 meant the expire stage walked the WHOLE deadline
+            // map, hot and cold, every tick for every loaded shard, which is what #1469 measured
+            // at 201.5 ms per round at 20k objects. The cursor #1469 added is what makes a bound
+            // usable: a round takes its window and the next resumes past it.
+            max_expire_hot_buckets_per_round:
+                crate::engine::reports::DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND,
+            max_expire_cold_buckets_per_round:
+                crate::engine::reports::DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND,
         }
     }
 }
