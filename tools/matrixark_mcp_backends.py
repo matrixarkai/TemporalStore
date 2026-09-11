@@ -15,7 +15,6 @@ try:
         MATRIXARK_ALLOW_LOCAL_BACKEND,
         MATRIXARK_MCP_PROFILE,
         MATRIXARK_REQUIRE_BACKEND_READY,
-        Json,
         MatrixArkError,
         adapter_ensure_backend_ready,
     )
@@ -29,7 +28,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MATRIXARK_ALLOW_LOCAL_BACKEND,
         MATRIXARK_MCP_PROFILE,
         MATRIXARK_REQUIRE_BACKEND_READY,
-        Json,
         MatrixArkError,
         adapter_ensure_backend_ready,
     )
@@ -106,22 +104,22 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--local-store",
         type=Path,
-        default=Path(os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "/tmp/matrixark-mcp-temporalstore-local.jsonl")),
+        default=Path((os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip() or "/tmp/matrixark-mcp-temporalstore-local.jsonl")),
         help="Persistent local record log for --backend temporalstore-local. This mode does not require metaserver.",
     )
     parser.add_argument(
         "--metaserver",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"),
+        default=(os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "").strip() or "127.0.0.1:18000"),
         help="TemporalStore metaserver address for --backend temporalstore-direct.",
     )
     parser.add_argument(
         "--namespace",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"),
+        default=(os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "").strip() or "deploy_ns"),
         help="TemporalStore namespace for --backend temporalstore-direct.",
     )
     parser.add_argument(
         "--table",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"),
+        default=(os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "").strip() or "deploy_table"),
         help="TemporalStore table for --backend temporalstore-direct.",
     )
     parser.add_argument(
@@ -131,7 +129,7 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--storage-prefix",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:mcp"),
+        default=(os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "").strip() or "matrixark:mcp"),
         help="TemporalStore key prefix for MatrixArk records.",
     )
     parser.add_argument(
@@ -149,13 +147,13 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--request-timeout-ms",
         type=int,
-        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")),
+        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "").strip() or "60000"),
         help="Per-request timeout for the native TemporalStore SDK.",
     )
     parser.add_argument(
         "--io-timeout-ms",
         type=int,
-        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")),
+        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "").strip() or "60000"),
         help="BRPC I/O timeout for the native TemporalStore SDK.",
     )
 

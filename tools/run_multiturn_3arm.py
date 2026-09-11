@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
 
 import run_local_context_token_quality_sweep as S
 

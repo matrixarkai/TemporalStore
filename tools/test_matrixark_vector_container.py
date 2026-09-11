@@ -15,7 +15,6 @@ exercised on the shapes a wrong reader would produce.
 import base64
 import importlib
 import os
-import struct
 import sys
 import unittest
 

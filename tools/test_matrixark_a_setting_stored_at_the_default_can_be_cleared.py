@@ -24,7 +24,6 @@ inferring it from the value, and the value cannot answer it.
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import subprocess

@@ -32,13 +32,13 @@ SUPPORTED_BINARY_TYPES = {"pdf", "docx", "pptx", "xlsx", "png", "jpg", "jpeg", "
 SUPPORTED_FILE_TYPES = SUPPORTED_TEXT_TYPES | SUPPORTED_BINARY_TYPES
 SUPPORTED_DIRECTORY_TYPES = {"md", "txt", "pdf", "html", "csv", "tsv", "json", "jsonl", "docx", "pptx", "xlsx", "skill"}
 SKIP_DIRECTORY_NAMES = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
-DEFAULT_MAX_FILE_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_FILE_BYTES", str(20 * 1024 * 1024)))
-DEFAULT_MAX_DIRECTORY_FILES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_FILES", "256"))
-DEFAULT_MAX_DIRECTORY_DEPTH = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_DEPTH", "8"))
-DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS", "2048"))
-DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", str(5 * 1024 * 1024)))
-DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "20"))
-DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
+DEFAULT_MAX_FILE_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_FILE_BYTES", "").strip() or str(20 * 1024 * 1024))
+DEFAULT_MAX_DIRECTORY_FILES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_FILES", "").strip() or "256")
+DEFAULT_MAX_DIRECTORY_DEPTH = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_DEPTH", "").strip() or "8")
+DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS", "").strip() or "2048")
+DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", "").strip() or str(5 * 1024 * 1024))
+DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "").strip() or "20")
+DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "").strip() or "20")
 #: `.strip().lower()` and the full FALSE_VALUES vocabulary -- the previous form folded no
 #: case and rejected "no" and "off", so those read as TRUE and switched the flag ON. The
 #: empty string stays false, as it was here.
@@ -76,10 +76,7 @@ def encoder_window_tokens(model: str | None = None) -> int:
 # The encoder's window bounds this from ABOVE -- never embed more than the model will read -- but
 # it is a ceiling, not a target.
 DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(
-    os.environ.get(
-        "MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS",
-        str(encoder_window_tokens()),
-    )
+    os.environ.get("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "").strip() or str(encoder_window_tokens())
 )
 # Chunk size is the dominant lever on ingest cost: for a 1.41 MB markdown file,
 # 240-token chunks are 2126 records and 27.8 MB resident, 2000-token chunks are
@@ -100,20 +97,17 @@ DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(
 # which sits far outside that interval. So the larger chunk is a free footprint choice, not a
 # quality one.
 DEFAULT_MAX_CHUNK_TOKENS = int(
-    os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "240")
+    os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "").strip() or "240"
 )
-DEFAULT_OVERLAP_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_TOKENS", "24"))
+DEFAULT_OVERLAP_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_TOKENS", "").strip() or "24")
 # Both caps bind, whichever is hit first. Deriving the character cap from the
 # token cap keeps raising one from being silently cancelled by the other.
 DEFAULT_MAX_CHUNK_CHARS = int(
-    os.environ.get(
-        "MATRIXARK_RESOURCE_MAX_CHUNK_CHARS",
-        str(1400 if DEFAULT_MAX_CHUNK_TOKENS <= 240 else DEFAULT_MAX_CHUNK_TOKENS * 8),
-    )
+    os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_CHARS", "").strip() or str(1400 if DEFAULT_MAX_CHUNK_TOKENS <= 240 else DEFAULT_MAX_CHUNK_TOKENS * 8)
 )
-DEFAULT_OVERLAP_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_CHARS", "120"))
-EMBEDDING_TEXT_PREFIX_SHARE = float(os.environ.get("MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE", "0.2"))
-DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "30"))
+DEFAULT_OVERLAP_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_CHARS", "").strip() or "120")
+EMBEDDING_TEXT_PREFIX_SHARE = float(os.environ.get("MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE", "").strip() or "0.2")
+DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "").strip() or "30")
 
 
 class ResourceParserError(RuntimeError):

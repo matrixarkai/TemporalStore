@@ -13,7 +13,6 @@ properties the JSONL codec claims and that this one must also hold:
   7. no-op on old data -> a record with no token key is untouched
   8. sidecars are storage -> they never surface as data records
 """
-import io
 import os
 import sys
 import unittest

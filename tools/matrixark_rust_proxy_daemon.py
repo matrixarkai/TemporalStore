@@ -17,7 +17,6 @@ import os
 import signal
 import socket
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -193,7 +192,7 @@ class RustProxyDaemon:
 
     @classmethod
     def _startup_warmup_allowed(cls) -> bool:
-        setting = os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP", "auto")
+        setting = (os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP", "").strip() or "auto")
         if cls._env_disabled(setting):
             return False
         if cls._env_enabled(setting):
@@ -257,7 +256,7 @@ class RustProxyDaemon:
             "storage_prefix": storage_prefix,
             "count_key": f"{storage_prefix}:record_count",
             "record_hash_key": f"{storage_prefix}:records",
-            "query": os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP_QUERY", "__matrixark_startup_context_warmup__"),
+            "query": (os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP_QUERY", "").strip() or "__matrixark_startup_context_warmup__"),
             "max_selected_refs": max(1, max_selected_refs),
             "request_timeout_ms": 120000,
         }

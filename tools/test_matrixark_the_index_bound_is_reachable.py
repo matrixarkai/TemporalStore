@@ -54,7 +54,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools import matrixark_mcp_local_adapter as adapter_module
 from tools.matrixark_mcp_local_adapter import (
     MatrixArkLocalAdapter,
     _LOCAL_READ_CACHE,

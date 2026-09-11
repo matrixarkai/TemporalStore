@@ -620,7 +620,8 @@ def main() -> int:  # pragma: no cover - thin CLI wrapper
     ap.add_argument("--emit-records", metavar="JSONL", default=None, help="write skill_manifest/registry/section records here")
     args = ap.parse_args()
 
-    raw = [json.loads(l) for l in open(args.events, encoding="utf-8") if l.strip()]
+    with open(args.events, encoding="utf-8") as handle:
+        raw = [json.loads(line) for line in handle if line.strip()]
     events = events_from_backfill_records(raw)
     specs = discover_skills(events, min_support=args.min_support, min_steps=args.min_steps, max_skills=args.max_skills)
     print(json.dumps({"episodes_scanned": len(mine_episodes(events)), "skills_discovered": len(specs),

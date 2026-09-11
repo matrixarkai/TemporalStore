@@ -30,10 +30,10 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 
 def default_claude_root() -> str:
@@ -394,7 +394,7 @@ def score_text(q_terms: set[str], text: str, recency_rank: int) -> float:
 
 # Per-ref fed-text cap. Raised 1400->4000 chars (~350->~1000 tokens) so a single
 # context event can return up to ~1k tokens of real content instead of being clipped.
-PER_REF_TEXT_CHARS = int(os.environ.get("SWEEP_PER_REF_TEXT_CHARS", "4000"))
+PER_REF_TEXT_CHARS = int(os.environ.get("SWEEP_PER_REF_TEXT_CHARS", "").strip() or "4000")
 
 
 def _fill(cands, token_budget, used, selected, seen_text, min_score=0.0):

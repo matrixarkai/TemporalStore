@@ -42,7 +42,7 @@ def wait_port(host, timeout=20):
     return False
 
 def start(name, binary, addr, env_extra):
-    logf = open(f"{BASE}/{name}.log", "w")
+    logf = open(f"{BASE}/{name}.log", "w", encoding="utf-8")
     env = dict(os.environ)
     env["PATH"] = os.path.expanduser("~/.cargo/bin") + ":" + env.get("PATH", "")
     env.update(env_extra)

@@ -24,7 +24,6 @@ still closes, just not deterministically.
 from __future__ import annotations
 
 import json
-import sys
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

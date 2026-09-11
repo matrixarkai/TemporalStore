@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
 import os
-import re
-import textwrap
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont

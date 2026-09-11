@@ -214,7 +214,7 @@ class Job:
                 "docs_per_s": round(rate, 3),
                 "eta_s": round(remaining / rate, 1) if rate > 0 and remaining else 0,
                 "current": self.current,
-                "current_elapsed_s": (round(time.time() - self.current_started, 1)
+                "current_elapsed_s": (round(max(0.0, time.time() - self.current_started), 1)
                                       if self.current_started else None),
                 "failures": [dict(f) for f in self.failures[:20]],
                 "failure_count": len(self.failures),
@@ -315,7 +315,7 @@ class Job:
                 ok, detail = batch.post_document(
                     base_url, path, user_id=user_id, api_key=api_key, timeout_s=timeout_s
                 )
-            self.record(label, ok, round((time.time() - started) * 1000.0, 1), size, detail,
+            self.record(label, ok, round(max(0.0, time.time() - started) * 1000.0, 1), size, detail,
                         item_kind=str(item["kind"]))
         with self._lock:
             self.state = "failed" if self.failed and not self.done else "completed"

@@ -12,7 +12,6 @@ Trimming walks the arenas, so doing it per request would spend CPU on the hot pa
 nothing. These tests pin the bound rather than the byte count: they assert WHEN the trim runs,
 which is deterministic, instead of asserting an RSS number, which is not.
 """
-import os
 import unittest
 
 import matrixark_rust_proxy_daemon as daemon

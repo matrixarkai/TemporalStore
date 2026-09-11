@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent

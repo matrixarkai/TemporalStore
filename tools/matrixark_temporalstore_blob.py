@@ -39,7 +39,7 @@ Json = dict[str, Any]
 # for backend resolution (see resolve_ts_blob_backend, which is inline when unset).
 DEFAULT_DATANODE_URL = "http://127.0.0.1:17102"
 BLOB_URI_SCHEME = "temporalstore"
-DEFAULT_KEY_PREFIX = os.environ.get("MATRIXARK_TS_BLOB_PREFIX", "resources")
+DEFAULT_KEY_PREFIX = (os.environ.get("MATRIXARK_TS_BLOB_PREFIX", "").strip() or "resources")
 
 
 def _env_blob_url() -> str:

@@ -11,8 +11,6 @@ the engine: the native branch skipped two of the three serving-pipeline stages, 
 methods called a JSONL-only reader that returns `[]` the moment the JSONL log is disabled -- which
 is exactly what a native backend does.
 """
-import json
-import os
 import tempfile
 import unittest
 

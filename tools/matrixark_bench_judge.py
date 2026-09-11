@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
 Json = dict[str, Any]
 
@@ -97,18 +97,24 @@ def default_judge() -> str:
 
 def _main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[0] == "emit":
-        report = json.load(open(argv[1], encoding="utf-8"))
+        with open(argv[1], encoding="utf-8") as handle:
+            report = json.load(handle)
         arms = argv[2].split(",") if len(argv) > 2 else ["baseline", "big_budget", "relaxed"]
         cases = cases_from_arm_turns(report.get("turns", []), arms)
         json.dump({"rubric": CLAUDE_JUDGE_RUBRIC, "cases": cases}, sys.stdout, indent=2, ensure_ascii=False)
         return 0
     if len(argv) >= 3 and argv[0] == "apply":
-        report = json.load(open(argv[1], encoding="utf-8"))
-        scores = json.load(open(argv[2], encoding="utf-8"))
+        with open(argv[1], encoding="utf-8") as handle:
+            report = json.load(handle)
+        with open(argv[2], encoding="utf-8") as handle:
+            scores = json.load(handle)
         arms = argv[3].split(",") if len(argv) > 3 else ["baseline", "big_budget", "relaxed"]
         merged = apply_judge_scores(report, scores, arms)
         out = argv[1]
-        json.dump(merged, open(out, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+        # `out` is argv[1] -- the input, rewritten in place. An exception part-way through
+        # the dump would leave it truncated and unclosed.
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump(merged, handle, indent=2, ensure_ascii=False)
         print(f"[applied] {len(scores)} Claude scores -> {out}")
         return 0
     print(__doc__)

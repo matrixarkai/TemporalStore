@@ -19,7 +19,6 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import matrixark_mcp_local_adapter as _adapter  # resolves the retrieval circular import
 import matrixark_local_adapter_retrieval as retrieval
 
 FLAG = "MATRIXARK_ONEBOX_EMBEDDING_FIRST"

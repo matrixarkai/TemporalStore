@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     except Exception:
         _BACKEND_DEFAULT_MAX_CONTEXT_TOKENS = 500000
 GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS = int(
-    os.environ.get("MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS", str(_BACKEND_DEFAULT_MAX_CONTEXT_TOKENS))
+    os.environ.get("MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS", "").strip() or str(_BACKEND_DEFAULT_MAX_CONTEXT_TOKENS)
 )
 
 def _coerce_http_value(value: str) -> Any:
@@ -680,7 +680,7 @@ def query_codex_hook_messages(args: Json) -> Json:
     backend = str(args.get("backend") or "both").strip().lower()
     readers: list[tuple[str, _HookStoreReader]] = []
     errors: list[Json] = []
-    if backend in {"both", "native", "native"}:
+    if backend in {"both", "native"}:
         try:
             readers.append(("native", _HookStoreReader(args)))
         except Exception as exc:
@@ -795,7 +795,7 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
 
         def end_headers(self) -> None:
             if self.cloud_mode:
-                self.send_header("Access-Control-Allow-Origin", os.environ.get("MATRIXARK_HTTP_ALLOWED_ORIGIN", "https://app.matrixark.ai"))
+                self.send_header("Access-Control-Allow-Origin", (os.environ.get("MATRIXARK_HTTP_ALLOWED_ORIGIN", "").strip() or "https://app.matrixark.ai"))
             else:
                 self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header(

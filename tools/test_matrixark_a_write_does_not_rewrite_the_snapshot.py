@@ -14,7 +14,6 @@ Measured with the writes interleaved to cancel machine drift, eight paired runs:
 the snapshot writer fell from 2.864 s to 0.621 s across the set, and ingest was faster in six of
 the eight pairs, median 0.26 s.
 """
-import json
 import os
 import sys
 import tempfile

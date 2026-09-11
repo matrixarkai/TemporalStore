@@ -160,9 +160,9 @@ class TinyReaderHandler(BaseHTTPRequestHandler):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a local MatrixArk OpenAI-compatible tiny OSS reader.")
-    parser.add_argument("--host", default=os.environ.get("MATRIXARK_TINY_READER_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("MATRIXARK_TINY_READER_PORT", "11434")))
-    parser.add_argument("--model", default=os.environ.get("MATRIXARK_TINY_READER_MODEL", "matrixark-tiny-oss-reader"))
+    parser.add_argument("--host", default=(os.environ.get("MATRIXARK_TINY_READER_HOST", "").strip() or "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("MATRIXARK_TINY_READER_PORT", "").strip() or "11434"))
+    parser.add_argument("--model", default=(os.environ.get("MATRIXARK_TINY_READER_MODEL", "").strip() or "matrixark-tiny-oss-reader"))
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), TinyReaderHandler)

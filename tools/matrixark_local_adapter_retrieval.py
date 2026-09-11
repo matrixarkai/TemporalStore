@@ -29,7 +29,7 @@ except ImportError:
 def _idle_drain_min_interval_ms() -> int:
     """How long a quiet session may go unchecked for a due idle commit (default 1s, 0 disables)."""
     try:
-        return max(0, int(os.environ.get("MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS", "1000")))
+        return max(0, int(os.environ.get("MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS", "").strip() or "1000"))
     except (TypeError, ValueError):
         return 1000
 

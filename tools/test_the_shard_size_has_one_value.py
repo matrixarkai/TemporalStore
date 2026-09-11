@@ -35,7 +35,7 @@ def python_defaults():
     ):
         body = open(os.path.join(HERE, name), encoding="utf-8").read()
         match = re.search(
-            r'DIRECT_RECORD_LOG_SHARD_SIZE = int\(os\.environ\.get\(\s*"MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE",\s*"(\d+)"\s*\)\)',
+            r'DIRECT_RECORD_LOG_SHARD_SIZE = int\(os\.environ\.get\(\s*"MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE",.*?"(\d+)"',
             body,
         )
         found[name] = int(match.group(1)) if match else None

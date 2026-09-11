@@ -19,26 +19,20 @@ from typing import Any
 try:
     from tools.matrixark_mcp_core import (
         CODEX_OUTCOME_QUERY_RE,
-        FEATURE_SCOPE_EXCLUSION_RE,
-        PROFILE_MEMORY_QUERY_RE,
         Json,
         access_scope_matches_before_scoring,
         feature_scope_excludes_outcome_evidence,
         now_ms,
         optional_object,
-        profile_entity_type_for_memory_text,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         CODEX_OUTCOME_QUERY_RE,
-        FEATURE_SCOPE_EXCLUSION_RE,
-        PROFILE_MEMORY_QUERY_RE,
         Json,
         access_scope_matches_before_scoring,
         feature_scope_excludes_outcome_evidence,
         now_ms,
         optional_object,
-        profile_entity_type_for_memory_text,
     )
 
 

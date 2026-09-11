@@ -17,17 +17,9 @@ except ImportError:
     from matrixark_mcp_temporal_append import slim_persisted_record
 
 try:  # package path
-    from tools.matrixark_temporal_location_codec import (
-        compact_location,
-        compact_location_list,
-        expand_location,
-    )
+    from tools.matrixark_temporal_location_codec import compact_location, compact_location_list
 except ImportError:
-    from matrixark_temporal_location_codec import (
-        compact_location,
-        compact_location_list,
-        expand_location,
-    )
+    from matrixark_temporal_location_codec import compact_location, compact_location_list
 
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
@@ -88,15 +80,15 @@ class _TemporalDirectBackendMixin:
         if not hasattr(self, "_direct_write_queue_enabled"):
             self._direct_write_queue_enabled = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE", False)
         if not hasattr(self, "_direct_write_queue_max_records"):
-            self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "10000")))
+            self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "").strip() or "10000"))
         if not hasattr(self, "_direct_write_queue_put_timeout_s"):
-            self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "1000")) / 1000.0)
+            self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "").strip() or "1000") / 1000.0)
         if not hasattr(self, "_direct_write_queue_mode"):
             self._direct_write_queue_mode = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MODE", "memory").strip().lower() or "memory"
         if self._direct_write_queue_mode not in {"memory", "temporalstore"}:
             self._direct_write_queue_mode = "memory"
         if not hasattr(self, "_direct_write_queue_drain_max_batches"):
-            self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "64")))
+            self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "").strip() or "64"))
         if not hasattr(self, "_direct_write_queue_allow_sync_context"):
             self._direct_write_queue_allow_sync_context = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", False)
         if not hasattr(self, "_direct_write_queue_autostart"):
@@ -723,7 +715,7 @@ class _TemporalDirectBackendMixin:
     def _ensure_raw_ingestion_fields(self) -> None:
         if not hasattr(self, "_raw_storage_backend"):
             self._raw_storage_backend = self._normalize_raw_storage_backend(
-                os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore")
+                (os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "").strip() or "temporalstore")
             )
         else:
             self._raw_storage_backend = self._normalize_raw_storage_backend(self._raw_storage_backend)

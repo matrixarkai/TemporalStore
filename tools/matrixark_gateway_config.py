@@ -1790,8 +1790,8 @@ def discover_models(target: str, timeout: float = 8.0) -> Json:
         # URL, which this deployment never sets, answered "Set the base URL first" -- pointing at a
         # field that provider does not read, in the one panel that exists to stop a misspelt model
         # name reaching ingest.
-        base = os.environ.get("MATRIXARK_ANTHROPIC_API_BASE",
-                              "https://api.anthropic.com").strip().rstrip("/") + "/v1"
+        base = (os.environ.get("MATRIXARK_ANTHROPIC_API_BASE",
+                              "").strip().rstrip("/") or "https://api.anthropic.com") + "/v1"
         key_env = _env_name(SETTINGS_BY_KEY["extraction.api_key"], values)
         auth = "anthropic"
     else:
@@ -1806,8 +1806,7 @@ def discover_models(target: str, timeout: float = 8.0) -> Json:
         headers: Dict[str, str] = {}
     elif auth == "anthropic":
         headers = {"x-api-key": key,
-                   "anthropic-version": os.environ.get("MATRIXARK_ANTHROPIC_VERSION",
-                                                       "2023-06-01")}
+                   "anthropic-version": (os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "").strip() or "2023-06-01")}
     else:
         headers = {"Authorization": "Bearer " + key}
     try:
@@ -2839,10 +2838,10 @@ def probe(targets: Optional[List[str]] = None, timeout: float = 10.0) -> Json:
             # than a bearer token. Probing it as though it were OpenAI-compatible asked for a base
             # URL and model this provider never reads, so the test told a customer to fill in two
             # fields that would not have changed anything.
-            anthropic_base = os.environ.get(
-                "MATRIXARK_ANTHROPIC_API_BASE", "https://api.anthropic.com").strip().rstrip("/")
+            anthropic_base = (os.environ.get(
+                "MATRIXARK_ANTHROPIC_API_BASE", "").strip().rstrip("/") or "https://api.anthropic.com")
             anthropic_model = os.environ.get("MATRIXARK_ANTHROPIC_MODEL", "").strip()
-            version = os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "2023-06-01")
+            version = (os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "").strip() or "2023-06-01")
             if not key:
                 results.append({"target": "extraction", "ok": False, "skipped": True,
                                 "error": "no_api_key",
@@ -2873,7 +2872,7 @@ def probe(targets: Optional[List[str]] = None, timeout: float = 10.0) -> Json:
                 headers, timeout))
 
     if "embedding" in wanted:
-        provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip()
+        provider = (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip() or "deterministic")
         base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
                 or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip()).rstrip("/")
         model = os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()

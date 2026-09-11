@@ -593,6 +593,14 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
         "_memory_layer_budget_tokens": retrieval_plan["memory_layer_budget_tokens"],
         "_memory_selection_policy_budget_tokens": retrieval_plan["memory_selection_policy_budget_tokens"],
         "_extraction_phase_budget_tokens": retrieval_plan["extraction_phase_budget_tokens"],
+        # A policy that changes the answer belongs in the key that caches it. The inline
+        # tuple in LocalAdapter.retrieve keys on these three and records that the first two
+        # were put there after a measured incident -- the same query came back from cache
+        # with the ranking built before the policy was turned on. This builder is the
+        # extracted form of that tuple, so it has to separate what the tuple separates.
+        "_cross_session_policy": retrieval_plan["cross_session_policy"],
+        "_shared_context_policy": retrieval_plan["shared_context_policy"],
+        "_include_retrieval_metrics": bool(args.get("include_retrieval_metrics")),
         "_pre_retrieval_summary_refresh": {
             "enabled": bool(pre_retrieval_summary_refresh.get("enabled")),
             "requested_limit": int(pre_retrieval_summary_refresh.get("requested_limit") or 0),

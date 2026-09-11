@@ -29,7 +29,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--http-host",
-        default=os.environ.get("MATRIXARK_HTTP_HOST", "127.0.0.1"),
+        default=(os.environ.get("MATRIXARK_HTTP_HOST", "").strip() or "127.0.0.1"),
         help="Host for the optional HTTP/JSON management portal facade.",
     )
     parser.add_argument(
@@ -46,7 +46,7 @@ def main() -> int:
         # simply finds nothing. Nothing ships that way -- the port is set in the cloud-api image,
         # the compose file and the gateway config, none of which launch this -- but a hand-rolled
         # environment can, and the failure looks like the MCP server never started.
-        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "0")),
+        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "").strip() or "0"),
         help="If non-zero, serve the browser portal and /api JSON facade instead of stdio MCP.",
     )
     parser.add_argument(
@@ -58,7 +58,7 @@ def main() -> int:
     parser.add_argument(
         "--access-mode",
         choices=["dev", "enforced"],
-        default=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"),
+        default=(os.environ.get("MATRIXARK_ACCESS_MODE", "").strip() or "dev"),
         help="dev allows omitted API keys for local testing; enforced requires scoped MatrixArk API keys.",
     )
     args = parser.parse_args()

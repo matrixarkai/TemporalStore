@@ -17,7 +17,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import matrixark_mcp_local_adapter as adapter_module
 from matrixark_mcp_local_adapter import (
     _decode_snapshot_bytes,
     INTERN_BUNDLE_TOKEN_KEY,

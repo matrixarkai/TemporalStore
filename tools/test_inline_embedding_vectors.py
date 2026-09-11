@@ -70,7 +70,6 @@ class InlineEmbeddingVectorTest(unittest.TestCase):
     def test_a_late_embedding_updates_its_earlier_owner(self):
         """Cross-batch: the owner was appended earlier; the embedding folds onto a re-appended
         copy of it instead of persisting separately."""
-        import matrixark_mcp_local_adapter as A
         import tempfile as tf
         adapter = mcp.MatrixArkLocalAdapter(Path(tf.mkdtemp()) / "late.jsonl")
         adapter.append({

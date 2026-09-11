@@ -10,24 +10,22 @@ except ImportError:
 
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
-    MEMORY_TOMBSTONE_RECORD_TYPE,
-    compact_and_apply_tombstones,
-    filter_live_memory_records,
-    session_event_message_count,
-    session_events_by_message_limit,
-    source_event_lineage_summary,
-    surviving_source_event_ids,
-)
+        MEMORY_TOMBSTONE_RECORD_TYPE,
+        compact_and_apply_tombstones,
+        filter_live_memory_records,
+        session_event_message_count,
+        session_events_by_message_limit,
+        source_event_lineage_summary,
+    )
 except ImportError:
     from matrixark_mcp_local_adapter import (
-    MEMORY_TOMBSTONE_RECORD_TYPE,
-    compact_and_apply_tombstones,
-    filter_live_memory_records,
-    session_event_message_count,
-    session_events_by_message_limit,
-    source_event_lineage_summary,
-    surviving_source_event_ids,
-)
+        MEMORY_TOMBSTONE_RECORD_TYPE,
+        compact_and_apply_tombstones,
+        filter_live_memory_records,
+        session_event_message_count,
+        session_events_by_message_limit,
+        source_event_lineage_summary,
+    )
 
 try:  # gate flags only (runtime_config is a leaf; symbols do not star-propagate).
     from tools.matrixark_mcp_runtime_config import (

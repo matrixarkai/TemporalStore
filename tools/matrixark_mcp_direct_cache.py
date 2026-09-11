@@ -129,7 +129,7 @@ def direct_record_cache_max_records() -> int:
     every hook process to take effect. 0 or a negative value means no ceiling.
     """
     try:
-        return int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "20000"))
+        return int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "").strip() or "20000")
     except (TypeError, ValueError):
         return 20000
 
@@ -344,7 +344,7 @@ def ensure_direct_context_pack_response_cache(target: Any) -> None:
         return
     target._direct_context_pack_response_cache_enabled = True
     target._direct_context_pack_response_cache_max_entries = max(
-        1, int(os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES", "256"))
+        1, int(os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES", "").strip() or "256")
     )
     target._direct_context_pack_response_cache_lock = threading.Lock()
     target._direct_context_pack_response_cache: OrderedDict[str, Json] = OrderedDict()

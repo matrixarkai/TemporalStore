@@ -688,7 +688,6 @@ def select_token_budgeted_refs(
             "stale": 0,
             "summary": 0,
             "raw_l2": 0,
-            "near_duplicate": 0,
             "cross_session_budget": 0,
             "cross_session_session_cap": 0,
             "cross_session_candidate_cap": 0,

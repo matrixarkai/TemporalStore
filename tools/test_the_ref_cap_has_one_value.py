@@ -39,7 +39,7 @@ def python_defaults():
     for name in ("matrixark_mcp_core.py", "matrixark_mcp_runtime_config.py"):
         body = open(os.path.join(HERE, name), encoding="utf-8").read()
         match = re.search(
-            r'DEFAULT_MAX_SELECTED_REFS = int\(os\.environ\.get\("MATRIXARK_MAX_SELECTED_REFS",\s*"(\d+)"\)\)',
+            r'DEFAULT_MAX_SELECTED_REFS = int\(os\.environ\.get\("MATRIXARK_MAX_SELECTED_REFS",.*?"(\d+)"',
             body,
         )
         found[name] = int(match.group(1)) if match else None

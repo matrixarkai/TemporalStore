@@ -20,7 +20,6 @@ import argparse
 import hashlib
 import json
 import os
-import shlex
 import sys
 import time
 from argparse import Namespace
@@ -48,7 +47,7 @@ Json = dict[str, Any]
 SourceRef = tuple[int, str | None] | tuple[int, str | None, str | None]
 # 256, matching the serving modules. This said 4096: the backfill wrote 4096 records per shard
 # while serving read 256 per shard, so the two disagreed about where a record lives.
-DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "256"))
+DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "").strip() or "256")
 
 VOLATILE_SERVING_FINGERPRINT_FIELDS = {
     'context_event_key',
@@ -2478,14 +2477,14 @@ def build_parser() -> argparse.ArgumentParser:
     # what the running processes carry. These defaulted to 'matrixark' and 'context', and nothing
     # else in the repository names either -- so a backfill run without --namespace addressed a
     # store the deployment does not read, and reported having done so.
-    parser.add_argument('--namespace', default=os.environ.get('MATRIXARK_NAMESPACE', 'deploy_ns'))
-    parser.add_argument('--table', default=os.environ.get('MATRIXARK_TABLE', 'deploy_table'))
+    parser.add_argument('--namespace', default=(os.environ.get('MATRIXARK_NAMESPACE', "").strip() or 'deploy_ns'))
+    parser.add_argument('--table', default=(os.environ.get('MATRIXARK_TABLE', "").strip() or 'deploy_table'))
     parser.add_argument('--library-path', default=os.environ.get('TEMPORALSTORE_LIBRARY_PATH', ''))
     parser.add_argument('--source-prefix', default='matrixark:mcp:raw_ingestion')
     parser.add_argument(
         '--raw-backend',
         choices=['temporalstore', 'matrixkv', 's3', 'objectstore'],
-        default=os.environ.get('MATRIXARK_RAW_INGESTION_BACKEND', 'temporalstore'),
+        default=(os.environ.get('MATRIXARK_RAW_INGESTION_BACKEND', "").strip() or 'temporalstore'),
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')

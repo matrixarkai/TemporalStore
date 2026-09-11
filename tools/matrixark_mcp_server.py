@@ -176,10 +176,10 @@ __all__ = [
 # `idle_commit_task_records`) -- never Python `read_all`, and never a full-store scan. It is
 # started per worker process and wired into the gateway lifespan (see
 # matrixark_v1_gateway.create_v1_app / the ASGI lifespan handler). 0 disables the loop.
-STREAM_MATERIALIZE_INTERVAL_MS = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS", "1500"))
+STREAM_MATERIALIZE_INTERVAL_MS = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS", "").strip() or "1500")
 # Hard cap on tracked pending scopes so a slow/stuck backend cannot grow the registry without
 # bound; the durable scheduled-task record + retrieve-time flush remain the backstop.
-STREAM_MATERIALIZE_MAX_SCOPES = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_MAX_SCOPES", "20000"))
+STREAM_MATERIALIZE_MAX_SCOPES = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_MAX_SCOPES", "").strip() or "20000")
 
 
 try:
@@ -239,7 +239,7 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
     SERVER_VERSION = "0.2.0"
     DEFAULT_PROTOCOL_VERSION = "2025-06-18"
     DEFAULT_REQUEST_DEADLINES_MS = {
-        "matrixark_ingest": int(os.environ.get("MATRIXARK_INGEST_TIMEOUT_MS", "30000")),
+        "matrixark_ingest": int(os.environ.get("MATRIXARK_INGEST_TIMEOUT_MS", "").strip() or "30000"),
         # Retrieve deadline default: a cold-start proxy scans the full serving-record
         # set (thousands of records) before scoring, which routinely exceeds the old
         # 5000ms ceiling and made the server discard the real ContextPack for an empty
@@ -248,17 +248,17 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # MATRIXARK_RETRIEVAL_TIMEOUT_MS, the one spelling every caller in the tree uses. Actual
         # warm/cold retrieve latency stays well under this ceiling; this only prevents premature
         # abort of an in-flight retrieve.
-        "matrixark_retrieve": int(os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "30000")),
-        "matrixark_feedback": int(os.environ.get("MATRIXARK_FEEDBACK_TIMEOUT_MS", "15000")),
-        "matrixark_replay": int(os.environ.get("MATRIXARK_REPLAY_TIMEOUT_MS", "10000")),
-        "matrixark_admin": int(os.environ.get("MATRIXARK_ADMIN_TIMEOUT_MS", "10000")),
+        "matrixark_retrieve": int(os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "").strip() or "30000"),
+        "matrixark_feedback": int(os.environ.get("MATRIXARK_FEEDBACK_TIMEOUT_MS", "").strip() or "15000"),
+        "matrixark_replay": int(os.environ.get("MATRIXARK_REPLAY_TIMEOUT_MS", "").strip() or "10000"),
+        "matrixark_admin": int(os.environ.get("MATRIXARK_ADMIN_TIMEOUT_MS", "").strip() or "10000"),
     }
     DEFAULT_OPERATION_CONCURRENCY = {
-        "ingest": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_INGEST", "32")),
+        "ingest": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_INGEST", "").strip() or "32"),
         "retrieve": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_RETRIEVE", str(max(4, min(8, (os.cpu_count() or 8) // 2))))),
-        "feedback": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_FEEDBACK", "16")),
-        "replay": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_REPLAY", "16")),
-        "admin": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_ADMIN", "16")),
+        "feedback": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_FEEDBACK", "").strip() or "16"),
+        "replay": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_REPLAY", "").strip() or "16"),
+        "admin": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_ADMIN", "").strip() or "16"),
     }
 
     def __init__(self, adapter: MatrixArkLocalAdapter, *, line_json: bool = False, access_mode: str = "dev") -> None:
@@ -279,8 +279,8 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # scope_key -> (scope_dict, due_ms). Populated at ingest time; drained by the loop.
         self._stream_materialize_registry: dict[str, tuple[Json, int]] = {}
         self._stream_materialize_registry_lock = threading.Lock()
-        self._operation_backpressure_timeout_ms = max(0, int(os.environ.get("MATRIXARK_BACKPRESSURE_TIMEOUT_MS", "100")))
-        self._retrieve_shed_cooldown_ms = max(0, int(os.environ.get("MATRIXARK_RETRIEVE_SHED_COOLDOWN_MS", "0")))
+        self._operation_backpressure_timeout_ms = max(0, int(os.environ.get("MATRIXARK_BACKPRESSURE_TIMEOUT_MS", "").strip() or "100"))
+        self._retrieve_shed_cooldown_ms = max(0, int(os.environ.get("MATRIXARK_RETRIEVE_SHED_COOLDOWN_MS", "").strip() or "0"))
         self._retrieve_shed_until_perf = 0.0
         self._retrieve_shed_lock = threading.Lock()
         # Audits default OFF: audit records live in the main record log, so with auditing on a
@@ -288,7 +288,7 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # the off-request-path auditing; full/sync restore per-call durability.
         self._audit_mode_default = os.environ.get("MATRIXARK_AUDIT_MODE", "off").strip().lower() or "off"
         from matrixark_mcp_audit_queue import AuditWriteQueue  # sibling; keeps this module small
-        self._audit_queue = AuditWriteQueue(int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "2")))
+        self._audit_queue = AuditWriteQueue(int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "").strip() or "2"))
         self._operation_limiters = {
             group: threading.BoundedSemaphore(max(1, int(capacity)))
             for group, capacity in self.DEFAULT_OPERATION_CONCURRENCY.items()
@@ -708,10 +708,6 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
             httpd.server_close()
 
 
-def production_profile_enabled() -> bool:
-    return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
-
-
 def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
     configured = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
     if configured:
@@ -765,14 +761,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--http-host",
-        default=os.environ.get("MATRIXARK_HTTP_HOST", "127.0.0.1"),
+        default=(os.environ.get("MATRIXARK_HTTP_HOST", "").strip() or "127.0.0.1"),
         help="Host for the optional HTTP/JSON management portal facade.",
     )
     parser.add_argument(
         "--http-port",
         type=int,
         # 0 is a MODE (stdio), not a bind port -- test_numeric_defaults_agree, JUSTIFIED entry.
-        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "0")),
+        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "").strip() or "0"),
         help="If non-zero, serve the browser portal and /api JSON facade instead of stdio MCP. Exporting MATRIXARK_HTTP_PORT globally rather than per service turns this server into a portal and an MCP client finds nothing.",
     )
     parser.add_argument(
@@ -784,7 +780,7 @@ def main() -> int:
     parser.add_argument(
         "--access-mode",
         choices=["dev", "enforced"],
-        default=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"),
+        default=(os.environ.get("MATRIXARK_ACCESS_MODE", "").strip() or "dev"),
         help="dev allows omitted API keys for local testing; enforced requires scoped MatrixArk API keys.",
     )
     args = parser.parse_args()

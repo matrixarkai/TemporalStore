@@ -195,16 +195,17 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
             from urllib.parse import urlparse, parse_qs, unquote
 
             parsed = urlparse(self.dsn)
-            if parsed.scheme not in {"mysql", "matrixkv", "matrixkv+mysql", "matrixkv", "matrixkv+mysql"}:
+            if parsed.scheme not in {"mysql", "matrixkv", "matrixkv+mysql"}:
                 raise MatrixArkError(
-                    "MATRIXARK_METADATA_DSN must be mysql://, matrixkv+mysql://, or matrixkv+mysql:// for SQL metadata"
+                    "MATRIXARK_METADATA_DSN must be mysql://, matrixkv://, or "
+                    "matrixkv+mysql:// for SQL metadata"
                 )
             params = {
                 "host": parsed.hostname or "127.0.0.1",
                 "port": parsed.port or 3306,
                 "user": unquote(parsed.username or "root"),
                 "password": unquote(parsed.password or ""),
-                "database": parsed.path.lstrip("/") or os.environ.get("MATRIXARK_METADATA_DB", "matrixark"),
+                "database": parsed.path.lstrip("/") or os.environ.get("MATRIXARK_METADATA_DB") or "matrixark",
                 "charset": "utf8mb4",
                 "autocommit": True,
             }
@@ -685,7 +686,7 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
 
 
 def build_matrixark_metadata_store(adapter: "MatrixArkLocalAdapter") -> MatrixArkMetadataStore:
-    backend = os.environ.get("MATRIXARK_METADATA_BACKEND", "record_log").strip().lower()
+    backend = (os.environ.get("MATRIXARK_METADATA_BACKEND", "").strip().lower() or "record_log")
     require_sql = _matrixark_env_truthy("MATRIXARK_REQUIRE_SQL_METADATA") or _matrixark_env_truthy("MATRIXARK_METADATA_REQUIRE_SQL")
     require_live = require_sql or _matrixark_env_truthy("MATRIXARK_METADATA_REQUIRE_LIVE")
     if backend in {"", "record_log", "temporalstore", "adapter"}:

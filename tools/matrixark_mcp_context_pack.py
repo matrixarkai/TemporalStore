@@ -14,7 +14,6 @@ except ImportError:  # Direct script execution from tools/.
 import bisect
 import os as _os
 
-import os
 from typing import Any
 
 Json = dict[str, Any]

@@ -23,7 +23,6 @@ import signal
 import sys
 import os
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -58,10 +57,7 @@ STOPWORDS = {
     "before", "after", "likely", "yes", "no", "since", "though", "would", "could", "should",
 }
 
-ACTIVE_RETRIEVAL_EMBEDDING_MODEL = os.environ.get(
-    "MATRIXARK_BENCHMARK_EMBEDDING_MODEL",
-    "matrixark-local-hash-embedding",
-)
+ACTIVE_RETRIEVAL_EMBEDDING_MODEL = (os.environ.get("MATRIXARK_BENCHMARK_EMBEDDING_MODEL", "").strip() or "matrixark-local-hash-embedding")
 _RETRIEVAL_ENCODER: Any | None = None
 _RETRIEVAL_EMBEDDING_CACHE: dict[tuple[str, str], list[float]] = {}
 
@@ -220,10 +216,7 @@ def main() -> int:
     parser.add_argument("--reader-model", default="gpt-4o-mini")
     parser.add_argument(
         "--embedding-model",
-        default=os.environ.get(
-            "MATRIXARK_BENCHMARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        ),
+        default=(os.environ.get("MATRIXARK_BENCHMARK_EMBEDDING_MODEL", "").strip() or "sentence-transformers/all-MiniLM-L6-v2"),
         help="Embedding/encoding model used by the MatrixArk/TemporalStore retrieval path.",
     )
     parser.add_argument(
@@ -1267,12 +1260,8 @@ except ImportError:  # Direct script execution from tools/.
 
 
 
-from run_locomo_source_packing import (  # re-export (extracted)
-    compact_rust_temporalstore_batch,
-    most_common_source_kind,
+from run_locomo_source_packing import (
     pack_rust_temporalstore_sources,
-    packed_rust_temporalstore_sources,
-    rust_temporalstore_source_signature,
     split_rust_temporalstore_jsonl,
 )
 def merge_rust_temporalstore_harnesses(harnesses: list[dict[str, Any]], source: str) -> dict[str, Any]:

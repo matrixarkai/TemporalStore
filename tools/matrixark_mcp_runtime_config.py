@@ -22,36 +22,36 @@ MAX_PRIOR_CHARS = 4096
 # reads a fraction of the store. It was 256 here, 4096 in the backfill (the only module that
 # honoured the environment variable) and 1024 in the engine, so which records a scan could see
 # depended on which module opened it.
-DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "256"))
-DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "65536"))
-DIRECT_RECORD_HOT_CACHE_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "20000"))
-DIRECT_WRITE_RETRIES = int(os.environ.get("MATRIXARK_DIRECT_WRITE_RETRIES", "3"))
-DIRECT_WRITE_BACKOFF_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_BACKOFF_MS", "25"))
-DIRECT_WRITE_THROTTLE_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_THROTTLE_MS", "0"))
-DIRECT_AUDIT_MODE = os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "buffered").strip().lower()
-DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "128"))
-DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
+DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "").strip() or "256")
+DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "").strip() or "65536")
+DIRECT_RECORD_HOT_CACHE_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "").strip() or "20000")
+DIRECT_WRITE_RETRIES = int(os.environ.get("MATRIXARK_DIRECT_WRITE_RETRIES", "").strip() or "3")
+DIRECT_WRITE_BACKOFF_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_BACKOFF_MS", "").strip() or "25")
+DIRECT_WRITE_THROTTLE_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_THROTTLE_MS", "").strip() or "0")
+DIRECT_AUDIT_MODE = (os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "").strip().lower() or "buffered")
+DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "").strip() or "128")
+DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "").strip() or "1000")
 
-CONTEXT_TELEMETRY_WRITE_MODE = os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "inline").strip().lower()
+CONTEXT_TELEMETRY_WRITE_MODE = (os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "").strip().lower() or "inline")
 ENABLE_CONTEXT_DEBUG_RECORDS = env_bool("MATRIXARK_CONTEXT_DEBUG_RECORDS", False)
 ENABLE_CONTEXT_REPLAY = env_bool("MATRIXARK_ENABLE_REPLAY", False)
 ENABLE_SUMMARY_REFRESH_AUDIT = env_bool("MATRIXARK_SUMMARY_REFRESH_AUDIT", False)
 ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS = env_bool("MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS", False)
-SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000"))
-SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64"))
+SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "").strip() or "1000")
+SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "").strip() or "64")
 # Largest share of wall-clock the background summary refresher may occupy. A refresh pass
 # costs O(store) -- it reads the whole record log and writes the refreshed summaries back
 # through the same proxy lane the request path uses -- so at a fixed interval a pass that
 # grows past that interval turns the loop into a permanent occupant of the lane. See
 # MatrixArkMcpServer._next_summary_refresh_delay_s.
-SUMMARY_REFRESH_MAX_DUTY = float(os.environ.get("MATRIXARK_SUMMARY_REFRESH_MAX_DUTY", "0.2"))
-SUMMARY_REFRESH_MAX_BACKOFF_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_MAX_BACKOFF_MS", "300000"))
+SUMMARY_REFRESH_MAX_DUTY = float(os.environ.get("MATRIXARK_SUMMARY_REFRESH_MAX_DUTY", "").strip() or "0.2")
+SUMMARY_REFRESH_MAX_BACKOFF_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_MAX_BACKOFF_MS", "").strip() or "300000")
 
-BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "30000"))
-BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "200"))
-BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
+BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "").strip() or "30000")
+BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "").strip() or "200")
+BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "").strip() or "1000")
 
-MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().lower()
+MATRIXARK_MCP_PROFILE = (os.environ.get("MATRIXARK_MCP_PROFILE", "").strip().lower() or "dev")
 MATRIXARK_ALLOW_LOCAL_BACKEND = env_bool("MATRIXARK_ALLOW_LOCAL_BACKEND", False)
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
@@ -90,7 +90,7 @@ def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
         return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
     return backend_label != "local"
 
-DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "500000"))
+DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "").strip() or "500000")
 
 
 def retrieval_min_score(args: Any = None, ranking: Any = None) -> float:
@@ -138,7 +138,7 @@ def serving_secondary_index_enabled() -> bool:
 #                       good enough to replace local replay for real sessions too.
 #   local_and_remote -> force legacy local-first for every request (disables the flip).
 # Per-request override: pass "context_source_mode" in the retrieve args.
-DEFAULT_CONTEXT_SOURCE_MODE = os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "auto").strip().lower()
+DEFAULT_CONTEXT_SOURCE_MODE = (os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "").strip().lower() or "auto")
 
 # Mode-dependent quota (opt-in; default OFF preserves legacy per-question-type ratios + tests).
 # When enabled, the cross-session budget ratio depends on context_source_mode:
@@ -149,8 +149,8 @@ DEFAULT_CONTEXT_SOURCE_MODE = os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "a
 #       minority (current-session reconstruction fills the majority of the remote budget).
 # Flip on with MATRIXARK_MODE_DEPENDENT_QUOTA=1 once the three-arm study validates it.
 MODE_DEPENDENT_QUOTA_ENABLED = env_bool("MATRIXARK_MODE_DEPENDENT_QUOTA", False)
-DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO", "0.60"))
-DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO", "0.30"))
+DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO", "").strip() or "0.60")
+DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO", "").strip() or "0.30")
 
 
 def resolve_context_source_mode(args: dict | None, *, default_mode: str | None = None) -> str:
@@ -175,7 +175,7 @@ def resolve_context_source_mode(args: dict | None, *, default_mode: str | None =
 # fall back to the request's local context for that turn so the agent is never left blind.
 # Makes the eventual global flip safe by construction. 0 disables the fallback.
 DEFAULT_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS = int(
-    os.environ.get("MATRIXARK_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS", "2048")
+    os.environ.get("MATRIXARK_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS", "").strip() or "2048"
 )
 
 
@@ -210,11 +210,11 @@ def apply_remote_only_local_fallback(
 CONTEXT_PACK_DEBUG_REFS = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", False)
 AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
 
-DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
-HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
-RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", str(2 * 1024 * 1024)))
-RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS", "200000"))
-RESOURCE_ASYNC_DEFAULT_PATH_COUNT = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT", "32"))
+DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "").strip() or "100000")
+HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "").strip() or "100000")
+RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", "").strip() or str(2 * 1024 * 1024))
+RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS", "").strip() or "200000")
+RESOURCE_ASYNC_DEFAULT_PATH_COUNT = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT", "").strip() or "32")
 
 DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
@@ -224,15 +224,15 @@ DEFAULT_BUSINESS_WEIGHT = 0.22
 # 0.05, and the engine request builder sent a bare 0.0 that overrode both -- so the threshold a
 # deployment got depended on which surface the request came through.
 # test_the_score_threshold_has_one_value pins the file and the code together.
-DEFAULT_RETRIEVAL_MIN_SCORE = float(os.environ.get("MATRIXARK_RETRIEVAL_MIN_SCORE", "0.05"))
-DEFAULT_TOP_K_PER_LAYER = int(os.environ.get("MATRIXARK_TOP_K_PER_LAYER", "8"))
-DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_PER_NODE", "1024"))
-DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "512"))
+DEFAULT_RETRIEVAL_MIN_SCORE = float(os.environ.get("MATRIXARK_RETRIEVAL_MIN_SCORE", "").strip() or "0.05")
+DEFAULT_TOP_K_PER_LAYER = int(os.environ.get("MATRIXARK_TOP_K_PER_LAYER", "").strip() or "8")
+DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_PER_NODE", "").strip() or "1024")
+DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "").strip() or "512")
 # 1000, matching config/temporalstore.toml. The config declared 1000 while this said 64 and
 # the engine used 24, so the number a deployment got depended on which surface it came from.
 # test_the_ref_cap_has_one_value pins all of them together.
-DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "1000"))
-DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "quality_first").strip().lower()
+DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "").strip() or "1000")
+DEFAULT_BUDGET_FILL_POLICY = (os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "").strip().lower() or "quality_first")
 # Near-duplicate suppression in ref selection. A candidate whose token set has a
 # Jaccard similarity >= this ratio with an already-selected (higher-ranked) ref
 # is dropped before packing, so the richer default packs (top_k 24, cross-session
@@ -240,31 +240,31 @@ DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "qua
 # containment) is used so distinct refs that merely share a common prefix are
 # kept. 1.0 == only token-set-identical collapses; <= 0.0 disables entirely.
 DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = float(
-    os.environ.get("MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD", "0.85")
+    os.environ.get("MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD", "").strip() or "0.85"
 )
 
 DEFAULT_CROSS_SESSION_BUDGET_RATIO = 0.12  # build default; live_float reads the environment
-DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "0.20"))
-DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO", "0.20"))
-DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "0.15"))
+DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "").strip() or "0.20")
+DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO", "").strip() or "0.20")
+DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "").strip() or "0.15")
 DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = 0.30  # build default; live_float reads the environment
 DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = 327680  # build default; live_int reads the environment
-DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "3"))
-DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "24"))
-DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "2"))
-DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "4"))
-DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "256"))
-DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "0.20"))
-DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE", "0.45"))
+DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "").strip() or "3")
+DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "").strip() or "24")
+DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "").strip() or "2")
+DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "").strip() or "4")
+DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "").strip() or "256")
+DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "").strip() or "0.20")
+DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE", "").strip() or "0.45")
 DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO = 0.60  # the guard, not the setting: the share below is what decides
-DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_SESSIONS", "6"))
-DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", "48"))
-DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS", "3"))
+DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_SESSIONS", "").strip() or "6")
+DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", "").strip() or "48")
+DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS", "").strip() or "3")
 DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
     item.strip()
-    for item in os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "entity,summary,compression").split(",")
+    for item in (os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "").strip() or "entity,summary,compression").split(",")
     if item.strip()
 )
 
@@ -359,34 +359,34 @@ DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = 262144  # build default; live_int re
 DEFAULT_SHARED_SKILL_BUDGET_RATIO = 0.10  # build default; live_float reads the environment
 DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
 DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
-DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "0.20"))
+DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "").strip() or "0.20")
 
 # Conditional follow-up query rewriting: rewrite the RETRIEVAL query (ranking only) from
 # recent session turns so anaphora ("that"/"the ones") carries its referent terms. It does
 # NOT change the pack fed to the model, so it adds ZERO model tokens. Ships OFF.
 QUERY_REWRITE_ENABLED = env_bool("MATRIXARK_QUERY_REWRITE", False)
-QUERY_REWRITE_WINDOW = int(os.environ.get("MATRIXARK_QUERY_REWRITE_WINDOW", "3"))
+QUERY_REWRITE_WINDOW = int(os.environ.get("MATRIXARK_QUERY_REWRITE_WINDOW", "").strip() or "3")
 
 # Precision-expand: for exact-fact queries, expand matched segments/summaries to their source
 # raw events (recovers exact hashes/numbers/commands that summaries drop). Ships OFF. Adds tokens
 # (raw > summary), so intended for remote-only exact-fact queries where accuracy is the priority.
 PACK_PRECISION_EXPAND_ENABLED = env_bool("MATRIXARK_PACK_PRECISION_EXPAND", False)
-PACK_PRECISION_EXPAND_MAX_EVENTS = int(os.environ.get("MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS", "12"))
+PACK_PRECISION_EXPAND_MAX_EVENTS = int(os.environ.get("MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS", "").strip() or "12")
 PACK_PRECISION_EXPAND_QUESTION_TYPES = {"fact", "multi_hop", "evidence", "benchmark_quality", "date"}
 
 # Auto skill discovery on session commit (mine reusable tool-procedures -> skill records).
 # Ships OFF; enable per-deployment. Runs only on final session boundaries.
 SKILL_DISCOVERY_ENABLED = env_bool("MATRIXARK_SKILL_DISCOVERY", False)
-SKILL_DISCOVERY_MIN_SUPPORT = int(os.environ.get("MATRIXARK_SKILL_DISCOVERY_MIN_SUPPORT", "2"))
-SKILL_DISCOVERY_MAX_SKILLS = int(os.environ.get("MATRIXARK_SKILL_DISCOVERY_MAX_SKILLS", "8"))
+SKILL_DISCOVERY_MIN_SUPPORT = int(os.environ.get("MATRIXARK_SKILL_DISCOVERY_MIN_SUPPORT", "").strip() or "2")
+SKILL_DISCOVERY_MAX_SKILLS = int(os.environ.get("MATRIXARK_SKILL_DISCOVERY_MAX_SKILLS", "").strip() or "8")
 
-TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "256"))
-TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "64"))
-TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "8"))
-TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH", "4"))
-TIME_COMPRESSION_MIN_EVENT_AGE_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENT_AGE_MS", "0"))
-TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS", str(30 * 24 * 60 * 60 * 1000)))
-TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS", str(30 * 24 * 60 * 60 * 1000)))
+TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "").strip() or "256")
+TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "").strip() or "64")
+TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "").strip() or "8")
+TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH", "").strip() or "4")
+TIME_COMPRESSION_MIN_EVENT_AGE_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENT_AGE_MS", "").strip() or "0")
+TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS", "").strip() or str(30 * 24 * 60 * 60 * 1000))
+TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS", "").strip() or str(30 * 24 * 60 * 60 * 1000))
 
 ENABLE_LLM_MERGE_OPERATOR = env_bool("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", False)
 DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"

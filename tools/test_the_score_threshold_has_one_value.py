@@ -39,7 +39,7 @@ def python_defaults():
     for name in ("matrixark_mcp_core.py", "matrixark_mcp_runtime_config.py"):
         body = open(os.path.join(HERE, name), encoding="utf-8").read()
         match = re.search(
-            r'DEFAULT_RETRIEVAL_MIN_SCORE = float\(os\.environ\.get\("MATRIXARK_RETRIEVAL_MIN_SCORE",\s*"([\d.]+)"\)\)',
+            r'DEFAULT_RETRIEVAL_MIN_SCORE = float\(os\.environ\.get\("MATRIXARK_RETRIEVAL_MIN_SCORE",.*?"([\d.]+)"',
             body,
         )
         found[name] = float(match.group(1)) if match else None

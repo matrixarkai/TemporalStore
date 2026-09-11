@@ -35,7 +35,7 @@ _EMBEDDING_CACHE_STATS = {"hits": 0, "misses": 0, "evictions": 0}
 
 def embedding_cache_capacity() -> int:
     try:
-        return max(0, int(os.environ.get("MATRIXARK_EMBEDDING_CACHE_ENTRIES", "8192")))
+        return max(0, int(os.environ.get("MATRIXARK_EMBEDDING_CACHE_ENTRIES", "").strip() or "8192"))
     except ValueError:
         return 8192
 
@@ -125,7 +125,7 @@ _PREFIXED_MODEL_MARKERS = ("e5",)
 def embedding_target_dims() -> int:
     """Dimensions to keep, or 0 to store whatever the model emits."""
     try:
-        return max(0, int(os.environ.get("MATRIXARK_EMBEDDING_DIMS", "512")))
+        return max(0, int(os.environ.get("MATRIXARK_EMBEDDING_DIMS", "").strip() or "512"))
     except ValueError:
         return 0
 
@@ -290,7 +290,7 @@ def embedding_provider_name() -> str:
     up. Sites that deliberately report the RAW configured string, rather than dispatch on it, still
     read the variable directly and should: they are answering "what is set", not "what will run".
     """
-    return os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    return (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip().lower() or "deterministic")
 
 
 
@@ -319,15 +319,19 @@ def _api_embedding_config(provider: str) -> tuple[str, str, str, str]:
         base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
                 or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip()
                 or "https://api.voyageai.com/v1")
-        key_env = os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "VOYAGE_API_KEY")
+        key_env = (os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "").strip()
+                   or "VOYAGE_API_KEY")
         default_model = "voyage-3"
     else:  # openai / openai_compatible / azure_openai / api
         base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
                 or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip()
                 or "https://api.openai.com/v1")
-        key_env = os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "OPENAI_API_KEY")
+        key_env = (os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "").strip()
+                   or "OPENAI_API_KEY")
         default_model = "text-embedding-3-large"
-    model = os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
+    # Cleared rather than unset, this sent the API an empty model name. The base URL above
+    # already reads this way; these two did not.
+    model = os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip() or default_model
     endpoint = base.rstrip("/") + "/embeddings"
     return endpoint, os.environ.get(key_env, "").strip(), model, key_env
 
@@ -402,7 +406,7 @@ def api_embedding_for_texts(texts: list[str], provider: str) -> list[list[float]
             # outright, which would turn a working keyless endpoint into the silent hash fallback.
             headers["Authorization"] = f"Bearer {api_key}"
         request = _urlreq.Request(endpoint, data=body, headers=headers)
-        timeout = float(os.environ.get("MATRIXARK_EMBEDDING_API_TIMEOUT_S", "30"))
+        timeout = float(os.environ.get("MATRIXARK_EMBEDDING_API_TIMEOUT_S", "").strip() or "30")
         with _urlreq.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed provider endpoint
             payload = _json.loads(response.read().decode("utf-8"))
         rows = sorted(payload.get("data", []), key=lambda row: row.get("index", 0))

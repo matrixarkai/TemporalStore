@@ -172,12 +172,41 @@ class TheTransportTimeoutHasOneNumberTest(Case):
     literal in an argument parser. This does."""
 
     def backend_default(self, variable: str) -> int:
-        """The number `matrixark_mcp_backends` actually parses, read out of its source."""
+        """The number `matrixark_mcp_backends` actually parses, read out of its source.
+
+        Evaluated rather than scraped. This used to look for `os.environ.get("NAME", "` and read
+        to the next quote, which found the default only while the default was the second argument.
+        It moved when the read was made blank-safe -- `get(NAME, "").strip() or "60000"` -- and the
+        scraper then read "" and raised, which is a guard going blind rather than a number
+        changing. So: find the int() around that variable's read, substitute the environment call
+        with what it returns when the variable is ABSENT, and evaluate. Either spelling, same
+        answer.
+        """
         with open(os.path.join(TOOLS, "matrixark_mcp_backends.py"), encoding="utf-8") as handle:
-            source = handle.read()
-        marker = 'os.environ.get("%s", "' % variable
-        start = source.index(marker) + len(marker)
-        return int(source[start:source.index('"', start)])
+            tree = ast.parse(handle.read())
+
+        def environ_get(node):
+            for sub in ast.walk(node):
+                if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr == "get"
+                        and isinstance(sub.func.value, ast.Attribute)
+                        and sub.func.value.attr == "environ"
+                        and sub.args and isinstance(sub.args[0], ast.Constant)
+                        and sub.args[0].value == variable):
+                    return sub
+            return None
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in {"int", "float"}):
+                continue
+            getter = environ_get(node)
+            if getter is None:
+                continue
+            absent = getter.args[1].value if len(getter.args) >= 2 else ""
+            expression = ast.unparse(node).replace(ast.unparse(getter), repr(absent))
+            return int(eval(expression, {"__builtins__": {"int": int, "float": float}}, {}))
+        raise AssertionError("no int() read of %s in matrixark_mcp_backends" % variable)
 
     def test_the_panel_resolves_the_number_the_backend_parses(self) -> None:
         for variable, constant in (

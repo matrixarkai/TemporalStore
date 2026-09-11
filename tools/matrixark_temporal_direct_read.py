@@ -31,9 +31,9 @@ except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
 try:  # package path
-    from tools.matrixark_temporal_location_codec import compact_location_list, expand_location
+    from tools.matrixark_temporal_location_codec import expand_location
 except ImportError:
-    from matrixark_temporal_location_codec import compact_location_list, expand_location
+    from matrixark_temporal_location_codec import expand_location
 
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
@@ -1565,7 +1565,7 @@ class _TemporalDirectReadMixin:
         elif not isinstance(dropped_refs, dict):
             pack["dropped_refs"] = {"refs": [], "native_summary": True}
         audit_mode = str(
-            args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "telemetry_only")
+            args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE") or "telemetry_only"
         ).strip().lower()
         if audit_mode not in {"full", "telemetry_only", "off"}:
             audit_mode = "telemetry_only"

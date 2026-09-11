@@ -361,7 +361,7 @@ class GatewayMetrics:
                 if status >= 400:
                     routes[route]["errors"] += count
             return {
-                "uptime_s": round(time.time() - self._start, 1),
+                "uptime_s": round(max(0.0, time.time() - self._start), 1),
                 "in_flight": self._in_flight,
                 "routes": routes,
                 "total_requests": sum(self._count.values()),
@@ -488,7 +488,7 @@ def config_health_lines(snapshot: Optional[Json] = None) -> List[str]:
     warnings: List[str] = []
     extraction_provider = (os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER")
                            or os.environ.get("MATRIXARK_EXTRACTION_PROVIDER") or "deterministic")
-    embedding_provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic")
+    embedding_provider = (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip() or "deterministic")
     if isinstance(snapshot, dict):
         raw = snapshot.get("warnings")
         if isinstance(raw, list):

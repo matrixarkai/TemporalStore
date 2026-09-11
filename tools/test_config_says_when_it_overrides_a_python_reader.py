@@ -43,7 +43,16 @@ _CONFIG_LINE = re.compile(
     r'(?P<var>MATRIXARK_[A-Z0-9_]+)')
 _READ = re.compile(
     r'os\.(?:environ\.get|getenv)\(\s*["\'](?P<var>MATRIXARK_[A-Z0-9_]+)["\']\s*,\s*'
-    r'(?P<default>"[^"]*"|\'[^\']*\'|[-\d.]+)\s*\)')
+    # A blank-safe read states its default past the fallback: get(VAR, "").strip() or "8",
+    # and the chain between the placeholder and the `or` may be longer than one call --
+    # .strip().lower() is the other spelling in this tree.
+    # Without this the guard reads '' as the reader's default and reports every shipped
+    # config value as a contradiction.
+    r'(?:["\']{2}\s*\)(?:\s*\.\w+\([^)]*\))*\s*or\s*)?'
+    # A literal followed by `).strip() or` is the blank placeholder, not the default. Without
+    # this the engine backtracks past the prefix above and captures '' whenever the real
+    # default is an expression rather than a literal.
+    r'(?P<default>"[^"]*"|\'[^\']*\'|[-\d.]+)(?!\s*\)(?:\s*\.\w+\([^)]*\))*\s*or\b)\s*\)?')
 
 #: A shipped-config value that is NOT what the Python reader would have chosen, and why.
 KNOWN_OVERRIDES: Dict[str, str] = {

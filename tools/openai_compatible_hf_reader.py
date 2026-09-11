@@ -433,31 +433,31 @@ def hash_embedding(text: str, dim: int) -> list[float]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a local OpenAI-compatible HF reader endpoint.")
-    parser.add_argument("--host", default=os.environ.get("TEMPORALSTORE_HF_READER_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("TEMPORALSTORE_HF_READER_PORT", "8000")))
-    parser.add_argument("--model", default=os.environ.get("TEMPORALSTORE_READER_MODEL", "google/flan-t5-small"))
-    parser.add_argument("--max-new-tokens", type=int, default=int(os.environ.get("TEMPORALSTORE_HF_READER_MAX_NEW_TOKENS", "96")))
+    parser.add_argument("--host", default=(os.environ.get("TEMPORALSTORE_HF_READER_HOST", "").strip() or "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("TEMPORALSTORE_HF_READER_PORT", "").strip() or "8000"))
+    parser.add_argument("--model", default=(os.environ.get("TEMPORALSTORE_READER_MODEL", "").strip() or "google/flan-t5-small"))
+    parser.add_argument("--max-new-tokens", type=int, default=int(os.environ.get("TEMPORALSTORE_HF_READER_MAX_NEW_TOKENS", "").strip() or "96"))
     parser.add_argument(
         "--task",
         choices=("seq2seq", "question-answering", "causal-lm"),
-        default=os.environ.get("TEMPORALSTORE_HF_READER_TASK", "seq2seq"),
+        default=(os.environ.get("TEMPORALSTORE_HF_READER_TASK", "").strip() or "seq2seq"),
         help="Use seq2seq, causal language-model generation, or extractive QA for OSS readers.",
     )
     parser.add_argument(
         "--max-length",
         type=int,
-        default=int(os.environ.get("TEMPORALSTORE_HF_READER_MAX_LENGTH", "1024")),
+        default=int(os.environ.get("TEMPORALSTORE_HF_READER_MAX_LENGTH", "").strip() or "1024"),
         help="Maximum tokenizer input length for the reader model.",
     )
     parser.add_argument(
         "--embedding-model",
-        default=os.environ.get("TEMPORALSTORE_HF_EMBEDDING_MODEL", "matrixark-hash-embedding-32"),
+        default=(os.environ.get("TEMPORALSTORE_HF_EMBEDDING_MODEL", "").strip() or "matrixark-hash-embedding-32"),
         help="OpenAI-compatible embedding model id exposed by /v1/embeddings.",
     )
     parser.add_argument(
         "--embedding-dim",
         type=int,
-        default=int(os.environ.get("TEMPORALSTORE_HF_EMBEDDING_DIM", "32")),
+        default=int(os.environ.get("TEMPORALSTORE_HF_EMBEDDING_DIM", "").strip() or "32"),
         help="Deterministic hash embedding dimension for local baseline bootstraps.",
     )
     parser.add_argument("--preload", action="store_true", default=os.environ.get("TEMPORALSTORE_HF_READER_PRELOAD", "1") != "0")
