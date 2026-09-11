@@ -629,6 +629,15 @@ pub struct LazyCheckpointSlab {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabDescriptor {
+    /// The same number as [`Self::block_slab_id`], always.
+    ///
+    /// A band IS a slab: `band_id_for_slab` is the identity function, and every construction site
+    /// passes the slab id into it. `band` is simply the older name -- the aliases below record
+    /// the lineage `zone_id` -> `extent_id` -> `band_id`.
+    ///
+    /// It stays because it SERIALIZES and the compat corpora carry it, so dropping it is a wire
+    /// break rather than a cleanup. Read `block_slab_id` in new code; the two cannot diverge, and
+    /// `a_slab_descriptor_carries_the_same_number_twice` fails if they ever do.
     #[serde(alias = "extent_id", alias = "zone_id")]
     pub band_id: u64,
     #[serde(rename = "page_segment_id")]

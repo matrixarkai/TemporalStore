@@ -2123,6 +2123,9 @@ pub struct StorageStreamSample {
 pub struct StorageSlabSample {
     #[serde(alias = "segment_id")]
     pub slab_id: u64,
+    /// The same number as [`Self::slab_id`], always -- see
+    /// [`crate::block_store::BlockStoreSlabDescriptor::band_id`]. Kept because it serializes and
+    /// the compat corpora carry it.
     pub band: u64,
     pub start_offset: u64,
     pub sealed: bool,
