@@ -6,6 +6,30 @@
 use super::*;
 use std::collections::BTreeSet;
 
+/// The `load_version` the PRIMARY reports for this shard, or 0 when nothing is known.
+///
+/// This is the same value `validate_load_version` compares against on the data node, because it
+/// is the server's own report of what it has loaded. Taking the max is deliberate: a server
+/// mid-handoff can briefly report two entries for one shard, and the newer one is the one a write
+/// should be fenced against.
+///
+/// 0 on every unknown -- no such server, no entry, not loaded -- so an unknown never produces a
+/// token that would fence a client out.
+fn reported_load_version(state: &MetaState, server_addr: &str, shard_id: ShardId) -> u64 {
+    state
+        .servers
+        .get(server_addr)
+        .and_then(|server| {
+            server
+                .shard_states
+                .iter()
+                .filter(|shard_state| shard_state.shard_id == shard_id && shard_state.loaded)
+                .map(|shard_state| shard_state.load_version)
+                .max()
+        })
+        .unwrap_or(0)
+}
+
 /// Whether the server a shard is registered to is in service.
 ///
 /// An unknown address counts as serving: a route can outlive the server record
@@ -135,6 +159,8 @@ pub(super) fn build_shards(
                 replicas: Vec::new(),
                 primary_endpoint: None,
                 replica_endpoints: Vec::new(),
+                // Not serving, so there is no primary to be fenced against.
+                load_version: 0,
             });
             continue;
         }
@@ -292,6 +318,10 @@ pub(super) fn build_shards(
             .iter()
             .map(|server_addr| server_endpoint(state, server_addr))
             .collect();
+        let load_version = primary
+            .as_deref()
+            .map(|server_addr| reported_load_version(state, server_addr, shard_id))
+            .unwrap_or(0);
         shards.push(TableShard {
             shard_id,
             start_bucket,
@@ -300,6 +330,7 @@ pub(super) fn build_shards(
             replicas,
             primary_endpoint,
             replica_endpoints,
+            load_version,
         });
     }
     shards

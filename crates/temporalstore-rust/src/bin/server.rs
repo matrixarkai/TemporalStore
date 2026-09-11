@@ -3006,6 +3006,7 @@ mod tests {
                                         temporalstore_rust::meta::TableServingOptions::default(),
                                 }),
                                 shards: vec![temporalstore_rust::meta::TableShard {
+                                    load_version: 0,
                                     shard_id: 9,
                                     start_bucket: 90,
                                     end_bucket: 99,

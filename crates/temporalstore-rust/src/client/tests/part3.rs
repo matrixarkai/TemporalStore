@@ -63,6 +63,7 @@ fn table_write_refreshes_due_topology_before_network() {
                                     serving_options: crate::meta::TableServingOptions::default(),
                                 }),
                                 shards: vec![crate::meta::TableShard {
+                                    load_version: 0,
                                     shard_id: first_shard_id,
                                     start_bucket: 0,
                                     end_bucket: u64::MAX,

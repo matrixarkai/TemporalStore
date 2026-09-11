@@ -178,6 +178,7 @@ impl TemporalStoreClient {
                             next_replica_index: std::sync::atomic::AtomicUsize::new(0),
                             fetched_at: Instant::now(),
                             topology_version: route_topology_version,
+                            load_version: partition.load_version,
                             refresh_reason: "table_topology_sync".to_string(),
                         },
                     )
