@@ -1471,12 +1471,19 @@ SETTINGS.extend([
             'Temporalstore async context warmup force. Off by default. Read by matrixark_temporal_direct_write.'),
     Setting("skills.dedupe_skill_chunk_embedding", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING",
             "Dedupe skill chunk embedding", "bool", "1", "restart",
-            "Dedupe skill chunk embedding. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_ingest_resource_chunk_records."),
+            "Stores one vector per skill chunk instead of two. A skill chunk used to store the "
+            "SAME vector twice -- once as embedding_type resource_chunk, once as skill_section, "
+            "under the same ref_hash -- and retrieval keys its vector map on ref_hash alone, so "
+            "the second copy only ever overwrote the first with an identical value. About 37% "
+            "of what a skill ingest writes, for nothing. Off restores the second copy."),
     Setting("skills.dedupe_skill_chunk_text", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_TEXT",
             "Dedupe skill chunk text", "bool", "1", "restart",
-            "Dedupe skill chunk text. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_ingest_resource_chunk_records."),
+            "Stores a skill chunk's text once instead of twice. It used to be written byte for "
+            "byte as both resource_chunk and skill_section: measured on a 1.41 MB markdown "
+            "skill, 411 chunks and 411 sections with all 411 section texts identical to a "
+            "chunk's, and resource_chunk was 42.1% of the bytes that ingest wrote. Retrieval "
+            "does not read it -- the skill scan skips resource_chunk and serves the section. "
+            "Off restores the second copy."),
     Setting("skills.enable_generic_resource_facts", "skills", "MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS",
             "Enable generic resource facts", "bool", "0", "restart",
             "Enable generic resource facts. Off by default. Frozen when the process starts. Read by "
@@ -1573,8 +1580,11 @@ SETTINGS.extend([
             "the majority of the footprint. Set it off to write every term again."),
     Setting("storage_engine.index_posting_lists", "storage_engine", "MATRIXARK_INDEX_POSTING_LISTS",
             "Index posting lists", "bool", "1", "restart",
-            "Index posting lists. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_ingest_resource_chunk_records."),
+            "Coalesces the index into one posting per term instead of one record per "
+            "(chunk, term) pair, which was 83.3% of everything a skill ingest writes -- 33,020 "
+            "of the 39,624 records a 1 MB skill produces. Measured on that document: records "
+            "-75.6%, bytes 18.4 MB to 6.9 MB, write amplification 17.5x to 6.6x. The index "
+            "CONTENT is unchanged -- the same terms carrying the same references."),
     Setting("storage_engine.index_skip_owner_derivable_terms", "storage_engine", "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS",
             "Index skip owner derivable terms", "bool", "1", "restart",
             "Skips postings whose target the owner record derives for itself. Since the vector "
