@@ -67,6 +67,27 @@ REPO = os.path.dirname(TOOLS)
 
 #: The variable names this guard covers, lifted out of the old read regex so the
 #: parse below shares one definition with it.
+def _or_fallbacks(tree) -> Dict[int, object]:
+    """id(read call) -> the constant after the `or`, for a blank-safe read.
+
+    `get(NAME, "").strip() or "256"` states its default on the right of the `or`. Reading only the
+    second argument finds "" there, which is not a number, and the whole variable then drops out of
+    the scan -- silently, which is what the floor below exists to catch.
+    """
+    found: Dict[int, object] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or)
+                and len(node.values) == 2):
+            continue
+        right = node.values[1]
+        if not isinstance(right, ast.Constant):
+            continue
+        for inner in ast.walk(node.values[0]):
+            if isinstance(inner, ast.Call):
+                found[id(inner)] = right.value
+    return found
+
+
 _NAME = re.compile(r'(?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+')
 
 _READ = re.compile(
@@ -123,6 +144,7 @@ def _numeric_reads() -> Dict[str, List[Tuple[str, int, str]]]:
                 tree = ast.parse(handle.read())
         except (OSError, SyntaxError):
             continue
+        or_fallbacks = _or_fallbacks(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or len(node.args) != 2:
                 continue
@@ -146,6 +168,8 @@ def _numeric_reads() -> Dict[str, List[Tuple[str, int, str]]]:
             if not isinstance(default, ast.Constant):
                 continue
             value = default.value
+            if value == "" and id(node) in or_fallbacks:
+                value = or_fallbacks[id(node)]     # the default sits past the `or`
             if isinstance(value, bool):
                 continue                      # a bool is not a number here; booleans have their
                                               # own guard, and True would render as "True"

@@ -708,10 +708,6 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
             httpd.server_close()
 
 
-def production_profile_enabled() -> bool:
-    return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
-
-
 def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
     configured = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
     if configured:

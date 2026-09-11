@@ -47,7 +47,29 @@ def _tracked() -> list:
                           capture_output=True, text=True).stdout.split()
 
 
-def _default_at(node, numeric: Dict[int, str]) -> Optional[Tuple[str, str]]:
+def _or_fallbacks(tree) -> Dict[int, object]:
+    """id(read call) -> the constant after the `or`, for the blank-safe spelling.
+
+    `get(NAME, "").strip() or "30000"` states its default on the right of the `or`, not in the
+    second argument. Without this the reader takes "" as the default and the setting drops out of
+    the comparison -- silently, which is what the floor below exists to catch.
+    """
+    found: Dict[int, object] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or)
+                and len(node.values) == 2):
+            continue
+        right = node.values[1]
+        if not isinstance(right, ast.Constant):
+            continue
+        for inner in ast.walk(node.values[0]):
+            if isinstance(inner, ast.Call):
+                found[id(inner)] = right.value
+    return found
+
+
+def _default_at(node, numeric: Dict[int, str],
+                or_fallbacks: Optional[Dict[int, object]] = None) -> Optional[Tuple[str, str]]:
     fn = node.func
     name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute)
                                                    else None)
@@ -55,6 +77,8 @@ def _default_at(node, numeric: Dict[int, str]) -> Optional[Tuple[str, str]]:
         return None
     raw = node.args[1].value if len(node.args) > 1 and isinstance(node.args[1], ast.Constant) \
         else None
+    if raw == "" and or_fallbacks is not None and id(node) in or_fallbacks:
+        raw = or_fallbacks[id(node)]
     if name == "env_bool" and isinstance(raw, bool):
         return "bool", "1" if raw else "0"
     if name == "env_int" and isinstance(raw, int) and not isinstance(raw, bool):
@@ -89,6 +113,7 @@ def defaults_in_the_source() -> Dict[str, Set[Tuple[str, str]]]:
                 tree = ast.parse(handle.read())
         except (OSError, SyntaxError):
             continue
+        or_fallbacks = _or_fallbacks(tree)
         numeric: Dict[int, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
@@ -104,7 +129,7 @@ def defaults_in_the_source() -> Dict[str, Set[Tuple[str, str]]]:
             if not (isinstance(first, ast.Constant) and isinstance(first.value, str)
                     and first.value.startswith(("MATRIXARK_", "TS_"))):
                 continue
-            pair = _default_at(node, numeric)
+            pair = _default_at(node, numeric, or_fallbacks)
             if pair is not None:
                 found.setdefault(first.value, set()).add(pair)
     return found
