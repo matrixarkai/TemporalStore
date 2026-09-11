@@ -1564,54 +1564,11 @@ def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]
     return pressure_bits
 
 
-def _format_count_map_bits(counts: Json, *, limit: int = 6) -> str:
-    if not isinstance(counts, dict) or not counts:
-        return ""
-    bits = []
-    for key in sorted(counts):
-        try:
-            count = int(counts[key] or 0)
-        except (TypeError, ValueError):
-            continue
-        if count > 0:
-            bits.append(f"{key}={count}")
-    return ",".join(bits[:limit])
-
-
-def _format_memory_lineage_summary(lineage: Json) -> str:
-    if not isinstance(lineage, dict) or not lineage:
-        return ""
-    bits = []
-    for label, field in [
-        ("roles", "source_role_counts"),
-        ("hooks", "source_hook_type_counts"),
-        ("codex_events", "source_codex_event_counts"),
-    ]:
-        formatted = _format_count_map_bits(lineage.get(field))
-        if formatted:
-            bits.append(f"{label}[{formatted}]")
-    flag_bits = []
-    for label, field in [
-        ("user_prompt", "user_prompt_captured"),
-        ("assistant_response", "assistant_response_captured"),
-        ("tool_evidence", "tool_evidence_captured"),
-    ]:
-        if bool(lineage.get(field)):
-            flag_bits.append(label)
-    if flag_bits:
-        bits.append("captured[" + ",".join(flag_bits) + "]")
-    try:
-        promotion_count = int(lineage.get("profile_promotion_count") or 0)
-    except (TypeError, ValueError):
-        promotion_count = 0
-    if promotion_count > 0:
-        bits.append(f"profile_promotions={promotion_count}")
-    session_ids = lineage.get("promoted_source_session_ids")
-    if isinstance(session_ids, list) and session_ids:
-        bits.append("promoted_sessions=" + ",".join(str(value) for value in session_ids[:4]))
-    if not bits:
-        return ""
-    return "Retrieved memory lineage: " + "; ".join(bits) + "."
+# The "Retrieved memory lineage:" line and its count formatter used to live here. They are gone
+# rather than kept warm: the line was taken out of additionalContext with eight other diagnostics,
+# and test_codex_hook_output_part2 asserts each of them is ABSENT -- so the renderer could not come
+# back without that test failing first. The hook's context budget is what this is about; a
+# diagnostic in additionalContext is paid for out of the agent's own window.
 
 
 def normalized_event_name(event: str) -> str:

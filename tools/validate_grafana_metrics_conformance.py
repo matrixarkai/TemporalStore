@@ -486,10 +486,6 @@ def check_no_bare_histogram_targets(kinds: dict) -> list:
     return failures
 
 
-def check_scan_extent_placeholder_removed() -> list:
-    return []
-
-
 def check_dashboard_extent() -> list:
     """Every dashboard listed must exist, or its panels stop being checked silently."""
     return ["dashboard_missing:%s" % path.name for path in DASHBOARDS if not path.exists()]

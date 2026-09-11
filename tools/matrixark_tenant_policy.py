@@ -913,19 +913,10 @@ def clear_user_policy_cache() -> None:
         _USER_POLICIES.clear()
 
 
-def tenant_scope_from_node_path(node_path: Any) -> Json:
-    """Recover a tenant identity from a context node path (``["tenant:acme", "user:u1", ...]``).
-
-    A background summary refresh can run with no scope argument, against a dirty marker whose own
-    scope was stripped by serving materialization -- but the node path always names the tenant, so
-    per-tenant policy has a last-resort identity instead of failing open."""
-    if not isinstance(node_path, (list, tuple)):
-        return {}
-    for part in node_path:
-        text = str(part or "")
-        if text.startswith("tenant:") and len(text) > 7:
-            return {"tenant_id": text[7:]}
-    return {}
+# Recovering a tenant from a node path is not done here. `candidate_access_scope` in
+# matrixark_mcp_core is the live one and recovers tenant AND user AND session, after trying the
+# record's own access_scope, its metadata and the serving scope first -- so the copy that used to
+# sit here answered a strictly narrower question, and was called by nothing.
 
 
 def explicit_int(name: str, scope: Any, fallback: int) -> int:

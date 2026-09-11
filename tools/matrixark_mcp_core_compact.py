@@ -44,7 +44,7 @@ except ImportError:  # top-level path
     from matrixark_mcp_models import embedding_model_ref_for_name
     from matrixark_mcp_runtime_config import ENABLE_CONTEXT_DEBUG_RECORDS
 
-__all__ = ['HOT_SERVING_RECORD_TYPES', 'COMPACT_SCOPE_RECORD_TYPES', 'COMPACT_TIMESTAMP_RECORD_TYPES', 'TOPOLOGY_DERIVED_PATH_RECORD_TYPES', 'NODE_PATH_HEAVY_RECORD_TYPES', 'EVENT_DEBUG_FIELDS', 'ENTITY_DEBUG_FIELDS', 'EMBEDDING_LINEAGE_DEBUG_FIELDS', 'HOT_EMBEDDING_COMPACT_TYPES', 'HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES', 'HOT_EMBEDDING_LINEAGE_FIELDS', 'compact_hot_context_embedding_record', 'legacy_hook_type_from_codex_event', 'CONTEXT_TIMELINE_FANOUT', 'COMPACT_DERIVED_SCOPE_FIELDS', 'COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES', 'COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS', 'compact_record_scope', '_record_debug_ref', 'context_event_timestamp_ms', 'context_event_time_key', 'attach_context_event_time_key', 'attach_storage_route', 'context_placement_key', 'attach_context_placement', 'compact_record_lifecycle_fields', 'compact_storage_record', 'materialize_serving_records', 'context_index_timestamp_key', 'context_index_posting_bucket', 'context_index_data_model', 'context_index_ref_hashes', 'materialize_serving_record_batch', 'latest_context_state_key', 'compact_latest_context_state_records']
+__all__ = ['HOT_SERVING_RECORD_TYPES', 'COMPACT_SCOPE_RECORD_TYPES', 'COMPACT_TIMESTAMP_RECORD_TYPES', 'TOPOLOGY_DERIVED_PATH_RECORD_TYPES', 'NODE_PATH_HEAVY_RECORD_TYPES', 'EVENT_DEBUG_FIELDS', 'ENTITY_DEBUG_FIELDS', 'EMBEDDING_LINEAGE_DEBUG_FIELDS', 'HOT_EMBEDDING_COMPACT_TYPES', 'HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES', 'HOT_EMBEDDING_LINEAGE_FIELDS', 'compact_hot_context_embedding_record', 'legacy_hook_type_from_codex_event', 'CONTEXT_TIMELINE_FANOUT', 'COMPACT_DERIVED_SCOPE_FIELDS', 'COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES', 'COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS', 'compact_record_scope', '_record_debug_ref', 'context_event_timestamp_ms', 'context_event_time_key', 'attach_context_event_time_key', 'attach_storage_route', 'context_placement_key', 'attach_context_placement', 'compact_record_lifecycle_fields', 'compact_storage_record', 'materialize_serving_records', 'context_index_timestamp_key', 'context_index_posting_bucket', 'context_index_ref_hashes', 'materialize_serving_record_batch', 'latest_context_state_key', 'compact_latest_context_state_records']
 
 # These record-shape constants live in matrixark_mcp_serving_records, and did so here as a second
 # copy: which record types are hot, which fields are debug-only, which carry a heavy node path,
@@ -355,22 +355,9 @@ def context_index_posting_bucket(timestamp_ms: int) -> int:
     return int(timestamp_ms) - (int(timestamp_ms) % bucket_ms)
 
 
-def context_index_data_model(record: Json) -> str:
-    explicit = str(record.get("data_model") or "").strip()
-    if explicit:
-        return explicit
-    ref_type = str(record.get("ref_type") or "").strip()
-    if ref_type:
-        return ref_type
-    if record.get("batch_id_hash") is not None:
-        return "context_batch_commit"
-    if record.get("summary_hash") is not None:
-        return "context_summary"
-    if record.get("chunk_hash") is not None:
-        return "resource_chunk"
-    if record.get("skill_hash") is not None or record.get("section_hash") is not None:
-        return "skill"
-    return "context"
+# A fallback that derived `data_model` from a record's other hashes used to sit here. It was
+# never called: matrixark_mcp_indexing writes the field explicitly when it builds the record, so
+# the fallback existed for a record shape this tree does not produce.
 
 
 # Not defined here: the implementation lives in matrixark_mcp_indexing and this module carried an

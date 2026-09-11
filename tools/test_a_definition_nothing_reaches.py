@@ -95,15 +95,15 @@ UNREACHED = {
     # 06a46d19f, d422a7e21 "OSS sync PR 4/4"), module-split refactors (efd36f9ef, 667b9e17a,
     # 7c80869cc), or a feature PR whose caller never followed. Import residue, so "left behind by
     # the path that used to call it" is the wrong story: nothing ever called them here.
-    "matrixark_codex_hook.py": ("_format_count_map_bits", "_format_memory_lineage_summary"),
     # Two whose docstrings say where they are applied, and neither is applied anywhere:
     # `clip_messages_for_ingest` says "Applied ONCE at the ingest boundary", and
     # `joined_summary_source_text` is the sentence-level summary dedup, measurement included.
     "matrixark_index_growth_bound.py": ("clip_messages_for_ingest", "joined_summary_source_text"),
-    "matrixark_mcp_core_compact.py": ("context_index_data_model",),
-    "matrixark_context_backfill.py": ("read_checkpoint_sequence",),
     "matrixark_load_config.py": ("apply_from_file",),
-    "matrixark_tenant_policy.py": ("clear_user_policy_cache", "tenant_scope_from_node_path"),
+    # `clear_user_policy_cache` stays: it is the twin of `clear_tenant_policy_cache`, which is
+    # itself called only from tests. Deleting one half of a symmetric test affordance makes the
+    # module worse rather than smaller.
+    "matrixark_tenant_policy.py": ("clear_user_policy_cache",),
     "matrixark_temporalstore_blob.py": ("BlobPutResult", "engine_blob_sweep"),
     # Reporting scripts: these are the rows and lookups their own main stopped printing.
     "run_matrixark_message_pdf_debug_trace.py": (
@@ -112,9 +112,9 @@ UNREACHED = {
         "latest_records_by_key",
         "model_registry_map",
     ),
+    # `require_int_between` stays for the same reason as the cache clearer above: its neighbour
+    # `require_string_set` is used, and half a validation vocabulary is worse than all of it.
     "validate_context_resource_skill_scale.py": ("require_int_between",),
-    "validate_grafana_metrics_conformance.py": ("check_scan_extent_placeholder_removed",),
-    "validate_storage_tuning_conformance.py": ("extract_runtime_defaults",),
 }
 
 
