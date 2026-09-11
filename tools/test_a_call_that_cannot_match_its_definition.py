@@ -37,9 +37,11 @@ from __future__ import annotations
 import ast
 import io
 import os
+import subprocess
 import unittest
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(TOOLS)
 
 #: Calls that cannot bind, recorded exactly. A new one fails here rather than joining them, and
 #: one that is fixed fails too, because a list allowed to go stale describes a tree that no longer
@@ -63,12 +65,23 @@ CANNOT_MATCH = {
 
 
 def _modules():
+    """The TRACKED non-test modules under tools/, parsed.
+
+    Tracked rather than listed: an untracked scratch module in this directory otherwise becomes
+    part of the tree this scan reasons about -- it can add a finding, and it can supply a
+    definition that changes how a call resolves. There is no fallback when git is absent; the
+    empty result fails the floor in `test_the_scan_resolves_enough_calls`, which is the honest
+    outcome.
+    """
+    listed = subprocess.run(["git", "ls-files", "-z", "tools/*.py"], cwd=REPO,
+                            capture_output=True, text=True).stdout.split("\0")
     trees = {}
-    for name in sorted(os.listdir(TOOLS)):
+    for relative in listed:
+        name = os.path.basename(relative)
         if not name.endswith(".py") or name.startswith("test_"):
             continue
         try:
-            with io.open(os.path.join(TOOLS, name), encoding="utf-8", errors="replace") as handle:
+            with io.open(os.path.join(REPO, relative), encoding="utf-8", errors="replace") as handle:
                 trees[name] = ast.parse(handle.read())
         except (OSError, SyntaxError):
             continue
@@ -200,12 +213,14 @@ class ACallThatCannotMatchItsDefinitionTest(unittest.TestCase):
     def test_the_scan_resolves_enough_calls(self):
         """Zero findings is also what a scan that resolved nothing prints."""
         self.assertGreaterEqual(self.modules, 250,
-                                "only %d modules parsed; tools/ holds 287 non-test modules today"
-                                % self.modules)
+                                "only %d modules parsed, against roughly 290 non-test modules in "
+                                "tools/. `git ls-files` returning little or nothing is what a "
+                                "missing repository looks like, and this scan has no fallback on "
+                                "purpose" % self.modules)
         self.assertGreaterEqual(self.resolved, 6000,
                                 "only %d calls resolved to an unshadowed definition, against "
-                                "7,913 today; the resolution rules have stopped matching the tree"
-                                % self.resolved)
+                                "roughly 8,000; the resolution rules have stopped matching the "
+                                "tree" % self.resolved)
 
     def test_the_scan_still_catches_the_recorded_one(self):
         """`identity_hashes` is a real defect this scan must keep finding.
