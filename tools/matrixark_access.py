@@ -195,9 +195,10 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
             from urllib.parse import urlparse, parse_qs, unquote
 
             parsed = urlparse(self.dsn)
-            if parsed.scheme not in {"mysql", "matrixkv", "matrixkv+mysql", "matrixkv", "matrixkv+mysql"}:
+            if parsed.scheme not in {"mysql", "matrixkv", "matrixkv+mysql"}:
                 raise MatrixArkError(
-                    "MATRIXARK_METADATA_DSN must be mysql://, matrixkv+mysql://, or matrixkv+mysql:// for SQL metadata"
+                    "MATRIXARK_METADATA_DSN must be mysql://, matrixkv://, or "
+                    "matrixkv+mysql:// for SQL metadata"
                 )
             params = {
                 "host": parsed.hostname or "127.0.0.1",

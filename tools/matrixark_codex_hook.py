@@ -1774,12 +1774,6 @@ def additional_context_from_retrieve(
         return ""
     refs = [ref for ref in _selected_refs_from_retrieve(pack) if not _ref_is_codex_hook_heartbeat(ref)]
     context_text = sanitized_rendered_context_from_retrieve(pack)
-    quality_warnings = _pack_cache.retrieval_warnings(pack)
-    retrieval_metrics = pack.get("retrieval_metrics")
-    budget = retrieval_budget_summary_from_retrieve(pack)
-    budget_pressure = retrieval_budget_pressure_from_retrieve(pack)
-    layer_summary = retrieval_layer_summary_from_retrieve(pack, refs)
-    session_identity = retrieval_session_identity_from_retrieve(pack, session_id_source=session_id_source)
     lines = [
         "MatrixArk/TemporalStore retrieved context for Codex.",
         f"Query: {_compact_one_line(query, max_chars=360)}",
@@ -1809,16 +1803,6 @@ def additional_context_from_retrieve(
             f"local_context_refs_seen={local_context_count}."
         ),
     ]
-    formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
-    try:
-        has_profile_memory = int(layer_summary.get("profile_memory_refs") or 0) > 0
-    except (TypeError, ValueError):
-        has_profile_memory = False
-    try:
-        has_cross_session_memory = int(layer_summary.get("cross_session_refs") or 0) > 0
-    except (TypeError, ValueError):
-        has_cross_session_memory = False
-
     if context_text:
         lines.append("")
         lines.append("Retrieved context:")
@@ -1889,18 +1873,6 @@ def codex_hook_output(
             "auto_batch_extract": session_commit_summary(auto_batch_extract_result),
             "auto_batch_extract_decision": auto_batch_decision_summary(ingest),
         }
-    auto_batch_extract = (
-        ingest.get("auto_batch_extract")
-        if isinstance(ingest.get("auto_batch_extract"), dict)
-        else {}
-    )
-    auto_batch_decision = (
-        ingest.get("auto_batch_extract_decision")
-        if isinstance(ingest.get("auto_batch_extract_decision"), dict)
-        else {}
-    )
-    idle_commit = ingest.get("idle_commit") if isinstance(ingest.get("idle_commit"), dict) else {}
-    lineage = memory_lineage_summary(auto_batch_extract or auto_batch_decision, idle_commit, commit)
     emitted_refs = [
         ref for ref in _selected_refs_from_retrieve(retrieve) if not _ref_is_codex_hook_heartbeat(ref)
     ]
@@ -2213,7 +2185,6 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             else {}
         )
         idle_commit = ingest.get("idle_commit") if isinstance(ingest.get("idle_commit"), dict) else {}
-        memory_lineage = memory_lineage_summary(auto_batch_extract or auto_batch_decision, idle_commit, commit)
         output_summary = {
             "strict_additional_context_emitted": bool(hook_specific.get("additionalContext")),
             "additional_context_chars": len(str(hook_specific.get("additionalContext") or "")),

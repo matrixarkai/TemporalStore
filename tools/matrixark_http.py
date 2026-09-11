@@ -680,7 +680,7 @@ def query_codex_hook_messages(args: Json) -> Json:
     backend = str(args.get("backend") or "both").strip().lower()
     readers: list[tuple[str, _HookStoreReader]] = []
     errors: list[Json] = []
-    if backend in {"both", "native", "native"}:
+    if backend in {"both", "native"}:
         try:
             readers.append(("native", _HookStoreReader(args)))
         except Exception as exc:
