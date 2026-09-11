@@ -56,8 +56,14 @@ fn every_maintenance_phase_is_enabled_under_the_shipped_default() {
         .filter(|stage| stage.ends_with("_disabled"))
         .cloned()
         .collect::<Vec<_>>();
-    assert!(
-        disabled.is_empty(),
+    // `evict` is the one stage that ships OFF, deliberately: wiring it made eviction reachable
+    // from this loop at all, and turning it on by default is a production eviction-policy change
+    // (`eviction_delete_drop` can discard unflushed state). Pinning the exact list rather than
+    // dropping the assertion keeps both teeth: another stage going off still fails here, and so
+    // does `evict` being quietly switched on.
+    assert_eq!(
+        disabled,
+        vec!["evict_disabled".to_string()],
         "phases switched off under the options the server ships with: {disabled:?} \
          (executed: {:?}, skipped: {:?})",
         report.executed_stages,
@@ -75,6 +81,7 @@ fn every_maintenance_phase_is_enabled_under_the_shipped_default() {
         "compact_pages",
         "reclaim_index",
         "reap_metrics",
+        "evict",
     ] {
         let ran = report.executed_stages.iter().any(|stage| stage == phase);
         let declined = report
@@ -1575,7 +1582,9 @@ fn runtime_storage_manager_loop_runs_style_pressure_stages() {
     }
     assert!(report.pressure.dirty_bucket_count >= 1);
     assert!(report.pressure.undumped_wal_records >= 1);
-    assert_eq!(report.pressure_decisions.len(), 8, "{report:?}");
+    // Nine since the evict stage was wired: eight that ship on, plus evict, which reports a
+    // decision every round whether or not it is enabled.
+    assert_eq!(report.pressure_decisions.len(), 9, "{report:?}");
     for stage in [
         "prepare",
         "reclaim_wal",
@@ -3326,4 +3335,68 @@ fn what_each_maintenance_stage_costs() {
             );
         }
     }
+}
+
+#[test]
+fn the_periodic_loop_can_evict_when_the_operator_asks() {
+    // Until this stage existed the periodic loop -- the one the server actually starts -- relieved
+    // memory by invalidating cached pages and nothing else. `apply_storage_eviction`, with
+    // dump-before-evict, delete-drop, a batch limit and a pressure threshold, was reachable ONLY
+    // from the on-demand cycle, so eviction could not happen on the running loop at ANY setting.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..64 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("evict-{index:04}"),
+                value: vec![b'v'; 128],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+
+    // CONTROL: the shipped default must not evict. This is the half that says the change is
+    // opt-in rather than a silent change to how every deployment relieves memory.
+    let default_report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        default_report.skipped_stages.iter().any(|stage| stage == "evict_disabled"),
+        "the default must skip eviction, got skipped={:?} executed={:?}",
+        default_report.skipped_stages,
+        default_report.executed_stages
+    );
+    assert_eq!(
+        runtime.stats().storage_manager_evict_runs,
+        0,
+        "the default must not have evicted"
+    );
+
+    // And with the operator asking, the stage the loop could never reach now runs.
+    let enabled_report = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_evict: true,
+            eviction_dump_before_evict: true,
+            ..StorageManagerOptions::default()
+        },
+    );
+    assert!(
+        enabled_report.executed_stages.iter().any(|stage| stage == "evict"),
+        "enabling eviction must reach the stage, got executed={:?} skipped={:?}",
+        enabled_report.executed_stages,
+        enabled_report.skipped_stages
+    );
+    assert_eq!(
+        runtime.stats().storage_manager_evict_runs,
+        1,
+        "the stage must be counted exactly once"
+    );
 }
