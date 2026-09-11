@@ -4029,3 +4029,114 @@ fn what_one_round_rebuilds() {
         );
     }
 }
+
+/// WHICH periodic stage truncates the logs, and what gates it? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_gates_the_periodic_truncation -- --ignored --nocapture
+///
+/// #1470 said the periodic scheduler reached none of `gc_before_sequence`'s production callers.
+/// That was too strong, and this is the measurement that says so. `run_gc_inner` truncates BOTH
+/// logs and the page-GC stage calls it -- but only when `stale_page_pressure` holds. #1470's
+/// probe wrote 1,512 keys and never deleted, so there were no stale slabs, the gate was false,
+/// and the stage never ran. "Six rounds reclaimed 0" was true for a WRITE-ONLY workload and I
+/// generalised it into "the loop never truncates".
+///
+/// Two arms, identical except for the deletes, so the gate is the only difference between them.
+#[test]
+#[ignore]
+fn what_gates_the_periodic_truncation() {
+    fn wal_records(engine: &TemporalEngine, shard_id: crate::types::ShardId) -> usize {
+        engine
+            .write_ahead_log_store()
+            .scan(shard_id, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0)
+    }
+
+    // A 2x2 on the two variables that differed between #1470's fixture and the first attempt
+    // here -- record COUNT and value SIZE -- because changing both at once cannot say which one
+    // decides. Plus the delete arm, which fails for a different and already-identified reason.
+    for (label, delete_every, keys, value_bytes) in [
+        ("1256 x 64", 0usize, 1_256usize, 64usize),
+        ("1256 x 96", 0, 1_256, 96),
+        ("2000 x 64", 0, 2_000, 64),
+        ("2000 x 96", 0, 2_000, 96),
+        ("2000 x 96 del", 2, 2_000, 96),
+    ] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..keys {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("gate-{index:06}"),
+                    value: vec![b'v'; value_bytes],
+                },
+            });
+        }
+        if delete_every > 0 {
+            for index in (0..keys).step_by(delete_every) {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonDelete {
+                        key: format!("gate-{index:06}"),
+                    },
+                });
+            }
+        }
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let engine_before = runtime.engine();
+        let before = wal_records(&engine_before, 1);
+        let mut report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let mut page_gc_rounds = 0;
+        if report.executed_stages.iter().any(|stage| stage == "reclaim_page") {
+            page_gc_rounds += 1;
+        }
+        for _ in 0..5 {
+            report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+            if report.executed_stages.iter().any(|stage| stage == "reclaim_page") {
+                page_gc_rounds += 1;
+            }
+        }
+        let _ = page_gc_rounds;
+        let engine_after = runtime.engine();
+        let after = wal_records(&engine_after, 1);
+        // Why did (or did not) it reclaim? The plan is the thing that decides.
+        let plan = engine_after.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+        eprintln!(
+            "  {label:>13}  plan: safe={} covered={} uncovered={} retain_from={} current={} \
+             blockers={:?}",
+            plan.safe_to_reclaim,
+            plan.covered_bucket_count,
+            plan.uncovered_bucket_count,
+            plan.retain_from_wal_sequence,
+            plan.current_wal_sequence,
+            plan.blocker_reasons,
+        );
+        eprintln!(
+            "  {label:>13}  log-resident pages still registered: {}",
+            engine_after.wal_resident_page_count(1)
+        );
+        // The clamp `gc_before_sequence` actually applies. A permissive plan still cannot drop
+        // anything above this, so it is the field that explains a safe plan reclaiming nothing.
+        eprintln!(
+            "  {label:>13}  durable frontier: wal={} index_log={}",
+            plan.durable_bucket_generation_frontier_wal_sequence,
+            plan.durable_bucket_generation_frontier_index_log_sequence,
+        );
+        eprintln!(
+            "  {label:>12}: stale_slabs={} reclaim_candidates={} reclaimable_bytes={} \
+             page_gc_rounds={page_gc_rounds}/6 wal {before} -> {after}",
+            report.pressure.stale_block_slab_count,
+            report.pressure.reclaim_candidate_count,
+            report.pressure.reclaimable_physical_bytes,
+        );
+    }
+}
