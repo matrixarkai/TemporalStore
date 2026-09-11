@@ -315,7 +315,12 @@ impl DataNodeRuntime {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 shard_id,
                 selected_dump_buckets: Vec::new(),
-                max_dump_buckets_per_round: 0,
+                // The cap, not 0. This stage dumps before it invalidates, and an unbounded dump
+                // here made the cap `reclaim_wal` respects meaningless: measured, one round with
+                // every stage on dumped 1,280 of 1,280 dirty buckets, while `reclaim_wal` alone
+                // dumped exactly 64. Bounding is safe -- invalidation drops CACHED pages, and the
+                // data is in the write-ahead log whether or not its bucket was dumped this round.
+                max_dump_buckets_per_round: options.max_dump_buckets_per_round,
                 min_undumped_wal_records: 0,
                 min_undumped_wal_bytes: 0,
                 purge_delayed_destroy: false,
@@ -557,6 +562,17 @@ impl DataNodeRuntime {
             let index_gc_request = StorageLifecycleRequest {
                 shard_id,
                 selected_dump_buckets: Vec::new(),
+                // UNBOUNDED, and load-bearing -- do not cap this.
+                //
+                // Capping it was tried and it stopped index-log reclaim dead: 16,000 records
+                // before a round, 16,000 after. The reason is COVERAGE, not the commit check:
+                // `wal_plan.safe_to_reclaim` needs a durable manifest for every live generation,
+                // and this whole-dirty-set dump is what produces one. Bound it and the frontier
+                // never advances -- the #1439 finding seen from the other side.
+                //
+                // The consequence is that `max_dump_buckets_per_round` bounds the reclaim_wal
+                // and reclaim_memory stages, not a ROUND: this stage still dumps the whole dirty
+                // set, deliberately.
                 max_dump_buckets_per_round: 0,
                 min_undumped_wal_records: 0,
                 min_undumped_wal_bytes: 0,
