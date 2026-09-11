@@ -550,7 +550,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
 
     const MAX_STORAGE_TOPOLOGY_SAMPLES: usize = 8;
     #[derive(Default)]
-    struct ZoneAcc {
+    struct BandUsageAcc {
         used_bytes: u64,
         stale_bytes: u64,
         slabs: BTreeSet<u64>,
@@ -580,7 +580,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         tombstones: BTreeSet<String>,
     }
 
-    let mut zones = BTreeMap::<u64, ZoneAcc>::new();
+    let mut bands_usage = BTreeMap::<u64, BandUsageAcc>::new();
     let mut slabs = BTreeMap::<u64, SlabAcc>::new();
     let mut bands = BTreeMap::<u64, BandAcc>::new();
     let mut buckets = BTreeMap::<u32, BucketAcc>::new();
@@ -592,13 +592,13 @@ pub(super) fn storage_topology_snapshot_with_samples(
             .unwrap_or(entry.address.block_slab_id);
         let slab_id = entry.address.block_slab_id;
         let generation = entry.address.object_id().unwrap_or(0);
-        let zone = zones.entry(band_id).or_default();
-        zone.slabs.insert(slab_id);
-        zone.generation = zone.generation.max(generation);
+        let usage = bands_usage.entry(band_id).or_default();
+        usage.slabs.insert(slab_id);
+        usage.generation = usage.generation.max(generation);
         if entry.deleted {
-            zone.stale_bytes = zone.stale_bytes.saturating_add(entry.address.length);
+            usage.stale_bytes = usage.stale_bytes.saturating_add(entry.address.length);
         } else {
-            zone.used_bytes = zone.used_bytes.saturating_add(entry.address.length);
+            usage.used_bytes = usage.used_bytes.saturating_add(entry.address.length);
         }
 
         let slab = slabs.entry(slab_id).or_insert_with(|| SlabAcc {
@@ -664,15 +664,15 @@ pub(super) fn storage_topology_snapshot_with_samples(
         }
     }
 
-    snapshot.storage_zone_samples = zones
+    snapshot.storage_band_usage_samples = bands_usage
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
-        .map(|(zone_id, zone)| StorageZoneSample {
-            zone_id,
-            total_bytes: zone.used_bytes.saturating_add(zone.stale_bytes),
-            used_bytes: zone.used_bytes,
-            stale_bytes: zone.stale_bytes,
-            slabs: zone.slabs.into_iter().collect(),
+        .map(|(band_id, usage)| StorageBandUsageSample {
+            band_id,
+            total_bytes: usage.used_bytes.saturating_add(usage.stale_bytes),
+            used_bytes: usage.used_bytes,
+            stale_bytes: usage.stale_bytes,
+            slabs: usage.slabs.into_iter().collect(),
         })
         .collect();
     let stream_slabs = slabs.keys().copied().collect::<Vec<_>>();
