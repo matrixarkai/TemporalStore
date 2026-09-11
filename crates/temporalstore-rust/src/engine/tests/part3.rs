@@ -1837,12 +1837,12 @@ fn stats_include_style_partition_and_object_manager_accounting() {
     assert_eq!(stats.shard_stat_info.start_routing_bucket, 10);
     assert_eq!(stats.shard_stat_info.end_routing_bucket, 20);
     assert_eq!(stats.shard_stat_info.object_manager, stats.object_manager);
-    assert!(stats.block_store_bands.active_slabs >= 1);
-    assert!(stats.block_store_bands.active_physical_bytes > 0);
+    assert!(stats.block_store_slabs.active_slabs >= 1);
+    assert!(stats.block_store_slabs.active_physical_bytes > 0);
     assert_eq!(
-        stats.block_store_bands.live_physical_bytes,
-        stats.block_store_bands.active_physical_bytes
-            + stats.block_store_bands.sealed_physical_bytes
+        stats.block_store_slabs.live_physical_bytes,
+        stats.block_store_slabs.active_physical_bytes
+            + stats.block_store_slabs.sealed_physical_bytes
     );
 }
 

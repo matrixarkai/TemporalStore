@@ -18,7 +18,7 @@ impl LocalBlockStore {
         if let Ok(file) = OpenOptions::new().append(true).open(&path) {
             file.sync_data()?;
         }
-        persist_band_manifest(&inner.root, &inner.bands)?;
+        persist_slab_manifest(&inner.root, &inner.bands)?;
         inner.relaxed_dirty = false;
         Ok(())
     }
@@ -109,7 +109,7 @@ impl LocalBlockStore {
         inner.write_offset += address.length;
         let block_slab_id = inner.block_slab_id;
         let write_offset = inner.write_offset;
-        upsert_band_after_append(
+        upsert_slab_after_append(
             &mut inner.bands,
             block_slab_id,
             write_offset,
@@ -119,7 +119,7 @@ impl LocalBlockStore {
         if defer_manifest {
             inner.relaxed_dirty = true;
         } else {
-            persist_band_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.bands)?;
         }
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
@@ -192,7 +192,7 @@ impl LocalBlockStore {
             inner.write_offset += address.length;
             let block_slab_id = inner.block_slab_id;
             let write_offset = inner.write_offset;
-            upsert_band_after_append(
+            upsert_slab_after_append(
                 &mut inner.bands,
                 block_slab_id,
                 write_offset,
@@ -226,7 +226,7 @@ impl LocalBlockStore {
         if defer_manifest {
             inner.relaxed_dirty = true;
         } else {
-            persist_band_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.bands)?;
         }
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);

@@ -264,7 +264,7 @@ pub struct ShardCanonicalStorageStats {
     #[serde(default)]
     pub bucket_index_resident_entries: u64,
     #[serde(rename = "storage_zone_count")]
-    pub storage_band_count: u64,
+    pub storage_slab_count: u64,
     #[serde(rename = "active_storage_zones")]
     pub active_storage_slabs: u64,
     #[serde(rename = "sealed_storage_zones")]
@@ -314,7 +314,8 @@ pub struct ShardStats {
     pub block_store: BlockStoreStats,
     #[serde(default)]
     #[serde(alias = "block_store_zones")]
-    pub block_store_bands: BlockStoreSlabSummary,
+    #[serde(rename = "block_store_bands")]
+    pub block_store_slabs: BlockStoreSlabSummary,
     pub write_ahead_log: WriteAheadLogStats,
 }
 

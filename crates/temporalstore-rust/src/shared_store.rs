@@ -996,8 +996,8 @@ where
 
         // Snapshot the local band descriptors so each uploaded slab carries its sealed-band
         // metadata (logical bytes + page-id range) into the manifest for S3 restore-time install.
-        let band_by_slab: BTreeMap<u64, _> = block_store
-            .band_descriptors()
+        let slab_by_slab: BTreeMap<u64, _> = block_store
+            .slab_descriptors()
             .into_iter()
             .map(|band| (band.block_slab_id, band))
             .collect();
@@ -1010,7 +1010,7 @@ where
                 .put(&key, Bytes::from(bytes.clone()))
                 .await?;
             uploaded_slab_ids.insert(block_slab_id);
-            let band = band_by_slab.get(&block_slab_id);
+            let band = slab_by_slab.get(&block_slab_id);
             block_slabs.push(SharedStoreBlockSlab {
                 block_slab_id,
                 key,
@@ -2065,7 +2065,7 @@ where
             // GC/compaction accounting is complete immediately after restore, before the first
             // on-demand fetch materializes any slab locally. Runs AFTER the reserve so the freshly
             // reserved slab stays the active band and every checkpoint slab is sealed.
-            let lazy_bands: Vec<LazyCheckpointSlab> = manifest
+            let lazy_slabs: Vec<LazyCheckpointSlab> = manifest
                 .block_slabs
                 .iter()
                 .map(|slab| LazyCheckpointSlab {
@@ -2078,7 +2078,7 @@ where
                     updated_unix_ms: slab.updated_unix_ms,
                 })
                 .collect();
-            block_store.install_lazy_checkpoint_bands(&lazy_bands)?;
+            block_store.install_lazy_checkpoint_slabs(&lazy_slabs)?;
         }
         Ok(manifest)
     }
@@ -3817,13 +3817,13 @@ mod tests {
                 value: b"snapshot-value".to_vec(),
             },
         });
-        let primary_band = primary
+        let primary_slab = primary
             .block_store()
-            .band_descriptors()
+            .slab_descriptors()
             .into_iter()
             .find(|b| b.block_slab_id == 0)
             .expect("primary must have a band for slab 0");
-        assert!(primary_band.logical_bytes > 0);
+        assert!(primary_slab.logical_bytes > 0);
 
         let (_store, replicator) = test_shared_store(dir.path());
         let manifest = replicator
@@ -3836,7 +3836,7 @@ mod tests {
             .iter()
             .find(|s| s.block_slab_id == 0)
             .expect("manifest must record slab 0");
-        assert_eq!(slab0.logical_bytes, primary_band.logical_bytes);
+        assert_eq!(slab0.logical_bytes, primary_slab.logical_bytes);
 
         let follower = test_engine(dir.path(), "follower");
         replicator
@@ -3851,18 +3851,18 @@ mod tests {
             "checkpoint slab 0 must not be materialized locally yet"
         );
         // ...but the sealed band descriptor for slab 0 is already present and complete.
-        let follower_band = follower
+        let follower_slab = follower
             .block_store()
-            .band_descriptors()
+            .slab_descriptors()
             .into_iter()
             .find(|b| b.block_slab_id == 0)
             .expect("restore must install a band descriptor for the lazily-backed slab 0");
-        assert_eq!(follower_band.state, crate::block_store::BlockStoreSlabState::Sealed);
-        assert_eq!(follower_band.logical_bytes, primary_band.logical_bytes);
-        assert_eq!(follower_band.physical_bytes, slab0.byte_size);
+        assert_eq!(follower_slab.state, crate::block_store::BlockStoreSlabState::Sealed);
+        assert_eq!(follower_slab.logical_bytes, primary_slab.logical_bytes);
+        assert_eq!(follower_slab.physical_bytes, slab0.byte_size);
         // The band summary counts the sealed shared band immediately (accounting is complete).
         assert!(
-            follower.block_store().band_summary().sealed_slabs >= 1,
+            follower.block_store().slab_summary().sealed_slabs >= 1,
             "sealed shared band must be counted before any lazy fetch"
         );
         assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);

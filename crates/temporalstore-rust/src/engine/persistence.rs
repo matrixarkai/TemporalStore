@@ -483,7 +483,7 @@ impl TemporalEngine {
         //    after it, the band catalog is recoverable from the durable log, so the per-write
         //    band-manifest file stops being the source of truth.
         let slab_version = anchor;
-        let bands = self.page_store.band_catalog(slab_version);
+        let bands = self.page_store.slab_catalog(slab_version);
         let meta = crate::index_log::MetaItem {
             version: 1,
             start_wal_sequence: anchor,
@@ -735,7 +735,7 @@ impl TemporalEngine {
             .cloned();
         shards.get(&shard_id).map(|state| {
             let page_store = self.page_store.stats();
-            let page_store_bands = self.page_store.band_summary();
+            let page_store_slabs = self.page_store.slab_summary();
             let string_records = state.strings.len();
             let hash_records = state.hashes.len();
             let set_records = state.sets.len();
@@ -810,21 +810,21 @@ impl TemporalEngine {
                 bucket_index_resident_bytes_floor: (state.bucket_index.bucket_map.len() as u64)
                     .saturating_mul(std::mem::size_of::<super::state::BucketNode>() as u64),
                 bucket_index_resident_entries: state.bucket_index.bucket_map.len() as u64,
-                storage_band_count: page_store_bands
+                storage_slab_count: page_store_slabs
                     .active_slabs
-                    .saturating_add(page_store_bands.sealed_slabs)
-                    .saturating_add(page_store_bands.delayed_destroy_slabs)
-                    .saturating_add(page_store_bands.purged_slabs),
-                active_storage_slabs: page_store_bands.active_slabs,
-                sealed_storage_slabs: page_store_bands.sealed_slabs,
-                stream_slab_count: page_store_bands
+                    .saturating_add(page_store_slabs.sealed_slabs)
+                    .saturating_add(page_store_slabs.delayed_destroy_slabs)
+                    .saturating_add(page_store_slabs.purged_slabs),
+                active_storage_slabs: page_store_slabs.active_slabs,
+                sealed_storage_slabs: page_store_slabs.sealed_slabs,
+                stream_slab_count: page_store_slabs
                     .active_slabs
-                    .saturating_add(page_store_bands.sealed_slabs)
-                    .saturating_add(page_store_bands.delayed_destroy_slabs)
-                    .saturating_add(page_store_bands.purged_slabs),
-                storage_slab_total_bytes: page_store_bands.total_known_physical_bytes,
-                storage_slab_used_bytes: page_store_bands.live_physical_bytes,
-                storage_slab_stale_bytes: page_store_bands.reclaimable_physical_bytes,
+                    .saturating_add(page_store_slabs.sealed_slabs)
+                    .saturating_add(page_store_slabs.delayed_destroy_slabs)
+                    .saturating_add(page_store_slabs.purged_slabs),
+                storage_slab_total_bytes: page_store_slabs.total_known_physical_bytes,
+                storage_slab_used_bytes: page_store_slabs.live_physical_bytes,
+                storage_slab_stale_bytes: page_store_slabs.reclaimable_physical_bytes,
                 page_reads: page_store.reads,
                 page_writes: page_store.writes,
                 block_reads: page_store.reads,
@@ -832,7 +832,7 @@ impl TemporalEngine {
                 bytes_read: page_store.bytes_read,
                 bytes_written: page_store.bytes_written,
                 append_watermark: page_store.writes,
-                compaction_watermark: page_store_bands.reclaimable_physical_bytes,
+                compaction_watermark: page_store_slabs.reclaimable_physical_bytes,
             };
             ShardStats {
                 shard_id,
@@ -852,9 +852,9 @@ impl TemporalEngine {
                 storage,
                 cache: self.cache.stats(),
                 page_store: page_store.clone(),
-                page_store_zones: page_store_bands.clone(),
+                page_store_zones: page_store_slabs.clone(),
                 block_store: page_store,
-                block_store_bands: page_store_bands,
+                block_store_slabs: page_store_slabs,
                 write_ahead_log: self.wal_store.stats(shard_id),
             }
         })

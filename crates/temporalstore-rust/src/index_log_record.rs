@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn band_states_keep_their_on_disk_numbering() {
+    fn slab_states_keep_their_on_disk_numbering() {
         // RECYCLED is 4, not 3 -- the gap is real and a renumber would silently reinterpret
         // existing records.
         assert_eq!(SlabState::Init as i32, 0);
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dump_watermark_round_trips_with_the_band_catalogue() {
+    fn the_dump_watermark_round_trips_with_the_slab_catalogue() {
         // start_wal_id is what replay resumes from and what truncation must not pass, so it has
         // to survive a round trip alongside the bands it describes.
         let mut bands = std::collections::HashMap::new();

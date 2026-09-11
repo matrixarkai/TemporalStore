@@ -124,8 +124,8 @@ impl LocalBlockStore {
             inner.block_slab_id = block_slab_id;
             inner.write_offset = bytes.len() as u64;
         }
-        let band_summary = summarize_slab(bytes, block_slab_id)?;
-        if let Some(max_page_id) = band_summary.last_page_id {
+        let slab_summary = summarize_slab(bytes, block_slab_id)?;
+        if let Some(max_page_id) = slab_summary.last_page_id {
             inner.next_page_id = inner.next_page_id.max(max_page_id.saturating_add(1));
         }
         let is_current_slab = block_slab_id == inner.block_slab_id;
@@ -141,15 +141,15 @@ impl LocalBlockStore {
                     BlockStoreSlabState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
-                logical_bytes: band_summary.logical_bytes,
+                logical_bytes: slab_summary.logical_bytes,
                 created_unix_ms: Some(
                     file_modified_unix_ms(&path)
                         .or_else(|| file_created_unix_ms(&path))
                         .unwrap_or(now),
                 ),
                 updated_unix_ms: Some(now),
-                first_page_id: band_summary.first_page_id,
-                last_page_id: band_summary.last_page_id,
+                first_page_id: slab_summary.first_page_id,
+                last_page_id: slab_summary.last_page_id,
                 readable_prefix_physical_bytes: bytes.len() as u64,
                 verified_source_mtime_unix_ms: None,
                 has_corruption: false,
@@ -174,7 +174,7 @@ impl LocalBlockStore {
         if inner.slabs_unwritten >= BANDS_UNWRITTEN_BEFORE_PERSIST {
             inner.slabs_unwritten = 0;
             inner.stats.slab_manifest_writes = inner.stats.slab_manifest_writes.saturating_add(1);
-            persist_band_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.bands)?;
         }
         Ok(())
     }

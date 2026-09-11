@@ -292,7 +292,7 @@ impl TemporalEngine {
                     .maxmemory_bytes
                     // Current on-disk footprint (GC-decremented), not cumulative-ever
                     // bytes_written -- see the single-command execute path.
-                    .map(|limit| self.page_store.band_summary().total_known_physical_bytes >= limit)
+                    .map(|limit| self.page_store.slab_summary().total_known_physical_bytes >= limit)
                     .unwrap_or(false)
             {
                 responses.push(ExecuteResponse {

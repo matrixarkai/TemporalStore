@@ -289,8 +289,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "slot dump/load validates restored slot summaries against the first-class ownership index"
             .to_string(),
     ];
-    let stream_backed_band_runtime_ready = true;
-    let stream_backed_band_runtime_evidence = vec![
+    let stream_backed_slab_runtime_ready = true;
+    let stream_backed_slab_runtime_evidence = vec![
         "LocalBlockStore exposes stream-backed band runtime reports".to_string(),
         "logical stream reads span page records while skipping envelopes and decompression"
             .to_string(),
@@ -299,7 +299,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "stream envelopes carry checksum, page id, object id, routing slot, band id, and compression metadata"
             .to_string(),
     ];
-    let stream_backed_band_runtime_blockers = vec![
+    let stream_backed_slab_runtime_blockers = vec![
         "byte-for-byte stream backend layout remains out of scope".to_string(),
         "distributed/control-plane compression policy remains separate evidence".to_string(),
     ];
@@ -397,7 +397,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !native_bucket_store_layout_transition_ready {
         missing.push("native SlotStore slot layout transitions".to_string());
     }
-    if !stream_backed_band_runtime_ready {
+    if !stream_backed_slab_runtime_ready {
         missing.push("stream-backed band runtime".to_string());
     }
     if !model_layout_compaction_ready {
@@ -431,9 +431,9 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         native_object_manager_runtime_blockers,
         native_bucket_store_layout_transition_ready,
         native_bucket_store_layout_transition_evidence,
-        stream_backed_band_runtime_ready,
-        stream_backed_band_runtime_evidence,
-        stream_backed_band_runtime_blockers,
+        stream_backed_slab_runtime_ready,
+        stream_backed_slab_runtime_evidence,
+        stream_backed_slab_runtime_blockers,
         model_layout_compaction_ready,
         model_layout_compaction_evidence,
         model_layout_compaction_blockers,

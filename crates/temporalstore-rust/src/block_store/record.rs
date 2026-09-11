@@ -336,13 +336,13 @@ pub(super) fn decode_page_record(
             ));
         }
     }
-    if let (Some(address_band_id), Some(record_band_id)) = (address.band_id(), header.band_id)
+    if let (Some(address_slab_id), Some(record_slab_id)) = (address.band_id(), header.band_id)
     {
-        if address_band_id != record_band_id {
+        if address_slab_id != record_slab_id {
             return Err(corrupt_page_envelope(
                 address,
                 format!(
-                    "band id mismatch: address {address_band_id}, record {record_band_id}"
+                    "band id mismatch: address {address_slab_id}, record {record_slab_id}"
                 ),
             ));
         }

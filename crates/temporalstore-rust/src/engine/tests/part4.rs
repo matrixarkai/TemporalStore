@@ -9472,7 +9472,7 @@ fn every_maintenance_round_is_bounded_by_default() {
     assert_eq!(request.max_expire_hot_buckets_per_round, 128);
     assert_eq!(request.max_expire_cold_buckets_per_round, 8);
     assert_eq!(request.eviction_batch_limit, 16);
-    assert_eq!(request.page_gc_min_band_garbage_basis_points, 4_000);
+    assert_eq!(request.page_gc_min_slab_garbage_basis_points, 4_000);
 
     for (name, bound) in [
         ("index_gc_max_entries_per_round", request.index_gc_max_entries_per_round as u64),
@@ -9486,7 +9486,7 @@ fn every_maintenance_round_is_bounded_by_default() {
         ("eviction_batch_limit", request.eviction_batch_limit as u64),
         (
             "page_gc_min_band_garbage_basis_points",
-            request.page_gc_min_band_garbage_basis_points,
+            request.page_gc_min_slab_garbage_basis_points,
         ),
     ] {
         assert!(bound > 0, "{name} is zero, which is not a bound at all");
@@ -17785,7 +17785,7 @@ fn a_compaction_round_stops_at_the_page_ref_budget() {
 }
 
 #[test]
-fn the_band_usage_sample_still_serializes_under_its_zone_wire_names() {
+fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
     // `zone` was the older name for a band, and `zones` is keyed by `band_id`
     // (storage_bucket_internals.rs) -- so the aggregate is the BAND level reported under an old
     // name, not a separate level. The Rust identifiers moved to band; the WIRE must not, because
@@ -17813,7 +17813,7 @@ fn the_band_usage_sample_still_serializes_under_its_zone_wire_names() {
 
     // And the collection it sits in keeps its own wire name.
     let mut snapshot = crate::engine::reports::StorageTopologySnapshot::default();
-    snapshot.storage_band_usage_samples = vec![sample];
+    snapshot.storage_slab_usage_samples = vec![sample];
     let encoded = serde_json::to_value(&snapshot).expect("serialize");
     assert!(
         encoded.get("storage_zone_samples").is_some(),

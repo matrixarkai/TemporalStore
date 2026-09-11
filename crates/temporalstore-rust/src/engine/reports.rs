@@ -266,9 +266,9 @@ pub struct StorageRecoveryReport {
     #[serde(rename = "live_page_slab_ids")]
     pub live_block_slab_ids: Vec<u64>,
     #[serde(rename = "zone_descriptors")]
-    pub band_descriptors: Vec<BlockStoreSlabDescriptor>,
+    pub slab_descriptors: Vec<BlockStoreSlabDescriptor>,
     #[serde(rename = "zone_summary", default)]
-    pub band_summary: BlockStoreSlabSummary,
+    pub slab_summary: BlockStoreSlabSummary,
     #[serde(default)]
     #[serde(alias = "page_segment_reports")]
     #[serde(rename = "page_slab_reports")]
@@ -2133,7 +2133,7 @@ pub struct StorageSlabSample {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageSlabBandSample {
+pub struct StorageSlabSlabSample {
     pub band: u64,
     pub block_range: Vec<u64>,
     pub reclaim_state: String,
@@ -2155,7 +2155,7 @@ pub struct StorageBucketSample {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTopologySnapshot {
     #[serde(rename = "storage_zone_count")]
-    pub storage_band_count: u64,
+    pub storage_slab_count: u64,
     #[serde(rename = "active_storage_zones")]
     pub active_storage_slabs: u64,
     #[serde(rename = "sealed_storage_zones")]
@@ -2177,14 +2177,14 @@ pub struct StorageTopologySnapshot {
     pub append_log_reclaimed_records: u64,
     #[serde(default)]
     #[serde(rename = "storage_zone_samples")]
-    pub storage_band_usage_samples: Vec<StorageSlabUsageSample>,
+    pub storage_slab_usage_samples: Vec<StorageSlabUsageSample>,
     #[serde(default)]
     pub stream_samples: Vec<StorageStreamSample>,
     #[serde(default)]
     #[serde(alias = "segment_samples")]
     pub slab_samples: Vec<StorageSlabSample>,
     #[serde(default)]
-    pub band_samples: Vec<StorageSlabBandSample>,
+    pub band_samples: Vec<StorageSlabSlabSample>,
     #[serde(default)]
     #[serde(rename = "slot_samples")]
     pub bucket_samples: Vec<StorageBucketSample>,
@@ -2194,7 +2194,7 @@ pub fn storage_topology_snapshot_from_metrics(
     metrics: &BTreeMap<String, u64>,
 ) -> StorageTopologySnapshot {
     StorageTopologySnapshot {
-        storage_band_count: metric(metrics, "storage_zone_count"),
+        storage_slab_count: metric(metrics, "storage_zone_count"),
         active_storage_slabs: metric(metrics, "active_storage_zones"),
         sealed_storage_slabs: metric(metrics, "sealed_storage_zones"),
         stream_slab_count: metric(metrics, "stream_segment_count"),
@@ -2206,7 +2206,7 @@ pub fn storage_topology_snapshot_from_metrics(
         storage_slab_stale_bytes: metric(metrics, "storage_zone_stale_bytes"),
         append_log_replay_records: metric(metrics, "append_log_replay_records"),
         append_log_reclaimed_records: metric(metrics, "append_log_reclaimed_records"),
-        storage_band_usage_samples: Vec::new(),
+        storage_slab_usage_samples: Vec::new(),
         stream_samples: Vec::new(),
         slab_samples: Vec::new(),
         band_samples: Vec::new(),
@@ -3234,7 +3234,8 @@ pub struct StorageManagerCycleRequest {
     /// (garbage = 10_000 - band live-fraction). 0 reclaims every eligible band
     /// (today's behavior). The garbage-ratio GC gate, expressed against bands.
     #[serde(default)]
-    pub page_gc_min_band_garbage_basis_points: u64,
+    #[serde(rename = "page_gc_min_band_garbage_basis_points")]
+    pub page_gc_min_slab_garbage_basis_points: u64,
 }
 
 /// Per-round bounds for the background storage cycle.
@@ -3319,7 +3320,7 @@ impl Default for StorageManagerCycleRequest {
                 DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS,
             index_gc_max_entries_per_round: DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
             index_gc_commit_dirty_buckets_before_truncation: true,
-            page_gc_min_band_garbage_basis_points:
+            page_gc_min_slab_garbage_basis_points:
                 DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS,
         }
     }
@@ -3527,7 +3528,8 @@ pub struct StorageDataStructureApiParityReport {
     pub block_address_api_ready: bool,
     #[serde(alias = "block_store_segment_api_ready")]
     pub block_store_slab_api_ready: bool,
-    pub stream_backed_band_api_ready: bool,
+    #[serde(rename = "stream_backed_band_api_ready")]
+    pub stream_backed_slab_api_ready: bool,
     pub legacy_page_zone_aliases_ready: bool,
     pub storage_manager_phase_api_ready: bool,
     pub storage_manager_pressure_api_ready: bool,
@@ -3838,13 +3840,13 @@ mod manifest_field_name_tests {
             block_slab_ids: vec![1, 2, 3],
             last_compacted_slab: Some(5),
         };
-        let mut no_band = full.clone();
-        no_band.last_compacted_slab = None;
+        let mut no_slab = full.clone();
+        no_slab.last_compacted_slab = None;
         let mut empty_slabs = full.clone();
         empty_slabs.block_slab_ids = Vec::new();
         vec![
             ("fully populated", full),
-            ("no compacted band", no_band),
+            ("no compacted band", no_slab),
             ("no slab ids", empty_slabs),
             ("all defaults", BucketStorageSummary::default()),
         ]

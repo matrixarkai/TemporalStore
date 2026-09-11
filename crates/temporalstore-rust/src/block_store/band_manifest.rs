@@ -8,10 +8,10 @@ use super::slab_ids::*;
 use std::fs::{self, File};
 use std::path::Path;
 
-pub(super) fn load_band_manifest_at(
+pub(super) fn load_slab_manifest_at(
     root: &Path,
 ) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
-    let current_path = band_manifest_path(root);
+    let current_path = slab_manifest_path(root);
     let legacy_path = legacy_zone_manifest_path(root);
     let path = if current_path.exists() {
         current_path
@@ -36,7 +36,7 @@ pub(super) fn load_band_manifest_at(
         .collect())
 }
 
-pub(super) fn rebuild_band_manifest_at(
+pub(super) fn rebuild_slab_manifest_at(
     root: &Path,
 ) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
     let mut bands = BTreeMap::new();
@@ -112,7 +112,7 @@ fn reverify_all_slabs() -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn reconcile_band_manifest_with_disk(
+pub(super) fn reconcile_slab_manifest_with_disk(
     root: &Path,
     bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
 ) -> Result<bool, BlockStoreError> {
@@ -316,12 +316,12 @@ pub(super) fn reconcile_band_manifest_with_disk(
     Ok(changed)
 }
 
-pub(super) fn persist_band_manifest(
+pub(super) fn persist_slab_manifest(
     root: &Path,
     bands: &BTreeMap<u64, BlockStoreSlabDescriptor>,
 ) -> Result<(), BlockStoreError> {
     fs::create_dir_all(root)?;
-    let path = band_manifest_path(root);
+    let path = slab_manifest_path(root);
     let temp_path = path.with_extension(format!(
         "json.tmp.{}",
         std::time::SystemTime::now()
@@ -351,19 +351,19 @@ pub(super) fn persist_band_manifest(
     Ok(())
 }
 
-pub(super) fn summarize_bands(
+pub(super) fn summarize_slabs(
     bands: &BTreeMap<u64, BlockStoreSlabDescriptor>,
 ) -> BlockStoreSlabSummary {
     let mut summary = BlockStoreSlabSummary::default();
     let now = now_unix_ms();
     for band in bands.values() {
-        update_oldest_band_timestamp(&mut summary.oldest_known_slab_unix_ms, band);
+        update_oldest_slab_timestamp(&mut summary.oldest_known_slab_unix_ms, band);
         summary.total_known_physical_bytes = summary
             .total_known_physical_bytes
             .saturating_add(band.physical_bytes);
         match band.state {
             BlockStoreSlabState::Active => {
-                update_oldest_band_timestamp(&mut summary.oldest_live_band_unix_ms, band);
+                update_oldest_slab_timestamp(&mut summary.oldest_live_slab_unix_ms, band);
                 summary.active_slabs = summary.active_slabs.saturating_add(1);
                 summary.active_physical_bytes = summary
                     .active_physical_bytes
@@ -373,7 +373,7 @@ pub(super) fn summarize_bands(
                     .saturating_add(band.physical_bytes);
             }
             BlockStoreSlabState::Sealed => {
-                update_oldest_band_timestamp(&mut summary.oldest_live_band_unix_ms, band);
+                update_oldest_slab_timestamp(&mut summary.oldest_live_slab_unix_ms, band);
                 summary.sealed_slabs = summary.sealed_slabs.saturating_add(1);
                 summary.sealed_physical_bytes = summary
                     .sealed_physical_bytes
@@ -383,8 +383,8 @@ pub(super) fn summarize_bands(
                     .saturating_add(band.physical_bytes);
             }
             BlockStoreSlabState::DelayedDestroy => {
-                update_oldest_band_timestamp(
-                    &mut summary.oldest_reclaimable_band_unix_ms,
+                update_oldest_slab_timestamp(
+                    &mut summary.oldest_reclaimable_slab_unix_ms,
                     band,
                 );
                 summary.delayed_destroy_slabs = summary.delayed_destroy_slabs.saturating_add(1);
@@ -406,16 +406,16 @@ pub(super) fn summarize_bands(
     summary.oldest_known_slab_age_ms = summary
         .oldest_known_slab_unix_ms
         .map(|timestamp| now.saturating_sub(timestamp));
-    summary.oldest_live_band_age_ms = summary
-        .oldest_live_band_unix_ms
+    summary.oldest_live_slab_age_ms = summary
+        .oldest_live_slab_unix_ms
         .map(|timestamp| now.saturating_sub(timestamp));
-    summary.oldest_reclaimable_band_age_ms = summary
-        .oldest_reclaimable_band_unix_ms
+    summary.oldest_reclaimable_slab_age_ms = summary
+        .oldest_reclaimable_slab_unix_ms
         .map(|timestamp| now.saturating_sub(timestamp));
     summary
 }
 
-pub(super) fn update_oldest_band_timestamp(target: &mut Option<u64>, band: &BlockStoreSlabDescriptor) {
+pub(super) fn update_oldest_slab_timestamp(target: &mut Option<u64>, band: &BlockStoreSlabDescriptor) {
     let Some(timestamp) = band.updated_unix_ms.or(band.created_unix_ms) else {
         return;
     };
@@ -424,7 +424,7 @@ pub(super) fn update_oldest_band_timestamp(target: &mut Option<u64>, band: &Bloc
     }
 }
 
-pub(super) fn ensure_band_descriptor(
+pub(super) fn ensure_slab_descriptor(
     bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
     root: &Path,
     block_slab_id: u64,
@@ -465,7 +465,7 @@ pub(super) fn ensure_band_descriptor(
     }
 }
 
-pub(super) fn upsert_band_after_append(
+pub(super) fn upsert_slab_after_append(
     bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
     block_slab_id: u64,
     physical_bytes: u64,
@@ -514,7 +514,7 @@ pub(super) fn upsert_band_after_append(
     );
 }
 
-pub(super) fn set_band_state(
+pub(super) fn set_slab_state(
     bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
     block_slab_id: u64,
     state: BlockStoreSlabState,

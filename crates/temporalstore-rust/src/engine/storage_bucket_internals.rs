@@ -580,7 +580,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         delete_markers: BTreeSet<String>,
     }
 
-    let mut bands_usage = BTreeMap::<u64, SlabUsageAcc>::new();
+    let mut slabs_usage = BTreeMap::<u64, SlabUsageAcc>::new();
     let mut slabs = BTreeMap::<u64, SlabAcc>::new();
     let mut bands = BTreeMap::<u64, SlabAccumulator>::new();
     let mut buckets = BTreeMap::<u32, BucketAcc>::new();
@@ -592,7 +592,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
             .unwrap_or(entry.address.block_slab_id);
         let slab_id = entry.address.block_slab_id;
         let generation = entry.address.object_id().unwrap_or(0);
-        let usage = bands_usage.entry(band_id).or_default();
+        let usage = slabs_usage.entry(band_id).or_default();
         usage.slabs.insert(slab_id);
         usage.generation = usage.generation.max(generation);
         if entry.deleted {
@@ -664,7 +664,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         }
     }
 
-    snapshot.storage_band_usage_samples = bands_usage
+    snapshot.storage_slab_usage_samples = slabs_usage
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
         .map(|(band_id, usage)| StorageSlabUsageSample {
@@ -703,7 +703,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
     snapshot.band_samples = bands
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
-        .map(|(band_id, band)| StorageSlabBandSample {
+        .map(|(band_id, band)| StorageSlabSlabSample {
             band: band_id,
             block_range: vec![band.min_offset, band.max_offset],
             reclaim_state: if band.deleted_refs > 0 && band.live_refs == 0 {

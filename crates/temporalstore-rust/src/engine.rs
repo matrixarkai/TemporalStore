@@ -672,7 +672,7 @@ impl TemporalEngine {
                 // long-running node permanently rejected all writes once it tripped.
                 // compares live resident size and evicts; this at least lets
                 // reclamation re-admit writes.
-                .map(|limit| self.page_store.band_summary().total_known_physical_bytes >= limit)
+                .map(|limit| self.page_store.slab_summary().total_known_physical_bytes >= limit)
                 .unwrap_or(false)
         {
             return ExecuteResponse {
@@ -1780,13 +1780,13 @@ impl TemporalEngine {
                     && (!checksums_recorded || entry.checksum.is_some())
             })
         });
-        let band_report = self.page_store.stream_backed_band_runtime_report().ok();
-        let stream_backed_band_api_ready = band_report
+        let band_report = self.page_store.stream_backed_slab_runtime_report().ok();
+        let stream_backed_slab_api_ready = band_report
             .as_ref()
             .map(|report| {
-                report.band_manifest_ready
-                    && report.band_manifest_disk_consistent
-                    && report.band_stats_ready
+                report.slab_manifest_ready
+                    && report.slab_manifest_disk_consistent
+                    && report.slab_stats_ready
                     && report.stream_record_count > 0
                     && report.blockers.iter().all(|blocker| {
                         blocker.contains("append/roll") || blocker.contains("purge lifecycle")
@@ -1855,7 +1855,7 @@ impl TemporalEngine {
         if block_index_count == 0 {
             blockers.push("block_store_segment_index_missing".to_string());
         }
-        if !stream_backed_band_api_ready {
+        if !stream_backed_slab_api_ready {
             blockers.push("stream_backed_band_api_not_ready".to_string());
         }
         if !storage_manager_phase_api_ready {
@@ -1878,7 +1878,7 @@ impl TemporalEngine {
             object_manager_runtime_api_ready: object_manager.runtime_ready,
             block_address_api_ready,
             block_store_slab_api_ready: block_index_count > 0,
-            stream_backed_band_api_ready,
+            stream_backed_slab_api_ready,
             legacy_page_zone_aliases_ready,
             storage_manager_phase_api_ready,
             storage_manager_pressure_api_ready,

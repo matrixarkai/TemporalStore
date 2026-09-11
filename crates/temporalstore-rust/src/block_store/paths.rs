@@ -8,7 +8,7 @@ pub(super) fn slab_path(root: &Path, block_slab_id: u64) -> PathBuf {
     root.join(format!("page_segment_{block_slab_id:020}.seg"))
 }
 
-pub(super) fn band_manifest_path(root: &Path) -> PathBuf {
+pub(super) fn slab_manifest_path(root: &Path) -> PathBuf {
     root.join("page_extent_manifest.json")
 }
 
