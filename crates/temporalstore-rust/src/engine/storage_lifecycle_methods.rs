@@ -1028,6 +1028,41 @@ impl TemporalEngine {
         }
     }
 
+    /// Reclaim the index log on the same terms the background cycle uses.
+    ///
+    /// [`Self::storage_index_gc_report`] is engine-internal and takes a cycle request for its
+    /// thresholds, which is why the periodic scheduler could not reach it: the index log was
+    /// truncated only by the cycle endpoint, an explicit `/gc` request, or the embedded proxy's
+    /// own reclaim thread. This is the entry that closes that, and it takes the CYCLE's defaults
+    /// rather than inventing a second policy -- including
+    /// `index_gc_commit_dirty_buckets_before_truncation`, which defaults TRUE and is the safe
+    /// order: an index-log record names where a block's bytes live, so dropping one the durable
+    /// state does not yet reflect loses the LOCATION of data that is still on disk, which reads
+    /// as missing rather than as corruption.
+    ///
+    /// The plan is recomputed from `request` AFTER the caller's dump has run, which is the order
+    /// that makes the safety check meaningful: if that dump cleared the dirty set, the plan now
+    /// selects nothing and truncation is safe on its own terms. A stale plan would ask about
+    /// buckets that have already been committed.
+    pub fn apply_periodic_index_gc(
+        &self,
+        request: StorageLifecycleRequest,
+        lifecycle_report: Option<&StorageLifecycleReport>,
+    ) -> StorageIndexGcReport {
+        let shard_id = request.shard_id;
+        let plan = self.storage_lifecycle_plan(request);
+        let wal_plan = self.storage_wal_reclaim_plan(shard_id, Vec::new(), Vec::new());
+        self.storage_index_gc_report(
+            &plan,
+            &wal_plan,
+            lifecycle_report,
+            &StorageManagerCycleRequest {
+                shard_id,
+                ..StorageManagerCycleRequest::default()
+            },
+        )
+    }
+
     pub(super) fn storage_index_gc_report(
         &self,
         plan: &StorageLifecyclePlan,
