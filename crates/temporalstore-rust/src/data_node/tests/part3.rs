@@ -3253,3 +3253,77 @@ fn the_slot_index_metric_counts_resident_buckets_not_the_routing_range() {
     // cannot pass by the numbers happening to agree.
     assert_eq!(shard.storage.bucket_entries, u32::MAX as u64);
 }
+
+/// What each maintenance stage costs on a realistic shard, by ablation.
+///
+///   cargo test --release -p temporalstore-rust --lib what_each_maintenance_stage_costs -- --ignored --nocapture --test-threads=1
+///
+/// The cycle is timed with everything on, then once per stage with that stage off. The difference
+/// is that stage's cost. Ablation rather than instrumentation, so no stage has to be edited to be
+/// measured, and a stage that declines for want of pressure shows up as ~0 rather than as absent.
+///
+/// Compaction was already measured directly at seconds per round
+/// (`what_a_whole_shard_compaction_costs`); this is the rest of them, which had no number at all.
+#[test]
+#[ignore]
+fn what_each_maintenance_stage_costs() {
+    fn build(objects: usize) -> (tempfile::TempDir, DataNodeRuntime) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..objects {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("stage-cost-{index:06}"),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        (dir, runtime)
+    }
+
+    fn time_once(objects: usize, options: StorageManagerOptions) -> f64 {
+        let (_dir, runtime) = build(objects);
+        let started = std::time::Instant::now();
+        let report = runtime.run_storage_manager_once(1, options);
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = report;
+        elapsed
+    }
+
+    for objects in [5_000usize, 20_000] {
+        let all_on = time_once(objects, StorageManagerOptions::default());
+        eprintln!("  [stages] {objects:>6} objects, everything on -> {all_on:>9.1} ms");
+
+        for (name, off) in [
+            ("prepare", StorageManagerOptions { enable_prepare: false, ..Default::default() }),
+            ("reclaim_wal", StorageManagerOptions { enable_wal_reclaim: false, ..Default::default() }),
+            ("reclaim_memory", StorageManagerOptions { enable_memory_reclaim: false, ..Default::default() }),
+            ("expire", StorageManagerOptions { enable_expire: false, ..Default::default() }),
+            ("reclaim_page", StorageManagerOptions { enable_page_gc: false, ..Default::default() }),
+            ("compact_pages", StorageManagerOptions { enable_page_compaction: false, ..Default::default() }),
+            ("reclaim_index", StorageManagerOptions { enable_index_gc: false, ..Default::default() }),
+            ("reap_metrics", StorageManagerOptions { enable_metrics_reap: false, ..Default::default() }),
+        ] {
+            let without = time_once(objects, off);
+            eprintln!(
+                "  [stages] {objects:>6}   without {name:<15} {without:>9.1} ms   (stage costs {:>9.1} ms)",
+                all_on - without,
+            );
+        }
+    }
+}
