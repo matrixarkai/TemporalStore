@@ -1004,6 +1004,15 @@ pub struct TableShard {
     pub primary_endpoint: Option<ServerEndpoint>,
     #[serde(default)]
     pub replica_endpoints: Vec<ServerEndpoint>,
+    /// The fencing token for this shard's placement: the `load_version` its PRIMARY reports for
+    /// it. A write carrying this is refused by a node that no longer holds that version, which is
+    /// the window a stale route otherwise writes into.
+    ///
+    /// 0 means NOT KNOWN, and is the safe direction: a client without a version keeps the
+    /// unfenced behaviour rather than being locked out. A topology written before this field
+    /// existed reads as 0 for the same reason.
+    #[serde(default)]
+    pub load_version: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3553,6 +3562,89 @@ mod tests {
             replicas.len(),
             2,
             "spreading turned a fill into a shortfall: {replicas:?}"
+        );
+    }
+
+    #[test]
+    fn the_topology_carries_the_load_version_the_primary_reports() {
+        // The fencing token only reaches a client if the topology carries it. Without it a client
+        // has no version to send, so the checked execute path cannot be used at all and a write
+        // routed on a stale topology is accepted by a node that no longer owns the shard.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "us-east/dc1/az1/rack1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+                first_shard_id: 1,
+                shard_count: 1,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+
+        let topology = || {
+            meta.get_table_topology(GetTableTopologyRequest {
+                client_location: String::new(),
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+                old_topology_version: 0,
+            })
+        };
+
+        // CONTROL: nothing reported yet. An unknown must read as 0 -- a token invented here would
+        // fence out every client the moment this field started being sent.
+        let before = topology();
+        assert!(before.status.ok);
+        assert_eq!(before.shards.len(), 1);
+        assert_eq!(
+            before.shards[0].load_version, 0,
+            "an unreported shard must carry 0, not a token that would fence a client out"
+        );
+        let primary = before.shards[0]
+            .primary
+            .clone()
+            .expect("the shard should have a primary");
+
+        assert!(meta
+            .server_heartbeat(ServerHeartbeatRequest {
+                server_addr: primary,
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: vec![ServerShardServingState {
+                    shard_id: 1,
+                    loaded: true,
+                    load_version: 7,
+                    ..ServerShardServingState::default()
+                }],
+            })
+            .status
+            .ok);
+
+        let after = topology();
+        assert!(after.status.ok);
+        assert_eq!(after.shards.len(), 1);
+        assert_eq!(
+            after.shards[0].load_version, 7,
+            "the topology must carry the load_version its primary reports"
         );
     }
 

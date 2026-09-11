@@ -2234,6 +2234,7 @@ fn verify_client_partition_set_route_cache() {
                         }),
                         shards: vec![
                             TableShard {
+                                load_version: 0,
                                 shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
                                 start_bucket: 0,
                                 end_bucket: 536_870_911,
@@ -2249,6 +2250,7 @@ fn verify_client_partition_set_route_cache() {
                                 }],
                             },
                             TableShard {
+                                load_version: 0,
                                 shard_id: PartitionId::new(42, 1, 0, 17).unwrap().id(),
                                 start_bucket: 536_870_912,
                                 end_bucket: 1_073_741_823,
@@ -2494,6 +2496,7 @@ fn verify_client_metasync_outage_churn() {
                                 serving_options: Default::default(),
                             }),
                             shards: vec![TableShard {
+                                load_version: 0,
                                 shard_id: 40,
                                 start_bucket: 0,
                                 end_bucket: 1_073_741_823,
@@ -2722,6 +2725,7 @@ fn verify_client_deployment_placement_routing() {
                             },
                         }),
                         shards: vec![TableShard {
+                            load_version: 0,
                             shard_id: 81,
                             start_bucket: 0,
                             end_bucket: u64::MAX,

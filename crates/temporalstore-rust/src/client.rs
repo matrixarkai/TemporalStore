@@ -738,6 +738,12 @@ struct CachedRoute {
     next_replica_index: std::sync::atomic::AtomicUsize,
     fetched_at: Instant,
     topology_version: u64,
+    /// The fencing token the metaserver gave for this route's primary, or 0 when it gave none.
+    ///
+    /// Held here so a routed write can be sent to the checked execute path, which refuses it if
+    /// the node no longer holds that version. 0 keeps the unchecked path, so a route fetched from
+    /// a metaserver that does not send one behaves exactly as before.
+    load_version: u64,
     refresh_reason: String,
 }
 
@@ -758,6 +764,7 @@ impl Clone for CachedRoute {
             ),
             fetched_at: self.fetched_at,
             topology_version: self.topology_version,
+            load_version: self.load_version,
             refresh_reason: self.refresh_reason.clone(),
         }
     }
@@ -777,6 +784,8 @@ impl CachedRoute {
             next_replica_index: std::sync::atomic::AtomicUsize::new(0),
             fetched_at: Instant::now(),
             topology_version: 0,
+            // A route built without topology carries no token, so writes through it stay unfenced.
+            load_version: 0,
             refresh_reason: refresh_reason.to_string(),
         }
     }

@@ -292,6 +292,7 @@ pub(super) fn topology_for_shard(
             serving_options: crate::meta::TableServingOptions::default(),
         }),
         shards: vec![TableShard {
+            load_version: 0,
             shard_id,
             start_bucket: 0,
             end_bucket: u64::MAX,

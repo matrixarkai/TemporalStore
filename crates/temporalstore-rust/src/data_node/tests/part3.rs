@@ -1341,6 +1341,7 @@ fn runtime_builds_style_server_load_report() {
             serving_options: crate::meta::TableServingOptions::default(),
         }),
         shards: vec![crate::meta::TableShard {
+            load_version: 0,
             shard_id: 7,
             start_bucket: 10,
             end_bucket: 19,
@@ -1360,6 +1361,7 @@ fn runtime_builds_style_server_load_report() {
         status: Status::ok(),
         table: None,
         shards: vec![crate::meta::TableShard {
+            load_version: 0,
             shard_id: 7,
             start_bucket: 0,
             end_bucket: 9,

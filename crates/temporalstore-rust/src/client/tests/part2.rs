@@ -163,6 +163,7 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
                                 serving_options: crate::meta::TableServingOptions::default(),
                             }),
                             shards: vec![TableShard {
+                                load_version: 0,
                                 shard_id: 40,
                                 start_bucket: 0,
                                 end_bucket: 1_073_741_823,
@@ -368,6 +369,7 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
                             status: Status::ok(),
                             table: Some(table),
                             shards: vec![TableShard {
+                                load_version: 0,
                                 shard_id: 1,
                                 start_bucket: 0,
                                 end_bucket: u64::MAX,
@@ -476,6 +478,7 @@ fn a_topology_missing_a_primary_keeps_the_route_it_cannot_replace() {
                                 serving_options: crate::meta::TableServingOptions::default(),
                             }),
                             shards: vec![TableShard {
+                                load_version: 0,
                                 shard_id: 1,
                                 start_bucket: 0,
                                 end_bucket: u64::MAX,
@@ -662,6 +665,7 @@ fn a_batch_is_split_across_shards_the_table_gained_after_it_was_opened() {
                     let count = count_for_server.load(Ordering::Relaxed);
                     let shards = (0..count)
                         .map(|offset| crate::meta::TableShard {
+                            load_version: 0,
                             shard_id: 10 + offset,
                             start_bucket: offset * 4096,
                             end_bucket: (offset + 1) * 4096 - 1,
@@ -1023,6 +1027,7 @@ fn table_read_policy_can_select_secondary_from_metaserver_topology() {
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
                         shards: vec![TableShard {
+                            load_version: 0,
                             shard_id: 1,
                             start_bucket: 0,
                             end_bucket: u64::MAX,
@@ -1133,6 +1138,7 @@ fn a_read_only_batch_reaches_the_replica_and_a_write_batch_the_primary() {
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
                         shards: vec![TableShard {
+                            load_version: 0,
                             shard_id: 1,
                             start_bucket: 0,
                             end_bucket: u64::MAX,
@@ -1312,6 +1318,7 @@ fn client_router_matches_crc64_bucket_formula() {
 #[test]
 fn client_router_round_robins_secondary_reads_like_router() {
     let mut route = CachedRoute {
+        load_version: 0,
         table_key: String::new(),
         partition_id: 1,
         start_bucket: 0,
@@ -1347,6 +1354,7 @@ fn client_router_round_robins_secondary_reads_like_router() {
 #[test]
 fn client_router_prefers_same_location_replica_when_available() {
     let mut route = CachedRoute {
+        load_version: 0,
         table_key: String::new(),
         partition_id: 1,
         start_bucket: 0,
@@ -1526,6 +1534,7 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
                                 },
                             }),
                             shards: vec![TableShard {
+                                load_version: 0,
                                 shard_id: 81,
                                 start_bucket: 0,
                                 end_bucket: u64::MAX,
