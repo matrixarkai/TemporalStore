@@ -17864,3 +17864,62 @@ fn the_delete_marker_rename_did_not_move_any_wire_name() {
     .expect("an old-name payload must still decode");
     assert_eq!(decoded.delete_marked_object_ids, 7);
 }
+
+/// Do a packed page's timestamps share ONE address, or several?
+///
+///   cargo test -p temporalstore-rust --lib what_a_packed_page_looks_like_in_the_index -- --ignored --nocapture
+///
+/// This settles which side of the corpus mismatch is right. `install_bucket_dump_manifest`
+/// cross-checks two derivations of one report: the model-map one dedupes a series' addresses
+/// through a HashSet, the bucket-index one does not. On
+/// `native_logical_storage_models_packed_timestamped_pages` they read 10 and 12, and the case has
+/// exactly two packed operations.
+///
+/// If the timestamps of one packed append share a single address, the dedup is right and the
+/// bucket index is carrying duplicate refs. If they carry distinct addresses (different offsets
+/// into one page), the dedup is collapsing pages that are genuinely separate entries and the
+/// invariant never held for packed pages.
+#[test]
+#[ignore]
+fn what_a_packed_page_looks_like_in_the_index() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    // One append carrying several points -- the shape `feature_append_packed_page` uses.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "packed:feature".to_string(),
+            points: (0..5)
+                .map(|index| crate::types::FeaturePoint {
+                    timestamp_ms: 1_000 + index,
+                    value: vec![b'v'; 16],
+                })
+                .collect(),
+        },
+    });
+    assert!(response.status.ok, "append failed: {:?}", response.status);
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard loaded");
+    let series = shard.features.get("packed:feature").expect("series present");
+
+    eprintln!("  timestamps in the series: {}", series.len());
+    let mut distinct = std::collections::HashSet::new();
+    for (timestamp, address) in series.iter() {
+        eprintln!(
+            "    ts={timestamp} slab={} off={} len={} page_id={:?}",
+            address.block_slab_id,
+            address.offset,
+            address.length,
+            address.page_id()
+        );
+        distinct.insert(address.clone());
+    }
+    eprintln!("  DISTINCT addresses: {}", distinct.len());
+    eprintln!(
+        "  so the model-map derivation would count {} and the bucket index {}",
+        distinct.len(),
+        series.len()
+    );
+}
