@@ -88,7 +88,8 @@ pub struct ShardCompactionReport {
     #[serde(default)]
     pub model_policy_family_count: usize,
     #[serde(default)]
-    pub tombstone_policy_model_count: usize,
+    #[serde(rename = "tombstone_policy_model_count")]
+    pub delete_marker_policy_model_count: usize,
     #[serde(default)]
     pub stale_density_policy_model_count: usize,
     #[serde(default)]
@@ -102,9 +103,11 @@ pub struct ShardCompactionReport {
     #[serde(rename = "slot_layout_states_after")]
     pub bucket_layout_states_after: Vec<BucketLayoutStateCount>,
     #[serde(default)]
-    pub tombstoned_object_ids_before: u64,
+    #[serde(rename = "tombstoned_object_ids_before")]
+    pub delete_marked_object_ids_before: u64,
     #[serde(default)]
-    pub tombstoned_object_ids_after: u64,
+    #[serde(rename = "tombstoned_object_ids_after")]
+    pub delete_marked_object_ids_after: u64,
     #[serde(default)]
     pub model_layouts: Vec<ShardCompactionModelLayoutReport>,
     #[serde(default)]
@@ -156,7 +159,8 @@ pub struct ModelCompactionPolicyReport {
     pub total_slab_pages: u64,
     pub stale_page_estimate: u64,
     pub stale_density_basis_points: u64,
-    pub tombstone_density_basis_points: u64,
+    #[serde(rename = "tombstone_density_basis_points")]
+    pub delete_marker_density_basis_points: u64,
     #[serde(default)]
     pub object_page_packing_enabled: bool,
     #[serde(default)]
@@ -168,7 +172,8 @@ pub struct ModelCompactionPolicyReport {
     #[serde(default)]
     pub stale_density_triggered: bool,
     #[serde(default)]
-    pub tombstone_compaction_triggered: bool,
+    #[serde(rename = "tombstone_compaction_triggered")]
+    pub delete_marker_compaction_triggered: bool,
     #[serde(default)]
     pub layout_aware_rewrite_required: bool,
 }
@@ -180,7 +185,8 @@ pub struct ModelCompactionRewriteReport {
     pub rewritten_page_refs: usize,
     pub cold_page_rewrite_refs: usize,
     pub object_page_pack_group_count: usize,
-    pub tombstone_density_basis_points: u64,
+    #[serde(rename = "tombstone_density_basis_points")]
+    pub delete_marker_density_basis_points: u64,
     pub stale_density_basis_points: u64,
 }
 
@@ -395,14 +401,16 @@ pub struct StorageObjectLifecycleReport {
     pub live_object_ids: u64,
     pub live_page_refs: u64,
     pub stale_object_ids: u64,
-    pub tombstoned_object_ids: u64,
+    #[serde(rename = "tombstoned_object_ids")]
+    pub delete_marked_object_ids: u64,
     pub reused_object_id_conflicts: u64,
     pub missing_owner_page_refs: u64,
     pub owner_mismatch_page_refs: u64,
     #[serde(default)]
     pub reused_object_ids: Vec<u64>,
     #[serde(default)]
-    pub tombstoned_object_keys: Vec<String>,
+    #[serde(rename = "tombstoned_object_keys")]
+    pub delete_marked_object_keys: Vec<String>,
 }
 
 impl StorageObjectLifecycleReport {
@@ -699,7 +707,8 @@ pub struct ObjectManagerRuntimeReport {
     pub hot_object_count: u64,
     pub cold_object_count: u64,
     pub mixed_residency_object_count: u64,
-    pub tombstone_object_count: u64,
+    #[serde(rename = "tombstone_object_count")]
+    pub delete_marker_object_count: u64,
     pub dirty_object_count: u64,
     pub loading_object_count: u64,
     pub meta_object_count: u64,
@@ -1112,7 +1121,8 @@ pub struct PublicStorageContract {
     pub bucket: String,
     pub append_watermark: String,
     pub compaction_watermark: String,
-    pub tombstone: String,
+    #[serde(rename = "tombstone")]
+    pub delete_marker: String,
     pub gc_eligibility: String,
     pub follower_cursor_safety: String,
     pub compatibility_aliases: BTreeMap<String, String>,
@@ -1145,7 +1155,7 @@ impl Default for PublicStorageContract {
             bucket: text("Slot"),
             append_watermark: text("AppendWatermark"),
             compaction_watermark: text("CompactionWatermark"),
-            tombstone: text("Tombstone"),
+            delete_marker: text("Tombstone"),
             gc_eligibility: text("GcEligibility"),
             follower_cursor_safety: text("FollowerCursorSafety"),
             compatibility_aliases,
@@ -1169,7 +1179,8 @@ pub struct PublicStorageFeatureShapes {
     pub bucket_fields: Vec<String>,
     pub append_watermark_fields: Vec<String>,
     pub compaction_watermark_fields: Vec<String>,
-    pub tombstone_fields: Vec<String>,
+    #[serde(rename = "tombstone_fields")]
+    pub delete_marker_fields: Vec<String>,
     pub gc_eligibility_fields: Vec<String>,
     pub follower_cursor_safety_fields: Vec<String>,
 }
@@ -1257,7 +1268,7 @@ impl Default for PublicStorageFeatureShapes {
                 "safe_timestamp_ms",
                 "follower_floor",
             ]),
-            tombstone_fields: public_storage_strings(&[
+            delete_marker_fields: public_storage_strings(&[
                 "ref",
                 "generation",
                 "deleted_at_ms",
@@ -1424,7 +1435,7 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "storage_manager_expire_count",
-            flag(object_lifecycle.tombstoned_object_ids > 0),
+            flag(object_lifecycle.delete_marked_object_ids > 0),
         );
         put(
             &mut metrics,
@@ -1499,7 +1510,7 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "slot_tombstone_count",
-            object_lifecycle.tombstoned_object_ids,
+            object_lifecycle.delete_marked_object_ids,
         );
         put(
             &mut metrics,
@@ -1604,7 +1615,7 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "tombstone_records",
-            object_lifecycle.tombstoned_object_ids,
+            object_lifecycle.delete_marked_object_ids,
         );
         put(
             &mut metrics,
@@ -1798,7 +1809,8 @@ pub fn default_storage_reclaim_scope() -> StorageReclaimScope {
 pub struct StorageSafetySnapshot {
     pub append_watermark: u64,
     pub compaction_watermark: u64,
-    pub tombstone_records: u64,
+    #[serde(rename = "tombstone_records")]
+    pub delete_marker_records: u64,
     pub gc_eligible_record_count: u64,
     pub reclaimable_bytes: u64,
     pub follower_cursor_retention_floor: u64,
@@ -1815,7 +1827,7 @@ pub fn storage_safety_snapshot_from_metrics(
     StorageSafetySnapshot {
         append_watermark: metric(metrics, "append_watermark"),
         compaction_watermark: metric(metrics, "compaction_watermark"),
-        tombstone_records: metric(metrics, "tombstone_records")
+        delete_marker_records: metric(metrics, "tombstone_records")
             .saturating_add(metric(metrics, "stale_page_tombstones"))
             .saturating_add(metric(metrics, "stale_block_tombstones")),
         gc_eligible_record_count: metric(metrics, "tombstone_records")
@@ -1894,7 +1906,7 @@ pub fn default_storage_watermark_snapshot() -> StorageWatermarkSnapshot {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageTombstoneSample {
+pub struct StorageDeleteMarkerSample {
     #[serde(rename = "ref")]
     pub ref_id: String,
     pub generation: u64,
@@ -1907,7 +1919,8 @@ pub struct StorageGcEligibilitySample {
     #[serde(rename = "ref")]
     pub ref_id: String,
     pub eligible_after_ms: u64,
-    pub has_tombstone: bool,
+    #[serde(rename = "has_tombstone")]
+    pub has_delete_marker: bool,
     pub follower_safe: bool,
     pub reclaimable_bytes: u64,
 }
@@ -1921,9 +1934,12 @@ pub struct StorageFollowerCursorSafetySample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageGcSnapshot {
-    pub tombstone_records: u64,
-    pub stale_page_tombstones: u64,
-    pub stale_block_tombstones: u64,
+    #[serde(rename = "tombstone_records")]
+    pub delete_marker_records: u64,
+    #[serde(rename = "stale_page_tombstones")]
+    pub stale_page_delete_markers: u64,
+    #[serde(rename = "stale_block_tombstones")]
+    pub stale_block_delete_markers: u64,
     pub gc_eligible_record_count: u64,
     pub reclaimable_bytes: u64,
     pub compaction_reclaimed_bytes: u64,
@@ -1933,7 +1949,8 @@ pub struct StorageGcSnapshot {
     pub follower_cursor_blocked_reclaim_count: u64,
     pub follower_cursor_safe_to_reclaim: bool,
     #[serde(default)]
-    pub tombstone_samples: Vec<StorageTombstoneSample>,
+    #[serde(rename = "tombstone_samples")]
+    pub delete_marker_samples: Vec<StorageDeleteMarkerSample>,
     #[serde(default)]
     pub gc_eligibility_samples: Vec<StorageGcEligibilitySample>,
     #[serde(default)]
@@ -1941,18 +1958,18 @@ pub struct StorageGcSnapshot {
 }
 
 pub fn storage_gc_snapshot_from_metrics(metrics: &BTreeMap<String, u64>) -> StorageGcSnapshot {
-    let stale_page_tombstones = metric(metrics, "stale_page_tombstones");
-    let stale_block_tombstones = metric(metrics, "stale_block_tombstones");
-    let tombstone_records = metric(metrics, "tombstone_records");
+    let stale_page_delete_markers = metric(metrics, "stale_page_tombstones");
+    let stale_block_delete_markers = metric(metrics, "stale_block_tombstones");
+    let delete_marker_records = metric(metrics, "tombstone_records");
     let follower_cursor_blocked_reclaim_count = metric(metrics, "stale_pages_skipped")
         .saturating_add(metric(metrics, "stale_blocks_skipped"));
     StorageGcSnapshot {
-        tombstone_records,
-        stale_page_tombstones,
-        stale_block_tombstones,
-        gc_eligible_record_count: tombstone_records
-            .saturating_add(stale_page_tombstones)
-            .saturating_add(stale_block_tombstones),
+        delete_marker_records,
+        stale_page_delete_markers,
+        stale_block_delete_markers,
+        gc_eligible_record_count: delete_marker_records
+            .saturating_add(stale_page_delete_markers)
+            .saturating_add(stale_block_delete_markers),
         reclaimable_bytes: metric(metrics, "reclaimable_bytes"),
         compaction_reclaimed_bytes: metric(metrics, "compaction_reclaimed_bytes"),
         physical_reclaimed_bytes: metric(metrics, "physical_reclaimed_bytes"),
@@ -1960,7 +1977,7 @@ pub fn storage_gc_snapshot_from_metrics(metrics: &BTreeMap<String, u64>) -> Stor
         follower_cursor_retention_floor: metric(metrics, "follower_cursor_retention_floor"),
         follower_cursor_blocked_reclaim_count,
         follower_cursor_safe_to_reclaim: follower_cursor_blocked_reclaim_count == 0,
-        tombstone_samples: Vec::new(),
+        delete_marker_samples: Vec::new(),
         gc_eligibility_samples: Vec::new(),
         follower_cursor_safety_samples: Vec::new(),
     }
@@ -2018,7 +2035,8 @@ pub struct StorageObjectIndexEntrySample {
     pub table: String,
     pub object_key: String,
     pub page_chain: Vec<StoragePageAddressSample>,
-    pub tombstone: bool,
+    #[serde(rename = "tombstone")]
+    pub delete_marker: bool,
     pub generation: u64,
 }
 
@@ -2126,7 +2144,8 @@ pub struct StorageBucketSample {
     pub dirty_generation: u64,
     pub object_refs: Vec<u64>,
     pub page_refs: Vec<StoragePageAddressSample>,
-    pub tombstones: Vec<String>,
+    #[serde(rename = "tombstones")]
+    pub delete_markers: Vec<String>,
     pub owner_mismatch_count: u64,
 }
 

@@ -4335,7 +4335,7 @@ mod key_state_shape_tests {
     /// omitting the nulls silently stops tombstoning keys on reload, and evicted membership
     /// comes back from the pages.
     #[test]
-    fn an_omitted_key_state_field_tombstones_exactly_like_an_explicit_null() {
+    fn an_omitted_key_state_field_delete_markers_exactly_like_an_explicit_null() {
         let mut with_null: HashMap<String, u64> = HashMap::new();
         with_null.insert("k".to_string(), 7);
         apply_key_state_field(&mut with_null, "k", Some(&serde_json::Value::Null));

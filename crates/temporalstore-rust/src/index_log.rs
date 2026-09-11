@@ -2411,7 +2411,7 @@ mod tests {
     }
 
     #[test]
-    fn fold_index_items_applies_tombstones_and_last_writer_wins() {
+    fn fold_index_items_applies_delete_markers_and_last_writer_wins() {
         let mut base = BTreeMap::new();
         base.insert((1u32, "a".to_string()), page_item(1, "a", false));
         base.insert((1u32, "b".to_string()), page_item(1, "b", false));

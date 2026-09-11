@@ -438,7 +438,7 @@ fn a_batch_is_written_as_one_record() {
 }
 
 #[test]
-fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
+fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -499,7 +499,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     // Freshly written, materialized, in-memory pages are hot (not log-backed), so
     // their objects are hot; cold residency only applies to reloaded-from-disk pages.
     assert!(report.hot_object_count >= 3);
-    assert!(report.tombstone_object_count >= 1);
+    assert!(report.delete_marker_object_count >= 1);
     assert!(report.dirty_object_count >= 4);
     assert!(report.dirty_bucket_count >= 1);
     assert!(report.max_dirty_generation >= 1);
@@ -532,8 +532,8 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     assert!(after_dump_load.runtime_ready, "{after_dump_load:?}");
     assert_eq!(after_dump_load.object_count, after_compaction.object_count);
     assert_eq!(
-        after_dump_load.tombstone_object_count,
-        after_compaction.tombstone_object_count
+        after_dump_load.delete_marker_object_count,
+        after_compaction.delete_marker_object_count
     );
 
     engine.unload_shard(1);
@@ -552,8 +552,8 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     assert_eq!(reloaded.object_count, after_dump_load.object_count);
     assert_eq!(reloaded.page_ref_count, after_dump_load.page_ref_count);
     assert_eq!(
-        reloaded.tombstone_object_count,
-        after_dump_load.tombstone_object_count
+        reloaded.delete_marker_object_count,
+        after_dump_load.delete_marker_object_count
     );
     assert_eq!(
         reloaded.object_page_count,
@@ -563,7 +563,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
 
 // shared-corpus: native_storage_object_page_bucket_parity_surfaces;
 #[test]
-fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_parity() {
+fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers_parity() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -624,7 +624,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_parity()
     // Freshly written, materialized, in-memory pages are hot (not log-backed), so
     // their objects are hot; cold residency only applies to reloaded-from-disk pages.
     assert!(report.hot_object_count >= 3);
-    assert!(report.tombstone_object_count >= 1);
+    assert!(report.delete_marker_object_count >= 1);
     assert!(report.dirty_object_count >= 4);
     assert!(report.dirty_bucket_count >= 1);
     assert!(report.max_dirty_generation >= 1);
@@ -655,8 +655,8 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_parity()
     assert_eq!(reloaded.object_count, report.object_count);
     assert_eq!(reloaded.page_ref_count, report.page_ref_count);
     assert_eq!(
-        reloaded.tombstone_object_count,
-        report.tombstone_object_count
+        reloaded.delete_marker_object_count,
+        report.delete_marker_object_count
     );
     assert_eq!(
         reloaded.packed_timestamped_page_count,
@@ -983,7 +983,7 @@ fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id
 }
 
 #[test]
-fn delete_drop_eviction_emits_a_wal_tombstone_and_does_not_resurrect() {
+fn delete_drop_eviction_emits_a_wal_delete_marker_and_does_not_resurrect() {
     // A delete_drop eviction is a logical delete and must emit a WAL tombstone + advance the
     // replay anchor like the expiry sweep, or the deletion is unreplicated and (under bulk mode)
     // resurrects on reload. Assert the eviction appends a CommonDelete to the WAL (observable as a
@@ -13176,7 +13176,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
             assert!(
                 bucket.deleted_object_index.contains(object_id),
                 "bucket {bucket_id} holds object id {object_id}, which is neither live nor a \
-                 recorded tombstone"
+                 recorded delete_marker"
             );
         }
     }
@@ -17825,4 +17825,42 @@ fn the_band_usage_sample_still_serializes_under_its_zone_wire_names() {
         serde_json::from_str(r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#)
             .expect("an old-name payload must still decode");
     assert_eq!(decoded.band_id, 9);
+}
+
+#[test]
+fn the_delete_marker_rename_did_not_move_any_wire_name() {
+    // `tombstone` became `delete_marker` in Rust. The WIRE must not follow: the compat corpora
+    // pin "tombstone", "tombstones", "tombstone_records", "tombstone_count" and
+    // "tombstone_compaction_coverage", and 708 Python plus 96 JSON references read those names.
+    //
+    // Every renamed field carries #[serde(rename = "<old name>")]. This asserts the result rather
+    // than the attribute, because a dropped pin compiles, passes every type-level test, and
+    // silently changes the exported shape.
+    let lifecycle = crate::engine::reports::StorageObjectLifecycleReport {
+        live_object_ids: 3,
+        delete_marked_object_ids: 2,
+        delete_marked_object_keys: vec!["k".to_string()],
+        ..crate::engine::reports::StorageObjectLifecycleReport::default()
+    };
+    let encoded = serde_json::to_value(&lifecycle).expect("serialize");
+    for (wire, renamed) in [
+        ("tombstoned_object_ids", "delete_marked_object_ids"),
+        ("tombstoned_object_keys", "delete_marked_object_keys"),
+    ] {
+        assert!(
+            encoded.get(wire).is_some(),
+            "{wire} must still be the exported name: {encoded}"
+        );
+        assert!(
+            encoded.get(renamed).is_none(),
+            "{renamed} must NOT reach the wire -- that is a format change: {encoded}"
+        );
+    }
+
+    // And a payload written under the old names must still decode.
+    let decoded: crate::engine::reports::StorageObjectLifecycleReport = serde_json::from_str(
+        r#"{"live_object_ids":1,"live_page_refs":1,"stale_object_ids":0,"tombstoned_object_ids":7,"reused_object_id_conflicts":0,"missing_owner_page_refs":0,"owner_mismatch_page_refs":0,"reused_object_ids":[],"tombstoned_object_keys":[]}"#,
+    )
+    .expect("an old-name payload must still decode");
+    assert_eq!(decoded.delete_marked_object_ids, 7);
 }

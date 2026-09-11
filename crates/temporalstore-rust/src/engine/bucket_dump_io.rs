@@ -503,7 +503,7 @@ pub(super) fn bucket_dump_generation_id(manifest: &BucketDumpManifest) -> String
         digest.update(
             manifest
                 .object_lifecycle
-                .tombstoned_object_ids
+                .delete_marked_object_ids
                 .to_le_bytes(),
         );
         digest.update(
@@ -527,7 +527,7 @@ pub(super) fn bucket_dump_generation_id(manifest: &BucketDumpManifest) -> String
         for object_id in &manifest.object_lifecycle.reused_object_ids {
             digest.update(object_id.to_le_bytes());
         }
-        for key in &manifest.object_lifecycle.tombstoned_object_keys {
+        for key in &manifest.object_lifecycle.delete_marked_object_keys {
             digest.update(key.as_bytes());
             digest.update([0]);
         }

@@ -173,15 +173,15 @@ pub(super) fn model_compaction_policy_reports(
                 stale_page_estimate.saturating_mul(10_000) / total_slab_pages
             };
             let total_refs = stats.live_page_refs.saturating_add(stats.deleted_page_refs);
-            let tombstone_density_basis_points = if total_refs == 0 {
+            let delete_marker_density_basis_points = if total_refs == 0 {
                 0
             } else {
                 stats.deleted_page_refs.saturating_mul(10_000) / total_refs
             };
             let layout_policy = compaction_layout_policy_for_model(&model_id);
             let stale_density_triggered = stale_density_basis_points > 0;
-            let tombstone_compaction_triggered =
-                stats.deleted_page_refs > 0 || tombstone_density_basis_points > 0;
+            let delete_marker_compaction_triggered =
+                stats.deleted_page_refs > 0 || delete_marker_density_basis_points > 0;
             let object_page_packing_enabled = compaction_object_page_packing_enabled(&model_id);
             let layout_aware_rewrite_required = object_page_packing_enabled
                 || matches!(
@@ -198,18 +198,18 @@ pub(super) fn model_compaction_policy_reports(
                 total_slab_pages,
                 stale_page_estimate,
                 stale_density_basis_points,
-                tombstone_density_basis_points,
+                delete_marker_density_basis_points,
                 object_page_pack_group_count: stats.slab_ids.len() as u64,
                 cold_page_rewrite_eligible_refs: stats.live_page_refs,
                 compaction_action: compaction_action_for_policy(
                     stats.live_page_refs,
                     stats.deleted_page_refs,
                     stale_density_basis_points,
-                    tombstone_density_basis_points,
+                    delete_marker_density_basis_points,
                 )
                 .to_string(),
                 stale_density_triggered,
-                tombstone_compaction_triggered,
+                delete_marker_compaction_triggered,
                 layout_aware_rewrite_required,
             }
         })
@@ -239,11 +239,11 @@ pub(super) fn compaction_action_for_policy(
     live_page_refs: u64,
     deleted_page_refs: u64,
     stale_density_basis_points: u64,
-    tombstone_density_basis_points: u64,
+    delete_marker_density_basis_points: u64,
 ) -> &'static str {
     if live_page_refs == 0 && deleted_page_refs > 0 {
         "drop_tombstones"
-    } else if tombstone_density_basis_points > 0 || deleted_page_refs > 0 {
+    } else if delete_marker_density_basis_points > 0 || deleted_page_refs > 0 {
         "rewrite_live_drop_tombstones"
     } else if stale_density_basis_points > 0 {
         "rewrite_stale_density"
@@ -346,8 +346,8 @@ impl CompactionRewriteStats {
                     object_page_pack_group_count: before_policy
                         .map(|policy| policy.object_page_pack_group_count as usize)
                         .unwrap_or_default(),
-                    tombstone_density_basis_points: before_policy
-                        .map(|policy| policy.tombstone_density_basis_points)
+                    delete_marker_density_basis_points: before_policy
+                        .map(|policy| policy.delete_marker_density_basis_points)
                         .unwrap_or_default(),
                     stale_density_basis_points: before_policy
                         .map(|policy| policy.stale_density_basis_points)

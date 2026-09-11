@@ -267,7 +267,7 @@ fn main() {
             MetaBackend::Raft(_) => {
                 warn!(
                     "TS_META_RETENTION_GC ignored: the raft backend owns its own meta state and \
-                     does not collect tombstones, so dropped resources accumulate"
+                     does not collect delete_markers, so dropped resources accumulate"
                 );
                 None
             }
