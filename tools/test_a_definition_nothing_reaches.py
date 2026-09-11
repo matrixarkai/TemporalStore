@@ -104,6 +104,15 @@ UNREACHED = {
     # itself called only from tests. Deleting one half of a symmetric test affordance makes the
     # module worse rather than smaller.
     "matrixark_tenant_policy.py": ("clear_user_policy_cache",),
+    # `engine_blob_sweep` is not one more unreached helper. It is the engine attachment tier's
+    # ONLY deletion path -- for unreferenced blobs AND for stale staging files -- and in
+    # engine/resource_blobs.rs it is reachable from exactly one place, the
+    # Command::ContextResourceBlobSweep arm, so nothing collects unless something asks. Nothing
+    # asks: the live adapter exposes resource_blob_sweep, this wrapper is its only caller, and
+    # this wrapper has none. TemporalStoreBlobClient, the other tier, has put/get/exists and no
+    # delete at all. Do not wire a sweep to clear this entry: the caller must enumerate every
+    # manifest still naming a content hash for that tenant, there is no such enumerator, and a
+    # wrong referenced set deletes live attachments.
     "matrixark_temporalstore_blob.py": ("BlobPutResult", "engine_blob_sweep"),
     # Reporting scripts: these are the rows and lookups their own main stopped printing.
     "run_matrixark_message_pdf_debug_trace.py": (
