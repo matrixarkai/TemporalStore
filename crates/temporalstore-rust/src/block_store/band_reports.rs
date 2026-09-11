@@ -42,7 +42,7 @@ impl LocalBlockStore {
     /// are deliberately dropped -- they are recomputed on load by scanning the slab, exactly as
     /// this design does not persist them. `band_version` stamps every entry so a folded anchor
     /// carries a monotonically-versioned snapshot.
-    pub fn band_catalog(&self, band_version: u64) -> Vec<crate::index_log::SlabCatalogEntry> {
+    pub fn band_catalog(&self, slab_version: u64) -> Vec<crate::index_log::SlabCatalogEntry> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
@@ -57,7 +57,7 @@ impl LocalBlockStore {
                 updated_unix_ms: band.updated_unix_ms,
                 first_page_id: band.first_page_id,
                 last_page_id: band.last_page_id,
-                version: band_version,
+                version: slab_version,
             })
             .collect()
     }
@@ -241,11 +241,11 @@ impl LocalBlockStore {
             _ => stream_record_count == 0,
         };
         let logical_stream_read_ready = slab_reports.iter().any(|report| report.page_count > 0);
-        let append_roll_ready = summary.active_bands == 1
+        let append_roll_ready = summary.active_slabs == 1
             && summary
-                .sealed_bands
-                .saturating_add(summary.delayed_destroy_bands)
-                .saturating_add(summary.purged_bands)
+                .sealed_slabs
+                .saturating_add(summary.delayed_destroy_slabs)
+                .saturating_add(summary.purged_slabs)
                 > 0;
         let band_manifest_ready = band_manifest_path(&root).exists()
             && !bands.is_empty()
@@ -292,14 +292,14 @@ impl LocalBlockStore {
                 .iter()
                 .any(|report| report.compressed_records > 0);
         let delayed_destroy_ready =
-            summary.delayed_destroy_bands > 0 || summary.purged_bands > 0;
-        let purge_lifecycle_ready = summary.purged_bands > 0;
+            summary.delayed_destroy_slabs > 0 || summary.purged_slabs > 0;
+        let purge_lifecycle_ready = summary.purged_slabs > 0;
         let band_lifecycle_states = band_lifecycle_states(&summary);
         let band_state_transition_count = [
-            summary.active_bands,
-            summary.sealed_bands,
-            summary.delayed_destroy_bands,
-            summary.purged_bands,
+            summary.active_slabs,
+            summary.sealed_slabs,
+            summary.delayed_destroy_slabs,
+            summary.purged_slabs,
         ]
         .into_iter()
         .filter(|count| *count > 0)
@@ -347,10 +347,10 @@ impl LocalBlockStore {
             runtime_ready,
             band_lifecycle_states,
             band_count: bands.len() as u64,
-            active_bands: summary.active_bands,
-            sealed_bands: summary.sealed_bands,
-            delayed_destroy_bands: summary.delayed_destroy_bands,
-            purged_bands: summary.purged_bands,
+            active_slabs: summary.active_slabs,
+            sealed_slabs: summary.sealed_slabs,
+            delayed_destroy_slabs: summary.delayed_destroy_slabs,
+            purged_slabs: summary.purged_slabs,
             band_stats_ready,
             band_usage,
             stream_slab_count,

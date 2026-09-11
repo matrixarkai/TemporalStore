@@ -318,13 +318,13 @@ impl TemporalEngine {
                 );
             }
             for (state, value) in [
-                ("active", stats.page_store_zones.active_bands),
-                ("sealed", stats.page_store_zones.sealed_bands),
+                ("active", stats.page_store_zones.active_slabs),
+                ("sealed", stats.page_store_zones.sealed_slabs),
                 (
                     "delayed_destroy",
-                    stats.page_store_zones.delayed_destroy_bands,
+                    stats.page_store_zones.delayed_destroy_slabs,
                 ),
-                ("purged", stats.page_store_zones.purged_bands),
+                ("purged", stats.page_store_zones.purged_slabs),
             ] {
                 push_metric(
                     &mut out,
@@ -383,7 +383,7 @@ impl TemporalEngine {
                 );
             }
             for (scope, value) in [
-                ("known", stats.page_store_zones.oldest_known_band_unix_ms),
+                ("known", stats.page_store_zones.oldest_known_slab_unix_ms),
                 ("live", stats.page_store_zones.oldest_live_band_unix_ms),
                 (
                     "reclaimable",
@@ -412,7 +412,7 @@ impl TemporalEngine {
                 }
             }
             for (scope, value) in [
-                ("known", stats.page_store_zones.oldest_known_band_age_ms),
+                ("known", stats.page_store_zones.oldest_known_slab_age_ms),
                 ("live", stats.page_store_zones.oldest_live_band_age_ms),
                 (
                     "reclaimable",

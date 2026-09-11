@@ -180,9 +180,9 @@ pub(super) fn bucket_storage_summaries(
             .or_default()
             .insert(entry.address.block_slab_id);
         if let Some(band_id) = entry.address.band_id() {
-            summary.last_compacted_band = Some(
+            summary.last_compacted_slab = Some(
                 summary
-                    .last_compacted_band
+                    .last_compacted_slab
                     .map_or(band_id, |current| current.max(band_id)),
             );
         }

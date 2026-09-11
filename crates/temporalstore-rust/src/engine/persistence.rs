@@ -482,13 +482,13 @@ impl TemporalEngine {
         //    index-log. This is this design's "dump the band catalog into the index log" step:
         //    after it, the band catalog is recoverable from the durable log, so the per-write
         //    band-manifest file stops being the source of truth.
-        let band_version = anchor;
-        let bands = self.page_store.band_catalog(band_version);
+        let slab_version = anchor;
+        let bands = self.page_store.band_catalog(slab_version);
         let meta = crate::index_log::MetaItem {
             version: 1,
             start_wal_sequence: anchor,
             timestamp_ms: now_ms(),
-            band_version,
+            slab_version,
             bands,
         };
         let meta_sequence = match self.index_log_store.append_delta(
@@ -811,20 +811,20 @@ impl TemporalEngine {
                     .saturating_mul(std::mem::size_of::<super::state::BucketNode>() as u64),
                 bucket_index_resident_entries: state.bucket_index.bucket_map.len() as u64,
                 storage_band_count: page_store_bands
-                    .active_bands
-                    .saturating_add(page_store_bands.sealed_bands)
-                    .saturating_add(page_store_bands.delayed_destroy_bands)
-                    .saturating_add(page_store_bands.purged_bands),
-                active_storage_bands: page_store_bands.active_bands,
-                sealed_storage_bands: page_store_bands.sealed_bands,
+                    .active_slabs
+                    .saturating_add(page_store_bands.sealed_slabs)
+                    .saturating_add(page_store_bands.delayed_destroy_slabs)
+                    .saturating_add(page_store_bands.purged_slabs),
+                active_storage_slabs: page_store_bands.active_slabs,
+                sealed_storage_slabs: page_store_bands.sealed_slabs,
                 stream_slab_count: page_store_bands
-                    .active_bands
-                    .saturating_add(page_store_bands.sealed_bands)
-                    .saturating_add(page_store_bands.delayed_destroy_bands)
-                    .saturating_add(page_store_bands.purged_bands),
-                storage_band_total_bytes: page_store_bands.total_known_physical_bytes,
-                storage_band_used_bytes: page_store_bands.live_physical_bytes,
-                storage_band_stale_bytes: page_store_bands.reclaimable_physical_bytes,
+                    .active_slabs
+                    .saturating_add(page_store_bands.sealed_slabs)
+                    .saturating_add(page_store_bands.delayed_destroy_slabs)
+                    .saturating_add(page_store_bands.purged_slabs),
+                storage_slab_total_bytes: page_store_bands.total_known_physical_bytes,
+                storage_slab_used_bytes: page_store_bands.live_physical_bytes,
+                storage_slab_stale_bytes: page_store_bands.reclaimable_physical_bytes,
                 page_reads: page_store.reads,
                 page_writes: page_store.writes,
                 block_reads: page_store.reads,

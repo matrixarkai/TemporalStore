@@ -130,7 +130,7 @@ impl LocalBlockStore {
             // Garbage-ratio gate (GetGarbageRate threshold): keep bands whose
             // garbage ratio is below the floor. garbage = 10_000 - live-fraction.
             let garbage_allowed = policy
-                .min_band_garbage_basis_points
+                .min_slab_garbage_basis_points
                 .map(|floor| 10_000u64.saturating_sub(candidate.utility_basis_points) >= floor)
                 .unwrap_or(true);
             if !utility_allowed || !age_allowed || !garbage_allowed {

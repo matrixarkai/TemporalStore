@@ -79,7 +79,7 @@ struct OffsetMetadataMapping {
     command_sha256: String,
     command_encoding: u32,
     object_length: u64,
-    physical_band_count: u64,
+    physical_slab_count: u64,
     first_physical_offset: Option<u64>,
     expected_start_offset: Option<u64>,
     expected_end_offset: Option<u64>,
@@ -115,7 +115,7 @@ struct PublishPhaseReport {
     append_receipts: Vec<AppendBlobReceipt>,
     offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
-    blob_physical_band_count: usize,
+    blob_physical_slab_count: usize,
     offset_frame_validation: OffsetFrameValidation,
     offset_index_validation: OffsetIndexValidation,
     authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
@@ -129,7 +129,7 @@ struct WriterPhaseReport {
     write_reports: Vec<SharedStoreWriteReport>,
     offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
-    blob_physical_band_count: usize,
+    blob_physical_slab_count: usize,
     authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
     replay: ReplayPhaseReport,
 }
@@ -143,7 +143,7 @@ struct AsyncWriterPhaseReport {
     flush_report: SharedStoreFlushReport,
     offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
-    blob_physical_band_count: usize,
+    blob_physical_slab_count: usize,
     authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
     replay: ReplayPhaseReport,
 }
@@ -529,7 +529,7 @@ async fn run_direct_publish(
         append_receipts,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_band_count: metadata.extents.len(),
+        blob_physical_slab_count: metadata.extents.len(),
         offset_frame_validation,
         offset_index_validation,
         authoritative_offset_lookup,
@@ -581,7 +581,7 @@ async fn run_sync_writer(
         write_reports,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_band_count: metadata.extents.len(),
+        blob_physical_slab_count: metadata.extents.len(),
         authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "sync").await,
     }
@@ -636,7 +636,7 @@ async fn run_async_writer(
         flush_report,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_band_count: metadata.extents.len(),
+        blob_physical_slab_count: metadata.extents.len(),
         authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "async").await,
     }
@@ -919,7 +919,7 @@ fn build_offset_metadata_mappings(
                 command_sha256: metadata.command_sha256.clone(),
                 command_encoding: metadata.command_encoding,
                 object_length: metadata.wal_blob_object_length,
-                physical_band_count: metadata.wal_blob_physical_band_count,
+                physical_slab_count: metadata.wal_blob_physical_slab_count,
                 first_physical_offset: metadata.wal_blob_first_physical_offset,
                 expected_start_offset,
                 expected_end_offset,
@@ -971,7 +971,7 @@ async fn validate_authoritative_offset_lookup(
                 if read.metadata.wal_blob_object_length > read.range_bytes_read {
                     range_reads_smaller_than_blob += 1;
                 }
-                if read.metadata.wal_blob_physical_band_count > 0 {
+                if read.metadata.wal_blob_physical_slab_count > 0 {
                     band_metadata_entries += 1;
                 }
                 if read.metadata.wal_blob_first_physical_offset.is_some() {

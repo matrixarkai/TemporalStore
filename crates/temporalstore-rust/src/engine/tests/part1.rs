@@ -2338,9 +2338,9 @@ fn crash_recovery_report_covers_wal_index_page_and_band_manifest() {
         report.band_descriptors[1].state,
         BlockStoreSlabState::Active
     );
-    assert_eq!(report.band_summary.sealed_bands, 1);
-    assert_eq!(report.band_summary.active_bands, 1);
-    assert_eq!(report.band_summary.delayed_destroy_bands, 0);
+    assert_eq!(report.band_summary.sealed_slabs, 1);
+    assert_eq!(report.band_summary.active_slabs, 1);
+    assert_eq!(report.band_summary.delayed_destroy_slabs, 0);
     assert_eq!(
         report.band_summary.sealed_physical_bytes,
         report.band_descriptors[0].physical_bytes
@@ -2651,8 +2651,8 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
             report.band_descriptors[1].state,
             BlockStoreSlabState::Active
         );
-        assert_eq!(report.band_summary.sealed_bands, 1);
-        assert_eq!(report.band_summary.active_bands, 1);
+        assert_eq!(report.band_summary.sealed_slabs, 1);
+        assert_eq!(report.band_summary.active_slabs, 1);
     }
     assert_eq!(
         recovered

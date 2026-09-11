@@ -136,7 +136,7 @@ pub struct IndexMetaItem {
     pub timestamp_ms: u64,
     /// Version of the band catalogue.
     #[prost(uint64, tag = "5")]
-    pub band_version: u64,
+    pub slab_version: u64,
 }
 
 /// Per-object metadata carried on a meta record. Only the TTL is meaningful.
@@ -249,7 +249,7 @@ mod tests {
                 start_wal_id: 987_654,
                 bands,
                 timestamp_ms: 5,
-                band_version: 7,
+                slab_version: 7,
             }),
             ..Default::default()
         };

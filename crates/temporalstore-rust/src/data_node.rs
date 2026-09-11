@@ -486,12 +486,12 @@ fn apply_shard_storage_metrics(
         add(
             metrics,
             "active_storage_zones",
-            storage.active_storage_bands,
+            storage.active_storage_slabs,
         );
         add(
             metrics,
             "sealed_storage_zones",
-            storage.sealed_storage_bands,
+            storage.sealed_storage_slabs,
         );
         add(
             metrics,
@@ -501,17 +501,17 @@ fn apply_shard_storage_metrics(
         add(
             metrics,
             "storage_zone_total_bytes",
-            storage.storage_band_total_bytes,
+            storage.storage_slab_total_bytes,
         );
         add(
             metrics,
             "storage_zone_used_bytes",
-            storage.storage_band_used_bytes,
+            storage.storage_slab_used_bytes,
         );
         add(
             metrics,
             "storage_zone_stale_bytes",
-            storage.storage_band_stale_bytes,
+            storage.storage_slab_stale_bytes,
         );
     }
 }
