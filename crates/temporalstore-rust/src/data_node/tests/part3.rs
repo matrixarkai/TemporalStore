@@ -3950,3 +3950,67 @@ fn the_dump_cap_bounds_a_stage_but_not_a_round() {
          {before} -> {after}"
     );
 }
+
+/// How many O(shard) plans does ONE round build? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_one_round_rebuilds -- --ignored --nocapture
+///
+/// #1496 attributed the index-GC stage: 95% of its 365 ms at 16k records is rebuilding a
+/// lifecycle plan and a WAL reclaim plan, not the index-log work it exists to do. This asks the
+/// wider question -- how many such plans a whole round builds -- because the answer decides
+/// whether reuse is worth the correctness risk.
+///
+/// COUNTED, not timed. A count does not move when another build is running on the box, and the
+/// question is how much duplicated work happens, which is a count. #1496's timings were taken on
+/// a quiet box; these do not need one.
+#[test]
+#[ignore]
+fn what_one_round_rebuilds() {
+    for keys in [2_000usize, 8_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..keys {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("plan-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+
+        crate::engine::reset_storage_plan_build_counts();
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let (lifecycle, wal) = crate::engine::storage_plan_build_counts();
+        eprintln!(
+            "  {keys:>6} keys -> one round built {lifecycle} lifecycle plans and {wal} wal \
+             reclaim plans"
+        );
+
+        // And the same for the stage #1496 measured, on its own.
+        crate::engine::reset_storage_plan_build_counts();
+        let engine = runtime.engine();
+        let _ = engine.apply_periodic_index_gc(
+            crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                prune_bucket_dump_manifests: true,
+                roll_forward_bucket_dump_installs: true,
+                ..crate::engine::reports::StorageLifecycleRequest::default()
+            },
+            None,
+        );
+        let (lifecycle, wal) = crate::engine::storage_plan_build_counts();
+        eprintln!(
+            "  {keys:>6} keys -> apply_periodic_index_gc alone built {lifecycle} lifecycle and \
+             {wal} wal reclaim plans"
+        );
+    }
+}
