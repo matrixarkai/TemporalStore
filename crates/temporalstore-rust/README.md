@@ -72,7 +72,6 @@ deployment profiles. `StorageTuningConfig::from_env()` reads:
 
 - `TS_CONTEXT_PAGE_TARGET_BYTES`: target bytes for packed context timestamp pages.
 - `TS_BLOCK_SLAB_TARGET_BYTES`: target local block segment size before rolling.
-- `TS_STORAGE_ZONE_SIZE`: storage zone target used by deployment/lifecycle wiring.
 - `TS_STREAM_MAX_BLOB_SIZE`: stream blob cap; the block store rolls at the lower
   of this value and `TS_BLOCK_SLAB_TARGET_BYTES`.
 - `TS_COMPACTION_WATERMARK_BYTES`: compaction scheduling watermark.
@@ -88,10 +87,14 @@ benchmarks can run with the same named production profile.
 
 launchers consume the same names through `tools/temporalstore_runtime_env.sh`.
 The storage-facing subset maps into existing gflags:
-`TS_STORAGE_ZONE_SIZE -> --storage_zone_size` and
-`TS_STREAM_MAX_BLOB_SIZE -> --stream_max_blob_size`. Existing
-`TEMPORALSTORE_STORAGE_ZONE_SIZE` and `TEMPORALSTORE_STREAM_MAX_BLOB_SIZE`
-overrides still work for compatibility.
+`TS_STREAM_MAX_BLOB_SIZE -> --stream_max_blob_size`, and the
+`TEMPORALSTORE_STREAM_MAX_BLOB_SIZE` override still works for compatibility.
+
+`TS_STORAGE_ZONE_SIZE` is retired and is deliberately absent from both lists above. The engine
+names it in no source file, the field it fed is gone, and the shipped config no longer declares it;
+`TEMPORALSTORE_STORAGE_ZONE_SIZE` survives only in the monitoring UI, which reads it to display a
+number rather than to configure anything. Offering a knob that is read by nothing is the one thing
+this section must not do.
 
 Keep the and Rust surfaces synchronized with:
 
