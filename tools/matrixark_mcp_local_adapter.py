@@ -1589,9 +1589,9 @@ def round_vector_to_f32(record: Json) -> Json:
     answered -0.40824800729751587. Same store, two answers, decided by which path served it.
 
     Called from `_sanitize_jsonl_record`, which is the one thing BOTH append paths run per record.
-    The list form below is a wrapper over this; putting the rounding in the list comprehensions
-    instead reached only one of the two, because the other spells the same loop with a different
-    variable name.
+    Putting the rounding in the list comprehensions instead reached only one of the two, because
+    the other spells the same loop with a different variable name -- which is why the list form
+    that used to sit below this was removed rather than called.
     """
     if not LOCAL_BINARY_VECTORS or not isinstance(record, dict):
         return record
@@ -1600,22 +1600,6 @@ def round_vector_to_f32(record: Json) -> Json:
     record = dict(record)
     record["vector"] = decode_vector_f32(encode_vector_f32(record["vector"]))
     return record
-
-
-def round_vectors_to_f32(records: list[Json]) -> list[Json]:
-    """Hold the value that will be stored.
-
-    Packing only on the way to the log left the cache and the snapshot holding the original
-    float64s, so a warm read answered -0.408248 where a cold read that re-derived from the log
-    answered -0.40824800729751587. Same store, two answers, decided by which path served it --
-    exactly the warm-and-cold disagreement that is worth refusing to ship.
-
-    Applied where the record is made, so the cache, the snapshot and the log all carry the same
-    float32 value and packing is left with nothing to change but the bytes.
-    """
-    if not LOCAL_BINARY_VECTORS:
-        return records
-    return [round_vector_to_f32(record) for record in records]
 
 
 def pack_record_vectors(records: list[Json]) -> list[Json]:
@@ -3842,22 +3826,6 @@ def _record_derivative_identity_ids(record: Json) -> set[str]:
         if value not in (None, ""):
             ids.add(str(value))
     return ids
-
-
-def _record_own_identity_id(record: Json) -> str | None:
-    """The single addressable id `record` is a *member* under, for the event-membership index:
-    an event's ``event_id_hash`` or a derivative's identity hash. Embeddings / index postings are
-    members *by reference* (their ref target is one of these ids), so they carry no own member id."""
-    event_hash = record.get("event_id_hash")
-    record_type = str(record.get("record_type") or "")
-    if record_type == "context_event" and event_hash not in (None, ""):
-        return str(event_hash)
-    if record_type in _MEMORY_DERIVATIVE_RECORD_TYPES:
-        for field in _MEMORY_DERIVATIVE_IDENTITY_FIELDS:
-            value = record.get(field)
-            if value not in (None, ""):
-                return str(value)
-    return None
 
 
 def build_event_member_index(records: list[Json]) -> dict[str, set[str]]:
