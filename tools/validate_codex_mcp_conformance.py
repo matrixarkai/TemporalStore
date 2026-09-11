@@ -112,7 +112,8 @@ def validate_server_when_available() -> dict[str, object]:
 def validate_rust_cli_smoke() -> dict[str, object]:
     # Use cargo run instead of requiring a prebuilt binary. The command is tiny
     # and proves the CLI accepts the exact JSON shape used by the shared server.
-    root = Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", "/tmp/temporalstore-mcp-parity-smoke"))
+    root = Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", "").strip()
+                or "/tmp/temporalstore-mcp-parity-smoke")
     env = os.environ.copy()
     env["MATRIXARK_TEMPORALSTORE_RUST_ROOT"] = str(root)
     env["MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG"] = "1"
