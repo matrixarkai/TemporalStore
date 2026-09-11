@@ -21,13 +21,39 @@ def _env_seconds_from_ms(name: str, default_ms: str, *, minimum: float = 0.0) ->
     return max(minimum, float(os.environ.get(name, default_ms)) / 1000.0)
 
 
+#: Slack added to a caller's own timeout before the lane reader gives up on the proxy. The proxy
+#: is answering a request that was accepted at the caller's budget, so the reader has to outlast
+#: that budget or it abandons answers that were about to arrive.
+LANE_RESPONSE_GRACE_S = 2.0
+
+
+def lane_response_deadline_s(request_timeout_ms: int) -> float:
+    """How long one call may hold a lane waiting for the proxy to answer.
+
+    This is the ONLY definition. It used to be written out again inside `_read_json_line`, and the
+    backpressure timeout was derived from `request_timeout_ms` alone -- two seconds less. A waiter
+    that gives up before the holder's own deadline can never be granted the lane, so any call that
+    ran to its deadline rejected every caller queued behind it, reporting lane backpressure when
+    the truth was one slow call.
+    """
+    return max(LANE_RESPONSE_GRACE_S, request_timeout_ms / 1000.0 + LANE_RESPONSE_GRACE_S)
+
+
 def initialize_rust_proxy_config(target: Any, *, request_timeout_ms: int) -> None:
+    # Defaults to the longest one in-flight call may legitimately take, so backpressure means the
+    # lane is saturated rather than merely busy. An operator value still wins, in either spelling;
+    # `.strip() or` on both because an exported-but-empty variable is not a value.
+    configured_backpressure_ms = (
+        os.environ.get("MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS", "").strip()
+        or os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", "").strip()
+    )
     target._backpressure_timeout_s = max(
         0.05,
-        int(
-            os.environ.get("MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS", "").strip() or os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms))
-        )
-        / 1000.0,
+        (
+            int(configured_backpressure_ms) / 1000.0
+            if configured_backpressure_ms
+            else lane_response_deadline_s(request_timeout_ms)
+        ),
     )
     target._write_lane_count = _env_int("MATRIXARK_RUST_PROXY_WRITE_LANES", "4")
     target._read_lane_count = _env_int("MATRIXARK_RUST_PROXY_READ_LANES", "4")

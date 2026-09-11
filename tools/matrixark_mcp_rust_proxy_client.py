@@ -36,7 +36,10 @@ try:
         max_count_value,
     )
     from tools.matrixark_mcp_rust_proxy_cache_mixin import MatrixArkRustProxyCacheMixin
-    from tools.matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
+    from tools.matrixark_mcp_rust_proxy_config import (
+        initialize_rust_proxy_config,
+        lane_response_deadline_s,
+    )
     from tools.matrixark_mcp_rust_proxy_lanes import build_lane_pools
     from tools.matrixark_mcp_rust_proxy_lane_select import (
         lane_group_for_op,
@@ -80,7 +83,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         percentile,
         record_call_metrics,
     )
-    from matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
+    from matrixark_mcp_rust_proxy_config import (
+        initialize_rust_proxy_config,
+        lane_response_deadline_s,
+    )
     from matrixark_mcp_rust_proxy_lanes import build_lane_pools
     from matrixark_mcp_rust_proxy_lane_select import (
         lane_group_for_op,
@@ -198,7 +204,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
         expected_request_id: str | None = None,
     ) -> Json:
         assert proc.stdout is not None
-        deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
+        deadline = time.monotonic() + lane_response_deadline_s(self.request_timeout_ms)
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 # The drain thread owns proc.stderr; reading it here would race it and, before
@@ -231,7 +237,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             return parsed
         raise MatrixArkError(
             f"Rust TemporalStore {op} timed out waiting for response from {self.cli_path} "
-            f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
+            f"after {lane_response_deadline_s(self.request_timeout_ms):.1f}s"
         )
 
     def _call_json(self, op: str, raise_on_error: bool = True, **kwargs: Any) -> Json:
