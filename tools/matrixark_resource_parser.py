@@ -60,8 +60,13 @@ _DEFAULT_ENCODER_WINDOW = 512
 
 def encoder_window_tokens(model: str | None = None) -> int:
     """The active encoder's token window, matched on its name."""
-    name = (model or os.environ.get("MATRIXARK_EMBEDDING_MODEL")
-            or os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or "").lower()
+    # MODEL_PATH first, because that is the order the five places that actually LOAD an encoder
+    # resolve it in (matrixark_mcp_embeddings x3, matrixark_mcp_core, context_minilm_embed_server).
+    # This function reads the other order, so with both set to different models the window
+    # described the encoder that does NOT load -- and this window is a ceiling on how much text is
+    # fed to the one that does. That is the over-feeding this module's guard was written about.
+    name = (model or os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH")
+            or os.environ.get("MATRIXARK_EMBEDDING_MODEL") or "").lower()
     for marker, window in _ENCODER_WINDOWS:
         if marker in name:
             return window
