@@ -802,16 +802,16 @@ mod tests {
         let store = FileObjectStore::new(dir.path().join("objects"));
 
         store
-            .put("shards/1/oplog/0001.json", Bytes::from_static(b"durable"))
+            .put("shards/1/wal/0001.json", Bytes::from_static(b"durable"))
             .await
             .unwrap();
 
-        let reopened = tokio::fs::read(dir.path().join("objects/shards/1/oplog/0001.json"))
+        let reopened = tokio::fs::read(dir.path().join("objects/shards/1/wal/0001.json"))
             .await
             .unwrap();
         assert_eq!(reopened, b"durable");
         assert_eq!(
-            store.get("shards/1/oplog/0001.json").await.unwrap(),
+            store.get("shards/1/wal/0001.json").await.unwrap(),
             Bytes::from_static(b"durable")
         );
     }
