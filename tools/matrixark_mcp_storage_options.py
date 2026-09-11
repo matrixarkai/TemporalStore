@@ -127,10 +127,6 @@ def storage_record_kind(record: Json) -> str:
     return record_type or "context_event"
 
 
-def storage_part_for_record(record: Json) -> str:
-    return storage_record_kind(record)
-
-
 def canonical_storage_route(storage_options: Json | None) -> Json:
     options = storage_options if isinstance(storage_options, dict) else {}
     storage_mode = str(options.get("storage_mode") or "default")
@@ -369,10 +365,6 @@ def normalize_record_storage_options(args: Json, metadata: Json | None = None, b
         normalized["storage_part"] = record_kind
         normalized_parts[record_kind] = normalized
     return normalized_parts
-
-
-def normalize_part_storage_options(args: Json, metadata: Json | None = None, base_options: Json | None = None) -> Json:
-    return normalize_record_storage_options(args, metadata, base_options)
 
 
 def default_async_ingest_storage_options() -> Json:

@@ -84,20 +84,22 @@ UNREACHED = {
     # one-line alias of `storage_record_kind`. The ENVELOPE path for the same idea does work --
     # `storage_options_for_record` reads `envelope["record_storage_options"]` -- so this is a
     # half-wired feature rather than a dead one, and which half should go is a product call.
-    "matrixark_mcp_storage_options.py": (
-        "normalize_part_storage_options",
-        "normalize_record_storage_options",
-        "storage_part_for_record",
-    ),
+    "matrixark_mcp_storage_options.py": ("normalize_record_storage_options",),
     # Two spellings of "the commonest memory layer among these refs", in two modules that both
     # also define `serving_ref_for_pack`. Neither is called.
     "matrixark_mcp_core_packing.py": ("default_memory_layer_for_pack",),
     "matrixark_mcp_context_pack.py": ("_default_memory_layer_for_pack",),
-    # Formatters for hook output lines that are no longer emitted.
+    # These are not decayed code. `git log -S` on each name shows almost every one arriving in a
+    # SINGLE commit and never being touched again -- bulk publish and port commits (4379a739d
+    # "publish the tooling behind index growth, task slimming and tenant policy", 1886b7056,
+    # 06a46d19f, d422a7e21 "OSS sync PR 4/4"), module-split refactors (efd36f9ef, 667b9e17a,
+    # 7c80869cc), or a feature PR whose caller never followed. Import residue, so "left behind by
+    # the path that used to call it" is the wrong story: nothing ever called them here.
     "matrixark_codex_hook.py": ("_format_count_map_bits", "_format_memory_lineage_summary"),
-    # Ingest-side helpers left behind by the paths that used to call them.
+    # Two whose docstrings say where they are applied, and neither is applied anywhere:
+    # `clip_messages_for_ingest` says "Applied ONCE at the ingest boundary", and
+    # `joined_summary_source_text` is the sentence-level summary dedup, measurement included.
     "matrixark_index_growth_bound.py": ("clip_messages_for_ingest", "joined_summary_source_text"),
-    "matrixark_mcp_local_adapter.py": ("_record_own_identity_id", "round_vectors_to_f32"),
     "matrixark_mcp_core_compact.py": ("context_index_data_model",),
     "matrixark_context_backfill.py": ("read_checkpoint_sequence",),
     "matrixark_load_config.py": ("apply_from_file",),
@@ -240,10 +242,11 @@ class ADefinitionNothingReachesTest(unittest.TestCase):
         """A positive control: the method must still be able to report a definition.
 
         Named rather than counted, so a scan that started reporting a different set does not pass
-        this by arithmetic.
+        this by arithmetic. `normalize_record_storage_options` is the one checked by hand -- its
+        only occurrence in the tree is its own `def` line.
         """
-        self.assertIn("round_vectors_to_f32",
-                      self.found.get("matrixark_mcp_local_adapter.py", ()),
+        self.assertIn("normalize_record_storage_options",
+                      self.found.get("matrixark_mcp_storage_options.py", ()),
                       "the scan no longer finds a definition verified by hand to have no caller")
 
     def test_the_guard_does_not_feed_on_its_own_list(self):
