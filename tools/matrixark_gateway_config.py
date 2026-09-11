@@ -1091,10 +1091,18 @@ _apply_build_defaults(SETTINGS)
 SETTINGS.extend([
     Setting("embedding.cache_entries", "embedding", "MATRIXARK_EMBEDDING_CACHE_ENTRIES",
             "Cache entries", "int", "8192", "live",
-            'Cache entries. Defaults to 8192. Read by matrixark_mcp_embeddings.'),
+            "How many encoded vectors the in-process cache holds before evicting the least "
+            "recently used. This is real memory -- an entry is a 384-float vector, so the "
+            "default is roughly 25 MB per worker. 0 turns the cache off. The policy used to "
+            "clear the WHOLE cache on overflow, which discarded every warm entry at the moment "
+            "it began paying off."),
     Setting("embedding.dims", "embedding", "MATRIXARK_EMBEDDING_DIMS",
             "Dims", "int", "512", "live",
-            'Dims. Defaults to 512. Read by matrixark_mcp_embeddings.'),
+            "How many leading dimensions of a vector are stored; 0 stores whatever the model "
+            "emits. Truncating is not only a size trade: over a 298-pair benchmark e5-large "
+            "scored HIGHER cut to 512 than at its native 1024 -- 76.2% against 74.2% hit@1 -- "
+            "at half the width a vector. The kept head is re-normalised to unit length, so "
+            "scores stay comparable with vectors stored whole."),
     Setting("embedding.require_oss_embeddings", "embedding", "MATRIXARK_REQUIRE_OSS_EMBEDDINGS",
             "Require oss embeddings", "bool", "0", "live",
             "Makes a failed local sentence-transformers call RAISE instead of falling back to "
@@ -1165,8 +1173,10 @@ SETTINGS.extend([
             "older readers are still running against the same store."),
     Setting("ingestion.local_durable_read_cache_block_records", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS",
             "Local durable read cache block records", "int", "256", "restart",
-            "Local durable read cache block records. Defaults to 256. Frozen when the process starts. "
-            "Read by matrixark_mcp_local_adapter."),
+            "How many records share one compressed block in the durable read-cache snapshot. "
+            "Measured on this corpus, per-block compression reaches 97% of its ceiling by 256, "
+            "and a cold read decodes one block at a time -- so a larger block buys a ratio the "
+            "store will not notice at memory the read will."),
     Setting("ingestion.local_durable_read_cache_compress", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS",
             "Local durable read cache compress", "bool", "1", "restart",
             "Stores the durable read cache in its compressed container rather than as JSON. "
@@ -1176,8 +1186,11 @@ SETTINGS.extend([
             "migration. It is rewritten in the container on the next full write."),
     Setting("ingestion.local_durable_read_cache_compress_level", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL",
             "Local durable read cache compress level", "int", "6", "restart",
-            "Local durable read cache compress level. Defaults to 6. Frozen when the process starts. Read "
-            "by matrixark_mcp_local_adapter."),
+            "The zlib level the snapshot container is written at, clamped to 1-9. It applies "
+            "only where MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS is on, and READING never "
+            "depends on either setting: the loader decides from what the stored form says "
+            "it is, so a store written across a change reads both ways and turning "
+            "compression off again is not a one-way door."),
     Setting("ingestion.local_durable_read_cache_max_delta", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA",
             "Local durable read cache max delta", "int", "250", "restart",
             "Local durable read cache maximum delta. Defaults to 250. Frozen when the process starts. "
@@ -1617,8 +1630,11 @@ SETTINGS.extend([
             "matrixark_mcp_runtime_config."),
     Setting("storage_engine.index_keyword_limit", "storage_engine", "MATRIXARK_INDEX_KEYWORD_LIMIT",
             "Index keyword limit", "int", "12", "restart",
-            "Index keyword limit. Defaults to 12. Frozen when the process starts. Read by "
-            "matrixark_mcp_ingest_resource_chunk_records."),
+            "How many terms per chunk reach the lexical index. 12 covers little more than a "
+            "chunk's opening: a needle 97% of the way through a 215-token chunk matched NONE "
+            "of its keywords at 12 and all eight at 200. Complete coverage needs roughly 76 a "
+            "chunk, which is only affordable with MATRIXARK_INDEX_POSTING_LISTS on -- one "
+            "record per (chunk, term) was 41.3x amplification over only 160 distinct terms."),
     Setting("storage_engine.index_only_consultable_terms", "storage_engine", "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS",
             "Index only consultable terms", "bool", "1", "restart",
             "Writes postings only for terms a query can actually consult. On a 1 MB skill the "
@@ -1652,7 +1668,11 @@ SETTINGS.extend([
             "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
     Setting("storage_engine.native_side_index_assume_fresh", "storage_engine", "MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH",
             "Native side index assume fresh", "bool", "0", "live",
-            'Native side index assume fresh. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
+            "Writes side-index entries from the new records alone, skipping the read of what is "
+            "already stored there. It saves a read per entry on ingest, and it is safe only "
+            "where nothing else writes those entries: the merge that preserves existing "
+            "references is handed an empty answer, so references already on an entry are "
+            "overwritten rather than kept."),
     Setting("storage_engine.rust_proxy_startup_warmup_full_scan", "storage_engine", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_FULL_SCAN",
             "Rust proxy startup warmup full scan", "bool", "1", "live",
             'Rust proxy startup warmup full scan. On by default. Read by matrixark_rust_proxy_daemon.'),
