@@ -6,7 +6,6 @@ content-addressed key (last segment is a 64-hex sha256) against the downloaded
 bytes, and raises loudly on mismatch (corrupt/partial upload) so customers retry.
 Non-content-addressed keys are not checked. Also verified through the ingest
 resolver's temporalstore:// branch. Ephemeral port + in-memory store; no live svc."""
-import json
 import os
 import threading
 import unittest

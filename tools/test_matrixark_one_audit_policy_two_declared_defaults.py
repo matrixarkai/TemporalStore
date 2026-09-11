@@ -20,7 +20,6 @@ changing one is a deliberate edit to a test that says what it means.
 from __future__ import annotations
 
 import os
-import re
 import sys
 import unittest
 

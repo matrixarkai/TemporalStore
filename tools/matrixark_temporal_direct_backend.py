@@ -17,17 +17,9 @@ except ImportError:
     from matrixark_mcp_temporal_append import slim_persisted_record
 
 try:  # package path
-    from tools.matrixark_temporal_location_codec import (
-        compact_location,
-        compact_location_list,
-        expand_location,
-    )
+    from tools.matrixark_temporal_location_codec import compact_location, compact_location_list
 except ImportError:
-    from matrixark_temporal_location_codec import (
-        compact_location,
-        compact_location_list,
-        expand_location,
-    )
+    from matrixark_temporal_location_codec import compact_location, compact_location_list
 
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (

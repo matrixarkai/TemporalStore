@@ -20,7 +20,6 @@ the route adds nothing of its own.
 """
 from __future__ import annotations
 
-import ast
 import json
 import os
 import sys

@@ -11,7 +11,6 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_env import env_bool
 
 
-import os
 from typing import Any
 
 RETRIEVAL_OPERATION_TOOLS = {"matrixark_retrieve"}

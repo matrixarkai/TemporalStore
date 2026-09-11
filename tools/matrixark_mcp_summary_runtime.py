@@ -72,18 +72,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 try:
     from tools.matrixark_mcp_summary_dirty import (
-        ContextEventTime,
         mark_node_summary_dirty,
-        node_summary_dirty_records,
         pending_dirty_node_records,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_summary_dirty import (
-        ContextEventTime,
-        mark_node_summary_dirty,
-        node_summary_dirty_records,
-        pending_dirty_node_records,
-    )
+    from matrixark_mcp_summary_dirty import mark_node_summary_dirty, pending_dirty_node_records
 
 
 def next_summary_refresh_delay_s(interval_s: float, last_pass_s: float) -> float:

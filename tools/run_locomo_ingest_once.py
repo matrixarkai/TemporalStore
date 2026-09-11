@@ -23,7 +23,6 @@ import signal
 import sys
 import os
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -1267,12 +1266,8 @@ except ImportError:  # Direct script execution from tools/.
 
 
 
-from run_locomo_source_packing import (  # re-export (extracted)
-    compact_rust_temporalstore_batch,
-    most_common_source_kind,
+from run_locomo_source_packing import (
     pack_rust_temporalstore_sources,
-    packed_rust_temporalstore_sources,
-    rust_temporalstore_source_signature,
     split_rust_temporalstore_jsonl,
 )
 def merge_rust_temporalstore_harnesses(harnesses: list[dict[str, Any]], source: str) -> dict[str, Any]:

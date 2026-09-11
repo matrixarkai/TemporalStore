@@ -15,7 +15,6 @@ try:
         MATRIXARK_ALLOW_LOCAL_BACKEND,
         MATRIXARK_MCP_PROFILE,
         MATRIXARK_REQUIRE_BACKEND_READY,
-        Json,
         MatrixArkError,
         adapter_ensure_backend_ready,
     )
@@ -29,7 +28,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MATRIXARK_ALLOW_LOCAL_BACKEND,
         MATRIXARK_MCP_PROFILE,
         MATRIXARK_REQUIRE_BACKEND_READY,
-        Json,
         MatrixArkError,
         adapter_ensure_backend_ready,
     )

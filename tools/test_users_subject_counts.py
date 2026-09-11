@@ -15,10 +15,8 @@ import unittest
 
 try:
     from tools import matrixark_mcp_temporal_adapters as adapters
-    from tools import matrixark_mcp_local_adapter as local_mod
 except ImportError:  # run from tools/ dir
     import matrixark_mcp_temporal_adapters as adapters
-    import matrixark_mcp_local_adapter as local_mod
 
 
 class _CountingAdapter:

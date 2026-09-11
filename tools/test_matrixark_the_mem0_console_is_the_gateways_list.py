@@ -27,7 +27,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import re
 import sys
 import unittest
 

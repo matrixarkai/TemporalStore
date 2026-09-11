@@ -13,7 +13,6 @@ constant says a floor "cost correctness".
 These tests pin the split: with a floor set, a write still refreshes the head promptly, and only the
 full rewrite is skipped.
 """
-import json
 import shutil
 import tempfile
 import unittest

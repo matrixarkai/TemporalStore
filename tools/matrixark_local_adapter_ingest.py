@@ -16,7 +16,6 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
-import os as _os
 import re as _re
 import warnings as _warnings
 

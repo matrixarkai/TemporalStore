@@ -37,7 +37,6 @@ than the fallback simply deleted.
 from __future__ import annotations
 
 import ast
-import importlib
 import os
 import subprocess
 import unittest

@@ -34,7 +34,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkError
+from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
 A = {"account_id": "acct_a", "tenant_id": "tenant_a"}
 B = {"account_id": "acct_b", "tenant_id": "tenant_b"}

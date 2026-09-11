@@ -31,7 +31,6 @@ a second encoding alive that no reader treated differently.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 SHARD_DIGITS = 6

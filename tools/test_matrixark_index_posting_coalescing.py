@@ -20,7 +20,6 @@ against a cap of 512, while `compact_context_index_postings` chunks at it. A cap
 of a record type observes and another ignores is not a bound on anything.
 """
 import importlib
-import json
 import os
 import sys
 import unittest
