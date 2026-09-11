@@ -352,7 +352,10 @@ impl DataNodeRuntime {
         ));
 
         if options.enable_expire {
-            expired_records_removed = self.sweep_expired_records();
+            expired_records_removed = self.sweep_expired_records_bounded(
+                options.max_expire_hot_buckets_per_round,
+                options.max_expire_cold_buckets_per_round,
+            );
             self.inner
                 .stats
                 .lock()
@@ -1045,6 +1048,56 @@ impl DataNodeRuntime {
             report,
             handle: Some(handle),
         }
+    }
+
+    /// Sweep every loaded shard with a per-round bound, resuming each from where it stopped.
+    ///
+    /// `hot_limit` / `cold_limit` of 0 mean no limit, and then this is exactly
+    /// `sweep_expired_records`: the window reaches the end, returns no cursor, and the stored
+    /// cursor stays `None`. With a bound it takes a window per round and advances, which is what
+    /// keeps one tick from walking the whole deadline map.
+    pub fn sweep_expired_records_bounded(&self, hot_limit: usize, cold_limit: usize) -> usize {
+        let shard_ids = self.inner.engine.loaded_shard_ids();
+        let mut removed = 0usize;
+        for shard_id in shard_ids {
+            let (hot_cursor, cold_cursor) = self
+                .inner
+                .expiry_cursors
+                .lock()
+                .expect("expiry cursor lock poisoned")
+                .get(&shard_id)
+                .cloned()
+                .unwrap_or((None, None));
+            let Ok(report) = self.inner.engine.sweep_expired_records_with_request(
+                crate::engine::reports::ShardExpirySweepRequest {
+                    shard_id,
+                    hot_cursor,
+                    cold_cursor,
+                    max_hot_buckets_per_round: hot_limit,
+                    max_cold_buckets_per_round: cold_limit,
+                    load_cold_buckets: true,
+                },
+            ) else {
+                continue;
+            };
+            removed = removed.saturating_add(report.expired_records_removed);
+            self.inner
+                .expiry_cursors
+                .lock()
+                .expect("expiry cursor lock poisoned")
+                .insert(
+                    shard_id,
+                    (report.next_hot_cursor.clone(), report.next_cold_cursor.clone()),
+                );
+        }
+        let mut stats = self
+            .inner
+            .stats
+            .lock()
+            .expect("runtime stats lock poisoned");
+        stats.expiry_sweeps += 1;
+        stats.expired_records_removed += removed as u64;
+        removed
     }
 
     pub fn sweep_expired_records(&self) -> usize {
