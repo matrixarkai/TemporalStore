@@ -1152,9 +1152,21 @@ impl TemporalEngine {
         // would return empty, because apply_storage_lifecycle already rolled the
         // interrupted installs forward (and cleared their markers).
         let install_roll_forward_reports = lifecycle.install_roll_forward_reports.clone();
-        let load_preflight = manifest
-            .as_ref()
-            .map(|manifest| self.bucket_dump_install_preflight_report(manifest));
+        // Sampled, because this round is not installing anything: `install_dump_manifest` is
+        // false here, the result feeds a reported readiness flag and gates nothing destructive,
+        // and the unbounded form read every page the manifest names -- the last whole-store pass
+        // left in a round. A real install still uses the unbounded one, where a sample could let
+        // a dump with unreadable pages through.
+        let load_preflight = manifest.as_ref().map(|manifest| {
+            if request.install_dump_manifest {
+                self.bucket_dump_install_preflight_report(manifest)
+            } else {
+                self.bucket_dump_install_preflight_report_sampled(
+                    manifest,
+                    RECOVERY_READABLE_PROBE_PER_ROUND,
+                )
+            }
+        });
         let install_status = if request.install_dump_manifest {
             manifest
                 .as_ref()
