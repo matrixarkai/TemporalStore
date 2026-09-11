@@ -260,9 +260,13 @@ fn what_a_dump_costs_as_the_shard_grows() {
 
 /// What one compaction costs, and for how long it holds the shard.
 ///
-/// `compact_shard_pages` takes the shard write lock and relocates EVERY live page of every model
-/// onto a freshly rolled slab, with no bound on how much that is. A write cannot proceed while
-/// that runs, so its duration IS the stall every reader and writer of the shard sees.
+/// `compact_shard_pages` takes the shard write lock for the whole relocation, so its duration IS
+/// the stall every reader and writer of the shard sees.
+///
+/// It is no longer unbounded: the round relocates at most `COMPACTION_ROUND_BYTES` and resumes
+/// onto the slab it was filling rather than rolling a fresh one. But that budget is 256 MiB and
+/// a store this size has a live set of about two, so the bound does not bind and the cost below
+/// is still the whole shard. `what_the_compaction_budget_buys` above measures where it starts to.
 ///
 /// Measured here, debug build, so a floor rather than a ceiling:
 ///
@@ -273,11 +277,58 @@ fn what_a_dump_costs_as_the_shard_grows() {
 /// Twenty seconds at twenty thousand objects, and the per-ref cost RISES with the shard -- 2.6x
 /// between five and twenty thousand -- so it is worse than linear in the thing it is unbounded in.
 ///
-/// Bounding it is not a one-line change, which is why this records the cost instead of pretending
-/// otherwise: `compact_shard_pages` rolls a fresh slab at the top of every call, so simply
-/// stopping early would leave each round with its own half-filled slab and trade a stall for slab
-/// proliferation. A bounded compaction needs to roll once and keep filling that slab across
-/// rounds, which is campaign state this does not have yet.
+/// This records the cost rather than choosing a smaller budget, because the value is a production
+/// decision and these are debug numbers. The mechanism for a smaller one is already in place --
+/// a round resumes onto the slab it was filling, so stopping early no longer trades a stall for
+/// slab proliferation.
+/// What the compaction ROUND BUDGET actually buys, at one shard size.
+///
+///   cargo test -p temporalstore-rust --lib what_the_compaction_budget_buys -- --ignored --nocapture --test-threads=1
+///
+/// `COMPACTION_ROUND_BYTES` is 256 MiB, chosen so every store the suite builds still compacts in
+/// ONE round. This asks what the first round costs at smaller budgets, because the stall it was
+/// built to bound is only bounded once the budget is smaller than the live set.
+#[test]
+#[ignore]
+fn what_the_compaction_budget_buys() {
+    for budget in [
+        256u64 * 1024 * 1024,
+        16 * 1024 * 1024,
+        4 * 1024 * 1024,
+        1024 * 1024,
+        256 * 1024,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..20_000usize {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("compact-budget-{index:07}"),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        let started = std::time::Instant::now();
+        let report = engine
+            .compact_shard_pages_with_budget(1, budget)
+            .expect("compaction should run");
+        let elapsed = started.elapsed();
+        eprintln!(
+            "  [budget] {:>9} KiB -> first round {:>9.1} ms, {:>6} page refs moved",
+            budget / 1024,
+            elapsed.as_secs_f64() * 1000.0,
+            report.rewritten_page_refs,
+        );
+    }
+}
+
 #[test]
 #[ignore]
 fn what_a_whole_shard_compaction_costs() {
