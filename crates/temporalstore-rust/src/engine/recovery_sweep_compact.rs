@@ -54,6 +54,23 @@ impl TemporalEngine {
         (narrow, full)
     }
 
+    /// Each dirty bucket's first undumped write sequence, for the test that pins it.
+    #[cfg(test)]
+    pub(crate) fn first_dirty_sequences_for_test(&self, shard_id: ShardId) -> Vec<(u32, u64)> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return Vec::new();
+        };
+        let mut out = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.first_dirty_wal_sequence))
+            .collect::<Vec<_>>();
+        out.sort();
+        out
+    }
+
     /// The per-slab live/stale tally the reclaim planner reads, without the whole-store scan.
     ///
     /// `storage_reclaim_candidates_from_slab_reports` consumes seven fields off each of these:

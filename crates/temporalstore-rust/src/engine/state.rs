@@ -1353,6 +1353,25 @@ pub(super) struct BucketNode {
     pub(super) in_memory: bool,
     pub(super) ttl_ms: Option<u64>,
     pub(super) dirty_generation: u64,
+    /// The write-ahead log sequence at which this bucket most recently went from clean to dirty,
+    /// or 0 when it is clean or the answer is not known.
+    ///
+    /// This is the floor the bucket holds over the log. Reclaim may free the log below the
+    /// oldest sequence any bucket still needs; a dirty bucket with no durable dump manifest is
+    /// captured nowhere, so without this the only safe answer for it is 0 -- and one such bucket
+    /// pins the whole log for ever. With it, that bucket pins the log only from its own oldest
+    /// undumped write.
+    ///
+    /// 0 means "no claim", which is the safe direction: an unknown value reads as the old
+    /// behaviour rather than as permission to reclaim more.
+    ///
+    /// NOT serialized. A load clears every dirty flag -- reloaded data is durable, hence clean --
+    /// and recomputes dirtiness from the live \ set, which is empty on load. So a
+    /// reloaded bucket holds no claim by definition, and persisting this would both add a key to
+    /// the index wire format and carry a number that is meaningless the moment it is read back.
+    /// \ is what caught that.
+    #[serde(skip)]
+    pub(super) first_dirty_wal_sequence: u64,
     pub(super) last_dump_sequence: u64,
     #[serde(default, alias = "object_ids")]
     pub(super) object_index: ObjectIndex,
