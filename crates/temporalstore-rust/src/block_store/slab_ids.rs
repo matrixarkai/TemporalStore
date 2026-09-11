@@ -92,15 +92,15 @@ pub(crate) fn band_id_for_slab(block_slab_id: u64) -> u64 {
 
 pub(crate) fn compact_slab_address_from_parts(block_slab_id: u64, offset: u64) -> Option<u64> {
     let band_id = u32::try_from(block_slab_id).ok()?;
-    let band_offset = u32::try_from(offset).ok()?;
-    Some(((band_id as u64) << 32) | band_offset as u64)
+    let slab_offset = u32::try_from(offset).ok()?;
+    Some(((band_id as u64) << 32) | slab_offset as u64)
 }
 
-pub(crate) fn compact_extract_band_id(address: u64) -> u32 {
+pub(crate) fn compact_extract_slab_id(address: u64) -> u32 {
     (address >> 32) as u32
 }
 
-pub(crate) fn compact_extract_band_offset(address: u64) -> u32 {
+pub(crate) fn compact_extract_slab_offset(address: u64) -> u32 {
     (address & 0xFFFF_FFFF) as u32
 }
 

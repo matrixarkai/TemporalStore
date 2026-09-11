@@ -35,7 +35,7 @@ pub(crate) use record::BLOCK_RECORD_HEADER_LEN;
 pub(crate) use record::block_index_checksums_enabled;
 
 use paths::{
-    delayed_destroy_dir, delayed_destroy_path, band_manifest_path, file_created_unix_ms,
+    delayed_destroy_dir, delayed_destroy_path, slab_manifest_path, file_created_unix_ms,
     file_modified_unix_ms, legacy_zone_manifest_path, now_unix_ms, slab_path, sync_dir,
     sync_parent_dir, system_time_unix_ms,
 };
@@ -344,8 +344,8 @@ impl BlockAddress {
 
     pub fn from_compact_slab_address(compact_slab_address: u64, length: u64) -> Self {
         Self::from_parts(
-            compact_extract_band_id(compact_slab_address) as u64,
-            compact_extract_band_offset(compact_slab_address) as u64,
+            compact_extract_slab_id(compact_slab_address) as u64,
+            compact_extract_slab_offset(compact_slab_address) as u64,
             length,
             None,
             None,
@@ -525,7 +525,7 @@ impl BlockStoreGcPolicy {
     /// Reclaim eligible bands whose garbage ratio is at least
     /// `min_band_garbage_basis_points`, highest-garbage first, optionally bounded by a
     /// minimum band age. Mirrors selecting the maximum-garbage-rate zone under GC.
-    pub fn with_band_garbage_floor(
+    pub fn with_slab_garbage_floor(
         min_slab_garbage_basis_points: u64,
         min_age_ms: Option<u64>,
     ) -> Self {
@@ -713,25 +713,29 @@ pub struct BlockStoreSlabSummary {
         alias = "oldest_live_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_live_band_unix_ms: Option<u64>,
+    #[serde(rename = "oldest_live_band_unix_ms")]
+    pub oldest_live_slab_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_live_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_live_band_age_ms: Option<u64>,
+    #[serde(rename = "oldest_live_band_age_ms")]
+    pub oldest_live_slab_age_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_reclaimable_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_reclaimable_band_unix_ms: Option<u64>,
+    #[serde(rename = "oldest_reclaimable_band_unix_ms")]
+    pub oldest_reclaimable_slab_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_reclaimable_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_reclaimable_band_age_ms: Option<u64>,
+    #[serde(rename = "oldest_reclaimable_band_age_ms")]
+    pub oldest_reclaimable_slab_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -768,7 +772,8 @@ pub struct BlockStoreSlabUsage {
 pub struct StreamBackedSlabRuntimeReport {
     pub runtime_ready: bool,
     #[serde(default)]
-    pub band_lifecycle_states: Vec<String>,
+    #[serde(rename = "band_lifecycle_states")]
+    pub slab_lifecycle_states: Vec<String>,
     #[serde(alias = "extent_count", alias = "zone_count")]
     pub band_count: u64,
     #[serde(alias = "active_zones")]
@@ -784,9 +789,9 @@ pub struct StreamBackedSlabRuntimeReport {
     #[serde(rename = "purged_bands")]
     pub purged_slabs: u64,
     #[serde(rename = "zone_stats_ready", default)]
-    pub band_stats_ready: bool,
+    pub slab_stats_ready: bool,
     #[serde(rename = "zone_usage", default)]
-    pub band_usage: Vec<BlockStoreSlabUsage>,
+    pub slab_usage: Vec<BlockStoreSlabUsage>,
     #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
     pub physical_bytes: u64,
@@ -802,29 +807,39 @@ pub struct StreamBackedSlabRuntimeReport {
     #[serde(default)]
     pub logical_stream_bytes_read: u64,
     #[serde(default)]
-    pub band_state_transition_count: u64,
+    #[serde(rename = "band_state_transition_count")]
+    pub slab_state_transition_count: u64,
     pub logical_stream_read_ready: bool,
     pub append_roll_ready: bool,
     #[serde(alias = "extent_manifest_ready", alias = "zone_manifest_ready")]
-    pub band_manifest_ready: bool,
+    #[serde(rename = "band_manifest_ready")]
+    pub slab_manifest_ready: bool,
     #[serde(default)]
-    pub band_manifest_rebuild_ready: bool,
+    #[serde(rename = "band_manifest_rebuild_ready")]
+    pub slab_manifest_rebuild_ready: bool,
     #[serde(default)]
-    pub band_manifest_reconciled_on_open: bool,
+    #[serde(rename = "band_manifest_reconciled_on_open")]
+    pub slab_manifest_reconciled_on_open: bool,
     #[serde(default)]
-    pub band_manifest_disk_consistent: bool,
+    #[serde(rename = "band_manifest_disk_consistent")]
+    pub slab_manifest_disk_consistent: bool,
     #[serde(default)]
-    pub manifest_missing_stream_bands: u64,
+    #[serde(rename = "manifest_missing_stream_bands")]
+    pub manifest_missing_stream_slabs: u64,
     #[serde(default)]
-    pub manifest_extra_stream_bands: u64,
+    #[serde(rename = "manifest_extra_stream_bands")]
+    pub manifest_extra_stream_slabs: u64,
     #[serde(default)]
-    pub corrupt_band_count: u64,
+    #[serde(rename = "corrupt_band_count")]
+    pub corrupt_slab_count: u64,
     #[serde(default)]
-    pub partial_band_count: u64,
+    #[serde(rename = "partial_band_count")]
+    pub partial_slab_count: u64,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
     #[serde(default)]
-    pub partial_band_recovery_ready: bool,
+    #[serde(rename = "partial_band_recovery_ready")]
+    pub partial_slab_recovery_ready: bool,
     pub envelope_checksum_ready: bool,
     pub compression_stream_ready: bool,
     pub delayed_destroy_ready: bool,
@@ -994,7 +1009,7 @@ struct BlockStoreInner {
     /// so it is written every so often rather than every install; the load rebuilds from the slabs
     /// when what it reads does not match them.
     slabs_unwritten: usize,
-    band_manifest_reconciled_on_open: bool,
+    slab_manifest_reconciled_on_open: bool,
     stats: BlockStoreStats,
     // Optional shared-storage read-through (on-demand lazy recovery): set by
     // attach_shared_slab_source() after a metadata-only restore. When present, a
@@ -1026,14 +1041,14 @@ impl LocalBlockStore {
             .map(|metadata| metadata.len())
             .unwrap_or_default();
         let manifest_exists =
-            band_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
+            slab_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
         let (mut bands, mut manifest_rebuilt) = if manifest_exists {
-            match load_band_manifest_at(&root) {
+            match load_slab_manifest_at(&root) {
                 Ok(bands) => (bands, false),
-                Err(_) => (rebuild_band_manifest_at(&root).unwrap_or_default(), true),
+                Err(_) => (rebuild_slab_manifest_at(&root).unwrap_or_default(), true),
             }
         } else {
-            (rebuild_band_manifest_at(&root).unwrap_or_default(), true)
+            (rebuild_slab_manifest_at(&root).unwrap_or_default(), true)
         };
         // Loaded BEFORE the page-id scan on purpose: the manifest already records `last_page_id`
         // per slab, and reading it turns a walk over every page record header -- 90% of a
@@ -1044,10 +1059,10 @@ impl LocalBlockStore {
         // counter here used to mean reading every block header in every slab to work out one
         // integer -- on a live-store copy, the bulk of a steady-state open.
         let next_page_id = 0;
-        let band_manifest_reconciled_on_open =
-            reconcile_band_manifest_with_disk(&root, &mut bands).unwrap_or_default();
-        manifest_rebuilt |= band_manifest_reconciled_on_open;
-        ensure_band_descriptor(
+        let slab_manifest_reconciled_on_open =
+            reconcile_slab_manifest_with_disk(&root, &mut bands).unwrap_or_default();
+        manifest_rebuilt |= slab_manifest_reconciled_on_open;
+        ensure_slab_descriptor(
             &mut bands,
             &root,
             block_slab_id,
@@ -1086,7 +1101,7 @@ impl LocalBlockStore {
             }
         }
         if manifest_rebuilt {
-            let _ = persist_band_manifest(&root, &bands);
+            let _ = persist_slab_manifest(&root, &bands);
         }
         Self {
             inner: Arc::new(Mutex::new(BlockStoreInner {
@@ -1098,7 +1113,7 @@ impl LocalBlockStore {
                 options,
                 bands,
                 slabs_unwritten: 0,
-                band_manifest_reconciled_on_open,
+                slab_manifest_reconciled_on_open,
                 stats: BlockStoreStats::default(),
                 shared_slab_source: None,
                 scratch: None,
@@ -1187,7 +1202,7 @@ impl LocalBlockStore {
                 first_error: None,
             },
         );
-        persist_band_manifest(&inner.root, &inner.bands)?;
+        persist_slab_manifest(&inner.root, &inner.bands)?;
         Ok(())
     }
 
@@ -1200,7 +1215,7 @@ impl LocalBlockStore {
     /// has a descriptor (e.g. it was fetched or is local), is left untouched. Call AFTER
     /// [`reserve_lazy_checkpoint_range`] so the reserved slab is the active one and every
     /// checkpoint slab is correctly sealed.
-    pub fn install_lazy_checkpoint_bands(
+    pub fn install_lazy_checkpoint_slabs(
         &self,
         bands: &[LazyCheckpointSlab],
     ) -> Result<(), BlockStoreError> {
@@ -1245,7 +1260,7 @@ impl LocalBlockStore {
             }
         }
         if changed {
-            persist_band_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.bands)?;
         }
         Ok(())
     }
@@ -1370,8 +1385,8 @@ impl LocalBlockStore {
         Ok(ids)
     }
 
-    pub fn band_usage(&self) -> Vec<BlockStoreSlabUsage> {
-        compute_band_usage(
+    pub fn slab_usage(&self) -> Vec<BlockStoreSlabUsage> {
+        compute_slab_usage(
             &self
                 .inner
                 .lock()
@@ -1458,12 +1473,12 @@ impl LocalBlockStore {
             }
             purged_physical_bytes += bytes;
             fs::remove_file(entry.path())?;
-            set_band_state(&mut inner.bands, id, BlockStoreSlabState::Purged);
+            set_slab_state(&mut inner.bands, id, BlockStoreSlabState::Purged);
             purged.push(id);
         }
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
-        persist_band_manifest(&inner.root, &inner.bands)?;
+        persist_slab_manifest(&inner.root, &inner.bands)?;
         retained_too_young.sort_unstable();
         Ok(BlockStorePurgeDelayedDestroyReport {
             purged_block_slab_ids: purged,
@@ -1626,7 +1641,7 @@ fn roll_slab_inner(
         previous.state = BlockStoreSlabState::Sealed;
         previous.updated_unix_ms = Some(transition_unix_ms);
     }
-    let new_band = BlockStoreSlabDescriptor {
+    let new_slab = BlockStoreSlabDescriptor {
         band_id: band_id_for_slab(inner.block_slab_id),
         block_slab_id: inner.block_slab_id,
         state: BlockStoreSlabState::Active,
@@ -1643,15 +1658,15 @@ fn roll_slab_inner(
         first_error: None,
     };
     let block_slab_id = inner.block_slab_id;
-    inner.bands.insert(block_slab_id, new_band);
-    persist_band_manifest(&inner.root, &inner.bands)?;
+    inner.bands.insert(block_slab_id, new_slab);
+    persist_slab_manifest(&inner.root, &inner.bands)?;
     Ok(BlockStoreRollReport {
         previous_block_slab_id,
         new_block_slab_id: inner.block_slab_id,
     })
 }
 
-fn band_lifecycle_states(summary: &BlockStoreSlabSummary) -> Vec<String> {
+fn slab_lifecycle_states(summary: &BlockStoreSlabSummary) -> Vec<String> {
     let mut states = Vec::new();
     if summary.active_slabs > 0 {
         states.push("active".to_string());
@@ -1668,7 +1683,7 @@ fn band_lifecycle_states(summary: &BlockStoreSlabSummary) -> Vec<String> {
     states
 }
 
-fn compute_band_usage(
+fn compute_slab_usage(
     bands: &BTreeMap<u64, BlockStoreSlabDescriptor>,
 ) -> Vec<BlockStoreSlabUsage> {
     #[derive(Debug, Clone)]
@@ -1676,7 +1691,7 @@ fn compute_band_usage(
         usage: BlockStoreSlabUsage,
     }
 
-    fn merged_band_state(
+    fn merged_slab_state(
         left: BlockStoreSlabState,
         right: BlockStoreSlabState,
     ) -> BlockStoreSlabState {
@@ -1689,7 +1704,7 @@ fn compute_band_usage(
         }
     }
 
-    let mut usage_by_band = BTreeMap::<u64, SlabUsageAcc>::new();
+    let mut usage_by_slab = BTreeMap::<u64, SlabUsageAcc>::new();
     for band in bands.values() {
         let (live, reclaimable, purged) = match band.state {
             BlockStoreSlabState::Active | BlockStoreSlabState::Sealed => {
@@ -1698,7 +1713,7 @@ fn compute_band_usage(
             BlockStoreSlabState::DelayedDestroy => (0, band.physical_bytes, 0),
             BlockStoreSlabState::Purged => (0, 0, band.physical_bytes),
         };
-        let entry = usage_by_band
+        let entry = usage_by_slab
             .entry(band.band_id)
             .or_insert_with(|| SlabUsageAcc {
                 usage: BlockStoreSlabUsage {
@@ -1722,7 +1737,7 @@ fn compute_band_usage(
         let usage = &mut entry.usage;
         usage.block_slab_id = usage.block_slab_id.min(band.block_slab_id);
         usage.stream_slab_id = usage.stream_slab_id.min(band.block_slab_id);
-        usage.state = merged_band_state(usage.state, band.state);
+        usage.state = merged_slab_state(usage.state, band.state);
         usage.used_bytes = usage.used_bytes.saturating_add(band.physical_bytes);
         usage.live_bytes = usage.live_bytes.saturating_add(live);
         usage.reclaimable_bytes = usage.reclaimable_bytes.saturating_add(reclaimable);
@@ -1747,7 +1762,7 @@ fn compute_band_usage(
             (left, None) => left,
         };
     }
-    usage_by_band.into_values().map(|acc| acc.usage).collect()
+    usage_by_slab.into_values().map(|acc| acc.usage).collect()
 }
 
 impl Default for LocalBlockStore {
@@ -2357,7 +2372,7 @@ mod tests {
     }
 
     #[test]
-    fn per_append_does_not_reserialize_the_band_manifest_on_the_default_path() {
+    fn per_append_does_not_reserialize_the_slab_manifest_on_the_default_path() {
         // MANIFEST-CONFORMANCE FOLD no-O(n) proof: on the default single-barrier path the per-append
         // band-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
         // write, growing with the band count) is OFF the write path. Appending many records must
@@ -2366,7 +2381,7 @@ mod tests {
         // byte-identical across a burst of appends, then changing exactly once at sync_durable.
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let manifest = band_manifest_path(dir.path());
+        let manifest = slab_manifest_path(dir.path());
         // Land one append so the manifest exists at a known state, then snapshot it.
         store.append(b"seed").unwrap();
         store.sync_durable().unwrap();
@@ -2390,7 +2405,7 @@ mod tests {
     }
 
     #[test]
-    fn band_catalog_folds_bands_and_install_reconstructs_lifecycle() {
+    fn slab_catalog_folds_slabs_and_install_reconstructs_lifecycle() {
         // MANIFEST-CONFORMANCE FOLD round-trip at the block-store layer: project the band catalog into
         // the durable SlabCatalogEntry subset, then reconstruct the band lifecycle from that projection
         // with the band-manifest file deleted -- proving the folded catalog is a lossless source
@@ -2402,7 +2417,7 @@ mod tests {
         store.roll_slab().unwrap();
         store.append(b"b").unwrap();
         store.sync_durable().unwrap();
-        let catalog = store.band_catalog(7);
+        let catalog = store.slab_catalog(7);
         // Two bands: the sealed first slab and the active second slab.
         assert_eq!(catalog.len(), 2);
         assert!(catalog.iter().any(|z| z.state == crate::index_log::SlabCatalogState::Sealed));
@@ -2412,9 +2427,9 @@ mod tests {
         // reconstructs bands from the durable slabs (reconcile-on-open), then we install the
         // folded catalog on top. The lifecycle states must match the pre-crash projection.
         let reopened = LocalBlockStore::new(dir.path());
-        std::fs::remove_file(band_manifest_path(dir.path())).ok();
-        let changed = reopened.install_band_catalog(&catalog).unwrap();
-        let recovered = reopened.band_catalog(0);
+        std::fs::remove_file(slab_manifest_path(dir.path())).ok();
+        let changed = reopened.install_slab_catalog(&catalog).unwrap();
+        let recovered = reopened.slab_catalog(0);
         let state_of = |slab: u64, zs: &[crate::index_log::SlabCatalogEntry]| {
             zs.iter().find(|z| z.block_slab_id == slab).map(|z| z.state)
         };
@@ -2579,7 +2594,7 @@ mod tests {
 
     // shared-corpus: storage_stream_manifest_disk_reconciliation;
     #[test]
-    fn reopen_reconciles_manifest_missing_existing_stream_band() {
+    fn reopen_reconciles_manifest_missing_existing_stream_slab() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
@@ -2587,7 +2602,7 @@ mod tests {
         let second = store.append(b"second").unwrap();
         drop(store);
 
-        let manifest_path = band_manifest_path(dir.path());
+        let manifest_path = slab_manifest_path(dir.path());
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         manifest["bands"] = serde_json::json!([manifest["bands"]
@@ -2604,7 +2619,7 @@ mod tests {
         .unwrap();
 
         let reopened = LocalBlockStore::new(dir.path());
-        let descriptors = reopened.band_descriptors();
+        let descriptors = reopened.slab_descriptors();
 
         assert!(descriptors
             .iter()
@@ -2614,18 +2629,18 @@ mod tests {
             .iter()
             .any(|band| band.block_slab_id == second.block_slab_id
                 && band.state == BlockStoreSlabState::Active));
-        let report = reopened.stream_backed_band_runtime_report().unwrap();
-        assert!(report.band_manifest_reconciled_on_open);
-        assert!(report.band_manifest_disk_consistent);
-        assert_eq!(report.manifest_extra_stream_bands, 0);
-        assert_eq!(report.manifest_missing_stream_bands, 0);
+        let report = reopened.stream_backed_slab_runtime_report().unwrap();
+        assert!(report.slab_manifest_reconciled_on_open);
+        assert!(report.slab_manifest_disk_consistent);
+        assert_eq!(report.manifest_extra_stream_slabs, 0);
+        assert_eq!(report.manifest_missing_stream_slabs, 0);
         assert_eq!(reopened.read(&first).unwrap(), b"first");
         assert_eq!(reopened.read(&second).unwrap(), b"second");
     }
 
     // shared-corpus: storage_stream_manifest_disk_reconciliation;
     #[test]
-    fn reopen_marks_manifest_band_without_stream_file_as_purged() {
+    fn reopen_marks_manifest_slab_without_stream_file_as_purged() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
@@ -2636,7 +2651,7 @@ mod tests {
         fs::remove_file(slab_path(dir.path(), first.block_slab_id)).unwrap();
 
         let reopened = LocalBlockStore::new(dir.path());
-        let descriptors = reopened.band_descriptors();
+        let descriptors = reopened.slab_descriptors();
 
         assert!(descriptors
             .iter()
@@ -2646,11 +2661,11 @@ mod tests {
             .iter()
             .any(|band| band.block_slab_id == second.block_slab_id
                 && band.state == BlockStoreSlabState::Active));
-        let report = reopened.stream_backed_band_runtime_report().unwrap();
-        assert!(report.band_manifest_reconciled_on_open);
-        assert!(report.band_manifest_disk_consistent);
-        assert_eq!(report.manifest_extra_stream_bands, 0);
-        assert_eq!(report.manifest_missing_stream_bands, 0);
+        let report = reopened.stream_backed_slab_runtime_report().unwrap();
+        assert!(report.slab_manifest_reconciled_on_open);
+        assert!(report.slab_manifest_disk_consistent);
+        assert_eq!(report.manifest_extra_stream_slabs, 0);
+        assert_eq!(report.manifest_missing_stream_slabs, 0);
         assert_eq!(reopened.read(&second).unwrap(), b"second");
     }
 
@@ -2843,7 +2858,7 @@ mod tests {
         store.roll_slab().unwrap();
         store.append(b"second").unwrap();
 
-        let descriptors = store.band_descriptors();
+        let descriptors = store.slab_descriptors();
         assert!(
             descriptors.len() >= 2,
             "the roll should give at least two descriptors, got {}",
@@ -2857,7 +2872,7 @@ mod tests {
         }
     }
 
-    fn rolled_slabs_stamp_new_band_ids() {
+    fn rolled_slabs_stamp_new_slab_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first-band").unwrap();
@@ -2871,14 +2886,14 @@ mod tests {
     }
 
     #[test]
-    fn band_manifest_tracks_roll_reopen_gc_and_purge() {
+    fn slab_manifest_tracks_roll_reopen_gc_and_purge() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first-band").unwrap();
         store.roll_slab().unwrap();
         let second = store.append(b"second-band").unwrap();
 
-        let bands = store.band_descriptors();
+        let bands = store.slab_descriptors();
         assert_eq!(bands.len(), 2);
         assert_eq!(bands[0].block_slab_id, first.block_slab_id);
         assert_eq!(bands[0].state, BlockStoreSlabState::Sealed);
@@ -2892,8 +2907,8 @@ mod tests {
         assert_eq!(bands[1].last_page_id, second.page_id());
         assert!(bands[1].created_unix_ms.is_some());
         assert!(bands[1].updated_unix_ms.is_some());
-        assert!(band_manifest_path(dir.path()).exists());
-        let initial_summary = store.band_summary();
+        assert!(slab_manifest_path(dir.path()).exists());
+        let initial_summary = store.slab_summary();
         assert_eq!(initial_summary.sealed_slabs, 1);
         assert_eq!(initial_summary.active_slabs, 1);
         assert_eq!(initial_summary.delayed_destroy_slabs, 0);
@@ -2913,31 +2928,31 @@ mod tests {
         assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
         assert!(initial_summary.oldest_known_slab_unix_ms.is_some());
         assert!(initial_summary.oldest_known_slab_age_ms.is_some());
-        assert!(initial_summary.oldest_live_band_unix_ms.is_some());
-        assert!(initial_summary.oldest_live_band_age_ms.is_some());
-        assert!(initial_summary.oldest_reclaimable_band_unix_ms.is_none());
-        assert!(initial_summary.oldest_reclaimable_band_age_ms.is_none());
-        let initial_band_usage = store.band_usage();
-        assert_eq!(initial_band_usage.len(), 2);
-        assert_eq!(initial_band_usage[0].band_id, bands[0].band_id);
+        assert!(initial_summary.oldest_live_slab_unix_ms.is_some());
+        assert!(initial_summary.oldest_live_slab_age_ms.is_some());
+        assert!(initial_summary.oldest_reclaimable_slab_unix_ms.is_none());
+        assert!(initial_summary.oldest_reclaimable_slab_age_ms.is_none());
+        let initial_slab_usage = store.slab_usage();
+        assert_eq!(initial_slab_usage.len(), 2);
+        assert_eq!(initial_slab_usage[0].band_id, bands[0].band_id);
         assert_eq!(
-            initial_band_usage[0].block_slab_id,
+            initial_slab_usage[0].block_slab_id,
             bands[0].block_slab_id
         );
         assert_eq!(
-            initial_band_usage[0].page_store_used_bytes,
+            initial_slab_usage[0].page_store_used_bytes,
             bands[0].physical_bytes
         );
         assert_eq!(
-            initial_band_usage[0].live_page_store_used_bytes,
+            initial_slab_usage[0].live_page_store_used_bytes,
             bands[0].physical_bytes
         );
-        assert_eq!(initial_band_usage[0].reclaimable_page_store_used_bytes, 0);
-        assert_eq!(initial_band_usage[0].purged_page_store_used_bytes, 0);
+        assert_eq!(initial_slab_usage[0].reclaimable_page_store_used_bytes, 0);
+        assert_eq!(initial_slab_usage[0].purged_page_store_used_bytes, 0);
 
         let reopened = LocalBlockStore::new(dir.path());
-        let reopened_bands = reopened.band_descriptors();
-        assert_eq!(reopened_bands.len(), bands.len());
+        let reopened_slabs = reopened.slab_descriptors();
+        assert_eq!(reopened_slabs.len(), bands.len());
         // The band must survive a reopen unchanged. `verified_source_mtime_unix_ms` is excluded
         // because it is not part of the band: it records when the descriptor was last checked
         // against the file, and the two sides differ on that for a good reason, asserted below.
@@ -2946,7 +2961,7 @@ mod tests {
             band.verified_source_mtime_unix_ms = None;
             band
         };
-        assert_eq!(strip(&reopened_bands[0]), strip(&bands[0]));
+        assert_eq!(strip(&reopened_slabs[0]), strip(&bands[0]));
         // The original store wrote and sealed this slab without ever inspecting it, so it has
         // nothing verified to record; the reopen reconciled, which inspected it, so it does.
         assert!(
@@ -2955,37 +2970,37 @@ mod tests {
             bands[0]
         );
         assert!(
-            reopened_bands[0].verified_source_mtime_unix_ms.is_some(),
+            reopened_slabs[0].verified_source_mtime_unix_ms.is_some(),
             "reopening inspected this slab, so the identity it verified should be recorded: {:?}",
-            reopened_bands[0]
+            reopened_slabs[0]
         );
         assert_eq!(
-            reopened_bands[1].block_slab_id,
+            reopened_slabs[1].block_slab_id,
             bands[1].block_slab_id
         );
-        assert_eq!(reopened_bands[1].state, bands[1].state);
+        assert_eq!(reopened_slabs[1].state, bands[1].state);
         assert_eq!(
-            reopened_bands[1].physical_bytes,
+            reopened_slabs[1].physical_bytes,
             bands[1].physical_bytes
         );
-        assert_eq!(reopened_bands[1].logical_bytes, bands[1].logical_bytes);
+        assert_eq!(reopened_slabs[1].logical_bytes, bands[1].logical_bytes);
         assert_eq!(
-            reopened_bands[1].created_unix_ms,
+            reopened_slabs[1].created_unix_ms,
             bands[1].created_unix_ms
         );
-        assert!(reopened_bands[1].updated_unix_ms >= bands[1].updated_unix_ms);
+        assert!(reopened_slabs[1].updated_unix_ms >= bands[1].updated_unix_ms);
 
         let report = reopened
             .gc_slabs_before_with_live_refs_delayed_destroy(1, std::iter::empty())
             .unwrap();
         assert_eq!(report.delayed_destroy_block_slab_ids, vec![0]);
-        let delayed = reopened.band_descriptors();
+        let delayed = reopened.slab_descriptors();
         assert_eq!(delayed[0].state, BlockStoreSlabState::DelayedDestroy);
         assert!(delayed[0].physical_bytes > 0);
         assert_eq!(delayed[0].created_unix_ms, bands[0].created_unix_ms);
         assert!(delayed[0].updated_unix_ms >= bands[0].updated_unix_ms);
         assert_eq!(delayed[1].state, BlockStoreSlabState::Active);
-        let delayed_summary = reopened.band_summary();
+        let delayed_summary = reopened.slab_summary();
         assert_eq!(delayed_summary.delayed_destroy_slabs, 1);
         assert_eq!(delayed_summary.active_slabs, 1);
         assert_eq!(
@@ -3001,14 +3016,14 @@ mod tests {
             delayed[1].physical_bytes
         );
         assert!(delayed_summary.oldest_known_slab_unix_ms.is_some());
-        assert!(delayed_summary.oldest_live_band_unix_ms.is_some());
+        assert!(delayed_summary.oldest_live_slab_unix_ms.is_some());
         assert_eq!(
-            delayed_summary.oldest_reclaimable_band_unix_ms,
+            delayed_summary.oldest_reclaimable_slab_unix_ms,
             delayed[0].updated_unix_ms
         );
-        assert!(delayed_summary.oldest_reclaimable_band_age_ms.is_some());
-        let delayed_band_usage = reopened.band_usage();
-        let delayed_first = delayed_band_usage
+        assert!(delayed_summary.oldest_reclaimable_slab_age_ms.is_some());
+        let delayed_slab_usage = reopened.slab_usage();
+        let delayed_first = delayed_slab_usage
             .iter()
             .find(|band| band.block_slab_id == first.block_slab_id)
             .unwrap();
@@ -3023,12 +3038,12 @@ mod tests {
             .unwrap();
         assert_eq!(purge.purged_block_slab_ids, vec![0]);
         assert!(purge.purged_physical_bytes > 0);
-        let purged = LocalBlockStore::new(dir.path()).band_descriptors();
+        let purged = LocalBlockStore::new(dir.path()).slab_descriptors();
         assert_eq!(purged[0].state, BlockStoreSlabState::Purged);
         assert_eq!(purged[0].created_unix_ms, bands[0].created_unix_ms);
         assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
         assert_eq!(purged[1].state, BlockStoreSlabState::Active);
-        let purged_summary = LocalBlockStore::new(dir.path()).band_summary();
+        let purged_summary = LocalBlockStore::new(dir.path()).slab_summary();
         assert_eq!(purged_summary.purged_slabs, 1);
         assert_eq!(purged_summary.active_slabs, 1);
         assert_eq!(
@@ -3037,8 +3052,8 @@ mod tests {
         );
         assert_eq!(purged_summary.live_physical_bytes, purged[1].physical_bytes);
         assert_eq!(purged_summary.reclaimable_physical_bytes, 0);
-        let purged_band_usage = LocalBlockStore::new(dir.path()).band_usage();
-        let purged_first = purged_band_usage
+        let purged_slab_usage = LocalBlockStore::new(dir.path()).slab_usage();
+        let purged_first = purged_slab_usage
             .iter()
             .find(|band| band.block_slab_id == first.block_slab_id)
             .unwrap();
@@ -3048,22 +3063,22 @@ mod tests {
         );
         assert_eq!(purged_first.reclaimable_page_store_used_bytes, 0);
         assert!(purged_summary.oldest_known_slab_unix_ms.is_some());
-        assert!(purged_summary.oldest_live_band_unix_ms.is_some());
-        assert!(purged_summary.oldest_reclaimable_band_unix_ms.is_none());
-        assert!(purged_summary.oldest_reclaimable_band_age_ms.is_none());
+        assert!(purged_summary.oldest_live_slab_unix_ms.is_some());
+        assert!(purged_summary.oldest_reclaimable_slab_unix_ms.is_none());
+        assert!(purged_summary.oldest_reclaimable_slab_age_ms.is_none());
     }
 
     #[test]
-    fn missing_band_manifest_rebuilds_from_existing_slabs() {
+    fn missing_slab_manifest_rebuilds_from_existing_slabs() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first-band").unwrap();
         store.roll_slab().unwrap();
         let second = store.append(b"second-band").unwrap();
-        fs::remove_file(band_manifest_path(dir.path())).unwrap();
+        fs::remove_file(slab_manifest_path(dir.path())).unwrap();
 
         let rebuilt = LocalBlockStore::new(dir.path());
-        let bands = rebuilt.band_descriptors();
+        let bands = rebuilt.slab_descriptors();
 
         assert_eq!(bands.len(), 2);
         assert_eq!(bands[0].block_slab_id, first.block_slab_id);
@@ -3078,36 +3093,36 @@ mod tests {
         assert_eq!(bands[1].last_page_id, second.page_id());
         assert!(bands[1].created_unix_ms.is_some());
         assert!(bands[1].updated_unix_ms.is_some());
-        assert!(band_manifest_path(dir.path()).exists());
+        assert!(slab_manifest_path(dir.path()).exists());
 
-        let report = rebuilt.stream_backed_band_runtime_report().unwrap();
+        let report = rebuilt.stream_backed_slab_runtime_report().unwrap();
         assert!(report.runtime_ready, "{report:?}");
-        assert_eq!(report.band_lifecycle_states, vec!["active", "sealed"]);
-        assert!(report.band_manifest_ready);
-        assert!(report.band_manifest_rebuild_ready);
-        assert!(report.band_stats_ready);
-        assert_eq!(report.band_usage.len(), 2);
+        assert_eq!(report.slab_lifecycle_states, vec!["active", "sealed"]);
+        assert!(report.slab_manifest_ready);
+        assert!(report.slab_manifest_rebuild_ready);
+        assert!(report.slab_stats_ready);
+        assert_eq!(report.slab_usage.len(), 2);
         assert_eq!(
             report
-                .band_usage
+                .slab_usage
                 .iter()
                 .map(|band| band.page_store_used_bytes)
                 .sum::<u64>(),
             report.physical_bytes
         );
-        assert!(!report.band_manifest_reconciled_on_open);
-        assert!(report.band_manifest_disk_consistent);
-        assert_eq!(report.manifest_missing_stream_bands, 0);
-        assert_eq!(report.manifest_extra_stream_bands, 0);
-        assert_eq!(report.corrupt_band_count, 0);
-        assert_eq!(report.partial_band_count, 0);
-        assert!(report.partial_band_recovery_ready);
+        assert!(!report.slab_manifest_reconciled_on_open);
+        assert!(report.slab_manifest_disk_consistent);
+        assert_eq!(report.manifest_missing_stream_slabs, 0);
+        assert_eq!(report.manifest_extra_stream_slabs, 0);
+        assert_eq!(report.corrupt_slab_count, 0);
+        assert_eq!(report.partial_slab_count, 0);
+        assert!(report.partial_slab_recovery_ready);
         assert_eq!(report.readable_prefix_physical_bytes, report.physical_bytes);
     }
 
     // shared-corpus: storage_stream_partial_band_rebuild;
     #[test]
-    fn partial_band_manifest_rebuild_preserves_readable_prefix_and_reports_corruption() {
+    fn partial_slab_manifest_rebuild_preserves_readable_prefix_and_reports_corruption() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first_payload = b"sealed-readable-prefix".repeat(64);
@@ -3123,13 +3138,13 @@ mod tests {
             .unwrap()
             .write_all(b"partial-corrupt-tail")
             .unwrap();
-        fs::remove_file(band_manifest_path(dir.path())).unwrap();
+        fs::remove_file(slab_manifest_path(dir.path())).unwrap();
 
         let rebuilt = LocalBlockStore::new(dir.path());
         assert_eq!(rebuilt.read(&first).unwrap(), first_payload);
         assert_eq!(rebuilt.read(&second).unwrap(), b"active-clean-tail");
 
-        let bands = rebuilt.band_descriptors();
+        let bands = rebuilt.slab_descriptors();
         let sealed = bands
             .iter()
             .find(|band| band.block_slab_id == first.block_slab_id)
@@ -3145,24 +3160,24 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("mixed raw bytes"));
-        assert!(band_manifest_path(dir.path()).exists());
+        assert!(slab_manifest_path(dir.path()).exists());
 
-        let report = rebuilt.stream_backed_band_runtime_report().unwrap();
+        let report = rebuilt.stream_backed_slab_runtime_report().unwrap();
         assert!(!report.runtime_ready, "{report:?}");
-        assert!(report.band_manifest_ready);
-        assert!(report.band_manifest_rebuild_ready);
-        assert!(!report.band_manifest_reconciled_on_open);
-        assert!(report.band_manifest_disk_consistent);
-        assert_eq!(report.manifest_missing_stream_bands, 0);
-        assert_eq!(report.manifest_extra_stream_bands, 0);
-        assert_eq!(report.band_lifecycle_states, vec!["active", "sealed"]);
-        assert_eq!(report.corrupt_band_count, 1);
-        assert_eq!(report.partial_band_count, 1);
+        assert!(report.slab_manifest_ready);
+        assert!(report.slab_manifest_rebuild_ready);
+        assert!(!report.slab_manifest_reconciled_on_open);
+        assert!(report.slab_manifest_disk_consistent);
+        assert_eq!(report.manifest_missing_stream_slabs, 0);
+        assert_eq!(report.manifest_extra_stream_slabs, 0);
+        assert_eq!(report.slab_lifecycle_states, vec!["active", "sealed"]);
+        assert_eq!(report.corrupt_slab_count, 1);
+        assert_eq!(report.partial_slab_count, 1);
         assert_eq!(
             report.readable_prefix_physical_bytes,
             readable_prefix + second.length
         );
-        assert!(report.partial_band_recovery_ready);
+        assert!(report.partial_slab_recovery_ready);
         assert!(!report.envelope_checksum_ready);
         assert!(report
             .blockers
@@ -3330,7 +3345,7 @@ mod tests {
 
     // shared-corpus: storage_stream_backed_band_runtime;
     #[test]
-    fn stream_backed_band_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
+    fn stream_backed_slab_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first_payload = b"band-stream-first-".repeat(96);
@@ -3358,28 +3373,28 @@ mod tests {
             .append_with_page_metadata(&third_payload, Some(13), Some(8))
             .unwrap();
         assert_eq!(third.block_slab_id, roll.new_block_slab_id);
-        let before_gc = store.stream_backed_band_runtime_report().unwrap();
+        let before_gc = store.stream_backed_slab_runtime_report().unwrap();
         assert!(before_gc.runtime_ready, "{before_gc:?}");
         assert_eq!(before_gc.active_slabs, 1);
         assert_eq!(before_gc.sealed_slabs, 1);
-        assert_eq!(before_gc.band_lifecycle_states, vec!["active", "sealed"]);
+        assert_eq!(before_gc.slab_lifecycle_states, vec!["active", "sealed"]);
         assert_eq!(before_gc.stream_record_count, 3);
         assert_eq!(before_gc.first_page_id, first.page_id());
         assert_eq!(before_gc.last_page_id, third.page_id());
         assert!(before_gc.page_id_continuity_ready);
-        assert!(before_gc.band_manifest_rebuild_ready);
-        assert!(before_gc.band_stats_ready);
-        assert_eq!(before_gc.band_usage.len(), 2);
+        assert!(before_gc.slab_manifest_rebuild_ready);
+        assert!(before_gc.slab_stats_ready);
+        assert_eq!(before_gc.slab_usage.len(), 2);
         assert_eq!(
             before_gc
-                .band_usage
+                .slab_usage
                 .iter()
                 .map(|band| band.page_store_used_bytes)
                 .sum::<u64>(),
             before_gc.physical_bytes
         );
         assert!(before_gc.logical_stream_bytes_read >= 16);
-        assert!(before_gc.band_state_transition_count >= 2);
+        assert!(before_gc.slab_state_transition_count >= 2);
 
         let delayed = store
             .gc_slabs_before_with_live_refs_delayed_destroy(
@@ -3394,28 +3409,28 @@ mod tests {
 
         let reopened = LocalBlockStore::new(dir.path());
         assert_eq!(reopened.read(&third).unwrap(), third_payload);
-        let report = reopened.stream_backed_band_runtime_report().unwrap();
+        let report = reopened.stream_backed_slab_runtime_report().unwrap();
         assert!(report.runtime_ready, "{report:?}");
         assert_eq!(report.active_slabs, 1);
         assert_eq!(report.delayed_destroy_slabs, 1);
         assert_eq!(
-            report.band_lifecycle_states,
+            report.slab_lifecycle_states,
             vec!["active", "delayed_destroy"]
         );
         assert!(report.band_count >= 2);
         assert!(report.stream_slab_count >= 1);
         assert!(report.logical_stream_read_ready);
         assert!(report.append_roll_ready);
-        assert!(report.band_manifest_ready);
-        assert!(report.band_manifest_rebuild_ready);
-        assert!(report.band_stats_ready);
+        assert!(report.slab_manifest_ready);
+        assert!(report.slab_manifest_rebuild_ready);
+        assert!(report.slab_stats_ready);
         assert!(report
-            .band_usage
+            .slab_usage
             .iter()
             .any(|band| band.state == BlockStoreSlabState::DelayedDestroy
                 && band.reclaimable_page_store_used_bytes > 0));
         assert!(report
-            .band_usage
+            .slab_usage
             .iter()
             .any(|band| band.state == BlockStoreSlabState::Active
                 && band.live_page_store_used_bytes > 0));
@@ -3446,16 +3461,16 @@ mod tests {
             vec![roll.previous_block_slab_id]
         );
         let purged = LocalBlockStore::new(dir.path())
-            .stream_backed_band_runtime_report()
+            .stream_backed_slab_runtime_report()
             .unwrap();
         assert!(purged.runtime_ready, "{purged:?}");
         assert_eq!(purged.active_slabs, 1);
         assert_eq!(purged.delayed_destroy_slabs, 0);
         assert_eq!(purged.purged_slabs, 1);
-        assert_eq!(purged.band_lifecycle_states, vec!["active", "purged"]);
-        assert!(purged.band_stats_ready);
+        assert_eq!(purged.slab_lifecycle_states, vec!["active", "purged"]);
+        assert!(purged.slab_stats_ready);
         assert!(purged
-            .band_usage
+            .slab_usage
             .iter()
             .any(|band| band.state == BlockStoreSlabState::Purged
                 && band.purged_page_store_used_bytes > 0));
@@ -3881,7 +3896,7 @@ mod tests {
     }
 
     #[test]
-    fn band_garbage_floor_gates_reclaim_by_garbage_ratio() {
+    fn slab_garbage_floor_gates_reclaim_by_garbage_ratio() {
         // garbage-ratio GC conformance: reclaim is gated on a minimum band garbage ratio
         // (garbage = 10_000 - band live-fraction). Floor 0 (the default) reclaims every
         // eligible band as before; a floor above a band's garbage ratio excludes it.
@@ -3894,7 +3909,7 @@ mod tests {
             .gc_policy_plan(
                 2,
                 Vec::<u64>::new(),
-                &BlockStoreGcPolicy::with_band_garbage_floor(0, None),
+                &BlockStoreGcPolicy::with_slab_garbage_floor(0, None),
             )
             .unwrap();
         assert_eq!(floor_zero.selected_block_slab_ids, vec![0, 1]);
@@ -3903,7 +3918,7 @@ mod tests {
             .gc_policy_plan(
                 2,
                 Vec::<u64>::new(),
-                &BlockStoreGcPolicy::with_band_garbage_floor(10_001, None),
+                &BlockStoreGcPolicy::with_slab_garbage_floor(10_001, None),
             )
             .unwrap();
         assert!(floor_impossible.selected_block_slab_ids.is_empty());

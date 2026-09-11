@@ -347,8 +347,8 @@ impl TemporalEngine {
                 // garbage-ratio GC victim selection (specification): reclaim the
                 // highest-garbage bands first, keeping bands below the garbage floor.
                 // Floor 0 (the default) reclaims every eligible band as before.
-                BlockStoreGcPolicy::with_band_garbage_floor(
-                    request.page_gc_min_band_garbage_basis_points,
+                BlockStoreGcPolicy::with_slab_garbage_floor(
+                    request.page_gc_min_slab_garbage_basis_points,
                     None,
                 ),
                 true,

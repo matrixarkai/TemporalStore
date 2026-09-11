@@ -96,11 +96,11 @@ struct AuthoritativeOffsetLookupReport {
     range_bytes_read: u64,
     exact_offset_slice_reads: u64,
     range_reads_smaller_than_blob: u64,
-    band_metadata_entries: u64,
+    slab_metadata_entries: u64,
     first_physical_offset_entries: u64,
     all_wal_indexes_directly_read_from_offset_metadata: bool,
     all_direct_reads_match_expected_entries: bool,
-    all_direct_reads_have_band_metadata: bool,
+    all_direct_reads_have_slab_metadata: bool,
     lower_layer_range_reads_exact_offset_slices: bool,
     lower_layer_range_reads_avoid_full_blob_scans: bool,
     lower_layer_blob_offset_reads_proven: bool,
@@ -208,7 +208,7 @@ struct Summary {
     direct_offset_index_maps_wal_to_blob_offsets: bool,
     authoritative_offset_lookup_reads_all_records: bool,
     authoritative_offset_lookup_matches_all_records: bool,
-    authoritative_offset_lookup_has_band_metadata: bool,
+    authoritative_offset_lookup_has_slab_metadata: bool,
     lower_layer_blob_offset_reads_proven: bool,
     lower_layer_range_reads_avoid_full_blob_scans: bool,
     snapshot_reopen_restores_offset_metadata: bool,
@@ -345,15 +345,15 @@ async fn main() {
             && async_writer
                 .authoritative_offset_lookup
                 .all_direct_reads_match_expected_entries,
-        authoritative_offset_lookup_has_band_metadata: direct_publish
+        authoritative_offset_lookup_has_slab_metadata: direct_publish
             .authoritative_offset_lookup
-            .all_direct_reads_have_band_metadata
+            .all_direct_reads_have_slab_metadata
             && sync_writer
                 .authoritative_offset_lookup
-                .all_direct_reads_have_band_metadata
+                .all_direct_reads_have_slab_metadata
             && async_writer
                 .authoritative_offset_lookup
-                .all_direct_reads_have_band_metadata,
+                .all_direct_reads_have_slab_metadata,
         lower_layer_blob_offset_reads_proven: direct_publish
             .authoritative_offset_lookup
             .lower_layer_blob_offset_reads_proven
@@ -943,7 +943,7 @@ async fn validate_authoritative_offset_lookup(
     let mut range_bytes_read = 0u64;
     let mut exact_offset_slice_reads = 0u64;
     let mut range_reads_smaller_than_blob = 0u64;
-    let mut band_metadata_entries = 0u64;
+    let mut slab_metadata_entries = 0u64;
     let mut first_physical_offset_entries = 0u64;
     let mut errors = Vec::new();
     for index in 1..=entry_count {
@@ -972,7 +972,7 @@ async fn validate_authoritative_offset_lookup(
                     range_reads_smaller_than_blob += 1;
                 }
                 if read.metadata.wal_blob_physical_slab_count > 0 {
-                    band_metadata_entries += 1;
+                    slab_metadata_entries += 1;
                 }
                 if read.metadata.wal_blob_first_physical_offset.is_some() {
                     first_physical_offset_entries += 1;
@@ -997,12 +997,12 @@ async fn validate_authoritative_offset_lookup(
         range_bytes_read,
         exact_offset_slice_reads,
         range_reads_smaller_than_blob,
-        band_metadata_entries,
+        slab_metadata_entries,
         first_physical_offset_entries,
         all_wal_indexes_directly_read_from_offset_metadata: metadata_hits == entry_count
             && decoded_entries == entry_count,
         all_direct_reads_match_expected_entries: matched_entries == entry_count,
-        all_direct_reads_have_band_metadata: band_metadata_entries == entry_count
+        all_direct_reads_have_slab_metadata: slab_metadata_entries == entry_count
             && first_physical_offset_entries == entry_count,
         lower_layer_range_reads_exact_offset_slices: exact_offset_slice_reads == entry_count,
         lower_layer_range_reads_avoid_full_blob_scans: range_reads_smaller_than_blob

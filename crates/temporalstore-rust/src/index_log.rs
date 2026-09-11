@@ -1228,7 +1228,7 @@ impl LocalIndexLogStore {
     /// The most recent `MetaItem` anchor carrying a folded band catalog, or `None` if no
     /// anchor with a non-empty `bands` list has been written. Used on load (gate on) to seed the
     /// block-store band catalog from the folded anchor when the band-manifest file is absent.
-    pub fn latest_band_catalog(&self, shard_id: ShardId) -> Result<Option<MetaItem>, IndexLogError> {
+    pub fn latest_slab_catalog(&self, shard_id: ShardId) -> Result<Option<MetaItem>, IndexLogError> {
         // The LAST matching record wins, so this cannot stop early -- but it never needed to
         // hold the records it walks past. It kept every record in the log, with every item each
         // one carries, to take one field out of one of them.
@@ -2437,7 +2437,7 @@ mod tests {
     /// catalog-less record after the catalogs let a fold that kept "the last meta, bands or not"
     /// pass -- the record had no meta at all, so the wrong rule never fired.
     #[test]
-    fn the_band_catalog_is_the_last_record_that_carries_one() {
+    fn the_slab_catalog_is_the_last_record_that_carries_one() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
 
@@ -2459,7 +2459,7 @@ mod tests {
             }],
         };
         // A meta that carries no bands. An anchor looks like this whenever the fold is off.
-        let bandless = MetaItem {
+        let slabless = MetaItem {
             version: 2,
             start_wal_sequence: 2,
             timestamp_ms: 2,
@@ -2475,14 +2475,14 @@ mod tests {
             .unwrap();
         // A meta AFTER the catalogs that carries none of its own.
         store
-            .append_delta(4, Vec::new(), Vec::new(), None, Some(bandless.clone()), false, true)
+            .append_delta(4, Vec::new(), Vec::new(), None, Some(slabless.clone()), false, true)
             .unwrap();
         // And a record with no meta at all.
         store
             .append_delta(4, vec![page_item(1, "later", false)], Vec::new(), None, None, false, true)
             .unwrap();
 
-        let found = store.latest_band_catalog(4).unwrap().expect("a catalog");
+        let found = store.latest_slab_catalog(4).unwrap().expect("a catalog");
         assert_eq!(
             found.bands.first().map(|band| band.block_slab_id),
             Some(22),
@@ -2493,10 +2493,10 @@ mod tests {
         // a fold that kept the last meta whether or not it held bands passes the assertion
         // above and fails here.
         store
-            .append_delta(5, Vec::new(), Vec::new(), None, Some(bandless), false, true)
+            .append_delta(5, Vec::new(), Vec::new(), None, Some(slabless), false, true)
             .unwrap();
         assert!(
-            store.latest_band_catalog(5).unwrap().is_none(),
+            store.latest_slab_catalog(5).unwrap().is_none(),
             "a meta carrying no bands is not a catalog"
         );
     }
@@ -2863,7 +2863,7 @@ mod tests {
     }
 
     #[test]
-    fn meta_item_band_catalog_round_trips_through_the_delta_log() {
+    fn meta_item_slab_catalog_round_trips_through_the_delta_log() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let meta = MetaItem {
@@ -2901,7 +2901,7 @@ mod tests {
             .unwrap();
         // A reopen reads the folded catalog back exactly, and latest_band_catalog finds it.
         let reopened = LocalIndexLogStore::new(dir.path());
-        let recovered = reopened.latest_band_catalog(4).unwrap().unwrap();
+        let recovered = reopened.latest_slab_catalog(4).unwrap().unwrap();
         assert_eq!(recovered, meta);
         assert_eq!(recovered.bands.len(), 2);
         assert_eq!(recovered.bands[0].state, SlabCatalogState::Sealed);
@@ -2909,7 +2909,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_band_catalog_prefers_the_newest_anchor_and_ignores_empty_ones() {
+    fn latest_slab_catalog_prefers_the_newest_anchor_and_ignores_empty_ones() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let older = MetaItem {
@@ -2956,7 +2956,7 @@ mod tests {
         store
             .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), false, true)
             .unwrap();
-        assert_eq!(store.latest_band_catalog(6).unwrap().unwrap(), newer);
+        assert_eq!(store.latest_slab_catalog(6).unwrap().unwrap(), newer);
     }
 
     /// The interval holds a second dump off, and a shard that has never dumped is not held.

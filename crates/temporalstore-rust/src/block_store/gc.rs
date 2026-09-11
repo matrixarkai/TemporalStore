@@ -189,8 +189,8 @@ impl LocalBlockStore {
         let current_block_slab_id = inner.block_slab_id;
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let slab_ids = slab_ids_at(&inner.root)?;
-        let mut band_total_bytes = BTreeMap::<u64, u64>::new();
-        let mut band_used_bytes = BTreeMap::<u64, u64>::new();
+        let mut slab_total_bytes = BTreeMap::<u64, u64>::new();
+        let mut slab_used_bytes = BTreeMap::<u64, u64>::new();
         for block_slab_id in &slab_ids {
             let bytes = slab_path(&inner.root, *block_slab_id)
                 .metadata()
@@ -201,7 +201,7 @@ impl LocalBlockStore {
                 .get(block_slab_id)
                 .map(|band| band.band_id)
                 .unwrap_or_else(|| band_id_for_slab(*block_slab_id));
-            *band_total_bytes.entry(band_id).or_default() = band_total_bytes
+            *slab_total_bytes.entry(band_id).or_default() = slab_total_bytes
                 .get(&band_id)
                 .copied()
                 .unwrap_or_default()
@@ -210,7 +210,7 @@ impl LocalBlockStore {
             let is_current = *block_slab_id == current_block_slab_id;
             let is_live = live_block_slab_ids.contains(block_slab_id);
             if !below_retention_floor || is_current || is_live {
-                *band_used_bytes.entry(band_id).or_default() = band_used_bytes
+                *slab_used_bytes.entry(band_id).or_default() = slab_used_bytes
                     .get(&band_id)
                     .copied()
                     .unwrap_or_default()
@@ -237,8 +237,8 @@ impl LocalBlockStore {
                 let band_id = band
                     .map(|band| band.band_id)
                     .unwrap_or_else(|| band_id_for_slab(block_slab_id));
-                let total_bytes = band_total_bytes.get(&band_id).copied().unwrap_or(bytes);
-                let used_bytes = band_used_bytes.get(&band_id).copied().unwrap_or_default();
+                let total_bytes = slab_total_bytes.get(&band_id).copied().unwrap_or(bytes);
+                let used_bytes = slab_used_bytes.get(&band_id).copied().unwrap_or_default();
                 let stale_bytes = total_bytes.saturating_sub(used_bytes);
                 let utility_basis_points = if total_bytes == 0 {
                     0
@@ -338,7 +338,7 @@ impl LocalBlockStore {
                 removed_physical_bytes += slab_physical_bytes;
                 if delayed_destroy {
                     move_slab_to_delayed_destroy(&inner.root, block_slab_id)?;
-                    set_band_state(
+                    set_slab_state(
                         &mut inner.bands,
                         block_slab_id,
                         BlockStoreSlabState::DelayedDestroy,
@@ -347,7 +347,7 @@ impl LocalBlockStore {
                     delayed_destroy_physical_bytes += slab_physical_bytes;
                 } else {
                     fs::remove_file(slab_path(&inner.root, block_slab_id))?;
-                    set_band_state(
+                    set_slab_state(
                         &mut inner.bands,
                         block_slab_id,
                         BlockStoreSlabState::Purged,
@@ -367,7 +367,7 @@ impl LocalBlockStore {
                 retained.push(block_slab_id);
             }
         }
-        persist_band_manifest(&inner.root, &inner.bands)?;
+        persist_slab_manifest(&inner.root, &inner.bands)?;
         Ok(BlockStoreGcReport {
             retain_from_block_slab_id,
             removed_block_slab_ids: removed,

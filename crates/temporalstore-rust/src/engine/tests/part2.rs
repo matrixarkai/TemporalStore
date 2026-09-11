@@ -3086,7 +3086,7 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
         "no dump below the threshold"
     );
     assert!(
-        engine.index_log_store().latest_band_catalog(1).unwrap().is_none(),
+        engine.index_log_store().latest_slab_catalog(1).unwrap().is_none(),
         "no folded catalog before any dump"
     );
     // A gap of 1 byte crosses immediately: exactly one dump fires and folds the catalog.
@@ -3097,7 +3097,7 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
         engine.maybe_dump_index_catalog_with_gap_for_test(1, 1, 0),
         "dump fires once the undumped gap crosses the threshold"
     );
-    let catalog = engine.index_log_store().latest_band_catalog(1).unwrap();
+    let catalog = engine.index_log_store().latest_slab_catalog(1).unwrap();
     let catalog = catalog.expect("a folded band catalog must be durable after the dump");
     assert!(
         !catalog.bands.is_empty(),
@@ -3258,7 +3258,7 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     assert!(
         engine
             .index_log_store()
-            .latest_band_catalog(1)
+            .latest_slab_catalog(1)
             .unwrap()
             .is_some(),
         "the folded catalog anchor must survive the index-log sweep"
@@ -3346,7 +3346,7 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_pages() {
 }
 
 #[test]
-fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
+fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
     // MANIFEST-CONFORMANCE FOLD round-trip: write, dump (folds the catalog), delete the band-manifest
     // file, reload -- every acked key must survive AND the band lifecycle must reconstruct from
     // the folded index-log MetaItem, proving the fold is a lossless catalog source.
@@ -3362,7 +3362,7 @@ fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
     assert!(engine.dump_index_catalog(1), "explicit dump must complete");
     let folded = engine
         .index_log_store()
-        .latest_band_catalog(1)
+        .latest_slab_catalog(1)
         .unwrap()
         .expect("catalog folded");
     drop(engine);
@@ -3387,7 +3387,7 @@ fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
         );
     }
     // The folded lifecycle states are present in the reconstructed catalog.
-    let recovered = restarted.block_store().band_catalog(0);
+    let recovered = restarted.block_store().slab_catalog(0);
     for entry in &folded.bands {
         assert!(
             recovered.iter().any(|z| z.block_slab_id == entry.block_slab_id),

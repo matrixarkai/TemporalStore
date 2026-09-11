@@ -384,10 +384,10 @@ impl TemporalEngine {
             }
             for (scope, value) in [
                 ("known", stats.page_store_zones.oldest_known_slab_unix_ms),
-                ("live", stats.page_store_zones.oldest_live_band_unix_ms),
+                ("live", stats.page_store_zones.oldest_live_slab_unix_ms),
                 (
                     "reclaimable",
-                    stats.page_store_zones.oldest_reclaimable_band_unix_ms,
+                    stats.page_store_zones.oldest_reclaimable_slab_unix_ms,
                 ),
             ] {
                 if let Some(value) = value {
@@ -413,10 +413,10 @@ impl TemporalEngine {
             }
             for (scope, value) in [
                 ("known", stats.page_store_zones.oldest_known_slab_age_ms),
-                ("live", stats.page_store_zones.oldest_live_band_age_ms),
+                ("live", stats.page_store_zones.oldest_live_slab_age_ms),
                 (
                     "reclaimable",
-                    stats.page_store_zones.oldest_reclaimable_band_age_ms,
+                    stats.page_store_zones.oldest_reclaimable_slab_age_ms,
                 ),
             ] {
                 if let Some(value) = value {

@@ -482,7 +482,7 @@ fn apply_shard_storage_metrics(
             "compaction_watermark",
             storage.compaction_watermark,
         );
-        add(metrics, "storage_zone_count", storage.storage_band_count);
+        add(metrics, "storage_zone_count", storage.storage_slab_count);
         add(
             metrics,
             "active_storage_zones",

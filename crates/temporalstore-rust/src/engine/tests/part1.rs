@@ -2030,7 +2030,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     assert!(report.object_manager_runtime_api_ready);
     assert!(report.block_address_api_ready);
     assert!(report.block_store_slab_api_ready);
-    assert!(report.stream_backed_band_api_ready);
+    assert!(report.stream_backed_slab_api_ready);
     assert!(report.legacy_page_zone_aliases_ready);
     assert!(report.storage_manager_phase_api_ready);
     assert!(report.storage_manager_pressure_api_ready);
@@ -2267,7 +2267,7 @@ fn recovery_reports_reused_object_id_conflicts() {
 }
 
 #[test]
-fn crash_recovery_report_covers_wal_index_page_and_band_manifest() {
+fn crash_recovery_report_covers_wal_index_page_and_slab_manifest() {
     let cache_dir = unique_temp_path("recovery-cache");
     let page_dir = unique_temp_path("recovery-pages");
     let index_dir = unique_temp_path("recovery-index");
@@ -2329,29 +2329,29 @@ fn crash_recovery_report_covers_wal_index_page_and_band_manifest() {
     assert_eq!(report.slab_integrity.discovered_block_slab_count, 2);
     assert_eq!(report.slab_integrity.live_block_slab_count, 2);
     assert_eq!(report.slab_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(report.band_descriptors.len(), 2);
+    assert_eq!(report.slab_descriptors.len(), 2);
     assert_eq!(
-        report.band_descriptors[0].state,
+        report.slab_descriptors[0].state,
         BlockStoreSlabState::Sealed
     );
     assert_eq!(
-        report.band_descriptors[1].state,
+        report.slab_descriptors[1].state,
         BlockStoreSlabState::Active
     );
-    assert_eq!(report.band_summary.sealed_slabs, 1);
-    assert_eq!(report.band_summary.active_slabs, 1);
-    assert_eq!(report.band_summary.delayed_destroy_slabs, 0);
+    assert_eq!(report.slab_summary.sealed_slabs, 1);
+    assert_eq!(report.slab_summary.active_slabs, 1);
+    assert_eq!(report.slab_summary.delayed_destroy_slabs, 0);
     assert_eq!(
-        report.band_summary.sealed_physical_bytes,
-        report.band_descriptors[0].physical_bytes
+        report.slab_summary.sealed_physical_bytes,
+        report.slab_descriptors[0].physical_bytes
     );
     assert_eq!(
-        report.band_summary.active_physical_bytes,
-        report.band_descriptors[1].physical_bytes
+        report.slab_summary.active_physical_bytes,
+        report.slab_descriptors[1].physical_bytes
     );
     assert_eq!(
-        report.band_summary.live_physical_bytes,
-        report.band_descriptors[0].physical_bytes + report.band_descriptors[1].physical_bytes
+        report.slab_summary.live_physical_bytes,
+        report.slab_descriptors[0].physical_bytes + report.slab_descriptors[1].physical_bytes
     );
     assert_eq!(report.block_slab_live_reports.len(), 2);
     assert_eq!(report.block_slab_live_reports[0].block_slab_id, 0);
@@ -2588,7 +2588,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
 }
 
 #[test]
-fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
+fn crash_recovery_rebuilds_missing_slab_manifest_from_page_stream() {
     let cache_dir = unique_temp_path("recovery-rebuild-cache");
     let page_dir = unique_temp_path("recovery-rebuild-pages");
     let index_dir = unique_temp_path("recovery-rebuild-index");
@@ -2628,7 +2628,7 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
 
     assert_eq!(report.wal_records, 2);
     assert!(report.all_live_pages_readable);
-    assert!(report.band_summary.live_physical_bytes > 0);
+    assert!(report.slab_summary.live_physical_bytes > 0);
     // The band manifest was rebuilt (from the page stream on the default path; from WAL-replayed
     // pages under the single barrier). Recovery of both acked writes is asserted by the reads below.
     assert!(page_dir.join("page_extent_manifest.json").exists());
@@ -2642,17 +2642,17 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
         assert_eq!(report.active_block_slab_ids, vec![0, 1]);
         assert_eq!(report.live_block_slab_ids, vec![0, 1]);
         assert_eq!(report.total_page_refs, 2);
-        assert_eq!(report.band_descriptors.len(), 2);
+        assert_eq!(report.slab_descriptors.len(), 2);
         assert_eq!(
-            report.band_descriptors[0].state,
+            report.slab_descriptors[0].state,
             BlockStoreSlabState::Sealed
         );
         assert_eq!(
-            report.band_descriptors[1].state,
+            report.slab_descriptors[1].state,
             BlockStoreSlabState::Active
         );
-        assert_eq!(report.band_summary.sealed_slabs, 1);
-        assert_eq!(report.band_summary.active_slabs, 1);
+        assert_eq!(report.slab_summary.sealed_slabs, 1);
+        assert_eq!(report.slab_summary.active_slabs, 1);
     }
     assert_eq!(
         recovered
@@ -7328,7 +7328,7 @@ fn what_grows_outside_the_shard_index() {
             });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
-        let bands = engine.page_store.band_descriptors().len();
+        let bands = engine.page_store.slab_descriptors().len();
         let slabs = engine.page_store.slab_ids().map(|v| v.len()).unwrap_or(0);
         let strings = {
             let shards = engine.shards.read().expect("engine lock poisoned");
@@ -7350,14 +7350,14 @@ fn what_grows_outside_the_shard_index() {
                  if per > 0.01 { "yes" } else { "no" });
         per
     };
-    let band_per = row("page bands", small_bands, large_bands);
+    let slab_per = row("page bands", small_bands, large_bands);
     row("page slabs", small_slabs, large_slabs);
     row("index entries", small_strings, large_strings);
 
     println!();
-    println!("  A band descriptor is on the order of 100 bytes, so at {band_per:.4} bands per");
-    println!("  record it accounts for roughly {:.1} bytes of the ~842 unattributed.", band_per * 100.0);
-    if band_per * 100.0 < 100.0 {
+    println!("  A band descriptor is on the order of 100 bytes, so at {slab_per:.4} bands per");
+    println!("  record it accounts for roughly {:.1} bytes of the ~842 unattributed.", slab_per * 100.0);
+    if slab_per * 100.0 < 100.0 {
         println!("  That is nowhere near enough: the page store is NOT where the memory goes, and");
         println!("  the remaining structure is somewhere these counts do not reach.");
     }

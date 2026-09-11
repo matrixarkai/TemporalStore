@@ -392,7 +392,7 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> StoragePageFormatCompatibilityReport {
         let stats = self.page_store.stats();
-        let summary = self.page_store.band_summary();
+        let summary = self.page_store.slab_summary();
         StoragePageFormatCompatibilityReport {
             shard_id,
             page_format: "rust-page-envelope-v6".to_string(),
