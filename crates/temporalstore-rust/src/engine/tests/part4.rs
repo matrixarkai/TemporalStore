@@ -5896,6 +5896,154 @@ fn the_block_index_entry_count_falls_when_entries_go() {
     );
 }
 
+/// Is the lifecycle PLAN the fixed cost, or is it the rest of the apply?
+///
+///   cargo test --release -p temporalstore-rust --lib what_the_lifecycle_plan_costs_alone -- --ignored --nocapture --test-threads=1
+///
+/// `apply_storage_lifecycle` costs ~635 ms at 20k objects with every optional flag off, and the
+/// first thing it does unconditionally is `storage_lifecycle_plan`. The plan was already the
+/// subject of one large cut. This times the plan on its own against the whole call, so the
+/// remaining fixed cost is attributed to one side or the other rather than guessed at.
+#[test]
+#[ignore]
+fn what_the_lifecycle_plan_costs_alone() {
+    fn bare_request(shard_id: ShardId) -> crate::engine::reports::StorageLifecycleRequest {
+        crate::engine::reports::StorageLifecycleRequest {
+            shard_id,
+            selected_dump_buckets: Vec::new(),
+            max_dump_buckets_per_round: 0,
+            min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
+            purge_delayed_destroy: false,
+            prune_bucket_dump_manifests: false,
+            roll_forward_bucket_dump_installs: false,
+            follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_slab_id: None,
+            page_gc_raft_install_floor_slab_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
+            invalidate_cache: false,
+            warm_cache: false,
+        }
+    }
+
+    fn build(objects: usize) -> (tempfile::TempDir, TemporalEngine) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..objects {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("plan-cost-{index:06}"),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        (dir, engine)
+    }
+
+    for objects in [5_000usize, 20_000] {
+        let (_d1, engine) = build(objects);
+        let started = std::time::Instant::now();
+        let plan = engine.storage_lifecycle_plan(bare_request(1));
+        let plan_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = plan;
+
+        let (_d2, engine2) = build(objects);
+        let started = std::time::Instant::now();
+        let response = engine2.apply_storage_lifecycle(bare_request(1));
+        let apply_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = response;
+
+        // The SAME engine again. A cycle calls this three times, so if the second call is cheap
+        // the cost is first-call initialisation and not per-call work -- which is also the only
+        // way three calls fit inside a cycle shorter than three times this number.
+        let started = std::time::Instant::now();
+        let second = engine2.apply_storage_lifecycle(bare_request(1));
+        let second_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = second;
+        let started = std::time::Instant::now();
+        let third = engine2.apply_storage_lifecycle(bare_request(1));
+        let third_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = third;
+        eprintln!(
+            "  [plan] {objects:>6}   apply again on the SAME engine: 2nd {second_ms:>8.1} ms | 3rd {third_ms:>8.1} ms",
+        );
+
+        eprintln!(
+            "  [plan] {objects:>6} objects: plan alone {plan_ms:>8.1} ms | whole apply {apply_ms:>8.1} ms | plan is {:>5.1}% of it",
+            if apply_ms > 0.0 { plan_ms / apply_ms * 100.0 } else { 0.0 },
+        );
+
+        // The three calls the apply makes UNCONDITIONALLY after the plan. Note the manifest
+        // prune PLAN is computed even when pruning is switched off -- only the apply of it is
+        // gated -- so it is paid on every round regardless.
+        let (_d3, engine3) = build(objects);
+        let started = std::time::Instant::now();
+        let lifecycle = engine3.storage_object_lifecycle_snapshot_for_test(1);
+        let lifecycle_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = lifecycle;
+
+        let started = std::time::Instant::now();
+        let roll_forward = engine3.bucket_dump_install_roll_forward_reports(1);
+        let roll_forward_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = roll_forward;
+
+        let started = std::time::Instant::now();
+        let prune_plan =
+            engine3.bucket_dump_manifest_prune_plan_with_follower_cursors(1, Vec::new());
+        let prune_plan_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = prune_plan;
+
+        eprintln!(
+            "  [plan] {objects:>6}   of which: object_lifecycle_snapshot {lifecycle_ms:>8.1} ms | roll_forward_reports {roll_forward_ms:>7.1} ms | manifest_prune_PLAN {prune_plan_ms:>7.1} ms",
+        );
+
+        // The four sample builders the apply runs unconditionally at the end, purely to fill in
+        // REPORT fields. Timed under the same read lock the apply takes.
+        {
+            let shards = engine3.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 is loaded");
+
+            let started = std::time::Instant::now();
+            let index_snapshot = crate::engine::storage_bucket_internals::
+                storage_index_snapshot_with_samples(1, shard, Default::default());
+            let index_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let _ = index_snapshot;
+
+            let started = std::time::Instant::now();
+            let watermark = crate::engine::storage_bucket_internals::
+                storage_watermark_snapshot_with_samples(1, shard, Default::default());
+            let watermark_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let _ = watermark;
+
+            let started = std::time::Instant::now();
+            let gc = crate::engine::storage_bucket_internals::
+                storage_gc_snapshot_with_samples(1, shard, Default::default());
+            let gc_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let _ = gc;
+
+            let started = std::time::Instant::now();
+            let topology = crate::engine::storage_bucket_internals::
+                storage_topology_snapshot_with_samples(1, shard, Default::default());
+            let topology_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let _ = topology;
+
+            eprintln!(
+                "  [plan] {objects:>6}   SAMPLE BUILDERS: index {index_ms:>7.1} | watermark {watermark_ms:>7.1} | gc {gc_ms:>7.1} | topology {topology_ms:>7.1}  (sum {:>7.1} ms)",
+                index_ms + watermark_ms + gc_ms + topology_ms,
+            );
+        }
+    }
+}
+
 /// Where the reclaim_index stage's time actually goes.
 ///
 ///   cargo test --release -p temporalstore-rust --lib where_the_index_reclaim_time_goes -- --ignored --nocapture --test-threads=1
