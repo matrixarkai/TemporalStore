@@ -195,10 +195,9 @@ fn what_a_stored_object_costs_in_memory() {
 
 /// What a dump costs as the shard grows, and whether it costs the shard or the change.
 ///
-/// `flush_shard_index` writes the index out. The counterpart in the design this follows dumps a
-/// BOUNDED set of dirty slots per round -- `ReclaimOpLogWithLimit(N)` hands `DumpSlots` a capped
-/// list -- so the work of one dump is a function of the round limit, not of how much the shard
-/// holds. Ours has no such limit, and this measures what that means: if the time grows with the
+/// `flush_shard_index` writes the index out. A bounded dump takes a capped set of dirty buckets
+/// per round, so the work of one dump is a function of that cap and not of how much the shard
+/// holds. Ours has no such cap, and this measures what that means: if the time grows with the
 /// shard rather than with what changed since the last dump, then a store pays more to checkpoint
 /// the larger it gets, forever.
 ///
