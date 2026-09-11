@@ -1249,10 +1249,18 @@ SETTINGS.extend([
             "process starts. Read by matrixark_mcp_core."),
     Setting("limits.direct_raw_ingestion", "limits", "MATRIXARK_DIRECT_RAW_INGESTION",
             "Direct raw ingestion", "bool", "0", "live",
-            'Direct raw ingestion. Off by default. Read by matrixark_mcp_temporal_adapters.'),
+            "Writes the raw half of the dual write on the default backend. The mixin's "
+            "append_many performs it, but the adapter that wins the MRO does not, so with this "
+            "off the default backend writes raw records NOWHERE -- the only other caller runs "
+            "on the queue path, which is off by default too. On costs a second store write on "
+            "every ingest, under MATRIXARK_DIRECT_RAW_STORAGE_PREFIX, which must differ from "
+            "the serving prefix or the first raw append raises."),
     Setting("limits.direct_raw_ingestion_queue", "limits", "MATRIXARK_DIRECT_RAW_INGESTION_QUEUE",
             "Direct raw ingestion queue", "bool", "0", "live",
-            'Direct raw ingestion queue. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
+            "Sends raw ingestion batches through the background write queue instead of writing "
+            "them inline. It does NOTHING on its own: the branch also requires "
+            "MATRIXARK_DIRECT_WRITE_QUEUE to be on and its mode to be memory, so turning only "
+            "this one on changes nothing and reports nothing."),
     Setting("limits.direct_record_log_shard_size", "limits", "MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE",
             "Direct record log shard size", "int", "256", "restart",
             "Records per shard in the direct record log. Frozen when the process starts. Declared "
@@ -1269,7 +1277,11 @@ SETTINGS.extend([
             "matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("limits.direct_write_queue", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE",
             "Direct write queue", "bool", "0", "live",
-            'Direct write queue. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
+            "Hands a qualifying append batch to a daemon worker thread instead of writing it "
+            "on the calling thread. The queue holds MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS "
+            "records and an append waits _PUT_TIMEOUT_MS for room; the worker drains up to "
+            "_DRAIN_MAX_BATCHES at a time, into an in-memory queue or a durable one in the "
+            "store as _MODE says. Which batches qualify is the allow-sync-context setting."),
     Setting("limits.direct_write_queue_drain_max_batches", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES",
             "Direct write queue drain max batches", "int", "64", "live",
             'Direct write queue drain maximum batches. Defaults to 64. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
@@ -1401,7 +1413,12 @@ SETTINGS.extend([
             "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("retrieval.direct_write_queue_allow_sync_context", "retrieval", "MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT",
             "Direct write queue allow sync context", "bool", "0", "live",
-            'Direct write queue allow sync context. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
+            "Decides which batches the direct write queue will take, and does nothing unless "
+            "MATRIXARK_DIRECT_WRITE_QUEUE is on. Off, a batch qualifies only if at least one "
+            "record's storage_route asks for a background write and none asks for a sync "
+            "write -- one record asking to be written synchronously keeps the WHOLE batch on "
+            "the calling thread. On, any batch of records qualifies and storage_route is not "
+            "consulted."),
     Setting("retrieval.disable_native_context_pack", "retrieval", "MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK",
             "Disable native context pack", "bool", "0", "live",
             "Skips native ContextPack assembly so the retrieve falls back to the Python path, "
