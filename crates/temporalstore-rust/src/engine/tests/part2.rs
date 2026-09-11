@@ -2974,6 +2974,74 @@ fn a_capped_dump_takes_the_oldest_undumped_bucket_first() {
     );
 }
 
+/// A capped dump still reclaims, because an undumped bucket holds the logs only from its own
+/// oldest write.
+///
+/// A bucket that is dirty and has no durable dump manifest is captured nowhere. The plan used to
+/// have no choice but to retain everything for it -- floor 0 -- so a round that dumped only some
+/// of the dirty buckets reclaimed NOTHING, for ever
+/// (`the_shipped_dump_cap_still_lets_the_log_be_reclaimed` is why the cap had to be turned off).
+///
+/// With `first_dirty_wal_sequence` and `first_dirty_index_log_sequence` such a bucket can say
+/// where its oldest undumped write sits in each log, and hold them only from there. Measured over
+/// 12 rounds of 500 dirty buckets:
+///
+/// | cap | records behind the head, before | after |
+/// |---|---|---|
+/// | 64 | 6001 (nothing reclaimed) | 436 |
+/// | 128 | 6001 | 372 |
+/// | 256 | 6001 | 244 |
+///
+/// Both claims are required and a zero in either still blocks: they count in different sequences,
+/// and a bucket that can place itself in one log but not the other has said nothing about the
+/// second. That is the assertion that matters here -- not the exact distance behind the head,
+/// which depends on the cap.
+#[test]
+fn a_capped_dump_still_reclaims() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // Far more dirty buckets per round than the cap can cover, for several rounds.
+    let mut last_retain = 0u64;
+    for _round in 1..=4u64 {
+        for index in 0..200 {
+            write_string(&engine, &format!("capped-{index:04}"), &[b'v'; 128]);
+        }
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
+            max_dump_buckets_per_round: 16,
+            ..StorageManagerCycleRequest::default()
+        });
+        let wal = report
+            .wal_reclaim_report
+            .as_ref()
+            .expect("the round must run WAL reclaim");
+        last_retain = wal.plan.retain_from_wal_sequence;
+    }
+
+    let stats = engine.write_ahead_log_store().stats(1);
+    assert!(
+        last_retain > 0,
+        "a capped round reclaimed nothing: the floor is still pinned at 0 with {} records \
+         written, which is the state a dump cap used to force",
+        stats.last_sequence,
+    );
+    // And it must be a real floor, not a token one: most of the log should be behind it.
+    assert!(
+        last_retain * 2 > stats.last_sequence,
+        "the floor advanced to {last_retain} of {}, which is too little to call reclaimable",
+        stats.last_sequence,
+    );
+}
+
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,

@@ -1154,15 +1154,39 @@ impl TemporalEngine {
                 // barrier only under the TS_WAL_LEGACY_RECOVERY escape hatch (wal_single_barrier
                 // false -> delta-fold recovery, which trusts the durable delta).
                 let index_log_durable = !raft_applying() && !wal_single_barrier();
-                let _ = self.index_log_store.append_delta(
-                    request.shard_id,
-                    items,
-                    key_states,
-                    shard.applied_wal_sequence,
-                    None,
-                    upsert_record,
-                    index_log_durable,
-                );
+                let appended_index_log_sequence = self
+                    .index_log_store
+                    .append_delta(
+                        request.shard_id,
+                        items,
+                        key_states,
+                        shard.applied_wal_sequence,
+                        None,
+                        upsert_record,
+                        index_log_durable,
+                    )
+                    .unwrap_or(0);
+                // The index-log half of what each dirtied bucket holds, stamped the same way as
+                // the WAL half above and for the same reason: the reclaim plan keeps two
+                // frontiers, counted in two different sequences, and a bucket that can place
+                // itself in only one of them can hold neither.
+                //
+                // `append_delta` returns 0 when it wrote nothing (bulk ingest, or the log
+                // disabled), which is exactly "no claim" -- so the guard is the same one.
+                if appended_index_log_sequence > 0 {
+                    for key in &delta_command_keys {
+                        let routing_bucket =
+                            page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                        if let Some(bucket) =
+                            shard.bucket_index.bucket_map.get_mut(&routing_bucket)
+                        {
+                            if bucket.first_dirty_index_log_sequence == 0 {
+                                bucket.first_dirty_index_log_sequence =
+                                    appended_index_log_sequence;
+                            }
+                        }
+                    }
+                }
             }
         }
         // Release the `shards` write lock BEFORE the durable barrier. A concurrent same-shard

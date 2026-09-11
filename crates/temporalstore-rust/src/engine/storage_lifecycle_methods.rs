@@ -516,6 +516,7 @@ impl TemporalEngine {
                 // The dump captured everything this bucket had, so it holds no claim over the
                 // log until it is written to again.
                 bucket.first_dirty_wal_sequence = 0;
+                bucket.first_dirty_index_log_sequence = 0;
                 for page in bucket.page_index.values_mut() {
                     page.dirty = false;
                 }
@@ -684,6 +685,34 @@ impl TemporalEngine {
             .get(&shard_id)
             .map(bucket_generation_fingerprints_by_bucket)
             .unwrap_or_default();
+        // What each bucket holds over the two logs when no manifest covers it.
+        //
+        // A dirty bucket with no durable dump manifest is captured nowhere, so the only answer
+        // the plan could give for it was "retain everything" -- floor 0. These two claims say
+        // where the bucket's oldest undumped write actually sits, so it can hold the logs from
+        // there instead of from the beginning.
+        let bucket_claims = self
+            .shards
+            .read()
+            .expect("shards lock poisoned")
+            .get(&shard_id)
+            .map(|shard| {
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .iter()
+                    .map(|(routing_bucket, bucket)| {
+                        (
+                            *routing_bucket,
+                            (
+                                bucket.first_dirty_wal_sequence,
+                                bucket.first_dirty_index_log_sequence,
+                            ),
+                        )
+                    })
+                    .collect::<std::collections::HashMap<u32, (u64, u64)>>()
+            })
+            .unwrap_or_default();
         let manifests = self.list_bucket_dump_manifests(shard_id);
         let mut missing_bucket_generations = Vec::new();
         let mut retained_manifest_ids = BTreeSet::<String>::new();
@@ -771,7 +800,32 @@ impl TemporalEngine {
                 })
                 .map(|(_, manifest)| manifest);
             let Some(manifest) = matching_manifest else {
-                missing_bucket_generations.push(summary.routing_bucket);
+                // No manifest covers this bucket. It is still allowed to hold the logs only from
+                // its own oldest undumped write, PROVIDED it can name that point in both logs.
+                //
+                // `retain_from_* = frontier + 1`, so a bucket needing everything from `F` onward
+                // contributes `F - 1`: records at or below that are reclaimable, `F` and above
+                // are kept.
+                //
+                // BOTH claims are required. They count in different sequences -- one in the
+                // write-ahead log, one in the index log -- and a bucket that can place itself in
+                // one but not the other has said nothing about the second. A zero in either means
+                // NO CLAIM RECORDED, and the only safe reading of "unknown" is the old one:
+                // block, and retain everything. Treating unknown as "nothing to retain" is the
+                // direction that loses committed records.
+                let (wal_claim, index_log_claim) = bucket_claims
+                    .get(&summary.routing_bucket)
+                    .copied()
+                    .unwrap_or((0, 0));
+                if wal_claim > 0 && index_log_claim > 0 {
+                    durable_wal_frontier =
+                        durable_wal_frontier.min(wal_claim.saturating_sub(1));
+                    durable_index_log_frontier =
+                        durable_index_log_frontier.min(index_log_claim.saturating_sub(1));
+                    covered_bucket_count = covered_bucket_count.saturating_add(1);
+                } else {
+                    missing_bucket_generations.push(summary.routing_bucket);
+                }
                 continue;
             };
             retained_manifest_ids.insert(manifest.manifest_id.clone());
