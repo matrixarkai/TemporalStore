@@ -475,6 +475,9 @@ impl TemporalEngine {
                 // Record the dumped-log sequence (informational; not part of the fingerprint).
                 bucket.last_dump_sequence = bucket.last_dump_sequence.max(manifest.wal_sequence);
                 bucket.dirty = false;
+                // The dump captured everything this bucket had, so it holds no claim over the
+                // log until it is written to again.
+                bucket.first_dirty_wal_sequence = 0;
                 for page in bucket.page_index.values_mut() {
                     page.dirty = false;
                 }

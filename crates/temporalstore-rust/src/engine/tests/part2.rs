@@ -2835,6 +2835,81 @@ fn the_log_stays_bounded_under_continuous_writing() {
     );
 }
 
+/// A bucket remembers the log sequence of its OLDEST undumped write.
+///
+/// That is the floor the bucket holds over the write-ahead log. Reclaim frees the log below the
+/// oldest sequence any bucket still needs, and a dirty bucket with no durable dump manifest is
+/// captured nowhere -- so without this the only safe answer for it is 0, and one such bucket pins
+/// the entire log for ever. That is what made a capped dump stop reclaim completely
+/// (`the_shipped_dump_cap_still_lets_the_log_be_reclaimed`).
+///
+/// Three properties, and the middle one is the one that is easy to get wrong:
+///
+///  * a write to a clean bucket records THIS write's sequence;
+///  * a second write to an already-dirty bucket does NOT move it forward -- it is the oldest
+///    undumped write, not the newest;
+///  * a dump clears it, because the dump captured everything the bucket held.
+#[test]
+fn a_bucket_remembers_its_oldest_undumped_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    write_string(&engine, "first", b"one");
+    let after_first = engine.first_dirty_sequences_for_test(1);
+    let claimed = after_first
+        .iter()
+        .filter(|(_, sequence)| *sequence > 0)
+        .count();
+    assert!(
+        claimed > 0,
+        "a write left no bucket holding a claim over the log: {after_first:?}"
+    );
+    let first_claim = after_first
+        .iter()
+        .map(|(_, sequence)| *sequence)
+        .filter(|sequence| *sequence > 0)
+        .min()
+        .expect("a claim");
+
+    // More writes to OTHER keys, then the same key again. The first key's bucket must still
+    // point at its original write, not at the later one.
+    for index in 0..20 {
+        write_string(&engine, &format!("other-{index:02}"), b"value");
+    }
+    write_string(&engine, "first", b"two");
+    let after_more = engine.first_dirty_sequences_for_test(1);
+    let still = after_more
+        .iter()
+        .map(|(_, sequence)| *sequence)
+        .filter(|sequence| *sequence > 0)
+        .min()
+        .expect("a claim");
+    assert_eq!(
+        still, first_claim,
+        "the oldest claim moved forward when a dirty bucket was written again; it must stay at \
+         the OLDEST undumped write, or reclaim would free records still needed"
+    );
+
+    // A dump captures everything, so nothing holds a claim afterwards.
+    engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        ..StorageManagerCycleRequest::default()
+    });
+    let after_dump = engine.first_dirty_sequences_for_test(1);
+    assert!(
+        after_dump.iter().all(|(_, sequence)| *sequence == 0),
+        "a dump captured every bucket, so none may still hold a claim: {after_dump:?}"
+    );
+}
+
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,

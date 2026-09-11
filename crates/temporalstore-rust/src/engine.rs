@@ -747,6 +747,10 @@ impl TemporalEngine {
         // write's durable barrier out of the `shards` lock (TS_ENGINE_CONCURRENT_COMMIT).
         // The barrier is awaited AFTER the lock is released, just before the ack.
         let mut pending_barrier_seq: Option<u64> = None;
+        // The sequence this write took, whichever append path assigned it. Separate from
+        // `pending_barrier_seq`, which means "the barrier for this sequence is deferred" and is
+        // set on only one of the two paths.
+        let mut appended_sequence: Option<u64> = None;
         if outcome.mutated {
             let object_keys = command_object_keys(&command);
             // Capture this write's touched keys for the O(delta) index-log append below
@@ -942,7 +946,10 @@ impl TemporalEngine {
                                 std::mem::take(&mut carried_pages)
                             },
                         )
-                        .map(|record| Some(record.sequence))
+                        .map(|record| {
+                            appended_sequence = Some(record.sequence);
+                            Some(record.sequence)
+                        })
                 } else {
                     self.wal_store
                         .append_with_outcomes(
@@ -967,6 +974,7 @@ impl TemporalEngine {
                             std::mem::take(&mut staged_outcomes),
                         )
                         .map(|(record, log_id)| {
+                            appended_sequence = Some(record.sequence);
                             // Point every page this record carries at the record, keyed on the
                             // object id the write derived -- which is what the stored address
                             // carries, so a read finds it by identity rather than by timing.
@@ -1002,6 +1010,32 @@ impl TemporalEngine {
                         // full replay re-derives the page.
                         for (object_id, placement) in wal_resident_updates.drain(..) {
                             shard.wal_resident_pages.insert(object_id, placement);
+                        }
+                        // Record where this write sits in the log, for every bucket it dirtied
+                        // that did not already have a claim.
+                        //
+                        // Done HERE rather than where the bucket is marked dirty, because the
+                        // mark happens before the append and the sequence does not exist yet at
+                        // that point. Both the sync and the async mark paths run above this, so
+                        // one pass covers them.
+                        //
+                        // Only when unset: the field is the OLDEST undumped write, so a second
+                        // write to an already-dirty bucket must not move it forward.
+                        if let Some(sequence) = appended_sequence {
+                            for key in &delta_command_keys {
+                                let routing_bucket = page_routing_bucket(
+                                    key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                );
+                                if let Some(bucket) =
+                                    shard.bucket_index.bucket_map.get_mut(&routing_bucket)
+                                {
+                                    if bucket.first_dirty_wal_sequence == 0 {
+                                        bucket.first_dirty_wal_sequence = sequence;
+                                    }
+                                }
+                            }
                         }
                         // In concurrent-commit mode remember the reserved sequence; its durable
                         // barrier is awaited after the `shards` lock is dropped (below). The ack
