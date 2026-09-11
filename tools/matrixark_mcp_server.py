@@ -279,8 +279,8 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # scope_key -> (scope_dict, due_ms). Populated at ingest time; drained by the loop.
         self._stream_materialize_registry: dict[str, tuple[Json, int]] = {}
         self._stream_materialize_registry_lock = threading.Lock()
-        self._operation_backpressure_timeout_ms = max(0, int(os.environ.get("MATRIXARK_BACKPRESSURE_TIMEOUT_MS", "100")))
-        self._retrieve_shed_cooldown_ms = max(0, int(os.environ.get("MATRIXARK_RETRIEVE_SHED_COOLDOWN_MS", "0")))
+        self._operation_backpressure_timeout_ms = max(0, int(os.environ.get("MATRIXARK_BACKPRESSURE_TIMEOUT_MS", "").strip() or "100"))
+        self._retrieve_shed_cooldown_ms = max(0, int(os.environ.get("MATRIXARK_RETRIEVE_SHED_COOLDOWN_MS", "").strip() or "0"))
         self._retrieve_shed_until_perf = 0.0
         self._retrieve_shed_lock = threading.Lock()
         # Audits default OFF: audit records live in the main record log, so with auditing on a
@@ -288,7 +288,7 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # the off-request-path auditing; full/sync restore per-call durability.
         self._audit_mode_default = os.environ.get("MATRIXARK_AUDIT_MODE", "off").strip().lower() or "off"
         from matrixark_mcp_audit_queue import AuditWriteQueue  # sibling; keeps this module small
-        self._audit_queue = AuditWriteQueue(int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "2")))
+        self._audit_queue = AuditWriteQueue(int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "").strip() or "2"))
         self._operation_limiters = {
             group: threading.BoundedSemaphore(max(1, int(capacity)))
             for group, capacity in self.DEFAULT_OPERATION_CONCURRENCY.items()
@@ -772,7 +772,7 @@ def main() -> int:
         "--http-port",
         type=int,
         # 0 is a MODE (stdio), not a bind port -- test_numeric_defaults_agree, JUSTIFIED entry.
-        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "0")),
+        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "").strip() or "0"),
         help="If non-zero, serve the browser portal and /api JSON facade instead of stdio MCP. Exporting MATRIXARK_HTTP_PORT globally rather than per service turns this server into a portal and an MCP client finds nothing.",
     )
     parser.add_argument(

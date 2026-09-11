@@ -191,7 +191,7 @@ class MatrixArkServerRequestPolicyMixin:
         max_context_tokens = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
-        record_limit = int(os.environ.get("MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT", "0"))
+        record_limit = int(os.environ.get("MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT", "").strip() or "0")
         backend_label = str(getattr(self.adapter, "_backend_label", lambda: "local")())
         pack_required = native_context_pack_required(backend_label)
         if reason == "service_backpressure":

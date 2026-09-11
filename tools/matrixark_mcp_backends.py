@@ -149,13 +149,13 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--request-timeout-ms",
         type=int,
-        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")),
+        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "").strip() or "60000"),
         help="Per-request timeout for the native TemporalStore SDK.",
     )
     parser.add_argument(
         "--io-timeout-ms",
         type=int,
-        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")),
+        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "").strip() or "60000"),
         help="BRPC I/O timeout for the native TemporalStore SDK.",
     )
 

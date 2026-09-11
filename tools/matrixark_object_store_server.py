@@ -256,7 +256,7 @@ class ObjectStoreHandler(BaseHTTPRequestHandler):
 
 def main() -> int:
     host = os.environ.get("MATRIXARK_OBJECT_STORE_SERVE_HOST", "127.0.0.1")
-    port = int(os.environ.get("MATRIXARK_OBJECT_STORE_SERVE_PORT", "17200"))
+    port = int(os.environ.get("MATRIXARK_OBJECT_STORE_SERVE_PORT", "").strip() or "17200")
     data_dir = _data_dir()
     os.makedirs(data_dir, exist_ok=True)
     httpd = ThreadingHTTPServer((host, port), ObjectStoreHandler)

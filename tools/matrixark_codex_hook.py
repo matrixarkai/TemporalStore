@@ -226,7 +226,7 @@ def _default_additional_context_char_limit() -> int:
     try:
         return max(
             1000,
-            int(os.environ.get("MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT", "40000")),
+            int(os.environ.get("MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT", "").strip() or "40000"),
         )
     except ValueError:
         return 40000
@@ -2456,10 +2456,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rust-direct-sdk", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", ""))
     parser.add_argument("--rust-cli", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:codex-hook"))
-    parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")))
-    parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")))
-    parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
-    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", str(DEFAULT_IDLE_COMMIT_TIMEOUT_MS))))
+    parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "").strip() or "60000"))
+    parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "").strip() or "60000"))
+    parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "").strip() or "20"))
+    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "").strip() or str(DEFAULT_IDLE_COMMIT_TIMEOUT_MS)))
     parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--extraction-provider", default=os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
@@ -2481,7 +2481,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rollout-backfill-delay-ms",
         type=int,
-        default=int(os.environ.get("MATRIXARK_ROLLOUT_BACKFILL_DELAY_MS", "3500")),
+        default=int(os.environ.get("MATRIXARK_ROLLOUT_BACKFILL_DELAY_MS", "").strip() or "3500"),
     )
     parser.add_argument(
         "--codex-strict-output",

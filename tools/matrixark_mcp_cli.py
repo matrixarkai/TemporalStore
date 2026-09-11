@@ -46,7 +46,7 @@ def main() -> int:
         # simply finds nothing. Nothing ships that way -- the port is set in the cloud-api image,
         # the compose file and the gateway config, none of which launch this -- but a hand-rolled
         # environment can, and the failure looks like the MCP server never started.
-        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "0")),
+        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "").strip() or "0"),
         help="If non-zero, serve the browser portal and /api JSON facade instead of stdio MCP.",
     )
     parser.add_argument(

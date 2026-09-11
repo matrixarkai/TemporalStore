@@ -1216,8 +1216,8 @@ def main() -> int:
         "embedding_model": mcp_core.embedding_model_name(),
         "embedding_execution_mode": mcp_core.embedding_execution_mode_name(),
         "summary_refresh_policy": {
-            "background_interval_ms": int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000")),
-            "background_limit": int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64")),
+            "background_interval_ms": int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "").strip() or "1000"),
+            "background_limit": int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "").strip() or "64"),
             "boundary_refresh_tool": "matrixark_refresh_summaries",
             "node_l1_policy": "generate when child summaries, >=3 source events, or >=180 estimated source tokens",
         },

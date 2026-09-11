@@ -25,10 +25,7 @@ def initialize_rust_proxy_config(target: Any, *, request_timeout_ms: int) -> Non
     target._backpressure_timeout_s = max(
         0.05,
         int(
-            os.environ.get(
-                "MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS",
-                os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms)),
-            )
+            os.environ.get("MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS", "").strip() or os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms))
         )
         / 1000.0,
     )

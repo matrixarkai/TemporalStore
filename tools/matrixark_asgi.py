@@ -145,7 +145,7 @@ def main() -> int:
     uvicorn.run(
         create_app(),
         host=os.environ.get("MATRIXARK_HTTP_HOST", "0.0.0.0"),
-        port=int(os.environ.get("MATRIXARK_HTTP_PORT", "8080")),
+        port=int(os.environ.get("MATRIXARK_HTTP_PORT", "").strip() or "8080"),
     )
     return 0
 

@@ -3037,12 +3037,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
         self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
         self._direct_write_queue_enabled = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE", False)
-        self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "10000")))
-        self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "1000")) / 1000.0)
+        self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "").strip() or "10000"))
+        self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "").strip() or "1000") / 1000.0)
         self._direct_write_queue_mode = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MODE", "memory").strip().lower() or "memory"
         if self._direct_write_queue_mode not in {"memory", "temporalstore"}:
             raise MatrixArkError("MATRIXARK_DIRECT_WRITE_QUEUE_MODE must be memory or temporalstore")
-        self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "64")))
+        self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "").strip() or "64"))
         self._direct_write_queue_allow_sync_context = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", False)
         self._direct_write_queue_autostart = True
         self._native_side_index_assume_fresh = env_bool("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", False)
@@ -3218,9 +3218,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         if not hasattr(self, "_context_pack_cache"):
             self._context_pack_cache = {}
         if not hasattr(self, "_context_pack_cache_max_entries"):
-            self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "256")))
+            self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "").strip() or "256"))
         if not hasattr(self, "_context_pack_cache_ttl_s"):
-            self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "30")))
+            self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "").strip() or "30"))
         if not hasattr(self, "_disk_fallback_adapter"):
             self._disk_fallback_adapter = None
         if not hasattr(self, "_disk_fallback_path"):
@@ -3697,10 +3697,10 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             )
             / 1000.0,
         )
-        self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "4")))
-        self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "4")))
-        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "8")))
-        self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
+        self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "").strip() or "4"))
+        self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "").strip() or "4"))
+        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "").strip() or "8"))
+        self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "").strip() or "1"))
         self._shared_process_mode = env_bool("MATRIXARK_RUST_PROXY_SHARED_PROCESS", True)
         self._proxy_socket = os.environ.get("MATRIXARK_RUST_PROXY_SOCKET", "").strip()
         # HTTP straight to the proxy, replacing the unix socket AND the Python daemon that owned
@@ -5501,7 +5501,7 @@ _LIBC_LOOKED_UP = False
 def _trim_threshold_bytes() -> int:
     """Payload bytes that must pass before a trim earns its walk. 0 switches it off."""
     try:
-        return max(0, int(os.environ.get("MATRIXARK_GATEWAY_TRIM_BYTES", str(64 * 1024 * 1024))))
+        return max(0, int(os.environ.get("MATRIXARK_GATEWAY_TRIM_BYTES", "").strip() or str(64 * 1024 * 1024)))
     except ValueError:
         return 64 * 1024 * 1024
 

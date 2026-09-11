@@ -781,7 +781,7 @@ LOCAL_JSONL_RETENTION_AGE_MS = positive_int_env("MATRIXARK_LOCAL_JSONL_RETENTION
 def _memory_purge_threshold() -> int:
     """Tombstone count that auto-triggers a physical purge after delete/forget. 0 (default) = off."""
     try:
-        return max(0, int(os.environ.get("MATRIXARK_MEMORY_PURGE_THRESHOLD", "0")))
+        return max(0, int(os.environ.get("MATRIXARK_MEMORY_PURGE_THRESHOLD", "").strip() or "0"))
     except (TypeError, ValueError):
         return 0
 
@@ -4300,8 +4300,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # emitted, so a value's dict record is written once. Lazily seeded from the log on first write.
         self._intern_emitted_tokens: set[tuple[str, str]] = set()
         self._intern_tokens_seeded = False
-        self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
-        self._resource_import_queue_max = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", "64")))
+        self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "").strip() or "2"))
+        self._resource_import_queue_max = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", "").strip() or "64"))
         self._resource_import_queue: thread_queue.Queue[Json] = thread_queue.Queue(maxsize=self._resource_import_queue_max)
         self._resource_import_workers_started = False
         self._resource_import_worker_lock = threading.RLock()
@@ -4357,8 +4357,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._retrieval_records_cache: dict[tuple[Any, ...], Json] = {}
         self._context_pack_cache_lock = threading.RLock()
         self._context_pack_cache: dict[tuple[Any, ...], tuple[float, Json]] = {}
-        self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "256")))
-        self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "30")))
+        self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "").strip() or "256"))
+        self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "").strip() or "30"))
         # Event-membership index: event_id_hash -> {member identity hashes} (see
         # `build_event_member_index`). The authoritative O(1) enumeration of what a delete/update must
         # sweep; rebuilt lazily from the live view and invalidated whenever the read caches clear. An

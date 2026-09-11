@@ -662,7 +662,7 @@ class _LocalAdapterSummariesMixin:
         import os as _os
         import time as _time
         try:
-            pass_budget_ms = int(_os.environ.get("MATRIXARK_SUMMARY_REFRESH_PASS_BUDGET_MS", "30000"))
+            pass_budget_ms = int(_os.environ.get("MATRIXARK_SUMMARY_REFRESH_PASS_BUDGET_MS", "").strip() or "30000")
         except (TypeError, ValueError):
             pass_budget_ms = 30000
         pass_deadline = (_time.monotonic() + pass_budget_ms / 1000.0) if pass_budget_ms > 0 else None
