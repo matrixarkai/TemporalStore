@@ -475,10 +475,6 @@ SETTINGS: List[Setting] = [
             "row the pack is built from, so every field it drops is a field the answer cannot "
             "print. Shipped once dropping the text, and retrieval returned an empty string for "
             "every hit."),
-    Setting("retrieval.scan_visits_path", "retrieval", "MATRIXARK_SCAN_VISITS_PATH",
-            "Scan visits the node path", "bool", "0", "live",
-            "Read by the retrieve path and offered nowhere until now. Off is the shipped "
-            "behaviour."),
     Setting("retrieval.timeout_ms", "retrieval", "MATRIXARK_RETRIEVAL_TIMEOUT_MS",
             "Retrieval deadline (ms)", "int", "0", "live",
             "How long a retrieve may keep working before it returns what it has. 0 means no "
