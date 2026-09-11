@@ -30,9 +30,47 @@ impl TemporalEngine {
             .iter()
             .filter(|summary| summary.dirty_object_count > 0)
             .collect::<Vec<_>>();
+        // Oldest undumped write first: the bucket that has held the log longest is dumped first.
+        //
+        // `last_dump_sequence` answers "when was this bucket last dumped", which is a proxy for
+        // "most overdue" and not the same question. What holds the log is the bucket's OLDEST
+        // UNDUMPED WRITE, and `first_dirty_wal_sequence` is that
+        // -- so ordering by it dumps the bucket pinning the log's floor first, and no bucket can
+        // be starved indefinitely while older ones keep being re-dirtied.
+        //
+        // Read from the bucket node rather than added to `BucketStorageSummary`: a summary is
+        // stored in the dump manifest and compared field-by-field when a manifest is validated,
+        // so a new field there is a durability contract, not a report field.
+        //
+        // 0 means no claim recorded, which sorts LAST: a bucket we cannot place in the log is not
+        // evidence of being old, and the ones we can place are the ones whose dump moves the
+        // floor.
+        let first_dirty_by_bucket = self
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .get(&request.shard_id)
+            .map(|shard| {
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .iter()
+                    .map(|(routing_bucket, bucket)| {
+                        (*routing_bucket, bucket.first_dirty_wal_sequence)
+                    })
+                    .collect::<std::collections::HashMap<u32, u64>>()
+            })
+            .unwrap_or_default();
+        let first_dirty_rank = |routing_bucket: u32| -> u64 {
+            match first_dirty_by_bucket.get(&routing_bucket).copied() {
+                Some(0) | None => u64::MAX,
+                Some(sequence) => sequence,
+            }
+        };
         dirty_bucket_summaries.sort_by(|left, right| {
-            left.last_dump_sequence
-                .cmp(&right.last_dump_sequence)
+            first_dirty_rank(left.routing_bucket)
+                .cmp(&first_dirty_rank(right.routing_bucket))
+                .then_with(|| left.last_dump_sequence.cmp(&right.last_dump_sequence))
                 .then_with(|| left.routing_bucket.cmp(&right.routing_bucket))
         });
         let dirty_buckets = dirty_bucket_summaries
