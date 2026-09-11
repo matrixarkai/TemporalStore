@@ -664,8 +664,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         let before_slabs = collect_live_block_slab_ids(shard);
         let before = compaction_utility_report(&self.page_store, shard);
-        let tombstoned_object_ids_before =
-            storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
+        let delete_marked_object_ids_before =
+            storage_object_lifecycle_report(shard_id, shard).delete_marked_object_ids;
         let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
         let object_manager_before =
             object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
@@ -901,8 +901,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let after_slabs = collect_live_block_slab_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
         rebuild_bucket_page_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
-        let tombstoned_object_ids_after =
-            storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
+        let delete_marked_object_ids_after =
+            storage_object_lifecycle_report(shard_id, shard).delete_marked_object_ids;
         let object_manager_after =
             object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let bucket_layout_transition_count_after = object_manager_after.layout_transition_count;
@@ -913,10 +913,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .collect::<Vec<_>>();
         let reclaimable_stale_block_slab_count = stale_block_slab_ids.len();
         let model_policy_family_count = before.model_policies.len();
-        let tombstone_policy_model_count = before
+        let delete_marker_policy_model_count = before
             .model_policies
             .iter()
-            .filter(|policy| policy.tombstone_compaction_triggered)
+            .filter(|policy| policy.delete_marker_compaction_triggered)
             .count();
         let stale_density_policy_model_count = before
             .model_policies
@@ -953,7 +953,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let bucket_layout_transition_count =
             bucket_layout_transition_count_after.saturating_sub(bucket_layout_transition_count_before);
         let has_model_layouts = !model_layouts_before.is_empty();
-        let preserves_tombstones = tombstoned_object_ids_after >= tombstoned_object_ids_before;
+        let preserves_delete_markers = delete_marked_object_ids_after >= delete_marked_object_ids_before;
         let improves_density =
             before.live_ref_density_basis_points <= after.live_ref_density_basis_points;
         let has_layout_transitions = bucket_layout_transition_count > 0
@@ -967,7 +967,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         if !has_model_layouts {
             model_layout_compaction_blockers.push("model layout report is empty".to_string());
         }
-        if !preserves_tombstones {
+        if !preserves_delete_markers {
             model_layout_compaction_blockers
                 .push("tombstone object count decreased during compaction".to_string());
         }
@@ -1007,15 +1007,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
             stale_block_slab_ids,
             reclaimable_stale_block_slab_count,
             model_policy_family_count,
-            tombstone_policy_model_count,
+            delete_marker_policy_model_count,
             stale_density_policy_model_count,
             layout_aware_policy_model_count,
             model_rewrite_policies: rewrite_stats.into_reports(&before),
             rewritten_object_pages,
             bucket_layout_transition_count,
             bucket_layout_states_after,
-            tombstoned_object_ids_before,
-            tombstoned_object_ids_after,
+            delete_marked_object_ids_before,
+            delete_marked_object_ids_after,
             model_layouts: model_layouts_before,
             before,
             after,

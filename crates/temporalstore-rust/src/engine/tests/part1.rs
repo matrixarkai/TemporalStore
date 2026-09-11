@@ -1636,7 +1636,7 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
 
 #[test]
 // shared-corpus: storage_dump_load_recovery storage_cache_refill storage_tombstone_compaction;
-fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
+fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -1753,7 +1753,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(async_response.status.ok, "{async_response:?}");
 
     let before = engine.storage_recovery_report(1);
-    assert!(before.object_lifecycle.tombstoned_object_ids >= 1);
+    assert!(before.object_lifecycle.delete_marked_object_ids >= 1);
     assert!(before.object_lifecycle.stale_object_ids >= 1);
 
     let report = engine.compact_shard_pages(1).unwrap();
@@ -1775,7 +1775,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         report.stale_block_slab_ids.len()
     );
     assert!(report.model_policy_family_count >= 6);
-    assert!(report.tombstone_policy_model_count >= 1);
+    assert!(report.delete_marker_policy_model_count >= 1);
     assert!(report.stale_density_policy_model_count >= 1);
     assert!(report.layout_aware_policy_model_count >= 5);
     assert!(report.before.stale_page_estimate >= 1);
@@ -1784,10 +1784,10 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         report.before.live_ref_density_basis_points < report.after.live_ref_density_basis_points
     );
     assert_eq!(
-        report.tombstoned_object_ids_before,
-        report.tombstoned_object_ids_after
+        report.delete_marked_object_ids_before,
+        report.delete_marked_object_ids_after
     );
-    assert!(report.tombstoned_object_ids_after >= 1);
+    assert!(report.delete_marked_object_ids_after >= 1);
 
     let layout = |kind: &str| {
         report
@@ -1865,7 +1865,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     );
     assert!(after
         .object_lifecycle
-        .tombstoned_object_keys
+        .delete_marked_object_keys
         .iter()
         .any(|key| key == "compact-set"));
     let object_runtime = engine.object_manager_runtime_report(1);

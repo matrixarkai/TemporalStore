@@ -1576,7 +1576,7 @@ fn wal_replay_gap_refuses_load_like_dataloss() {
 }
 
 #[test]
-fn expiry_sweep_emits_wal_tombstone_like_native() {
+fn expiry_sweep_emits_wal_delete_marker_like_native() {
     // Active expiry is a logged, replicated delete. Rust's sweep must append a
     // WAL tombstone per expired key so followers / WAL replay observe the deletion,
     // instead of removing only in-memory + index.

@@ -7905,7 +7905,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     }
 
     #[test]
-    fn a_tombstone_with_no_stamp_is_still_left_alone() {
+    fn a_delete_marker_with_no_stamp_is_still_left_alone() {
         // Retention starts from the drop stamps now instead of walking every
         // resource. That is the same set only because a tombstone with no stamp
         // is never collected -- it predates the stamps, and treating it as

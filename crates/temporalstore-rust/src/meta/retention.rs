@@ -1240,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn tombstones_past_their_retention_are_collected() {
+    fn delete_markers_past_their_retention_are_collected() {
         let result = plan(
             &candidates(&[("old-server", NOW - 2 * DAY)]),
             &candidates(&[("old-proxy", NOW - 2 * DAY)]),
@@ -1256,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn a_recent_tombstone_is_kept() {
+    fn a_recent_delete_marker_is_kept() {
         // Retention exists so an operator can still see what was decommissioned
         // an hour ago.
         let result = plan(
@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tombstone_with_no_timestamp_is_left_alone() {
+    fn a_delete_marker_with_no_timestamp_is_left_alone() {
         // Pre-existing tombstones carry no drop time. Treating a missing
         // timestamp as "infinitely old" would purge the entire history on the
         // first round after an upgrade.
@@ -1466,7 +1466,7 @@ mod tests {
     }
 
     #[test]
-    fn a_resource_that_comes_back_loses_its_tombstone_clock() {
+    fn a_resource_that_comes_back_loses_its_delete_marker_clock() {
         // Re-registering a dropped server must not leave it scheduled for
         // collection while it is serving.
         let meta = SingleNodeMeta::default();

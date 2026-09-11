@@ -3106,7 +3106,7 @@ mod tests {
     // A delete applied BEFORE the checkpoint rides the published served index/pages: a follower
     // restoring from shared storage sees the key as a miss without ever replaying a WAL tail.
     #[tokio::test]
-    async fn delete_tombstone_replicates_in_shared_store_base_index() {
+    async fn delete_delete_marker_replicates_in_shared_store_base_index() {
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
@@ -3170,7 +3170,7 @@ mod tests {
     // A delete published as a WAL-tail entry replicates too: a follower that restored a base where
     // the key was still live applies the tail delete on replay and then reads it as a miss.
     #[tokio::test]
-    async fn delete_tombstone_replicates_via_wal_tail() {
+    async fn delete_delete_marker_replicates_via_wal_tail() {
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);

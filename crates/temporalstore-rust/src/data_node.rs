@@ -732,9 +732,11 @@ pub struct CompactionResponse {
     #[serde(default)]
     pub rewritten_object_pages: usize,
     #[serde(default)]
-    pub tombstoned_object_ids_before: u64,
+    #[serde(rename = "tombstoned_object_ids_before")]
+    pub delete_marked_object_ids_before: u64,
     #[serde(default)]
-    pub tombstoned_object_ids_after: u64,
+    #[serde(rename = "tombstoned_object_ids_after")]
+    pub delete_marked_object_ids_after: u64,
     #[serde(default)]
     pub model_layouts: Vec<ShardCompactionModelLayoutReport>,
     #[serde(default)]

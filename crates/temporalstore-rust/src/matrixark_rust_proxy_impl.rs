@@ -11755,7 +11755,7 @@ mod tests {
     }
 
     #[test]
-    fn native_forget_tombstones_survive_wal_replay_recovery() {
+    fn native_forget_delete_markers_survive_wal_replay_recovery() {
         let _guard = env_guard();
         clear_native_caches();
         let dir = tempdir().expect("tempdir");

@@ -182,7 +182,7 @@ impl TemporalEngine {
             .filter(|policy| {
                 policy.stale_page_estimate > 0
                     || policy.stale_density_basis_points > 0
-                    || policy.tombstone_density_basis_points > 0
+                    || policy.delete_marker_density_basis_points > 0
             })
             .count()
             .max(usize::from(block_slab_stale_density_basis_points > 0));
@@ -193,7 +193,7 @@ impl TemporalEngine {
                 policy
                     .stale_page_estimate
                     .saturating_add(policy.stale_density_basis_points)
-                    .saturating_add(policy.tombstone_density_basis_points)
+                    .saturating_add(policy.delete_marker_density_basis_points)
             })
             .sum::<u64>()
             .saturating_add(compaction_utility.stale_page_estimate)

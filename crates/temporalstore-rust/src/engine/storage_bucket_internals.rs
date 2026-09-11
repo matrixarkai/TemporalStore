@@ -343,7 +343,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 table: entry.kind.to_string(),
                 object_key: entry.object_key.to_string(),
                 page_chain: Vec::new(),
-                tombstone: entry.deleted,
+                delete_marker: entry.deleted,
                 generation: entry.address.object_id().unwrap_or(0),
             });
         if sample.page_chain.len() < MAX_STORAGE_INDEX_SAMPLES {
@@ -351,7 +351,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 .page_chain
                 .push(storage_page_address_sample(shard_id, &entry.address));
         }
-        sample.tombstone |= entry.deleted;
+        sample.delete_marker |= entry.deleted;
         sample.generation = sample.generation.max(entry.address.object_id().unwrap_or(0));
     }
     snapshot.object_index_entry_samples = object_entries
@@ -452,11 +452,11 @@ pub(super) fn storage_gc_snapshot_with_samples(
 
     const MAX_STORAGE_GC_SAMPLES: usize = 8;
     let now = now_ms();
-    snapshot.tombstone_samples = entries
+    snapshot.delete_marker_samples = entries
         .iter()
         .filter(|entry| entry.deleted)
         .take(MAX_STORAGE_GC_SAMPLES)
-        .map(|entry| StorageTombstoneSample {
+        .map(|entry| StorageDeleteMarkerSample {
             ref_id: storage_gc_ref(entry),
             generation: entry.address.object_id().unwrap_or(0),
             deleted_at_ms: now,
@@ -473,15 +473,15 @@ pub(super) fn storage_gc_snapshot_with_samples(
                 .get(entry.object_key.as_ref())
                 .copied()
                 .unwrap_or(0);
-            let has_tombstone = entry.deleted;
+            let has_delete_marker = entry.deleted;
             let ttl_eligible = eligible_after_ms > 0 && eligible_after_ms <= now;
-            if !has_tombstone && !ttl_eligible {
+            if !has_delete_marker && !ttl_eligible {
                 return None;
             }
             Some(StorageGcEligibilitySample {
                 ref_id: storage_gc_ref(entry),
                 eligible_after_ms,
-                has_tombstone,
+                has_delete_marker,
                 follower_safe,
                 reclaimable_bytes: if follower_safe {
                     entry.address.length
@@ -497,7 +497,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
         eligibility_samples.push(StorageGcEligibilitySample {
             ref_id: "aggregate:gc_eligible_records".to_string(),
             eligible_after_ms: 0,
-            has_tombstone: snapshot.tombstone_records > 0,
+            has_delete_marker: snapshot.delete_marker_records > 0,
             follower_safe,
             reclaimable_bytes: if follower_safe {
                 snapshot.reclaimable_bytes
@@ -577,7 +577,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         dirty_generation: u64,
         object_refs: BTreeSet<u64>,
         page_refs: Vec<StoragePageAddressSample>,
-        tombstones: BTreeSet<String>,
+        delete_markers: BTreeSet<String>,
     }
 
     let mut bands_usage = BTreeMap::<u64, BandUsageAcc>::new();
@@ -642,7 +642,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
                 .push(storage_page_address_sample(shard_id, &entry.address));
         }
         if entry.deleted {
-            bucket.tombstones.insert(storage_gc_ref(entry));
+            bucket.delete_markers.insert(storage_gc_ref(entry));
         }
     }
 
@@ -658,7 +658,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
             bucket.page_refs
                 .push(storage_page_address_sample(shard_id, &page.address));
             if page.deleted {
-                bucket.tombstones
+                bucket.delete_markers
                     .insert(format!("{}:{}", page.model_id, page.object_key));
             }
         }
@@ -732,8 +732,8 @@ pub(super) fn storage_topology_snapshot_with_samples(
                 .into_iter()
                 .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
                 .collect(),
-            tombstones: bucket
-                .tombstones
+            delete_markers: bucket
+                .delete_markers
                 .into_iter()
                 .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
                 .collect(),

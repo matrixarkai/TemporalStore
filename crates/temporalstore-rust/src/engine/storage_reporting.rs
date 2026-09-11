@@ -93,7 +93,7 @@ fn object_lifecycle_report_from_entries(
             (expected_ids.len() > 1).then_some(actual_object_id)
         })
         .collect::<Vec<_>>();
-    let tombstoned_object_keys = shard
+    let delete_marked_object_keys = shard
         .dirty_objects
         .iter()
         .filter(|key| {
@@ -108,12 +108,12 @@ fn object_lifecycle_report_from_entries(
         live_object_ids: expected_object_ids.len() as u64,
         live_page_refs: entries.len() as u64,
         stale_object_ids: 0,
-        tombstoned_object_ids: tombstoned_object_keys.len() as u64,
+        delete_marked_object_ids: delete_marked_object_keys.len() as u64,
         reused_object_id_conflicts: reused_object_ids.len() as u64,
         missing_owner_page_refs,
         owner_mismatch_page_refs,
         reused_object_ids,
-        tombstoned_object_keys,
+        delete_marked_object_keys,
     }
 }
 
@@ -513,7 +513,7 @@ pub(super) fn object_manager_runtime_report(
         hot_object_count: object_runtime.hot_object_count as u64,
         cold_object_count: object_runtime.cold_object_count as u64,
         mixed_residency_object_count: object_runtime.mixed_residency_object_count as u64,
-        tombstone_object_count: object_runtime.deleted_object_count as u64,
+        delete_marker_object_count: object_runtime.deleted_object_count as u64,
         dirty_object_count: object_runtime.dirty_object_count as u64,
         loading_object_count: object_runtime.loading_object_count as u64,
         ttl_object_count: object_runtime.ttl_object_count as u64,
