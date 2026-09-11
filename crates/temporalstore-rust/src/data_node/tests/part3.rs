@@ -3665,3 +3665,146 @@ fn the_periodic_loop_actually_reclaims_the_write_ahead_log() {
         "with reclaim_wal disabled nothing may shrink the log: {control_before} -> {control_after}"
     );
 }
+
+#[test]
+fn the_periodic_loop_actually_reclaims_the_index_log() {
+    // #1470 gave this loop its write-ahead log reclaim and left the index log open, because
+    // `storage_index_gc_report` is engine-internal and takes a cycle request for its thresholds.
+    // Until this, the index log was truncated only by the cycle endpoint, an explicit /gc request,
+    // or the embedded proxy's own thread -- so a server started as shipped grew it for ever, the
+    // same way it grew the write-ahead log.
+    //
+    // The fixture is large on purpose. The shipped gate needs BOTH triggers, ANDed: at least
+    // `DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD` (768 KiB) of index log AND at least 40%
+    // removable. Measured, an index-log record is about 59 B, so 8,000 records is 477 KB and the
+    // byte gate declines -- correctly. 16,000 reaches 943 KB and it fires. Testing at a tuned-down
+    // threshold would exercise a gate no deployment runs.
+    fn index_log_records(engine: &TemporalEngine, shard_id: crate::types::ShardId) -> usize {
+        engine
+            .index_log_store()
+            .scan(shard_id, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0)
+    }
+
+    fn runtime_with_records(records: usize) -> (DataNodeRuntime, usize) {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("index-gc-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let before = index_log_records(&engine, 1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        (runtime, before)
+    }
+
+    const RECORDS: usize = 16_000;
+
+    let (runtime, before) = runtime_with_records(RECORDS);
+    assert!(before > 0, "the fixture must write index-log records, got {before}");
+    for _ in 0..3 {
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    }
+    let runtime_engine = runtime.engine();
+    let after = index_log_records(&runtime_engine, 1);
+    assert!(
+        after < before,
+        "the periodic loop must reclaim index-log records: {before} before, {after} after"
+    );
+
+    // CONTROL: the same rounds with the stage switched off must reclaim NOTHING. Without it,
+    // "the log shrank" could be the dump, the prune or the roll-forward, and the assertion above
+    // would pass while proving nothing about index GC.
+    let (control, control_before) = runtime_with_records(RECORDS);
+    for _ in 0..3 {
+        control.run_storage_manager_once(
+            1,
+            StorageManagerOptions {
+                enable_index_gc: false,
+                ..StorageManagerOptions::default()
+            },
+        );
+    }
+    let control_engine = control.engine();
+    let control_after = index_log_records(&control_engine, 1);
+    assert_eq!(
+        control_after, control_before,
+        "with index GC off nothing may truncate the index log: {control_before} before, \
+         {control_after} after -- if this moved, the stage under test is not the one responsible"
+    );
+}
+
+
+/// Why does the index-log reclaim decline? Prints the gate.
+///
+///   cargo test -p temporalstore-rust --lib what_the_index_gc_gate_says -- --ignored --nocapture
+#[test]
+#[ignore]
+fn what_the_index_gc_gate_says() {
+    for records in [8_000usize, 16_000, 32_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("gate-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        // A round first, so the dump has run and the plan reflects it.
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let engine = runtime.engine();
+        let wal_plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+        eprintln!(
+            "  {records:>6} records -> wal_safe={} blockers={:?}",
+            wal_plan.safe_to_reclaim, wal_plan.blocker_reasons
+        );
+        let report = engine.apply_periodic_index_gc(
+            crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                purge_delayed_destroy: true,
+                prune_bucket_dump_manifests: true,
+                roll_forward_bucket_dump_installs: true,
+                ..crate::engine::reports::StorageLifecycleRequest::default()
+            },
+            None,
+        );
+        eprintln!(
+            "  {records:>6} records -> enabled={} applied={} safe_dirty={} bytes_before={} \
+             threshold={} usage={}bp trigger={}bp retain_from={} before={} after={}",
+            report.enabled,
+            report.applied,
+            report.dirty_buckets_committed_before_truncate,
+            report.bytes_before,
+            report.bytes_threshold,
+            report.usage_ratio_basis_points,
+            report.usage_ratio_trigger_basis_points,
+            report.retain_from_index_log_sequence,
+            report.records_before,
+            report.records_after,
+        );
+    }
+}

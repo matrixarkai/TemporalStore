@@ -554,7 +554,7 @@ impl DataNodeRuntime {
             reason == "slot_dump_manifest_prune" || reason == "slot_dump_install_roll_forward_check"
         });
         if options.enable_index_gc {
-            let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+            let index_gc_request = StorageLifecycleRequest {
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: 0,
@@ -571,7 +571,28 @@ impl DataNodeRuntime {
                 page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
-            });
+            };
+            let response = self.apply_storage_lifecycle(index_gc_request.clone());
+            // Pruning manifests and rolling forward installs make the index log RECLAIMABLE.
+            // Neither frees a byte of it: `storage_index_gc_report` is what truncates, and until
+            // now nothing on this loop reached it -- so a server started as shipped grew its index
+            // log for ever, exactly as it grew its write-ahead log before #1470.
+            //
+            // The same request this stage just applied, so the plan the safety check reads is the
+            // one this stage's dump produced; and this stage's OWN report, so a dump that
+            // committed dirty buckets is visible to
+            // `index_gc_commit_dirty_buckets_before_truncation`.
+            let index_gc = self
+                .inner
+                .engine
+                .apply_periodic_index_gc(index_gc_request, Some(&response.report));
+            if index_gc.applied {
+                tracing::debug!(
+                    shard_id,
+                    index_log_records_removed = index_gc.records_removed,
+                    "storage manager reclaimed index-log records"
+                );
+            }
             lifecycle_report = Some(response.report);
             self.inner
                 .stats
