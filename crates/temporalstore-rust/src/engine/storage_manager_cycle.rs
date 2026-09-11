@@ -251,6 +251,26 @@ impl TemporalEngine {
         };
         let mut stages = Vec::new();
         let mut errors = Vec::new();
+        // Everything above gets its own stage, for the reason mx#1435 gave for the dump-load
+        // policy report: `stage_clock` runs from the previous stage's push, and this is the FIRST
+        // stage boundary in the round. So `storage_lifecycle_plan` (which surveys the shard),
+        // `storage_page_gc_dependency_plan` and the pressure-snapshot arithmetic were all being
+        // charged to `prepare` -- which pre-allocates the next slab and surveys nothing, yet
+        // reported 328 ms at 32,000 records.
+        stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
+            stage: "plan".to_string(),
+            enabled: true,
+            applied: true,
+            skipped: false,
+            reason: "lifecycle plan, page-GC dependency plan and the pressure snapshot"
+                .to_string(),
+            ..StorageManagerStageReport::default()
+        });
         stages.push(StorageManagerStageReport {
             duration_ms: {
                 let elapsed = stage_clock.elapsed().as_millis() as u64;
