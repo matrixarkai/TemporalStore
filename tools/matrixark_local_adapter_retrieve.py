@@ -4,6 +4,10 @@ from __future__ import annotations
 import os as _os
 import re as _re
 
+try:  # pragma: no cover - import shape differs when run as a package
+    from matrixark_mcp_retrieve_cache import put_cached_context_pack
+except ImportError:  # pragma: no cover
+    from tools.matrixark_mcp_retrieve_cache import put_cached_context_pack
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -4105,16 +4109,12 @@ class _LocalAdapterRetrieveMixin:
             audit_sample_rate=audit_sample_rate,
         )
         pack["operational_visibility_policy"] = visibility_decision
-        if pack_cache_enabled and not pack.get("partial_context_pack"):
-            cached_pack = json.loads(json.dumps(pack))
-            cached_recall = cached_pack.get("recall_policy") if isinstance(cached_pack.get("recall_policy"), dict) else {}
-            cached_recall["context_pack_cache"] = {"hit": False, "ttl_s": self._context_pack_cache_ttl_s}
-            cached_pack["recall_policy"] = cached_recall
-            with self._context_pack_cache_lock:
-                if len(self._context_pack_cache) >= self._context_pack_cache_max_entries:
-                    oldest_key = next(iter(self._context_pack_cache))
-                    self._context_pack_cache.pop(oldest_key, None)
-                self._context_pack_cache[pack_cache_key] = (time.monotonic(), cached_pack)
+        # The extracted writer, adopted. This block was its own copy of
+        # matrixark_mcp_retrieve_cache.put_cached_context_pack -- same enablement gate, same
+        # partial-pack refusal, same eviction -- and the extraction was called by nothing. An
+        # extraction nobody adopts is the copy that stops being updated, which is how the pack
+        # cache KEY came to differ between the two paths.
+        put_cached_context_pack(self, pack_cache_key, pack)
         finish_retrieval_stage("audit", audit_started_perf)
         placement = retrieval_scan_stats.get("native_selected_node_locations", {}) if isinstance(retrieval_scan_stats, dict) else {}
         candidate_cache_hit = bool(
