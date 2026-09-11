@@ -906,28 +906,26 @@ impl Default for StorageManagerOptions {
 
 /// How many dirty buckets one round may dump. 0 means all of them.
 ///
-/// This was 64, and a cap here does not slow reclaim down -- it stops it completely.
+/// A cap bounds the work one round does. It was turned OFF in mx#1439 because a cap did not slow
+/// reclaim down, it stopped it: a dirty bucket with no durable dump manifest was captured
+/// nowhere, so it held the reclaim floor at 0, and a capped round always leaves such buckets
+/// behind. The floor never moved and the log grew for ever while every round reported success.
 ///
-/// Reclaim frees the log below a floor, and that floor is the oldest sequence any bucket still
-/// needs. A bucket that is dirty and has no durable dump manifest is captured nowhere, so it
-/// holds the floor at 0. A capped round dumps `cap` buckets and leaves every other dirty bucket
-/// in exactly that state, so the floor stays at 0 and the log grows for ever -- while every round
-/// reports success. Measured at 500 dirty buckets per round over 12 rounds:
+/// mx#1444 removed that: a bucket now records the write-ahead-log and index-log sequences of its
+/// oldest undumped write, so an undumped bucket holds the logs from ITS OWN oldest write instead
+/// of from zero. Measured over 12 rounds of 500 dirty buckets, 6,000 writes:
 ///
-///   cap   0: retain_from reaches the head, the log stays at one segment
-///   cap  64: retain_from = 0 on every round, the log rolls a second segment
-///   cap 128, 256: the same
-///   cap 512 (above the dirty count): reaches the head again
+///   cap    records behind the head    wal bytes
+///     0                          0      262,144 (one preallocated segment)
+///    64                        436       35,238
+///   128                        372       30,054
+///   256                        244       19,742
 ///
-/// At the default routing range every key gets its own bucket, so "more dirty buckets than the
-/// cap" is every real workload.
-///
-/// A cap becomes safe once a bucket records the log sequence at which it FIRST went dirty: an
-/// undumped bucket then holds the floor at its own oldest write instead of at 0, and the floor
-/// advances as far as the dumped buckets allow. That is a data-structure change to the bucket
-/// node and is not done; until it is, this stays off.
+/// So a cap now costs a bounded lag behind the head rather than all reclaim, and buys a bounded
+/// dump per round. 64 is the value this shipped with before mx#1439; the comparison point in the
+/// design this follows is 200 slots per round.
 fn default_storage_manager_max_dump_buckets_per_round() -> usize {
-    0
+    64
 }
 
 fn default_storage_manager_stage_enabled() -> bool {
