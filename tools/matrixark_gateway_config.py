@@ -1131,8 +1131,10 @@ SETTINGS.extend([
             "matrixark_mcp_core."),
     Setting("extraction.summary_dirty_debug_fields", "extraction", "MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS",
             "Summary dirty debug fields", "bool", "0", "restart",
-            "Summary dirty debug fields. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_runtime_config."),
+            "Adds tracing fields to every summary DIRTY MARKER written -- depth, dirty_reason, "
+            "source_ref_type, changed_ref_count, propagate_depth and the source role, hook and "
+            "event counts. Any one of this, the summary refresh audit, or context debug records "
+            "turns them on, so they are already present if either of those is set."),
     Setting("extraction.time_compression_max_windows_per_refresh", "extraction", "MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH",
             "Time compression max windows per refresh", "int", "4", "restart",
             "Time compression maximum windows per refresh. Defaults to 4. Frozen when the process starts. "
@@ -1210,8 +1212,10 @@ SETTINGS.extend([
             "Read by matrixark_mcp_server."),
     Setting("ingestion.summary_refresh_audit", "ingestion", "MATRIXARK_SUMMARY_REFRESH_AUDIT",
             "Summary refresh audit", "bool", "0", "restart",
-            "Summary refresh audit. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_runtime_config."),
+            "Records what each background summary refresh did, and carries the same tracing "
+            "fields onto dirty markers that the summary dirty debug setting adds -- either one "
+            "is enough to turn those on. A refresh pass already costs O(store); this adds a "
+            "durable record of every one."),
     Setting("ingestion.summary_refresh_max_backoff_ms", "ingestion", "MATRIXARK_SUMMARY_REFRESH_MAX_BACKOFF_MS",
             "Summary refresh max backoff ms", "int", "300000", "restart",
             "Summary refresh maximum backoff milliseconds. Defaults to 300000. Frozen when the process "
@@ -1450,7 +1454,10 @@ SETTINGS.extend([
             "matrixark_resource_parser."),
     Setting("retrieval.rust_proxy_dedicated_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
             "Rust proxy dedicated pack lanes", "bool", "0", "live",
-            'Rust proxy dedicated pack lanes. Off by default. Read by matrixark_mcp_temporal_adapters.'),
+            "Gives retrieve-pack its own warm pool of proxy processes instead of sharing the "
+            "single write/read/control process. Off by default, so pack shares that one "
+            "process. On avoids stdin/stdout head-of-line blocking under scale tests, at the "
+            "cost of several engines open on one store directory."),
     Setting("retrieval.rust_proxy_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_PACK_LANES",
             "Rust proxy pack lanes", "int", "8", "live",
             'Rust proxy pack lanes. Defaults to 8. Read by matrixark_mcp_temporal_adapters.'),
@@ -1549,7 +1556,10 @@ SETTINGS.extend([
             "matrixark_resource_parser."),
     Setting("skills.rust_proxy_shared_process", "skills", "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
             "Rust proxy shared process", "bool", "1", "live",
-            'Rust proxy shared process. On by default. Read by matrixark_mcp_temporal_adapters.'),
+            "Keeps writes, reads and control on ONE proxy process, with the local Rust engine "
+            "embedded in it. Off, each lane group gets its own pool. On is the default because "
+            "a multi-process write lane pool can hide writes from reads until there is a real "
+            "shared server behind it."),
     Setting("skills.rust_proxy_startup_warmup_max_selected_refs", "skills", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_MAX_SELECTED_REFS",
             "Rust proxy startup warmup max selected refs", "int", "1", "live",
             'Rust proxy startup warmup maximum selected refs. Defaults to 1. Read by matrixark_rust_proxy_daemon.'),
