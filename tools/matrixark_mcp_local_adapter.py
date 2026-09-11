@@ -5699,8 +5699,88 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             kept.append(record)
         return kept
 
+    #: Fields that identify a record cheaply. Used only to decide which records are WORTH
+    #: comparing in full -- never as the equality itself, so a record type missing from this
+    #: list is compared by its whole content like any other, just after a coarser first pass.
+    _RECORD_IDENTITY_HINTS = (
+        "event_id_hash",
+        "entity_hash",
+        "segment_hash",
+        "ref_hash",
+        "summary_hash",
+        "commit_id_hash",
+        "child_ref_hash",
+        "task_hash",
+        "node_hash",
+    )
+
+    def _coarse_record_key(self, record: Json) -> tuple:
+        return (
+            str(record.get("record_type") or ""),
+            tuple(record.get(field) for field in self._RECORD_IDENTITY_HINTS
+                  if isinstance(record.get(field), (int, str))),
+        )
+
+    def _collapse_identical_records(self, records: list[Json]) -> list[Json]:
+        """Keep ONE copy of each byte-identical record in a single write batch.
+
+        A batch was observed carrying the same `context_event` three times, byte for byte --
+        same identity hash, same `updated_at_ms`, no field differing at all -- and nothing
+        downstream collapsed it: `_filter_duplicate_model_registry` and `_coalesce_summary_dirty`
+        each cover one record type, and `materialize_serving_record_batch` returns as many events
+        as it is given. On one soak store this reached 6,700 copies of a single event, about a
+        ninth of every log row, and 45.7 MB of the 59.4 MB that each `session_commit` scan reads
+        back and parses.
+
+        Dropping the extra copies loses nothing. Serving already collapses them --
+        `compact_latest_value_records` keeps the newest record per identity -- so the second and
+        third copies cannot be read back as anything the first is not; they only cost log bytes,
+        scan bytes and parse time. Equality here is the WHOLE record, so two rows that differ in
+        any field, including a timestamp or a status, are both kept.
+
+        The cheap pass exists because the fix must not cost more than it saves: serialising every
+        record of every batch to look for duplicates would add work to the write path that has
+        none today. Records are grouped by type and identity first, and only a group holding more
+        than one member is serialised.
+        """
+        if len(records) < 2:
+            return records
+        counts: dict[tuple, int] = {}
+        for record in records:
+            if isinstance(record, dict):
+                key = self._coarse_record_key(record)
+                counts[key] = counts.get(key, 0) + 1
+        if not any(count > 1 for count in counts.values()):
+            return records
+        seen: set[str] = set()
+        kept: list[Json] = []
+        dropped = 0
+        for record in records:
+            if not isinstance(record, dict) or counts.get(self._coarse_record_key(record), 0) < 2:
+                kept.append(record)
+                continue
+            try:
+                identity = json.dumps(record, sort_keys=True, separators=(",", ":"), default=str)
+            except (TypeError, ValueError):
+                # Unserialisable: duplication cannot be PROVEN, so the record is kept. A dedup
+                # that guesses is worse than one that misses.
+                kept.append(record)
+                continue
+            if identity in seen:
+                dropped += 1
+                continue
+            seen.add(identity)
+            kept.append(record)
+        if dropped:
+            self._identical_records_dropped_total = (
+                getattr(self, "_identical_records_dropped_total", 0) + dropped
+            )
+        return kept
+
     def _apply_serving_dedup(self, records: list[Json]) -> list[Json]:
-        return self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
+        return self._collapse_identical_records(
+            self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
+        )
 
     @property
     def _append_coalesce_tls(self) -> threading.local:
