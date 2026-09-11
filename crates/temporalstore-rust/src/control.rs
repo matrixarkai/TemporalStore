@@ -228,6 +228,9 @@ pub struct ShardStatInfo {
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardCanonicalStorageStats {
     pub page_index_entries: u64,
+    /// The same live count as `page_index_entries` -- block and page are one concept under two
+    /// names, and both are published while the rename is in flight. It is NOT a write counter;
+    /// `block_writes` and `page_writes` are.
     pub block_index_entries: u64,
     pub object_index_entries: u64,
     /// The routing RANGE this shard covers -- the hash modulus, `end - start` -- and NOT a count

@@ -5845,6 +5845,58 @@ fn does_writing_scale_with_the_store() {
 /// safe while loading actually rebuilds it. `a_reload_rebuilds_the_lookup_the_index_no_longer_writes`
 /// holds that half; this one holds that the format stays as small as that change made it.
 #[test]
+fn the_block_index_entry_count_falls_when_entries_go() {
+    // `block_index_entries` was fed `page_store.writes`, a counter that only ever increases, so
+    // the published entry count could never fall -- after a delete it still reported every write
+    // the shard had ever taken. An "entry count" that cannot go down is not a count.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    for index in 0..40usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("block-entry-{index:04}"),
+                value: vec![b'v'; 16],
+            },
+        });
+    }
+    let filled = engine.get_stats(1).stats.expect("stats for a loaded shard");
+    let entries_before = filled.storage.block_index_entries;
+    let writes_before = filled.storage.block_writes;
+    assert!(entries_before > 0, "40 writes should produce entries");
+
+    for index in 0..40usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringDelete {
+                key: format!("block-entry-{index:04}"),
+            },
+        });
+    }
+    let emptied = engine.get_stats(1).stats.expect("stats for a loaded shard");
+
+    assert!(
+        emptied.storage.block_index_entries < entries_before,
+        "deleting every object must lower the entry count: {} -> {}",
+        entries_before,
+        emptied.storage.block_index_entries
+    );
+    // The control: writes DID keep climbing over the same span, which is what the entry count
+    // used to be reporting. If the two moved together this test would prove nothing.
+    assert!(
+        emptied.storage.block_writes >= writes_before,
+        "the write counter is monotonic and is a separate number"
+    );
+}
+
+#[test]
 fn the_resident_bucket_count_is_not_the_routing_range() {
     // `slot_index_entry_count` was published from `bucket_entries`, which is the routing RANGE --
     // u32::MAX on a default shard -- so the metric read 4,294,967,295 per shard whatever the
