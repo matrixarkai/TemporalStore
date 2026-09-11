@@ -1202,10 +1202,17 @@ SETTINGS.extend([
             "matrixark_mcp_local_adapter, matrixark_mcp_retrieve_pre_refresh."),
     Setting("ingestion.rust_proxy_read_lanes", "ingestion", "MATRIXARK_RUST_PROXY_READ_LANES",
             "Rust proxy read lanes", "int", "4", "live",
-            'Rust proxy read lanes. Defaults to 4. Read by matrixark_mcp_temporal_adapters.'),
+            "How many proxy processes serve reads when each lane group runs its own pool. It "
+            "binds only with MATRIXARK_RUST_PROXY_SHARED_PROCESS off: on -- the default -- "
+            "reads share the single process with writes and control, and this number is read "
+            "and then not used."),
     Setting("ingestion.rust_proxy_write_lanes", "ingestion", "MATRIXARK_RUST_PROXY_WRITE_LANES",
             "Rust proxy write lanes", "int", "4", "live",
-            'Rust proxy write lanes. Defaults to 4. Read by matrixark_mcp_temporal_adapters.'),
+            "How many proxy processes serve writes when each lane group runs its own pool. "
+            "Like the read count, it binds only with MATRIXARK_RUST_PROXY_SHARED_PROCESS off. "
+            "That default is deliberate: with the engine embedded in the proxy process, a "
+            "multi-process write pool can hide writes from reads until a real shared server "
+            "sits behind it."),
     Setting("ingestion.stream_materialize_interval_ms", "ingestion", "MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS",
             "Stream materialize interval ms", "int", "1500", "restart",
             "Stream materialize interval milliseconds. Defaults to 1500. Frozen when the process starts. "
@@ -1477,7 +1484,10 @@ SETTINGS.extend([
             "cost of several engines open on one store directory."),
     Setting("retrieval.rust_proxy_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_PACK_LANES",
             "Rust proxy pack lanes", "int", "8", "live",
-            'Rust proxy pack lanes. Defaults to 8. Read by matrixark_mcp_temporal_adapters.'),
+            "How many proxy processes serve retrieve-pack. The only lane count that can bind "
+            "while MATRIXARK_RUST_PROXY_SHARED_PROCESS is on, and only then with "
+            "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES also on -- without it, pack shares the "
+            "single process and this number is read and then not used."),
     Setting("retrieval.segment_max_new_tokens", "retrieval", "MATRIXARK_SEGMENT_MAX_NEW_TOKENS",
             "Segment max new tokens", "int", "512", "live",
             'Segment maximum new tokens. Defaults to 512. Read by matrixark_mcp_core.'),
