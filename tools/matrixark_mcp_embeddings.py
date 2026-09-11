@@ -362,8 +362,14 @@ def _api_base_is_explicit() -> bool:
     normal configuration. Reading the variable rather than comparing the URL to a default keeps one
     source of truth: whatever `_api_embedding_config` used as the base, this asks whether that came
     from the environment.
+
+    BOTH spellings, therefore. The resolver accepts the shipped config's MATRIXARK_EMBED_BASE_URL
+    as well as the portal's name, and reading only one of them answered False for an endpoint the
+    resolver had just dialled -- which, one line away in `api_embedding_for_texts`, is the
+    difference between calling a self-hosted encoder without a key and not calling it at all.
     """
-    return bool(os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip())
+    return bool(os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
+                or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip())
 
 
 def api_embedding_for_texts(texts: list[str], provider: str) -> list[list[float]]:

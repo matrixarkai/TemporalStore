@@ -129,6 +129,38 @@ class TheEncoderDialsWhatTheProbeTestedTest(unittest.TestCase):
         self.assertEqual("", _probe_resolution())
         self.assertTrue(self._endpoint().startswith("https://api.openai.com"))
 
+    def test_either_spelling_counts_as_naming_the_endpoint(self) -> None:
+        """The companion question, and the one with teeth.
+
+        `_api_base_is_explicit` decides whether a MISSING KEY means "call the endpoint anyway"
+        (a self-hosted encoder takes none) or "do not call at all" (a hosted default cannot be
+        reached without one). Reading one spelling while the resolver reads two made it answer
+        False for an endpoint the resolver had just dialled -- so a deployment that named its
+        encoder in the shipped config and supplied no key would have been served 32-dimension
+        hash vectors, which is the incident `api_embedding_for_texts` documents.
+        """
+        for spelling in SPELLINGS:
+            for name in SPELLINGS:
+                os.environ.pop(name, None)
+            os.environ[spelling] = CONFIGURED
+            self.assertTrue(
+                emb._api_base_is_explicit(),
+                "%s names the endpoint and the encoder dials it, but the explicit test says the "
+                "operator did not name one -- so a missing key would skip the call and serve hash "
+                "vectors" % spelling)
+            self.assertTrue(self._endpoint().startswith(CONFIGURED),
+                            "%s did not reach the resolver" % spelling)
+
+    def test_naming_nothing_is_not_explicit(self) -> None:
+        """The control. Without it, a function that simply returned True would pass the test
+        above and destroy the distinction it exists to draw."""
+        for name in SPELLINGS:
+            os.environ.pop(name, None)
+        self.assertFalse(
+            emb._api_base_is_explicit(),
+            "with no endpoint named, a missing key must still mean the hosted default cannot be "
+            "called")
+
     def test_both_spellings_are_named_where_the_encoder_resolves_them(self) -> None:
         """A source check beside the behavioural ones, so dropping a spelling fails here with the
         reason rather than only as a surprising endpoint in one of the tests above."""
