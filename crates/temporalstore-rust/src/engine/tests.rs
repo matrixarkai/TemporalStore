@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use super::*;
-use crate::block_store::BlockStoreBandState;
+use crate::block_store::BlockStoreSlabState;
 use crate::engine::golden::{
     native_api_golden_corpus_report, native_feature_sequence_golden_corpus_report,
 };

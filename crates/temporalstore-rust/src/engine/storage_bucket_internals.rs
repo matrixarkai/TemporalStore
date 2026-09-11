@@ -550,7 +550,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
 
     const MAX_STORAGE_TOPOLOGY_SAMPLES: usize = 8;
     #[derive(Default)]
-    struct BandUsageAcc {
+    struct SlabUsageAcc {
         used_bytes: u64,
         stale_bytes: u64,
         slabs: BTreeSet<u64>,
@@ -565,7 +565,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         live_refs: u64,
     }
     #[derive(Default)]
-    struct BandAcc {
+    struct SlabAccumulator {
         min_offset: u64,
         max_offset: u64,
         generation: u64,
@@ -580,9 +580,9 @@ pub(super) fn storage_topology_snapshot_with_samples(
         delete_markers: BTreeSet<String>,
     }
 
-    let mut bands_usage = BTreeMap::<u64, BandUsageAcc>::new();
+    let mut bands_usage = BTreeMap::<u64, SlabUsageAcc>::new();
     let mut slabs = BTreeMap::<u64, SlabAcc>::new();
-    let mut bands = BTreeMap::<u64, BandAcc>::new();
+    let mut bands = BTreeMap::<u64, SlabAccumulator>::new();
     let mut buckets = BTreeMap::<u32, BucketAcc>::new();
 
     for entry in &entries {
@@ -614,10 +614,10 @@ pub(super) fn storage_topology_snapshot_with_samples(
             slab.live_refs = slab.live_refs.saturating_add(1);
         }
 
-        let band = bands.entry(band_id).or_insert_with(|| BandAcc {
+        let band = bands.entry(band_id).or_insert_with(|| SlabAccumulator {
             min_offset: entry.address.offset,
             max_offset: entry.address.offset.saturating_add(entry.address.length),
-            ..BandAcc::default()
+            ..SlabAccumulator::default()
         });
         band.min_offset = band.min_offset.min(entry.address.offset);
         band.max_offset = band
@@ -667,7 +667,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
     snapshot.storage_band_usage_samples = bands_usage
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
-        .map(|(band_id, usage)| StorageBandUsageSample {
+        .map(|(band_id, usage)| StorageSlabUsageSample {
             band_id,
             total_bytes: usage.used_bytes.saturating_add(usage.stale_bytes),
             used_bytes: usage.used_bytes,
@@ -703,7 +703,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
     snapshot.band_samples = bands
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
-        .map(|(band_id, band)| StorageBandSample {
+        .map(|(band_id, band)| StorageSlabBandSample {
             band: band_id,
             block_range: vec![band.min_offset, band.max_offset],
             reclaim_state: if band.deleted_refs > 0 && band.live_refs == 0 {

@@ -17794,7 +17794,7 @@ fn the_band_usage_sample_still_serializes_under_its_zone_wire_names() {
     //
     // This asserts the pinning directly. A rename that dropped the #[serde(rename = ...)] would
     // compile, pass every type-level test, and silently change the exported shape.
-    let sample = crate::engine::reports::StorageBandUsageSample {
+    let sample = crate::engine::reports::StorageSlabUsageSample {
         band_id: 7,
         total_bytes: 300,
         used_bytes: 200,
@@ -17821,7 +17821,7 @@ fn the_band_usage_sample_still_serializes_under_its_zone_wire_names() {
     );
 
     // Reading back what the old name produced must still work, which is what a stored corpus is.
-    let decoded: crate::engine::reports::StorageBandUsageSample =
+    let decoded: crate::engine::reports::StorageSlabUsageSample =
         serde_json::from_str(r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#)
             .expect("an old-name payload must still decode");
     assert_eq!(decoded.band_id, 9);

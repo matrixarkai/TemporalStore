@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use tokio::sync::oneshot;
 
-use crate::block_store::{BlockStoreError, LazyCheckpointBand, LocalBlockStore, SharedSlabSource};
+use crate::block_store::{BlockStoreError, LazyCheckpointSlab, LocalBlockStore, SharedSlabSource};
 use crate::engine::TemporalEngine;
 use crate::sdk::{self, v1};
 use crate::types::{Command, ExecuteRequest, ShardId, Status};
@@ -2065,10 +2065,10 @@ where
             // GC/compaction accounting is complete immediately after restore, before the first
             // on-demand fetch materializes any slab locally. Runs AFTER the reserve so the freshly
             // reserved slab stays the active band and every checkpoint slab is sealed.
-            let lazy_bands: Vec<LazyCheckpointBand> = manifest
+            let lazy_bands: Vec<LazyCheckpointSlab> = manifest
                 .block_slabs
                 .iter()
-                .map(|slab| LazyCheckpointBand {
+                .map(|slab| LazyCheckpointSlab {
                     block_slab_id: slab.block_slab_id,
                     physical_bytes: slab.byte_size,
                     logical_bytes: slab.logical_bytes,
@@ -3857,7 +3857,7 @@ mod tests {
             .into_iter()
             .find(|b| b.block_slab_id == 0)
             .expect("restore must install a band descriptor for the lazily-backed slab 0");
-        assert_eq!(follower_band.state, crate::block_store::BlockStoreBandState::Sealed);
+        assert_eq!(follower_band.state, crate::block_store::BlockStoreSlabState::Sealed);
         assert_eq!(follower_band.logical_bytes, primary_band.logical_bytes);
         assert_eq!(follower_band.physical_bytes, slab0.byte_size);
         // The band summary counts the sealed shared band immediately (accounting is complete).

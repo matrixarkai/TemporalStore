@@ -5,28 +5,28 @@
 
 use super::*;
 
-/// Map a band descriptor's lifecycle state to the index-log `BandCatalogState` (1:1). Kept a free fn
+/// Map a band descriptor's lifecycle state to the index-log `SlabCatalogState` (1:1). Kept a free fn
 /// so both directions of the MANIFEST-CONFORMANCE FOLD conversion share one mapping.
-fn band_state_to_catalog_state(state: BlockStoreBandState) -> crate::index_log::BandCatalogState {
+fn band_state_to_catalog_state(state: BlockStoreSlabState) -> crate::index_log::SlabCatalogState {
     match state {
-        BlockStoreBandState::Active => crate::index_log::BandCatalogState::Active,
-        BlockStoreBandState::Sealed => crate::index_log::BandCatalogState::Sealed,
-        BlockStoreBandState::DelayedDestroy => crate::index_log::BandCatalogState::DelayedDestroy,
-        BlockStoreBandState::Purged => crate::index_log::BandCatalogState::Purged,
+        BlockStoreSlabState::Active => crate::index_log::SlabCatalogState::Active,
+        BlockStoreSlabState::Sealed => crate::index_log::SlabCatalogState::Sealed,
+        BlockStoreSlabState::DelayedDestroy => crate::index_log::SlabCatalogState::DelayedDestroy,
+        BlockStoreSlabState::Purged => crate::index_log::SlabCatalogState::Purged,
     }
 }
 
-fn catalog_state_to_band_state(state: crate::index_log::BandCatalogState) -> BlockStoreBandState {
+fn catalog_state_to_band_state(state: crate::index_log::SlabCatalogState) -> BlockStoreSlabState {
     match state {
-        crate::index_log::BandCatalogState::Active => BlockStoreBandState::Active,
-        crate::index_log::BandCatalogState::Sealed => BlockStoreBandState::Sealed,
-        crate::index_log::BandCatalogState::DelayedDestroy => BlockStoreBandState::DelayedDestroy,
-        crate::index_log::BandCatalogState::Purged => BlockStoreBandState::Purged,
+        crate::index_log::SlabCatalogState::Active => BlockStoreSlabState::Active,
+        crate::index_log::SlabCatalogState::Sealed => BlockStoreSlabState::Sealed,
+        crate::index_log::SlabCatalogState::DelayedDestroy => BlockStoreSlabState::DelayedDestroy,
+        crate::index_log::SlabCatalogState::Purged => BlockStoreSlabState::Purged,
     }
 }
 
 impl LocalBlockStore {
-    pub fn band_descriptors(&self) -> Vec<BlockStoreBandDescriptor> {
+    pub fn band_descriptors(&self) -> Vec<BlockStoreSlabDescriptor> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
@@ -36,19 +36,19 @@ impl LocalBlockStore {
             .collect()
     }
 
-    /// MANIFEST-CONFORMANCE FOLD: project the in-memory band catalog into the DURABLE `BandCatalogEntry`
+    /// MANIFEST-CONFORMANCE FOLD: project the in-memory band catalog into the DURABLE `SlabCatalogEntry`
     /// subset kept in the index-log band catalog. Only the durable fields ride in
     /// the fold; the band descriptor's diagnostic fields (readable_prefix / corruption / errors)
     /// are deliberately dropped -- they are recomputed on load by scanning the slab, exactly as
     /// this design does not persist them. `band_version` stamps every entry so a folded anchor
     /// carries a monotonically-versioned snapshot.
-    pub fn band_catalog(&self, band_version: u64) -> Vec<crate::index_log::BandCatalogEntry> {
+    pub fn band_catalog(&self, band_version: u64) -> Vec<crate::index_log::SlabCatalogEntry> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
             .bands
             .values()
-            .map(|band| crate::index_log::BandCatalogEntry {
+            .map(|band| crate::index_log::SlabCatalogEntry {
                 block_slab_id: band.block_slab_id,
                 state: band_state_to_catalog_state(band.state),
                 physical_bytes: band.physical_bytes,
@@ -62,7 +62,7 @@ impl LocalBlockStore {
             .collect()
     }
 
-    /// MANIFEST-CONFORMANCE FOLD recovery: seed the band catalog from a folded `BandCatalogEntry` snapshot
+    /// MANIFEST-CONFORMANCE FOLD recovery: seed the band catalog from a folded `SlabCatalogEntry` snapshot
     /// recovered from the index-log MetaItem. Applied on load AFTER the block store has already
     /// reconciled from durable pages (reconcile stays authoritative for on-disk physical bytes
     /// and diagnostics), so this only RESTORES the catalog fields a pure disk scan cannot infer:
@@ -73,7 +73,7 @@ impl LocalBlockStore {
     /// the merged manifest once. Returns whether anything changed.
     pub fn install_band_catalog(
         &self,
-        catalog: &[crate::index_log::BandCatalogEntry],
+        catalog: &[crate::index_log::SlabCatalogEntry],
     ) -> Result<bool, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let active = inner.block_slab_id;
@@ -104,7 +104,7 @@ impl LocalBlockStore {
                     // live file): install it from the fold so accounting/GC see the full history.
                     inner.bands.insert(
                         entry.block_slab_id,
-                        BlockStoreBandDescriptor {
+                        BlockStoreSlabDescriptor {
                             band_id: band_id_for_slab(entry.block_slab_id),
                             block_slab_id: entry.block_slab_id,
                             state,
@@ -132,7 +132,7 @@ impl LocalBlockStore {
         Ok(changed)
     }
 
-    pub fn band_summary(&self) -> BlockStoreBandSummary {
+    pub fn band_summary(&self) -> BlockStoreSlabSummary {
         summarize_bands(
             &self
                 .inner
@@ -144,7 +144,7 @@ impl LocalBlockStore {
 
     pub fn stream_backed_band_runtime_report(
         &self,
-    ) -> Result<StreamBackedBandRuntimeReport, BlockStoreError> {
+    ) -> Result<StreamBackedSlabRuntimeReport, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let bands = inner.bands.clone();
         let root = inner.root.clone();
@@ -185,7 +185,7 @@ impl LocalBlockStore {
         let manifest_missing_stream_bands = bands
             .values()
             .filter(|band| {
-                !matches!(band.state, BlockStoreBandState::Purged)
+                !matches!(band.state, BlockStoreSlabState::Purged)
                     && !live_slab_ids.contains(&band.block_slab_id)
                     && !delayed_slab_ids.contains(&band.block_slab_id)
             })
@@ -343,7 +343,7 @@ impl LocalBlockStore {
         }
 
         let runtime_ready = blockers.is_empty();
-        Ok(StreamBackedBandRuntimeReport {
+        Ok(StreamBackedSlabRuntimeReport {
             runtime_ready,
             band_lifecycle_states,
             band_count: bands.len() as u64,
@@ -392,7 +392,7 @@ impl LocalBlockStore {
                     .to_string(),
                 "open-time reconciliation repairs manifest/live stream divergence like band updates"
                     .to_string(),
-                "band usage reports map band ids to page-store used bytes like BandStats"
+                "band usage reports map band ids to page-store used bytes like SlabStats"
                     .to_string(),
             ],
         })

@@ -845,13 +845,13 @@ where
 }
 
 /// Band lifecycle state folded into the index-log MetaItem. 1:1 with
-/// `block_store::BlockStoreBandState` and with the on-disk band-state encoding
+/// `block_store::BlockStoreSlabState` and with the on-disk band-state encoding
 /// (INIT/CREATED/FROZEN/RECYCLED): Active==CREATED, Sealed==FROZEN, DelayedDestroy/Purged
 /// cover the RECYCLED grace. Serialized snake_case so it round-trips with the band manifest's
 /// own state enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BandCatalogState {
+pub enum SlabCatalogState {
     Active,
     Sealed,
     DelayedDestroy,
@@ -866,11 +866,11 @@ pub enum BandCatalogState {
 /// (`inspect_slab`, driven by `rebuild_band_manifest_at` / reconcile-on-open), exactly as the
 /// are not persisted. So this is the lossless durable projection of a band.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BandCatalogEntry {
+pub struct SlabCatalogEntry {
     #[serde(alias = "zone_id")]
     #[serde(rename = "page_slab_id")]
     pub block_slab_id: u64,
-    pub state: BandCatalogState,
+    pub state: SlabCatalogState,
     #[serde(alias = "total_bytes")]
     pub physical_bytes: u64,
     #[serde(default)]
@@ -908,7 +908,7 @@ pub struct MetaItem {
     #[serde(default)]
     pub timestamp_ms: u64,
     #[serde(rename = "zones", default)]
-    pub bands: Vec<BandCatalogEntry>,
+    pub bands: Vec<SlabCatalogEntry>,
     #[serde(rename = "zone_version", default)]
     pub band_version: u64,
 }
@@ -2446,9 +2446,9 @@ mod tests {
             start_wal_sequence: 1,
             timestamp_ms: 1,
             band_version: 1,
-            bands: vec![BandCatalogEntry {
+            bands: vec![SlabCatalogEntry {
                 block_slab_id: slab,
-                state: BandCatalogState::Active,
+                state: SlabCatalogState::Active,
                 physical_bytes: 1,
                 logical_bytes: 1,
                 created_unix_ms: None,
@@ -2872,9 +2872,9 @@ mod tests {
             timestamp_ms: 100,
             band_version: 3,
             bands: vec![
-                BandCatalogEntry {
+                SlabCatalogEntry {
                     block_slab_id: 0,
-                    state: BandCatalogState::Sealed,
+                    state: SlabCatalogState::Sealed,
                     physical_bytes: 4096,
                     logical_bytes: 4000,
                     created_unix_ms: Some(10),
@@ -2883,9 +2883,9 @@ mod tests {
                     last_page_id: Some(9),
                     version: 3,
                 },
-                BandCatalogEntry {
+                SlabCatalogEntry {
                     block_slab_id: 1,
-                    state: BandCatalogState::Active,
+                    state: SlabCatalogState::Active,
                     physical_bytes: 512,
                     logical_bytes: 512,
                     created_unix_ms: Some(30),
@@ -2904,7 +2904,7 @@ mod tests {
         let recovered = reopened.latest_band_catalog(4).unwrap().unwrap();
         assert_eq!(recovered, meta);
         assert_eq!(recovered.bands.len(), 2);
-        assert_eq!(recovered.bands[0].state, BandCatalogState::Sealed);
+        assert_eq!(recovered.bands[0].state, SlabCatalogState::Sealed);
         assert_eq!(recovered.bands[1].block_slab_id, 1);
     }
 
@@ -2917,9 +2917,9 @@ mod tests {
             start_wal_sequence: 1,
             timestamp_ms: 1,
             band_version: 1,
-            bands: vec![BandCatalogEntry {
+            bands: vec![SlabCatalogEntry {
                 block_slab_id: 0,
-                state: BandCatalogState::Active,
+                state: SlabCatalogState::Active,
                 physical_bytes: 1,
                 logical_bytes: 1,
                 created_unix_ms: None,
@@ -2934,9 +2934,9 @@ mod tests {
             start_wal_sequence: 9,
             timestamp_ms: 9,
             band_version: 2,
-            bands: vec![BandCatalogEntry {
+            bands: vec![SlabCatalogEntry {
                 block_slab_id: 0,
-                state: BandCatalogState::Sealed,
+                state: SlabCatalogState::Sealed,
                 physical_bytes: 2,
                 logical_bytes: 2,
                 created_unix_ms: None,
