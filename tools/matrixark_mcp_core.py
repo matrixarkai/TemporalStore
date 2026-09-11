@@ -2461,14 +2461,8 @@ def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:
     return [refs[index:index + cap] for index in range(0, len(refs), cap)] or [[]]
 
 
-#: This module carries its own copy of the posting fold, and it groups by data_model where the
-#: copy in matrixark_mcp_indexing groups by capability -- different keys, different policy string.
-#: Compaction resolves THIS one. The skip-when-already-folded helper is shared with the other copy
-#: rather than written twice, because two copies of this fold have already drifted once.
-_CORE_POSTING_POLICY = "bucketed_by_scope_data_model_index_time"
-_ALREADY_FOLDED_POSTINGS = None
 
-#: The same shape as _ALREADY_FOLDED_POSTINGS below, for the same reason and the same helper: three
+#: Resolved once, for the reason the posting fold used to be: three
 #: functions import `strip_default_debug_lineage_fields` in their bodies, the dotted form raises
 #: ModuleNotFoundError when there is no `tools` package on the path, and Python does not cache that.
 #: Six attempts per retrieve at 238.49 us each, for one resolution that never changes.
@@ -2486,34 +2480,6 @@ def _strip_default_debug_lineage_fields(value: Any) -> Any:
             from matrixark_mcp_context_pack import strip_default_debug_lineage_fields as helper
         _STRIP_DEFAULT_DEBUG_LINEAGE_FIELDS = helper
     return helper(value)
-
-
-def _core_posting_bucket_key(record: Json):
-    index_name = str(record.get("index_name") or "")
-    data_model = str(record.get("data_model") or "")
-    if not index_name or not data_model:
-        return None
-    return (
-        str(record.get("scope_key") or ""),
-        data_model,
-        index_name,
-        str(record.get("ref_type") or ""),
-        context_index_time_bucket(record.get("timestamp_key_ms") or record.get("updated_at_ms")),
-    )
-
-
-def _core_already_folded_postings(records: list[Json]):
-    """Resolved once: compaction calls this for every read, and an import per call was already
-    measured as 82.9% of what keying a record costs."""
-    global _ALREADY_FOLDED_POSTINGS
-    helper = _ALREADY_FOLDED_POSTINGS
-    if helper is None:
-        try:
-            from tools.matrixark_mcp_indexing import already_folded_postings as helper
-        except ImportError:  # Direct script execution from tools/.
-            from matrixark_mcp_indexing import already_folded_postings as helper
-        _ALREADY_FOLDED_POSTINGS = helper
-    return helper(records, _CORE_POSTING_POLICY, _core_posting_bucket_key, ("index_hash",))
 
 
 # Not defined here. `compact_context_index_postings` lives in matrixark_mcp_indexing, and this
