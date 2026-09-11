@@ -230,8 +230,29 @@ pub struct ShardCanonicalStorageStats {
     pub page_index_entries: u64,
     pub block_index_entries: u64,
     pub object_index_entries: u64,
+    /// The routing RANGE this shard covers -- the hash modulus, `end - start` -- and NOT a count
+    /// of buckets that exist. A default shard covers the whole space, so this reads 4,294,967,295
+    /// on an empty one. Read `bucket_index_resident_bytes_floor` below if you want a number that
+    /// tracks what is actually resident.
     #[serde(rename = "slot_entries")]
     pub bucket_entries: u64,
+    /// A FLOOR on what the bucket index costs in memory: one `BucketNode` per RESIDENT bucket,
+    /// and nothing else.
+    ///
+    /// Published because every other memory number this engine emits reads the CACHE only -- the
+    /// maintenance cycle's pressure gate and the `ShardLoad.memory_bytes` the metaserver balances
+    /// on are both `cache.memory_bytes`. The bucket index is in neither, and it grows one entry
+    /// per stored object and is never evicted, so "zero" is the one answer that is certainly
+    /// wrong.
+    ///
+    /// A FLOOR, not the total: it counts the node structs and not the heap they point at (the
+    /// shared object key, the map nodes). Measured over 96-byte values the true resident cost was
+    /// roughly 3.5x this; `what_a_bucket_costs` prints both. Do not gate on it as though it were
+    /// the whole figure -- it is published to make a growing index visible, not to size it.
+    ///
+    /// O(1): a count the stats path already holds, times a compile-time size.
+    #[serde(default)]
+    pub bucket_index_resident_bytes_floor: u64,
     #[serde(rename = "storage_zone_count")]
     pub storage_band_count: u64,
     #[serde(rename = "active_storage_zones")]

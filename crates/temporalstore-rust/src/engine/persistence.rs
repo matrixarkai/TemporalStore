@@ -800,6 +800,11 @@ impl TemporalEngine {
                 block_index_entries: page_store.writes,
                 object_index_entries: object_manager.object_count as u64,
                 bucket_entries: object_manager.routing_bucket_count as u64,
+                // `bucket_entries` above is the routing RANGE (the hash modulus), which is
+                // u32::MAX on a default shard and says nothing about how many buckets exist.
+                // The resident count is the map's length.
+                bucket_index_resident_bytes_floor: (state.bucket_index.bucket_map.len() as u64)
+                    .saturating_mul(std::mem::size_of::<super::state::BucketNode>() as u64),
                 storage_band_count: page_store_bands
                     .active_bands
                     .saturating_add(page_store_bands.sealed_bands)
