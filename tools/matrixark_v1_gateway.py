@@ -705,7 +705,13 @@ class _UsageMeter:
                 json.dump(snapshot, handle, sort_keys=True)
             os.replace(tmp, self.path)
         except Exception:  # pragma: no cover - flush is best-effort
-            pass
+            # Same reason as the shard sealer: the temp is PID-named, so leaving it behind
+            # accumulates one per restart. Flushing stays best-effort and the `finally` below
+            # still runs.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         finally:
             self._dirty = 0
             self._last_flush = time.monotonic()

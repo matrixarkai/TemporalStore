@@ -4599,7 +4599,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 os.fsync(handle.fileno())
             os.replace(tmp, path)
         except OSError:
-            pass
+            # The temp carries this process's PID, so a recurring failure would leave one behind
+            # per restart rather than overwriting a single file -- and the OSError most likely
+            # here is ENOSPC, which those leftovers make worse. Sealing stays best-effort.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
     def _retained_jsonl_paths(self) -> list[Path]:
         if not self._local_jsonl_enabled:
