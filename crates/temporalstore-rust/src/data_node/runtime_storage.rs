@@ -245,6 +245,32 @@ impl DataNodeRuntime {
                     "storage manager moved log-resident pages into the block store"
                 );
             }
+            // Dumping and spilling make the log RECLAIMABLE. Neither frees a byte of it.
+            //
+            // This stage was named for a reclaim it never performed: `gc_before_sequence` is the
+            // only thing that truncates the log, and nothing above reaches it. Its production
+            // callers were the cycle endpoint, an explicit /gc request, and the embedded proxy's
+            // own reclaim thread -- so a server started as shipped, with this scheduler running,
+            // grew its log for ever unless something outside asked. Measured on an identical
+            // fixture: six rounds of this loop freed 0 of 1,512 records, six rounds of the
+            // on-demand cycle freed 1,511.
+            //
+            // Same plan and same call the cycle applies, with the same empty retention inputs its
+            // default request carries, so this is the cycle's reclaim running on the timer rather
+            // than a second policy. `apply_storage_wal_reclaim` declines unless the plan proves
+            // itself safe, so the floor is the plan's, not this stage's.
+            let wal_reclaim_plan =
+                self.inner
+                    .engine
+                    .storage_wal_reclaim_plan(shard_id, Vec::new(), Vec::new());
+            let wal_reclaim = self.inner.engine.apply_storage_wal_reclaim(wal_reclaim_plan);
+            if wal_reclaim.applied {
+                tracing::debug!(
+                    shard_id,
+                    wal_records_removed = wal_reclaim.wal_records_removed,
+                    "storage manager reclaimed write-ahead log records"
+                );
+            }
             executed_stages.push("reclaim_wal".to_string());
         } else if !options.enable_wal_reclaim {
             skipped_stages.push("reclaim_wal_disabled".to_string());

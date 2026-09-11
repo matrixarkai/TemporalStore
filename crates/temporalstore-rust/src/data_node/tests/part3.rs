@@ -3506,3 +3506,162 @@ fn the_periodic_expire_stage_takes_a_bounded_window_and_resumes_past_it() {
          is not binding: removed {removed} of {EXPIRED}"
     );
 }
+
+/// Does the PERIODIC loop -- the one `bin/server.rs` starts -- actually reclaim the logs?
+///
+///   cargo test -p temporalstore-rust --lib what_the_periodic_loop_reclaims -- --ignored --nocapture
+///
+/// `bin/server.rs` says the scheduler runs "Dump, WAL and index-log reclaim ... the same phases
+/// the cycle endpoint runs", and its banner prints `phases=prepare,reclaim,...`. Reading the call
+/// graph says otherwise: `gc_before_sequence` is the only thing that truncates either log, and
+/// nothing the periodic loop calls reaches it. This measures rather than argues, and carries the
+/// on-demand cycle as a POSITIVE CONTROL so "nothing moved" cannot be mistaken for "the fixture
+/// had nothing to reclaim".
+#[test]
+#[ignore]
+fn what_the_periodic_loop_reclaims() {
+    fn first_record_offset(engine: &TemporalEngine, shard_id: crate::types::ShardId) -> u64 {
+        engine
+            .write_ahead_log_store()
+            .scan(shard_id, 0, u64::MAX, u64::MAX)
+            .expect("scan")
+            .first()
+            .map(|(offset, _)| *offset)
+            .unwrap_or(0)
+    }
+    fn record_count(engine: &TemporalEngine, shard_id: crate::types::ShardId) -> usize {
+        engine
+            .write_ahead_log_store()
+            .scan(shard_id, 0, u64::MAX, u64::MAX)
+            .expect("scan")
+            .len()
+    }
+
+    fn build(records: usize) -> TemporalEngine {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("reclaim-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        engine
+    }
+
+    let records = StorageManagerOptions::default().min_undumped_wal_records as usize + 512;
+
+    // ARM A: the periodic loop, run enough times that no threshold can be the explanation.
+    let periodic_engine = build(records);
+    let before_low = first_record_offset(&periodic_engine, 1);
+    let before_count = record_count(&periodic_engine, 1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        periodic_engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    }
+    let periodic_engine = runtime.engine();
+    let after_low = first_record_offset(&periodic_engine, 1);
+    let after_count = record_count(&periodic_engine, 1);
+
+    // ARM B, the POSITIVE CONTROL: the same fixture through the on-demand cycle.
+    let cycle_engine = build(records);
+    let control_before = record_count(&cycle_engine, 1);
+    for _ in 0..6 {
+        cycle_engine.run_storage_manager_cycle(crate::engine::reports::StorageManagerCycleRequest {
+            shard_id: 1,
+            ..crate::engine::reports::StorageManagerCycleRequest::default()
+        });
+    }
+    let control_after = record_count(&cycle_engine, 1);
+    let control_low = first_record_offset(&cycle_engine, 1);
+
+    eprintln!("  [periodic]  {before_count:>6} records (first offset {before_low}) -> {after_count:>6} (first offset {after_low})");
+    eprintln!("  [cycle   ]  {control_before:>6} records -> {control_after:>6} (first offset {control_low})");
+    eprintln!(
+        "  periodic reclaimed {} records; the cycle reclaimed {}",
+        before_count.saturating_sub(after_count),
+        control_before.saturating_sub(control_after)
+    );
+}
+
+#[test]
+fn the_periodic_loop_actually_reclaims_the_write_ahead_log() {
+    // The stage was named `reclaim_wal` and reclaimed nothing. `gc_before_sequence` is the only
+    // thing that truncates the log, and its production callers were the cycle endpoint, an
+    // explicit /gc request, and the embedded proxy's own thread -- none of them this loop. So a
+    // server started as shipped grew its log for ever unless something outside asked.
+    //
+    // Measured before the fix, six rounds on 1,512 records: 0 reclaimed. Six rounds of the
+    // on-demand cycle on the same fixture: 1,511.
+    fn record_count(engine: &TemporalEngine) -> usize {
+        engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .expect("scan")
+            .len()
+    }
+    fn build(records: usize) -> TemporalEngine {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("reclaim-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        engine
+    }
+    fn run(engine: TemporalEngine, options: StorageManagerOptions) -> TemporalEngine {
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        for _ in 0..4 {
+            runtime.run_storage_manager_once(1, options.clone());
+        }
+        runtime.engine()
+    }
+
+    let records = StorageManagerOptions::default().min_undumped_wal_records as usize + 256;
+
+    let engine = build(records);
+    let before = record_count(&engine);
+    let engine = run(engine, StorageManagerOptions::default());
+    let after = record_count(&engine);
+    assert!(
+        after < before,
+        "the periodic loop must reclaim the log it dumps: {before} records before, {after} after"
+    );
+
+    // CONTROL: the same rounds with the stage switched off must reclaim NOTHING. Without this,
+    // the assertion above would also pass on any unrelated path that happened to shrink the log,
+    // and it is the stage under test that has to be responsible.
+    let control = build(records);
+    let control_before = record_count(&control);
+    let control = run(
+        control,
+        StorageManagerOptions { enable_wal_reclaim: false, ..StorageManagerOptions::default() },
+    );
+    let control_after = record_count(&control);
+    assert_eq!(
+        control_after, control_before,
+        "with reclaim_wal disabled nothing may shrink the log: {control_before} -> {control_after}"
+    );
+}
