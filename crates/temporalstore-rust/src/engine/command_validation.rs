@@ -385,9 +385,13 @@ pub(super) fn admission_limits(
     info: &Option<ShardInfo>,
 ) -> Vec<AdmissionLimit> {
     let mut limits = Vec::new();
-    // A configured qps of 0 means UNLIMITED (QuotaManager: a 0 qps installs no limiter
-    // and ConsumeQuota always succeeds), NOT deny-all. Filtering out 0 here keeps the
-    // downstream `limit == 0` reject from ever firing on an intended "no limit" setting.
+    // A configured qps of 0 means UNLIMITED on EVERY scope below, not deny-all. Zero is what
+    // an unset knob reads as, so treating it as "refuse everything" turns an intended "no limit
+    // here" into a total outage; denying traffic outright has its own controls.
+    //
+    // The filter has to stay uniform across the three scopes. It once guarded the shard knob
+    // alone, so `write_qps: 0` meant no limit while `table_write_qps: 0` a few lines below denied
+    // every write to that table -- two knobs of identical shape with opposite meanings.
     if let Some(limit) = (if write_command {
         config.write_qps
     } else {
@@ -410,11 +414,13 @@ pub(super) fn admission_limits(
         .map(|info| info.table_name.trim())
         .filter(|table_name| !table_name.is_empty())
     {
-        if let Some(limit) = if write_command {
+        if let Some(limit) = (if write_command {
             config.table_write_qps
         } else {
             config.table_read_qps
-        } {
+        })
+        .filter(|&limit| limit > 0)
+        {
             limits.push(AdmissionLimit {
                 scope: AdmissionScope::Table(table_name.to_string()),
                 limit,
@@ -432,11 +438,13 @@ pub(super) fn admission_limits(
         .map(str::trim)
         .filter(|tenant_name| !tenant_name.is_empty())
     {
-        if let Some(limit) = if write_command {
+        if let Some(limit) = (if write_command {
             config.tenant_write_qps
         } else {
             config.tenant_read_qps
-        } {
+        })
+        .filter(|&limit| limit > 0)
+        {
             limits.push(AdmissionLimit {
                 scope: AdmissionScope::Tenant(tenant_name.to_string()),
                 limit,
