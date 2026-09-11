@@ -609,7 +609,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
     }
 
     pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
-        self.compact_shard_pages_with_budget(shard_id, COMPACTION_ROUND_BYTES)
+        self.compact_shard_pages_with_budgets(
+            shard_id,
+            COMPACTION_ROUND_BYTES,
+            COMPACTION_ROUND_PAGE_REFS,
+        )
     }
 
     /// Compact, relocating at most `budget_bytes` of pages this round.
@@ -619,10 +623,23 @@ fn expiry_scan_budget(limit: usize) -> usize {
     /// no test would reach, and the rules that make a bounded round correct -- a round resumes
     /// onto the slab it was filling rather than rolling again, and rounds together still move
     /// every page -- all live at that boundary.
+    /// Compact with a byte budget only, leaving the ref count unbounded.
+    ///
+    /// This is what the byte-budget probe measures and what every existing caller wants: adding
+    /// a ref bound here would silently change what those measurements mean.
     pub(crate) fn compact_shard_pages_with_budget(
         &self,
         shard_id: ShardId,
         budget_bytes: u64,
+    ) -> Result<ShardCompactionReport, Status> {
+        self.compact_shard_pages_with_budgets(shard_id, budget_bytes, usize::MAX)
+    }
+
+    pub(crate) fn compact_shard_pages_with_budgets(
+        &self,
+        shard_id: ShardId,
+        budget_bytes: u64,
+        budget_page_refs: usize,
     ) -> Result<ShardCompactionReport, Status> {
         let (start_routing_bucket, end_routing_bucket) = self
             .infos
@@ -677,7 +694,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             }
         };
         let mut rewrite_stats =
-            CompactionRewriteStats::for_round(target_block_slab_id, budget_bytes);
+            CompactionRewriteStats::for_round(target_block_slab_id, budget_bytes, budget_page_refs);
 
         // Relocate every model's live pages onto the freshly rolled slab. A mid-way failure
         // (append ENOSPC / an unreadable torn page) is caught below so we can durably commit the

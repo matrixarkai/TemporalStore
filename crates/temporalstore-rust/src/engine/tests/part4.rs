@@ -17731,3 +17731,55 @@ fn a_reclaim_that_drops_whole_segments_reports_them() {
         "the freed total must exceed the active-file delta once segments are counted: {report:?}"
     );
 }
+
+#[test]
+fn a_compaction_round_stops_at_the_page_ref_budget() {
+    // `COMPACTION_ROUND_BYTES` is 256 MiB and never binds in practice -- a store of a few MiB is
+    // nowhere near it -- so before this a round relocated the WHOLE shard while holding the shard
+    // write lock. Measured in release that is 3.1 s at 20k refs, on the periodic path.
+    //
+    // The stall tracks the NUMBER of refs moved (~200 us each, near enough regardless of page
+    // size), so the ref budget is the bound that actually caps it.
+    use crate::engine::compaction::COMPACTION_ROUND_PAGE_REFS;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    // Enough to exceed the cap and still leave a remainder for the control round.
+    let objects = COMPACTION_ROUND_PAGE_REFS + 600;
+    for index in 0..objects {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("ref-budget-{index:07}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index} failed: {:?}", response.status);
+    }
+
+    let bounded = engine
+        .compact_shard_pages(1)
+        .expect("compaction runs");
+    assert!(
+        bounded.rewritten_page_refs <= COMPACTION_ROUND_PAGE_REFS,
+        "a round must not relocate more than its ref budget: moved {} with a budget of {}",
+        bounded.rewritten_page_refs,
+        COMPACTION_ROUND_PAGE_REFS
+    );
+    assert!(
+        bounded.pages_left_by_budget > 0,
+        "the round must leave the rest for the next one, so compaction still progresses"
+    );
+
+    // CONTROL. The same store, same open round, with the ref budget lifted: it now FINISHES.
+    // Without this the assertions above would also pass on a fixture too small to reach the cap,
+    // which is exactly the way a budget test passes while proving nothing.
+    let unbounded = engine
+        .compact_shard_pages_with_budget(1, u64::MAX)
+        .expect("compaction runs");
+    assert_eq!(
+        unbounded.pages_left_by_budget, 0,
+        "with the ref budget lifted the round must complete, which is what shows the budget \
+         is what stopped the round above"
+    );
+}
