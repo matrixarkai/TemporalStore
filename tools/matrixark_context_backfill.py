@@ -1057,27 +1057,6 @@ def checkpoint_key(
     return f'matrixark:backfill:{job_id}:checkpoint:{fingerprint}'
 
 
-def read_checkpoint_sequence(kv: Any, key: str) -> int | None:
-    raw_checkpoint = kv.get_string(key)
-    if not raw_checkpoint:
-        return None
-    try:
-        return int(raw_checkpoint)
-    except ValueError:
-        pass
-    try:
-        checkpoint = json.loads(raw_checkpoint)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(checkpoint, dict):
-        return None
-    value = checkpoint.get('last_sequence')
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def read_checkpoint_state(kv: Any, key: str) -> Json:
     raw_checkpoint = kv.get_string(key)
     state: Json = {

@@ -45,21 +45,6 @@ def _eval_numeric_expr(expr: str) -> int:
     return int(eval(expr, {"__builtins__": {}}, {}))
 
 
-def extract_runtime_defaults(path: pathlib.Path) -> dict[str, object]:
-    text = path.read_text(encoding="utf-8")
-    values: dict[str, object] = {}
-    for name in EXPECTED_KNOBS:
-        match = re.search(rf'{name}="\$\{{{name}:-([^}}]+)\}}"', text)
-        if not match:
-            continue
-        raw = match.group(1)
-        if raw.lower() in {"true", "false"}:
-            values[name] = raw.lower() == "true"
-        else:
-            values[name] = int(raw)
-    return values
-
-
 def extract_rust_defaults(path: pathlib.Path) -> dict[str, object]:
     text = path.read_text(encoding="utf-8")
     constant_map = {
