@@ -839,8 +839,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // behavior) let the independent next-cycle reclaim trust this volatile index, see a
             // fully-vacated old slab as stale, quarantine+purge it, and a later reload of the STALE
             // on-disk index would then dangle at the deleted slab -> silent durable data loss.
-            // avoids the desync structurally (the compactor leaves the index unchanged on
-            // failure and commits the rewrite atomically). We instead
+            // A compactor that leaves the index untouched on failure and commits the rewrite
+            // atomically avoids the desync structurally. We instead
             // durably commit the consistent partial: rebuild the secondary views so the serialized
             // index is internally consistent, fsync the relocated bytes so the index never names a
             // non-durable page, then persist -- leaving volatile == durable so reclaim is safe --
