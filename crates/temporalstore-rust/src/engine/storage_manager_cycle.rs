@@ -14,6 +14,14 @@
 
 use super::*;
 
+/// How many live pages one maintenance round checks for readability.
+///
+/// The round used to check every one. A bound makes the cost of the check independent of the
+/// store's size, and 512 is chosen the way the other round bounds were: large enough that a
+/// small store is still fully checked every round, small enough that a large one pays a fixed
+/// price. At the measured ~18 microseconds per page read that is about 9 ms.
+pub(super) const RECOVERY_READABLE_PROBE_PER_ROUND: usize = 512;
+
 impl TemporalEngine {
     pub fn run_storage_manager_cycle(
         &self,
@@ -1125,7 +1133,16 @@ impl TemporalEngine {
             .dump_manifest
             .clone()
             .or_else(|| latest_bucket_dump_manifest_at(&self.index_dir, lifecycle_request.shard_id));
-        let boundary = self.storage_recovery_boundary_report(lifecycle_request.shard_id);
+        // Sampled, not the whole store. This report is here for `manifest_chain_issues`, the two
+        // dump sequences and the two replay sequences, none of which reads a page -- but it also
+        // CARRIES `stale_index_page_refs` / `unreadable_page_bytes`, so the readability check is
+        // bounded rather than skipped: corruption is still found, across rounds instead of all in
+        // one. Measured at 32,000 records the unbounded version was 575 ms and 32,000 reads,
+        // about a fifth of the round.
+        let boundary = self.storage_recovery_boundary_report_sampled(
+            lifecycle_request.shard_id,
+            RECOVERY_READABLE_PROBE_PER_ROUND,
+        );
         let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
             lifecycle_request.shard_id,
             lifecycle_request.follower_replay_cursors.clone(),
