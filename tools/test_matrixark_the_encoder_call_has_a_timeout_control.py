@@ -75,7 +75,10 @@ class TheDeclaredDefaultIsTheRealOneTest(unittest.TestCase):
     deployment."""
 
     def test_it_matches_what_the_encoder_falls_back_to(self) -> None:
-        found = re.search(r'MATRIXARK_EMBEDDING_API_TIMEOUT_S"\s*,\s*"([0-9.]+)"',
+        # `,.*?"(...)"` rather than `,\s*"(...)"`: a blank-safe read states the number past a
+        # `.strip() or`, and "" carries no digits for the non-greedy match to stop at, so this
+        # finds the same literal in either spelling.
+        found = re.search(r'MATRIXARK_EMBEDDING_API_TIMEOUT_S",.*?"([0-9.]+)"',
                           source_of(ENCODER))
         self.assertIsNotNone(found, "the encoder no longer defaults this inline")
         self.assertEqual(float(found.group(1)),
