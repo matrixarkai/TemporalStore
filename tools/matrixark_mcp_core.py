@@ -3205,9 +3205,10 @@ def embedding_model_name() -> str:
 
     provider = embedding_provider_name()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        return (os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH")
-                or os.environ.get("MATRIXARK_EMBEDDING_MODEL")
-                or "sentence-transformers/all-MiniLM-L6-v2")
+        return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
+            "MATRIXARK_EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
     if provider in _API_EMBEDDING_PROVIDERS:
         default_model = "voyage-3" if provider == "voyage" else "text-embedding-3-large"
         return os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
