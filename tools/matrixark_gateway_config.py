@@ -1151,8 +1151,11 @@ SETTINGS.extend([
             "Read by matrixark_mcp_local_adapter."),
     Setting("ingestion.local_durable_read_cache_compress", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS",
             "Local durable read cache compress", "bool", "1", "restart",
-            "Local durable read cache compress. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter."),
+            "Stores the durable read cache in its compressed container rather than as JSON. "
+            "REVERSIBLE, and not a one-way door: reading never depends on this flag -- the "
+            "loader decides by what the bytes say they are -- so a store written across a "
+            "change of this setting reads either way, and anything written before it needs no "
+            "migration. It is rewritten in the container on the next full write."),
     Setting("ingestion.local_durable_read_cache_compress_level", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL",
             "Local durable read cache compress level", "int", "6", "restart",
             "Local durable read cache compress level. Defaults to 6. Frozen when the process starts. Read "
@@ -1163,12 +1166,18 @@ SETTINGS.extend([
             "Read by matrixark_mcp_local_adapter."),
     Setting("ingestion.local_jsonl_block_log", "ingestion", "MATRIXARK_LOCAL_JSONL_BLOCK_LOG",
             "Local jsonl block log", "bool", "1", "restart",
-            "Local jsonl block log. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter."),
+            "Writes the local log in blocks rather than one record per line. REVERSIBLE: the "
+            "flag chooses what to WRITE, never what can be READ, so a store written with this "
+            "on still reads with it off. Nothing already on disk is converted -- the form is "
+            "read from the file, so an existing plain log stays plain and only a fresh one "
+            "adopts blocks."),
     Setting("ingestion.local_jsonl_compress_sealed", "ingestion", "MATRIXARK_LOCAL_JSONL_COMPRESS_SEALED",
             "Local jsonl compress sealed", "bool", "1", "restart",
-            "Local jsonl compress sealed. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter."),
+            "Compresses a shard once it is sealed, per block, carrying the base in the same "
+            "blocks as the tail. REVERSIBLE: the reader takes either form and a shard sealed "
+            "once never needs unsealing. The codec is a new codec BYTE rather than a new magic, "
+            "so a build from before this raises on an unknown codec and the loader answers by "
+            "re-deriving from the log."),
     Setting("ingestion.pre_retrieval_summary_refresh", "ingestion", "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH",
             "Pre retrieval summary refresh", "bool", "0", "restart",
             "Pre retrieval summary refresh. Off by default. Frozen when the process starts. Read by "
