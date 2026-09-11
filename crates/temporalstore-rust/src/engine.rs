@@ -1046,15 +1046,12 @@ impl TemporalEngine {
                     if sync {
                         // A synchronous write whose durable WAL commit failed is NOT durable: the
                         // WAL is the recovery source of truth (replayed on load), so returning ok
-                        // would tell the client a write that is gone after a crash succeeded.
-                        // surfaces the wal Commit failure to the client
-                        // The failed commit status is copied into the response.
-                        // rather than acking a non-durable write. Match that instead of swallowing
-                        // the error. (async/bulk mode is a fire-and-forget commit, so
-                        // its append errors stay
-                        // best-effort and do not fail the command.) We also skip the index anchor
-                        // + persist below, so durable state never advances past a write the WAL
-                        // did not accept.
+                        // would tell the client a write that is gone after a crash succeeded. The
+                        // failed commit status is surfaced to the client instead of acking a write
+                        // that is not durable, so the error is never swallowed. (Async/bulk mode is
+                        // a fire-and-forget commit, so its append errors stay best-effort and do
+                        // not fail the command.) We also skip the index anchor + persist below, so
+                        // durable state never advances past a write the WAL did not accept.
                         return ExecuteResponse {
                             status: Status::error(
                                 "wal_commit_failed",
@@ -2150,16 +2147,20 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// page bytes do not move at all -- the data is unchanged, only the way the index is written.
 ///
 /// A format default is a durability decision, not a size one, so the flip is gated on recovery
-/// rather than on the table above. Three cases, 120 memories each, comparing full retrieval
+/// rather than on the table above. Measured over 120 memories per case, comparing full retrieval
 /// snapshots across a restart:
 ///
 ///   * written by the container, reopened by it -- identical.
 ///   * written as JSON, reopened with the container on -- identical, and the index on disk becomes
 ///     a container, so an existing store upgrades in place with no migration step.
-///     make it the default rather than an opt-in.
+///
+/// A third case -- a container-written index reopened with raw-JSON writing selected -- measured
+/// identical too, and being reversible in both directions is what made the container safe to adopt
+/// as a default rather than an opt-in. That switch has since been removed, so only the two cases
+/// above are reachable now.
 ///
 /// A reader never has to be told which it is holding: JSON starts with `{`, a container with its
-/// magic, so both formats stay loadable whichever way this flag points.
+/// magic, so both formats stay loadable.
 ///
 /// Writing raw JSON was a switch until nothing selected it: reading is sniffed either way, so the
 /// only thing the off position produced was an index an older build could read, and producing one
