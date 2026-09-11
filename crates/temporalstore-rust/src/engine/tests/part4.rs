@@ -5845,6 +5845,66 @@ fn does_writing_scale_with_the_store() {
 /// safe while loading actually rebuilds it. `a_reload_rebuilds_the_lookup_the_index_no_longer_writes`
 /// holds that half; this one holds that the format stays as small as that change made it.
 #[test]
+fn the_stats_report_a_floor_on_what_the_bucket_index_costs() {
+    // Every other memory number this engine emits is the CACHE's. The bucket index grows one
+    // entry per stored object and is never evicted, so a shard can hold gigabytes of it while
+    // every published signal reads near zero. This is not a gate -- it is the number being
+    // visible at all.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // CONTROL: an empty shard has no buckets, so the floor is genuinely zero here -- which is
+    // what makes a non-zero reading below mean something.
+    let empty = engine.get_stats(1).stats.expect("stats for a loaded shard");
+    assert_eq!(empty.storage.bucket_index_resident_bytes_floor, 0);
+    // And NOT from , which is the routing RANGE: it reads u32::MAX here, so a
+    // floor derived from it would report ~927 GB for an empty shard. That is how this was first
+    // written, and this control is what caught it.
+    assert_eq!(empty.storage.bucket_entries, u32::MAX as u64);
+
+    for index in 0..500usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("index-cost-{index:05}"),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+
+    let filled = engine.get_stats(1).stats.expect("stats for a loaded shard");
+    assert!(
+        filled.storage.bucket_entries > 0,
+        "the fixture should have produced buckets"
+    );
+    assert!(
+        filled.storage.bucket_index_resident_bytes_floor > 0,
+        "500 stored objects must show a non-zero index cost"
+    );
+    assert_eq!(
+        filled.storage.bucket_index_resident_bytes_floor
+            % std::mem::size_of::<crate::engine::state::BucketNode>() as u64,
+        0,
+        "the floor is a whole number of nodes"
+    );
+    // And it tracks the index rather than the cache: the cache can be dropped without the index
+    // going anywhere, which is the whole reason this number exists.
+    let before = filled.storage.bucket_index_resident_bytes_floor;
+    let _ = engine.cache().invalidate_shard(1);
+    let after = engine.get_stats(1).stats.expect("stats for a loaded shard");
+    assert_eq!(
+        after.storage.bucket_index_resident_bytes_floor, before,
+        "dropping the cache must not change what the INDEX costs"
+    );
+}
+
+#[test]
 fn the_index_wire_keys_are_what_they_were() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
