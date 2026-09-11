@@ -319,15 +319,19 @@ def _api_embedding_config(provider: str) -> tuple[str, str, str, str]:
         base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
                 or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip()
                 or "https://api.voyageai.com/v1")
-        key_env = os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "VOYAGE_API_KEY")
+        key_env = (os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "").strip()
+                   or "VOYAGE_API_KEY")
         default_model = "voyage-3"
     else:  # openai / openai_compatible / azure_openai / api
         base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
                 or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip()
                 or "https://api.openai.com/v1")
-        key_env = os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "OPENAI_API_KEY")
+        key_env = (os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "").strip()
+                   or "OPENAI_API_KEY")
         default_model = "text-embedding-3-large"
-    model = os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
+    # Cleared rather than unset, this sent the API an empty model name. The base URL above
+    # already reads this way; these two did not.
+    model = os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip() or default_model
     endpoint = base.rstrip("/") + "/embeddings"
     return endpoint, os.environ.get(key_env, "").strip(), model, key_env
 

@@ -36,6 +36,25 @@ def parse(filename: str) -> ast.Module:
         return ast.parse(handle.read(), filename=filename)
 
 
+def _or_fallback(node: ast.AST, call: ast.Call) -> str | None:
+    """The constant after the `or` for a blank-safe read: get(VAR, "").strip() or "DEFAULT".
+
+    A read written that way states its fallback past the `or`, not in the second argument. Reading
+    only the argument finds "" and reports it as the declared default, which is how this guard
+    failed six times the day the reads were blank-proofed.
+    """
+    for sub in ast.walk(node):
+        if not (isinstance(sub, ast.BoolOp) and isinstance(sub.op, ast.Or)
+                and len(sub.values) == 2):
+            continue
+        if not isinstance(sub.values[1], ast.Constant):
+            continue
+        if any(inner is call for inner in ast.walk(sub.values[0])):
+            value = sub.values[1].value
+            return value if isinstance(value, str) else None
+    return None
+
+
 def _environ_get_default(node: ast.AST, variable: str) -> str | None:
     """The literal fallback in ``os.environ.get(variable, "...")``, wherever it sits under node."""
     for sub in ast.walk(node):
@@ -47,6 +66,10 @@ def _environ_get_default(node: ast.AST, variable: str) -> str | None:
         first, second = sub.args
         if (isinstance(first, ast.Constant) and first.value == variable
                 and isinstance(second, ast.Constant) and isinstance(second.value, str)):
+            if second.value == "":
+                fallback = _or_fallback(node, sub)
+                if fallback is not None:
+                    return fallback
             return second.value
     return None
 
