@@ -904,8 +904,30 @@ impl Default for StorageManagerOptions {
     }
 }
 
+/// How many dirty buckets one round may dump. 0 means all of them.
+///
+/// This was 64, and a cap here does not slow reclaim down -- it stops it completely.
+///
+/// Reclaim frees the log below a floor, and that floor is the oldest sequence any bucket still
+/// needs. A bucket that is dirty and has no durable dump manifest is captured nowhere, so it
+/// holds the floor at 0. A capped round dumps `cap` buckets and leaves every other dirty bucket
+/// in exactly that state, so the floor stays at 0 and the log grows for ever -- while every round
+/// reports success. Measured at 500 dirty buckets per round over 12 rounds:
+///
+///   cap   0: retain_from reaches the head, the log stays at one segment
+///   cap  64: retain_from = 0 on every round, the log rolls a second segment
+///   cap 128, 256: the same
+///   cap 512 (above the dirty count): reaches the head again
+///
+/// At the default routing range every key gets its own bucket, so "more dirty buckets than the
+/// cap" is every real workload.
+///
+/// A cap becomes safe once a bucket records the log sequence at which it FIRST went dirty: an
+/// undumped bucket then holds the floor at its own oldest write instead of at 0, and the floor
+/// advances as far as the dumped buckets allow. That is a data-structure change to the bucket
+/// node and is not done; until it is, this stays off.
 fn default_storage_manager_max_dump_buckets_per_round() -> usize {
-    64
+    0
 }
 
 fn default_storage_manager_stage_enabled() -> bool {
