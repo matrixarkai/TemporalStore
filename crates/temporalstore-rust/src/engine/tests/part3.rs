@@ -1465,10 +1465,9 @@ fn write_qps_config_rejects_writes_after_admission_limit() {
 
 #[test]
 fn write_qps_zero_means_unlimited_not_deny_all_like_native() {
-    // QuotaManager treats a configured qps of 0 as UNLIMITED (it installs no limiter
-    // and ConsumeQuota always succeeds), NOT deny-all. The live admission path must not
-    // push a limit==0 (which the downstream gate rejects as "is zero"). Regression for the
-    // case where the >0 filter existed only in an orphaned, never-compiled module.
+    // A configured qps of 0 is UNLIMITED, not deny-all. The live admission path must not push
+    // a limit==0, which the downstream gate rejects as "is zero". Regression for the case where
+    // the >0 filter existed only in an orphaned, never-compiled module.
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     engine.set_config(SetConfigRequest {
@@ -1504,6 +1503,69 @@ fn write_qps_zero_means_unlimited_not_deny_all_like_native() {
             },
         });
         assert!(resp.status.ok, "read_qps=0 must be unlimited (got {:?})", resp.status);
+    }
+}
+
+#[test]
+fn table_and_tenant_qps_zero_mean_unlimited_like_the_shard_knob() {
+    // The shard knob above pins 0 = unlimited. The table and tenant knobs have identical shape
+    // and must mean the same thing. A 0 that denied every request here, while `write_qps: 0`
+    // eight lines away meant no limit, is a trap an operator falls into by reading one knob and
+    // assuming the next: setting `table_write_qps: 0` to mean "no table limit" took the table
+    // completely offline instead.
+    let engine = TemporalEngine::default();
+    assert!(
+        engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 1,
+                local_node_id: Some(1),
+                shard_uri: "local://feature_table/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
+                readonly: false,
+                table_name: "feature_table".to_string(),
+            })
+            .status
+            .ok
+    );
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            table_write_qps: Some(0),
+            table_read_qps: Some(0),
+            tenant_write_qps: Some(0),
+            tenant_read_qps: Some(0),
+            tenant_name: Some("a_tenant".to_string()),
+            ..Config::default()
+        },
+    });
+    wait_for_fresh_admission_second();
+    for i in 0..5 {
+        let wrote = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{i}"),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(
+            wrote.status.ok,
+            "a table/tenant write qps of 0 must be unlimited (got {:?})",
+            wrote.status
+        );
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("k{i}"),
+            },
+        });
+        assert!(
+            read.status.ok,
+            "a table/tenant read qps of 0 must be unlimited (got {:?})",
+            read.status
+        );
     }
 }
 
