@@ -3,18 +3,19 @@
 # Copyright 2026 MatrixArkAI
 """Every site that serialises a record for storage slims it first.
 
-Four sites turn a record into a persisted entry: the bundle path and the legacy index path in
-matrixark_temporal_direct_write, the raw path in matrixark_temporal_direct_backend, and
-matrixark_mcp_raw_ingestion. The slimmers were applied at ONE of them, on the strength of a comment
-reading "This is the ONLY append call site" -- which is true of the append CLIENT, not of record
-serialisation.
+Three sites turn a record into a persisted entry: the bundle path and the legacy index path in
+matrixark_temporal_direct_write, and the raw path in matrixark_temporal_direct_backend. The
+slimmers were applied at ONE of them, on the strength of a comment reading "This is the ONLY append
+call site" -- which is true of the append CLIENT, not of record serialisation. (A fourth sat in
+matrixark_mcp_raw_ingestion, in an extraction nothing had adopted; it was removed rather than
+maintained.)
 
 Measured on the live log afterwards: of 26,944 records written, **871 still carried the derived
 fields** -- 504 of 1,065 matrixark_idempotency rows and 366 of 619 context_summary rows.
 
 test_no_persist_site_serialises_an_unslimmed_record is the point of this file. Applying a slimmer to
 one of several equivalent paths is the defect that keeps recurring here, and a structural check is
-the only kind that catches the FIFTH site before it ships.
+the only kind that catches the NEXT site before it ships.
 """
 import ast
 import os
@@ -33,7 +34,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PERSIST_MODULES = (
     "matrixark_temporal_direct_write.py",
     "matrixark_temporal_direct_backend.py",
-    "matrixark_mcp_raw_ingestion.py",
     "matrixark_mcp_temporal_append.py",
 )
 

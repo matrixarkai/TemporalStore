@@ -337,14 +337,14 @@ def slim_persisted_record_kind(record: Json) -> Json:
 def slim_persisted_record(record: Json) -> Json:
     """Everything a record does not need to carry to disk, removed in one place.
 
-    Four sites serialise a record into a persisted entry -- the bundle path and the legacy index
-    path in `matrixark_temporal_direct_write`, the raw path in `matrixark_temporal_direct_backend`,
-    and `matrixark_mcp_raw_ingestion` -- and the slimmers were applied at ONE of them. Measured on
+    Three sites serialise a record into a persisted entry -- the bundle path and the legacy index
+    path in `matrixark_temporal_direct_write`, and the raw path in
+    `matrixark_temporal_direct_backend` -- and the slimmers were applied at ONE of them. Measured on
     the live log after that landed: of 26,944 records written, **871 still carried the derived
     fields** -- 504 of 1,065 `matrixark_idempotency` rows and 366 of 619 `context_summary` rows,
     because those went out through a path that never saw a slimmer.
 
-    Composing them here means a fifth call site inherits every one, instead of inheriting none.
+    Composing them here means a fourth call site inherits every one, instead of inheriting none.
     Each slimmer is a no-op on a record without the fields it looks for, so this is safe to apply
     to any record on any path.
     """
