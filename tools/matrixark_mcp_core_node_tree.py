@@ -46,8 +46,10 @@ def node_l1_generation_policy(
     return {**base, "generate_l1": False, "reason": "l0_sufficient"}
 
 
-def normalized_node_path(envelope: Json, node_hint: list[Any]) -> list[str]:
-    return [str(part) for part in node_hint if str(part)]
+try:  # the implementation lives in matrixark_mcp_tree; this module re-exports it
+    from .matrixark_mcp_tree import normalized_node_path
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_tree import normalized_node_path
 
 
 try:  # the implementation lives in matrixark_mcp_tree; this module re-exports it
