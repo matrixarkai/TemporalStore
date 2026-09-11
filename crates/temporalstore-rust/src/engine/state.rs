@@ -1372,6 +1372,17 @@ pub(super) struct BucketNode {
     /// \ is what caught that.
     #[serde(skip)]
     pub(super) first_dirty_wal_sequence: u64,
+    /// The same claim against the INDEX LOG: the index-log sequence at which this bucket most
+    /// recently went from clean to dirty, or 0 when it is clean or not known.
+    ///
+    /// Both are needed, and one cannot stand in for the other: the reclaim plan keeps a WAL
+    /// frontier and an index-log frontier, and they count in different sequences. A bucket that
+    /// can say where it sits in the log but not in the index log can only hold both at 0.
+    ///
+    /// Transient for the same reason as its WAL twin -- a load clears every dirty flag and
+    /// recomputes from an empty dirty set, so a reloaded bucket holds no claim.
+    #[serde(skip)]
+    pub(super) first_dirty_index_log_sequence: u64,
     pub(super) last_dump_sequence: u64,
     #[serde(default, alias = "object_ids")]
     pub(super) object_index: ObjectIndex,
