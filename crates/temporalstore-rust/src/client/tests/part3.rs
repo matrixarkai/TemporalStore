@@ -605,3 +605,159 @@ fn pipeline_batches_partial_failures_and_timeout_budget_contract() {
     assert!(stale_route_retry.would_retry);
 }
 
+#[test]
+fn a_routed_write_sends_the_fencing_token_when_the_topology_gives_one() {
+    // The token only closes the stale-route window if the routed write actually carries it, so
+    // this asserts the PATH the write took, not just that it succeeded.
+    //
+    // Both halves matter. With a token the write must take the checked path -- the one a node
+    // that no longer holds that version refuses. With no token it must keep the unchecked path,
+    // or every client whose metaserver does not send one would start failing.
+    fn write_once(topology_load_version: u64) -> (String, u64) {
+        let node_addr = free_local_addr();
+        let meta_addr = free_local_addr();
+        let seen: std::sync::Arc<std::sync::Mutex<Option<(String, u64)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+
+        let node_server = node_addr.clone();
+        let node_seen = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            serve(&node_server, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let _ = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        *node_seen.lock().expect("seen lock poisoned") =
+                            Some(("/execute".to_string(), 0));
+                        json_response(
+                            200,
+                            &ExecuteResponse {
+                                status: Status::ok(),
+                                response: CommandResponse::Empty,
+                            },
+                        )
+                    }
+                    ("POST", "/execute_checked") => {
+                        let checked =
+                            parse_json::<crate::control::CheckedExecuteRequest>(&request.body)
+                                .unwrap();
+                        *node_seen.lock().expect("seen lock poisoned") =
+                            Some(("/execute_checked".to_string(), checked.load_version));
+                        json_response(
+                            200,
+                            &crate::control::CheckedExecuteResponse {
+                                status: Status::ok(),
+                                response: ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                },
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&node_addr);
+
+        let meta_server = meta_addr.clone();
+        let primary = node_addr.clone();
+        std::thread::spawn(move || {
+            serve(&meta_server, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/tables/topology") => json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(TableMetaInfo {
+                                table_id: 5,
+                                namespace: "ns".to_string(),
+                                table_name: "fenced".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: 3,
+                                first_shard_id: 1,
+                                shard_count: 1,
+                                replica_count: 1,
+                                partition_version: 0,
+                                serving_options: crate::meta::TableServingOptions::default(),
+                            }),
+                            shards: vec![TableShard {
+                                load_version: topology_load_version,
+                                shard_id: 1,
+                                start_bucket: 0,
+                                end_bucket: u32::MAX as u64,
+                                primary: Some(primary.clone()),
+                                replicas: vec![primary.clone()],
+                                primary_endpoint: None,
+                                replica_endpoints: Vec::new(),
+                            }],
+                            unchanged: false,
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&meta_addr);
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            meta_addr: Some(meta_addr),
+            meta_sync_interval_ms: 1,
+            ..ClientOptions::default()
+        });
+        let table = client.open_table(
+            "ns",
+            "fenced",
+            TableOptions {
+                first_shard_id: 1,
+                shard_count: 1,
+                ..TableOptions::default()
+            },
+        );
+
+        // Force the topology sync: without a synced table route the client falls back to
+        // resolving the shard on its own, which never carries a token.
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            client.run_due_meta_sync_once(ClientMetaSyncLoopOptions {
+                tick_ms: 1,
+                max_tables_per_tick: 1,
+            }),
+            1,
+            "the table topology should have synced"
+        );
+
+        // Through the TABLE handle, so routing goes via the table topology -- which is where the
+        // token lives. A raw shard-id route resolves through /shards/{id} and never sees one.
+        let response = table
+            .execute(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            })
+            .expect("the routed write should reach the node");
+        assert!(
+            response.status.ok,
+            "unexpected write failure: {:?}",
+            response.status
+        );
+        let observed = seen
+            .lock()
+            .expect("seen lock poisoned")
+            .clone()
+            .expect("the node saw no write at all");
+        observed
+    }
+
+    assert_eq!(
+        write_once(9),
+        ("/execute_checked".to_string(), 9),
+        "a write with a known token must take the checked path, carrying that exact version"
+    );
+    // CONTROL: no token, so nothing changes for a client whose metaserver does not send one.
+    assert_eq!(
+        write_once(0),
+        ("/execute".to_string(), 0),
+        "a write with no token must keep the unchecked path"
+    );
+}
