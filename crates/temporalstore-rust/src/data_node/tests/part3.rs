@@ -3882,3 +3882,71 @@ fn what_the_index_gc_gate_costs() {
         );
     }
 }
+
+#[test]
+fn the_dump_cap_bounds_a_stage_but_not_a_round() {
+    // Two facts, and the second is the surprising one.
+    //
+    // `reclaim_wal` honours `max_dump_buckets_per_round` (64). `reclaim_index` does NOT, and that
+    // is deliberate: `wal_plan.safe_to_reclaim` needs a durable manifest for every live
+    // generation, and its whole-dirty-set dump is what produces one. Capping it was tried and
+    // stopped index-log reclaim dead -- 16,000 records before a round, 16,000 after.
+    //
+    // So the option bounds a STAGE, not a round, and a default round still dumps everything. If
+    // you came here because you capped that stage and this test failed, that is the reason, and
+    // `the_periodic_loop_actually_reclaims_the_index_log` is what breaks next.
+    let cap = StorageManagerOptions::default().max_dump_buckets_per_round;
+    assert!(cap > 0, "this test is about a non-zero cap");
+    let keys = cap * 20;
+
+    fn dirty_after_one_round(keys: usize, options: StorageManagerOptions) -> (usize, usize) {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..keys {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("cap-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let first = runtime.run_storage_manager_once(1, options.clone());
+        let second = runtime.run_storage_manager_once(1, options);
+        (
+            first.pressure.dirty_bucket_count,
+            second.pressure.dirty_bucket_count,
+        )
+    }
+
+    // The stage that honours the cap dumps exactly the cap.
+    let (before, after) = dirty_after_one_round(
+        keys,
+        StorageManagerOptions {
+            enable_memory_reclaim: false,
+            enable_index_gc: false,
+            ..StorageManagerOptions::default()
+        },
+    );
+    assert_eq!(
+        before.saturating_sub(after),
+        cap,
+        "reclaim_wal alone must dump exactly its cap: {before} -> {after}"
+    );
+
+    // A whole round does not, because reclaim_index dumps the rest on purpose.
+    let (before, after) = dirty_after_one_round(keys, StorageManagerOptions::default());
+    assert_eq!(
+        after, 0,
+        "a default round dumps the whole dirty set, because index GC needs the coverage: \
+         {before} -> {after}"
+    );
+}
