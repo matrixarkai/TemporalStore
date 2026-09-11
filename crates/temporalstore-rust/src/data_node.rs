@@ -191,6 +191,8 @@ pub struct DataNodeRuntimeStats {
     pub storage_manager_compact_runs: u64,
     #[serde(default)]
     pub storage_manager_index_gc_runs: u64,
+    #[serde(default)]
+    pub storage_manager_evict_runs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -860,6 +862,31 @@ pub struct StorageManagerOptions {
     pub enable_index_gc: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_metrics_reap: bool,
+    /// Whether the periodic loop may EVICT, not merely invalidate cached pages.
+    ///
+    /// Defaults to FALSE, alone among the stage flags, and that is deliberate. Until this existed
+    /// the eviction machinery -- `apply_storage_eviction`, with dump-before-evict, delete-drop, a
+    /// batch limit and a pressure threshold -- was reachable only from the on-demand cycle, so the
+    /// loop the server actually starts could not evict at ANY setting. This makes it reachable.
+    ///
+    /// Turning it on by default is a production eviction-policy decision and a behaviour change,
+    /// which is why it is opt-in: shipping it default-on would change what every deployment does
+    /// to relieve memory, on no evidence about their workloads.
+    #[serde(default)]
+    pub enable_evict: bool,
+    /// Cache bytes (memory + disk) above which the evict stage acts. 0 evicts whenever it runs.
+    #[serde(default)]
+    pub eviction_memory_pressure_threshold: u64,
+    /// How many buckets one evict stage may take. 0 means no limit.
+    #[serde(default)]
+    pub eviction_batch_limit: usize,
+    /// Dump a bucket before freeing it, so eviction relieves log pressure as well as memory.
+    /// Without it an evicted dirty bucket still pins the log.
+    #[serde(default)]
+    pub eviction_dump_before_evict: bool,
+    /// Drop rather than dump. Off by default: this is the arm that can lose unflushed state.
+    #[serde(default)]
+    pub eviction_delete_drop: bool,
 }
 
 /// Records that must be undumped before a dump is taken.
@@ -904,6 +931,13 @@ impl Default for StorageManagerOptions {
             enable_page_compaction: true,
             enable_index_gc: true,
             enable_metrics_reap: true,
+            // Off, unlike every stage above it. See the field doc: this makes eviction REACHABLE
+            // from the periodic loop; enabling it by default is a separate decision.
+            enable_evict: false,
+            eviction_memory_pressure_threshold: 0,
+            eviction_batch_limit: 0,
+            eviction_dump_before_evict: false,
+            eviction_delete_drop: false,
         }
     }
 }
@@ -1408,6 +1442,7 @@ struct MutableRuntimeStats {
     storage_manager_reclaim_page_runs: u64,
     storage_manager_compact_runs: u64,
     storage_manager_index_gc_runs: u64,
+    storage_manager_evict_runs: u64,
 }
 
 #[derive(Debug)]
