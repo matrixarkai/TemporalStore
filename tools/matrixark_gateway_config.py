@@ -1442,7 +1442,9 @@ SETTINGS.extend([
             "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("retrieval.hook_additional_context_char_limit", "retrieval", "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT",
             "Hook additional context char limit", "int", "40000", "live",
-            'Hook additional context char limit. Defaults to 40000. Read by matrixark_codex_hook.'),
+            "How many characters of retrieved context one hook invocation may hand back. The "
+            "value is floored at 1000 -- a smaller number is raised to it -- and a value that "
+            "is not an integer falls back to 40000 without complaining."),
     Setting("retrieval.hook_fail_open", "retrieval", "MATRIXARK_HOOK_FAIL_OPEN",
             "Hook fail open", "bool", "1", "live",
             "On, a hook that fails lets the operation through and prints the failure. Off, a "
@@ -1451,7 +1453,11 @@ SETTINGS.extend([
             "produced it."),
     Setting("retrieval.memory_purge_threshold", "retrieval", "MATRIXARK_MEMORY_PURGE_THRESHOLD",
             "Memory purge threshold", "int", "0", "live",
-            'Memory purge threshold. Defaults to 0. Read by matrixark_mcp_local_adapter.'),
+            "How many raw tombstones may accumulate before the local JSONL event log is "
+            "physically rewritten without the records they retire. 0, the default, never "
+            "purges. It applies only where the local JSONL is in use, is best-effort -- it "
+            "never raises into the write path that triggered it -- and the rewrite itself is "
+            "crash-safe: temp file, fsync, atomic replace."),
     Setting("retrieval.pack_precision_expand_max_events", "retrieval", "MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS",
             "Pack precision expand max events", "int", "12", "restart",
             "Pack precision expand maximum events. Defaults to 12. Frozen when the process starts. Read "
@@ -1462,16 +1468,21 @@ SETTINGS.extend([
             "where the exact wording of what was said matters more than a rollup of it."),
     Setting("retrieval.query_rewrite_window", "retrieval", "MATRIXARK_QUERY_REWRITE_WINDOW",
             "Query rewrite window", "int", "3", "restart",
-            "Query rewrite window. Defaults to 3. Frozen when the process starts. Read by "
-            "matrixark_mcp_runtime_config."),
+            "How many recent session turns the follow-up query rewrite reads, so a question "
+            "saying 'that' or 'the ones' carries its subject's terms. It does nothing unless "
+            "MATRIXARK_QUERY_REWRITE is on, which it is not by default. The rewrite changes the "
+            "RANKING query only, never the pack the model is given, so it costs no model "
+            "tokens."),
     Setting("retrieval.remote_only_cross_session_budget_ratio", "retrieval", "MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO",
             "Remote only cross session budget ratio", "float", "0.3", "restart",
             "Remote only cross session budget ratio. Defaults to 0.3. Frozen when the process starts. "
             "Read by matrixark_mcp_runtime_config."),
     Setting("retrieval.remote_only_local_fallback_floor_tokens", "retrieval", "MATRIXARK_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS",
             "Remote only local fallback floor tokens", "int", "2048", "restart",
-            "Remote only local fallback floor tokens. Defaults to 2048. Frozen when the process starts. "
-            "Read by matrixark_mcp_runtime_config."),
+            "How small a remote-only pack may be before the request's local context is "
+            "re-admitted for that turn, so a cold start or a sparse-topic miss never leaves the "
+            "agent blind. It fires only on a request already resolved to remote_only -- where "
+            "local was set aside rather than absent -- and 0 disables the fallback."),
     Setting("retrieval.resource_overlap_tokens", "retrieval", "MATRIXARK_RESOURCE_OVERLAP_TOKENS",
             "Resource overlap tokens", "int", "24", "restart",
             "How much of the previous chunk each chunk repeats, measured at the TOKEN split. "
@@ -1496,7 +1507,9 @@ SETTINGS.extend([
             'Segment maximum new tokens. Defaults to 512. Read by matrixark_mcp_core.'),
     Setting("retrieval.session_commit_threshold", "retrieval", "MATRIXARK_SESSION_COMMIT_THRESHOLD",
             "Session commit threshold", "int", "20", "live",
-            'Session commit threshold. Defaults to 20. Read by matrixark_agent_hook, matrixark_codex_hook.'),
+            "How many buffered messages a session accumulates before it is committed. Both "
+            "hooks read it as the DEFAULT for their --session-commit-threshold argument, so a "
+            "caller passing that flag overrides this for that invocation."),
     Setting("retrieval.summary_refresh_pass_budget_ms", "retrieval", "MATRIXARK_SUMMARY_REFRESH_PASS_BUDGET_MS",
             "Summary refresh pass budget ms", "int", "30000", "live",
             'Summary refresh pass budget milliseconds. Defaults to 30000. Read by matrixark_local_adapter_summaries.'),
