@@ -755,9 +755,27 @@ impl TemporalEngine {
         Ok(())
     }
 
+    /// The install preflight, checking EVERY page the manifest names.
+    ///
+    /// This is what an actual install must use: a dump whose pages cannot be read must not be
+    /// installed, and a sample cannot establish that.
     pub fn bucket_dump_install_preflight_report(
         &self,
         manifest: &BucketDumpManifest,
+    ) -> BucketDumpInstallPreflightReport {
+        self.bucket_dump_install_preflight_report_sampled(manifest, 0)
+    }
+
+    /// The same preflight, reading at most `readable_probe_limit` of the manifest's pages.
+    ///
+    /// 0 means no bound. The maintenance cycle computes a preflight every round for an install it
+    /// is not performing (`install_dump_manifest: false`) -- the result feeds a reported readiness
+    /// flag and nothing destructive -- and the unbounded version read every live page to do it:
+    /// measured 8,000 reads for 8,000 live pages, the last whole-store pass left in a round.
+    pub fn bucket_dump_install_preflight_report_sampled(
+        &self,
+        manifest: &BucketDumpManifest,
+        readable_probe_limit: usize,
     ) -> BucketDumpInstallPreflightReport {
         let current_wal_sequence = self.wal_store.stats(manifest.shard_id).last_sequence;
         let current_index_log_sequence =
@@ -802,11 +820,16 @@ impl TemporalEngine {
         if !manifest.index_bytes.is_empty() && missing_block_slab_ids.is_empty() {
             if let Ok(restored) = crate::engine::decode_index_bytes(&manifest.index_bytes) {
                 let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
+                let mut probed_page_refs = 0usize;
                 for entry in collect_live_page_entries(&restored) {
                     let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
                         self.routing_bucket_for_key(manifest.shard_id, &entry.object_key)
                     });
                     if manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket) {
+                        if readable_probe_limit > 0 && probed_page_refs >= readable_probe_limit {
+                            continue;
+                        }
+                        probed_page_refs += 1;
                         if self.page_store.read(&entry.address).is_err() {
                             unreadable_page_ref_count = unreadable_page_ref_count.saturating_add(1);
                             unreadable_page_bytes =
