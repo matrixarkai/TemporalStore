@@ -131,6 +131,51 @@ impl TemporalStoreClient {
         !commands.iter().any(super::commands::is_write) || err.request_never_reached_the_server()
     }
 
+    /// The fencing token to send with a write bound for `server_addr`, or 0 for none.
+    ///
+    /// The token describes the PRIMARY's placement, so it only means anything when the write is
+    /// actually going to the primary. Sending it to a replica would fence on a version that
+    /// replica never claimed to hold, turning every replica-directed write into a mismatch.
+    ///
+    /// 0 whenever there is nothing to say -- no cached route, a route from a metaserver that
+    /// sends no token, or an address that is not the primary -- and 0 keeps the unchecked path,
+    /// so this can only ever ADD a check, never remove one.
+    fn fencing_token_for(&self, shard_id: ShardId, server_addr: &str) -> u64 {
+        self.inner
+            .routes
+            .read()
+            .expect("client route cache lock poisoned")
+            .get(&shard_id)
+            .filter(|route| route.primary_addr == server_addr)
+            .map(|route| route.load_version)
+            .unwrap_or(0)
+    }
+
+    /// Send one write, fenced when a token is known.
+    ///
+    /// The checked path answers with a `CheckedExecuteResponse` whose inner response carries the
+    /// same status, so unwrapping it here keeps the caller's type and keeps a rejection visible:
+    /// `load_version_mismatch` is already classified retryable, and a retry re-resolves the route
+    /// rather than repeating the write to a node that has been fenced out.
+    fn post_execute(
+        server_addr: &str,
+        request: &ExecuteRequest,
+        load_version: u64,
+        http_options: HttpRequestOptions,
+    ) -> Result<ExecuteResponse, HttpError> {
+        if load_version == 0 {
+            return post_json_with_options(server_addr, "/execute", request, http_options);
+        }
+        let checked = crate::control::CheckedExecuteRequest {
+            shard_id: request.shard_id,
+            load_version,
+            command: request.command.clone(),
+        };
+        let response: crate::control::CheckedExecuteResponse =
+            post_json_with_options(server_addr, "/execute_checked", &checked, http_options)?;
+        Ok(response.response)
+    }
+
     pub(super) fn execute_routed_with_http_and_policy(
         &self,
         request: ExecuteRequest,
@@ -153,7 +198,8 @@ impl TemporalStoreClient {
                 policy,
                 preferred_location,
             )?;
-            return post_json_with_options(&server_addr, "/execute", &request, http_options)
+            let load_version = self.fencing_token_for(request.shard_id, &server_addr);
+            return Self::post_execute(&server_addr, &request, load_version, http_options)
                 .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
                         &server_addr,
@@ -193,8 +239,14 @@ impl TemporalStoreClient {
                         policy,
                         preferred_location,
                     )?;
-                    let response =
-                        post_json_with_options(&refreshed, "/execute", &request, http_options)?;
+                    let refreshed_load_version =
+                        self.fencing_token_for(request.shard_id, &refreshed);
+                    let response = Self::post_execute(
+                        &refreshed,
+                        &request,
+                        refreshed_load_version,
+                        http_options,
+                    )?;
                     self.record_backend_success(&refreshed);
                     self.inner
                         .stats
