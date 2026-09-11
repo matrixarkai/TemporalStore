@@ -85,7 +85,7 @@ pub struct IndexItem {
 /// Numbering matches this design exactly, including that RECYCLED is 4 and 3 is unused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
-pub enum BandState {
+pub enum SlabState {
     /// Reserved and durable, but its stream does not exist yet.
     Init = 0,
     /// Stream created and accepting writes.
@@ -104,7 +104,7 @@ pub struct BandInfo {
     pub band_id: u32,
     #[prost(uint64, tag = "2")]
     pub total_bytes: u64,
-    #[prost(enumeration = "BandState", tag = "3")]
+    #[prost(enumeration = "SlabState", tag = "3")]
     pub state: i32,
     #[prost(uint64, tag = "4")]
     pub init_time_ms: u64,
@@ -179,10 +179,10 @@ mod tests {
     fn band_states_keep_their_on_disk_numbering() {
         // RECYCLED is 4, not 3 -- the gap is real and a renumber would silently reinterpret
         // existing records.
-        assert_eq!(BandState::Init as i32, 0);
-        assert_eq!(BandState::Created as i32, 1);
-        assert_eq!(BandState::Frozen as i32, 2);
-        assert_eq!(BandState::Recycled as i32, 4);
+        assert_eq!(SlabState::Init as i32, 0);
+        assert_eq!(SlabState::Created as i32, 1);
+        assert_eq!(SlabState::Frozen as i32, 2);
+        assert_eq!(SlabState::Recycled as i32, 4);
     }
 
     #[test]
@@ -237,7 +237,7 @@ mod tests {
             BandInfo {
                 band_id: 1,
                 total_bytes: 1 << 20,
-                state: BandState::Frozen as i32,
+                state: SlabState::Frozen as i32,
                 version: 7,
                 ..Default::default()
             },
@@ -257,7 +257,7 @@ mod tests {
         let (decoded, _): (IndexLogRecord, usize) = decode_framed_at(&framed, 0).unwrap();
         let meta = decoded.meta_item.expect("meta item");
         assert_eq!(meta.start_wal_id, 987_654);
-        assert_eq!(meta.bands[&1].state, BandState::Frozen as i32);
+        assert_eq!(meta.bands[&1].state, SlabState::Frozen as i32);
         assert_eq!(meta.bands[&1].version, 7);
     }
 

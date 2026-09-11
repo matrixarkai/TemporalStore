@@ -62,7 +62,7 @@ pub mod index_log_record;
 pub mod wal_record;
 
 pub use block_store::{
-    BlockAddress, BlockStoreBandDescriptor, BlockStoreBandState, BlockStoreBandSummary,
+    BlockAddress, BlockStoreSlabDescriptor, BlockStoreSlabState, BlockStoreSlabSummary,
     BlockStoreOptions, BlockStoreSlabReport, BlockStoreStats, LocalBlockStore, SharedSlabSource,
 };
 pub use client::{

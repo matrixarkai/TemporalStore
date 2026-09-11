@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::{
-    BlockStoreSlabReport, BlockStoreStats, BlockStoreBandDescriptor, BlockStoreBandSummary,
+    BlockStoreSlabReport, BlockStoreStats, BlockStoreSlabDescriptor, BlockStoreSlabSummary,
 };
 use crate::storage_config::{
     StorageTuningConfig, TS_BLOCK_INDEX_CACHE_BYTES, TS_BLOCK_SLAB_TARGET_BYTES,
@@ -266,9 +266,9 @@ pub struct StorageRecoveryReport {
     #[serde(rename = "live_page_slab_ids")]
     pub live_block_slab_ids: Vec<u64>,
     #[serde(rename = "zone_descriptors")]
-    pub band_descriptors: Vec<BlockStoreBandDescriptor>,
+    pub band_descriptors: Vec<BlockStoreSlabDescriptor>,
     #[serde(rename = "zone_summary", default)]
-    pub band_summary: BlockStoreBandSummary,
+    pub band_summary: BlockStoreSlabSummary,
     #[serde(default)]
     #[serde(alias = "page_segment_reports")]
     #[serde(rename = "page_slab_reports")]
@@ -2096,10 +2096,10 @@ pub fn default_storage_index_snapshot() -> StorageIndexSnapshot {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// A band's byte accounting and the slabs it holds.
 ///
-/// Keyed by `band_id`, the same key as [`StorageBandSample`], which carries that band's block
+/// Keyed by `band_id`, the same key as [`StorageSlabBandSample`], which carries that band's block
 /// range and reclaim state. Two shapes over one entity, not two levels -- "zone" was the older
 /// name for a band, and the wire still uses it.
-pub struct StorageBandUsageSample {
+pub struct StorageSlabUsageSample {
     #[serde(rename = "zone_id")]
     pub band_id: u64,
     pub total_bytes: u64,
@@ -2130,7 +2130,7 @@ pub struct StorageSlabSample {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageBandSample {
+pub struct StorageSlabBandSample {
     pub band: u64,
     pub block_range: Vec<u64>,
     pub reclaim_state: String,
@@ -2174,14 +2174,14 @@ pub struct StorageTopologySnapshot {
     pub append_log_reclaimed_records: u64,
     #[serde(default)]
     #[serde(rename = "storage_zone_samples")]
-    pub storage_band_usage_samples: Vec<StorageBandUsageSample>,
+    pub storage_band_usage_samples: Vec<StorageSlabUsageSample>,
     #[serde(default)]
     pub stream_samples: Vec<StorageStreamSample>,
     #[serde(default)]
     #[serde(alias = "segment_samples")]
     pub slab_samples: Vec<StorageSlabSample>,
     #[serde(default)]
-    pub band_samples: Vec<StorageBandSample>,
+    pub band_samples: Vec<StorageSlabBandSample>,
     #[serde(default)]
     #[serde(rename = "slot_samples")]
     pub bucket_samples: Vec<StorageBucketSample>,

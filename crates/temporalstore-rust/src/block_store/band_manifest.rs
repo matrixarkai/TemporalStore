@@ -10,7 +10,7 @@ use std::path::Path;
 
 pub(super) fn load_band_manifest_at(
     root: &Path,
-) -> Result<BTreeMap<u64, BlockStoreBandDescriptor>, BlockStoreError> {
+) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
     let current_path = band_manifest_path(root);
     let legacy_path = legacy_zone_manifest_path(root);
     let path = if current_path.exists() {
@@ -21,7 +21,7 @@ pub(super) fn load_band_manifest_at(
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
-    let manifest: BlockStoreBandManifest =
+    let manifest: BlockStoreSlabManifest =
         serde_json::from_slice(&fs::read(path)?).map_err(|err| {
             BlockStoreError::CorruptPageEnvelope {
                 block_slab_id: 0,
@@ -38,7 +38,7 @@ pub(super) fn load_band_manifest_at(
 
 pub(super) fn rebuild_band_manifest_at(
     root: &Path,
-) -> Result<BTreeMap<u64, BlockStoreBandDescriptor>, BlockStoreError> {
+) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
     let mut bands = BTreeMap::new();
     let latest = latest_slab_id_at(root)?;
     for block_slab_id in slab_ids_at(root)? {
@@ -47,13 +47,13 @@ pub(super) fn rebuild_band_manifest_at(
         let report = inspect_slab(&bytes, block_slab_id);
         bands.insert(
             block_slab_id,
-            BlockStoreBandDescriptor {
+            BlockStoreSlabDescriptor {
                 band_id: band_id_for_slab(block_slab_id),
                 block_slab_id,
                 state: if block_slab_id == latest {
-                    BlockStoreBandState::Active
+                    BlockStoreSlabState::Active
                 } else {
-                    BlockStoreBandState::Sealed
+                    BlockStoreSlabState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
                 logical_bytes: report.logical_bytes,
@@ -78,14 +78,14 @@ pub(super) fn rebuild_band_manifest_at(
         bands
             .entry(delayed.block_slab_id)
             .and_modify(|band| {
-                band.state = BlockStoreBandState::DelayedDestroy;
+                band.state = BlockStoreSlabState::DelayedDestroy;
                 band.updated_unix_ms = delayed.modified_unix_ms;
                 band.physical_bytes = delayed.physical_bytes;
             })
-            .or_insert(BlockStoreBandDescriptor {
+            .or_insert(BlockStoreSlabDescriptor {
                 band_id: band_id_for_slab(delayed.block_slab_id),
                 block_slab_id: delayed.block_slab_id,
-                state: BlockStoreBandState::DelayedDestroy,
+                state: BlockStoreSlabState::DelayedDestroy,
                 physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
                 created_unix_ms: delayed.modified_unix_ms,
@@ -114,7 +114,7 @@ fn reverify_all_slabs() -> bool {
 
 pub(super) fn reconcile_band_manifest_with_disk(
     root: &Path,
-    bands: &mut BTreeMap<u64, BlockStoreBandDescriptor>,
+    bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
 ) -> Result<bool, BlockStoreError> {
     let mut changed = false;
     let live_slab_ids = slab_ids_at(root)?.into_iter().collect::<BTreeSet<_>>();
@@ -153,7 +153,7 @@ pub(super) fn reconcile_band_manifest_with_disk(
             let Some(band) = bands.get(block_slab_id) else {
                 return true;
             };
-            if band.has_corruption || band.state != BlockStoreBandState::Sealed {
+            if band.has_corruption || band.state != BlockStoreSlabState::Sealed {
                 return true;
             }
             let Some(verified_mtime) = band.verified_source_mtime_unix_ms else {
@@ -203,9 +203,9 @@ pub(super) fn reconcile_band_manifest_with_disk(
                 .take()
                 .expect("every slab in the batch is inspected exactly once")?;
             let desired_state = if *block_slab_id == latest {
-            BlockStoreBandState::Active
+            BlockStoreSlabState::Active
         } else {
-            BlockStoreBandState::Sealed
+            BlockStoreSlabState::Sealed
         };
         match bands.get_mut(block_slab_id) {
             Some(band) => {
@@ -245,7 +245,7 @@ pub(super) fn reconcile_band_manifest_with_disk(
             None => {
                 bands.insert(
                     *block_slab_id,
-                    BlockStoreBandDescriptor {
+                    BlockStoreSlabDescriptor {
                         band_id: band_id_for_slab(*block_slab_id),
                         block_slab_id: *block_slab_id,
                         state: desired_state,
@@ -274,10 +274,10 @@ pub(super) fn reconcile_band_manifest_with_disk(
         let old = bands.get(block_slab_id).cloned();
         bands.insert(
             *block_slab_id,
-            BlockStoreBandDescriptor {
+            BlockStoreSlabDescriptor {
                 band_id: band_id_for_slab(*block_slab_id),
                 block_slab_id: *block_slab_id,
-                state: BlockStoreBandState::DelayedDestroy,
+                state: BlockStoreSlabState::DelayedDestroy,
                 physical_bytes: report.physical_bytes,
                 logical_bytes: old.as_ref().map(|band| band.logical_bytes).unwrap_or(0),
                 created_unix_ms: old
@@ -305,8 +305,8 @@ pub(super) fn reconcile_band_manifest_with_disk(
             continue;
         }
         if let Some(band) = bands.get_mut(&block_slab_id) {
-            if band.state != BlockStoreBandState::Purged {
-                band.state = BlockStoreBandState::Purged;
+            if band.state != BlockStoreSlabState::Purged {
+                band.state = BlockStoreSlabState::Purged;
                 band.updated_unix_ms = Some(now_unix_ms());
                 changed = true;
             }
@@ -318,7 +318,7 @@ pub(super) fn reconcile_band_manifest_with_disk(
 
 pub(super) fn persist_band_manifest(
     root: &Path,
-    bands: &BTreeMap<u64, BlockStoreBandDescriptor>,
+    bands: &BTreeMap<u64, BlockStoreSlabDescriptor>,
 ) -> Result<(), BlockStoreError> {
     fs::create_dir_all(root)?;
     let path = band_manifest_path(root);
@@ -329,7 +329,7 @@ pub(super) fn persist_band_manifest(
             .map(|duration| duration.as_nanos())
             .unwrap_or_default()
     ));
-    let manifest = BlockStoreBandManifest {
+    let manifest = BlockStoreSlabManifest {
         version: 1,
         bands: bands.values().cloned().collect(),
     };
@@ -352,9 +352,9 @@ pub(super) fn persist_band_manifest(
 }
 
 pub(super) fn summarize_bands(
-    bands: &BTreeMap<u64, BlockStoreBandDescriptor>,
-) -> BlockStoreBandSummary {
-    let mut summary = BlockStoreBandSummary::default();
+    bands: &BTreeMap<u64, BlockStoreSlabDescriptor>,
+) -> BlockStoreSlabSummary {
+    let mut summary = BlockStoreSlabSummary::default();
     let now = now_unix_ms();
     for band in bands.values() {
         update_oldest_band_timestamp(&mut summary.oldest_known_band_unix_ms, band);
@@ -362,7 +362,7 @@ pub(super) fn summarize_bands(
             .total_known_physical_bytes
             .saturating_add(band.physical_bytes);
         match band.state {
-            BlockStoreBandState::Active => {
+            BlockStoreSlabState::Active => {
                 update_oldest_band_timestamp(&mut summary.oldest_live_band_unix_ms, band);
                 summary.active_bands = summary.active_bands.saturating_add(1);
                 summary.active_physical_bytes = summary
@@ -372,7 +372,7 @@ pub(super) fn summarize_bands(
                     .live_physical_bytes
                     .saturating_add(band.physical_bytes);
             }
-            BlockStoreBandState::Sealed => {
+            BlockStoreSlabState::Sealed => {
                 update_oldest_band_timestamp(&mut summary.oldest_live_band_unix_ms, band);
                 summary.sealed_bands = summary.sealed_bands.saturating_add(1);
                 summary.sealed_physical_bytes = summary
@@ -382,7 +382,7 @@ pub(super) fn summarize_bands(
                     .live_physical_bytes
                     .saturating_add(band.physical_bytes);
             }
-            BlockStoreBandState::DelayedDestroy => {
+            BlockStoreSlabState::DelayedDestroy => {
                 update_oldest_band_timestamp(
                     &mut summary.oldest_reclaimable_band_unix_ms,
                     band,
@@ -395,7 +395,7 @@ pub(super) fn summarize_bands(
                     .reclaimable_physical_bytes
                     .saturating_add(band.physical_bytes);
             }
-            BlockStoreBandState::Purged => {
+            BlockStoreSlabState::Purged => {
                 summary.purged_bands = summary.purged_bands.saturating_add(1);
                 summary.purged_physical_bytes = summary
                     .purged_physical_bytes
@@ -415,7 +415,7 @@ pub(super) fn summarize_bands(
     summary
 }
 
-pub(super) fn update_oldest_band_timestamp(target: &mut Option<u64>, band: &BlockStoreBandDescriptor) {
+pub(super) fn update_oldest_band_timestamp(target: &mut Option<u64>, band: &BlockStoreSlabDescriptor) {
     let Some(timestamp) = band.updated_unix_ms.or(band.created_unix_ms) else {
         return;
     };
@@ -425,17 +425,17 @@ pub(super) fn update_oldest_band_timestamp(target: &mut Option<u64>, band: &Bloc
 }
 
 pub(super) fn ensure_band_descriptor(
-    bands: &mut BTreeMap<u64, BlockStoreBandDescriptor>,
+    bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
     root: &Path,
     block_slab_id: u64,
-    state: BlockStoreBandState,
+    state: BlockStoreSlabState,
 ) {
     bands.entry(block_slab_id).or_insert_with(|| {
         let physical_bytes = slab_path(root, block_slab_id)
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        BlockStoreBandDescriptor {
+        BlockStoreSlabDescriptor {
             band_id: band_id_for_slab(block_slab_id),
             block_slab_id,
             state,
@@ -458,15 +458,15 @@ pub(super) fn ensure_band_descriptor(
         if band.block_slab_id == block_slab_id {
             band.state = state;
             band.updated_unix_ms = Some(transition_unix_ms);
-        } else if band.state == BlockStoreBandState::Active {
-            band.state = BlockStoreBandState::Sealed;
+        } else if band.state == BlockStoreSlabState::Active {
+            band.state = BlockStoreSlabState::Sealed;
             band.updated_unix_ms = Some(transition_unix_ms);
         }
     }
 }
 
 pub(super) fn upsert_band_after_append(
-    bands: &mut BTreeMap<u64, BlockStoreBandDescriptor>,
+    bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
     block_slab_id: u64,
     physical_bytes: u64,
     logical_bytes_written: u64,
@@ -474,10 +474,10 @@ pub(super) fn upsert_band_after_append(
 ) {
     let band = bands
         .entry(block_slab_id)
-        .or_insert(BlockStoreBandDescriptor {
+        .or_insert(BlockStoreSlabDescriptor {
             band_id: band_id_for_slab(block_slab_id),
             block_slab_id,
-            state: BlockStoreBandState::Active,
+            state: BlockStoreSlabState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
             created_unix_ms: Some(now_unix_ms()),
@@ -491,7 +491,7 @@ pub(super) fn upsert_band_after_append(
             first_error: None,
         });
     let updated_unix_ms = now_unix_ms();
-    band.state = BlockStoreBandState::Active;
+    band.state = BlockStoreSlabState::Active;
     band.physical_bytes = physical_bytes;
     band.readable_prefix_physical_bytes = physical_bytes;
     band.has_corruption = false;
@@ -515,9 +515,9 @@ pub(super) fn upsert_band_after_append(
 }
 
 pub(super) fn set_band_state(
-    bands: &mut BTreeMap<u64, BlockStoreBandDescriptor>,
+    bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
     block_slab_id: u64,
-    state: BlockStoreBandState,
+    state: BlockStoreSlabState,
 ) {
     bands
         .entry(block_slab_id)
@@ -525,7 +525,7 @@ pub(super) fn set_band_state(
             band.state = state;
             band.updated_unix_ms = Some(now_unix_ms());
         })
-        .or_insert(BlockStoreBandDescriptor {
+        .or_insert(BlockStoreSlabDescriptor {
             band_id: band_id_for_slab(block_slab_id),
             block_slab_id,
             state,

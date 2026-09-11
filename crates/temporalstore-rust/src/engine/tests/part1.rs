@@ -2332,11 +2332,11 @@ fn crash_recovery_report_covers_wal_index_page_and_band_manifest() {
     assert_eq!(report.band_descriptors.len(), 2);
     assert_eq!(
         report.band_descriptors[0].state,
-        BlockStoreBandState::Sealed
+        BlockStoreSlabState::Sealed
     );
     assert_eq!(
         report.band_descriptors[1].state,
-        BlockStoreBandState::Active
+        BlockStoreSlabState::Active
     );
     assert_eq!(report.band_summary.sealed_bands, 1);
     assert_eq!(report.band_summary.active_bands, 1);
@@ -2645,11 +2645,11 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
         assert_eq!(report.band_descriptors.len(), 2);
         assert_eq!(
             report.band_descriptors[0].state,
-            BlockStoreBandState::Sealed
+            BlockStoreSlabState::Sealed
         );
         assert_eq!(
             report.band_descriptors[1].state,
-            BlockStoreBandState::Active
+            BlockStoreSlabState::Active
         );
         assert_eq!(report.band_summary.sealed_bands, 1);
         assert_eq!(report.band_summary.active_bands, 1);

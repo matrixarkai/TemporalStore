@@ -132,13 +132,13 @@ impl LocalBlockStore {
         let now = now_unix_ms();
         inner.bands.insert(
             block_slab_id,
-            BlockStoreBandDescriptor {
+            BlockStoreSlabDescriptor {
                 band_id: band_id_for_slab(block_slab_id),
                 block_slab_id,
                 state: if is_current_slab {
-                    BlockStoreBandState::Active
+                    BlockStoreSlabState::Active
                 } else {
-                    BlockStoreBandState::Sealed
+                    BlockStoreSlabState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
                 logical_bytes: band_summary.logical_bytes,
@@ -160,9 +160,9 @@ impl LocalBlockStore {
         if is_current_slab {
             for band in inner.bands.values_mut() {
                 if band.block_slab_id != block_slab_id
-                    && band.state == BlockStoreBandState::Active
+                    && band.state == BlockStoreSlabState::Active
                 {
-                    band.state = BlockStoreBandState::Sealed;
+                    band.state = BlockStoreSlabState::Sealed;
                 }
             }
         }

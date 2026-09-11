@@ -341,7 +341,7 @@ impl LocalBlockStore {
                     set_band_state(
                         &mut inner.bands,
                         block_slab_id,
-                        BlockStoreBandState::DelayedDestroy,
+                        BlockStoreSlabState::DelayedDestroy,
                     );
                     delayed_destroy_ids.push(block_slab_id);
                     delayed_destroy_physical_bytes += slab_physical_bytes;
@@ -350,7 +350,7 @@ impl LocalBlockStore {
                     set_band_state(
                         &mut inner.bands,
                         block_slab_id,
-                        BlockStoreBandState::Purged,
+                        BlockStoreSlabState::Purged,
                     );
                 }
                 removed.push(block_slab_id);
