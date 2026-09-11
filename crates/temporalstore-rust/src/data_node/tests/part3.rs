@@ -3808,3 +3808,77 @@ fn what_the_index_gc_gate_says() {
         );
     }
 }
+
+/// What does the index-GC GATE cost when it cannot possibly fire? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_the_index_gc_gate_costs -- --ignored --nocapture
+///
+/// The gate needs BOTH triggers, ANDed: at least 768 KiB of index log AND at least 40% removable.
+/// It establishes the second by scanning the WHOLE log and decoding every record -- and only then
+/// checks the first, which is a file length. So every round below the byte threshold pays a full
+/// scan to learn it was never eligible.
+#[test]
+#[ignore]
+fn what_the_index_gc_gate_costs() {
+    for records in [4_000usize, 8_000, 16_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("gate-cost-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let engine = runtime.engine();
+        let log_bytes = engine.index_log_store().log_len_bytes(1);
+
+        let lifecycle_request = || crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            purge_delayed_destroy: true,
+            prune_bucket_dump_manifests: true,
+            roll_forward_bucket_dump_installs: true,
+            ..crate::engine::reports::StorageLifecycleRequest::default()
+        };
+
+        // Attribute the three pieces separately. Timing only the enclosing call cannot say which
+        // of them costs, and the first guess -- the index-log scan -- turned out to be wrong.
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            let _ = engine.storage_lifecycle_plan(lifecycle_request());
+        }
+        let plan_ms = started.elapsed().as_micros() as f64 / 5.0 / 1000.0;
+
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            let _ = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+        }
+        let wal_plan_ms = started.elapsed().as_micros() as f64 / 5.0 / 1000.0;
+
+        let started = std::time::Instant::now();
+        let mut applied_any = false;
+        for _ in 0..5 {
+            let report = engine.apply_periodic_index_gc(lifecycle_request(), None);
+            applied_any |= report.applied;
+        }
+        let per_call = started.elapsed().as_micros() as f64 / 5.0 / 1000.0;
+
+        eprintln!(
+            "  [gate] {records:>6} records, log {log_bytes:>8} B -> whole {per_call:>7.1} ms = \
+             plan {plan_ms:>7.1} + wal_plan {wal_plan_ms:>6.1} + rest \
+             {:>6.1}, applied={applied_any}",
+            per_call - plan_ms - wal_plan_ms
+        );
+    }
+}
