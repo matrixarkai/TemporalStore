@@ -3223,4 +3223,33 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
     );
 }
 
+#[test]
+fn the_slot_index_metric_counts_resident_buckets_not_the_routing_range() {
+    // `slot_index_entry_count` was built from `storage.bucket_entries`, which is the routing
+    // RANGE. On a default shard that is u32::MAX, and `max(u32::MAX, anything)` is u32::MAX, so
+    // the metric exported 4,294,967,295 per shard whatever the index held -- and these are SUMMED
+    // across shards. Nothing asserted it, which is why it stayed that way.
+    let shard = crate::meta::ServerShardServingState {
+        shard_id: 1,
+        dirty_bucket_count: 3,
+        storage: crate::control::ShardCanonicalStorageStats {
+            // the routing range a default shard reports
+            bucket_entries: u32::MAX as u64,
+            bucket_index_resident_entries: 42,
+            ..crate::control::ShardCanonicalStorageStats::default()
+        },
+        ..crate::meta::ServerShardServingState::default()
+    };
 
+    let mut metrics = std::collections::BTreeMap::new();
+    super::super::apply_shard_storage_metrics(&mut metrics, std::slice::from_ref(&shard));
+
+    assert_eq!(
+        metrics.get("slot_index_entry_count").copied(),
+        Some(42),
+        "the metric must report resident buckets"
+    );
+    // The control: the field it used to read is still u32::MAX right here, so a regression to it
+    // cannot pass by the numbers happening to agree.
+    assert_eq!(shard.storage.bucket_entries, u32::MAX as u64);
+}

@@ -5845,6 +5845,51 @@ fn does_writing_scale_with_the_store() {
 /// safe while loading actually rebuilds it. `a_reload_rebuilds_the_lookup_the_index_no_longer_writes`
 /// holds that half; this one holds that the format stays as small as that change made it.
 #[test]
+fn the_resident_bucket_count_is_not_the_routing_range() {
+    // `slot_index_entry_count` was published from `bucket_entries`, which is the routing RANGE --
+    // u32::MAX on a default shard -- so the metric read 4,294,967,295 per shard whatever the
+    // index actually held, and the per-shard values are SUMMED. A count that cannot move is not
+    // a measurement.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let empty = engine.get_stats(1).stats.expect("stats for a loaded shard");
+    assert_eq!(empty.storage.bucket_index_resident_entries, 0);
+    // The control: the old source reads u32::MAX on this very same empty shard.
+    assert_eq!(empty.storage.bucket_entries, u32::MAX as u64);
+
+    for index in 0..300usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("resident-{index:05}"),
+                value: vec![b'v'; 16],
+            },
+        });
+    }
+
+    let filled = engine.get_stats(1).stats.expect("stats for a loaded shard");
+    assert!(
+        filled.storage.bucket_index_resident_entries > 0
+            && filled.storage.bucket_index_resident_entries <= 300,
+        "300 objects must give a resident count in range, got {}",
+        filled.storage.bucket_index_resident_entries
+    );
+    // And the floor stays consistent with it -- one node per resident bucket.
+    assert_eq!(
+        filled.storage.bucket_index_resident_bytes_floor,
+        filled.storage.bucket_index_resident_entries
+            * std::mem::size_of::<crate::engine::state::BucketNode>() as u64
+    );
+}
+
+#[test]
 fn the_stats_report_a_floor_on_what_the_bucket_index_costs() {
     // Every other memory number this engine emits is the CACHE's. The bucket index grows one
     // entry per stored object and is never evicted, so a shard can hold gigabytes of it while
