@@ -2,8 +2,17 @@
 # Copyright 2026 MatrixArkAI
 """Split out of matrixark_mcp_core.py; re-exported at core end via the dual
 relative/absolute import pattern so the same core module object is reused under
-both the package path (tools.matrixark_mcp_core) and the top-level path. No
-import-time cycle. __all__ lists every moved name for total re-export."""
+both the package path (tools.matrixark_mcp_core) and the top-level path.
+
+This module cannot be imported on its own. matrixark_mcp_core imports it from the
+bottom of its own body and it imports names back, so importing it first hands it a
+half-built aggregator and raises ImportError -- import matrixark_mcp_core first.
+Which of the split-out modules break this way is positional: it depends on whether
+the names they want are defined above or below the import at the end of the
+aggregator, so moving a definition there can break another one without touching it.
+test_a_module_that_claims_no_cycle_can_be_imported pins the set.
+
+__all__ lists every moved name for total re-export."""
 import json
 import os
 import re

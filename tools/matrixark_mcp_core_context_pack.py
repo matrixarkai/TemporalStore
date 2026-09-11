@@ -102,16 +102,18 @@ def _attach_compact_profile_source_counts(item: Json, ref: Json) -> None:
 
 
 
-def _context_memory_source_ref_is_debug_only(ref: Json) -> bool:
-    ref_type = str(ref.get("ref_type") or "").strip().lower()
-    memory_scope = str(ref.get("memory_scope") or "").strip().lower()
-    session_continuity = str(ref.get("session_continuity") or "").strip().lower()
-    context_class = str(ref.get("context_class") or "").strip().lower()
-    return (
-        ref_type in {"event", "entity", "segment", "summary"}
-        or context_class in {"event", "entity", "segment", "summary"}
-        or memory_scope in {"session", "session_memory", "user_profile", "profile", "cross_session_profile"}
-        or session_continuity in {"same_session", "cross_session"}
+# Not defined here: the implementation lives in matrixark_mcp_context_pack and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_context_pack import (
+        _context_memory_source_ref_is_debug_only,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_context_pack import (
+        _context_memory_source_ref_is_debug_only,
     )
 
 def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:

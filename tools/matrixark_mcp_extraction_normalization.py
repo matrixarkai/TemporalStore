@@ -139,46 +139,16 @@ def normalize_extracted_segments(raw_segments: Any, messages: list[Json]) -> lis
     return []
 
 
-def normalize_extracted_facts(raw_facts: Any, *, chunk: Any, chunk_metadata: Json, raw_uri: str, resource_version: str, provider: str) -> list[Json]:
-    if not isinstance(raw_facts, list):
-        return []
-    facts: list[Json] = []
-    for raw in raw_facts[:12]:
-        if not isinstance(raw, dict):
-            continue
-        event_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("event_type") or raw.get("fact_type") or "resource_fact").lower()).strip("_") or "resource_fact"
-        if not event_type.startswith("resource_"):
-            event_type = f"resource_{event_type}"
-        entity_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("entity_type") or event_type).lower()).strip("_") or event_type
-        if not entity_type.startswith("resource_"):
-            entity_type = f"resource_{entity_type}"
-        value = summarize_text(str(raw.get("value") or raw.get("summary_text") or raw.get("state") or "").strip(), limit=260)
-        if not value:
-            continue
-        entity_name = summarize_text(str(raw.get("entity_name") or raw.get("name") or "").strip(), limit=140)
-        if not entity_name:
-            entity_name = resource_fact_entity_name({"entity_type": entity_type, "entity_prefix": entity_type.removeprefix("resource_")}, value, chunk_metadata, raw_uri)
-        try:
-            confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.86))))
-        except (TypeError, ValueError):
-            confidence = 0.86
-        facts.append(
-            {
-                "mode": "matrixark_resource_schema_openai_compatible",
-                "classification": "RESOURCE_FACT",
-                "event_type": event_type,
-                "entity_type": entity_type,
-                "status": str(raw.get("status") or "observed"),
-                "value": value,
-                "entity_name": entity_name,
-                "confidence": round(confidence, 6),
-                "source_chunk_hash": chunk.chunk_hash,
-                "source_ref": chunk.source_ref,
-                "resource_version": resource_version,
-                "extraction_provider": provider,
-            }
-        )
-    return facts
+# Not defined here: the implementation lives in matrixark_mcp_core_extraction and this module carried an
+# identical second copy of each.
+try:
+    from tools.matrixark_mcp_core_extraction import (
+        normalize_extracted_facts,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_extraction import (
+        normalize_extracted_facts,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
@@ -233,22 +203,20 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_indexing import normalized_index_value
 
 
-CODEX_OUTCOME_CHANGE_RE = re.compile(
-    r"\b(?:changed|updated|implemented|added|removed|fixed|configured|enabled|disabled|installed|upgraded|downgraded|migrated|recovered|restored|cleaned|deleted|moved|renamed|wired|integrated|extracted|promoted|indexed|budgeted|ranked|batched|flushed|synced|consumed|hooked|captured)\b",
-    re.IGNORECASE,
-)
-CODEX_OUTCOME_PUBLISH_RE = re.compile(
-    r"\b(?:outcome|pushed|published|deployed|released|uploaded|merged|rebased|fast[- ]?forward(?:ed)?|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b",
-    re.IGNORECASE,
-)
-CODEX_OUTCOME_VALIDATION_RE = re.compile(
-    r"\b(?:validation|validated|verified|tests?|py_compile|unittest|pytest|cargo test|cargo check|build(?: succeeded)?|built|compiled|syntax check)\b",
-    re.IGNORECASE,
-)
-CODEX_OUTCOME_BENCHMARK_RE = re.compile(
-    r"\b(?:benchmark|benchmarked|p50|p99|throughput|latency|qps|ops/sec|requests/sec)\b",
-    re.IGNORECASE,
-)
+try:  # the four patterns live in matrixark_mcp_core_codex_outcome; this module re-exports them
+    from .matrixark_mcp_core_codex_outcome import (
+        CODEX_OUTCOME_BENCHMARK_RE,
+        CODEX_OUTCOME_CHANGE_RE,
+        CODEX_OUTCOME_PUBLISH_RE,
+        CODEX_OUTCOME_VALIDATION_RE,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import (
+        CODEX_OUTCOME_BENCHMARK_RE,
+        CODEX_OUTCOME_CHANGE_RE,
+        CODEX_OUTCOME_PUBLISH_RE,
+        CODEX_OUTCOME_VALIDATION_RE,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
@@ -263,14 +231,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_codex_outcome import codex_outcome_entity_type
 
 
-CODEX_OUTCOME_ENTITY_TYPES = {
-    "codex_next_action",
-    "codex_blocker",
-    "codex_validation",
-    "codex_publish_outcome",
-    "codex_code_change",
-    "codex_benchmark_result",
-}
+try:  # the set lives in matrixark_mcp_core_codex_outcome; this module re-exports it
+    from .matrixark_mcp_core_codex_outcome import CODEX_OUTCOME_ENTITY_TYPES
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import CODEX_OUTCOME_ENTITY_TYPES
 
 
 def codex_outcome_fact_entities(

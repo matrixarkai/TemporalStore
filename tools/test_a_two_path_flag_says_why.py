@@ -43,6 +43,14 @@ INVENTORY = os.path.join(REPO, "docs", "ops", "temporalstore-engine-flags.md")
 
 # Every boolean whose other arm no shipped selector reaches, and why it keeps one.
 KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
+    # --- surfaced when the inventory learned to read matrixark_rust_proxy_impl.rs ---------------
+    "MATRIXARK_RUST_PROXY_HTTP_CONCURRENT":
+        "The engine states the reason beside the read: OFF reproduces exactly the serialization "
+        "the pipe had, where --serve handled one request at a time behind a daemon holding a "
+        "single lock, so nothing in this engine has ever had two requests in flight. Moving the "
+        "transport off the pipe is one change and letting requests overlap is another, and the "
+        "second is behind its own switch so it can be measured, and reverted, on its own. The "
+        "branch is what makes that separable.",
     # The arm that produces a benchmark result the project refuses to publish. Turning it on
     # scores the source text directly instead of retrieving it, and marks the run
     # rust_context_event_ingest=false; validate_benchmark_claims.py and
@@ -75,6 +83,19 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
     "TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START":
         "the networked half of the same checkpoint, so a future owner can follow it lazily; the "
         "same opt-out",
+    # --- two more opt-outs, landed on main while this branch was in flight ---------------------
+    # Neither is new behaviour hiding behind a flag: each is a way back from a change that shipped
+    # ON, and the engine writes the reason directly above the read.
+    "MATRIXARK_ENGINE_COMPACT_SERVING_REFS":
+        "the engine calls it \"a kill switch, not the decision\": whether a retrieve wants debug "
+        "refs is the caller's to know, because those carry lineage the serving shape drops. Off "
+        "returns a deployment to the previous shape WITHOUT touching its callers, which is a thing "
+        "the on arm cannot do and the only way back if the new shape loses something a caller "
+        "needed",
+    "MATRIXARK_PROXY_EMBED_QUERY":
+        "on because ranking is dense and a retrieve that cannot embed its query ranks lexically. "
+        "Off hands query embedding back to the caller, for a deployment that would rather own it "
+        "entirely -- a division of labour the on arm forecloses, not a disabled feature",
     # The rest default OFF. Retiring one of those deletes a hatch rather than a dead arm, and each
     # is a behaviour an operator asks for:
     "TS_BLOCK_INDEX_CHECKSUMS":

@@ -1704,6 +1704,11 @@ class _LocalAdapterIngestMixin:
                 source_hash_field="source_event_hash",
                 source_hash=event_id_hash,
             )
+        # The buffer event for the message just ingested goes through the append coalescer, so it
+        # is not readable until this flush. Without it the count below is one short and the commit
+        # fires on the message AFTER the one that reaches the threshold -- at the default of 20,
+        # extraction at 21. The other branch of this method already flushes before the same read.
+        self._flush_append_coalescing()
         pending_events = self.pending_session_events(envelope["scope"])
         pending_event_count = len(pending_events)
         pending_message_count = session_event_message_count(pending_events)

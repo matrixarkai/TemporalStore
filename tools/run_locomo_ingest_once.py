@@ -276,8 +276,8 @@ def main() -> int:
     parser.add_argument(
         "--require-shared-oss-models",
         action="store_true",
-        default=os.environ.get("MATRIXARK_REQUIRE_SHARED_OSS_MODELS", "1").lower()
-        not in {"0", "false", "no"},
+        default=os.environ.get("MATRIXARK_REQUIRE_SHARED_OSS_MODELS", "1").strip().lower()
+        not in {"0", "false", "no", "off"},
         help=(
             "Fail comparable benchmark claims unless MatrixArk and the baseline declare the same "
             "OSS reader model, embedding/encoding model, and benchmark budgets."

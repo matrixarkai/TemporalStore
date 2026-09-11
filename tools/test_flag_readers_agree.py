@@ -21,6 +21,7 @@ statement carries its own set and nothing else's, which is why the scan below fo
 """
 from __future__ import annotations
 
+import ast
 import collections
 import os
 import re
@@ -30,6 +31,10 @@ from typing import Dict, List, Tuple
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
+
+#: The variable names this guard covers. Lifted out of the old read regex, which is gone --
+#: it matched per LINE and so could not see a call the formatter split across lines.
+_NAME_SHAPE = re.compile(r"[A-Z][A-Z0-9_]{3,}")
 
 _READ = re.compile(
     r'os\.(?:environ\.get|getenv)\(\s*["\']([A-Z][A-Z0-9_]{3,})["\']\s*,\s*["\']([^"\']*)["\']')
@@ -56,7 +61,13 @@ ONE_VOCABULARY = ("<env_bool>",)
 #
 # A flag leaving this set is not a loss -- one reader cannot disagree with itself. What the floor
 # guards against is the scan matching NOTHING, which looks the same as universal agreement.
-EXPECTED_SHARED_FLOOR = 14
+# 15 since the scan was rewritten to PARSE. The extra one is
+# MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES: its second reader is written with the name on
+# the line after `os.environ.get(`, so the old per-line regex never matched it and the flag
+# was not in the scan at all -- while its two readers disagreed about "on". A step UP here
+# means the scan sees a read it could not see before, which is the only reason this number
+# should ever rise without new code.
+EXPECTED_SHARED_FLOOR = 15
 
 
 def _production_sources() -> List[str]:
@@ -65,45 +76,127 @@ def _production_sources() -> List[str]:
     return [path for path in listed if not os.path.basename(path).startswith("test_")]
 
 
-def _statement_at(lines: List[str], start: int) -> str:
-    """The whole statement beginning at `start`, followed by bracket balance."""
-    depth, collected = 0, []
-    for number in range(start, min(start + 40, len(lines))):
-        line = lines[number]
-        collected.append(line)
-        depth += line.count("(") + line.count("{") + line.count("[")
-        depth -= line.count(")") + line.count("}") + line.count("]")
-        if depth <= 0:
-            break
-    return "\n".join(collected)
+#: The words a boolean read tests against. A set holding none of these is not a spelling table.
+_SPELLING_WORDS = {"1", "0", "true", "false", "yes", "no", "on", "off"}
+
+
+def _flag_name(node) -> str:
+    """The variable a read names, or "" if the first argument is not a literal."""
+    if not isinstance(node, ast.Call) or not node.args:
+        return ""
+    try:
+        value = ast.literal_eval(node.args[0])
+    except (ValueError, SyntaxError):
+        return ""
+    return value if isinstance(value, str) and _NAME_SHAPE.fullmatch(value) else ""
+
+
+def _is_environ_read(node) -> bool:
+    func = node.func
+    if not isinstance(func, ast.Attribute) or func.attr not in ("get", "getenv"):
+        return False
+    owner = func.value
+    if isinstance(owner, ast.Attribute):
+        return owner.attr == "environ"
+    return isinstance(owner, ast.Name) and owner.id in ("os", "environ")
 
 
 def _readers() -> Dict[str, List[Tuple[str, int, str, Tuple[str, ...], bool]]]:
+    """Every boolean read of a flag, PARSED.
+
+    The previous scan matched a regex per line and required the name and the default on the same
+    line as `os.environ.get(`. A call the formatter split across lines never matched, so the flag
+    did not enter the scan at all -- which is how the one variable read through two different
+    spelling tables passed this file.
+    """
     found: Dict[str, List[Tuple[str, int, str, Tuple[str, ...], bool]]] = collections.defaultdict(list)
     for path in _production_sources():
         try:
             with open(os.path.join(REPO, path), encoding="utf-8") as handle:
-                lines = handle.read().splitlines()
-        except OSError:
+                tree = ast.parse(handle.read())
+        except (OSError, SyntaxError):
             continue
-        for number, line in enumerate(lines):
-            for match in _READ.finditer(line):
-                name, default = match.group(1), match.group(2).strip()
-                statement = _statement_at(lines, number)
-                if _NUMERIC.search(statement):
+        parents = {child: parent for parent in ast.walk(tree)
+                   for child in ast.iter_child_nodes(parent)}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else (
+                func.attr if isinstance(func, ast.Attribute) else "")
+
+            if name in ("env_bool", "bool_env", "_env_bool", "_bool_env"):
+                flag = _flag_name(node)
+                if not flag or len(node.args) < 2:
                     continue
-                # A statement naming a second flag is not a clean read of either.
-                if set(_OTHER_FLAG.findall(statement)) - {name}:
+                try:
+                    default = ast.literal_eval(node.args[1])
+                except (ValueError, SyntaxError):
                     continue
-                accepted = tuple(sorted({s.lower() for s in _SPELLING.findall(statement)}
-                                        - {default.lower()}))
-                if not accepted:
+                if not isinstance(default, bool):
                     continue
-                found[name].append((path, number + 1, default.lower(), accepted,
-                                    "not in" in statement))
-            for match in _ENV_BOOL.finditer(line):
-                name, default = match.group(1), match.group(2)
-                found[name].append((path, number + 1, default.lower(), ONE_VOCABULARY, False))
+                # Recorded as "1"/"0", not "true"/"false": the same default written the two
+                # ways these shapes write it must compare equal, or a flag read through env_bool
+                # in one place and os.environ.get(X, "0") in another reports a disagreement about
+                # a default the two actually share.
+                found[flag].append((path, node.lineno, "1" if default else "0",
+                                    ONE_VOCABULARY, False))
+                continue
+
+            if not _is_environ_read(node):
+                continue
+            flag = _flag_name(node)
+            if not flag:
+                continue
+            default = ""
+            if len(node.args) > 1:
+                try:
+                    raw = ast.literal_eval(node.args[1])
+                except (ValueError, SyntaxError):
+                    raw = ""
+                default = str(raw).strip().lower() if isinstance(raw, str) else ""
+
+            # Climb to the comparison this read feeds, through the .strip().lower() chain.
+            cursor, compare = node, None
+            for _hop in range(8):
+                parent = parents.get(cursor)
+                if parent is None:
+                    break
+                if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Attribute):
+                    if parent.func.attr in ("int", "float"):
+                        break
+                    cursor = parent
+                    continue
+                if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name) \
+                        and parent.func.id in ("int", "float"):
+                    break                      # a numeric read, not a boolean one
+                if isinstance(parent, ast.Compare) and len(parent.ops) == 1 \
+                        and isinstance(parent.ops[0], (ast.In, ast.NotIn)):
+                    compare = parent
+                    break
+                cursor = parent
+            if compare is None:
+                continue
+            comparator = compare.comparators[0]
+            if not isinstance(comparator, (ast.Set, ast.Tuple, ast.List)):
+                continue
+            try:
+                members = {str(value).strip().lower() for value in ast.literal_eval(comparator)}
+            except (ValueError, SyntaxError, TypeError):
+                continue
+            if not members & _SPELLING_WORDS:
+                continue
+            # A comparison naming a second flag is not a clean read of either.
+            others = {constant.value for constant in ast.walk(compare)
+                      if isinstance(constant, ast.Constant) and isinstance(constant.value, str)
+                      and _NAME_SHAPE.fullmatch(constant.value)} - {flag}
+            if others:
+                continue
+            accepted = tuple(sorted(members - {default}))
+            if not accepted:
+                continue
+            found[flag].append((path, node.lineno, default, accepted,
+                                isinstance(compare.ops[0], ast.NotIn)))
     return found
 
 

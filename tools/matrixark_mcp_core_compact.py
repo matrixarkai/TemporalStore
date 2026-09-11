@@ -13,44 +13,77 @@ _record_debug_ref) for total re-export.
 import json
 from typing import Any
 
+# Imported from the modules that DEFINE these, not from matrixark_mcp_core, which only
+# republishes them. core star-imports this module, so taking them from there closed a cycle:
+# importing either module by its flat name failed part-way with "cannot import name
+# 'canonical_scope_key' from partially initialized module", and four suites could not load.
+#
+# Each name was compared against core's view before being moved: eight resolve to the same
+# definition either way. `canonical_storage_route` does NOT -- core's honours `durability` and
+# matrixark_mcp_storage_options' returns a `read_preference` core's does not, with neither a
+# superset -- so that one still comes from core, at its single call site below, and the choice of
+# implementation is unchanged.
+Json = dict[str, Any]
+
 try:  # package path
-    from .matrixark_mcp_core import (
-        ENABLE_CONTEXT_DEBUG_RECORDS,
-        Json,
+    from .matrixark_mcp_identity import canonical_scope_key, now_ms, stable_hash
+    from .matrixark_mcp_indexing import (
         SECONDARY_INDEX_POSTING_BUCKET_MS,
-        canonical_scope_key,
-        canonical_storage_route,
         compact_context_index_postings,
-        embedding_model_ref_for_name,
         non_default_classification,
-        now_ms,
-        stable_hash,
     )
+    from .matrixark_mcp_models import embedding_model_ref_for_name
+    from .matrixark_mcp_runtime_config import ENABLE_CONTEXT_DEBUG_RECORDS
 except ImportError:  # top-level path
-    from matrixark_mcp_core import (
-        ENABLE_CONTEXT_DEBUG_RECORDS,
-        Json,
+    from matrixark_mcp_identity import canonical_scope_key, now_ms, stable_hash
+    from matrixark_mcp_indexing import (
         SECONDARY_INDEX_POSTING_BUCKET_MS,
-        canonical_scope_key,
-        canonical_storage_route,
         compact_context_index_postings,
-        embedding_model_ref_for_name,
         non_default_classification,
-        now_ms,
-        stable_hash,
     )
+    from matrixark_mcp_models import embedding_model_ref_for_name
+    from matrixark_mcp_runtime_config import ENABLE_CONTEXT_DEBUG_RECORDS
 
 __all__ = ['HOT_SERVING_RECORD_TYPES', 'COMPACT_SCOPE_RECORD_TYPES', 'COMPACT_TIMESTAMP_RECORD_TYPES', 'TOPOLOGY_DERIVED_PATH_RECORD_TYPES', 'NODE_PATH_HEAVY_RECORD_TYPES', 'EVENT_DEBUG_FIELDS', 'ENTITY_DEBUG_FIELDS', 'EMBEDDING_LINEAGE_DEBUG_FIELDS', 'HOT_EMBEDDING_COMPACT_TYPES', 'HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES', 'HOT_EMBEDDING_LINEAGE_FIELDS', 'compact_hot_context_embedding_record', 'legacy_hook_type_from_codex_event', 'CONTEXT_TIMELINE_FANOUT', 'COMPACT_DERIVED_SCOPE_FIELDS', 'COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES', 'COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS', 'compact_record_scope', '_record_debug_ref', 'context_event_timestamp_ms', 'context_event_time_key', 'attach_context_event_time_key', 'attach_storage_route', 'context_placement_key', 'attach_context_placement', 'compact_record_lifecycle_fields', 'compact_storage_record', 'materialize_serving_records', 'context_index_timestamp_key', 'context_index_posting_bucket', 'context_index_data_model', 'context_index_ref_hashes', 'materialize_serving_record_batch', 'latest_context_state_key', 'compact_latest_context_state_records']
 
-HOT_SERVING_RECORD_TYPES = {
-    "context_event",
-    "context_entity",
-    "context_segment",
-    "resource_chunk",
-    "skill_section",
-    "context_index",
-    "context_embedding",
-}
+# These record-shape constants live in matrixark_mcp_serving_records, and did so here as a second
+# copy: which record types are hot, which fields are debug-only, which carry a heavy node path,
+# which topology scope fields are strings. The two agreed -- which is what a pair does until one of
+# them is extended, and three constants elsewhere in this tree disagreed exactly that way, on the
+# copy the live path used.
+#
+# serving_records owns them because the dependency already runs that way: it imports nothing from
+# here, and `compact_hot_context_embedding_record` has been taken from it for some time.
+#
+# Imported HERE rather than beside that function further down, because module-scope code in between
+# reads these names -- COMPACT_SCOPE_RECORD_TYPES is built from HOT_SERVING_RECORD_TYPES two lines
+# below. Appending to the lower block broke this module with a NameError at import.
+try:
+    from .matrixark_mcp_serving_records import (  # noqa: F401
+        COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS,
+        COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES,
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        ENTITY_DEBUG_FIELDS,
+        EVENT_DEBUG_FIELDS,
+        HOT_EMBEDDING_COMPACT_TYPES,
+        HOT_EMBEDDING_LINEAGE_FIELDS,
+        HOT_SERVING_RECORD_TYPES,
+        NODE_PATH_HEAVY_RECORD_TYPES,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_serving_records import (  # noqa: F401
+        COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS,
+        COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES,
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        ENTITY_DEBUG_FIELDS,
+        EVENT_DEBUG_FIELDS,
+        HOT_EMBEDDING_COMPACT_TYPES,
+        HOT_EMBEDDING_LINEAGE_FIELDS,
+        HOT_SERVING_RECORD_TYPES,
+        NODE_PATH_HEAVY_RECORD_TYPES,
+    )
+
+
 COMPACT_SCOPE_RECORD_TYPES = HOT_SERVING_RECORD_TYPES | {
     "context_node",
     "context_child_ref",
@@ -69,56 +102,7 @@ COMPACT_TIMESTAMP_RECORD_TYPES = COMPACT_SCOPE_RECORD_TYPES | {
     "matrixark_async_pipeline_task",
 }
 TOPOLOGY_DERIVED_PATH_RECORD_TYPES = {"context_child_ref"}
-NODE_PATH_HEAVY_RECORD_TYPES = {
-    "context_event",
-    "context_entity",
-    "context_segment",
-    "resource_chunk",
-    "skill_section",
-    "context_index",
-}
-EVENT_DEBUG_FIELDS = {"envelope", "internal_extraction", "prior_context", "agent_hook", "storage_options"}
-ENTITY_DEBUG_FIELDS = {"previous_state", "field_patches", "patch_results"}
-EMBEDDING_LINEAGE_DEBUG_FIELDS = {
-    "source_event_ids",
-    "source_entity_hashes",
-    "source_summary_hashes",
-    "source_segment_hashes",
-    "source_session_ids",
-    "supersedes_session_entity_hash",
-    "supersedes_session_entity_hashes",
-    "previous_profile_revision",
-    "previous_profile_updated_at_ms",
-    "extraction_context_event_ids",
-    "summary_generation_policy",
-    "dirty_hash",
-}
-HOT_EMBEDDING_COMPACT_TYPES = {"event_text", "entity_state", "profile_entity_state", "segment_text"}
 HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES = {"batch_l0"}
-HOT_EMBEDDING_LINEAGE_FIELDS = {
-    "source_roles",
-    "source_role_counts",
-    "source_hook_types",
-    "source_hook_type_counts",
-    "source_codex_events",
-    "source_codex_event_counts",
-    "source_memory_selection_policies",
-    "source_memory_selection_policy_counts",
-    "source_memory_selection_lossy_count",
-    "source_memory_selection_complete_count",
-    "source_memory_selection_dropped_text_chars",
-    "source_memory_selection_dropped_line_count",
-    "source_memory_selection_retained_text_ratio_avg",
-    "source_memory_selection_retained_line_ratio_avg",
-    "source_memory_scopes",
-    "source_session_continuities",
-    "source_extraction_phases",
-    "source_profile_promotion_policies",
-    "source_profile_promotion_blockers",
-    "promoted_from_memory_scope",
-    "extraction_phase",
-    "final_session_boundary",
-}
 
 
 try:  # the implementation lives in matrixark_mcp_serving_records; this module re-exports it
@@ -149,23 +133,6 @@ CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 # scope_key, event_time_key, node_path, or ContextEmbedding metadata. Keep them
 # out of hot serving records unless the caller explicitly asks for debug data.
 COMPACT_DERIVED_SCOPE_FIELDS = {"_explicit_scope_keys"}
-COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES = {
-    "context_node",
-    "context_child_ref",
-    "context_summary",
-    "context_summary_dirty",
-}
-COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS = {
-    "account_id",
-    "account_hash",
-    "tenant_id",
-    "tenant_hash",
-    "user_id",
-    "user_hash",
-    "session_id",
-    "session_hash",
-    "agent_name",
-}
 
 
 def compact_record_scope(record: Json) -> Json:
@@ -221,24 +188,21 @@ def context_event_time_key(timestamp_ms: int, event_id_hash: Any) -> int:
     return int(timestamp_ms) * CONTEXT_TIMELINE_FANOUT + (disambiguator % CONTEXT_TIMELINE_FANOUT)
 
 
-def attach_context_event_time_key(record: Json) -> Json:
-    if str(record.get("record_type") or "") != "context_event":
-        return record
-    enriched = dict(record)
-    event_hash = enriched.get("event_id_hash") or stable_hash(json.dumps(enriched, sort_keys=True, separators=(",", ":")))
-    timestamp_ms = context_event_timestamp_ms(enriched)
-    time_key = context_event_time_key(timestamp_ms, event_hash)
-    enriched.setdefault("event_id_hash", event_hash)
-    enriched.setdefault("timestamp_key_ms", timestamp_ms)
-    enriched.setdefault("context_event_key", f"{time_key:020d}:{event_hash}")
-    segment_hash = enriched.get("segment_hash")
-    if segment_hash:
-        enriched.setdefault("context_event_parent_type", "context_segment")
-        enriched.setdefault("context_event_parent_hash", segment_hash)
-    else:
-        enriched.setdefault("context_event_parent_type", "context_node")
-        enriched.setdefault("context_event_parent_hash", enriched.get("node_hash") or 0)
-    return enriched
+# Not defined here: the implementation lives in matrixark_mcp_event_keys and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_event_keys import (
+        attach_context_event_time_key,
+        attach_context_placement,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_event_keys import (
+        attach_context_event_time_key,
+        attach_context_placement,
+    )
 
 
 def attach_storage_route(record: Json) -> Json:
@@ -248,6 +212,13 @@ def attach_storage_route(record: Json) -> Json:
         route_source = envelope.get("storage_options", {})
     if "storage_route" not in record or not isinstance(record.get("storage_route"), dict):
         if route_source:
+            # From core deliberately: see the note on the imports above. The copy in
+            # matrixark_mcp_storage_options answers differently and choosing between them is not
+            # this change's to make, so this keeps the one that has always run here.
+            try:  # package path
+                from .matrixark_mcp_core import canonical_storage_route
+            except ImportError:  # top-level path
+                from matrixark_mcp_core import canonical_storage_route
             record = {**record, "storage_route": canonical_storage_route(route_source)}
     return record
 
@@ -256,24 +227,6 @@ try:  # the implementation lives in matrixark_mcp_event_keys; this module re-exp
     from .matrixark_mcp_event_keys import context_placement_key
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_event_keys import context_placement_key
-
-
-def attach_context_placement(record: Json, *, scope_key: str = "", node_hash: Any = None) -> Json:
-    placement_key = context_placement_key(record, scope_key=scope_key, node_hash=node_hash)
-    if not placement_key:
-        return record
-    placement_hash = stable_hash(placement_key)
-    route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
-    route = dict(route)
-    route["placement_key"] = placement_key
-    route["placement_hash"] = placement_hash
-    route.setdefault("routing_key", placement_key)
-    route.setdefault("partition_key", placement_key)
-    route.setdefault("colocation_group", "matrixark_context")
-    record["placement_key"] = placement_key
-    record["placement_hash"] = placement_hash
-    record["storage_route"] = route
-    return record
 
 
 try:  # the implementation lives in matrixark_mcp_serving_records; this module re-exports it
@@ -420,34 +373,19 @@ def context_index_data_model(record: Json) -> str:
     return "context"
 
 
-def context_index_ref_hashes(record: Json) -> list[int]:
-    values: list[Any] = []
-    raw_refs = record.get("ref_hashes")
-    if isinstance(raw_refs, list):
-        values.extend(raw_refs)
-    for field in (
-        "ref_hash",
-        "event_id_hash",
-        "chunk_hash",
-        "section_hash",
-        "skill_hash",
-        "resource_hash",
-        "summary_hash",
-        "batch_id_hash",
-    ):
-        if record.get(field) is not None:
-            values.append(record.get(field))
-    refs: list[int] = []
-    seen: set[int] = set()
-    for value in values:
-        try:
-            ref_hash = int(value)
-        except (TypeError, ValueError):
-            continue
-        if ref_hash and ref_hash not in seen:
-            seen.add(ref_hash)
-            refs.append(ref_hash)
-    return refs
+# Not defined here: the implementation lives in matrixark_mcp_indexing and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_indexing import (
+        context_index_ref_hashes,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import (
+        context_index_ref_hashes,
+    )
 
 
 def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
@@ -498,26 +436,15 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
     return delegate(record)
 
 
-def compact_latest_context_state_records(records: list[Json]) -> list[Json]:
-    """Collapse append-log state into compact serving records.
-
-    The physical log can retain older writes for durability/debug, but serving,
-    retrieval, and normal debug tables should see ContextSummary L0/L1 as state
-    and ContextIndex as Feature-style timestamped posting rows.
-    """
-    records = compact_context_index_postings(records)
-    latest: dict[tuple[Any, ...], tuple[int, Json]] = {}
-    passthrough: list[tuple[int, Json]] = []
-    for index, record in enumerate(records):
-        key = latest_context_state_key(record)
-        if key is None:
-            passthrough.append((index, record))
-            continue
-        compacted = dict(record)
-        compacted.pop("summary_version_hash", None)
-        latest[key] = (index, compacted)
-    combined = passthrough + list(latest.values())
-    combined.sort(key=lambda item: item[0])
-    return [record for _index, record in combined]
+# Not defined here: the implementation lives in matrixark_mcp_serving_records and this module carried an
+# identical second copy of each.
+try:
+    from tools.matrixark_mcp_serving_records import (
+        compact_latest_context_state_records,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_serving_records import (
+        compact_latest_context_state_records,
+    )
 
 

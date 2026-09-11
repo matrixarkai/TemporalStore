@@ -167,28 +167,6 @@ MAX_SECONDARY_INDEX_REFS_PER_POSTING = int(os.environ.get("MATRIXARK_MAX_SECONDA
 SECONDARY_INDEX_TIME_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_TIME_BUCKET_MS", "60000"))
 DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
 HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
-SECONDARY_INDEX_PRIORITY_PREFIXES = (
-    "source_type:",
-    "resource_type:",
-    "unit_kind:",
-    "entity_type:",
-    "event_type:",
-    "classification:",
-    "status:",
-    "memory_scope:",
-    "session_continuity:",
-    "extraction_phase:",
-    "memory_selection_policy:",
-    "memory_selection_quality:",
-    "profile_promotion_policy:",
-    "skill_name:",
-    "skill_trigger:",
-    "skill_tool:",
-    "relative_path:",
-    "heading_slug:",
-    "segment_topic:",
-    "keyword:",
-)
 # ------------------------------------------------------------------------------------------------
 # Secondary-index dimension pruning (Lever 2).
 #
@@ -308,16 +286,41 @@ TIME_COMPRESSION_MIN_EVENT_AGE_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSI
 TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS", str(30 * 24 * 60 * 60 * 1000)))
 TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS", str(30 * 24 * 60 * 60 * 1000)))
 TIME_COMPRESSION_SUMMARY_PROVIDER = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER", "deterministic").strip().lower()
-TIME_COMPRESSION_SUMMARY_MODEL = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
-TIME_COMPRESSION_SUMMARY_BASE_URL = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+TIME_COMPRESSION_SUMMARY_MODEL = (
+    os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_MODEL", "").strip()
+    or os.environ.get("OPENAI_MODEL", "").strip()
+    or "gpt-4o-mini")
+TIME_COMPRESSION_SUMMARY_BASE_URL = (
+    os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_BASE_URL", "").strip()
+    or os.environ.get("OPENAI_BASE_URL", "").strip()
+    or "https://api.openai.com/v1").rstrip("/")
 TIME_COMPRESSION_SUMMARY_API_KEY_ENV = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_API_KEY_ENV", "OPENAI_API_KEY")
 TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC", "30"))
 TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = env_bool("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", False)
-EXTRACTION_LLM_MODEL = os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "qwen2.5:1.5b"))
-EXTRACTION_LLM_BASE_URL = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")).rstrip("/")
-EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
-EXTRACTION_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"))
-EXTRACTION_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200"))
+# These five were built here AND in matrixark_mcp_extraction_provider, from the same variables
+# with the same defaults, and both modules are live. matrixark_gateway_config already names the
+# provider module as the holder in its own tables, so that is the definition and this is the copy
+# -- imported rather than rebuilt, and re-exported because matrixark_mcp_core_extraction imports
+# them from here and SUMMARY_LLM_MODEL reads one of them below.
+#
+# Safe at this point in the file: matrixark_mcp_extraction_provider imports only
+# matrixark_mcp_errors, which imports nothing from this project.
+try:
+    from .matrixark_mcp_extraction_provider import (
+        EXTRACTION_LLM_API_KEY_ENV,
+        EXTRACTION_LLM_BASE_URL,
+        EXTRACTION_LLM_MAX_TOKENS,
+        EXTRACTION_LLM_MODEL,
+        EXTRACTION_LLM_TIMEOUT_SEC,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_extraction_provider import (  # type: ignore[no-redef]
+        EXTRACTION_LLM_API_KEY_ENV,
+        EXTRACTION_LLM_BASE_URL,
+        EXTRACTION_LLM_MAX_TOKENS,
+        EXTRACTION_LLM_MODEL,
+        EXTRACTION_LLM_TIMEOUT_SEC,
+    )
 # Anthropic / Claude GENERATION provider (extraction + summary; Anthropic has no embeddings
 # API, so this is the generation side only). Mirrors the OpenAI-compatible extraction config
 # above but targets the Anthropic Messages API (POST /v1/messages; x-api-key + anthropic-version
@@ -327,12 +330,24 @@ ANTHROPIC_LLM_MODEL = os.environ.get("MATRIXARK_ANTHROPIC_MODEL", "claude-sonnet
 ANTHROPIC_API_BASE = os.environ.get("MATRIXARK_ANTHROPIC_API_BASE", "https://api.anthropic.com").rstrip("/")
 ANTHROPIC_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "ANTHROPIC_API_KEY")
 ANTHROPIC_API_VERSION = os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "2023-06-01")
-ANTHROPIC_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_ANTHROPIC_TIMEOUT_SEC", os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30")))
-ANTHROPIC_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_ANTHROPIC_MAX_TOKENS", os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200")))
-SUMMARY_LLM_PROVIDER = os.environ.get(
-    "MATRIXARK_SUMMARY_PROVIDER",
-    os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
-).strip().lower().replace("-", "_")
+# `.strip() or` at each step, so a newer name that is present but blank -- or whitespace --
+# falls through to the older one. With the two-argument form, MATRIXARK_ANTHROPIC_TIMEOUT_SEC=
+# handed float() the empty string at module scope and this module failed to import, with
+# MATRIXARK_EXTRACTION_TIMEOUT_SEC set correctly and never read.
+ANTHROPIC_LLM_TIMEOUT_SEC = float(
+    os.environ.get("MATRIXARK_ANTHROPIC_TIMEOUT_SEC", "").strip()
+    or os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "").strip()
+    or "30")
+ANTHROPIC_LLM_MAX_TOKENS = int(
+    os.environ.get("MATRIXARK_ANTHROPIC_MAX_TOKENS", "").strip()
+    or os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "").strip()
+    or "1200")
+SUMMARY_LLM_PROVIDER = (
+    os.environ.get("MATRIXARK_SUMMARY_PROVIDER", "").strip()
+    or os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip()
+    or os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "").strip()
+    or "deterministic"
+).lower().replace("-", "_")
 # The summary IS the extraction model. It used to be `get(MATRIXARK_SUMMARY_MODEL, ...)`, a
 # second name for a call made against the extraction endpoint with the extraction key -- so the two
 # could name models that endpoint does not both serve, and the portal offered no way to see that.
@@ -341,11 +356,9 @@ SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900
 # ENABLE_LLM_MERGE_OPERATOR comes from matrixark_mcp_runtime_config, above.
 DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
-_OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
 _EMBEDDING_VECTOR_CACHE: dict[tuple[str, str], list[float]] = {}
 _EMBEDDING_VECTOR_CACHE_LOCK = threading.RLock()
-_EMBEDDING_FALLBACK_USED = False
 _DIRECT_RECORD_CACHE: dict[str, tuple[int, list[Json]]] = {}
 _DIRECT_RECORD_CACHE_LOCK = threading.RLock()
 _DIRECT_RECORD_CACHE_MAX_PREFIXES = 64
@@ -389,119 +402,47 @@ def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
         return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
     return backend_label != "local"
 
-DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
-    "confirmation": 1.0,
-    "correction": 1.0,
-    "approval_budget": 0.95,
-    "approval": 0.95,
-    "approval_state": 0.95,
-    "budget": 0.9,
-    "preference_update": 0.82,
-    "plan_update": 0.78,
-    "status_update": 0.76,
-    "job_status": 0.76,
-    "relationship": 0.74,
-    "location": 0.7,
-    "current_plan": 0.78,
-    "family_profile": 0.72,
-    "skill": 0.84,
-    "resource": 0.68,
-    "dialogue_batch": 0.45,
-    "session": 0.45,
-}
-MATRIXARK_ADMIN_SCOPES = {"admin:account", "admin:tenant", "admin:user", "admin:api_key", "admin:sso", "admin:audit", "portal:read"}
-MATRIXARK_CONTEXT_SCOPES = {
-    "context:ingest",
-    "context:retrieve",
-    "context:forget",
-    "context:feedback",
-    "context:replay",
-    "resource:ingest",
-    "resource:read",
-    "resource:manage",
-    "skill:read",
-    "skill:manage",
-}
-MATRIXARK_ALL_SCOPES = MATRIXARK_CONTEXT_SCOPES | MATRIXARK_ADMIN_SCOPES
-MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
-    "matrixark_ingest": {"context:ingest"},
-    "matrixark_batch_extract": {"context:ingest"},
-    "matrixark_session_commit": {"context:ingest"},
-    "matrixark_refresh_summaries": {"context:ingest"},
-    "matrixark_retrieve": {"context:retrieve"},
-    "matrixark_embedding_status": {"context:retrieve"},
-    "matrixark_forget": {"context:forget"},
-    "matrixark_delete": {"context:forget"},
-    "matrixark_reset": {"context:forget"},
-    "matrixark_get_all": {"context:retrieve"},
-    "matrixark_list_users": {"context:retrieve"},
-    "matrixark_get_resource_content": {"context:retrieve"},
-    "matrixark_get_memory": {"context:retrieve"},
-    "matrixark_get_memory_by_key": {"context:retrieve"},
-    "matrixark_update_memory": {"context:ingest"},
-    "matrixark_memory_history": {"context:retrieve"},
-    # A write about a memory, so it gates like a write rather than like a read.
-    "matrixark_memory_feedback": {"context:ingest"},
-    "matrixark_ingestion_dashboard": {"context:replay"},
-    "matrixark_management_portal": {"portal:read"},
-    "matrixark_auth_sso_login": set(),
-    "matrixark_list_resources": {"resource:read"},
-    "matrixark_list_skills": {"skill:read"},
-    "matrixark_update_skill": {"skill:manage"},
-    "matrixark_feedback": {"context:feedback"},
-    "matrixark_replay": {"context:replay"},
-    "matrixark_admin_create_account": {"admin:account"},
-    "matrixark_admin_update_account": {"admin:account"},
-    "matrixark_admin_list_accounts": {"admin:account"},
-    "matrixark_admin_create_user": {"admin:user"},
-    "matrixark_admin_update_user": {"admin:user"},
-    "matrixark_admin_list_users": {"admin:user"},
-    "matrixark_admin_create_api_key": {"admin:api_key"},
-    "matrixark_admin_apply_api_key": {"admin:api_key", "admin:account", "admin:user"},
-    "matrixark_admin_list_api_keys": {"admin:api_key"},
-    "matrixark_admin_rotate_api_key": {"admin:api_key"},
-    "matrixark_admin_revoke_api_key": {"admin:api_key"},
-    "matrixark_admin_map_sso_user": {"admin:sso"},
-    "matrixark_admin_audit": {"admin:audit"},
-    "matrixark_backend_ready": set(),
-    "matrixark_backend_metrics": set(),
-}
+# DEFAULT_BUSINESS_TYPE_WEIGHTS lives in matrixark_mcp_runtime_config, which this module already imports and which imports nothing from
+# here. They were declared in both and agreed -- which is what a pair does until one of them is
+# extended, and three constants elsewhere in this tree disagreed exactly that way, on the copy the
+# live path used.
+try:
+    from .matrixark_mcp_runtime_config import (  # noqa: F401
+        DEFAULT_BUSINESS_TYPE_WEIGHTS,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_runtime_config import (  # noqa: F401
+        DEFAULT_BUSINESS_TYPE_WEIGHTS,
+    )
 
-MATRIXARK_ROLE_SCOPE_LIMITS: dict[str, set[str] | None] = {
-    "owner": None,
-    "admin": None,
-    "operator": {
-        "portal:read",
-        "admin:audit",
-        "context:ingest",
-        "context:retrieve",
-        "context:forget",
-        "context:feedback",
-        "context:replay",
-        "resource:ingest",
-        "resource:read",
-        "resource:manage",
-        "skill:read",
-        "skill:manage",
-    },
-    "developer": {
-        "portal:read",
-        "context:ingest",
-        "context:retrieve",
-        "context:feedback",
-        "context:replay",
-        "resource:ingest",
-        "resource:read",
-        "skill:read",
-    },
-    "viewer": {"portal:read", "context:retrieve", "context:replay", "resource:read", "skill:read"},
-    # Scoped service keys are capability-limited by their explicit scopes and
-    # optional user/session allow-lists. They may be used by Codex, Claude,
-    # Cursor, CI, or backend agents without forcing a human role name.
-    "service": None,
-    "local_agent": None,
-    "dev_admin": None,
-}
+
+
+# Not defined here: the scope tables and `MATRIXARK_ROLE_SCOPE_LIMITS` live in
+# matrixark_mcp_identity, which this module carried second, drifted copies of -- see the note
+# there. identity holds the definitions because it imports nothing but the standard library, so
+# importing them from here adds no edge that can close a cycle, where the reverse would.
+#
+# The scope tables joined the role limits for the same reason and by the same evidence: core's
+# copies carried `context:forget` and eleven mem0-surface tools that identity's never did, all of
+# them added at 73f9ec542 on 2026-08-17 with the forget/delete API. A tool ABSENT from
+# MATRIXARK_TOOL_SCOPES is read by `.get(name, set())` as requiring no scope at all, so the two
+# copies did not merely differ -- one gated those eleven and the other did not.
+try:
+    from tools.matrixark_mcp_identity import (  # noqa: F401
+        MATRIXARK_ADMIN_SCOPES,
+        MATRIXARK_ALL_SCOPES,
+        MATRIXARK_CONTEXT_SCOPES,
+        MATRIXARK_ROLE_SCOPE_LIMITS,
+        MATRIXARK_TOOL_SCOPES,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import (  # noqa: F401
+        MATRIXARK_ADMIN_SCOPES,
+        MATRIXARK_ALL_SCOPES,
+        MATRIXARK_CONTEXT_SCOPES,
+        MATRIXARK_ROLE_SCOPE_LIMITS,
+        MATRIXARK_TOOL_SCOPES,
+    )
 
 
 
@@ -852,7 +793,7 @@ def detect_memory_segments(messages: list[Json], envelope: Json | None = None) -
             "fallback_used": False,
         }
 
-    fallback_enabled = bool(envelope.get("segment_provider_fallback", False)) or provider in {"oss-fallback", "oss_with_fallback"} or os.getenv("MATRIXARK_SEGMENT_PROVIDER_FALLBACK", "").lower() in {"1", "true", "yes"}
+    fallback_enabled = bool(envelope.get("segment_provider_fallback", False)) or provider in {"oss-fallback", "oss_with_fallback"} or os.getenv("MATRIXARK_SEGMENT_PROVIDER_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
     if provider in {"oss", "oss-fallback", "oss_with_fallback"}:
         model = str(envelope.get("segment_model") or os.getenv("MATRIXARK_SEGMENT_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"))
         model_path = str(envelope.get("segment_model_path") or os.getenv("MATRIXARK_SEGMENT_MODEL_PATH", ""))
@@ -917,7 +858,7 @@ def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: s
     cache_key = f"{target}:{max_new_tokens}"
     cached = _OSS_SEGMENT_MODEL_CACHE.get(cache_key)
     if cached is None:
-        local_only = bool(local_only) or bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").lower() in {"1", "true", "yes"}
+        local_only = bool(local_only) or bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
         tokenizer = AutoTokenizer.from_pretrained(target, local_files_only=local_only)
         model_obj = AutoModelForCausalLM.from_pretrained(target, local_files_only=local_only)
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1191,9 +1132,16 @@ QUERY_TYPE_LABELS: dict[str, str] = {
     "fact": "question asks a direct factual answer",
 }
 
-PROFILE_MEMORY_QUERY_RE = re.compile(
-    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|identity profile|communication profile|workspace profile|mem0|memory feature parity|feature parity|feature[- ]focused memor(?:y|ies)|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality only|memory functionalit(?:y|ies)|memory algorithms?|memory algos?|no testing|no teseting|no monitoring|no debugging|no evidence|no evident|session memory|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before|from previous sessions?|across sessions?|across conversations?|between conversations?|how should (?:you|codex) (?:address|reply|respond|answer)|what (?:is|are) my (?:name|nickname|pronouns?|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)|what (?:workspace|repo|repository|branch|build|deployment|github|remote) rules? (?:do|should) (?:you|codex) remember|what (?:workflow|workflows|rules?|instructions?|preferences?) (?:do|should) (?:you|codex) follow)\b"
-)
+# PROFILE_MEMORY_QUERY_RE lives in matrixark_mcp_budget_policies. It was compiled in both, with
+# the same pattern -- which is what a pair does until one of them is extended. budget_policies owns
+# it because it is the lower module: it imports nothing but errors, runtime_config and validation,
+# and neither module reaches the other, so this edge cannot close a cycle.
+try:
+    from .matrixark_mcp_budget_policies import PROFILE_MEMORY_QUERY_RE  # noqa: F401
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_budget_policies import PROFILE_MEMORY_QUERY_RE  # noqa: F401
+
+
 
 PROFILE_MEMORY_STANDING_RULE_QUERY_RE = re.compile(
     r"\b(?:which|what|where|should|must|need)\b.{0,80}\b(?:repo|repository|folder|workspace|worktree|ubuntu|wsl|linux|windows|branch|remote|github|main branch|build|deploy|deployment|push)\b.{0,80}\b(?:use|work|build|push|commit|rebase|download|clone|store|keep|follow|prefer)\b"
@@ -1213,13 +1161,25 @@ ACTIVE_MEMORY_GOAL_QUERY_RE = re.compile(
     r"|\b(?:memory|retrieval|extraction|ingestion|context)\b.{0,80}\b(?:goal|focus|priority|feature|functionality|implementation|direction)\b.{0,80}\b(?:active|current|latest|next|ongoing|standing|persistent)\b"
 )
 
-FEATURE_SCOPE_EXCLUSION_RE = re.compile(
-    r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
-    r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
+# The dimension list, once. It appears in both patterns below and in both of them again in
+# matrixark_codex_hook, which imports the two PATTERN strings from here rather than restating them.
+#
+# The hook compiles them with re.IGNORECASE and this module does not, and that is per-site and
+# correct: the hook matches text it has only whitespace-normalised, while every reader here
+# lowercases first. Sharing the compiled objects would have made one of the two sites wrong, so
+# what is shared is the pattern and not the compilation.
+_FEATURE_SCOPE_DIMENSIONS = (
+    r"testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation"
+    r"|benchmarks?"
 )
-FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(
-    r"\b(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
+FEATURE_SCOPE_EXCLUDED_DIMENSION_PATTERN = r"\b(?:%s)\b" % _FEATURE_SCOPE_DIMENSIONS
+FEATURE_SCOPE_EXCLUSION_PATTERN = (
+    r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+(?:%s)\b"
+    % _FEATURE_SCOPE_DIMENSIONS
 )
+
+FEATURE_SCOPE_EXCLUSION_RE = re.compile(FEATURE_SCOPE_EXCLUSION_PATTERN)
+FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(FEATURE_SCOPE_EXCLUDED_DIMENSION_PATTERN)
 FEATURE_SCOPE_ONLY_RE = re.compile(
     r"\b(?:just|only|pure(?:ly)?|focus(?:ed)? on|prioriti[sz]e)\s+"
     r"(?:feature parity|features?|functionalit(?:y|ies)|implementation|algorithms?|algos?)\b"
@@ -1308,14 +1268,20 @@ QUERY_INDEX_LABELS: dict[str, str] = {
 
 
 def require_oss_understanding() -> bool:
-    return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes"}
+    return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def understanding_provider(envelope: Json | None = None) -> str:
     provider = ""
     if envelope:
         provider = str(envelope.get("understanding_provider") or envelope.get("extraction_provider") or "")
-    provider = provider or os.getenv("MATRIXARK_UNDERSTANDING_PROVIDER", os.getenv("MATRIXARK_EXTRACTION_PROVIDER", "deterministic"))
+    # Every step with `.strip() or`. The two-argument form reached "deterministic" on a
+    # blank only via the `or` at the end of this function, having never consulted the older
+    # spelling at all.
+    provider = (provider
+                or os.getenv("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip()
+                or os.getenv("MATRIXARK_EXTRACTION_PROVIDER", "").strip()
+                or "deterministic")
     provider = provider.strip().lower().replace("-", "_")
     if provider in {"oss", "open_source", "embedding", "oss_embedding"}:
         return "oss_encoder"
@@ -2342,21 +2308,22 @@ def metadata_index_terms(metadata: Json, *, keyword_limit: int = MAX_METADATA_KE
     return ordered_unique(terms)
 
 
-# Every priority prefix is exactly "<kind>:", and every index term is exactly
-# f"{kind}:{value}", so priority is decided by the term's kind alone. Built once here rather
-# than rediscovered by a 20-way startswith scan on each of the ~36,000 terms a document emits.
-_SECONDARY_INDEX_PRIORITY_BY_KIND = {
-    prefix[:-1]: index
-    for index, prefix in enumerate(SECONDARY_INDEX_PRIORITY_PREFIXES)
-}
-_SECONDARY_INDEX_PRIORITY_DEFAULT = len(SECONDARY_INDEX_PRIORITY_PREFIXES)
-
-
-def secondary_index_priority(term: str) -> int:
-    kind, separator, _ = term.partition(":")
-    if not separator:
-        return _SECONDARY_INDEX_PRIORITY_DEFAULT
-    return _SECONDARY_INDEX_PRIORITY_BY_KIND.get(kind, _SECONDARY_INDEX_PRIORITY_DEFAULT)
+# Not defined here: the prefix table and `secondary_index_priority` live in
+# matrixark_mcp_indexing, which owns index naming and imports nothing -- the same reason
+# `ordered_unique` and the index-name character class are taken from it above. This module carried
+# a second copy of the tuple that never received `benchmark:`, `metric:` and `workload:` (added to
+# indexing at 4add70e25, 2026-07-30), and it was THIS copy the live ingest and retrieve paths used,
+# so those three kinds answered the same as an unrecognised term.
+try:
+    from tools.matrixark_mcp_indexing import (  # noqa: F401
+        SECONDARY_INDEX_PRIORITY_PREFIXES,
+        secondary_index_priority,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import (  # noqa: F401
+        SECONDARY_INDEX_PRIORITY_PREFIXES,
+        secondary_index_priority,
+    )
 
 
 def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:
@@ -2385,14 +2352,6 @@ def take_secondary_index_terms(terms: list[str], budget: Json) -> list[str]:
     budget["emitted"] = emitted + len(selected)
     budget["dropped"] = max(0, int(budget.get("dropped", 0))) + max(0, len(unique_terms) - len(selected))
     return selected
-
-
-def secondary_index_budget_summary(budget: Json) -> Json:
-    return {
-        "index_total_cap": max(0, int(budget.get("limit", 0))),
-        "index_emitted_count": max(0, int(budget.get("emitted", 0))),
-        "index_dropped_by_total_cap_count": max(0, int(budget.get("dropped", 0))),
-    }
 
 
 def context_index_posting_record(
@@ -2460,43 +2419,41 @@ def context_index_posting_record(
     return record
 
 
-def context_index_record_ref_hashes(record: Json) -> list[Any]:
-    refs = record.get("ref_hashes")
-    if isinstance(refs, list):
-        return [ref for ref in refs if ref is not None]
-    legacy = record.get("ref_hash")
-    return [legacy] if legacy is not None else []
+# These four are not defined here either, for the reason `ordered_unique` above is not: the
+# implementations live in matrixark_mcp_indexing and this module kept a second, identical copy of
+# each. Identical today -- `context_index_ref_hashes` next door in matrixark_mcp_core_compact is
+# the same function again and has NOT stayed identical, which is what a second copy turns into.
+# Every caller importing these names from here is unaffected: the behaviour is what these
+# definitions did, because it is the same code.
+try:
+    from tools.matrixark_mcp_indexing import (
+        context_index_record_node_hashes,
+        context_index_record_ref_hashes,
+        context_index_time_bucket,
+        secondary_index_budget_summary,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import (
+        context_index_record_node_hashes,
+        context_index_record_ref_hashes,
+        context_index_time_bucket,
+        secondary_index_budget_summary,
+    )
 
 
-def context_index_record_node_hashes(record: Json) -> list[Any]:
-    node_hashes = record.get("node_hashes")
-    if isinstance(node_hashes, list) and node_hashes:
-        return [node_hash for node_hash in node_hashes if node_hash is not None]
-    node_hash = record.get("node_hash")
-    return [node_hash] if node_hash is not None else []
-
-
-def ordered_unique_any(values: list[Any]) -> list[Any]:
-    output: list[Any] = []
-    seen: set[str] = set()
-    for value in values:
-        if value is None:
-            continue
-        key = str(value)
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(value)
-    return output
-
-
-def context_index_time_bucket(timestamp_ms: Any) -> int:
-    try:
-        timestamp = int(timestamp_ms)
-    except (TypeError, ValueError):
-        timestamp = now_ms()
-    bucket_ms = max(1, int(SECONDARY_INDEX_TIME_BUCKET_MS))
-    return (timestamp // bucket_ms) * bucket_ms
+# Not defined here: the implementation lives in matrixark_mcp_indexing and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_indexing import (
+        ordered_unique_any,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import (
+        ordered_unique_any,
+    )
 
 
 def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:
@@ -2559,174 +2516,21 @@ def _core_already_folded_postings(records: list[Json]):
     return helper(records, _CORE_POSTING_POLICY, _core_posting_bucket_key, ("index_hash",))
 
 
-def compact_context_index_postings(records: list[Json]) -> list[Json]:
-    """Group ContextIndex writes into Feature-style timestamped posting rows.
-
-    ContextIndex is an index data model. It should not produce one row per
-    indexed object when many objects share the same term, model, scope, node, and
-    timestamp bucket. Grouping keeps index rows bounded by terms and buckets,
-    while ref_hashes carries the posting list.
-    """
-    unchanged = _core_already_folded_postings(records)
-    if unchanged is not None:
-        return unchanged
-    scalar_lineage_fields = [
-        "memory_scope",
-        "session_continuity",
-        "profile_memory_class",
-        "profile_memory_kind",
-        "profile_entity_current",
-        "profile_revision",
-        "promoted_from_memory_scope",
-        "extraction_phase",
-        "final_session_boundary",
-    ]
-    list_lineage_fields = [
-        "source_session_ids",
-        "source_entity_hashes",
-        "source_memory_scopes",
-        "source_session_continuities",
-        "source_profile_memory_classes",
-        "source_profile_memory_kinds",
-    ]
-    grouped: dict[tuple[Any, ...], Json] = {}
-    grouped_scalar_values: dict[tuple[Any, ...], dict[str, set[str]]] = {}
-    grouped_list_values: dict[tuple[Any, ...], dict[str, list[Any]]] = {}
-    passthrough: list[Json] = []
-    order: list[tuple[Any, ...]] = []
-    for record in records:
-        if str(record.get("record_type") or "") != "context_index":
-            passthrough.append(record)
-            continue
-        index_name = str(record.get("index_name") or "")
-        data_model = str(record.get("data_model") or "")
-        if not index_name or not data_model:
-            passthrough.append(record)
-            continue
-        bucket_ms = context_index_time_bucket(record.get("timestamp_key_ms") or record.get("updated_at_ms"))
-        key = (
-            str(record.get("scope_key") or ""),
-            data_model,
-            index_name,
-            str(record.get("ref_type") or ""),
-            bucket_ms,
-        )
-        if key not in grouped:
-            grouped[key] = {
-                "record_type": "context_index",
-                "index_name": index_name,
-                "data_model": data_model,
-                "timestamp_key_ms": bucket_ms,
-                "updated_at_ms": bucket_ms,
-                "ref_hashes": [],
-                "node_hashes": [],
-                "batch_id_hashes": [],
-                "posting_count": 0,
-                "posting_policy": "bucketed_by_scope_data_model_index_time",
-            }
-            for field in ("scope_key", "ref_type", "storage_route"):
-                value = record.get(field)
-                if value not in (None, "", [], {}):
-                    grouped[key][field] = value
-            grouped_scalar_values[key] = {field: set() for field in scalar_lineage_fields}
-            grouped_list_values[key] = {field: [] for field in list_lineage_fields}
-            order.append(key)
-        posting = grouped[key]
-        for field in scalar_lineage_fields:
-            value = record.get(field)
-            if value not in (None, "", [], {}):
-                grouped_scalar_values[key][field].add(str(value))
-        for field in list_lineage_fields:
-            values = record.get(field)
-            if not isinstance(values, list):
-                value = record.get(field)
-                values = [value] if value not in (None, "", [], {}) else []
-            for value in values:
-                if value not in (None, "", [], {}) and str(value) not in {str(item) for item in grouped_list_values[key][field]}:
-                    grouped_list_values[key][field].append(value)
-        node_hash = record.get("node_hash")
-        if node_hash is not None and str(node_hash) not in {str(item) for item in posting.get("node_hashes", [])}:
-            posting["node_hashes"].append(node_hash)
-        batch_id_hash = record.get("batch_id_hash")
-        if batch_id_hash is not None and str(batch_id_hash) not in {str(item) for item in posting.get("batch_id_hashes", [])}:
-            posting["batch_id_hashes"].append(batch_id_hash)
-        existing = {str(ref) for ref in posting.get("ref_hashes", [])}
-        for ref in context_index_record_ref_hashes(record):
-            if ref is None or str(ref) in existing:
-                continue
-            posting["ref_hashes"].append(ref)
-            existing.add(str(ref))
-        if record.get("source_ref") and not posting.get("sample_source_ref"):
-            posting["sample_source_ref"] = record.get("source_ref")
-        try:
-            posting["posting_count"] += max(1, int(record.get("posting_count") or len(context_index_record_ref_hashes(record)) or 1))
-        except (TypeError, ValueError):
-            posting["posting_count"] += 1
-    compacted_indexes: list[Json] = []
-    for key in order:
-        base = grouped[key]
-        for field, values in grouped_scalar_values.get(key, {}).items():
-            if len(values) == 1:
-                raw_value = next(iter(values))
-                if raw_value == "True":
-                    base[field] = True
-                elif raw_value == "False":
-                    base[field] = False
-                elif field == "profile_revision":
-                    try:
-                        base[field] = int(raw_value)
-                    except (TypeError, ValueError):
-                        base[field] = raw_value
-                else:
-                    base[field] = raw_value
-        for field, values in grouped_list_values.get(key, {}).items():
-            if values:
-                base[field] = values
-        refs = []
-        seen_ref_keys: set[str] = set()
-        for ref in base.get("ref_hashes", []):
-            ref_key = str(ref)
-            if ref_key in seen_ref_keys:
-                continue
-            seen_ref_keys.add(ref_key)
-            refs.append(ref)
-        for part, ref_chunk in enumerate(_chunked_refs(refs, limit=MAX_SECONDARY_INDEX_REFS_PER_POSTING)):
-            record = dict(base)
-            record["ref_hashes"] = ref_chunk
-            record["posting_part"] = part
-            # `ref_hashes` is the one place a posting names what it points at. The singular
-            # `ref_hash` restated it on every single-ref row, and `chunk_hash` restated it again;
-            # the serving accessor reads neither when the list is present, and `index_hash` is
-            # derived from the list, so both are dropped rather than written three ways. Older
-            # rows still resolve -- the fallbacks that read them are unchanged.
-            record.pop("ref_hash", None)
-            record.pop("chunk_hash", None)
-            if len(record.get("node_hashes", [])) == 1:
-                record["node_hash"] = record["node_hashes"][0]
-            else:
-                record.pop("node_hash", None)
-            if len(record.get("batch_id_hashes", [])) == 1:
-                record["batch_id_hash"] = record["batch_id_hashes"][0]
-            else:
-                record.pop("batch_id_hash", None)
-            if not record.get("node_hashes"):
-                record.pop("node_hashes", None)
-            if not record.get("batch_id_hashes"):
-                record.pop("batch_id_hashes", None)
-            identity = {
-                "scope_key": record.get("scope_key"),
-                "index_name": record.get("index_name"),
-                "data_model": record.get("data_model"),
-                "timestamp_key_ms": record.get("timestamp_key_ms"),
-                "node_hashes": record.get("node_hashes") or ([record.get("node_hash")] if record.get("node_hash") is not None else []),
-                "batch_id_hashes": record.get("batch_id_hashes") or ([record.get("batch_id_hash")] if record.get("batch_id_hash") is not None else []),
-                "ref_type": record.get("ref_type"),
-                "posting_part": part,
-                "ref_hashes": ref_chunk,
-            }
-            record["index_hash"] = stable_hash(json.dumps(identity, sort_keys=True, separators=(",", ":")))
-            compacted_indexes.append(record)
-    return passthrough + compacted_indexes
+# Not defined here. `compact_context_index_postings` lives in matrixark_mcp_indexing, and this
+# module kept the copy that the 2026-08-05 split ("split compact/context-record helpers out of
+# matrixark_mcp_core.py") was supposed to remove. The two diverged for a month afterwards: the one
+# over there buckets by `capability`, gained an adopt fast path measured at 23.755 ms against
+# 3.255 ms on a 2,123-row cache, reads node_hashES rather than only the singular node_hash, and had
+# its give-up path fixed in #1307. This copy buckets by `data_model`, has none of that, and stamps
+# a different `posting_policy` on every row it folds.
+#
+# Both shapes were already being written: matrixark_mcp_serving_records reaches the one in
+# matrixark_mcp_indexing while matrixark_temporal_direct_read and _write reached this one, so the
+# same records compacted differently depending on which entry point asked. One implementation now.
+try:
+    from tools.matrixark_mcp_indexing import compact_context_index_postings  # noqa: F401
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import compact_context_index_postings  # noqa: F401
 
 
 RESOURCE_FACT_KEYWORDS = re.compile(
@@ -3078,40 +2882,20 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     return envelope
 
 
-STORAGE_ROUTE_PRESETS: dict[str, Json] = {
-    "shared_store_async": {
-        "storage_family": "shared_store",
-        "write_mode": "async",
-        "storage_mode": "shared_store",
-        "replication_mode": "shared_store",
-        "oplog_mode": "async",
-        "raft_mode": False,
-    },
-    "shared_store_sync": {
-        "storage_family": "shared_store",
-        "write_mode": "sync",
-        "storage_mode": "shared_store",
-        "replication_mode": "shared_store",
-        "oplog_mode": "sync",
-        "raft_mode": False,
-    },
-    "raft_async": {
-        "storage_family": "raft",
-        "write_mode": "async",
-        "storage_mode": "raft",
-        "replication_mode": "raft",
-        "oplog_mode": "async",
-        "raft_mode": True,
-    },
-    "raft_sync": {
-        "storage_family": "raft",
-        "write_mode": "sync",
-        "storage_mode": "raft",
-        "replication_mode": "raft",
-        "oplog_mode": "sync",
-        "raft_mode": True,
-    },
-}
+# STORAGE_ROUTE_PRESETS lives in matrixark_mcp_storage_options, which this module already imports and which imports nothing from
+# here. They were declared in both and agreed -- which is what a pair does until one of them is
+# extended, and three constants elsewhere in this tree disagreed exactly that way, on the copy the
+# live path used.
+try:
+    from .matrixark_mcp_storage_options import (  # noqa: F401
+        STORAGE_ROUTE_PRESETS,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_storage_options import (  # noqa: F401
+        STORAGE_ROUTE_PRESETS,
+    )
+
+
 
 
 def entity_ref_text(record: Json) -> str:
@@ -3352,17 +3136,84 @@ except ImportError:  # top-level path (direct tools/ execution)
 # and adding the query/passage role there produced a TypeError at the call site, which is how the
 # duplication was found at all.
 #
+# `embedding_model_name` is here for the same reason, and it is the same bug caught later: this
+# module carried its own copy, and under an OSS provider the two disagreed --
+#
+#     core        -> sentence-transformers/all-MiniLM-L6-v2
+#     embeddings  -> intfloat/multilingual-e5-large
+#
+# with the API branch hardcoding "voyage-3"/"text-embedding-3-large" rather than resolving through
+# _api_embedding_config. `matrixark_mcp_ingest_resource_records` imports the name from HERE and
+# stamps it on the record it writes, so an OSS deployment labelled every record with a model that
+# had not produced its vectors. `prototype_vectors` above keys its cache on the same string, so the
+# two copies of THAT cached under different keys as well.
+#
+# `embedding_fallback_used`, `embedding_execution_mode_name` and `oss_embedding_for_text` are here
+# for the same reason and were the same bug still running. They were IMPORTED above and then
+# DEFINED again below, so the definitions won and every serving module reaching this one through
+# `import *` got them:
+#
+#   embedding_fallback_used        read a module global here that only this module's own
+#                                  oss_embedding_for_text ever set, and nothing calls that -- so it
+#                                  answered False for the life of the process. The version in
+#                                  matrixark_mcp_embeddings reads per-call, per-thread state, which
+#                                  is what test_matrixark_did_this_call_fall_back was written to
+#                                  pin -- and that suite imports only matrixark_mcp_embeddings, so
+#                                  it passed while the copy the retrieve path used stayed broken.
+#   embedding_execution_mode_name  calls the above, so it could never return
+#                                  local_hash_embedding_fallback.
+#   oss_embedding_for_text         hardcoded the superseded OSS default.
+#
+# Both values are reported in every context pack, so a retrieve served by a silently degraded
+# encoder said it had not degraded.
+#
 # One implementation, imported here, so a fix applies once.
 try:  # package path
     from tools.matrixark_mcp_embeddings import (  # noqa: F401
+        embedding_execution_mode_name,
+        embedding_fallback_used,
         embedding_for_text,
         embeddings_for_texts,
+        oss_embedding_for_text,
     )
 except ImportError:  # top-level path (direct tools/ execution)
     from matrixark_mcp_embeddings import (  # noqa: F401
+        embedding_execution_mode_name,
+        embedding_fallback_used,
         embedding_for_text,
         embeddings_for_texts,
+        oss_embedding_for_text,
     )
+
+def embedding_model_name() -> str:
+    """NOT delegated to matrixark_mcp_embeddings, unlike its neighbours above, and deliberately.
+
+    The two disagree -- this returns sentence-transformers/all-MiniLM-L6-v2 for an OSS provider
+    where that one returns intfloat/multilingual-e5-large -- and `test_string_defaults_agree`
+    carries the disagreement as a recorded defect whose decision is still open. It is open for a
+    reason, quoted from there:
+
+        mcp_embeddings is the module that LOADS the encoder -- so vectors are produced by e5-large
+        while thirteen modules label them MiniLM. Making the name truthful changes
+        embedding_model_ref_for_name and orphans every embedding a populated store already holds.
+
+    So the fix is a backfill, not an import. Deleting this copy would relabel every stored vector
+    by editing one line, which is why it stays until that decision is made -- and why the three
+    names above, which report what THIS call did and touch nothing stored, could go.
+    """
+    from matrixark_mcp_embeddings import embedding_provider_name
+
+    provider = embedding_provider_name()
+    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+        return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
+            "MATRIXARK_EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+    if provider in _API_EMBEDDING_PROVIDERS:
+        default_model = "voyage-3" if provider == "voyage" else "text-embedding-3-large"
+        return os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
+    return "matrixark-local-token-hash-v1"
+
 
 def _env_int(name: str, default: int) -> int:
     """Read an integer env var, treating empty or unparseable as unset.
@@ -3413,7 +3264,10 @@ EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 10000)
 #
 # int8 remains legitimate where ranking does not matter -- bulk archival, or a coarse
 # prefilter re-scored at full precision.
-EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0") not in {"0", "false", "False", ""}
+#: `.strip().lower()` and the full FALSE_VALUES vocabulary. It was
+#: `not in {"0", "false", "False", ""}` with neither, so `=off`, `=no` and `=FALSE` read as
+#: TRUE and switched the flag ON. The empty string stays false, as it was here.
+EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0").strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 def _int8_scale(dims: int) -> float:
@@ -3581,70 +3435,6 @@ def compact_embedding_vector(vector: list[float]) -> list[float]:
     if EMBEDDING_VECTOR_DECIMALS <= 0:
         return vector
     return [round(value, EMBEDDING_VECTOR_DECIMALS) for value in vector]
-
-
-def embedding_model_name() -> str:
-    from matrixark_mcp_embeddings import embedding_provider_name
-
-    provider = embedding_provider_name()
-    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-            "MATRIXARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        )
-    if provider in _API_EMBEDDING_PROVIDERS:
-        default_model = "voyage-3" if provider == "voyage" else "text-embedding-3-large"
-        return os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
-    return "matrixark-local-token-hash-v1"
-
-
-def embedding_execution_mode_name() -> str:
-    from matrixark_mcp_embeddings import embedding_provider_name
-
-    provider = embedding_provider_name()
-    if embedding_fallback_used():
-        return "local_hash_embedding_fallback"
-    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        return "oss_embedding_model"
-    if provider in _API_EMBEDDING_PROVIDERS:
-        return "voyage_embedding_api" if provider == "voyage" else "openai_embedding_api"
-    if provider == "hash":
-        return "hashing-local"
-    return "deterministic-token-hash"
-
-
-def embedding_fallback_used() -> bool:
-    return _EMBEDDING_FALLBACK_USED
-
-
-def oss_embedding_for_text(text: str) -> list[float]:
-    global _EMBEDDING_FALLBACK_USED
-    model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-        "MATRIXARK_EMBEDDING_MODEL",
-        "sentence-transformers/all-MiniLM-L6-v2",
-    )
-    try:
-        encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
-        if encoder is None:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-
-            encoder = SentenceTransformer(model_ref)
-            _OSS_EMBEDDING_MODEL_CACHE[model_ref] = encoder
-        vector = encoder.encode([text], normalize_embeddings=True, show_progress_bar=False)[0]
-        return [round(float(value), 6) for value in vector]
-    except Exception as exc:  # pragma: no cover - depends on optional local model packages.
-        if env_bool("MATRIXARK_REQUIRE_OSS_EMBEDDINGS", False):
-            raise MatrixArkError(f"OSS embedding model is required but unavailable: {model_ref}: {exc}") from exc
-        _EMBEDDING_FALLBACK_USED = True
-        previous = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER")
-        try:
-            os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = "deterministic"
-            return embedding_for_text(text)
-        finally:
-            if previous is None:
-                os.environ.pop("MATRIXARK_EMBEDDING_PROVIDER", None)
-            else:
-                os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = previous
 
 
 # `cosine` is not defined here. It was, and it returned the bare dot product without dividing by
@@ -4823,20 +4613,19 @@ def access_scope_matches_before_scoring(record: Json, query_scope: Json) -> bool
     return scope_matches(record_scope, query_scope)
 
 
-def session_continuity_status(record_scope: Json, query_scope: Json) -> str:
-    query_session = str(query_scope.get("session_id") or "")
-    if not query_session:
-        return "unscoped"
-    record_session = str(record_scope.get("session_id") or "")
-    if record_session == query_session:
-        return "same_session"
-    record_key = str(record_scope.get("scope_key") or "")
-    query_session_hash = int(query_scope.get("session_hash") or 0)
-    if record_key and query_session_hash and parse_scope_key(record_key).get("s") == query_session_hash:
-        return "same_session"
-    if record_session or record_key:
-        return "cross_session"
-    return "unscoped"
+# Not defined here: the implementation lives in matrixark_mcp_access_scope and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_access_scope import (
+        session_continuity_status,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_access_scope import (
+        session_continuity_status,
+    )
 
 
 def session_continuity_boost(candidate: Json, question_type: str) -> float:

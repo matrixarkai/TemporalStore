@@ -32,7 +32,11 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 
 GUARD = "ensure_identity_can_manage"
 GATEWAY = os.path.join(TOOLS, "matrixark_v1_gateway.py")
-CORE = os.path.join(TOOLS, "matrixark_mcp_core.py")
+# The module that DEFINES MATRIXARK_TOOL_SCOPES, which is where the admin tool names are
+# read from. It was matrixark_mcp_core until the scope tables were consolidated into their
+# one definition here; core re-exports them. If it moves again, MIN_ADMIN_TOOLS below is
+# what says so rather than the sweep quietly checking nothing.
+TOOL_SCOPES_SOURCE = os.path.join(TOOLS, "matrixark_mcp_identity.py")
 ACCESS_MODULES = ("matrixark_access_apikey", "matrixark_access_accounts", "matrixark_access_sso",
                   "matrixark_access_portal", "matrixark_access")
 
@@ -60,8 +64,8 @@ def read(path: str) -> str:
         return handle.read()
 
 
-def admin_tools(core_source: str) -> list:
-    return sorted(set(re.findall(r'"(matrixark_admin_\w+)":\s*\{', core_source)))
+def admin_tools(tool_scopes_source: str) -> list:
+    return sorted(set(re.findall(r'"(matrixark_admin_\w+)":\s*\{', tool_scopes_source)))
 
 
 def method_bodies(sources: dict) -> dict:
@@ -72,11 +76,11 @@ def method_bodies(sources: dict) -> dict:
     return bodies
 
 
-def unfenced_methods(core_source: str, sources: dict) -> list:
+def unfenced_methods(tool_scopes_source: str, sources: dict) -> list:
     """Admin operations that neither call the guard nor force the caller's own account."""
     bodies = method_bodies(sources)
     unfenced = []
-    for tool in admin_tools(core_source):
+    for tool in admin_tools(tool_scopes_source):
         name = tool[len("matrixark_admin_"):]
         body = bodies.get(name)
         if body is None:
@@ -121,7 +125,7 @@ def unscoped_routes(gateway_source: str) -> list:
 class EveryAdminOperationChecksTheCallerTest(unittest.TestCase):
 
     def setUp(self) -> None:
-        self.core = read(CORE)
+        self.tool_scopes_source = read(TOOL_SCOPES_SOURCE)
         self.sources = {}
         for name in ACCESS_MODULES:
             path = os.path.join(TOOLS, name + ".py")
@@ -129,13 +133,13 @@ class EveryAdminOperationChecksTheCallerTest(unittest.TestCase):
                 self.sources[name] = read(path)
 
     def test_the_sweep_covers_the_operations_it_claims_to(self) -> None:
-        found = admin_tools(self.core)
+        found = admin_tools(self.tool_scopes_source)
         self.assertGreaterEqual(len(found), MIN_ADMIN_TOOLS,
                                 "found %d admin tools, expected at least %d: %r"
                                 % (len(found), MIN_ADMIN_TOOLS, found))
 
     def test_no_admin_operation_skips_the_guard(self) -> None:
-        self.assertEqual([], unfenced_methods(self.core, self.sources),
+        self.assertEqual([], unfenced_methods(self.tool_scopes_source, self.sources),
                          "these admin operations neither call %s nor force the caller's own "
                          "account, so they can act on another tenant" % GUARD)
 
@@ -163,7 +167,7 @@ class EveryAdminOperationChecksTheCallerTest(unittest.TestCase):
         self.assertNotEqual(self.sources["matrixark_access_apikey"],
                             doctored["matrixark_access_apikey"],
                             "the doctoring matched nothing, so this proves nothing")
-        self.assertIn("revoke_api_key", unfenced_methods(self.core, doctored),
+        self.assertIn("revoke_api_key", unfenced_methods(self.tool_scopes_source, doctored),
                       "a revocation with no authorization check went unnoticed")
 
 

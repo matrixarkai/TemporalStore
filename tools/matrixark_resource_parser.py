@@ -39,7 +39,10 @@ DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUN
 DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", str(5 * 1024 * 1024)))
 DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "20"))
 DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
-DEFAULT_SLIM_CHUNK_METADATA = os.environ.get("MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA", "0") not in {"0", "false", "False", ""}
+#: `.strip().lower()` and the full FALSE_VALUES vocabulary -- the previous form folded no
+#: case and rejected "no" and "off", so those read as TRUE and switched the flag ON. The
+#: empty string stays false, as it was here.
+DEFAULT_SLIM_CHUNK_METADATA = os.environ.get("MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA", "0").strip().lower() not in {"0", "false", "no", "off", ""}
 # How many tokens each encoder actually reads. A window is a property of the MODEL, not a
 # constant: e5 and MiniLM stop at 512, BGE-M3 and jina-v3 at 8192. Anything beyond a model's
 # limit is silently truncated by its tokenizer, and anything short of it wastes capacity and

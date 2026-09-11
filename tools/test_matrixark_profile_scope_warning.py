@@ -5,11 +5,26 @@
 import tempfile
 import time
 import unittest
+import inspect
 import warnings
 from pathlib import Path
 
 import matrixark_mcp_local_adapter as mcp
 import matrixark_local_adapter_ingest as ing
+
+
+def _live_ingest_module():
+    """The ingest module the adapter actually runs.
+
+    `matrixark_local_adapter_ingest` and `tools.matrixark_local_adapter_ingest` are two module
+    objects with separate globals, and which one the adapter got depends on the spelling IT
+    imported with. Clearing `_PROFILE_SCOPE_WARNED` on the wrong one clears a set nothing reads:
+    the first ingest in the process warned, every later one was deduped, and the set this file
+    inspected stayed empty -- so the dedup test passed alone and failed in the class.
+
+    Resolved from the method rather than by importing a name, so it cannot drift again.
+    """
+    return inspect.getmodule(mcp.MatrixArkLocalAdapter._ingest_impl) or ing
 import matrixark_mcp_server as mcp_server
 
 
@@ -25,7 +40,7 @@ class ProfileScopeWarningTest(unittest.TestCase):
         self.assertEqual("", ing.warn_if_profile_scope_missing("not a dict"))
 
     def test_ingest_missing_scope_warns_and_surfaces(self):
-        ing._PROFILE_SCOPE_WARNED.clear()
+        _live_ingest_module()._PROFILE_SCOPE_WARNED.clear()
         a = self._adapter()
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -36,7 +51,7 @@ class ProfileScopeWarningTest(unittest.TestCase):
         self.assertIn("profile_scope_warning", r)
 
     def test_ingest_full_scope_is_silent(self):
-        ing._PROFILE_SCOPE_WARNED.clear()
+        _live_ingest_module()._PROFILE_SCOPE_WARNED.clear()
         a = self._adapter()
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -45,8 +60,19 @@ class ProfileScopeWarningTest(unittest.TestCase):
         self.assertEqual(0, len(w))
         self.assertNotIn("profile_scope_warning", r)
 
+    def test_the_dedup_set_this_file_clears_is_the_one_the_adapter_reads(self) -> None:
+        """The floor under the three clears above.
+
+        They are only meaningful if they reach the set the ingest path consults. Two module
+        spellings mean two sets, and clearing the wrong one is invisible -- the assertions still
+        run, they just stop being about anything."""
+        self.assertIs(
+            _live_ingest_module()._PROFILE_SCOPE_WARNED,
+            inspect.getmodule(mcp.MatrixArkLocalAdapter._ingest_impl)._PROFILE_SCOPE_WARNED,
+            "the dedup set this file clears is not the one the adapter's ingest reads")
+
     def test_warning_deduped_per_identity(self):
-        ing._PROFILE_SCOPE_WARNED.clear()
+        _live_ingest_module()._PROFILE_SCOPE_WARNED.clear()
         a = self._adapter()
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")

@@ -10,13 +10,29 @@ sso_callback integration are exercised without any network access.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from matrixark_google_oauth import emsa_pkcs1_v15_encode, verify_google_claims, verify_google_id_token
-from matrixark_mcp_core import MatrixArkError
+
+def _oauth_error_class():
+    """The MatrixArkError class `matrixark_google_oauth` actually raises.
+
+    `matrixark_mcp_errors` and `tools.matrixark_mcp_errors` are two module objects carrying two
+    distinct classes, neither a subclass of the other, and which one a module holds depends on the
+    spelling IT imported with. Catching the other one does not catch: `assertRaises` reports that
+    no exception was raised while the message of the one that was is the refusal being asserted.
+
+    Resolved through the function under test, because that is what raises.
+    """
+    return inspect.getmodule(verify_google_claims).MatrixArkError
+
+
+MatrixArkError = _oauth_error_class()
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
 # Throwaway key — for tests only, never used to sign anything real.
@@ -62,6 +78,32 @@ def base_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+class TheErrorClassAssertedOnIsTheOneRaisedTest(unittest.TestCase):
+    """The floor under every assertRaises in this file.
+
+    Two spellings of `matrixark_mcp_errors` are loaded and carry two distinct classes. An
+    assertRaises against the wrong one never catches, and the failure says no error was raised
+    while one was -- which is how nine tests here reported the verifier as broken while it was
+    refusing exactly what they asked it to refuse."""
+
+    def test_the_class_this_file_catches_is_the_class_the_verifier_raises(self) -> None:
+        self.assertIs(
+            MatrixArkError, inspect.getmodule(verify_google_claims).MatrixArkError,
+            "this file catches %r but the verifier raises %r"
+            % (MatrixArkError, inspect.getmodule(verify_google_claims).MatrixArkError))
+
+    def test_the_two_spellings_really_are_different_classes(self) -> None:
+        """If this ever reports one class, the hazard has gone and the resolution above can be a
+        plain import -- but while there are two, an import picks one by luck."""
+        classes = {id(module.MatrixArkError)
+                   for name, module in list(sys.modules.items())
+                   if module is not None
+                   and name.rsplit(".", 1)[-1] == "matrixark_mcp_errors"
+                   and hasattr(module, "MatrixArkError")}
+        self.assertGreaterEqual(
+            len(classes), 1, "no loaded module carries MatrixArkError, so this file tests nothing")
 
 
 class MatrixArkGoogleOAuthTest(unittest.TestCase):

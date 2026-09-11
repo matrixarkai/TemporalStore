@@ -103,9 +103,36 @@ def read_shapes() -> tuple:
                 tree = ast.parse(handle.read(), filename=name)
         except SyntaxError:  # pragma: no cover - a module this build cannot parse
             continue
+        # `get(X, "").strip() or get(Y, "").strip() or "default"` states the same chain as
+        # `get(X, get(Y, "default"))` and reads completely differently to a parser looking at the
+        # second argument: the `""` there is a placeholder that lets `.strip()` run, and the real
+        # default is the literal at the end. Collected here, and the calls inside such a chain are
+        # skipped by the loop below so that placeholder is never mistaken for an answer.
+        in_or_chain = set()
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or)):
+                continue
+            reads = []
+            for value in node.values:
+                for child in ast.walk(value):
+                    got = _get_call(child)
+                    if got is not None:
+                        in_or_chain.add(id(child))
+                        reads.append(got[0])
+                        break
+            if not reads:
+                continue
+            primary = reads[0]
+            if len(reads) > 1:
+                follows.setdefault(primary, set()).update(reads[1:])
+            tail = node.values[-1]
+            if (isinstance(tail, ast.Constant) and isinstance(tail.value, (str, int, float))
+                    and not isinstance(tail.value, bool)):
+                literals.setdefault(primary, set()).add(str(tail.value))
+
         for node in ast.walk(tree):
             call = _get_call(node)
-            if call is None:
+            if call is None or id(node) in in_or_chain:
                 continue
             variable, second = call
             if isinstance(second, ast.Constant) and isinstance(second.value, (str, int, float)):

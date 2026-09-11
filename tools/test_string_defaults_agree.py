@@ -56,12 +56,23 @@ KNOWN_DISAGREEMENTS: Dict[str, str] = {
     "MATRIXARK_TEMPORALSTORE_PREFIX":
         "matrixark:agent-hook, matrixark:codex-hook and matrixark:mcp -- a key prefix that exists "
         "to keep the three writers apart",
+    "MATRIXARK_USER_ID":
+        "agent_user and default -- the agent hook names the user it writes as, the batch ingest "
+        "tool names its own, the same per-writer separation as the three entries above. It became "
+        "visible when the hook's read stopped nesting its literal behind a USERNAME fallback; the "
+        "difference is older than that.",
     "MATRIXARK_EMBEDDING_API_BASE":
         "the OpenAI and Voyage endpoints, chosen in one function by which provider is configured",
     "MATRIXARK_EMBEDDING_API_KEY_ENV":
         "OPENAI_API_KEY and VOYAGE_API_KEY, picked beside the base above",
     "MATRIXARK_EXTRACTION_API_KEY_ENV":
         "OPENAI_API_KEY and ANTHROPIC_API_KEY, the same shape for the extraction provider",
+    "MATRIXARK_UNDERSTANDING_PROVIDER":
+        "deterministic and rules, which are two spellings of one behaviour rather than two "
+        "behaviours: extraction_provider_effect answers 'rules' for both -- and for 'local' and "
+        "'' -- so every path that dispatches on the effect agrees, and only the word each default "
+        "uses differs. Visible since the resolution chain stopped nesting the core spelling inside "
+        "a second argument this scan skips.",
     "MATRIXARK_HTTP_HOST":
         "0.0.0.0 for the gateway, which serves a network, and 127.0.0.1 for the two MCP entry "
         "points, whose HTTP mode is a local portal facade",
@@ -138,9 +149,43 @@ def _reads() -> Dict[str, List[Tuple[str, int, str]]]:
                 tree = ast.parse(handle.read())
         except (OSError, SyntaxError):
             continue
+        # `get(NAME, "").strip() or get(OTHER, "").strip() or "default"` puts the default at the
+        # END of the chain; the `""` is a placeholder that lets `.strip()` run and is one of the
+        # values this scan ignores. Reading only the second argument therefore lost BOTH endpoints
+        # of a variable whose two defaults are the whole reason it is listed. Same lesson as the
+        # line-oriented scan in the docstring above, one spelling further on.
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or)):
+                continue
+            first_name = None
+            for value in node.values:
+                for child in ast.walk(value):
+                    if not (isinstance(child, ast.Call) and child.args):
+                        continue
+                    child_func = child.func
+                    if not (isinstance(child_func, ast.Attribute)
+                            and child_func.attr in ("get", "getenv")):
+                        continue
+                    first = child.args[0]
+                    if first_name is None and isinstance(first, ast.Constant) \
+                            and isinstance(first.value, str):
+                        first_name = first.value
+                    break
+            tail = node.values[-1]
+            if first_name is None or not _NAME.fullmatch(first_name):
+                continue
+            if not (isinstance(tail, ast.Constant) and isinstance(tail.value, str)):
+                continue
+            if tail.value in _NOT_A_STRING or _looks_numeric(tail.value):
+                continue
+            found[first_name].append((path, node.lineno, tail.value))
+
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or len(node.args) != 2:
                 continue
+            # Deliberately NOT skipping calls inside an `or` chain: `get(NAME, "literal")` is that
+            # variable's own default wherever it sits, and the `""` placeholders the chain head
+            # uses are already discarded by _NOT_A_STRING below.
             func = node.func
             if not isinstance(func, ast.Attribute) or func.attr not in ("get", "getenv"):
                 continue

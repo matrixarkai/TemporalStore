@@ -139,7 +139,15 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_retrieve":
         started_perf = time.perf_counter()
-        effective_retrieve_deadline_ms = int(args.get("deadline_ms") or request_deadline_ms or 0)
+        try:
+            effective_retrieve_deadline_ms = int(args.get("deadline_ms") or request_deadline_ms or 0)
+        except (TypeError, ValueError):
+            # Unguarded, this converted a client-supplied argument outside the try/except that
+            # wraps the retrieve below, so a non-numeric deadline_ms left the tool call as a bare
+            # ValueError. `retrieval_deadline_ms` rejects the same input with this message, and
+            # never saw it -- this layer converts first. Same wording, so a caller sees one
+            # refusal whichever layer rejects it.
+            raise MatrixArkError("deadline_ms must be an integer")
         if effective_retrieve_deadline_ms > 0 and "deadline_ms" not in args:
             args["deadline_ms"] = effective_retrieve_deadline_ms
         try:

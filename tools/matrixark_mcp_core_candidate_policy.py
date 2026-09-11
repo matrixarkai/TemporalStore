@@ -2,8 +2,17 @@
 # Copyright 2026 MatrixArkAI
 """Split out of matrixark_mcp_core.py; re-exported at core end via the dual
 relative/absolute import pattern so the same core module object is reused under
-both the package path (tools.matrixark_mcp_core) and the top-level path. No
-import-time cycle. __all__ lists every moved name for total re-export."""
+both the package path (tools.matrixark_mcp_core) and the top-level path.
+
+This module cannot be imported on its own. matrixark_mcp_core imports it from the
+bottom of its own body and it imports names back, so importing it first hands it a
+half-built aggregator and raises ImportError -- import matrixark_mcp_core first.
+Which of the split-out modules break this way is positional: it depends on whether
+the names they want are defined above or below the import at the end of the
+aggregator, so moving a definition there can break another one without touching it.
+test_a_module_that_claims_no_cycle_can_be_imported pins the set.
+
+__all__ lists every moved name for total re-export."""
 import re
 from typing import Any
 
@@ -144,20 +153,19 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_scoring import numeric_field
 
 
-def apply_statistical_operator(operator: str, records: list[Json], *, field: str = "value") -> float | int | None:
-    values = [value for record in records if (value := numeric_field(record, field)) is not None]
-    op = operator.upper()
-    if op == "COUNT":
-        return len(records)
-    if not values:
-        return None
-    if op == "SUM":
-        return round(sum(values), 6)
-    if op == "AVG":
-        return round(sum(values) / len(values), 6)
-    if op == "MAX":
-        return max(values)
-    raise MatrixArkError(f"unsupported statistical operator: {operator}")
+# Not defined here: the implementation lives in matrixark_mcp_scoring and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_scoring import (
+        apply_statistical_operator,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import (
+        apply_statistical_operator,
+    )
 
 
 def latest_record(records: list[Json], *, time_field: str = "updated_at_ms") -> Json | None:
@@ -166,27 +174,19 @@ def latest_record(records: list[Json], *, time_field: str = "updated_at_ms") -> 
     return max(records, key=lambda record: int(record.get(time_field) or 0))
 
 
-def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limit: int, auxiliary_quota: int) -> list[Json]:
-    selected: list[Json] = []
-    seen: set[tuple[str, Any]] = set()
-
-    def take(items: list[Json], limit: int) -> None:
-        for item in items:
-            key = (str(item.get("ref_type", "")), item.get("ref_hash"))
-            if key in seen:
-                continue
-            selected.append(item)
-            seen.add(key)
-            if len(selected) >= limit:
-                return
-
-    auxiliary_quota = max(0, min(auxiliary_quota, total_limit))
-    primary_quota = max(0, total_limit - auxiliary_quota)
-    take(primary, primary_quota)
-    take(auxiliary, total_limit)
-    if len(selected) < total_limit:
-        take(primary, total_limit)
-    return selected[:total_limit]
+# Not defined here: the implementation lives in matrixark_mcp_recall_scoring and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_recall_scoring import (
+        merge_ranked_paths,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_recall_scoring import (
+        merge_ranked_paths,
+    )
 
 
 def candidate_codex_outcome_terms(candidate: Json) -> set[str]:

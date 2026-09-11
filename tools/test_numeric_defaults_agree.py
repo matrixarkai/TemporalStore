@@ -54,6 +54,7 @@ started outside every shipped path, and the resolver now agrees at 60000.
 """
 from __future__ import annotations
 
+import ast
 import collections
 import os
 import re
@@ -63,6 +64,10 @@ from typing import Dict, List, Set, Tuple
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
+
+#: The variable names this guard covers, lifted out of the old read regex so the
+#: parse below shares one definition with it.
+_NAME = re.compile(r'(?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+')
 
 _READ = re.compile(
     r'os\.(?:environ\.get|getenv)\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']\s*,\s*'
@@ -92,17 +97,83 @@ def _production_sources() -> List[str]:
 
 
 def _numeric_reads() -> Dict[str, List[Tuple[str, int, str]]]:
+    """Every os.environ read of a prefixed variable with a NUMERIC default, keyed by variable.
+
+    PARSED, not matched line by line, and not restricted to integers. The previous scan here was
+    a regex run over one line at a time with the pattern ``(-?\\d+)``, so two whole classes of read
+    were invisible to it:
+
+        every FLOAT default                    MATRIXARK_CROSS_SESSION_MIN_SCORE, 0.20
+        every call a formatter split           os.environ.get(
+                                                   "MATRIXARK_...",
+                                                   "0.15",
+                                               )
+
+    Measured before the change: 28 variables and 38 reads outside its view. None of them disagreed
+    with anything the scan already saw, so nothing was being hidden at that moment -- but a guard
+    whose purpose is to fail when a second default appears could not have failed for any of them.
+
+    This is the same fault `test_string_defaults_agree` was rewritten to fix, and the same fix. It
+    was not carried across at the time; a formatting choice should not decide what a guard can see.
+    """
     found: Dict[str, List[Tuple[str, int, str]]] = collections.defaultdict(list)
     for path in _production_sources():
         try:
             with open(os.path.join(REPO, path), encoding="utf-8", errors="replace") as handle:
-                lines = handle.read().splitlines()
-        except OSError:
+                tree = ast.parse(handle.read())
+        except (OSError, SyntaxError):
             continue
-        for number, line in enumerate(lines, 1):
-            for match in _READ.finditer(line):
-                found[match.group(1)].append((path, number, match.group(2)))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or len(node.args) != 2:
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr not in ("get", "getenv"):
+                continue
+            owner = func.value
+            if isinstance(owner, ast.Attribute):
+                is_env = owner.attr == "environ"
+            elif isinstance(owner, ast.Name):
+                is_env = owner.id in ("os", "environ")
+            else:
+                is_env = False
+            if not is_env:
+                continue
+            key, default = node.args
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                continue
+            if not _NAME.fullmatch(key.value):
+                continue
+            if not isinstance(default, ast.Constant):
+                continue
+            value = default.value
+            if isinstance(value, bool):
+                continue                      # a bool is not a number here; booleans have their
+                                              # own guard, and True would render as "True"
+            if isinstance(value, (int, float)):
+                text = repr(value)
+            elif isinstance(value, str):
+                text = value.strip()
+                try:
+                    float(text)
+                except ValueError:
+                    continue                  # a non-numeric default is the string guard's
+            else:
+                continue
+            found[key.value].append((path, key.lineno, _canonical(text)))
     return found
+
+
+def _canonical(text: str) -> str:
+    """One spelling per value, so `"30000"` and `30000` are not read as a disagreement.
+
+    The old scan compared the matched TEXT, which meant the quotes around a default decided whether
+    two readers agreed. `int(os.environ.get(X, "0"))` and `os.environ.get(X, 0)` are the same
+    default written twice."""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    return repr(int(number)) if number == int(number) else repr(number)
 
 
 def _disagreeing() -> Set[str]:

@@ -1840,9 +1840,12 @@ def _model_config_snapshot() -> Json:
             "api_key_configured": bool(os.environ.get(env_name, "").strip()),
         }
 
-    extraction_provider = _env(
-        "MATRIXARK_UNDERSTANDING_PROVIDER", _env("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")
-    )
+    # `or`, matching the resolution further down this same file, which already flattens
+    # absent and blank into "". This one did not, so one page read a blank variable as a
+    # provider named "" while the other read it as unset. `_env` already strips.
+    extraction_provider = (_env("MATRIXARK_UNDERSTANDING_PROVIDER")
+                           or _env("MATRIXARK_EXTRACTION_PROVIDER")
+                           or "deterministic")
     embedding_provider = _env("MATRIXARK_EMBEDDING_PROVIDER", "deterministic")
     # Which variable a key lands in is the registry's decision, and asking it is the only way this
     # page can be right about it. Recomputing the name here is what let the portal report

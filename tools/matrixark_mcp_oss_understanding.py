@@ -53,88 +53,27 @@ def _core_runtime() -> Any:
 
 
 def require_oss_understanding() -> bool:
-    return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes"}
+    return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def understanding_provider(envelope: Json | None = None) -> str:
-    provider = ""
-    if envelope:
-        provider = str(envelope.get("understanding_provider") or envelope.get("extraction_provider") or "")
-    provider = provider or os.getenv("MATRIXARK_UNDERSTANDING_PROVIDER", os.getenv("MATRIXARK_EXTRACTION_PROVIDER", "deterministic"))
-    provider = provider.strip().lower().replace("-", "_")
-    if provider in {"oss", "open_source", "embedding", "oss_embedding"}:
-        return "oss_encoder"
-    if provider in {"", "deterministic", "rules", "local"} and require_oss_understanding():
-        raise MatrixArkError("deterministic extraction/query understanding is disabled because MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1")
-    return provider or "deterministic"
-
-
-def prototype_vectors(labels: dict[str, str]) -> dict[str, list[float]]:
-    cache_key = json.dumps(labels, sort_keys=True) + "|" + embedding_model_name()
-    cached = _OSS_UNDERSTANDING_PROTOTYPE_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    vectors = {label: embedding_for_text(description) for label, description in labels.items()}
-    _OSS_UNDERSTANDING_PROTOTYPE_CACHE[cache_key] = vectors
-    return vectors
-
-
-def oss_encoder_rank_labels(text: str, labels: dict[str, str], *, limit: int = 5) -> list[Json]:
-    query_vector = embedding_for_text(text)
-    ranked = [
-        {
-            "label": label,
-            "score": round(normalized_dense_score(cosine(query_vector, vector)), 6),
-            "description": labels[label],
-        }
-        for label, vector in prototype_vectors(labels).items()
-    ]
-    ranked.sort(key=lambda item: item["score"], reverse=True)
-    return ranked[:limit]
-
-
-def oss_encoder_event_type(text: str) -> str:
-    ranked = oss_encoder_rank_labels(text, UNDERSTANDING_LABELS, limit=1)
-    label = str(ranked[0]["label"]) if ranked else "session"
-    if label == "approval":
-        return "confirmation"
-    if label == "location":
-        return "status_update"
-    if label in {"relationship", "family_profile"}:
-        return "dialogue_batch"
-    return label
-
-
-def oss_encoder_compact_extraction(envelope: Json, *, prior_context: Json) -> Json:
-    text = text_from_messages(envelope["messages"])
-    ranked = oss_encoder_rank_labels(text, UNDERSTANDING_LABELS, limit=5)
-    top = str(ranked[0]["label"]) if ranked else "session"
-    classification = "NEW_EVENT"
-    status = "observed"
-    if envelope["kind"] == "feedback":
-        if not prior_context.get("level"):
-            classification = "AMBIGUOUS"
-        elif top in {"confirmation", "approval"}:
-            classification = "CONFIRMATION"
-            status = "accepted"
-        elif top == "correction":
-            classification = "CORRECTION"
-            status = "rejected"
-        else:
-            classification = "FEEDBACK"
-    return {
-        "mode": "matrixark_internal_oss_encoder",
-        "understanding_provider": "oss_encoder",
-        "classification": classification,
-        "status": status,
-        "event_type": oss_encoder_event_type(text),
-        "label_scores": ranked,
-        "prior_context": prior_context.get("level", ""),
-        "prior_refs": prior_context.get("refs", []),
-        "prior_message_count": len(prior_context.get("messages", [])),
-        "prior_summary_count": len(prior_context.get("summaries", [])),
-        "quality_warning": "" if classification != "AMBIGUOUS" else "short feedback lacks prior context",
-    }
+# Not defined here: the implementation lives in matrixark_mcp_core and this module carried an
+# identical second copy of each.
+try:
+    from tools.matrixark_mcp_core import (
+        oss_encoder_compact_extraction,
+        oss_encoder_event_type,
+        oss_encoder_rank_labels,
+        prototype_vectors,
+        understanding_provider,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import (
+        oss_encoder_compact_extraction,
+        oss_encoder_event_type,
+        oss_encoder_rank_labels,
+        prototype_vectors,
+        understanding_provider,
+    )
 
 
 def oss_encoder_extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:

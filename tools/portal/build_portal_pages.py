@@ -1788,7 +1788,7 @@ SETUP_JS = r"""
        someone reading carefully. Declared INSIDE the function on purpose -- the byte-hint harness
        extracts this function alone and calls it, so anything it needs has to travel with it.
        test_matrixark_byte_settings_read_in_units keeps the list in step with the settings. */
-    var byteValued = { TS_STORAGE_ZONE_SIZE: 1, TS_STREAM_MAX_BLOB_SIZE: 1 };
+    var byteValued = { TS_STREAM_MAX_BLOB_SIZE: 1 };
     if (!f.env || (!/_BYTES$/.test(f.env) && !byteValued[f.env])) { return ""; }
     var raw = (f.value === "" || f.value == null) ? f.default : f.value;
     var size = Number(raw);

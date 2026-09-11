@@ -70,19 +70,6 @@ REPO = os.path.dirname(TOOLS)
 
 #: module stem -> what it is, so removing it is a reading task and not a guess.
 KNOWN_ORPHANS: Dict[str, str] = {
-    "matrixark_mcp_rust_proxy_client":
-        "NOT dead by accident, and the reason it is still here. It is the pre-split proxy client, "
-        "and it heads a cluster: matrixark_mcp_rust_proxy_cache_mixin and "
-        "matrixark_mcp_rust_proxy_coalesce are imported by NOTHING ELSE, so they go with it. "
-        "Between them they implement a string cache, a scan-hash cache, a context-pack response "
-        "cache, and coalescing for batch hset, batch hget and record append. The live "
-        "MatrixArkRustProxyClient in matrixark_mcp_temporal_adapters -- which is the one "
-        "matrixark_mcp_server imports -- has NONE of that: no base class, and no member whose "
-        "name contains cache or coalesce. The live one is richer where it counts for "
-        "correctness (__init__ 69 lines against 23, _record_call_metrics 88 against 2, _call_json "
-        "66 against 51) and has no performance layer at all. Removing this makes that gap "
-        "permanent; wiring it up is a product decision. Either is a choice somebody should make "
-        "on purpose, which is why it is written down rather than deleted.",
 }
 
 #: 330 non-test modules under tools/ when this was written.
@@ -175,6 +162,63 @@ def _modules() -> Dict[str, str]:
     return found
 
 
+
+def _without_comments(path: str, text: str) -> str:
+    """`text` with Python comments removed. Strings are left alone.
+
+    A module named in a comment is not a module anything uses, and counting it as one took
+    `matrixark_mcp_rust_proxy_client` off this list on the strength of two sentences that describe
+    it -- one of them explaining that the LIVE client is somewhere else. Strings stay, because a
+    name in a string can be a dynamic import and catching those is why this is a word scan rather
+    than an import scan.
+
+    Tokenised rather than pattern-matched: a `#` inside a string is not a comment, and a module
+    name after one would then be dropped rather than counted.
+    """
+    if not path.endswith(".py"):
+        return text
+    import io
+    import tokenize
+    try:
+        docstrings = _docstring_spans(text)
+        out = []
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if token.type == tokenize.COMMENT:
+                continue
+            if token.type == tokenize.STRING and token.start in docstrings:
+                continue
+            out.append(token.string)
+        return "\n".join(out)
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return text          # unparseable: keep the old behaviour rather than under-report
+
+
+def _docstring_spans(text: str):
+    """(line, col) of every module, class and function docstring in `text`.
+
+    Identified through the AST rather than by shape, because a triple-quoted string is only a
+    docstring when it is the FIRST statement of one of those three -- anywhere else it is a value,
+    and a value naming a module can be a dynamic import.
+    """
+    import ast
+    spans = set()
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return spans
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+                and isinstance(first.value.value, str):
+            spans.add((first.value.lineno, first.value.col_offset))
+    return spans
+
+
 def _named_anywhere(modules: Dict[str, str]) -> Set[str]:
     """Every module stem that any OTHER tracked file mentions.
 
@@ -190,6 +234,7 @@ def _named_anywhere(modules: Dict[str, str]) -> Set[str]:
                 text = handle.read()
         except (OSError, ValueError):
             continue
+        text = _without_comments(path, text)
         for word in set(_WORD.findall(text)):
             if word in stems and own.get(word) != path:
                 seen.add(word)

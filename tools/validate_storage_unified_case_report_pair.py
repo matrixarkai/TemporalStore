@@ -51,7 +51,6 @@ REQUIRED_OUTPUT_FIELDS = {
         "TS_COMPACTION_WATERMARK_BYTES",
         "TS_CONTEXT_PAGE_TARGET_BYTES",
         "TS_PAGE_INDEX_CACHE_BYTES",
-        "TS_STORAGE_ZONE_SIZE",
         "TS_STREAM_MAX_BLOB_SIZE",
     },
     "storage_data_structure_api_parity": {

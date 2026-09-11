@@ -142,30 +142,19 @@ except ImportError:  # Direct script execution from tools/.
     )
 
 
-def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
-    if question_type == "broad_exploration":
-        summary = next((candidate for candidate in candidates if candidate.get("ref_type") == "summary"), None)
-        if summary is None:
-            return candidates[:total_limit]
-        selected = [summary]
-        selected.extend(candidate for candidate in candidates if candidate is not summary)
-        return selected[:total_limit]
-    if question_type != "multi_hop":
-        return candidates[:total_limit]
-    selected: list[Json] = []
-    deferred: list[Json] = []
-    seen_nodes: set[Any] = set()
-    for candidate in candidates:
-        node_hash = candidate.get("node_hash")
-        if node_hash not in seen_nodes:
-            selected.append(candidate)
-            seen_nodes.add(node_hash)
-        else:
-            deferred.append(candidate)
-        if len(selected) >= total_limit:
-            return selected
-    selected.extend(deferred)
-    return selected[:total_limit]
+# Not defined here: the implementation lives in matrixark_mcp_recall_scoring and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_recall_scoring import (
+        diversify_for_question_type,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_recall_scoring import (
+        diversify_for_question_type,
+    )
 
 
 def entity_current_state_key(candidate: Json) -> tuple[str, str] | None:

@@ -187,6 +187,40 @@ def canonical_storage_route(storage_options: Json | None) -> Json:
     }
 
 
+#: The `temporalstore_*` spellings a caller may pass at the top level of args or metadata, and the
+#: storage_options key each one sets. Built once: `normalize_storage_options` runs about twenty
+#: times per ingest and used to rebuild this on every call -- including on the path that returns
+#: immediately because there are no options at all, which is what most ingests do.
+_STORAGE_OPTION_ALIASES = {
+    "temporalstore_storage_mode": "storage_mode",
+    "temporalstore_oplog_mode": "oplog_mode",
+    "temporalstore_replication_mode": "replication_mode",
+    "temporalstore_raft_mode": "raft_mode",
+    "temporalstore_consistency": "consistency",
+    "temporalstore_route": "route",
+    "temporalstore_storage_family": "storage_family",
+    "temporalstore_write_mode": "write_mode",
+    "temporalstore_durability": "durability",
+    "temporalstore_background_write": "background_write",
+    "temporalstore_read_preference": "read_preference",
+}
+
+#: The values each storage_options key accepts. Also built once; the `route` entry allocated a
+#: fresh set from STORAGE_ROUTE_PRESETS on every call.
+_STORAGE_OPTION_ALLOWED_VALUES = {
+    "storage_mode": {"default", "local", "single_node", "multi_node", "shared_store", "raft"},
+    "oplog_mode": {"default", "async", "sync"},
+    "durability": {"default", "async", "sync"},
+    "replication_mode": {"default", "none", "shared_store", "raft"},
+    "consistency": {"default", "eventual", "read_your_writes", "linearizable"},
+    "read_preference": {"default", "primary", "replica", "replica_preferred"},
+    "route": set(STORAGE_ROUTE_PRESETS) | {"default"},
+    "storage_family": {"default", "shared_store", "raft"},
+    "family": {"default", "shared_store", "raft"},
+    "write_mode": {"default", "async", "sync"},
+}
+
+
 def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
     metadata = metadata if isinstance(metadata, dict) else _optional_object(args, "metadata")
     raw_options = args.get("storage_options")
@@ -194,20 +228,7 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
     metadata_options = metadata.get("storage_options") if isinstance(metadata, dict) else None
     if isinstance(metadata_options, dict):
         options = {**metadata_options, **options}
-    aliases = {
-        "temporalstore_storage_mode": "storage_mode",
-        "temporalstore_oplog_mode": "oplog_mode",
-        "temporalstore_replication_mode": "replication_mode",
-        "temporalstore_raft_mode": "raft_mode",
-        "temporalstore_consistency": "consistency",
-        "temporalstore_route": "route",
-        "temporalstore_storage_family": "storage_family",
-        "temporalstore_write_mode": "write_mode",
-        "temporalstore_durability": "durability",
-        "temporalstore_background_write": "background_write",
-        "temporalstore_read_preference": "read_preference",
-    }
-    for source, target in aliases.items():
+    for source, target in _STORAGE_OPTION_ALIASES.items():
         if source in args:
             options[target] = args[source]
         if isinstance(metadata, dict) and source in metadata:
@@ -215,18 +236,6 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
     if not options:
         return {}
 
-    allowed = {
-        "storage_mode": {"default", "local", "single_node", "multi_node", "shared_store", "raft"},
-        "oplog_mode": {"default", "async", "sync"},
-        "durability": {"default", "async", "sync"},
-        "replication_mode": {"default", "none", "shared_store", "raft"},
-        "consistency": {"default", "eventual", "read_your_writes", "linearizable"},
-        "read_preference": {"default", "primary", "replica", "replica_preferred"},
-        "route": set(STORAGE_ROUTE_PRESETS) | {"default"},
-        "storage_family": {"default", "shared_store", "raft"},
-        "family": {"default", "shared_store", "raft"},
-        "write_mode": {"default", "async", "sync"},
-    }
     route_value = options.get("route")
     if route_value is not None:
         if not isinstance(route_value, str):
@@ -246,14 +255,16 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
                 raise MatrixArkError(f"storage_options.{key} must be a boolean")
             normalized[key] = value
             continue
-        if key not in allowed:
+        if key not in _STORAGE_OPTION_ALLOWED_VALUES:
             normalized[key] = value
             continue
         if not isinstance(value, str):
             raise MatrixArkError(f"storage_options.{key} must be a string")
         compact = value.strip().lower().replace("-", "_")
-        if compact not in allowed[key]:
-            raise MatrixArkError(f"storage_options.{key} must be one of {sorted(allowed[key])}")
+        if compact not in _STORAGE_OPTION_ALLOWED_VALUES[key]:
+            raise MatrixArkError(
+                f"storage_options.{key} must be one of "
+                f"{sorted(_STORAGE_OPTION_ALLOWED_VALUES[key])}")
         normalized[key] = compact
     storage_family = normalized.get("storage_family") or normalized.get("family")
     explicit_modes = {

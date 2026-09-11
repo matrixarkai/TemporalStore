@@ -4,26 +4,19 @@
 from __future__ import annotations
 
 def lane_record_payload(value):
-    """A lane record's payload as a dict, whether it arrived as a document or as a string.
+    """Delegates to the one implementation, in matrixark_temporal_direct_retrieve.
 
-    The lane has always sent a record's stored JSON as a STRING, so every reader parses the
-    envelope and then parses the record a second time. The proxy can now send the record as a
-    sub-document instead (`records_inline_json`), which removes that second parse -- but only if
-    the readers accept both shapes. This accepts both, so the two sides can be switched over
-    independently instead of in one flip.
-
-    Returns {} for anything that is neither, which is what the callers' try/except did before.
+    This module carried an identical second copy. It delegates rather than re-exporting at
+    module scope because importing matrixark_temporal_direct_retrieve from here closes an import cycle -- the same reason
+    build_cross_session_policy in matrixark_mcp_budget_policies delegates rather than
+    importing. Nothing is passed through: every free name the body reads is bound the same
+    way in both modules, which was checked rather than assumed.
     """
-    if isinstance(value, dict):
-        return value
-    if not value:
-        return {}
-    try:
-        import json as _json
-        decoded = _json.loads(value if isinstance(value, str) else str(value))
-    except (TypeError, ValueError):
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
+    try:  # package path
+        from tools.matrixark_temporal_direct_retrieve import lane_record_payload as _impl  # type: ignore
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_temporal_direct_retrieve import lane_record_payload as _impl  # type: ignore
+    return _impl(value)
 
 
 try:

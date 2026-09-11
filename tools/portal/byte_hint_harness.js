@@ -48,8 +48,7 @@ const cases = [
   /* Both are byte counts whose names do NOT end in _BYTES. The case here used to read
      TS_STREAM_MAX_BLOB_SIZE_BYTES, a variable that exists nowhere -- so it exercised the suffix
      rule against a name invented to satisfy it, and said nothing about the setting it was for. */
-  { env: "TS_STREAM_MAX_BLOB_SIZE", value: "10485760", expect: "10 MiB" },
-  { env: "TS_STORAGE_ZONE_SIZE", value: "1073741824", expect: "1 GiB" }
+  { env: "TS_STREAM_MAX_BLOB_SIZE", value: "10485760", expect: "10 MiB" }
 ];
 
 for (const c of cases) {

@@ -95,33 +95,6 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import sanitize_resource_metadata
 
 
-def serving_resource_metadata(metadata: Json) -> Json:
-    sanitized = sanitize_resource_metadata(metadata)
-    serving = {
-        key: sanitized[key]
-        for key in SERVING_RESOURCE_METADATA_FIELDS
-        if key in sanitized and sanitized[key] not in (None, "", [], {})
-    }
-    # `raw_storage_policy` is not carried per chunk: it is a document fact, identical on every
-    # chunk, and no reader takes it from a stored chunk. The dashboard reads the TOP-level
-    # field on manifest rows, ingest reads the live storage_resolution, and resource IO reads
-    # the ENVELOPE metadata while deciding where raw bytes go. 93.1 KB per 1 MB skill.
-    #
-    # `resource_version` stays, though it is the same shape: the retrieve path reads it from a
-    # stored record to decide version_state, falling back to a top-level field sections do not
-    # carry, so dropping it would make every chunk look current.
-    # `raw_bytes_stored` is a per-document fact and a constant False on every chunk of a
-    # document, 27 B a row -- 66.2 KB per 1 MB skill. It is not carried here because
-    # nothing reads it from a chunk: every mention inside a metadata dict is an
-    # ASSIGNMENT, and every read takes the top-level field with a False default, which
-    # the manifest record supplies.
-    parse_warnings = normalize_parse_warnings(sanitized)
-    if parse_warnings:
-        serving["parse_warning_count"] = len(parse_warnings)
-        serving["has_parse_warnings"] = True
-    return serving
-
-
 def debug_resource_metadata(metadata: Json) -> Json:
     sanitized = sanitize_resource_metadata(metadata)
     debug = {
@@ -202,20 +175,6 @@ def deployment_scope_from_args(args: Json, envelope: Json) -> str:
     return value if value in {"local", "global", "cloud", "on_prem", "hybrid"} else "local"
 
 
-def resource_storage_mode_from_args(args: Json, envelope: Json, deployment_scope: str) -> str:
-    value = str(
-        args.get("raw_storage_mode")
-        or envelope.get("metadata", {}).get("raw_storage_mode")
-        or os.environ.get("MATRIXARK_RESOURCE_STORAGE_MODE")
-        or ("cloud" if deployment_scope == "cloud" else "local")
-    ).strip().lower()
-    if value in {"s3", "remote"}:
-        value = "cloud"
-    if value not in {"local", "cloud"}:
-        raise MatrixArkError("raw_storage_mode must be local or cloud")
-    return value
-
-
 try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
     from .matrixark_mcp_core_resource_io import is_s3_uri
 except ImportError:  # Direct script execution from tools/.
@@ -277,21 +236,21 @@ def _s3_client() -> Any:
         return None
 
 
-def _aws_cli_s3_cp(source: str, target: str) -> None:
-    command = ["aws"]
-    profile = os.environ.get("AWS_PROFILE")
-    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
-    if profile:
-        command.extend(["--profile", profile])
-    if region:
-        command.extend(["--region", region])
-    endpoint_url = os.environ.get("MATRIXARK_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3")
-    if endpoint_url:
-        command.extend(["--endpoint-url", endpoint_url])
-    command.extend(["s3", "cp", source, target])
-    completed = subprocess.run(command, text=True, capture_output=True, check=False)
-    if completed.returncode != 0:
-        raise MatrixArkError(compact_ws(completed.stderr or completed.stdout or f"aws s3 cp failed: {source} -> {target}"))
+# Not defined here: the implementation lives in matrixark_mcp_core_resource_io and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_core_resource_io import (
+        _aws_cli_s3_cp,
+        resource_storage_mode_from_args,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import (
+        _aws_cli_s3_cp,
+        resource_storage_mode_from_args,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
@@ -476,18 +435,18 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import should_extract_resource_fact
 
 
-def matched_resource_fact_schemas(text: str, metadata: Json) -> list[Json]:
-    lower = text.lower()
-    matches = [
-        schema
-        for schema in RESOURCE_FACT_SCHEMAS
-        if any(keyword in lower for keyword in schema["keywords"])
-    ]
-    if matches:
-        return matches[: max(0, MAX_RESOURCE_FACTS_PER_CHUNK)]
-    if ENABLE_GENERIC_RESOURCE_FACTS and should_extract_resource_fact(text, metadata):
-        return [{"fact_type": "resource_fact", "entity_type": "resource_fact", "entity_prefix": "fact", "keywords": []}]
-    return []
+# Not defined here: the implementation lives in matrixark_mcp_core and this module carried an
+# identical second copy of each.
+try:
+    from tools.matrixark_mcp_core import (
+        matched_resource_fact_schemas,
+        serving_resource_metadata,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import (
+        matched_resource_fact_schemas,
+        serving_resource_metadata,
+    )
 
 
 def extract_resource_fact_value(text: str, fact_type: str) -> str:

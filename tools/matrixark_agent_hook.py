@@ -151,21 +151,22 @@ COMMIT_EVENTS = {
     "sessionidle",
     "session_idle",
 }
-RESOURCE_EVENTS = {
-    "resourceadded",
-    "resource_added",
-    "addresource",
-    "add_resource",
-    "resource",
-    "fileadded",
-    "file_added",
-    "documentadded",
-    "document_added",
-    "resourceimport",
-    "resource_import",
-    "skilladded",
-    "skill_added",
-}
+# RESOURCE_EVENTS and RESOURCE_TYPE_BY_SUFFIX live in matrixark_codex_hook, which this module already imports and which imports nothing from
+# here. They were declared in both and agreed -- which is what a pair does until one of them is
+# extended, and three constants elsewhere in this tree disagreed exactly that way, on the copy the
+# live path used.
+try:
+    from .matrixark_codex_hook import (  # noqa: F401
+        RESOURCE_EVENTS,
+        RESOURCE_TYPE_BY_SUFFIX,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_codex_hook import (  # noqa: F401
+        RESOURCE_EVENTS,
+        RESOURCE_TYPE_BY_SUFFIX,
+    )
+
+
 FEEDBACK_EVENTS = {
     "feedback",
     "userfeedback",
@@ -182,28 +183,6 @@ FEEDBACK_EVENTS = {
     "correction",
 }
 
-RESOURCE_TYPE_BY_SUFFIX = {
-    ".md": "md",
-    ".markdown": "md",
-    ".txt": "txt",
-    ".log": "log",
-    ".html": "html",
-    ".htm": "html",
-    ".pdf": "pdf",
-    ".docx": "docx",
-    ".pptx": "pptx",
-    ".xlsx": "xlsx",
-    ".csv": "csv",
-    ".tsv": "tsv",
-    ".json": "json",
-    ".jsonl": "jsonl",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".png": "image",
-    ".jpg": "image",
-    ".jpeg": "image",
-    ".webp": "image",
-}
 
 
 def norm(value: str) -> str:
@@ -234,7 +213,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_agent"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_agent"))
-    parser.add_argument("--user-id", default=os.environ.get("MATRIXARK_USER_ID", os.environ.get("USERNAME", "agent_user")))
+    # `.strip() or`: a blank MATRIXARK_USER_ID would otherwise attribute every record to
+    # the empty string rather than falling back to USERNAME.
+    parser.add_argument("--user-id", default=(
+        os.environ.get("MATRIXARK_USER_ID", "").strip()
+        or os.environ.get("USERNAME", "").strip()
+        or "agent_user"))
     parser.add_argument("--session-id", default=os.environ.get("MATRIXARK_SESSION_ID"))
     parser.add_argument("--session-state-dir", type=Path, default=Path(os.environ.get("MATRIXARK_AGENT_SESSION_STATE_DIR", "/tmp/matrixark-agent-sessions")))
     parser.add_argument("--team", default=os.environ.get("MATRIXARK_TEAM", "agent"))
@@ -246,7 +230,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
-    parser.add_argument("--rust-proxy", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_PROXY", os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", "")))
+    # `or`: a blank MATRIXARK_TEMPORALSTORE_RUST_PROXY means unset, and suppressing
+    # the MATRIXARK_TEMPORALSTORE_RUST_CLI fallback is not what clearing it says.
+    parser.add_argument("--rust-proxy", default=(
+        os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_PROXY", "").strip()
+        or os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", "").strip()
+        or ""))
     parser.add_argument("--rust-direct-sdk", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", ""))
     parser.add_argument("--rust-cli", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:agent-hook"))

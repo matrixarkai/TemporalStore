@@ -118,7 +118,9 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES  # noqa: F401
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
-LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+#: "off" added: the set accepted "no" and not "off", so `=off` left this default-ON cache on.
+#: The empty string is NOT in the set, so `X=` still means on here -- unchanged deliberately.
+LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 # Records the tail file may hold before the base is folded back in. Bounds both the
 # delta file and the work a load does stitching it onto the base.
 # 250 rather than 2000, because the tail is now on the COLD path: a load stitches the delta onto the
@@ -2438,20 +2440,20 @@ def codex_session_identity_policy(session_id_source: str) -> Json:
     }
 
 
-AUTO_BUDGET_QUERY_TYPES = {
-    "current_state",
-    "latest",
-    "profile_memory",
-    "multi_hop",
-    "date",
-    "broad_exploration",
-    "evidence",
-    "benchmark_quality",
-}
+# AUTO_BUDGET_QUERY_TYPES lives in matrixark_mcp_retrieve_pre_refresh, which this module already
+# imports from and which does not reach back -- at module scope it imports nothing from here. It
+# was declared in both with the same value; a pair agrees until one of them is extended.
+try:
+    from .matrixark_mcp_retrieve_pre_refresh import AUTO_BUDGET_QUERY_TYPES  # noqa: F401
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import AUTO_BUDGET_QUERY_TYPES  # noqa: F401
 
-FEATURE_MEMORY_BUDGET_QUERY_RE = re.compile(
-    r"\b(?:mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|session memory|profile memory|cross[- ]session memory|long[- ]term memory|threshold|idle batch|batch extraction)\b"
-)
+
+
+try:  # the pattern lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it
+    from .matrixark_mcp_retrieve_pre_refresh import FEATURE_MEMORY_BUDGET_QUERY_RE
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import FEATURE_MEMORY_BUDGET_QUERY_RE
 
 
 try:  # the implementation lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it

@@ -103,13 +103,21 @@ INDEX_SKIP_OWNER_DERIVABLE_TERMS = os.environ.get(
     "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
 
+#: Read like INDEX_ONLY_CONSULTABLE_TERMS above: case folded, whitespace stripped, and every
+#: FALSE_VALUES spelling accepted. It used to be `not in {"0", "false", "False", ""}` with no
+#: strip or lower, so `=off`, `=no` and `=FALSE` all read as TRUE and left the flag on --
+#: a false spelling turning it on rather than off.
 INDEX_POSTING_LISTS = os.environ.get(
     "MATRIXARK_INDEX_POSTING_LISTS", "1"
-) not in {"0", "false", "False", ""}
+).strip().lower() not in {"0", "false", "no", "off", ""}
 
+#: Read like INDEX_ONLY_CONSULTABLE_TERMS above: case folded, whitespace stripped, and every
+#: FALSE_VALUES spelling accepted. It used to be `not in {"0", "false", "False", ""}` with no
+#: strip or lower, so `=off`, `=no` and `=FALSE` all read as TRUE and left the flag on --
+#: a false spelling turning it on rather than off.
 DEDUPE_SKILL_CHUNK_EMBEDDING = os.environ.get(
     "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING", "1"
-) not in {"0", "false", "False", ""}
+).strip().lower() not in {"0", "false", "no", "off", ""}
 
 # A skill chunk's text is written TWICE: once as `resource_chunk` and once as `skill_section`,
 # byte for byte. Measured on a 1.41 MB markdown skill: 411 chunks and 411 sections, and all 411
@@ -132,9 +140,13 @@ except ImportError:  # top-level path
         _chunked_refs as chunked_posting_refs,
     )
 
+#: Read like INDEX_ONLY_CONSULTABLE_TERMS above: case folded, whitespace stripped, and every
+#: FALSE_VALUES spelling accepted. It used to be `not in {"0", "false", "False", ""}` with no
+#: strip or lower, so `=off`, `=no` and `=FALSE` all read as TRUE and left the flag on --
+#: a false spelling turning it on rather than off.
 DEDUPE_SKILL_CHUNK_TEXT = os.environ.get(
     "MATRIXARK_DEDUPE_SKILL_CHUNK_TEXT", "1"
-) not in {"0", "false", "False", ""}
+).strip().lower() not in {"0", "false", "no", "off", ""}
 
 RESOURCE_APPEND_BATCH_RECORDS = int(
     os.environ.get("MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS", "512")

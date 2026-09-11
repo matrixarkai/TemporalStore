@@ -25,6 +25,15 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matrixark_mcp_local_adapter  # noqa: E402,F401  (establishes the package first)
+# ... and this establishes the FLAT one, which is the spelling the imports below use.
+# `matrixark_mcp_core` and `tools.matrixark_mcp_core` are two module objects. The aggregator
+# imports several matrixark_mcp_core_* modules from the bottom of its own body and they import
+# names back, so none of them can be imported before it -- and the line above only builds the
+# PACKAGE spelling. Importing the flat core_scoring then built a fresh flat aggregator and walked
+# into the cycle, which is why the tests below reported an ImportError rather than a result.
+# The set of modules that cannot stand alone is pinned by
+# test_a_module_that_claims_no_cycle_can_be_imported.
+import matrixark_mcp_core  # noqa: E402,F401
 import matrixark_mcp_budget_policies as budget_policies  # noqa: E402
 import matrixark_mcp_core_scoring as core_scoring  # noqa: E402
 

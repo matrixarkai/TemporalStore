@@ -71,7 +71,6 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _ENGINE_MINIMUMS: Dict[str, int] = {
     "TS_CONTEXT_PAGE_TARGET_BYTES": 1024,
     "TS_BLOCK_SLAB_TARGET_BYTES": 1024,
-    "TS_STORAGE_ZONE_SIZE": 1024,
     "TS_STREAM_MAX_BLOB_SIZE": 1024,
 }
 
@@ -353,7 +352,9 @@ SETTINGS: List[Setting] = [
             "Embedding model", "str", "", "live",
             "The encoder to use: a model name like paraphrase-multilingual-MiniLM-L12-v2, or "
             "a path to one you have downloaded -- an in-process encoder loads either, and a hosted "
-            "provider is sent the name."
+            "provider is sent the name. An in-process encoder prefers "
+            "MATRIXARK_EMBEDDING_MODEL_PATH where a launcher sets it, and then this field is not "
+            "read at all; a hosted provider ignores that variable and is sent the name from here."
             + ENCODER_SERVER_NOTE + ENCODER_CHANGE_NOTE),
     # MATRIXARK_EMBEDDING_MODEL_PATH was offered here as a second encoder field. It is not a
     # second choice: the encoder reads `MODEL_PATH or MODEL`, so it only ever overrode the field
@@ -643,9 +644,11 @@ SETTINGS: List[Setting] = [
             "not and returns the session too. auto decides per request.",
             ["auto", "local_and_remote", "remote_only"]),
     Setting("retrieval.min_score", "retrieval", "MATRIXARK_RETRIEVAL_MIN_SCORE",
-            "Minimum similarity score", "float", "0.20", "restart",
+            "Minimum similarity score", "float", "0.05", "restart",
             "Candidates scoring below this are dropped before packing. Raising it returns less but "
-            "more relevant context; lowering it fills the budget with weaker matches."),
+            "more relevant context; lowering it fills the budget with weaker matches. Declared 0.20 "
+            "until the readers were lowered to 0.05 and this was not; the panel showed a floor four "
+            "times the one being applied."),
     Setting("retrieval.budget_fill_policy", "retrieval", "MATRIXARK_BUDGET_FILL_POLICY",
             "Budget fill policy", "str", "quality_first", "restart",
             "quality_first leaves the budget underfilled rather than packing weak candidates. "
@@ -735,12 +738,6 @@ SETTINGS: List[Setting] = [
             "The unit page-slab reclaim works in. A slab is retained while any loaded shard still "
             "references it, so larger slabs mean fewer, coarser reclaims. Values below 1 KiB are "
             "raised to it."),
-    Setting("storage_engine.storage_zone_size", "storage_engine",
-            "TS_STORAGE_ZONE_SIZE",
-            "Storage zone size", "int", "1073741824", "live",
-            "The span the band and zone catalog accounts in. It sets the granularity of what "
-            "compaction and the catalog can talk about, not how much is stored. Values below 1 KiB "
-            "are raised to it."),
     Setting("storage_engine.stream_max_blob_size", "storage_engine",
             "TS_STREAM_MAX_BLOB_SIZE",
             "Largest streamed blob", "int", "10485760", "live",
@@ -1098,19 +1095,16 @@ _apply_build_defaults(SETTINGS)
 SETTINGS.extend([
     Setting("embedding.cache_entries", "embedding", "MATRIXARK_EMBEDDING_CACHE_ENTRIES",
             "Cache entries", "int", "8192", "live",
-            "Cache entries. Defaults to 8192. Frozen when the process starts. Read by "
-            "matrixark_mcp_embeddings."),
+            'Cache entries. Defaults to 8192. Read by matrixark_mcp_embeddings.'),
     Setting("embedding.dims", "embedding", "MATRIXARK_EMBEDDING_DIMS",
             "Dims", "int", "512", "live",
-            "Dims. Defaults to 512. Frozen when the process starts. Read by matrixark_mcp_embeddings."),
+            'Dims. Defaults to 512. Read by matrixark_mcp_embeddings.'),
     Setting("embedding.require_oss_embeddings", "embedding", "MATRIXARK_REQUIRE_OSS_EMBEDDINGS",
             "Require oss embeddings", "bool", "0", "live",
-            "Require oss embeddings. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_core."),
+            'Require oss embeddings. Off by default. Read by matrixark_mcp_core.'),
     Setting("embedding.rust_proxy_native_c_api_compat", "embedding", "MATRIXARK_RUST_PROXY_NATIVE_MATRIXARK_C_API_COMPAT",
             "Rust proxy native c api compat", "bool", "0", "live",
-            "Rust proxy native c api compat. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_rust_proxy_process, matrixark_mcp_temporal_adapters."),
+            'Rust proxy native c api compat. Off by default. Read by matrixark_mcp_rust_proxy_process, matrixark_mcp_temporal_adapters.'),
     Setting("embedding.text_prefix_share", "embedding", "MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE",
             "Text prefix share", "float", "0.2", "restart",
             "Text prefix share. Defaults to 0.2. Frozen when the process starts. Read by "
@@ -1147,8 +1141,7 @@ SETTINGS.extend([
             "matrixark_codex_hook, matrixark_mcp_runtime_config."),
     Setting("ingestion.idle_drain_min_interval_ms", "ingestion", "MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS",
             "Idle drain min interval ms", "int", "1000", "live",
-            "Idle drain minimum interval milliseconds. Defaults to 1000. Frozen when the process starts. "
-            "Read by matrixark_local_adapter_retrieval."),
+            'Idle drain minimum interval milliseconds. Defaults to 1000. Read by matrixark_local_adapter_retrieval.'),
     Setting("ingestion.local_binary_vectors", "ingestion", "MATRIXARK_LOCAL_BINARY_VECTORS",
             "Local binary vectors", "bool", "1", "restart",
             "Local binary vectors. On by default. Frozen when the process starts. Read by "
@@ -1183,12 +1176,10 @@ SETTINGS.extend([
             "matrixark_mcp_local_adapter, matrixark_mcp_retrieve_pre_refresh."),
     Setting("ingestion.rust_proxy_read_lanes", "ingestion", "MATRIXARK_RUST_PROXY_READ_LANES",
             "Rust proxy read lanes", "int", "4", "live",
-            "Rust proxy read lanes. Defaults to 4. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters."),
+            'Rust proxy read lanes. Defaults to 4. Read by matrixark_mcp_temporal_adapters.'),
     Setting("ingestion.rust_proxy_write_lanes", "ingestion", "MATRIXARK_RUST_PROXY_WRITE_LANES",
             "Rust proxy write lanes", "int", "4", "live",
-            "Rust proxy write lanes. Defaults to 4. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters."),
+            'Rust proxy write lanes. Defaults to 4. Read by matrixark_mcp_temporal_adapters.'),
     Setting("ingestion.stream_materialize_interval_ms", "ingestion", "MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS",
             "Stream materialize interval ms", "int", "1500", "restart",
             "Stream materialize interval milliseconds. Defaults to 1500. Frozen when the process starts. "
@@ -1206,7 +1197,7 @@ SETTINGS.extend([
             "Summary refresh maximum duty. Defaults to 0.2. Frozen when the process starts. Read by "
             "matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("limits.admin_timeout_ms", "limits", "MATRIXARK_ADMIN_TIMEOUT_MS",
-            "Admin timeout ms", "int", "10000", "live",
+            "Admin timeout ms", "int", "10000", "restart",
             "Admin timeout milliseconds. Defaults to 10000. Frozen when the process starts. Read by "
             "matrixark_mcp_server."),
     Setting("limits.backend_readiness_connect_timeout_ms", "limits", "MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS",
@@ -1215,8 +1206,7 @@ SETTINGS.extend([
             "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("limits.backpressure_fallback_record_limit", "limits", "MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT",
             "Backpressure fallback record limit", "int", "0", "live",
-            "Backpressure fallback record limit. Defaults to 0. Frozen when the process starts. Read by "
-            "matrixark_mcp_server_request_policy."),
+            'Backpressure fallback record limit. Defaults to 0. Read by matrixark_mcp_server_request_policy.'),
     Setting("limits.backpressure_timeout_ms", "limits", "MATRIXARK_BACKPRESSURE_TIMEOUT_MS",
             "Backpressure timeout ms", "int", "100", "restart",
             "Backpressure timeout milliseconds. Defaults to 100. Frozen when the process starts. Read by "
@@ -1235,16 +1225,16 @@ SETTINGS.extend([
             "process starts. Read by matrixark_mcp_core."),
     Setting("limits.direct_raw_ingestion", "limits", "MATRIXARK_DIRECT_RAW_INGESTION",
             "Direct raw ingestion", "bool", "0", "live",
-            "Direct raw ingestion. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters."),
+            'Direct raw ingestion. Off by default. Read by matrixark_mcp_temporal_adapters.'),
     Setting("limits.direct_raw_ingestion_queue", "limits", "MATRIXARK_DIRECT_RAW_INGESTION_QUEUE",
             "Direct raw ingestion queue", "bool", "0", "live",
-            "Direct raw ingestion queue. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+            'Direct raw ingestion queue. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("limits.direct_record_log_shard_size", "limits", "MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE",
-            "Direct record log shard size", "int", "4096", "restart",
-            "Direct record log shard size. Defaults to 4096. Frozen when the process starts. Read by "
-            "matrixark_context_backfill."),
+            "Direct record log shard size", "int", "256", "restart",
+            "Records per shard in the direct record log. Frozen when the process starts. Declared "
+            "4096 while every reader that names it -- matrixark_context_backfill, "
+            "matrixark_mcp_runtime_config and matrixark_mcp_core -- applied 256, including the one "
+            "this description used to name as its reader."),
     Setting("limits.direct_retrieval_candidate_cache_max_entries", "limits", "MATRIXARK_DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES",
             "Direct retrieval candidate cache max entries", "int", "256", "restart",
             "Direct retrieval candidate cache maximum entries. Defaults to 256. Frozen when the process "
@@ -1255,20 +1245,16 @@ SETTINGS.extend([
             "matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("limits.direct_write_queue", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE",
             "Direct write queue", "bool", "0", "live",
-            "Direct write queue. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+            'Direct write queue. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("limits.direct_write_queue_drain_max_batches", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES",
             "Direct write queue drain max batches", "int", "64", "live",
-            "Direct write queue drain maximum batches. Defaults to 64. Frozen when the process starts. "
-            "Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+            'Direct write queue drain maximum batches. Defaults to 64. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("limits.direct_write_queue_max_records", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS",
             "Direct write queue max records", "int", "10000", "live",
-            "Direct write queue maximum records. Defaults to 10000. Frozen when the process starts. Read "
-            "by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+            'Direct write queue maximum records. Defaults to 10000. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("limits.direct_write_queue_put_timeout_ms", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS",
             "Direct write queue put timeout ms", "int", "1000", "live",
-            "Direct write queue put timeout milliseconds. Defaults to 1000. Frozen when the process "
-            "starts. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+            'Direct write queue put timeout milliseconds. Defaults to 1000. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("limits.direct_write_retries", "limits", "MATRIXARK_DIRECT_WRITE_RETRIES",
             "Direct write retries", "int", "3", "restart",
             "Direct write retries. Defaults to 3. Frozen when the process starts. Read by "
@@ -1278,11 +1264,11 @@ SETTINGS.extend([
             "Direct write throttle milliseconds. Defaults to 0. Frozen when the process starts. Read by "
             "matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("limits.feedback_timeout_ms", "limits", "MATRIXARK_FEEDBACK_TIMEOUT_MS",
-            "Feedback timeout ms", "int", "15000", "live",
+            "Feedback timeout ms", "int", "15000", "restart",
             "Feedback timeout milliseconds. Defaults to 15000. Frozen when the process starts. Read by "
             "matrixark_mcp_server."),
     Setting("limits.ingest_timeout_ms", "limits", "MATRIXARK_INGEST_TIMEOUT_MS",
-            "Ingest timeout ms", "int", "30000", "live",
+            "Ingest timeout ms", "int", "30000", "restart",
             "Ingest timeout milliseconds. Defaults to 30000. Frozen when the process starts. Read by "
             "matrixark_mcp_server."),
     Setting("limits.intern_backend_metadata", "limits", "MATRIXARK_INTERN_BACKEND_METADATA",
@@ -1290,11 +1276,11 @@ SETTINGS.extend([
             "Intern backend metadata. Off by default. Frozen when the process starts. Read by "
             "matrixark_mcp_temporal_append."),
     Setting("limits.max_concurrent_ingest", "limits", "MATRIXARK_MAX_CONCURRENT_INGEST",
-            "Max concurrent ingest", "int", "32", "live",
+            "Max concurrent ingest", "int", "32", "restart",
             "Maximum concurrent ingest. Defaults to 32. Frozen when the process starts. Read by "
             "matrixark_mcp_server."),
     Setting("limits.replay_timeout_ms", "limits", "MATRIXARK_REPLAY_TIMEOUT_MS",
-            "Replay timeout ms", "int", "10000", "live",
+            "Replay timeout ms", "int", "10000", "restart",
             "Replay timeout milliseconds. Defaults to 10000. Frozen when the process starts. Read by "
             "matrixark_mcp_server."),
     Setting("limits.resource_ocr_timeout_s", "limits", "MATRIXARK_RESOURCE_OCR_TIMEOUT_S",
@@ -1307,8 +1293,7 @@ SETTINGS.extend([
             "matrixark_mcp_server."),
     Setting("limits.rust_proxy_startup_warmup_timeout_ms", "limits", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_TIMEOUT_MS",
             "Rust proxy startup warmup timeout ms", "int", "120000", "live",
-            "Rust proxy startup warmup timeout milliseconds. Defaults to 120000. Frozen when the process "
-            "starts. Read by matrixark_rust_proxy_daemon."),
+            'Rust proxy startup warmup timeout milliseconds. Defaults to 120000. Read by matrixark_rust_proxy_daemon.'),
     Setting("retrieval.allow_python_retrieval_fallback", "retrieval", "MATRIXARK_ALLOW_PYTHON_RETRIEVAL_FALLBACK",
             "Allow python retrieval fallback", "bool", "0", "restart",
             "Allow python retrieval fallback. Off by default. Frozen when the process starts. Read by "
@@ -1334,16 +1319,13 @@ SETTINGS.extend([
             "matrixark_mcp_runtime_config, matrixark_mcp_serving_records."),
     Setting("retrieval.context_event_time_index_full_payload", "retrieval", "MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD",
             "Context event time index full payload", "bool", "0", "live",
-            "Context event time index full payload. Off by default. Frozen when the process starts. Read "
-            "by matrixark_mcp_event_keys, matrixark_temporal_direct_backend."),
+            'Context event time index full payload. Off by default. Read by matrixark_mcp_event_keys, matrixark_temporal_direct_backend.'),
     Setting("retrieval.context_pack_cache_max_entries", "retrieval", "MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES",
             "Context pack cache max entries", "int", "256", "live",
-            "Context pack cache maximum entries. Defaults to 256. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters."),
+            'Context pack cache maximum entries. Defaults to 256. Read by matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters.'),
     Setting("retrieval.context_pack_cache_ttl_s", "retrieval", "MATRIXARK_CONTEXT_PACK_CACHE_TTL_S",
             "Context pack cache ttl s", "float", "30.0", "live",
-            "Context pack cache time to live seconds. Defaults to 30.0. Frozen when the process starts. "
-            "Read by matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters."),
+            'Context pack cache time to live seconds. Defaults to 30.0. Read by matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters.'),
     Setting("retrieval.context_pack_debug_refs", "retrieval", "MATRIXARK_CONTEXT_PACK_DEBUG_REFS",
             "Context pack debug refs", "bool", "0", "restart",
             "Context pack debug refs. Off by default. Frozen when the process starts. Read by "
@@ -1378,27 +1360,23 @@ SETTINGS.extend([
             "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("retrieval.direct_write_queue_allow_sync_context", "retrieval", "MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT",
             "Direct write queue allow sync context", "bool", "0", "live",
-            "Direct write queue allow sync context. Off by default. Frozen when the process starts. Read "
-            "by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+            'Direct write queue allow sync context. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("retrieval.disable_native_context_pack", "retrieval", "MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK",
             "Disable native context pack", "bool", "0", "live",
-            "Disable native context pack. Off by default. Frozen when the process starts. Read by "
-            "matrixark_temporal_direct_read."),
+            'Disable native context pack. Off by default. Read by matrixark_temporal_direct_read.'),
     Setting("retrieval.hard_max_children_scored_per_parent", "retrieval", "MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT",
             "Hard max children scored per parent", "int", "100000", "restart",
             "Hard maximum children scored per parent. Defaults to 100000. Frozen when the process starts. "
             "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("retrieval.hook_additional_context_char_limit", "retrieval", "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT",
             "Hook additional context char limit", "int", "40000", "live",
-            "Hook additional context char limit. Defaults to 40000. Frozen when the process starts. Read "
-            "by matrixark_codex_hook."),
+            'Hook additional context char limit. Defaults to 40000. Read by matrixark_codex_hook.'),
     Setting("retrieval.hook_fail_open", "retrieval", "MATRIXARK_HOOK_FAIL_OPEN",
             "Hook fail open", "bool", "1", "live",
-            "Hook fail open. On by default. Frozen when the process starts. Read by matrixark_codex_hook."),
+            'Hook fail open. On by default. Read by matrixark_codex_hook.'),
     Setting("retrieval.memory_purge_threshold", "retrieval", "MATRIXARK_MEMORY_PURGE_THRESHOLD",
             "Memory purge threshold", "int", "0", "live",
-            "Memory purge threshold. Defaults to 0. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter."),
+            'Memory purge threshold. Defaults to 0. Read by matrixark_mcp_local_adapter.'),
     Setting("retrieval.pack_precision_expand_max_events", "retrieval", "MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS",
             "Pack precision expand max events", "int", "12", "restart",
             "Pack precision expand maximum events. Defaults to 12. Frozen when the process starts. Read "
@@ -1425,32 +1403,25 @@ SETTINGS.extend([
             "matrixark_resource_parser."),
     Setting("retrieval.rust_proxy_dedicated_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
             "Rust proxy dedicated pack lanes", "bool", "0", "live",
-            "Rust proxy dedicated pack lanes. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters."),
+            'Rust proxy dedicated pack lanes. Off by default. Read by matrixark_mcp_temporal_adapters.'),
     Setting("retrieval.rust_proxy_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_PACK_LANES",
             "Rust proxy pack lanes", "int", "8", "live",
-            "Rust proxy pack lanes. Defaults to 8. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters."),
+            'Rust proxy pack lanes. Defaults to 8. Read by matrixark_mcp_temporal_adapters.'),
     Setting("retrieval.segment_max_new_tokens", "retrieval", "MATRIXARK_SEGMENT_MAX_NEW_TOKENS",
             "Segment max new tokens", "int", "512", "live",
-            "Segment maximum new tokens. Defaults to 512. Frozen when the process starts. Read by "
-            "matrixark_mcp_core."),
+            'Segment maximum new tokens. Defaults to 512. Read by matrixark_mcp_core.'),
     Setting("retrieval.session_commit_threshold", "retrieval", "MATRIXARK_SESSION_COMMIT_THRESHOLD",
             "Session commit threshold", "int", "20", "live",
-            "Session commit threshold. Defaults to 20. Frozen when the process starts. Read by "
-            "matrixark_agent_hook, matrixark_codex_hook."),
+            'Session commit threshold. Defaults to 20. Read by matrixark_agent_hook, matrixark_codex_hook.'),
     Setting("retrieval.summary_refresh_pass_budget_ms", "retrieval", "MATRIXARK_SUMMARY_REFRESH_PASS_BUDGET_MS",
             "Summary refresh pass budget ms", "int", "30000", "live",
-            "Summary refresh pass budget milliseconds. Defaults to 30000. Frozen when the process starts. "
-            "Read by matrixark_local_adapter_summaries."),
+            'Summary refresh pass budget milliseconds. Defaults to 30000. Read by matrixark_local_adapter_summaries.'),
     Setting("retrieval.temporalstore_async_context_warmup", "retrieval", "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP",
             "Temporalstore async context warmup", "bool", "1", "live",
-            "Temporalstore async context warmup. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters."),
+            'Temporalstore async context warmup. On by default. Read by matrixark_mcp_temporal_adapters.'),
     Setting("retrieval.temporalstore_async_context_warmup_force", "retrieval", "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE",
             "Temporalstore async context warmup force", "bool", "0", "live",
-            "Temporalstore async context warmup force. Off by default. Frozen when the process starts. "
-            "Read by matrixark_temporal_direct_write."),
+            'Temporalstore async context warmup force. Off by default. Read by matrixark_temporal_direct_write.'),
     Setting("skills.dedupe_skill_chunk_embedding", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING",
             "Dedupe skill chunk embedding", "bool", "1", "restart",
             "Dedupe skill chunk embedding. On by default. Frozen when the process starts. Read by "
@@ -1493,12 +1464,10 @@ SETTINGS.extend([
             "matrixark_mcp_core_resource_io."),
     Setting("skills.resource_import_queue_max", "skills", "MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX",
             "Resource import queue max", "int", "64", "live",
-            "Resource import queue maximum. Defaults to 64. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter."),
+            'Resource import queue maximum. Defaults to 64. Read by matrixark_mcp_local_adapter.'),
     Setting("skills.resource_import_workers", "skills", "MATRIXARK_RESOURCE_IMPORT_WORKERS",
             "Resource import workers", "int", "2", "live",
-            "Resource import workers. Defaults to 2. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter."),
+            'Resource import workers. Defaults to 2. Read by matrixark_mcp_local_adapter.'),
     Setting("skills.resource_json_records_per_chunk", "skills", "MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK",
             "Resource json records per chunk", "int", "20", "restart",
             "Resource json records per chunk. Defaults to 20. Frozen when the process starts. Read by "
@@ -1533,12 +1502,10 @@ SETTINGS.extend([
             "matrixark_resource_parser."),
     Setting("skills.rust_proxy_shared_process", "skills", "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
             "Rust proxy shared process", "bool", "1", "live",
-            "Rust proxy shared process. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters."),
+            'Rust proxy shared process. On by default. Read by matrixark_mcp_temporal_adapters.'),
     Setting("skills.rust_proxy_startup_warmup_max_selected_refs", "skills", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_MAX_SELECTED_REFS",
             "Rust proxy startup warmup max selected refs", "int", "1", "live",
-            "Rust proxy startup warmup maximum selected refs. Defaults to 1. Frozen when the process "
-            "starts. Read by matrixark_rust_proxy_daemon."),
+            'Rust proxy startup warmup maximum selected refs. Defaults to 1. Read by matrixark_rust_proxy_daemon.'),
     Setting("skills.skill_discovery_max_skills", "skills", "MATRIXARK_SKILL_DISCOVERY_MAX_SKILLS",
             "Skill discovery max skills", "int", "8", "restart",
             "Skill discovery maximum skills. Defaults to 8. Frozen when the process starts. Read by "
@@ -1577,12 +1544,10 @@ SETTINGS.extend([
             "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
     Setting("storage_engine.native_side_index_assume_fresh", "storage_engine", "MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH",
             "Native side index assume fresh", "bool", "0", "live",
-            "Native side index assume fresh. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+            'Native side index assume fresh. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("storage_engine.rust_proxy_startup_warmup_full_scan", "storage_engine", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_FULL_SCAN",
             "Rust proxy startup warmup full scan", "bool", "1", "live",
-            "Rust proxy startup warmup full scan. On by default. Frozen when the process starts. Read by "
-            "matrixark_rust_proxy_daemon."),
+            'Rust proxy startup warmup full scan. On by default. Read by matrixark_rust_proxy_daemon.'),
     Setting("storage_engine.secondary_index_posting_bucket_ms", "storage_engine", "MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS",
             "Secondary index posting bucket ms", "int", "60000", "restart",
             "Secondary index posting bucket milliseconds. Defaults to 60000. Frozen when the process "
@@ -1796,9 +1761,14 @@ def _configured_extraction_provider() -> str:
     need to know whether anything is set AT ALL, and a resolver answering "deterministic" for an
     unset deployment could not tell the two apart.
     """
-    return os.environ.get(
-        "MATRIXARK_UNDERSTANDING_PROVIDER",
-        os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
+    # `or`, not a second argument: a variable that is present and blank means the operator
+    # cleared it, not that the provider is named "". The two-argument form skipped the older
+    # spelling on a blank, so this answered "nothing is set" for a deployment that HAD set
+    # MATRIXARK_EXTRACTION_PROVIDER -- the one thing this resolver exists to report. The
+    # trailing "" is still the deliberate sentinel for "neither is set".
+    return (os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip()
+            or os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "").strip()
+            or "")
 
 
 def discover_models(target: str, timeout: float = 8.0) -> Json:
@@ -1998,10 +1968,22 @@ def config_path() -> str:
 _UNOFFERED_OVERRIDES: Dict[str, Json] = {
     "extraction.timeout_sec": {"env": "MATRIXARK_ANTHROPIC_TIMEOUT_SEC",
                                "depends_on": "extraction.provider",
-                               "effect": "anthropic"},
+                               "effect": "anthropic",
+                               "classifier": "extraction"},
     "extraction.max_tokens": {"env": "MATRIXARK_ANTHROPIC_MAX_TOKENS",
                               "depends_on": "extraction.provider",
-                              "effect": "anthropic"},
+                              "effect": "anthropic",
+                              "classifier": "extraction"},
+    # Four live reads resolve the encoder as
+    #     get("MATRIXARK_EMBEDDING_MODEL_PATH") or get("MATRIXARK_EMBEDDING_MODEL", ...)
+    # so this variable beats whatever an operator types into "Embedding model", on a page that
+    # never mentions it. Conditional like the two above: those reads sit behind
+    # `provider in _OSS_EMBEDDING_PROVIDERS`, which is what embedding_provider_effect calls
+    # "local_model", and on an API encoder the variable overrides nothing.
+    "embedding.model": {"env": "MATRIXARK_EMBEDDING_MODEL_PATH",
+                        "depends_on": "embedding.provider",
+                        "effect": "local_model",
+                        "classifier": "embedding"},
 }
 
 
@@ -2017,6 +1999,11 @@ def unoffered_override(key: str, values: Dict[str, str]) -> Optional[Json]:
     if entry is None:
         return None
     variable, depends_on, effect = entry["env"], entry["depends_on"], entry["effect"]
+    # Which classifier decides whether the override applies. Asking the extraction one about an
+    # embedding provider answers "rules" for every name it does not know, so a single hard-wired
+    # classifier silently refused to report any override outside extraction.
+    classify = (embedding_provider_effect if entry.get("classifier") == "embedding"
+                else extraction_provider_effect)
     raw = os.environ.get(variable)
     if raw is None or not str(raw).strip():
         return None
@@ -2026,7 +2013,7 @@ def unoffered_override(key: str, values: Dict[str, str]) -> Optional[Json]:
     current, _source = _effective(setting, values)
     # Through the classifier, so every name that reaches this path is covered and a new alias
     # needs no change here.
-    if extraction_provider_effect(current) != effect:
+    if classify(current) != effect:
         return None
     return {"env": variable, "value": str(raw).strip(), "depends_on": depends_on,
             "when": "%s reaches the %s path" % (depends_on, effect)}

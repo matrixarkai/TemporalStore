@@ -76,6 +76,23 @@ _DISPLAY_ONLY = {
     ("matrixark_v1_gateway.py", "_readiness_checks"),
 }
 
+# (setting key, reader file) pairs where the import-time capture is a DIFFERENT layer from the one
+# the setting describes, so the label follows the layer described rather than the strictest reader.
+#
+# MATRIXARK_RETRIEVAL_TIMEOUT_MS drives two: the cooperative stage deadline, read per call in
+# matrixark_mcp_retrieve_planning and defaulting to 0 for "no deadline" -- which is what
+# retrieval.timeout_ms's help describes -- and the tool-call deadline in
+# MatrixArkMcpServer.DEFAULT_REQUEST_DEADLINES_MS, defaulting to 30000, which bounds how long the
+# server waits before abandoning the call. test_numeric_defaults_agree carries the same pair as a
+# JUSTIFIED default difference for the same reason.
+#
+# A change to this variable therefore half-applies until a restart: the stage budget picks it up,
+# the request deadline does not. That is the cost of the exception and the reason it is written
+# here rather than assumed.
+_LAYER_THE_SETTING_DOES_NOT_DESCRIBE = {
+    ("retrieval.timeout_ms", "matrixark_mcp_server.py"),
+}
+
 # Full qualnames. `make_v1_app` is the app FACTORY -- its own body runs once per worker -- but the
 # request handler nested inside it (`make_v1_app._serve`) runs per request and must not inherit the
 # factory's classification.
@@ -99,21 +116,37 @@ class _Sites(ast.NodeVisitor):
     def __init__(self, wanted: Set[str]) -> None:
         self.wanted = wanted
         self.stack: List[str] = []
-        self.hits: List[Tuple[str, Optional[str], int]] = []
+        #: How many FUNCTIONS enclose the node being visited. Tracked apart from `stack`, which
+        #: also holds class names for the reported location: a class body runs at import, so only
+        #: a function defers evaluation. Counting a class as deferring is what reported five
+        #: settings read in the body of MatrixArkMcpServer as per-call.
+        self.func_depth = 0
+        self.hits: List[Tuple[str, Optional[str], int, bool]] = []
         self.in_doc_structure = False
 
     def _push(self, node) -> None:
+        """A class: contributes its name to the location, and defers nothing."""
         self.stack.append(node.name)
         self.generic_visit(node)
         self.stack.pop()
 
+    def _push_function(self, node) -> None:
+        """A function: contributes its name AND defers everything inside it to call time."""
+        self.stack.append(node.name)
+        self.func_depth += 1
+        self.generic_visit(node)
+        self.func_depth -= 1
+        self.stack.pop()
+
     visit_ClassDef = _push
-    visit_FunctionDef = _push
-    visit_AsyncFunctionDef = _push
+    visit_FunctionDef = _push_function
+    visit_AsyncFunctionDef = _push_function
 
     def visit_Lambda(self, node) -> None:
         self.stack.append("<lambda>")
+        self.func_depth += 1
         self.generic_visit(node)
+        self.func_depth -= 1
         self.stack.pop()
 
     def visit_Assign(self, node) -> None:
@@ -134,9 +167,11 @@ class _Sites(ast.NodeVisitor):
         if self.in_doc_structure:
             return
         if isinstance(node.value, str) and node.value in self.wanted:
-            # A class body is still module-level execution; only a function defers evaluation.
+            # A class body is still module-level execution; only a function defers evaluation --
+            # which is what `func_depth` answers. `qual` is the location for the report and for the
+            # exclusion tables, and a class name belongs in that even though it defers nothing.
             qual = ".".join(self.stack) if self.stack else None
-            self.hits.append((node.value, qual, node.lineno))
+            self.hits.append((node.value, qual, node.lineno, self.func_depth > 0))
 
 
 def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
@@ -175,10 +210,10 @@ def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
             continue
         visitor = _Sites(wanted)
         visitor.visit(tree)
-        for name, qual, line in visitor.hits:
+        for name, qual, line, deferred in visitor.hits:
             if qual is not None and (entry, qual.split(".")[-1]) in _DISPLAY_ONLY:
                 continue
-            if qual is None:
+            if not deferred:
                 scope = "import-time"
             # FULL qualname only. Matching the outermost segment classified everything nested
             # inside a startup function as startup too -- and the ASGI request handler is nested
@@ -200,7 +235,11 @@ SCAN_COVERAGE_FLOOR = 40
 # Modules that name a setting's variable and never write `os.environ` themselves: they hand the
 # read to a helper. If the admission above is removed, these fall out of the scan entirely and
 # every live label that rests on them silently stops being checked.
-DELEGATED_READERS = ("matrixark_mcp_budget_policies.py", "matrixark_mcp_core_scoring.py")
+# `matrixark_mcp_budget_policies.py` was here until its last `live_*` call left with
+# build_shared_context_policy, which now delegates whole. It names no setting and reads none, so it
+# is not a delegated reader any more -- it is not a reader at all. `matrixark_mcp_core_scoring.py`
+# holds both policies and both reads.
+DELEGATED_READERS = ("matrixark_mcp_core_scoring.py",)
 
 
 class TheScanSeesADelegatedReadTest(unittest.TestCase):
@@ -241,7 +280,9 @@ class AppliesLabelTest(unittest.TestCase):
         for setting in cfgmod.SETTINGS:
             if not setting.env or setting.applies == "restart":
                 continue
-            frozen = [s for s in SITES.get(setting.env, []) if s[0] == "import-time"]
+            frozen = [s for s in SITES.get(setting.env, [])
+                      if s[0] == "import-time"
+                      and (setting.key, s[1]) not in _LAYER_THE_SETTING_DOES_NOT_DESCRIBE]
             if frozen:
                 where = ", ".join("%s:%d" % (f, n) for _s, f, n in frozen[:3])
                 wrong.append("%s (%s) is labelled live but captured at import in %s"

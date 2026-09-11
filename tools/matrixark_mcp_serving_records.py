@@ -414,7 +414,12 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
 
 
 def compact_latest_context_state_records(records: list[Json]) -> list[Json]:
-    """Collapse append-log state into compact serving records."""
+    """Collapse append-log state into compact serving records.
+
+    The physical log can retain older writes for durability/debug, but serving,
+    retrieval, and normal debug tables should see ContextSummary L0/L1 as state
+    and ContextIndex as Feature-style timestamped posting rows.
+    """
     records = compact_context_index_postings(records)
     latest: dict[tuple[Any, ...], tuple[int, Json]] = {}
     passthrough: list[tuple[int, Json]] = []

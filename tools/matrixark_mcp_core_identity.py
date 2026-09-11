@@ -17,18 +17,18 @@ import socket
 import time
 from typing import Any
 
-try:  # package import: from tools.matrixark_mcp_core (dominant, 110 importers)
-    from .matrixark_mcp_core import (
-        BACKEND_READINESS_CONNECT_TIMEOUT_MS,
-        Json,
-        MATRIXARK_ROLE_SCOPE_LIMITS,
-    )
-except ImportError:  # top-level import: PYTHONPATH=tools, import matrixark_mcp_core
-    from matrixark_mcp_core import (
-        BACKEND_READINESS_CONNECT_TIMEOUT_MS,
-        Json,
-        MATRIXARK_ROLE_SCOPE_LIMITS,
-    )
+# From the modules that DEFINE these rather than from matrixark_mcp_core, which republishes
+# them and star-imports this module back -- a cycle that made `import matrixark_mcp_core_identity`
+# fail part-way. BACKEND_READINESS_CONNECT_TIMEOUT_MS is written out identically in core and in
+# matrixark_mcp_runtime_config, so this reads the same value from the module that owns it.
+Json = dict[str, Any]
+
+try:  # package path
+    from .matrixark_mcp_identity import MATRIXARK_ROLE_SCOPE_LIMITS
+    from .matrixark_mcp_runtime_config import BACKEND_READINESS_CONNECT_TIMEOUT_MS
+except ImportError:  # top-level path
+    from matrixark_mcp_identity import MATRIXARK_ROLE_SCOPE_LIMITS
+    from matrixark_mcp_runtime_config import BACKEND_READINESS_CONNECT_TIMEOUT_MS
 
 # mem0-compat scope alias folding lives in the leaf validation module (single
 # source of truth) and is re-exported here via core's `import *` so
@@ -45,12 +45,16 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import normalize_matrixark_role
 
 
-def role_allows_scopes(role: str, scopes: set[str]) -> bool:
-    normalized = normalize_matrixark_role(role)
-    if normalized not in MATRIXARK_ROLE_SCOPE_LIMITS:
-        return False
-    limits = MATRIXARK_ROLE_SCOPE_LIMITS[normalized]
-    return limits is None or scopes.issubset(limits)
+# Not defined here: the implementation lives in matrixark_mcp_identity and this module carried an
+# identical second copy of each.
+try:
+    from tools.matrixark_mcp_identity import (
+        role_allows_scopes,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import (
+        role_allows_scopes,
+    )
 
 
 def stable_hash(value: str) -> int:
@@ -200,22 +204,21 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_validation import optional_object
 
 
-def optional_string(data: Json, field: str, default: str = "") -> str:
-    value = data.get(field, default)
-    if value is None:
-        return default
-    if not isinstance(value, str):
-        raise MatrixArkError(f"{field} must be a string")
-    return value
-
-
-def optional_string_list(data: Json, field: str, default: list[str] | None = None) -> list[str]:
-    value = data.get(field, default or [])
-    if value is None:
-        return []
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise MatrixArkError(f"{field} must be a list of strings")
-    return list(value)
+# Not defined here: the implementation lives in matrixark_mcp_validation and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_validation import (
+        optional_string,
+        optional_string_list,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_validation import (
+        optional_string,
+        optional_string_list,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
@@ -236,23 +239,6 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import local_agent_name
 
 
-def local_identity_defaults(args: Json, scope: Json) -> Json:
-    agent_name = local_agent_name(args, scope)
-    account_id = canonical_account_id(str(scope.get("account_id") or os.environ.get("MATRIXARK_LOCAL_ACCOUNT_ID") or "acct_local"))
-    tenant_id = canonical_tenant_id(
-        str(scope.get("tenant_id") or os.environ.get("MATRIXARK_LOCAL_TENANT_ID") or f"tenant_{agent_name}")
-    )
-    user_id = str(scope.get("user_id") or os.environ.get("MATRIXARK_LOCAL_USER_ID") or local_account_user_id())
-    session_id = str(scope.get("session_id") or "")
-    return {
-        "account_id": account_id,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "session_id": session_id,
-        "agent_name": agent_name,
-    }
-
-
 try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
     from .matrixark_mcp_identity import canonical_account_id
 except ImportError:  # Direct script execution from tools/.
@@ -265,39 +251,29 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import canonical_tenant_id
 
 
-def identity_hashes(account_id: str, tenant_id: str, user_id: str = "", session_id: str = "", agent_id: str = "") -> Json:
-    tenant_hash = stable_hash(f"{account_id}:{tenant_id}")
-    user_hash = stable_hash(f"{tenant_hash}:user:{user_id}") if user_id else 0
-    session_hash = stable_hash(f"{tenant_hash}:session:{session_id}") if session_id else 0
-    # agent_id (mem0 identity dimension): only participates when supplied, so the
-    # returned dict and scope_key are byte-identical for callers without an agent.
-    agent_hash = stable_hash(f"{tenant_hash}:agent:{agent_id}") if agent_id else 0
-    hashes: Json = {
-        "tenant_hash": tenant_hash,
-        "user_hash": user_hash,
-        "session_hash": session_hash,
-        "scope_key": scope_key_from_hashes(tenant_hash, user_hash, session_hash, agent_hash),
-    }
-    if agent_hash:
-        hashes["agent_hash"] = agent_hash
-    return hashes
+# Not defined here: the implementation lives in matrixark_mcp_identity and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_identity import (
+        identity_hashes,
+        local_identity_defaults,
+        scope_key_prefix_for_query,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_identity import (
+        identity_hashes,
+        local_identity_defaults,
+        scope_key_prefix_for_query,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it
     from .matrixark_mcp_identity import scope_key_from_hashes
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import scope_key_from_hashes
-
-
-def scope_key_prefix_for_query(query_scope: Json) -> str:
-    explicit_keys = set(query_scope.get("_explicit_scope_keys", []))
-    tenant_hash = int(query_scope.get("tenant_hash") or 0)
-    if not tenant_hash:
-        return ""
-    user_hash = int(query_scope.get("user_hash") or 0) if "user_id" in explicit_keys or query_scope.get("user_hash") else 0
-    session_hash = int(query_scope.get("session_hash") or 0) if "session_id" in explicit_keys or query_scope.get("session_hash") else 0
-    agent_hash = int(query_scope.get("agent_hash") or 0) if "agent_id" in explicit_keys or query_scope.get("agent_hash") else 0
-    return scope_key_from_hashes(tenant_hash, user_hash, session_hash, agent_hash)
 
 
 try:  # the implementation lives in matrixark_mcp_identity; this module re-exports it

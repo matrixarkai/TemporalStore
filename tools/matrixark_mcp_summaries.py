@@ -34,10 +34,12 @@ TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMP
 TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = env_bool("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", False)
 
 
-SUMMARY_LLM_PROVIDER = os.environ.get(
-    "MATRIXARK_SUMMARY_PROVIDER",
-    os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
-).strip().lower().replace("-", "_")
+SUMMARY_LLM_PROVIDER = (
+    os.environ.get("MATRIXARK_SUMMARY_PROVIDER", "").strip()
+    or os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip()
+    or os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "").strip()
+    or "deterministic"
+).lower().replace("-", "_")
 # The same chain matrixark_mcp_core resolves for EXTRACTION_LLM_MODEL, ending in the same
 # literal. This module imports nothing from the project on purpose, so the chain is written
 # out rather than shared -- and the last step used to say "gpt-4o-mini" here while mcp_core
@@ -168,30 +170,19 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import estimated_context_tokens
 
 
-def node_l1_generation_policy(
-    *,
-    source_text: str,
-    event_count: int,
-    child_summary_count: int,
-) -> Json:
-    """Decide when a node needs a richer L1 overview.
-
-    L0 is mandatory for traversal. L1 is useful once a node has enough local
-    content or child summaries that a short abstract would lose routing detail.
-    """
-    token_estimate = estimated_context_tokens(source_text)
-    base = {
-        "token_estimate": token_estimate,
-        "event_count": event_count,
-        "child_summary_count": child_summary_count,
-    }
-    if child_summary_count > 0:
-        return {**base, "generate_l1": True, "reason": "has_child_summaries"}
-    if event_count >= 3:
-        return {**base, "generate_l1": True, "reason": "event_count_threshold"}
-    if token_estimate >= 180:
-        return {**base, "generate_l1": True, "reason": "token_threshold"}
-    return {**base, "generate_l1": False, "reason": "l0_sufficient"}
+# Not defined here: the implementation lives in matrixark_mcp_core_node_tree and this module carried an
+# identical second copy of each. Every caller importing these names from here is
+# unaffected -- it is the same code, and the free names each body reads are bound the
+# same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
+try:
+    from tools.matrixark_mcp_core_node_tree import (
+        node_l1_generation_policy,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_node_tree import (
+        node_l1_generation_policy,
+    )
 
 
 def _require_oss_understanding() -> bool:
