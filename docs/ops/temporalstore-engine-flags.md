@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 292 of them, read by 94 functions.
+There are 298 of them, read by 98 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,15 +60,15 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 292 |
-| booleans whose default this could read off the source | 50 |
-| numbers whose default this could read off the source | 69 |
-| **defaulting on, and set by nothing** | 5 |
-| offered on the portal | 25 |
-| **that nothing in this repository sets** | 164 |
+| total | 298 |
+| booleans whose default this could read off the source | 53 |
+| numbers whose default this could read off the source | 70 |
+| **defaulting on, and set by nothing** | 7 |
+| offered on the portal | 28 |
+| **that nothing in this repository sets** | 167 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
-| whose doc comment is really about another flag | 38 |
+| whose doc comment is really about another flag | 40 |
 
 ## topology (39)
 
@@ -217,7 +217,7 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
 | `TS_VECTOR_SCALED` | on | launch, test, portal | 1 | — |
 
-## capacity (78)
+## capacity (79)
 
 Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 
@@ -238,6 +238,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `MATRIXARK_RUST_PROXY_CACHE_BYTES` | — | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES` | 256 | test | 1 | — |
 | `MATRIXARK_RUST_PROXY_TRIM_BYTES` | — | nothing | 1 | — |
+| `MATRIXARK_STORAGE_MANAGER_INTERVAL_MS` | 30000 | nothing | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_CONNECT_TIMEOUT_MS` | — | nothing | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_IO_TIMEOUT_MS` | 30000 | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS` | 32 | script | 1 | — |
@@ -302,7 +303,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_SHARED_STORE_MAX_PENDING` | 50000 | nothing | 1 | yes |
 | `TS_STREAM_MAX_BLOB_SIZE` | 10485760 | config, test, portal | 1 | — |
 
-## context (24)
+## context (28)
 
 The memory pipeline: what gets extracted, embedded, drained and packed. The surface a deployment tunes for recall rather than for throughput.
 
@@ -320,12 +321,16 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_CONTEXT_COMPRESSION_WINDOW` | — | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_QUERY_OVERFETCH` | 2 | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_SCAN_CAP` | 64 | nothing | 1 | — |
+| `MATRIXARK_EMBEDDING_API_BASE` | — | test, portal | 1 | — |
+| `MATRIXARK_EMBEDDING_API_KEY_ENV` | — | test, portal | 1 | — |
 | `MATRIXARK_EMBEDDING_MODEL` | — | config, launch, script, test, portal | 1 | — |
 | `MATRIXARK_EMBED_API_KEY_ENV` | — | nothing | 1 | — |
 | `MATRIXARK_EMBED_BASE_URL` | — | config, script, test | 1 | — |
 | `MATRIXARK_EMBED_DRAINER` | off | config, launch, test, portal | 1 | — |
 | `MATRIXARK_EMBED_DRAINER_BATCH` | — | config, portal | 1 | — |
 | `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | 40000 | launch, portal | 1 | — |
+| `MATRIXARK_PACK_DROP_REDUNDANT_ITEMS` | on | portal | 1 | — |
+| `MATRIXARK_PROXY_EMBED_QUERY` | on | nothing | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` | off | config, test, portal | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_SUMMARIES` | off | config, test, portal | 1 | — |
 | `MATRIXARK_RETRIEVAL_TRAVERSAL_TOP_K` | — | nothing | 1 | — |
@@ -368,7 +373,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | script | 1 | — |
 
-## behaviour (64)
+## behaviour (65)
 
 Everything else that changes what the engine does.
 
@@ -385,6 +390,7 @@ Everything else that changes what the engine does.
 | `TEMPORALSTORE_RUST_CODEX_HOOK_ROOT` | — | launch | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, launch, test | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_LEVEL` | — | config, test | 2 | — |
+| `MATRIXARK_ENGINE_COMPACT_SERVING_REFS` | on | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_ASYNC_STORAGE` | off | launch, script, test | 1 | — |
 | `MATRIXARK_RUST_PROXY_HTTP_CONCURRENT` | off | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED` | — | test | 1 | — |
