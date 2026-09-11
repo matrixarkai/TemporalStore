@@ -83,6 +83,19 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
     "TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START":
         "the networked half of the same checkpoint, so a future owner can follow it lazily; the "
         "same opt-out",
+    # --- two more opt-outs, landed on main while this branch was in flight ---------------------
+    # Neither is new behaviour hiding behind a flag: each is a way back from a change that shipped
+    # ON, and the engine writes the reason directly above the read.
+    "MATRIXARK_ENGINE_COMPACT_SERVING_REFS":
+        "the engine calls it \"a kill switch, not the decision\": whether a retrieve wants debug "
+        "refs is the caller's to know, because those carry lineage the serving shape drops. Off "
+        "returns a deployment to the previous shape WITHOUT touching its callers, which is a thing "
+        "the on arm cannot do and the only way back if the new shape loses something a caller "
+        "needed",
+    "MATRIXARK_PROXY_EMBED_QUERY":
+        "on because ranking is dense and a retrieve that cannot embed its query ranks lexically. "
+        "Off hands query embedding back to the caller, for a deployment that would rather own it "
+        "entirely -- a division of labour the on arm forecloses, not a disabled feature",
     # The rest default OFF. Retiring one of those deletes a hatch rather than a dead arm, and each
     # is a behaviour an operator asks for:
     "TS_BLOCK_INDEX_CHECKSUMS":
