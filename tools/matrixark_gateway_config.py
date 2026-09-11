@@ -1465,10 +1465,19 @@ SETTINGS.extend([
             'Summary refresh pass budget milliseconds. Defaults to 30000. Read by matrixark_local_adapter_summaries.'),
     Setting("retrieval.temporalstore_async_context_warmup", "retrieval", "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP",
             "Temporalstore async context warmup", "bool", "1", "live",
-            'Temporalstore async context warmup. On by default. Read by matrixark_mcp_temporal_adapters.'),
+            "Lets a background thread read the durable record log after start so context is "
+            "warm before the first retrieve. This is the master switch and it is checked "
+            "FIRST: off, the warmup is skipped whatever else is set, including "
+            "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE. On, a storage-mode gate still "
+            "decides."),
     Setting("retrieval.temporalstore_async_context_warmup_force", "retrieval", "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE",
             "Temporalstore async context warmup force", "bool", "0", "live",
-            'Temporalstore async context warmup force. Off by default. Read by matrixark_temporal_direct_write.'),
+            "Skips the storage-mode gate on the async context warmup. Without it the warmup "
+            "runs only for local, single_node, single, standalone, dev, debug or default "
+            "storage modes; it declines on distributed, multi_node, shared_store, replicated, "
+            "replication and raft -- and on any mode string it does not recognise. It cannot "
+            "force a warmup that MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP has turned off: "
+            "that check comes first."),
     Setting("skills.dedupe_skill_chunk_embedding", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING",
             "Dedupe skill chunk embedding", "bool", "1", "restart",
             "Dedupe skill chunk embedding. On by default. Frozen when the process starts. Read by "
@@ -1598,7 +1607,11 @@ SETTINGS.extend([
             'Native side index assume fresh. Off by default. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("storage_engine.rust_proxy_startup_warmup_full_scan", "storage_engine", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_FULL_SCAN",
             "Rust proxy startup warmup full scan", "bool", "1", "live",
-            'Rust proxy startup warmup full scan. On by default. Read by matrixark_rust_proxy_daemon.'),
+            "Chooses which retrieve the proxy daemon issues to warm itself: the full-scan "
+            "variant, or the ordinary one that consults the index. It only matters where the "
+            "warmup runs at all -- MATRIXARK_RUST_PROXY_STARTUP_WARMUP defaults to auto, which "
+            "warms on local and single-node deployments and declines on distributed, "
+            "replicated, raft, cluster or production ones."),
     Setting("storage_engine.secondary_index_posting_bucket_ms", "storage_engine", "MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS",
             "Secondary index posting bucket ms", "int", "60000", "restart",
             "Secondary index posting bucket milliseconds. Defaults to 60000. Frozen when the process "
