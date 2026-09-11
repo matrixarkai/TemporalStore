@@ -40,8 +40,10 @@ from pathlib import PurePosixPath
 # replace.
 try:  # pragma: no cover - import shape differs when run as a package
     from matrixark_json_lane import lane_loads as _LANE_LOADS
+    from matrixark_json_lane import lane_response_deadline_s as _LANE_DEADLINE_S
 except ImportError:  # pragma: no cover
     from tools.matrixark_json_lane import lane_loads as _LANE_LOADS
+    from tools.matrixark_json_lane import lane_response_deadline_s as _LANE_DEADLINE_S
 
 
 # msgpack for the lane, where both ends have it.
@@ -3685,17 +3687,23 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         self.io_timeout_ms = io_timeout_ms
         self._legacy_lock = threading.Lock()
         self._legacy_semaphore = threading.BoundedSemaphore(1)
+        # Defaults to the longest one in-flight call may legitimately take, NOT to
+        # request_timeout_ms. Those differ by the lane reader's grace period, and a waiter given
+        # the smaller of the two expires while the holder is still inside its own budget -- so a
+        # call that ran long rejected its entire queue and reported it as lane backpressure.
+        # `.strip() or` on both spellings: a blank newer name falls through rather than handing
+        # int() the empty string.
+        _configured_backpressure_ms = (
+            os.environ.get("MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS", "").strip()
+            or os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", "").strip()
+        )
         self._backpressure_timeout_s = max(
             0.05,
-            int(
-                # `.strip() or`: a blank newer name falls through rather than handing
-                # int() the empty string.
-                os.environ.get("MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS", "").strip()
-                or os.environ.get(
-                    "MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", "").strip()
-                or str(request_timeout_ms)
-            )
-            / 1000.0,
+            (
+                int(_configured_backpressure_ms) / 1000.0
+                if _configured_backpressure_ms
+                else _LANE_DEADLINE_S(request_timeout_ms)
+            ),
         )
         self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "").strip() or "4"))
         self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "").strip() or "4"))
@@ -3938,7 +3946,7 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         expected_request_id: str | None = None,
     ) -> Json:
         assert proc.stdout is not None
-        deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
+        deadline = time.monotonic() + _LANE_DEADLINE_S(self.request_timeout_ms)
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 # The drain thread owns proc.stderr; read what it captured, never the pipe.
@@ -3972,7 +3980,7 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
             return parsed
         raise MatrixArkError(
             f"Rust TemporalStore {op} timed out waiting for response from {self.cli_path} "
-            f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
+            f"after {_LANE_DEADLINE_S(self.request_timeout_ms):.1f}s"
         )
 
     def _call_json(self, op: str, raise_on_error: bool = True, **kwargs: Any) -> Json:

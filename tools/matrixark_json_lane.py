@@ -40,3 +40,21 @@ except ImportError:  # pragma: no cover
         return _stdlib_json.loads(text)
 
     LANE_DECODER = "stdlib"
+
+
+#: Slack added to a caller's own timeout before the lane reader gives up on the proxy. The proxy is
+#: answering a request accepted at the caller's budget, so the reader has to outlast that budget or
+#: it abandons answers that were about to arrive.
+LANE_RESPONSE_GRACE_S = 2.0
+
+
+def lane_response_deadline_s(request_timeout_ms):
+    """How long one call may hold a lane waiting for the proxy to answer.
+
+    Lives here for the same reason `lane_loads` does: TWO modules serve this lane, and the last
+    time a fix reached only one of them a profile went on naming the thing that was supposedly
+    replaced. A caller queued behind a lane holder must be willing to wait at least this long --
+    a waiter that expires while the holder is still inside its own budget can never be admitted,
+    so one slow call rejects its whole queue and reports it as lane backpressure.
+    """
+    return max(LANE_RESPONSE_GRACE_S, request_timeout_ms / 1000.0 + LANE_RESPONSE_GRACE_S)

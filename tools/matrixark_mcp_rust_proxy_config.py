@@ -21,13 +21,15 @@ def _env_seconds_from_ms(name: str, default_ms: str, *, minimum: float = 0.0) ->
     return max(minimum, float(os.environ.get(name, default_ms)) / 1000.0)
 
 
-#: Slack added to a caller's own timeout before the lane reader gives up on the proxy. The proxy
-#: is answering a request that was accepted at the caller's budget, so the reader has to outlast
-#: that budget or it abandons answers that were about to arrive.
-LANE_RESPONSE_GRACE_S = 2.0
+try:  # pragma: no cover - import shape differs when run as a package
+    from matrixark_json_lane import LANE_RESPONSE_GRACE_S, lane_response_deadline_s
+except ImportError:  # pragma: no cover
+    from tools.matrixark_json_lane import LANE_RESPONSE_GRACE_S, lane_response_deadline_s
+
+_ = LANE_RESPONSE_GRACE_S  # noqa: F401 - re-exported for readers of this module
 
 
-def lane_response_deadline_s(request_timeout_ms: int) -> float:
+def _unused_lane_response_deadline_s(request_timeout_ms: int) -> float:
     """How long one call may hold a lane waiting for the proxy to answer.
 
     This is the ONLY definition. It used to be written out again inside `_read_json_line`, and the
