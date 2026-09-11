@@ -6115,7 +6115,7 @@ def event_from_argv(default: str = "UserPromptSubmit") -> str:
 
 
 def fail_open_enabled() -> bool:
-    return os.environ.get("MATRIXARK_HOOK_FAIL_OPEN", "1").strip().lower() in {"1", "true", "yes", "on"}
+    return _env_bool("MATRIXARK_HOOK_FAIL_OPEN", True)
 
 
 def print_hook_failure(exc: BaseException) -> None:

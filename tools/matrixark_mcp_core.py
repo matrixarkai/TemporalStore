@@ -3308,7 +3308,7 @@ def _int8_scale(dims: int) -> float:
 # way, so a store written under one setting serves under the other.
 EMBEDDING_VECTOR_BASE64 = os.environ.get(
     "MATRIXARK_EMBEDDING_VECTOR_BASE64", "1"
-).strip().lower() not in {"0", "false", "no", "off", ""}
+).strip().lower() not in {"0", "false", "no", "off"}
 
 _VECTOR_BASE64_PREFIX = "i16:"
 _VECTOR_INT8_PREFIX = "i8:"
