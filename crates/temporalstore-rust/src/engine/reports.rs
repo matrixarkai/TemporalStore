@@ -2076,8 +2076,14 @@ pub fn default_storage_index_snapshot() -> StorageIndexSnapshot {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageZoneSample {
-    pub zone_id: u64,
+/// A band's byte accounting and the slabs it holds.
+///
+/// Keyed by `band_id`, the same key as [`StorageBandSample`], which carries that band's block
+/// range and reclaim state. Two shapes over one entity, not two levels -- "zone" was the older
+/// name for a band, and the wire still uses it.
+pub struct StorageBandUsageSample {
+    #[serde(rename = "zone_id")]
+    pub band_id: u64,
     pub total_bytes: u64,
     pub used_bytes: u64,
     pub stale_bytes: u64,
@@ -2148,7 +2154,8 @@ pub struct StorageTopologySnapshot {
     pub append_log_replay_records: u64,
     pub append_log_reclaimed_records: u64,
     #[serde(default)]
-    pub storage_zone_samples: Vec<StorageZoneSample>,
+    #[serde(rename = "storage_zone_samples")]
+    pub storage_band_usage_samples: Vec<StorageBandUsageSample>,
     #[serde(default)]
     pub stream_samples: Vec<StorageStreamSample>,
     #[serde(default)]
@@ -2177,7 +2184,7 @@ pub fn storage_topology_snapshot_from_metrics(
         storage_band_stale_bytes: metric(metrics, "storage_zone_stale_bytes"),
         append_log_replay_records: metric(metrics, "append_log_replay_records"),
         append_log_reclaimed_records: metric(metrics, "append_log_reclaimed_records"),
-        storage_zone_samples: Vec::new(),
+        storage_band_usage_samples: Vec::new(),
         stream_samples: Vec::new(),
         slab_samples: Vec::new(),
         band_samples: Vec::new(),

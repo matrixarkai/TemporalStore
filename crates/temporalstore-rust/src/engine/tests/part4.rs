@@ -17783,3 +17783,46 @@ fn a_compaction_round_stops_at_the_page_ref_budget() {
          is what stopped the round above"
     );
 }
+
+#[test]
+fn the_band_usage_sample_still_serializes_under_its_zone_wire_names() {
+    // `zone` was the older name for a band, and `zones` is keyed by `band_id`
+    // (storage_bucket_internals.rs) -- so the aggregate is the BAND level reported under an old
+    // name, not a separate level. The Rust identifiers moved to band; the WIRE must not, because
+    // the compat corpora pin "zone_id" 31 times and "storage_zone_samples" twice, and Python
+    // readers use those names.
+    //
+    // This asserts the pinning directly. A rename that dropped the #[serde(rename = ...)] would
+    // compile, pass every type-level test, and silently change the exported shape.
+    let sample = crate::engine::reports::StorageBandUsageSample {
+        band_id: 7,
+        total_bytes: 300,
+        used_bytes: 200,
+        stale_bytes: 100,
+        slabs: vec![1, 2],
+    };
+    let encoded = serde_json::to_value(&sample).expect("serialize");
+    assert!(
+        encoded.get("zone_id").is_some(),
+        "the band id must still go out as zone_id: {encoded}"
+    );
+    assert!(
+        encoded.get("band_id").is_none(),
+        "band_id must NOT appear on the wire -- that would be a format change: {encoded}"
+    );
+
+    // And the collection it sits in keeps its own wire name.
+    let mut snapshot = crate::engine::reports::StorageTopologySnapshot::default();
+    snapshot.storage_band_usage_samples = vec![sample];
+    let encoded = serde_json::to_value(&snapshot).expect("serialize");
+    assert!(
+        encoded.get("storage_zone_samples").is_some(),
+        "the collection must still go out as storage_zone_samples: {encoded}"
+    );
+
+    // Reading back what the old name produced must still work, which is what a stored corpus is.
+    let decoded: crate::engine::reports::StorageBandUsageSample =
+        serde_json::from_str(r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#)
+            .expect("an old-name payload must still decode");
+    assert_eq!(decoded.band_id, 9);
+}
