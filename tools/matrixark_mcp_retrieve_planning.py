@@ -90,14 +90,43 @@ class RetrievalRankingLimits:
     max_raw_events_per_node: int
 
 
-def retrieval_ranking_limits(ranking: Json) -> RetrievalRankingLimits:
+def _tenant_ranking_limit(name: str, scope: Json | None, fallback: int) -> int:
+    """A retrieval limit for `scope`: an explicit tenant override, else an env var, else `fallback`.
+
+    The same resolution LocalAdapter.retrieve applies inline, and deliberately the same shape: an
+    explicit override only, never the knob registry default, because the registry disagrees with
+    what retrieval actually uses by 10x to 156x and wiring to it would multiply the budget for
+    every deployment that configured nothing.
+
+    Anything unexpected -- no policy module, a malformed override -- falls back to the build
+    default. A limit that resolved to nothing would return nothing at all, which is worse than
+    ignoring a bad setting.
+    """
+    try:
+        from matrixark_tenant_policy import explicit_int
+    except Exception:  # pragma: no cover - policy module absent
+        return fallback
+    try:
+        return explicit_int(name, scope, fallback)
+    except Exception:  # pragma: no cover - a malformed policy must not break retrieval
+        return fallback
+
+
+def retrieval_ranking_limits(ranking: Json, *, scope: Json | None) -> RetrievalRankingLimits:
+    """`scope` is required, not defaulted: forgetting it would hand every tenant the build
+    default, which is exactly the silent widening this signature exists to prevent."""
     budget_fill_policy = str(
         ranking.get("budget_fill_policy", DEFAULT_BUDGET_FILL_POLICY) or DEFAULT_BUDGET_FILL_POLICY
     ).strip().lower()
     if budget_fill_policy not in {"quality_first", "force_fill"}:
         raise MatrixArkError("budget_fill_policy must be quality_first or force_fill")
     return RetrievalRankingLimits(
-        top_k_per_layer=integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1),
+        top_k_per_layer=integer_arg(
+            ranking,
+            "top_k_per_layer",
+            _tenant_ranking_limit("top_k_per_layer", scope, DEFAULT_TOP_K_PER_LAYER),
+            minimum=1,
+        ),
         max_children_scored_per_parent=bounded_max_children_scored_per_parent(
             integer_arg(
                 ranking,
@@ -110,11 +139,23 @@ def retrieval_ranking_limits(ranking: Json) -> RetrievalRankingLimits:
         max_candidates_per_node=integer_arg(
             ranking,
             "max_candidates_per_node",
-            DEFAULT_MAX_CANDIDATES_PER_NODE,
+            _tenant_ranking_limit("max_candidates_per_node", scope,
+                                  DEFAULT_MAX_CANDIDATES_PER_NODE),
             minimum=1,
         ),
-        max_selected_refs=integer_arg(ranking, "max_selected_refs", DEFAULT_MAX_SELECTED_REFS, minimum=1),
-        max_global_candidates=integer_arg(ranking, "max_global_candidates", DEFAULT_MAX_GLOBAL_CANDIDATES, minimum=1),
+        max_selected_refs=integer_arg(
+            ranking,
+            "max_selected_refs",
+            _tenant_ranking_limit("max_selected_refs", scope, DEFAULT_MAX_SELECTED_REFS),
+            minimum=1,
+        ),
+        max_global_candidates=integer_arg(
+            ranking,
+            "max_global_candidates",
+            _tenant_ranking_limit("max_global_candidates", scope,
+                                  DEFAULT_MAX_GLOBAL_CANDIDATES),
+            minimum=1,
+        ),
         min_similarity_score=float_arg(
             ranking,
             "min_similarity_score",
