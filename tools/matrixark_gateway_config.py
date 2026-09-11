@@ -1140,8 +1140,11 @@ SETTINGS.extend([
             'Idle drain minimum interval milliseconds. Defaults to 1000. Read by matrixark_local_adapter_retrieval.'),
     Setting("ingestion.local_binary_vectors", "ingestion", "MATRIXARK_LOCAL_BINARY_VECTORS",
             "Local binary vectors", "bool", "1", "restart",
-            "Local binary vectors. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter."),
+            "Stores vectors packed rather than as JSON numbers. Within one build the round "
+            "trip is measured byte-identical. The hazard is a MIXED-VERSION deployment: a "
+            "reader from before this change finds no `vector` on a packed record and carries "
+            "on without one -- lost recall, and no error anywhere. Turn it off only while "
+            "older readers are still running against the same store."),
     Setting("ingestion.local_durable_read_cache_block_records", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS",
             "Local durable read cache block records", "int", "256", "restart",
             "Local durable read cache block records. Defaults to 256. Frozen when the process starts. "
@@ -1269,8 +1272,13 @@ SETTINGS.extend([
             "matrixark_mcp_server."),
     Setting("limits.intern_backend_metadata", "limits", "MATRIXARK_INTERN_BACKEND_METADATA",
             "Intern backend metadata", "bool", "0", "restart",
-            "Intern backend metadata. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_temporal_append."),
+            "Replaces repeated storage_options with a token and a sidecar dict record. "
+            "DO NOT TURN THIS ON YET. It is off because its crash-safety is UNVERIFIED: the "
+            "JSONL codec is safe because the dict record precedes the data record under the "
+            "event-log lock, and the backend has no such ordering -- it would rely on the "
+            "engine's batch append being atomic, which is a different claim nobody has "
+            "established. A reader that meets a token whose dict never landed cannot resolve "
+            "the field."),
     Setting("limits.max_concurrent_ingest", "limits", "MATRIXARK_MAX_CONCURRENT_INGEST",
             "Max concurrent ingest", "int", "32", "restart",
             "Maximum concurrent ingest. Defaults to 32. Frozen when the process starts. Read by "
@@ -1311,11 +1319,17 @@ SETTINGS.extend([
             "matrixark_codex_hook."),
     Setting("retrieval.context_debug_records", "retrieval", "MATRIXARK_CONTEXT_DEBUG_RECORDS",
             "Context debug records", "bool", "0", "restart",
-            "Context debug records. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_runtime_config, matrixark_mcp_serving_records."),
+            "Writes the extra metadata_debug rows used when tracing what a pack was built "
+            "from. The serving pack strips metadata_debug from every item, so with this off "
+            "nothing reads them -- they were 12.1% of the cache while being carried and never "
+            "read. Turn it on only while tracing."),
     Setting("retrieval.context_event_time_index_full_payload", "retrieval", "MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD",
             "Context event time index full payload", "bool", "0", "live",
-            'Context event time index full payload. Off by default. Read by matrixark_mcp_event_keys, matrixark_temporal_direct_backend.'),
+            'The event-time index is an ORDERING structure: its field is '
+            '{timestamp:020d}:{event_hash}, so lexical order is chronological, and the slim '
+            'payload carries only what a reader needs to reach the canonical record -- '
+            'ref_hash, node_hash, scope_key, timestamp. On, every entry carries the full '
+            'record again, which is what it held before the slim payload.'),
     Setting("retrieval.context_pack_cache_max_entries", "retrieval", "MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES",
             "Context pack cache max entries", "int", "256", "live",
             'Context pack cache maximum entries. Defaults to 256. Read by matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters.'),
@@ -1516,16 +1530,20 @@ SETTINGS.extend([
             "matrixark_mcp_ingest_resource_chunk_records."),
     Setting("storage_engine.index_only_consultable_terms", "storage_engine", "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS",
             "Index only consultable terms", "bool", "1", "restart",
-            "Index only consultable terms. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_ingest_resource_chunk_records."),
+            "Writes postings only for terms a query can actually consult. On a 1 MB skill the "
+            "dropped terms were 1,418 KB of a 1,471 KB index -- 15.7% of the ingest -- and "
+            "dropping them took write amplification from 8.6x to 7.2x, leaving embeddings as "
+            "the majority of the footprint. Set it off to write every term again."),
     Setting("storage_engine.index_posting_lists", "storage_engine", "MATRIXARK_INDEX_POSTING_LISTS",
             "Index posting lists", "bool", "1", "restart",
             "Index posting lists. On by default. Frozen when the process starts. Read by "
             "matrixark_mcp_ingest_resource_chunk_records."),
     Setting("storage_engine.index_skip_owner_derivable_terms", "storage_engine", "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS",
             "Index skip owner derivable terms", "bool", "1", "restart",
-            "Index skip owner derivable terms. On by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_ingest_resource_chunk_records."),
+            "Skips postings whose target the owner record derives for itself. Since the vector "
+            "fold the owner always carries its vector, which is the condition the prefilter's "
+            "owner branch is gated on, so that branch now reaches every chunk and the posting "
+            "is a restatement. Set it off to write them again."),
     Setting("storage_engine.max_secondary_index_records_per_operation", "storage_engine", "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION",
             "Max secondary index records per operation", "int", "128", "restart",
             "Maximum secondary index records per operation. Defaults to 128. Frozen when the process "
