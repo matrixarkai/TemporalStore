@@ -1113,7 +1113,10 @@ SETTINGS.extend([
             "is the form that covers both."),
     Setting("embedding.rust_proxy_native_c_api_compat", "embedding", "MATRIXARK_RUST_PROXY_NATIVE_MATRIXARK_C_API_COMPAT",
             "Rust proxy native c api compat", "bool", "0", "live",
-            'Rust proxy native c api compat. Off by default. Read by matrixark_mcp_rust_proxy_process, matrixark_mcp_temporal_adapters.'),
+            "Puts TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API=1 into the environment of "
+            "each proxy process as it is launched. Nothing in the Python side behaves "
+            "differently; this only hands the permission down to the engine. It is set with a "
+            "default, so a value already in the environment wins."),
     Setting("embedding.text_prefix_share", "embedding", "MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE",
             "Text prefix share", "float", "0.2", "restart",
             "Text prefix share. Defaults to 0.2. Frozen when the process starts. Read by "
@@ -1135,8 +1138,11 @@ SETTINGS.extend([
             "still 67.9% of the float size."),
     Setting("extraction.require_llm_time_compression", "extraction", "MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION",
             "Require llm time compression", "bool", "0", "restart",
-            "Require llm time compression. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_core."),
+            "Turns the time-compression summary's fallbacks into errors. Off, an unsupported "
+            "provider, a missing API key or a failed call still returns a summary -- the "
+            "deterministic one -- carrying fallback_used and a warning naming the cause. On, "
+            "each of those raises instead, so a deployment that must not store a deterministic "
+            "stand-in fails loudly rather than storing one quietly."),
     Setting("extraction.summary_dirty_debug_fields", "extraction", "MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS",
             "Summary dirty debug fields", "bool", "0", "restart",
             "Adds tracing fields to every summary DIRTY MARKER written -- depth, dirty_reason, "
@@ -1211,8 +1217,12 @@ SETTINGS.extend([
             "re-deriving from the log."),
     Setting("ingestion.pre_retrieval_summary_refresh", "ingestion", "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH",
             "Pre retrieval summary refresh", "bool", "0", "restart",
-            "Pre retrieval summary refresh. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_local_adapter, matrixark_mcp_retrieve_pre_refresh."),
+            "Refreshes summaries a retrieve is about to read, before serving it. This value is "
+            "the LAST of three: the request's own argument wins, then the tenant ranking "
+            "policy, then this -- so a deployment can leave it off here and still have it on "
+            "for one tenant. How many are refreshed is "
+            "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT (2), which rises to at least 4 for a "
+            "profile-memory query that did not ask for a limit of its own."),
     Setting("ingestion.rust_proxy_read_lanes", "ingestion", "MATRIXARK_RUST_PROXY_READ_LANES",
             "Rust proxy read lanes", "int", "4", "live",
             "How many proxy processes serve reads when each lane group runs its own pool. It "
@@ -1254,7 +1264,12 @@ SETTINGS.extend([
             "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("limits.backpressure_fallback_record_limit", "limits", "MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT",
             "Backpressure fallback record limit", "int", "0", "live",
-            'Backpressure fallback record limit. Defaults to 0. Read by matrixark_mcp_server_request_policy.'),
+            "How many recent records the fallback pack may carry when a request is shed under "
+            "BACKPRESSURE. 0, the default, means it carries none: the caller gets a pack built "
+            "without them rather than a slow full read while the service is already behind. It "
+            "applies to the backpressure case only -- a plain deadline fallback reads the whole "
+            "log -- and does nothing at all on a backend that requires a native context pack, "
+            "where the record list is empty either way."),
     Setting("limits.backpressure_timeout_ms", "limits", "MATRIXARK_BACKPRESSURE_TIMEOUT_MS",
             "Backpressure timeout ms", "int", "100", "restart",
             "Backpressure timeout milliseconds. Defaults to 100. Frozen when the process starts. Read by "
@@ -1317,8 +1332,11 @@ SETTINGS.extend([
             'Direct write queue put timeout milliseconds. Defaults to 1000. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
     Setting("limits.direct_write_retries", "limits", "MATRIXARK_DIRECT_WRITE_RETRIES",
             "Direct write retries", "int", "3", "restart",
-            "Direct write retries. Defaults to 3. Frozen when the process starts. Read by "
-            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+            "How many times a failed store write is retried after its first attempt, so 3 "
+            "allows four tries. The wait doubles each time from "
+            "MATRIXARK_DIRECT_WRITE_BACKOFF_MS -- 25 ms, 50, 100 at the defaults -- and any "
+            "exception is retried, so a write failing for a reason that will not pass still "
+            "costs the full ladder before it is raised."),
     Setting("limits.direct_write_throttle_ms", "limits", "MATRIXARK_DIRECT_WRITE_THROTTLE_MS",
             "Direct write throttle ms", "int", "0", "restart",
             "Direct write throttle milliseconds. Defaults to 0. Frozen when the process starts. Read by "
@@ -1373,15 +1391,21 @@ SETTINGS.extend([
             "every audit verbose, which is a durable size cost on every retrieve."),
     Setting("retrieval.audit_workers", "retrieval", "MATRIXARK_AUDIT_WORKERS",
             "Audit workers", "int", "2", "restart",
-            "Audit workers. Defaults to 2. Frozen when the process starts. Read by matrixark_mcp_server."),
+            "Threads in the pool that writes audit records. The pool tracks what it submitted "
+            "so a closing server can wait for exactly those writes within a deadline: its "
+            "executor's own shutdown neither cancels queued writes nor bounds in-flight ones, "
+            "and a server that closed without draining could still be appending into a "
+            "directory its caller had begun removing."),
     Setting("retrieval.augment_cross_session_budget_ratio", "retrieval", "MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO",
             "Augment cross session budget ratio", "float", "0.6", "restart",
             "Augment cross session budget ratio. Defaults to 0.6. Frozen when the process starts. Read by "
             "matrixark_mcp_runtime_config."),
     Setting("retrieval.codex_hook_capture_raw_payload", "retrieval", "MATRIXARK_CODEX_HOOK_CAPTURE_RAW_PAYLOAD",
             "Codex hook capture raw payload", "bool", "0", "restart",
-            "Codex hook capture raw payload. Off by default. Frozen when the process starts. Read by "
-            "matrixark_codex_hook."),
+            "Stores the hook input as it arrived, under raw_hook_payload, beside the fields "
+            "derived from it. A diagnostic: it keeps whatever the hook was handed, including "
+            "anything in it that the derived fields leave out, so the records grow by the size "
+            "of the payload."),
     Setting("retrieval.context_debug_records", "retrieval", "MATRIXARK_CONTEXT_DEBUG_RECORDS",
             "Context debug records", "bool", "0", "restart",
             "Writes the extra metadata_debug rows used when tracing what a pack was built "
@@ -1558,8 +1582,10 @@ SETTINGS.extend([
             "Off restores the second copy."),
     Setting("skills.enable_generic_resource_facts", "skills", "MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS",
             "Enable generic resource facts", "bool", "0", "restart",
-            "Enable generic resource facts. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_core."),
+            "Emits a resource_fact record for text matching the generic fact patterns -- owner, "
+            "deadline, cost, API contract, approval, risk -- as well as the chunk itself. Off, "
+            "only chunks are written and those sentences are found by ordinary retrieval "
+            "instead."),
     Setting("skills.max_resource_facper_chunk", "skills", "MATRIXARK_MAX_RESOURCE_FACTS_PER_CHUNK",
             "Max resource facper chunk", "int", "2", "restart",
             "Maximum resource facper chunk. Defaults to 2. Frozen when the process starts. Read by "
