@@ -142,7 +142,7 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     bound = server.server_address[1]
     print("LISTENING %d" % bound, flush=True)
-    with open("/tmp/minilm_embed_server.port", "w") as fh:
+    with open("/tmp/minilm_embed_server.port", "w", encoding="utf-8") as fh:
         fh.write(str(bound))
     server.serve_forever()
 

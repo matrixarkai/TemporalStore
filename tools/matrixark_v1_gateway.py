@@ -6132,7 +6132,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             try:
                 _gwmetrics.METRICS.record(
                     scope.get("path", ""), scope.get("method", ""), observed["status"],
-                    time.time() - started,
+                    max(0.0, time.time() - started),
                     request_bytes=observed["request_bytes"],
                     response_bytes=observed["response_bytes"],
                     incident=_INCIDENT.get(""))

@@ -361,7 +361,7 @@ class GatewayMetrics:
                 if status >= 400:
                     routes[route]["errors"] += count
             return {
-                "uptime_s": round(time.time() - self._start, 1),
+                "uptime_s": round(max(0.0, time.time() - self._start), 1),
                 "in_flight": self._in_flight,
                 "routes": routes,
                 "total_requests": sum(self._count.values()),
