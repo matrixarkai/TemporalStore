@@ -477,7 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--manifest", help="file listing documents (one path per line, or JSON Lines)")
     parser.add_argument("--base-url", default=os.environ.get("MATRIXARK_BASE_URL", DEFAULT_BASE_URL))
-    parser.add_argument("--user-id", default=os.environ.get("MATRIXARK_USER_ID", "default"))
+    parser.add_argument("--user-id", default=(os.environ.get("MATRIXARK_USER_ID", "").strip() or "default"))
     parser.add_argument(
         "--api-key-env",
         default="MATRIXARK_API_KEY",

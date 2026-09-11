@@ -31,7 +31,7 @@ from typing import Any, Optional
 
 Json = dict[str, Any]
 
-DEFAULT_BUCKET = os.environ.get("MATRIXARK_OBJECT_BUCKET", "matrixark-resources")
+DEFAULT_BUCKET = (os.environ.get("MATRIXARK_OBJECT_BUCKET", "").strip() or "matrixark-resources")
 OBJECT_RPC_URL = os.environ.get("MATRIXARK_OBJECT_RPC_URL", "").rstrip("/")   # rust proxy object RPC base
 LOCAL_OBJECT_DIR = os.environ.get("MATRIXARK_OBJECT_STORE_DIR", "")           # dev/local backend dir
 OBJECT_URI_SCHEME = "matrixobject"

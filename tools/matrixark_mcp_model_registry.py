@@ -37,7 +37,7 @@ def context_model_registry_record(
         else f"{model_kind}:{compact_model_slug(model_name)}:{model_hash % 10000:04d}",
         "model_name": model_name,
         "model_hash": model_hash,
-        "provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic") if model_kind == "embedding" else "",
+        "provider": (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip() or "deterministic") if model_kind == "embedding" else "",
         "execution_mode": embedding_execution_mode_name() if model_kind == "embedding" else "",
         "updated_at_ms": int(updated_at_ms or now_ms()),
     }

@@ -2420,7 +2420,7 @@ def codex_hook_lineage_from_payload(payload: Json, args: argparse.Namespace, *, 
 def parse_args() -> argparse.Namespace:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Ingest Codex hook payloads into MatrixArk.")
-    parser.add_argument("--event", default=os.environ.get("CODEX_HOOK_EVENT", "UserPromptSubmit"))
+    parser.add_argument("--event", default=(os.environ.get("CODEX_HOOK_EVENT", "").strip() or "UserPromptSubmit"))
     parser.add_argument(
         "--backend",
         choices=["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct", "local"],
@@ -2428,24 +2428,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_EVENT_LOG", "")) if os.environ.get("MATRIXARK_EVENT_LOG") else None)
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
-    parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex"))
-    parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex"))
+    parser.add_argument("--account-id", default=(os.environ.get("MATRIXARK_ACCOUNT_ID", "").strip() or "acct_codex"))
+    parser.add_argument("--tenant-id", default=(os.environ.get("MATRIXARK_TENANT_ID", "").strip() or "tenant_codex"))
     parser.add_argument("--user-id", default=os.environ.get("MATRIXARK_USER_ID") or local_account_user_id())
     parser.add_argument("--session-id", default=os.environ.get("MATRIXARK_SESSION_ID"))
     parser.add_argument(
         "--session-state-dir",
         type=Path,
-        default=Path(os.environ.get("MATRIXARK_CODEX_SESSION_STATE_DIR", "/tmp/matrixark-codex-sessions")),
+        default=Path((os.environ.get("MATRIXARK_CODEX_SESSION_STATE_DIR", "").strip() or "/tmp/matrixark-codex-sessions")),
         help="Directory used for the fallback generated Codex hook session id.",
     )
-    parser.add_argument("--team", default=os.environ.get("MATRIXARK_TEAM", "codex"))
-    parser.add_argument("--project", default=os.environ.get("MATRIXARK_PROJECT", "local"))
+    parser.add_argument("--team", default=(os.environ.get("MATRIXARK_TEAM", "").strip() or "codex"))
+    parser.add_argument("--project", default=(os.environ.get("MATRIXARK_PROJECT", "").strip() or "local"))
     parser.add_argument("--query", default="")
     parser.add_argument("--max-context-tokens", type=int,
                         default=_hook_max_context_tokens())
-    parser.add_argument("--metaserver", default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"))
-    parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
-    parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
+    parser.add_argument("--metaserver", default=(os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "").strip() or "127.0.0.1:18000"))
+    parser.add_argument("--namespace", default=(os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "").strip() or "deploy_ns"))
+    parser.add_argument("--table", default=(os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "").strip() or "deploy_table"))
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
     # `or`: a blank MATRIXARK_TEMPORALSTORE_RUST_PROXY means unset, and suppressing
     # the MATRIXARK_TEMPORALSTORE_RUST_CLI fallback is not what clearing it says.
@@ -2455,13 +2455,13 @@ def parse_args() -> argparse.Namespace:
         or ""))
     parser.add_argument("--rust-direct-sdk", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", ""))
     parser.add_argument("--rust-cli", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""))
-    parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:codex-hook"))
+    parser.add_argument("--storage-prefix", default=(os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "").strip() or "matrixark:codex-hook"))
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "").strip() or "60000"))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "").strip() or "60000"))
     parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "").strip() or "20"))
     parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "").strip() or str(DEFAULT_IDLE_COMMIT_TIMEOUT_MS)))
-    parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
-    parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
+    parser.add_argument("--understanding-provider", default=(os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "").strip() or "rules"))
+    parser.add_argument("--segment-provider", default=(os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "").strip() or "deterministic"))
     parser.add_argument("--extraction-provider", default=os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
     parser.add_argument("--segment-model", default=os.environ.get("MATRIXARK_SEGMENT_MODEL", ""))
     parser.add_argument("--segment-model-path", default=os.environ.get("MATRIXARK_SEGMENT_MODEL_PATH", ""))
@@ -4220,7 +4220,7 @@ def scope_from_args(args: argparse.Namespace) -> Json:
 
 
 def hook_storage_options() -> Json:
-    return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
+    return {"route": (os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "").strip() or "shared_store_async")}
 
 
 def is_tool_hook_event(event: str) -> bool:

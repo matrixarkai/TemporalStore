@@ -16,7 +16,7 @@ from matrixark_mcp_core import now_ms, stable_hash
 
 
 def main() -> int:
-    backend = os.environ.get("MATRIXARK_METADATA_BACKEND", "mysql")
+    backend = (os.environ.get("MATRIXARK_METADATA_BACKEND", "").strip() or "mysql")
     dsn = os.environ.get("MATRIXARK_METADATA_DSN", "")
     if backend in {"mysql", "matrixkv_sql"} and not dsn:
         raise SystemExit("MATRIXARK_METADATA_DSN is required for the mysql/matrixkv_sql probe")

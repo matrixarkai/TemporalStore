@@ -3330,7 +3330,7 @@ def _encoder_summary() -> Json:
     a deterministic provider nothing is waiting because nothing will ever be encoded, and a count of
     zero pending would otherwise read as "all done".
     """
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip()
+    provider = (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip() or "deterministic")
     # Asked of the classifier, not decided here. The pair this replaced -- ("", "deterministic") --
     # was the last hand-written copy of that question in this file, and it was the incomplete kind:
     # "local" is a synonym for the hash fallback and a misspelt provider name falls through to it,
@@ -6179,7 +6179,7 @@ def _build_server_from_env() -> Any:
     adapter = build_mcp_adapter(ns)
     # DEV DEFAULT: access_mode defaults to "dev" (anonymous allowed) so the server
     # works out of the box; set MATRIXARK_ACCESS_MODE=enforced in production.
-    return MatrixArkMcpServer(adapter, access_mode=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"))
+    return MatrixArkMcpServer(adapter, access_mode=(os.environ.get("MATRIXARK_ACCESS_MODE", "").strip() or "dev"))
 
 
 def create_v1_app() -> Callable[..., Awaitable[None]]:
@@ -6230,7 +6230,7 @@ def main() -> int:
         )
     uvicorn.run(
         create_v1_app(),
-        host=os.environ.get("MATRIXARK_HTTP_HOST", "0.0.0.0"),
+        host=(os.environ.get("MATRIXARK_HTTP_HOST", "").strip() or "0.0.0.0"),
         port=int(os.environ.get("MATRIXARK_HTTP_PORT", "").strip() or "8080"),
     )
     return 0

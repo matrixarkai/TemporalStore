@@ -29,7 +29,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--http-host",
-        default=os.environ.get("MATRIXARK_HTTP_HOST", "127.0.0.1"),
+        default=(os.environ.get("MATRIXARK_HTTP_HOST", "").strip() or "127.0.0.1"),
         help="Host for the optional HTTP/JSON management portal facade.",
     )
     parser.add_argument(
@@ -58,7 +58,7 @@ def main() -> int:
     parser.add_argument(
         "--access-mode",
         choices=["dev", "enforced"],
-        default=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"),
+        default=(os.environ.get("MATRIXARK_ACCESS_MODE", "").strip() or "dev"),
         help="dev allows omitted API keys for local testing; enforced requires scoped MatrixArk API keys.",
     )
     args = parser.parse_args()

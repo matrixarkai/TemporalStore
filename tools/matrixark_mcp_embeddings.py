@@ -209,10 +209,9 @@ def embeddings_for_texts(texts: list[str], role: str = "passage") -> list[list[f
                 _cache_put((model, text), materialized)
                 results[index] = materialized
     elif missing and provider in _OSS_EMBEDDING_PROVIDERS:
-        model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-            "MATRIXARK_EMBEDDING_MODEL",
-            "intfloat/multilingual-e5-large",
-        )
+        model_ref = (os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH")
+                     or os.environ.get("MATRIXARK_EMBEDDING_MODEL")
+                     or "intfloat/multilingual-e5-large")
         try:
             encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
             if encoder is None:
@@ -238,10 +237,9 @@ def embeddings_for_texts(texts: list[str], role: str = "passage") -> list[list[f
 def embedding_model_name() -> str:
     provider = embedding_provider_name()
     if provider in _OSS_EMBEDDING_PROVIDERS:
-        return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-            "MATRIXARK_EMBEDDING_MODEL",
-            "intfloat/multilingual-e5-large",
-        )
+        return (os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH")
+                or os.environ.get("MATRIXARK_EMBEDDING_MODEL")
+                or "intfloat/multilingual-e5-large")
     if provider in _API_EMBEDDING_PROVIDERS:
         _endpoint, _api_key, model, _key_env = _api_embedding_config(provider)
         return model
@@ -290,7 +288,7 @@ def embedding_provider_name() -> str:
     up. Sites that deliberately report the RAW configured string, rather than dispatch on it, still
     read the variable directly and should: they are answering "what is set", not "what will run".
     """
-    return os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    return (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip().lower() or "deterministic")
 
 
 
@@ -428,10 +426,9 @@ def api_embedding_for_text(text: str, provider: str) -> list[float]:
 
 
 def oss_embedding_for_text(text: str) -> list[float]:
-    model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-        "MATRIXARK_EMBEDDING_MODEL",
-        "intfloat/multilingual-e5-large",
-    )
+    model_ref = (os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH")
+                 or os.environ.get("MATRIXARK_EMBEDDING_MODEL")
+                 or "intfloat/multilingual-e5-large")
     try:
         encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
         if encoder is None:

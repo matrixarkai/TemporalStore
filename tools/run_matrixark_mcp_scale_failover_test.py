@@ -186,8 +186,8 @@ def run_rust_gateway_failover(args: argparse.Namespace) -> dict[str, Any]:
     client = MatrixArkRustCliClient(
         cli_path=str(args.rust_cli),
         metaserver=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", ""),
-        namespace=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "matrixark_local"),
-        table=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "context_records"),
+        namespace=(os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "").strip() or "matrixark_local"),
+        table=(os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "").strip() or "context_records"),
         request_timeout_ms=5000,
         io_timeout_ms=5000,
     )

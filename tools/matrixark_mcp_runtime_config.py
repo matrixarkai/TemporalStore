@@ -28,11 +28,11 @@ DIRECT_RECORD_HOT_CACHE_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_RECOR
 DIRECT_WRITE_RETRIES = int(os.environ.get("MATRIXARK_DIRECT_WRITE_RETRIES", "").strip() or "3")
 DIRECT_WRITE_BACKOFF_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_BACKOFF_MS", "").strip() or "25")
 DIRECT_WRITE_THROTTLE_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_THROTTLE_MS", "").strip() or "0")
-DIRECT_AUDIT_MODE = os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "buffered").strip().lower()
+DIRECT_AUDIT_MODE = (os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "").strip().lower() or "buffered")
 DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "").strip() or "128")
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "").strip() or "1000")
 
-CONTEXT_TELEMETRY_WRITE_MODE = os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "inline").strip().lower()
+CONTEXT_TELEMETRY_WRITE_MODE = (os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "").strip().lower() or "inline")
 ENABLE_CONTEXT_DEBUG_RECORDS = env_bool("MATRIXARK_CONTEXT_DEBUG_RECORDS", False)
 ENABLE_CONTEXT_REPLAY = env_bool("MATRIXARK_ENABLE_REPLAY", False)
 ENABLE_SUMMARY_REFRESH_AUDIT = env_bool("MATRIXARK_SUMMARY_REFRESH_AUDIT", False)
@@ -51,7 +51,7 @@ BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_T
 BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "").strip() or "200")
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "").strip() or "1000")
 
-MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().lower()
+MATRIXARK_MCP_PROFILE = (os.environ.get("MATRIXARK_MCP_PROFILE", "").strip().lower() or "dev")
 MATRIXARK_ALLOW_LOCAL_BACKEND = env_bool("MATRIXARK_ALLOW_LOCAL_BACKEND", False)
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
@@ -138,7 +138,7 @@ def serving_secondary_index_enabled() -> bool:
 #                       good enough to replace local replay for real sessions too.
 #   local_and_remote -> force legacy local-first for every request (disables the flip).
 # Per-request override: pass "context_source_mode" in the retrieve args.
-DEFAULT_CONTEXT_SOURCE_MODE = os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "auto").strip().lower()
+DEFAULT_CONTEXT_SOURCE_MODE = (os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "").strip().lower() or "auto")
 
 # Mode-dependent quota (opt-in; default OFF preserves legacy per-question-type ratios + tests).
 # When enabled, the cross-session budget ratio depends on context_source_mode:
@@ -232,7 +232,7 @@ DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDA
 # the engine used 24, so the number a deployment got depended on which surface it came from.
 # test_the_ref_cap_has_one_value pins all of them together.
 DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "").strip() or "1000")
-DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "quality_first").strip().lower()
+DEFAULT_BUDGET_FILL_POLICY = (os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "").strip().lower() or "quality_first")
 # Near-duplicate suppression in ref selection. A candidate whose token set has a
 # Jaccard similarity >= this ratio with an already-selected (higher-ranked) ref
 # is dropped before packing, so the richer default packs (top_k 24, cross-session
@@ -264,7 +264,7 @@ DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CRO
 DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS", "").strip() or "3")
 DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
     item.strip()
-    for item in os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "entity,summary,compression").split(",")
+    for item in (os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "").strip() or "entity,summary,compression").split(",")
     if item.strip()
 )
 

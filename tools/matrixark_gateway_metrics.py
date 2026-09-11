@@ -488,7 +488,7 @@ def config_health_lines(snapshot: Optional[Json] = None) -> List[str]:
     warnings: List[str] = []
     extraction_provider = (os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER")
                            or os.environ.get("MATRIXARK_EXTRACTION_PROVIDER") or "deterministic")
-    embedding_provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic")
+    embedding_provider = (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip() or "deterministic")
     if isinstance(snapshot, dict):
         raw = snapshot.get("warnings")
         if isinstance(raw, list):

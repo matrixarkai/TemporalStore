@@ -43,8 +43,11 @@ DECLARED = {
 }
 
 _READ = re.compile(
-    r'access_mode\s*=\s*os\.environ\.get\(\s*["\']MATRIXARK_ACCESS_MODE["\']\s*,\s*'
-    r'["\']([a-z]+)["\']\s*\)')
+    # `\(?` and `,.*?` rather than `,\s*`: a blank-proofed read is parenthesised and states its
+    # default past a `.strip() or`. `([a-z]+)` needs a letter, so the non-greedy match steps over
+    # the "" placeholder and finds the real default in either spelling.
+    r'access_mode\s*=\s*\(?\s*os\.environ\.get\(\s*["\']MATRIXARK_ACCESS_MODE["\']\s*,'
+    r'.*?["\']([a-z]+)["\']')
 
 
 def _default_in(name: str) -> str:

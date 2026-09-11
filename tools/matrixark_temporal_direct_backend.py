@@ -715,7 +715,7 @@ class _TemporalDirectBackendMixin:
     def _ensure_raw_ingestion_fields(self) -> None:
         if not hasattr(self, "_raw_storage_backend"):
             self._raw_storage_backend = self._normalize_raw_storage_backend(
-                os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore")
+                (os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "").strip() or "temporalstore")
             )
         else:
             self._raw_storage_backend = self._normalize_raw_storage_backend(self._raw_storage_backend)

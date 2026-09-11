@@ -31,7 +31,7 @@ EXTRACTION_LLM_BASE_URL = (
     os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", "").strip()
     or os.environ.get("OPENAI_BASE_URL", "").strip()
     or "http://127.0.0.1:8000/v1").rstrip("/")
-EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
+EXTRACTION_LLM_API_KEY_ENV = (os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "").strip() or "OPENAI_API_KEY")
 EXTRACTION_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "").strip() or "30")
 EXTRACTION_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "").strip() or "1200")
 

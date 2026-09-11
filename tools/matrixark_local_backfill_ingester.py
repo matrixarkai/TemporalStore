@@ -67,8 +67,7 @@ def shared_hook_store_base() -> str:
     Read per call rather than captured at import, for the same reason every other setting here is:
     a value resolved once could not be changed by anything that sets it later.
     """
-    return os.environ.get(
-        "MATRIXARK_SHARED_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/shared")
+    return (os.environ.get("MATRIXARK_SHARED_HOOK_STORE_BASE", "").strip() or "/root/.matrixark/temporalstore-hooks/shared")
 
 
 def agent_root(agent: str) -> str:
@@ -164,7 +163,7 @@ def _homes() -> tuple[str, str]:
     env_home = os.environ.get("MATRIXARK_WIN_HOME")
     if env_home:
         candidates.append(env_home)
-    mount_root = os.environ.get("MATRIXARK_WSL_MOUNT", "/mnt")
+    mount_root = (os.environ.get("MATRIXARK_WSL_MOUNT", "").strip() or "/mnt")
     for active_path in (os.environ.get("PWD"), os.getcwd()):
         if active_path:
             active_home = _windows_home_from_path(active_path, mount_root)
@@ -705,7 +704,7 @@ def main() -> int:
     # Curated allowlist (NO recursive ** over the .claude tree or the 800k-file
     # repo -- that firehose pulls thousands of stray/backup .md files and is slow
     # on the /mnt/c 9p mount). These are the real, durable resource surfaces.
-    repo = os.environ.get("MATRIXARK_REPO", "/opt/github-services/TemporalStore")
+    repo = (os.environ.get("MATRIXARK_REPO", "").strip() or "/opt/github-services/TemporalStore")
     default_resources = [
         os.path.join(home, ".claude", "projects", "*", "memory", "MEMORY.md"),
         os.path.join(home, ".claude", "projects", "*", "memory", "*.md"),
@@ -737,8 +736,8 @@ def main() -> int:
     ap.add_argument("--home", default=None,
                     help="override the user-home root for sources (e.g. a fast ext4 stage dir "
                          "holding .claude/.codex/external-memory copies instead of the slow /mnt/c mount)")
-    ap.add_argument("--claude-user", default=os.environ.get("USER", "root"))
-    ap.add_argument("--codex-user", default=os.environ.get("USER", "root"))
+    ap.add_argument("--claude-user", default=(os.environ.get("USER", "").strip() or "root"))
+    ap.add_argument("--codex-user", default=(os.environ.get("USER", "").strip() or "root"))
     ap.add_argument("--rollout-min-assistant-chars", type=int, default=400,
                     help="drop codex-rollout assistant micro-steps shorter than this")
     ap.add_argument("--rollout-user-only", action="store_true",

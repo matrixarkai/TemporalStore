@@ -79,7 +79,7 @@ def raw_ingestion_append_options(backend: Any) -> Json:
 def ensure_raw_ingestion_fields(target: Any) -> None:
     if not hasattr(target, "_raw_storage_backend"):
         target._raw_storage_backend = normalize_raw_storage_backend(
-            os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore")
+            (os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "").strip() or "temporalstore")
         )
     else:
         target._raw_storage_backend = normalize_raw_storage_backend(target._raw_storage_backend)

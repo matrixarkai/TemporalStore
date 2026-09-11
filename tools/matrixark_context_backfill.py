@@ -2477,14 +2477,14 @@ def build_parser() -> argparse.ArgumentParser:
     # what the running processes carry. These defaulted to 'matrixark' and 'context', and nothing
     # else in the repository names either -- so a backfill run without --namespace addressed a
     # store the deployment does not read, and reported having done so.
-    parser.add_argument('--namespace', default=os.environ.get('MATRIXARK_NAMESPACE', 'deploy_ns'))
-    parser.add_argument('--table', default=os.environ.get('MATRIXARK_TABLE', 'deploy_table'))
+    parser.add_argument('--namespace', default=(os.environ.get('MATRIXARK_NAMESPACE', "").strip() or 'deploy_ns'))
+    parser.add_argument('--table', default=(os.environ.get('MATRIXARK_TABLE', "").strip() or 'deploy_table'))
     parser.add_argument('--library-path', default=os.environ.get('TEMPORALSTORE_LIBRARY_PATH', ''))
     parser.add_argument('--source-prefix', default='matrixark:mcp:raw_ingestion')
     parser.add_argument(
         '--raw-backend',
         choices=['temporalstore', 'matrixkv', 's3', 'objectstore'],
-        default=os.environ.get('MATRIXARK_RAW_INGESTION_BACKEND', 'temporalstore'),
+        default=(os.environ.get('MATRIXARK_RAW_INGESTION_BACKEND', "").strip() or 'temporalstore'),
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')

@@ -129,7 +129,7 @@ def create_app() -> Callable[..., Awaitable[None]]:
     import argparse
     ns = argparse.Namespace(backend=os.environ.get("MATRIXARK_MCP_BACKEND", default_mcp_backend()))
     adapter = build_mcp_adapter(ns)
-    server = MatrixArkMcpServer(adapter, access_mode=os.environ.get("MATRIXARK_ACCESS_MODE", "enforced"))
+    server = MatrixArkMcpServer(adapter, access_mode=(os.environ.get("MATRIXARK_ACCESS_MODE", "").strip() or "enforced"))
     return make_asgi_app(server)
 
 
@@ -144,7 +144,7 @@ def main() -> int:
         )
     uvicorn.run(
         create_app(),
-        host=os.environ.get("MATRIXARK_HTTP_HOST", "0.0.0.0"),
+        host=(os.environ.get("MATRIXARK_HTTP_HOST", "").strip() or "0.0.0.0"),
         port=int(os.environ.get("MATRIXARK_HTTP_PORT", "").strip() or "8080"),
     )
     return 0

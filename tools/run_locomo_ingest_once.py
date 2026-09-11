@@ -57,10 +57,7 @@ STOPWORDS = {
     "before", "after", "likely", "yes", "no", "since", "though", "would", "could", "should",
 }
 
-ACTIVE_RETRIEVAL_EMBEDDING_MODEL = os.environ.get(
-    "MATRIXARK_BENCHMARK_EMBEDDING_MODEL",
-    "matrixark-local-hash-embedding",
-)
+ACTIVE_RETRIEVAL_EMBEDDING_MODEL = (os.environ.get("MATRIXARK_BENCHMARK_EMBEDDING_MODEL", "").strip() or "matrixark-local-hash-embedding")
 _RETRIEVAL_ENCODER: Any | None = None
 _RETRIEVAL_EMBEDDING_CACHE: dict[tuple[str, str], list[float]] = {}
 
@@ -219,10 +216,7 @@ def main() -> int:
     parser.add_argument("--reader-model", default="gpt-4o-mini")
     parser.add_argument(
         "--embedding-model",
-        default=os.environ.get(
-            "MATRIXARK_BENCHMARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        ),
+        default=(os.environ.get("MATRIXARK_BENCHMARK_EMBEDDING_MODEL", "").strip() or "sentence-transformers/all-MiniLM-L6-v2"),
         help="Embedding/encoding model used by the MatrixArk/TemporalStore retrieval path.",
     )
     parser.add_argument(

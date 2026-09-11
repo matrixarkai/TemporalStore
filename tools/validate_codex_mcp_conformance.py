@@ -124,8 +124,8 @@ def validate_rust_cli_smoke() -> dict[str, object]:
         "metaserver": (os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER")
                        or os.environ.get("MATRIXARK_METASERVER")
                        or "127.0.0.1:18000"),
-        "namespace": os.environ.get("MATRIXARK_NAMESPACE", "deploy_ns"),
-        "table": os.environ.get("MATRIXARK_TABLE", "deploy_table"),
+        "namespace": (os.environ.get("MATRIXARK_NAMESPACE", "").strip() or "deploy_ns"),
+        "table": (os.environ.get("MATRIXARK_TABLE", "").strip() or "deploy_table"),
         "key": "matrixark:mcp:parity",
         "value": "rust-temporalstore-ok",
     }

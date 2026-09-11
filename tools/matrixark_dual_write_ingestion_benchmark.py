@@ -488,19 +488,19 @@ def run_benchmark(args: argparse.Namespace) -> Json:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark synchronous MatrixArk dual-write ingestion QPS and latency.")
-    parser.add_argument("--mode", choices=["local", "direct"], default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MODE", "local"))
+    parser.add_argument("--mode", choices=["local", "direct"], default=(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MODE", "").strip() or "local"))
     parser.add_argument("--records", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_RECORDS", "").strip() or "10000"))
     parser.add_argument("--workers", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_WORKERS", "").strip() or "4"))
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_BATCH_SIZE", "").strip() or "128"))
     parser.add_argument("--payload-bytes", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_PAYLOAD_BYTES", "").strip() or "128"))
-    parser.add_argument("--scope-key", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_SCOPE_KEY", "benchmark:tenant=1001"))
+    parser.add_argument("--scope-key", default=(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_SCOPE_KEY", "").strip() or "benchmark:tenant=1001"))
     parser.add_argument("--local-write-delay-us", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_LOCAL_WRITE_DELAY_US", "").strip() or "0"))
-    parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_STORAGE_PREFIX", "matrixark:mcp:bench"))
+    parser.add_argument("--storage-prefix", default=(os.environ.get("MATRIXARK_STORAGE_PREFIX", "").strip() or "matrixark:mcp:bench"))
     parser.add_argument("--raw-storage-prefix", default=os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", ""))
     parser.add_argument(
         "--raw-backend",
         choices=RAW_BACKEND_CHOICES,
-        default=os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore"),
+        default=(os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "").strip() or "temporalstore"),
         help="Raw-message durability backend label used by the direct adapter.",
     )
     parser.add_argument(
@@ -513,11 +513,11 @@ def build_parser() -> argparse.ArgumentParser:
     # reader uses, so a run that set nothing benchmarked a shard size no deployment
     # has. Pass --shard-size to sweep it.
     parser.add_argument("--shard-size", type=int, default=DIRECT_RECORD_LOG_SHARD_SIZE)
-    parser.add_argument("--metaserver", default=os.environ.get("TEMPORALSTORE_METASERVER", "127.0.0.1:65000"))
+    parser.add_argument("--metaserver", default=(os.environ.get("TEMPORALSTORE_METASERVER", "").strip() or "127.0.0.1:65000"))
     # The values config/temporalstore.toml declares for these two variables; see the note in
     # matrixark_context_backfill, which carried the same pair.
-    parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_NAMESPACE", "deploy_ns"))
-    parser.add_argument("--table", default=os.environ.get("MATRIXARK_TABLE", "deploy_table"))
+    parser.add_argument("--namespace", default=(os.environ.get("MATRIXARK_NAMESPACE", "").strip() or "deploy_ns"))
+    parser.add_argument("--table", default=(os.environ.get("MATRIXARK_TABLE", "").strip() or "deploy_table"))
     parser.add_argument("--library-path", default=os.environ.get("TEMPORALSTORE_LIBRARY_PATH", ""))
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_REQUEST_TIMEOUT_MS", "").strip() or "20000"))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_IO_TIMEOUT_MS", "").strip() or "20000"))

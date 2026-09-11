@@ -795,7 +795,7 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
 
         def end_headers(self) -> None:
             if self.cloud_mode:
-                self.send_header("Access-Control-Allow-Origin", os.environ.get("MATRIXARK_HTTP_ALLOWED_ORIGIN", "https://app.matrixark.ai"))
+                self.send_header("Access-Control-Allow-Origin", (os.environ.get("MATRIXARK_HTTP_ALLOWED_ORIGIN", "").strip() or "https://app.matrixark.ai"))
             else:
                 self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header(

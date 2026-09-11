@@ -1565,7 +1565,7 @@ class _TemporalDirectReadMixin:
         elif not isinstance(dropped_refs, dict):
             pack["dropped_refs"] = {"refs": [], "native_summary": True}
         audit_mode = str(
-            args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "telemetry_only")
+            args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE") or "telemetry_only"
         ).strip().lower()
         if audit_mode not in {"full", "telemetry_only", "off"}:
             audit_mode = "telemetry_only"

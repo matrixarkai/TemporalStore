@@ -3012,7 +3012,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._raw_record_hash_key = f"{self._raw_ingestion_prefix}:records"
         self._raw_count_key = f"{self._raw_ingestion_prefix}:record_count"
         self._raw_storage_backend = self._normalize_raw_storage_backend(
-            os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore")
+            (os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "").strip() or "temporalstore")
         )
         self._raw_entry_count_cache: int | None = None
         self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE

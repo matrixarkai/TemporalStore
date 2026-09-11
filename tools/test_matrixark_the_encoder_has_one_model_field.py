@@ -69,8 +69,23 @@ def in_process_resolutions() -> list:
                     names.append(sub.args[0].value)
                     break
         if literals and names:
-            found.append((names, literals[-1]))
+            found.append((names, _chain_default(node, literals)))
     return found
+
+
+def _chain_default(node: ast.BoolOp, literals: list):
+    """The literal the chain ENDS in: its last operand, not its last-walked constant.
+
+    ast.walk is breadth-first, so `literals[-1]` is the deepest-and-last constant rather than the
+    final fallback. A blank-proofed read -- `get(A) or (get(B, "") or "d")` -- puts a "" two levels
+    down, and it became literals[-1] while the real default sat one level up.
+    """
+    last = node.values[-1]
+    while isinstance(last, ast.BoolOp) and isinstance(last.op, ast.Or):
+        last = last.values[-1]
+    if isinstance(last, ast.Constant) and isinstance(last.value, str):
+        return last.value
+    return literals[-1]
 
 
 class Case(unittest.TestCase):

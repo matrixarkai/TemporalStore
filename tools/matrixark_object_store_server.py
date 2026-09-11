@@ -51,7 +51,7 @@ OBJECTS_PREFIX = "/v1/objects/"
 
 
 def _data_dir() -> str:
-    return os.environ.get("MATRIXARK_OBJECT_STORE_DIR", "/opt/temporalstore/data/objectstore")
+    return (os.environ.get("MATRIXARK_OBJECT_STORE_DIR", "").strip() or "/opt/temporalstore/data/objectstore")
 
 
 def _safe_segment_join(base: str, bucket: str, key: str) -> str | None:
@@ -255,7 +255,7 @@ class ObjectStoreHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    host = os.environ.get("MATRIXARK_OBJECT_STORE_SERVE_HOST", "127.0.0.1")
+    host = (os.environ.get("MATRIXARK_OBJECT_STORE_SERVE_HOST", "").strip() or "127.0.0.1")
     port = int(os.environ.get("MATRIXARK_OBJECT_STORE_SERVE_PORT", "").strip() or "17200")
     data_dir = _data_dir()
     os.makedirs(data_dir, exist_ok=True)

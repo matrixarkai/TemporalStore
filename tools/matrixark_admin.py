@@ -25,8 +25,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tool", help="MatrixArk admin/auth/portal tool name, for example matrixark_management_portal.")
     parser.add_argument("--arguments-json", default="{}", help="JSON object passed as tool arguments.")
-    parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_ADMIN_EVENT_LOG", "/tmp/matrixark-admin-events.jsonl")))
-    parser.add_argument("--access-mode", choices=["dev", "enforced"], default=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"))
+    parser.add_argument("--event-log", type=Path, default=Path((os.environ.get("MATRIXARK_ADMIN_EVENT_LOG", "").strip() or "/tmp/matrixark-admin-events.jsonl")))
+    parser.add_argument("--access-mode", choices=["dev", "enforced"], default=(os.environ.get("MATRIXARK_ACCESS_MODE", "").strip() or "dev"))
     args = parser.parse_args()
     payload = json.loads(args.arguments_json)
     if not isinstance(payload, dict):

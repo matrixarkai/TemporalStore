@@ -29,9 +29,9 @@ def add_sdk_path() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--metaserver", default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"))
-    parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
-    parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
+    parser.add_argument("--metaserver", default=(os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "").strip() or "127.0.0.1:18000"))
+    parser.add_argument("--namespace", default=(os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "").strip() or "deploy_ns"))
+    parser.add_argument("--table", default=(os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "").strip() or "deploy_table"))
     parser.add_argument("--storage-prefix", action="append", default=[])
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--shard-size", type=int, default=DEFAULT_SHARD_SIZE)

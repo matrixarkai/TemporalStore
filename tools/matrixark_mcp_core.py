@@ -91,10 +91,10 @@ DIRECT_RECORD_HOT_CACHE_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_RECOR
 DIRECT_WRITE_RETRIES = int(os.environ.get("MATRIXARK_DIRECT_WRITE_RETRIES", "").strip() or "3")
 DIRECT_WRITE_BACKOFF_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_BACKOFF_MS", "").strip() or "25")
 DIRECT_WRITE_THROTTLE_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_THROTTLE_MS", "").strip() or "0")
-DIRECT_AUDIT_MODE = os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "buffered").strip().lower()
+DIRECT_AUDIT_MODE = (os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "").strip().lower() or "buffered")
 DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "").strip() or "128")
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "").strip() or "1000")
-CONTEXT_TELEMETRY_WRITE_MODE = os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "inline").strip().lower()
+CONTEXT_TELEMETRY_WRITE_MODE = (os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "").strip().lower() or "inline")
 # These four, and four more below, are defined here AND in matrixark_mcp_runtime_config. See the
 # single-source note beside DEFAULT_MAX_CONTEXT_TOKENS further down: that constant was read from
 # the same variable in both modules with different fallbacks, and an operator who set nothing got
@@ -111,7 +111,7 @@ SUMMARY_REFRESH_MAX_DUTY = float(os.environ.get("MATRIXARK_SUMMARY_REFRESH_MAX_D
 SUMMARY_REFRESH_MAX_BACKOFF_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_MAX_BACKOFF_MS", "").strip() or "300000")
 BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "").strip() or "30000")
 BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "").strip() or "200")
-MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().lower()
+MATRIXARK_MCP_PROFILE = (os.environ.get("MATRIXARK_MCP_PROFILE", "").strip().lower() or "dev")
 # MATRIXARK_ALLOW_LOCAL_BACKEND comes from matrixark_mcp_runtime_config, above.
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
@@ -240,7 +240,7 @@ DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDA
 # the engine used 24, so the number a deployment got depended on which surface it came from.
 # test_the_ref_cap_has_one_value pins all of them together.
 DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "").strip() or "1000")
-DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "quality_first").strip().lower()
+DEFAULT_BUDGET_FILL_POLICY = (os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "").strip().lower() or "quality_first")
 # Near-duplicate suppression threshold (see matrixark_mcp_runtime_config for the
 # canonical definition). Reused here so the ref-selection path shares one source
 # of truth for the knob.
@@ -268,7 +268,7 @@ DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CRO
 DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS", "").strip() or "3")
 DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
     item.strip()
-    for item in os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "entity,summary,compression").split(",")
+    for item in (os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "").strip() or "entity,summary,compression").split(",")
     if item.strip()
 )
 DEFAULT_SHARED_RESOURCE_BUDGET_RATIO = 0.25  # build default; live_float reads the environment
@@ -285,7 +285,7 @@ TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH = int(os.environ.get("MATRIXARK_TIME_CO
 TIME_COMPRESSION_MIN_EVENT_AGE_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENT_AGE_MS", "").strip() or "0")
 TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS", "").strip() or str(30 * 24 * 60 * 60 * 1000))
 TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS", "").strip() or str(30 * 24 * 60 * 60 * 1000))
-TIME_COMPRESSION_SUMMARY_PROVIDER = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER", "deterministic").strip().lower()
+TIME_COMPRESSION_SUMMARY_PROVIDER = (os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER", "").strip().lower() or "deterministic")
 TIME_COMPRESSION_SUMMARY_MODEL = (
     os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_MODEL", "").strip()
     or os.environ.get("OPENAI_MODEL", "").strip()
@@ -294,7 +294,7 @@ TIME_COMPRESSION_SUMMARY_BASE_URL = (
     os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_BASE_URL", "").strip()
     or os.environ.get("OPENAI_BASE_URL", "").strip()
     or "https://api.openai.com/v1").rstrip("/")
-TIME_COMPRESSION_SUMMARY_API_KEY_ENV = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_API_KEY_ENV", "OPENAI_API_KEY")
+TIME_COMPRESSION_SUMMARY_API_KEY_ENV = (os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_API_KEY_ENV", "").strip() or "OPENAI_API_KEY")
 TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC", "").strip() or "30")
 TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = env_bool("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", False)
 # These five were built here AND in matrixark_mcp_extraction_provider, from the same variables
@@ -326,10 +326,10 @@ except ImportError:  # Direct script execution from tools/.
 # above but targets the Anthropic Messages API (POST /v1/messages; x-api-key + anthropic-version
 # headers; response text in .content[0].text). Default-off: only selected when the request's
 # understanding_provider resolves to anthropic/claude/anthropic_messages.
-ANTHROPIC_LLM_MODEL = os.environ.get("MATRIXARK_ANTHROPIC_MODEL", "claude-sonnet-5")
-ANTHROPIC_API_BASE = os.environ.get("MATRIXARK_ANTHROPIC_API_BASE", "https://api.anthropic.com").rstrip("/")
-ANTHROPIC_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "ANTHROPIC_API_KEY")
-ANTHROPIC_API_VERSION = os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "2023-06-01")
+ANTHROPIC_LLM_MODEL = (os.environ.get("MATRIXARK_ANTHROPIC_MODEL", "").strip() or "claude-sonnet-5")
+ANTHROPIC_API_BASE = (os.environ.get("MATRIXARK_ANTHROPIC_API_BASE", "").strip() or "https://api.anthropic.com").rstrip("/")
+ANTHROPIC_LLM_API_KEY_ENV = (os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "").strip() or "ANTHROPIC_API_KEY")
+ANTHROPIC_API_VERSION = (os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "").strip() or "2023-06-01")
 # `.strip() or` at each step, so a newer name that is present but blank -- or whitespace --
 # falls through to the older one. With the two-argument form, MATRIXARK_ANTHROPIC_TIMEOUT_SEC=
 # handed float() the empty string at module scope and this module failed to import, with
@@ -521,7 +521,7 @@ def context_model_registry_record(model_name: str, *, model_kind: str = "embeddi
         "model_ref": embedding_model_ref_for_name(model_name) if model_kind == "embedding" else f"{model_kind}:{compact_model_slug(model_name)}:{model_hash % 10000:04d}",
         "model_name": model_name,
         "model_hash": model_hash,
-        "provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic") if model_kind == "embedding" else "",
+        "provider": (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip() or "deterministic") if model_kind == "embedding" else "",
         "execution_mode": embedding_execution_mode_name() if model_kind == "embedding" else "",
         "updated_at_ms": int(updated_at_ms or now_ms()),
     }
@@ -3205,10 +3205,9 @@ def embedding_model_name() -> str:
 
     provider = embedding_provider_name()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-            "MATRIXARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        )
+        return (os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH")
+                or os.environ.get("MATRIXARK_EMBEDDING_MODEL")
+                or "sentence-transformers/all-MiniLM-L6-v2")
     if provider in _API_EMBEDDING_PROVIDERS:
         default_model = "voyage-3" if provider == "voyage" else "text-embedding-3-large"
         return os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
