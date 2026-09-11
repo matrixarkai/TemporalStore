@@ -532,9 +532,23 @@ impl TemporalEngine {
             .map_err(|err| Status::error("cache_slot_invalidation_failed", err.to_string()))
     }
 
+    /// The boundary report, checking EVERY live page for readability.
+    ///
+    /// What the diagnostic endpoint and the harnesses want: the whole store looked at. The
+    /// maintenance cycle calls the sampled form instead -- see
+    /// `storage_recovery_report_without_boundary_sampled` for why.
     pub fn storage_recovery_boundary_report(
         &self,
         shard_id: ShardId,
+    ) -> StorageRecoveryBoundaryReport {
+        self.storage_recovery_boundary_report_sampled(shard_id, 0)
+    }
+
+    /// The same report, reading at most `readable_probe_limit` live pages. 0 means no bound.
+    pub fn storage_recovery_boundary_report_sampled(
+        &self,
+        shard_id: ShardId,
+        readable_probe_limit: usize,
     ) -> StorageRecoveryBoundaryReport {
         let manifests = self.list_bucket_dump_manifests(shard_id);
         let latest_dump_wal_sequence = manifests
@@ -581,7 +595,8 @@ impl TemporalEngine {
             unknown_bucket_dump_install_count,
         ) = bucket_dump_install_phase_counts(&interrupted_bucket_dump_installs);
         let manifest_chain_issues = bucket_dump_manifest_chain_issues(&manifests);
-        let recovery = self.storage_recovery_report_without_boundary(shard_id);
+        let recovery =
+            self.storage_recovery_report_without_boundary_sampled(shard_id, readable_probe_limit);
         let corrupt_block_slab_ids = recovery
             .block_slab_reports
             .iter()
