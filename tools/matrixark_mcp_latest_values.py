@@ -53,7 +53,20 @@ def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
     if record_type == "skill_registry_update":
         return (record_type, record.get("skill_hash"))
     if record_type == "resource_import_task":
-        return (record_type, record.get("resource_import_task_hash"))
+        # Every writer of this row writes `task_hash`; nothing writes
+        # `resource_import_task_hash`, which is what this asked for. So the key was
+        # (record_type, None) for every one of them, compact_latest_value_records declines a key
+        # with an empty part, and these rows were never superseded -- they accumulated. The old
+        # name is still accepted, for a log that somehow carries it.
+        #
+        # matrixark_mcp_local_adapter fixed this in its own copy of the function and this copy,
+        # the one matrixark_mcp_recovery imports, was not carried along.
+        return (
+            record_type,
+            record.get("task_hash")
+            if record.get("task_hash") is not None
+            else record.get("resource_import_task_hash"),
+        )
     return None
 
 
