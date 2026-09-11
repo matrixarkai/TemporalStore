@@ -7547,6 +7547,75 @@ fn where_a_record_is_kept_everywhere() {
 /// A meta-server-managed shard gets 0..1023 instead. This loads the same corpus both ways and
 /// counts, so the saving is measured rather than argued.
 ///
+/// What does one bucket cost in memory? Prints.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bucket_costs -- --ignored --nocapture --test-threads=1
+///
+/// At the default routing range every key gets its own bucket, so this is also "what does one
+/// stored object cost in index memory".
+///
+/// Read the MARGINAL bytes between two rows, not a single row's "B per bucket". Engine startup
+/// retains several megabytes that have nothing to do with record count -- caches and store
+/// buffers -- so a small fixture divides that fixed cost over too few buckets and reports a
+/// per-bucket figure several times the truth. Measured 2026-09-11 the rows fit
+/// `fixed + 760 B x buckets` closely, while the smallest row alone reads 2,486 B.
+///
+/// The single-page and single-object cases are already held inline by `BlockIndexMap::One` and
+/// `ObjectIndex::One`, so what remains is the node itself rather than container allocation.
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_bucket_costs() {
+    use crate::engine::state;
+    for (name, bytes) in [
+        ("BucketNode", std::mem::size_of::<state::BucketNode>()),
+        ("  ObjectIndex", std::mem::size_of::<state::ObjectIndex>()),
+        ("  BlockIndexMap", std::mem::size_of::<state::BlockIndexMap>()),
+        ("    BlockIndex", std::mem::size_of::<state::BlockIndex>()),
+        (
+            "      BlockAddress",
+            std::mem::size_of::<crate::block_store::BlockAddress>(),
+        ),
+    ] {
+        eprintln!("  size_of::<{name}>() = {bytes}");
+    }
+    for records in [5_000usize, 20_000, 40_000, 80_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = crate::alloc_probe::Probe::start();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("cost-{index:07}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let counts = probe.stop();
+        let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+        let buckets = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            shards
+                .get(&1)
+                .map(|shard| shard.bucket_index.bucket_map.len())
+                .unwrap_or(0)
+        };
+        eprintln!(
+            "  {records:>6} records -> {buckets:>6} buckets: {live:>12} live bytes, \
+             {:>8.0} B per record, {:>8.0} B per bucket",
+            live as f64 / records as f64,
+            live as f64 / buckets.max(1) as f64,
+        );
+    }
+}
+
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_slot_range_saves -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
