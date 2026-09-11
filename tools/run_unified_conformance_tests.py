@@ -31,7 +31,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = Path(os.environ.get("TEMPORALSTORE_TEST_CORPUS", ROOT / "third_party" / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json"))
-DEFAULT_RESULT_DIR = Path(os.environ.get("TEMPORALSTORE_UNIFIED_RESULT_DIR", "/tmp/temporalstore-unified-parity"))
+DEFAULT_RESULT_DIR = Path(os.environ.get("TEMPORALSTORE_UNIFIED_RESULT_DIR", "").strip()
+                          or "/tmp/temporalstore-unified-parity")
 
 
 def load_corpus(path: Path) -> dict[str, Any]:
