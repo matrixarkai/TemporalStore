@@ -1446,8 +1446,11 @@ SETTINGS.extend([
             "Read by matrixark_mcp_runtime_config."),
     Setting("retrieval.resource_overlap_tokens", "retrieval", "MATRIXARK_RESOURCE_OVERLAP_TOKENS",
             "Resource overlap tokens", "int", "24", "restart",
-            "Resource overlap tokens. Defaults to 24. Frozen when the process starts. Read by "
-            "matrixark_resource_parser."),
+            "How much of the previous chunk each chunk repeats, measured at the TOKEN split. "
+            "Text is split by tokens first and each piece then by characters, so this and "
+            "MATRIXARK_RESOURCE_OVERLAP_CHARS both apply, each at its own stage. It must be "
+            "smaller than MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS: a value at or above the cap is "
+            "not clamped, the import raises."),
     Setting("retrieval.rust_proxy_dedicated_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
             "Rust proxy dedicated pack lanes", "bool", "0", "live",
             'Rust proxy dedicated pack lanes. Off by default. Read by matrixark_mcp_temporal_adapters.'),
@@ -1517,8 +1520,9 @@ SETTINGS.extend([
             'Resource import workers. Defaults to 2. Read by matrixark_mcp_local_adapter.'),
     Setting("skills.resource_json_records_per_chunk", "skills", "MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK",
             "Resource json records per chunk", "int", "20", "restart",
-            "Resource json records per chunk. Defaults to 20. Frozen when the process starts. Read by "
-            "matrixark_resource_parser."),
+            "How many JSON or JSONL records are grouped into one unit before chunking. The "
+            "group is rendered as text and then split by the chunk caps, so this sets the "
+            "granularity a record can be retrieved at, not the size of a chunk."),
     Setting("skills.resource_max_chunk_tokens", "skills", "MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS",
             "Resource max chunk tokens", "int", "240", "restart",
             "Resource maximum chunk tokens. Defaults to 240. Frozen when the process starts. Read by "
@@ -1537,16 +1541,22 @@ SETTINGS.extend([
             "matrixark_resource_parser."),
     Setting("skills.resource_overlap_chars", "skills", "MATRIXARK_RESOURCE_OVERLAP_CHARS",
             "Resource overlap chars", "int", "120", "restart",
-            "Resource overlap chars. Defaults to 120. Frozen when the process starts. Read by "
-            "matrixark_resource_parser."),
+            "How much of the previous chunk each chunk repeats, measured at the CHARACTER "
+            "split, which runs on the pieces the token split has already produced. It must be "
+            "smaller than MATRIXARK_RESOURCE_MAX_CHUNK_CHARS: a value at or above the cap is "
+            "not clamped, the import raises."),
     Setting("skills.resource_slim_chunk_metadata", "skills", "MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA",
             "Resource slim chunk metadata", "bool", "0", "restart",
-            "Resource slim chunk metadata. Off by default. Frozen when the process starts. Read by "
-            "matrixark_resource_parser."),
+            "Keeps only the chunk metadata that cannot be recomputed. embedding_text alone is "
+            "about 67% of a chunk's metadata -- a second copy of the chunk text, enriched for "
+            "the encoder -- and building it is 41% of parse time; keywords feeds a lexical "
+            "list a vector index already covers. On, neither is built, and both are rebuilt on "
+            "demand when a caller asks for them."),
     Setting("skills.resource_table_rows_per_chunk", "skills", "MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK",
             "Resource table rows per chunk", "int", "20", "restart",
-            "Resource table rows per chunk. Defaults to 20. Frozen when the process starts. Read by "
-            "matrixark_resource_parser."),
+            "How many table rows are grouped into one unit before chunking, for CSV, TSV and "
+            "XLSX. The group is rendered as text and then split by the chunk caps, so a wide "
+            "table can still spill a group across several chunks."),
     Setting("skills.rust_proxy_shared_process", "skills", "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
             "Rust proxy shared process", "bool", "1", "live",
             'Rust proxy shared process. On by default. Read by matrixark_mcp_temporal_adapters.'),
