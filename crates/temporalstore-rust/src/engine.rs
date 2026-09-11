@@ -27,6 +27,7 @@ mod zset_index_serde;
 mod seen_index_serde;
 mod bucket_dump_manifest_methods;
 mod storage_lifecycle_methods;
+pub use storage_lifecycle_methods::{reset_storage_plan_build_counts, storage_plan_build_counts};
 mod storage_manager_cycle;
 mod storage_reports;
 mod prometheus_metrics;

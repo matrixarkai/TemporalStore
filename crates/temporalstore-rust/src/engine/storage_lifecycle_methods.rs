@@ -13,8 +13,36 @@ use super::*;
 pub(crate) static DIRTY_DRAIN_VISITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// How many O(shard) plans one round builds, counted rather than timed.
+///
+/// A round builds these in several stages and each walks the shard. Whether that is duplicated
+/// work is a question about COUNTS, and a count is immune to whatever else is running on the box
+/// -- timing it beside another build would measure the machine, not the loop.
+pub(crate) static LIFECYCLE_PLAN_BUILDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The same, for the WAL reclaim plan. Separate because the two have different costs and a
+/// single total would hide which one a change moved.
+pub(crate) static WAL_RECLAIM_PLAN_BUILDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Both counters, for a probe measuring one round.
+pub fn storage_plan_build_counts() -> (u64, u64) {
+    (
+        LIFECYCLE_PLAN_BUILDS.load(std::sync::atomic::Ordering::Relaxed),
+        WAL_RECLAIM_PLAN_BUILDS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Zero both, so a probe measures a round rather than a process.
+pub fn reset_storage_plan_build_counts() {
+    LIFECYCLE_PLAN_BUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
+    WAL_RECLAIM_PLAN_BUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
+        LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let bucket_summaries = self.bucket_storage_summaries(request.shard_id);
         // Select the least-recently-dumped (most overdue) dirty buckets first, matching the
         // WAL-reclaim routine's oldest-first-dirty ordering (dirty buckets are consumed
@@ -673,6 +701,7 @@ impl TemporalEngine {
         follower_replay_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
         raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
     ) -> StorageWalReclaimPlan {
+        WAL_RECLAIM_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let follower_replay_cursors = follower_replay_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
         let current_wal_sequence = self.write_ahead_log_store().stats(shard_id).last_sequence;
