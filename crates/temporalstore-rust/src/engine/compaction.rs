@@ -16,6 +16,24 @@ use super::*;
 /// relocates pages that have not moved yet rather than re-moving the last round's work.
 pub(super) const COMPACTION_ROUND_BYTES: u64 = 256 * 1024 * 1024;
 
+/// How many page refs one compaction round may relocate.
+///
+/// The stall this bounds tracks the NUMBER of refs moved, not their size: measured in release,
+/// a relocation costs ~200 us per ref almost regardless of page size. So a byte budget bounds it
+/// only through average page size, and the same byte constant gives wildly different stalls --
+/// 256 KiB is ~2,400 refs of 100-byte values but ~64 refs of 4 KiB ones. A ref budget bounds the
+/// stall directly.
+///
+/// 2,048 puts a round near 0.4 s of shard write lock at the measured per-ref cost. It is chosen
+/// to sit ABOVE every fixture the suite builds -- which are tens of objects, so they still
+/// compact in one round and their single-round assumptions hold -- and BELOW production scale,
+/// where 20k refs in one round measured 3.1 s. That is the difference from
+/// `COMPACTION_ROUND_BYTES`, which was sized only to clear the suite and so never binds anywhere.
+///
+/// A round that stops here stays open and the next one resumes onto the same slab, so bounding
+/// costs round count, not progress.
+pub(super) const COMPACTION_ROUND_PAGE_REFS: usize = 2_048;
+
 /// Blocks per slab, counted by header walk.
 ///
 /// Both callers below read `page_count` and nothing else off a slab report, and `slab_reports()`
@@ -244,6 +262,9 @@ pub(super) struct CompactionRewriteStats {
     /// Bytes this round may still relocate. Saturates at zero, and a round that reaches zero
     /// leaves the rest where it is for the next one.
     budget_bytes: u64,
+    /// Page refs this round may still relocate, the bound that actually tracks the stall.
+    /// Same saturating behaviour as `budget_bytes`; whichever runs out first ends the round.
+    budget_page_refs: usize,
     pub(super) skipped_by_budget: usize,
     pub(super) skipped_by_budget_bytes: u64,
 }
@@ -255,11 +276,17 @@ pub(super) struct ModelCompactionRewriteStats {
 }
 
 impl CompactionRewriteStats {
-    /// A round that relocates onto `target_block_slab_id` and may spend `budget_bytes`.
-    pub(super) fn for_round(target_block_slab_id: u64, budget_bytes: u64) -> Self {
+    /// A round that relocates onto `target_block_slab_id`, spending at most `budget_bytes` and
+    /// `budget_page_refs`. Whichever runs out first ends the round.
+    pub(super) fn for_round(
+        target_block_slab_id: u64,
+        budget_bytes: u64,
+        budget_page_refs: usize,
+    ) -> Self {
         Self {
             target_block_slab_id,
             budget_bytes,
+            budget_page_refs,
             ..Self::default()
         }
     }
@@ -274,13 +301,14 @@ impl CompactionRewriteStats {
         if address.block_slab_id == self.target_block_slab_id {
             return false;
         }
-        if address.length > self.budget_bytes {
+        if address.length > self.budget_bytes || self.budget_page_refs == 0 {
             self.skipped_by_budget = self.skipped_by_budget.saturating_add(1);
             self.skipped_by_budget_bytes =
                 self.skipped_by_budget_bytes.saturating_add(address.length);
             return false;
         }
         self.budget_bytes = self.budget_bytes.saturating_sub(address.length);
+        self.budget_page_refs = self.budget_page_refs.saturating_sub(1);
         true
     }
 

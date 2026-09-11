@@ -63,11 +63,13 @@ pub struct ShardCompactionReport {
     #[serde(rename = "compacted_page_slab_id")]
     pub compacted_block_slab_id: u64,
     pub rewritten_page_refs: usize,
-    /// Pages this round left where they were because it spent its byte budget.
+    /// Pages this round left where they were because it spent a budget -- bytes OR page refs,
+    /// whichever ran out first. In practice it is the ref budget: the byte one is 256 MiB and a
+    /// store that large is rare, while the ref budget is sized to bound the shard write lock.
     ///
     /// Non-zero means the round did NOT finish, and the next one continues filling the same slab
     /// rather than rolling a new one. Zero means compaction completed inside one round, which is
-    /// what every store small enough for the default budget does.
+    /// what every store smaller than a round's budget does.
     #[serde(default)]
     pub pages_left_by_budget: usize,
     #[serde(default)]
