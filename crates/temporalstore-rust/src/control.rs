@@ -253,6 +253,13 @@ pub struct ShardCanonicalStorageStats {
     /// O(1): a count the stats path already holds, times a compile-time size.
     #[serde(default)]
     pub bucket_index_resident_bytes_floor: u64,
+    /// How many buckets are actually resident -- `bucket_map.len()`.
+    ///
+    /// Distinct from `bucket_entries` above, which is the routing RANGE. The metric
+    /// `slot_index_entry_count` was published from that range and therefore read
+    /// 4,294,967,295 per shard no matter how large the index really was.
+    #[serde(default)]
+    pub bucket_index_resident_entries: u64,
     #[serde(rename = "storage_zone_count")]
     pub storage_band_count: u64,
     #[serde(rename = "active_storage_zones")]

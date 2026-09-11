@@ -444,7 +444,11 @@ fn apply_shard_storage_metrics(
         let page_entries = storage.page_index_entries.max(shard.total_records as u64);
         let block_entries = storage.block_index_entries.max(page_entries);
         let object_entries = storage.object_index_entries.max(shard.total_records as u64);
-        let bucket_entries = storage.bucket_entries.max(shard.dirty_bucket_count);
+        // NOT `storage.bucket_entries`: that is the routing RANGE, so this metric reported
+        // u32::MAX per shard -- summed across shards -- regardless of the real index size.
+        let bucket_entries = storage
+            .bucket_index_resident_entries
+            .max(shard.dirty_bucket_count);
         add(metrics, "object_index_entry_count", object_entries);
         add(metrics, "slot_index_entry_count", bucket_entries);
         add(metrics, "slot_object_ref_count", object_entries);
