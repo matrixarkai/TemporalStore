@@ -887,6 +887,20 @@ pub struct StorageManagerOptions {
     /// Drop rather than dump. Off by default: this is the arm that can lose unflushed state.
     #[serde(default)]
     pub eviction_delete_drop: bool,
+    /// How many hot buckets one expire stage may take. 0 means NO LIMIT, which is what this
+    /// loop has always passed -- so expiry walked the whole deadline map, hot and cold, on every
+    /// tick for every loaded shard. The on-demand cycle has always passed a bound (128) and
+    /// carried a cursor; this is what lets the periodic loop do the same.
+    ///
+    /// Left at 0 by default so the shipped behaviour is unchanged: with no limit the window
+    /// always reaches the end, so the cursor below stays `None` and nothing differs.
+    #[serde(default)]
+    #[serde(rename = "max_expire_hot_slots_per_round")]
+    pub max_expire_hot_buckets_per_round: usize,
+    /// The cold half of the same bound. 0 means no limit.
+    #[serde(default)]
+    #[serde(rename = "max_expire_cold_slots_per_round")]
+    pub max_expire_cold_buckets_per_round: usize,
 }
 
 /// Records that must be undumped before a dump is taken.
@@ -938,6 +952,9 @@ impl Default for StorageManagerOptions {
             eviction_batch_limit: 0,
             eviction_dump_before_evict: false,
             eviction_delete_drop: false,
+            // 0 = unbounded, the behaviour this loop has always had. See the field docs.
+            max_expire_hot_buckets_per_round: 0,
+            max_expire_cold_buckets_per_round: 0,
         }
     }
 }
@@ -1408,6 +1425,12 @@ struct DataNodeRuntimeInner {
     stats: Mutex<MutableRuntimeStats>,
     meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
     lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
+    /// Where each shard's expiry sweep left off, as (hot, cold).
+    ///
+    /// Only meaningful when a bound is set: an unbounded window always reaches the end and
+    /// returns `None`, so at the shipped default these stay `None` and cost nothing. Live-path
+    /// state, never persisted -- a reload re-derives deadlines and a fresh pass is correct.
+    expiry_cursors: Mutex<HashMap<ShardId, (Option<String>, Option<String>)>>,
     lifecycle_tokens: Mutex<HashMap<(ShardId, String), SchedulerLifecycleToken>>,
     lifecycle_snapshot_path: Option<PathBuf>,
     lifecycle_persistence: Mutex<DataNodeLifecyclePersistenceReport>,
@@ -1711,6 +1734,7 @@ impl DataNodeRuntime {
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
+            expiry_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
             lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
                 lifecycle_snapshot_path.as_ref(),
@@ -1834,6 +1858,7 @@ impl DataNodeRuntime {
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
+            expiry_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
             lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
                 lifecycle_snapshot_path.as_ref(),

@@ -3400,3 +3400,109 @@ fn the_periodic_loop_can_evict_when_the_operator_asks() {
         "the stage must be counted exactly once"
     );
 }
+
+#[test]
+fn the_periodic_expire_stage_takes_a_bounded_window_and_resumes_past_it() {
+    // The periodic loop passed `ShardExpirySweepRequest::default()`, whose limits are 0 -- and the
+    // window code says plainly that "zero limits mean no limit". So every tick walked the WHOLE
+    // deadline map, hot and cold, for every loaded shard, while the on-demand cycle passed 128 and
+    // carried a cursor. Measured by ablation, that stage was 201.5 ms at 20k objects.
+    //
+    // The fixture is built to make the CURSOR the thing under test. A first attempt used only
+    // expired keys and passed with resuming disabled -- removing a key deletes it, so the next
+    // round finds the next one whether or not it resumed. The cursor only earns its keep when a
+    // round EXAMINES keys it does not remove: here a long-lived prefix that the window selects
+    // (they exist) but the sweep never deletes (they are not due). Without resuming, every round
+    // re-examines that same prefix and never reaches anything expired.
+    const LIVE_PREFIX: usize = 20;
+    const EXPIRED: usize = 20;
+    const WINDOW: usize = 4;
+
+    fn runtime_with_a_live_prefix() -> DataNodeRuntime {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        // Sorted before the expired ones, so they are what a window from the start lands on.
+        for index in 0..LIVE_PREFIX {
+            let key = format!("aaa-live-{index:04}");
+            assert!(engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: key.clone(), value: vec![b'v'; 32] },
+                })
+                .status
+                .ok);
+            assert!(engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonExpire { key, ttl_ms: 10 * 60 * 1000 },
+                })
+                .status
+                .ok);
+        }
+        for index in 0..EXPIRED {
+            let key = format!("zzz-dead-{index:04}");
+            assert!(engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: key.clone(), value: vec![b'v'; 32] },
+                })
+                .status
+                .ok);
+            assert!(engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonExpire { key, ttl_ms: 1 },
+                })
+                .status
+                .ok);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        )
+    }
+
+    // CONTROL: the shipped default is unbounded and must still clear every expired key in one
+    // round. This is what says the change is opt-in, not a silent slowdown of expiry.
+    let unbounded = runtime_with_a_live_prefix();
+    let cleared = unbounded.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        cleared.executed_stages.iter().any(|stage| stage == "expire"),
+        "expire must run: {:?}",
+        cleared.executed_stages
+    );
+    assert_eq!(
+        unbounded.stats().expired_records_removed,
+        EXPIRED as u64,
+        "the shipped default must still clear every expired key in one round"
+    );
+
+    // Bounded: each round takes a window of live-but-not-due keys and RESUMES past them, so it
+    // eventually reaches the expired tail. Without resuming this stays at 0 for ever.
+    let bounded = runtime_with_a_live_prefix();
+    let options = StorageManagerOptions {
+        max_expire_hot_buckets_per_round: WINDOW,
+        max_expire_cold_buckets_per_round: WINDOW,
+        ..StorageManagerOptions::default()
+    };
+    let rounds = LIVE_PREFIX / WINDOW + 3;
+    for _ in 0..rounds {
+        bounded.run_storage_manager_once(1, options.clone());
+    }
+    let removed = bounded.stats().expired_records_removed;
+    assert!(
+        removed > 0,
+        "after {rounds} bounded rounds the sweep must have resumed past the {LIVE_PREFIX} \
+         live keys and reached the expired tail, but removed {removed}"
+    );
+    assert!(
+        removed < EXPIRED as u64,
+        "a bounded sweep must not clear the whole tail at once -- that would mean the bound \
+         is not binding: removed {removed} of {EXPIRED}"
+    );
+}
