@@ -1097,7 +1097,12 @@ SETTINGS.extend([
             'Dims. Defaults to 512. Read by matrixark_mcp_embeddings.'),
     Setting("embedding.require_oss_embeddings", "embedding", "MATRIXARK_REQUIRE_OSS_EMBEDDINGS",
             "Require oss embeddings", "bool", "0", "live",
-            'Require oss embeddings. Off by default. Read by matrixark_mcp_core.'),
+            "Makes a failed local sentence-transformers call RAISE instead of falling back to "
+            "hash vectors. Off, the fallback is silent: hash vectors answer 200 and retrieve "
+            "plausibly while poisoning the store with 32-dimension data that only shows up as "
+            "bad recall much later. Guards the locally loaded model only -- the hosted endpoint "
+            "has its own MATRIXARK_REQUIRE_API_EMBEDDINGS, and MATRIXARK_REQUIRE_MODEL_EMBEDDINGS "
+            "is the form that covers both."),
     Setting("embedding.rust_proxy_native_c_api_compat", "embedding", "MATRIXARK_RUST_PROXY_NATIVE_MATRIXARK_C_API_COMPAT",
             "Rust proxy native c api compat", "bool", "0", "live",
             'Rust proxy native c api compat. Off by default. Read by matrixark_mcp_rust_proxy_process, matrixark_mcp_temporal_adapters.'),
@@ -1107,10 +1112,19 @@ SETTINGS.extend([
             "matrixark_resource_parser."),
     Setting("embedding.vector_base64", "embedding", "MATRIXARK_EMBEDDING_VECTOR_BASE64",
             "Vector base64", "bool", "1", "restart",
-            "Vector base64. On by default. Frozen when the process starts. Read by matrixark_mcp_core."),
+            "Writes each stored vector as one base64 string instead of a JSON list of numbers. "
+            "REVERSIBLE: reads accept both forms, so a store written under one setting serves "
+            "under the other, and turning it off writes lists again. It was held off until every "
+            "reader went through decode_stored_vector, because the failure mode is silent rather "
+            "than loud -- a reader expecting a list and handed a string does not raise, it reads "
+            "the vector as ABSENT, and that node simply stops being scored."),
     Setting("embedding.vector_int8", "embedding", "MATRIXARK_EMBEDDING_VECTOR_INT8",
             "Vector int8", "bool", "0", "restart",
-            "Vector int8. Off by default. Frozen when the process starts. Read by matrixark_mcp_core."),
+            "Quantises each vector into [-127, 127] scaled by its own max magnitude. Smallest on "
+            "disk, and NOT RECOMMENDED for retrieval: measured against the same candidate set it "
+            "loses half the top-10 -- top-1 correct 1 of 6 where scaled integers score 6 of 6. "
+            "Prefer MATRIXARK_EMBEDDING_VECTOR_SCALE=100000, which is exact on that test and "
+            "still 67.9% of the float size."),
     Setting("extraction.require_llm_time_compression", "extraction", "MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION",
             "Require llm time compression", "bool", "0", "restart",
             "Require llm time compression. Off by default. Frozen when the process starts. Read by "
@@ -1133,8 +1147,10 @@ SETTINGS.extend([
             "Read by matrixark_mcp_core."),
     Setting("ingestion.allow_local_backend", "ingestion", "MATRIXARK_ALLOW_LOCAL_BACKEND",
             "Allow local backend", "bool", "0", "restart",
-            "Allow local backend. Off by default. Frozen when the process starts. Read by "
-            "matrixark_codex_hook, matrixark_mcp_runtime_config."),
+            "Permits --backend local under the production or benchmark profile, which otherwise "
+            "refuses it and requires temporalstore-direct or temporalstore-rust. The refusal "
+            "exists because a deployed gateway must never silently fall back to the O(store) "
+            "JSONL local backend. For debugging only."),
     Setting("ingestion.idle_drain_min_interval_ms", "ingestion", "MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS",
             "Idle drain min interval ms", "int", "1000", "live",
             'Idle drain minimum interval milliseconds. Defaults to 1000. Read by matrixark_local_adapter_retrieval.'),
@@ -1392,7 +1408,10 @@ SETTINGS.extend([
             'Hook additional context char limit. Defaults to 40000. Read by matrixark_codex_hook.'),
     Setting("retrieval.hook_fail_open", "retrieval", "MATRIXARK_HOOK_FAIL_OPEN",
             "Hook fail open", "bool", "1", "live",
-            'Hook fail open. On by default. Read by matrixark_codex_hook.'),
+            "On, a hook that fails lets the operation through and prints the failure. Off, a "
+            "failing hook blocks the operation it was called from. On is the safer default for "
+            "an agent hook: a memory write that cannot happen should not stop the work that "
+            "produced it."),
     Setting("retrieval.memory_purge_threshold", "retrieval", "MATRIXARK_MEMORY_PURGE_THRESHOLD",
             "Memory purge threshold", "int", "0", "live",
             'Memory purge threshold. Defaults to 0. Read by matrixark_mcp_local_adapter.'),
@@ -1402,8 +1421,8 @@ SETTINGS.extend([
             "by matrixark_mcp_runtime_config."),
     Setting("retrieval.pack_raw_precision", "retrieval", "MATRIXARK_PACK_RAW_PRECISION",
             "Pack raw precision", "bool", "0", "restart",
-            "Pack raw precision. Off by default. Frozen when the process starts. Read by "
-            "matrixark_mcp_core_packing."),
+            "Shifts events up and summaries down in the pack ordering for precision questions, "
+            "where the exact wording of what was said matters more than a rollup of it."),
     Setting("retrieval.query_rewrite_window", "retrieval", "MATRIXARK_QUERY_REWRITE_WINDOW",
             "Query rewrite window", "int", "3", "restart",
             "Query rewrite window. Defaults to 3. Frozen when the process starts. Read by "
