@@ -1536,26 +1536,40 @@ SETTINGS.extend([
             "matrixark_mcp_core."),
     Setting("skills.resource_append_batch_records", "skills", "MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS",
             "Resource append batch records", "int", "512", "restart",
-            "Resource append batch records. Defaults to 512. Frozen when the process starts. Read by "
-            "matrixark_mcp_ingest_resource_chunk_records."),
+            "How many chunk records accumulate before they are handed to the adapter in one "
+            "append_many. Lower means more, smaller store writes during a large import; "
+            "higher means more records held in memory before the first of them is durable."),
     Setting("skills.resource_async_default_path_count", "skills", "MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT",
             "Resource async default path count", "int", "32", "restart",
-            "Resource async default path count. Defaults to 32. Frozen when the process starts. Read by "
-            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+            "How many files a directory may hold before its import runs in the background "
+            "instead of in the call. One of three thresholds that decide the same thing -- the "
+            "others are MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS and "
+            "MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES -- and the first one reached wins and names "
+            "itself as the recorded reason. Passing an explicit wait argument skips all "
+            "three."),
     Setting("skills.resource_async_default_text_chars", "skills", "MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS",
             "Resource async default text chars", "int", "200000", "restart",
-            "Resource async default text chars. Defaults to 200000. Frozen when the process starts. Read "
-            "by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+            "How many characters of inline text an import may carry before it runs in the "
+            "background instead of in the call. This is the first of the three thresholds "
+            "checked, ahead of MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES and "
+            "MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT, and an explicit wait argument skips "
+            "all of them."),
     Setting("skills.resource_event_text_chars", "skills", "MATRIXARK_RESOURCE_EVENT_TEXT_CHARS",
             "Resource event text chars", "int", "4096", "restart",
-            "Resource event text chars. Defaults to 4096. Frozen when the process starts. Read by "
-            "matrixark_mcp_core_resource_io."),
+            "How much of a resource or skill document its context_event keeps, with a pointer "
+            "to the rest. The document used to be stored three times -- once in the chunks, "
+            "once in the event, once inside the session buffer envelope -- and on a 66.2 KB "
+            "file the event alone was 1.05x the source. Set 0 to store the full text. Message "
+            "records are not bounded by this."),
     Setting("skills.resource_import_queue_max", "skills", "MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX",
             "Resource import queue max", "int", "64", "live",
             'Resource import queue maximum. Defaults to 64. Read by matrixark_mcp_local_adapter.'),
     Setting("skills.resource_import_workers", "skills", "MATRIXARK_RESOURCE_IMPORT_WORKERS",
             "Resource import workers", "int", "2", "live",
-            'Resource import workers. Defaults to 2. Read by matrixark_mcp_local_adapter.'),
+            "How many background threads drain the resource import queue. The queue itself "
+            "holds MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX entries (64) and an import that finds "
+            "it full RAISES rather than waiting, so the two numbers set how much work can be "
+            "in flight before a caller is refused."),
     Setting("skills.resource_json_records_per_chunk", "skills", "MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK",
             "Resource json records per chunk", "int", "20", "restart",
             "Resource json records per chunk. Defaults to 20. Frozen when the process starts. Read by "
