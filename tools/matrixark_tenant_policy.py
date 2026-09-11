@@ -653,12 +653,25 @@ def _user_aliases(tenant_id: str, user_id: str) -> list[str]:
     try:
         from matrixark_mcp_identity import identity_hashes  # type: ignore
 
+        # BROKEN, and deliberately left so rather than patched blind: identity_hashes takes
+        # (account_id, tenant_id, user_id=...), so this one-dict call raises TypeError on EVERY
+        # call and the handler below swallows it. The hashed user alias has therefore never been
+        # produced -- on the write path either, since _persist_user_policy keys by these same
+        # aliases, so nothing depends on it existing.
+        #
+        # There is no correct argument to pass from here. Every production caller of
+        # identity_hashes supplies a real account_id and the user_hash a record carries is derived
+        # from it; this function is given only a tenant and a user. Passing "" yields a different
+        # tenant_hash than tenant_hash_of() does -- 1004798881946030977 against
+        # 4168368968138697317 for the same tenant, measured -- so the alias would match nothing.
+        # Repairing it means deciding which account the policy layer hashes with, which is a
+        # signature change.
         hashed = identity_hashes({"tenant_id": tenant_id, "user_id": user_id}) or {}
         candidate = str(hashed.get("user_hash") or "").strip()
         if candidate and candidate not in users:
             users.append(candidate)
     except Exception:
-        # Identity helpers are optional here, exactly as they are for the tenant aliases.
+        # Reached on every call today, by the TypeError above -- not by an absent identity layer.
         pass
     return [user_key(tenant_alias, user)
             for tenant_alias in _tenant_aliases(tenant_id)
