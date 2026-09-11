@@ -906,6 +906,28 @@ impl TemporalEngine {
                 create_dump_manifest: request.enable_wal_reclaim,
                 install_dump_manifest: false,
             });
+        // Its own stage, because it is its own work: this report runs a lifecycle plan, an apply
+        // and a recovery-boundary report (which reads every live page).
+        //
+        // `stage_clock` measures from the PREVIOUS stage's push, so before this entry existed
+        // every millisecond of that landed on `compact`. Compaction then read as the most
+        // expensive stage of the round at 32,000 records -- about 1.7 s -- while reporting
+        // `skipped=true` and moving zero pages, because it was being charged for work it does
+        // not do. A stage report that names the wrong stage is worse than no stage report: it
+        // sends whoever reads it to optimise the wrong function, which is exactly what it did.
+        stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
+            stage: "merged_dump_load_policy".to_string(),
+            enabled: true,
+            applied: true,
+            skipped: false,
+            reason: "dump-load policy: plan, apply and recovery boundary".to_string(),
+            ..StorageManagerStageReport::default()
+        });
 
         let should_compact = request.enable_page_compaction
             && !request.dry_run
