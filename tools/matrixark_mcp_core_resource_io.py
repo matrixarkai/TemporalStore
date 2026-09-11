@@ -93,7 +93,7 @@ def resource_chunk_materialization_enabled(args: Json, envelope: Json) -> bool:
     return value != ATTACHMENT_RESOURCE_POLICY
 
 
-RESOURCE_EVENT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_EVENT_TEXT_CHARS", "4096"))
+RESOURCE_EVENT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_EVENT_TEXT_CHARS", "").strip() or "4096")
 
 
 def bound_resource_event_text(kind: str, text: str, raw_uri: str) -> str:

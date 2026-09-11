@@ -62,7 +62,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 # keywords_for_text defaults to 12 terms, which covers only a chunk's opening: a needle at
 # 97% through a 215-token chunk matched 0 of its keywords at 12 and all 8 at 200. Complete
 # coverage needs roughly 76 per chunk, which is only affordable with posting lists.
-INDEX_KEYWORD_LIMIT = int(os.environ.get("MATRIXARK_INDEX_KEYWORD_LIMIT", "12"))
+INDEX_KEYWORD_LIMIT = int(os.environ.get("MATRIXARK_INDEX_KEYWORD_LIMIT", "").strip() or "12")
 
 # Default ON. One index record per (chunk, term) pair is 83.3% of everything a skill ingest
 # writes -- 33,020 of the 39,624 records a 1 MB skill produces. Coalescing them into one posting
@@ -149,7 +149,7 @@ DEDUPE_SKILL_CHUNK_TEXT = os.environ.get(
 ).strip().lower() not in {"0", "false", "no", "off", ""}
 
 RESOURCE_APPEND_BATCH_RECORDS = int(
-    os.environ.get("MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS", "512")
+    os.environ.get("MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS", "").strip() or "512"
 )
 
 

@@ -48,7 +48,7 @@ Json = dict[str, Any]
 SourceRef = tuple[int, str | None] | tuple[int, str | None, str | None]
 # 256, matching the serving modules. This said 4096: the backfill wrote 4096 records per shard
 # while serving read 256 per shard, so the two disagreed about where a record lives.
-DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "256"))
+DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "").strip() or "256")
 
 VOLATILE_SERVING_FINGERPRINT_FIELDS = {
     'context_event_key',

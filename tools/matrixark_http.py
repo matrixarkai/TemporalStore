@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     except Exception:
         _BACKEND_DEFAULT_MAX_CONTEXT_TOKENS = 500000
 GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS = int(
-    os.environ.get("MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS", str(_BACKEND_DEFAULT_MAX_CONTEXT_TOKENS))
+    os.environ.get("MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS", "").strip() or str(_BACKEND_DEFAULT_MAX_CONTEXT_TOKENS)
 )
 
 def _coerce_http_value(value: str) -> Any:

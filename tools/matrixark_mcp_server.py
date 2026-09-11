@@ -176,10 +176,10 @@ __all__ = [
 # `idle_commit_task_records`) -- never Python `read_all`, and never a full-store scan. It is
 # started per worker process and wired into the gateway lifespan (see
 # matrixark_v1_gateway.create_v1_app / the ASGI lifespan handler). 0 disables the loop.
-STREAM_MATERIALIZE_INTERVAL_MS = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS", "1500"))
+STREAM_MATERIALIZE_INTERVAL_MS = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS", "").strip() or "1500")
 # Hard cap on tracked pending scopes so a slow/stuck backend cannot grow the registry without
 # bound; the durable scheduled-task record + retrieve-time flush remain the backstop.
-STREAM_MATERIALIZE_MAX_SCOPES = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_MAX_SCOPES", "20000"))
+STREAM_MATERIALIZE_MAX_SCOPES = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_MAX_SCOPES", "").strip() or "20000")
 
 
 try:
@@ -239,7 +239,7 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
     SERVER_VERSION = "0.2.0"
     DEFAULT_PROTOCOL_VERSION = "2025-06-18"
     DEFAULT_REQUEST_DEADLINES_MS = {
-        "matrixark_ingest": int(os.environ.get("MATRIXARK_INGEST_TIMEOUT_MS", "30000")),
+        "matrixark_ingest": int(os.environ.get("MATRIXARK_INGEST_TIMEOUT_MS", "").strip() or "30000"),
         # Retrieve deadline default: a cold-start proxy scans the full serving-record
         # set (thousands of records) before scoring, which routinely exceeds the old
         # 5000ms ceiling and made the server discard the real ContextPack for an empty
@@ -248,17 +248,17 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # MATRIXARK_RETRIEVAL_TIMEOUT_MS, the one spelling every caller in the tree uses. Actual
         # warm/cold retrieve latency stays well under this ceiling; this only prevents premature
         # abort of an in-flight retrieve.
-        "matrixark_retrieve": int(os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "30000")),
-        "matrixark_feedback": int(os.environ.get("MATRIXARK_FEEDBACK_TIMEOUT_MS", "15000")),
-        "matrixark_replay": int(os.environ.get("MATRIXARK_REPLAY_TIMEOUT_MS", "10000")),
-        "matrixark_admin": int(os.environ.get("MATRIXARK_ADMIN_TIMEOUT_MS", "10000")),
+        "matrixark_retrieve": int(os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "").strip() or "30000"),
+        "matrixark_feedback": int(os.environ.get("MATRIXARK_FEEDBACK_TIMEOUT_MS", "").strip() or "15000"),
+        "matrixark_replay": int(os.environ.get("MATRIXARK_REPLAY_TIMEOUT_MS", "").strip() or "10000"),
+        "matrixark_admin": int(os.environ.get("MATRIXARK_ADMIN_TIMEOUT_MS", "").strip() or "10000"),
     }
     DEFAULT_OPERATION_CONCURRENCY = {
-        "ingest": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_INGEST", "32")),
+        "ingest": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_INGEST", "").strip() or "32"),
         "retrieve": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_RETRIEVE", str(max(4, min(8, (os.cpu_count() or 8) // 2))))),
-        "feedback": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_FEEDBACK", "16")),
-        "replay": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_REPLAY", "16")),
-        "admin": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_ADMIN", "16")),
+        "feedback": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_FEEDBACK", "").strip() or "16"),
+        "replay": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_REPLAY", "").strip() or "16"),
+        "admin": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_ADMIN", "").strip() or "16"),
     }
 
     def __init__(self, adapter: MatrixArkLocalAdapter, *, line_json: bool = False, access_mode: str = "dev") -> None:
