@@ -2839,14 +2839,13 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_slab_descriptor_carries_the_same_number_twice() {
         // `band_id_for_slab` is the identity function, so a descriptor's `band_id` and its
         // `block_slab_id` are ONE value under two names. Every construction site says so:
         // band_id_for_slab(inner.block_slab_id), band_id_for_slab(band.block_slab_id),
         // band_id_for_slab(new_slab_id).
         //
-        // `rolled_slabs_stamp_new_band_ids` above pins that for an ADDRESS. This pins it for the
+        // `rolled_slabs_stamp_new_slab_ids` below pins that for an ADDRESS. This pins it for the
         // DESCRIPTOR, which is the struct that actually stores both, and where a caller picks
         // whichever name is nearer without it mattering today.
         //
@@ -2872,6 +2871,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn rolled_slabs_stamp_new_slab_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
