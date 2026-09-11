@@ -40,7 +40,8 @@ pub struct AppendBlobReceipt {
     pub end_offset: u64,
     pub bytes_written: u64,
     pub object_length: u64,
-    pub physical_band_count: usize,
+    #[serde(rename = "physical_band_count")]
+    pub physical_slab_count: usize,
     pub first_physical_offset: Option<u64>,
 }
 
@@ -60,7 +61,7 @@ pub trait ObjectStore: Send + Sync {
             end_offset: bytes_written,
             bytes_written,
             object_length: bytes_written,
-            physical_band_count: 0,
+            physical_slab_count: 0,
             first_physical_offset: None,
         })
     }
@@ -629,7 +630,7 @@ impl ObjectStore for FileObjectStore {
             end_offset,
             bytes_written,
             object_length: end_offset,
-            physical_band_count: 0,
+            physical_slab_count: 0,
             first_physical_offset: None,
         })
     }

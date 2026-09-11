@@ -377,7 +377,8 @@ pub struct BlockStoreStats {
     /// cost n manifests -- and each install cost time proportional to how many slabs already
     /// existed. Counted rather than timed, because a count says the same thing on a busy machine.
     #[serde(default)]
-    pub band_manifest_writes: u64,
+    #[serde(rename = "band_manifest_writes")]
+    pub slab_manifest_writes: u64,
     /// Slabs fetched on-demand from a shared-storage read-through source (conformance
     /// lazy recovery). Each shared slab is fetched at most once, only when a read
     /// misses it locally; a nonzero count proves recovery did not install every slab
@@ -506,7 +507,8 @@ pub struct BlockStoreGcPolicy {
     /// behavior). The garbage-ratio gate (reclaim the most-garbage zones),
     /// expressed against Rust bands.
     #[serde(default)]
-    pub min_band_garbage_basis_points: Option<u64>,
+    #[serde(rename = "min_band_garbage_basis_points")]
+    pub min_slab_garbage_basis_points: Option<u64>,
 }
 
 impl BlockStoreGcPolicy {
@@ -516,7 +518,7 @@ impl BlockStoreGcPolicy {
             max_destroy_physical_bytes: 0,
             max_utility_score: None,
             min_age_ms: None,
-            min_band_garbage_basis_points: None,
+            min_slab_garbage_basis_points: None,
         }
     }
 
@@ -524,7 +526,7 @@ impl BlockStoreGcPolicy {
     /// `min_band_garbage_basis_points`, highest-garbage first, optionally bounded by a
     /// minimum band age. Mirrors selecting the maximum-garbage-rate zone under GC.
     pub fn with_band_garbage_floor(
-        min_band_garbage_basis_points: u64,
+        min_slab_garbage_basis_points: u64,
         min_age_ms: Option<u64>,
     ) -> Self {
         Self {
@@ -532,7 +534,7 @@ impl BlockStoreGcPolicy {
             max_destroy_physical_bytes: 0,
             max_utility_score: None,
             min_age_ms,
-            min_band_garbage_basis_points: Some(min_band_garbage_basis_points),
+            min_slab_garbage_basis_points: Some(min_slab_garbage_basis_points),
         }
     }
 }
@@ -665,13 +667,17 @@ pub struct BlockStoreSlabDescriptor {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabSummary {
     #[serde(alias = "active_zones")]
-    pub active_bands: u64,
+    #[serde(rename = "active_bands")]
+    pub active_slabs: u64,
     #[serde(alias = "sealed_zones")]
-    pub sealed_bands: u64,
+    #[serde(rename = "sealed_bands")]
+    pub sealed_slabs: u64,
     #[serde(alias = "delayed_destroy_zones")]
-    pub delayed_destroy_bands: u64,
+    #[serde(rename = "delayed_destroy_bands")]
+    pub delayed_destroy_slabs: u64,
     #[serde(alias = "purged_zones")]
-    pub purged_bands: u64,
+    #[serde(rename = "purged_bands")]
+    pub purged_slabs: u64,
     pub active_physical_bytes: u64,
     pub sealed_physical_bytes: u64,
     pub delayed_destroy_physical_bytes: u64,
@@ -684,13 +690,15 @@ pub struct BlockStoreSlabSummary {
         alias = "oldest_known_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_known_band_unix_ms: Option<u64>,
+    #[serde(rename = "oldest_known_band_unix_ms")]
+    pub oldest_known_slab_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_known_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_known_band_age_ms: Option<u64>,
+    #[serde(rename = "oldest_known_band_age_ms")]
+    pub oldest_known_slab_age_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_live_zone_unix_ms",
@@ -755,13 +763,17 @@ pub struct StreamBackedSlabRuntimeReport {
     #[serde(alias = "extent_count", alias = "zone_count")]
     pub band_count: u64,
     #[serde(alias = "active_zones")]
-    pub active_bands: u64,
+    #[serde(rename = "active_bands")]
+    pub active_slabs: u64,
     #[serde(alias = "sealed_zones")]
-    pub sealed_bands: u64,
+    #[serde(rename = "sealed_bands")]
+    pub sealed_slabs: u64,
     #[serde(alias = "delayed_destroy_zones")]
-    pub delayed_destroy_bands: u64,
+    #[serde(rename = "delayed_destroy_bands")]
+    pub delayed_destroy_slabs: u64,
     #[serde(alias = "purged_zones")]
-    pub purged_bands: u64,
+    #[serde(rename = "purged_bands")]
+    pub purged_slabs: u64,
     #[serde(rename = "zone_stats_ready", default)]
     pub band_stats_ready: bool,
     #[serde(rename = "zone_usage", default)]
@@ -972,7 +984,7 @@ struct BlockStoreInner {
     /// Slab installs since the manifest was last written out. Writing it costs the whole manifest,
     /// so it is written every so often rather than every install; the load rebuilds from the slabs
     /// when what it reads does not match them.
-    bands_unwritten: usize,
+    slabs_unwritten: usize,
     band_manifest_reconciled_on_open: bool,
     stats: BlockStoreStats,
     // Optional shared-storage read-through (on-demand lazy recovery): set by
@@ -1076,7 +1088,7 @@ impl LocalBlockStore {
                 next_page_id,
                 options,
                 bands,
-                bands_unwritten: 0,
+                slabs_unwritten: 0,
                 band_manifest_reconciled_on_open,
                 stats: BlockStoreStats::default(),
                 shared_slab_source: None,
@@ -1632,16 +1644,16 @@ fn roll_slab_inner(
 
 fn band_lifecycle_states(summary: &BlockStoreSlabSummary) -> Vec<String> {
     let mut states = Vec::new();
-    if summary.active_bands > 0 {
+    if summary.active_slabs > 0 {
         states.push("active".to_string());
     }
-    if summary.sealed_bands > 0 {
+    if summary.sealed_slabs > 0 {
         states.push("sealed".to_string());
     }
-    if summary.delayed_destroy_bands > 0 {
+    if summary.delayed_destroy_slabs > 0 {
         states.push("delayed_destroy".to_string());
     }
-    if summary.purged_bands > 0 {
+    if summary.purged_slabs > 0 {
         states.push("purged".to_string());
     }
     states
@@ -2873,10 +2885,10 @@ mod tests {
         assert!(bands[1].updated_unix_ms.is_some());
         assert!(band_manifest_path(dir.path()).exists());
         let initial_summary = store.band_summary();
-        assert_eq!(initial_summary.sealed_bands, 1);
-        assert_eq!(initial_summary.active_bands, 1);
-        assert_eq!(initial_summary.delayed_destroy_bands, 0);
-        assert_eq!(initial_summary.purged_bands, 0);
+        assert_eq!(initial_summary.sealed_slabs, 1);
+        assert_eq!(initial_summary.active_slabs, 1);
+        assert_eq!(initial_summary.delayed_destroy_slabs, 0);
+        assert_eq!(initial_summary.purged_slabs, 0);
         assert_eq!(
             initial_summary.sealed_physical_bytes,
             bands[0].physical_bytes
@@ -2890,8 +2902,8 @@ mod tests {
             bands[0].physical_bytes + bands[1].physical_bytes
         );
         assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
-        assert!(initial_summary.oldest_known_band_unix_ms.is_some());
-        assert!(initial_summary.oldest_known_band_age_ms.is_some());
+        assert!(initial_summary.oldest_known_slab_unix_ms.is_some());
+        assert!(initial_summary.oldest_known_slab_age_ms.is_some());
         assert!(initial_summary.oldest_live_band_unix_ms.is_some());
         assert!(initial_summary.oldest_live_band_age_ms.is_some());
         assert!(initial_summary.oldest_reclaimable_band_unix_ms.is_none());
@@ -2965,8 +2977,8 @@ mod tests {
         assert!(delayed[0].updated_unix_ms >= bands[0].updated_unix_ms);
         assert_eq!(delayed[1].state, BlockStoreSlabState::Active);
         let delayed_summary = reopened.band_summary();
-        assert_eq!(delayed_summary.delayed_destroy_bands, 1);
-        assert_eq!(delayed_summary.active_bands, 1);
+        assert_eq!(delayed_summary.delayed_destroy_slabs, 1);
+        assert_eq!(delayed_summary.active_slabs, 1);
         assert_eq!(
             delayed_summary.delayed_destroy_physical_bytes,
             delayed[0].physical_bytes
@@ -2979,7 +2991,7 @@ mod tests {
             delayed_summary.live_physical_bytes,
             delayed[1].physical_bytes
         );
-        assert!(delayed_summary.oldest_known_band_unix_ms.is_some());
+        assert!(delayed_summary.oldest_known_slab_unix_ms.is_some());
         assert!(delayed_summary.oldest_live_band_unix_ms.is_some());
         assert_eq!(
             delayed_summary.oldest_reclaimable_band_unix_ms,
@@ -3008,8 +3020,8 @@ mod tests {
         assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
         assert_eq!(purged[1].state, BlockStoreSlabState::Active);
         let purged_summary = LocalBlockStore::new(dir.path()).band_summary();
-        assert_eq!(purged_summary.purged_bands, 1);
-        assert_eq!(purged_summary.active_bands, 1);
+        assert_eq!(purged_summary.purged_slabs, 1);
+        assert_eq!(purged_summary.active_slabs, 1);
         assert_eq!(
             purged_summary.purged_physical_bytes,
             purged[0].physical_bytes
@@ -3026,7 +3038,7 @@ mod tests {
             purged[0].physical_bytes
         );
         assert_eq!(purged_first.reclaimable_page_store_used_bytes, 0);
-        assert!(purged_summary.oldest_known_band_unix_ms.is_some());
+        assert!(purged_summary.oldest_known_slab_unix_ms.is_some());
         assert!(purged_summary.oldest_live_band_unix_ms.is_some());
         assert!(purged_summary.oldest_reclaimable_band_unix_ms.is_none());
         assert!(purged_summary.oldest_reclaimable_band_age_ms.is_none());
@@ -3339,8 +3351,8 @@ mod tests {
         assert_eq!(third.block_slab_id, roll.new_block_slab_id);
         let before_gc = store.stream_backed_band_runtime_report().unwrap();
         assert!(before_gc.runtime_ready, "{before_gc:?}");
-        assert_eq!(before_gc.active_bands, 1);
-        assert_eq!(before_gc.sealed_bands, 1);
+        assert_eq!(before_gc.active_slabs, 1);
+        assert_eq!(before_gc.sealed_slabs, 1);
         assert_eq!(before_gc.band_lifecycle_states, vec!["active", "sealed"]);
         assert_eq!(before_gc.stream_record_count, 3);
         assert_eq!(before_gc.first_page_id, first.page_id());
@@ -3375,8 +3387,8 @@ mod tests {
         assert_eq!(reopened.read(&third).unwrap(), third_payload);
         let report = reopened.stream_backed_band_runtime_report().unwrap();
         assert!(report.runtime_ready, "{report:?}");
-        assert_eq!(report.active_bands, 1);
-        assert_eq!(report.delayed_destroy_bands, 1);
+        assert_eq!(report.active_slabs, 1);
+        assert_eq!(report.delayed_destroy_slabs, 1);
         assert_eq!(
             report.band_lifecycle_states,
             vec!["active", "delayed_destroy"]
@@ -3428,9 +3440,9 @@ mod tests {
             .stream_backed_band_runtime_report()
             .unwrap();
         assert!(purged.runtime_ready, "{purged:?}");
-        assert_eq!(purged.active_bands, 1);
-        assert_eq!(purged.delayed_destroy_bands, 0);
-        assert_eq!(purged.purged_bands, 1);
+        assert_eq!(purged.active_slabs, 1);
+        assert_eq!(purged.delayed_destroy_slabs, 0);
+        assert_eq!(purged.purged_slabs, 1);
         assert_eq!(purged.band_lifecycle_states, vec!["active", "purged"]);
         assert!(purged.band_stats_ready);
         assert!(purged
@@ -3903,7 +3915,7 @@ mod tests {
             max_destroy_physical_bytes: b"small".len() as u64,
             max_utility_score: Some(0),
             min_age_ms: Some(0),
-            min_band_garbage_basis_points: None,
+            min_slab_garbage_basis_points: None,
         };
         let plan = store.gc_policy_plan(3, [2_u64], &policy).unwrap();
         assert_eq!(plan.retain_from_block_slab_id, 3);
@@ -3996,7 +4008,7 @@ mod tests {
         for id in 0..slabs {
             store.install_slab(id, b"slab-contents").unwrap();
         }
-        let writes = store.stats().band_manifest_writes;
+        let writes = store.stats().slab_manifest_writes;
         assert!(
             writes < slabs / 8,
             "installing {slabs} slabs wrote the manifest {writes} times; one per install is what \

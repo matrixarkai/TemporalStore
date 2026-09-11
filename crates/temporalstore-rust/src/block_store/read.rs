@@ -170,10 +170,10 @@ impl LocalBlockStore {
         // manifest, so doing it per install makes installing n slabs cost n manifests. The load
         // rebuilds from the slabs when what it reads does not match them, so the worst a deferred
         // write costs is a rebuild after a crash.
-        inner.bands_unwritten = inner.bands_unwritten.saturating_add(1);
-        if inner.bands_unwritten >= BANDS_UNWRITTEN_BEFORE_PERSIST {
-            inner.bands_unwritten = 0;
-            inner.stats.band_manifest_writes = inner.stats.band_manifest_writes.saturating_add(1);
+        inner.slabs_unwritten = inner.slabs_unwritten.saturating_add(1);
+        if inner.slabs_unwritten >= BANDS_UNWRITTEN_BEFORE_PERSIST {
+            inner.slabs_unwritten = 0;
+            inner.stats.slab_manifest_writes = inner.stats.slab_manifest_writes.saturating_add(1);
             persist_band_manifest(&inner.root, &inner.bands)?;
         }
         Ok(())

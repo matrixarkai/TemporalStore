@@ -142,7 +142,7 @@ pub struct SharedStoreWalOffsetMetadata {
     pub wal_blob_bytes_written: u64,
     pub wal_blob_object_length: u64,
     #[serde(default)]
-    pub wal_blob_physical_band_count: u64,
+    pub wal_blob_physical_slab_count: u64,
     pub wal_blob_first_physical_offset: Option<u64>,
     pub command_byte_size: u64,
     pub command_sha256: String,
@@ -441,7 +441,7 @@ struct SharedStoreWalOffsetMetadataProto {
     #[prost(uint32, tag = "10")]
     command_encoding: u32,
     #[prost(uint64, tag = "11")]
-    wal_blob_physical_band_count: u64,
+    wal_blob_physical_slab_count: u64,
     #[prost(uint64, optional, tag = "12")]
     wal_blob_first_physical_offset: Option<u64>,
 }
@@ -720,7 +720,7 @@ where
             wal_blob_end_offset: receipt.end_offset,
             wal_blob_bytes_written: receipt.bytes_written,
             wal_blob_object_length: receipt.object_length,
-            wal_blob_physical_band_count: receipt.physical_band_count as u64,
+            wal_blob_physical_slab_count: receipt.physical_slab_count as u64,
             wal_blob_first_physical_offset: receipt.first_physical_offset,
             command_byte_size: command_metadata.byte_size,
             command_sha256: command_metadata.sha256,
@@ -819,7 +819,7 @@ where
                 wal_blob_end_offset: end,
                 wal_blob_bytes_written: frame_len,
                 wal_blob_object_length: receipt.object_length,
-                wal_blob_physical_band_count: receipt.physical_band_count as u64,
+                wal_blob_physical_slab_count: receipt.physical_slab_count as u64,
                 wal_blob_first_physical_offset: receipt.first_physical_offset,
                 command_byte_size: metadata.byte_size,
                 command_sha256: metadata.sha256,
@@ -2590,7 +2590,7 @@ fn encode_wal_offset_metadata_frame(metadata: &SharedStoreWalOffsetMetadata) -> 
         command_byte_size: metadata.command_byte_size,
         command_sha256: metadata.command_sha256.clone(),
         command_encoding: metadata.command_encoding,
-        wal_blob_physical_band_count: metadata.wal_blob_physical_band_count,
+        wal_blob_physical_slab_count: metadata.wal_blob_physical_slab_count,
         wal_blob_first_physical_offset: metadata.wal_blob_first_physical_offset,
     };
     let mut encoded = proto.encode_to_vec();
@@ -2750,7 +2750,7 @@ fn decode_wal_offset_metadata_blob(
                 wal_blob_end_offset: frame.wal_blob_end_offset,
                 wal_blob_bytes_written: frame.wal_blob_bytes_written,
                 wal_blob_object_length: frame.wal_blob_object_length,
-                wal_blob_physical_band_count: frame.wal_blob_physical_band_count,
+                wal_blob_physical_slab_count: frame.wal_blob_physical_slab_count,
                 wal_blob_first_physical_offset: frame.wal_blob_first_physical_offset,
                 command_byte_size: frame.command_byte_size,
                 command_sha256: frame.command_sha256,
@@ -3862,7 +3862,7 @@ mod tests {
         assert_eq!(follower_band.physical_bytes, slab0.byte_size);
         // The band summary counts the sealed shared band immediately (accounting is complete).
         assert!(
-            follower.block_store().band_summary().sealed_bands >= 1,
+            follower.block_store().band_summary().sealed_slabs >= 1,
             "sealed shared band must be counted before any lazy fetch"
         );
         assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
@@ -5389,7 +5389,7 @@ mod tests {
             append_receipts[1].end_offset,
             append_receipts[1].object_length
         );
-        assert!(append_receipts[1].physical_band_count > 1);
+        assert!(append_receipts[1].physical_slab_count > 1);
 
         let blob_key = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
         let offset_index_key = "cluster-a/shards/1/shared/wal/wal.offset_index.protobuf.blob";

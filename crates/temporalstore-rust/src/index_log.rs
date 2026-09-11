@@ -910,7 +910,7 @@ pub struct MetaItem {
     #[serde(rename = "zones", default)]
     pub bands: Vec<SlabCatalogEntry>,
     #[serde(rename = "zone_version", default)]
-    pub band_version: u64,
+    pub slab_version: u64,
 }
 
 /// One appended delta record: either a batch of page/object item deltas (PAGE/OBJECT) or
@@ -2445,7 +2445,7 @@ mod tests {
             version: 1,
             start_wal_sequence: 1,
             timestamp_ms: 1,
-            band_version: 1,
+            slab_version: 1,
             bands: vec![SlabCatalogEntry {
                 block_slab_id: slab,
                 state: SlabCatalogState::Active,
@@ -2463,7 +2463,7 @@ mod tests {
             version: 2,
             start_wal_sequence: 2,
             timestamp_ms: 2,
-            band_version: 0,
+            slab_version: 0,
             bands: Vec::new(),
         };
 
@@ -2870,7 +2870,7 @@ mod tests {
             version: 1,
             start_wal_sequence: 5,
             timestamp_ms: 100,
-            band_version: 3,
+            slab_version: 3,
             bands: vec![
                 SlabCatalogEntry {
                     block_slab_id: 0,
@@ -2916,7 +2916,7 @@ mod tests {
             version: 1,
             start_wal_sequence: 1,
             timestamp_ms: 1,
-            band_version: 1,
+            slab_version: 1,
             bands: vec![SlabCatalogEntry {
                 block_slab_id: 0,
                 state: SlabCatalogState::Active,
@@ -2933,7 +2933,7 @@ mod tests {
             version: 2,
             start_wal_sequence: 9,
             timestamp_ms: 9,
-            band_version: 2,
+            slab_version: 2,
             bands: vec![SlabCatalogEntry {
                 block_slab_id: 0,
                 state: SlabCatalogState::Sealed,

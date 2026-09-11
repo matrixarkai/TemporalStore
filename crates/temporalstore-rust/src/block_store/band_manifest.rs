@@ -357,14 +357,14 @@ pub(super) fn summarize_bands(
     let mut summary = BlockStoreSlabSummary::default();
     let now = now_unix_ms();
     for band in bands.values() {
-        update_oldest_band_timestamp(&mut summary.oldest_known_band_unix_ms, band);
+        update_oldest_band_timestamp(&mut summary.oldest_known_slab_unix_ms, band);
         summary.total_known_physical_bytes = summary
             .total_known_physical_bytes
             .saturating_add(band.physical_bytes);
         match band.state {
             BlockStoreSlabState::Active => {
                 update_oldest_band_timestamp(&mut summary.oldest_live_band_unix_ms, band);
-                summary.active_bands = summary.active_bands.saturating_add(1);
+                summary.active_slabs = summary.active_slabs.saturating_add(1);
                 summary.active_physical_bytes = summary
                     .active_physical_bytes
                     .saturating_add(band.physical_bytes);
@@ -374,7 +374,7 @@ pub(super) fn summarize_bands(
             }
             BlockStoreSlabState::Sealed => {
                 update_oldest_band_timestamp(&mut summary.oldest_live_band_unix_ms, band);
-                summary.sealed_bands = summary.sealed_bands.saturating_add(1);
+                summary.sealed_slabs = summary.sealed_slabs.saturating_add(1);
                 summary.sealed_physical_bytes = summary
                     .sealed_physical_bytes
                     .saturating_add(band.physical_bytes);
@@ -387,7 +387,7 @@ pub(super) fn summarize_bands(
                     &mut summary.oldest_reclaimable_band_unix_ms,
                     band,
                 );
-                summary.delayed_destroy_bands = summary.delayed_destroy_bands.saturating_add(1);
+                summary.delayed_destroy_slabs = summary.delayed_destroy_slabs.saturating_add(1);
                 summary.delayed_destroy_physical_bytes = summary
                     .delayed_destroy_physical_bytes
                     .saturating_add(band.physical_bytes);
@@ -396,15 +396,15 @@ pub(super) fn summarize_bands(
                     .saturating_add(band.physical_bytes);
             }
             BlockStoreSlabState::Purged => {
-                summary.purged_bands = summary.purged_bands.saturating_add(1);
+                summary.purged_slabs = summary.purged_slabs.saturating_add(1);
                 summary.purged_physical_bytes = summary
                     .purged_physical_bytes
                     .saturating_add(band.physical_bytes);
             }
         }
     }
-    summary.oldest_known_band_age_ms = summary
-        .oldest_known_band_unix_ms
+    summary.oldest_known_slab_age_ms = summary
+        .oldest_known_slab_unix_ms
         .map(|timestamp| now.saturating_sub(timestamp));
     summary.oldest_live_band_age_ms = summary
         .oldest_live_band_unix_ms

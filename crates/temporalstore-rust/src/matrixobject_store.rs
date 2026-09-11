@@ -158,7 +158,7 @@ impl ObjectStore for MatrixObjectObjectStore {
             end_offset,
             bytes_written,
             object_length: metadata.length,
-            physical_band_count: metadata.extents.len(),
+            physical_slab_count: metadata.extents.len(),
             first_physical_offset: metadata.extents.first().map(|extent| extent.offset),
         })
     }
