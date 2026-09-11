@@ -348,6 +348,49 @@ class _LocalAdapterContextNodeMixin:
             if current is None or int(record.get("updated_at_ms") or 0) >= int(current.get("updated_at_ms") or 0):
                 existing_embeddings[key] = record
 
+        # A vector folded ONTO its owner is an existing embedding too, and this loop used to
+        # miss every one of them.
+        #
+        # `fold_embedding_records` sets `owner["vector"]` and drops the separate
+        # `context_embedding` row -- "the owners are the only place vectors live in new logs".
+        # This map was built from those separate rows alone, so on a folded store it sees almost
+        # nothing: measured on a 4 GB one-box, 2,530 separate rows against ~46,000 owners already
+        # carrying a vector, and for `context_node` SIX visible against 17,163 records. Everything
+        # it cannot see is re-targeted, re-embedded, folded onto the owner again and dropped
+        # again, so the next pass repeats it -- the store grew 67 MB in three minutes with zero
+        # requests served, and the pass was 14.6% of gateway CPU with the largest scan in the
+        # system (353 MB, ~5 GB of transient proxy RSS per run).
+        #
+        # The owner's key is the one its own target would use, so the two halves cannot drift.
+        # `embedding_meta` carries what the separate record held, MINUS the fields identical to
+        # the owner -- the fold deletes those -- so an absent `updated_at_ms` or `model_ref` there
+        # means "same as the owner", and falling back to the owner's value is exact rather than a
+        # guess.
+        for record in records:
+            if record.get("record_type") == "context_embedding":
+                continue
+            if not record_vector(record):
+                continue
+            folded = self._embedding_target_for_context_record(record)
+            if folded is None:
+                continue
+            meta = record.get("embedding_meta")
+            if not isinstance(meta, dict):
+                meta = {}
+            try:
+                key = (str(folded["embedding_type"]), str(folded["ref_type"]), int(folded["ref_hash"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+            seen = {
+                "_folded_embedding_seen": True,
+                "vector": record.get("vector"),
+                "model_ref": meta.get("model_ref") or record.get("model_ref"),
+                "updated_at_ms": meta.get("updated_at_ms") or record.get("updated_at_ms"),
+            }
+            current = existing_embeddings.get(key)
+            if current is None or int(seen.get("updated_at_ms") or 0) >= int(current.get("updated_at_ms") or 0):
+                existing_embeddings[key] = seen
+
         targets: list[Json] = []
         skipped_current = 0
         skipped_scope = 0
