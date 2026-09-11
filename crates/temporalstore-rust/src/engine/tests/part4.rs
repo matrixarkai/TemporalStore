@@ -5896,6 +5896,86 @@ fn the_block_index_entry_count_falls_when_entries_go() {
     );
 }
 
+/// Where the reclaim_index stage's time actually goes.
+///
+///   cargo test --release -p temporalstore-rust --lib where_the_index_reclaim_time_goes -- --ignored --nocapture --test-threads=1
+///
+/// The stage is the most expensive one in a maintenance cycle -- 750 ms of a 1,336 ms cycle at
+/// 20k objects, and roughly linear in store size. It turns on three things at once
+/// (`purge_delayed_destroy`, `prune_bucket_dump_manifests`, `roll_forward_bucket_dump_installs`),
+/// and nothing said which of them costs. Same ablation as the stage-level probe, one level down:
+/// all three on, then each turned off in turn.
+#[test]
+#[ignore]
+fn where_the_index_reclaim_time_goes() {
+    fn request(
+        purge: bool,
+        prune: bool,
+        roll_forward: bool,
+    ) -> crate::engine::reports::StorageLifecycleRequest {
+        crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_buckets: Vec::new(),
+            max_dump_buckets_per_round: 0,
+            min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
+            purge_delayed_destroy: purge,
+            prune_bucket_dump_manifests: prune,
+            roll_forward_bucket_dump_installs: roll_forward,
+            follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_slab_id: None,
+            page_gc_raft_install_floor_slab_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
+            invalidate_cache: false,
+            warm_cache: false,
+        }
+    }
+
+    fn time_once(objects: usize, req: crate::engine::reports::StorageLifecycleRequest) -> f64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..objects {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("index-gc-{index:06}"),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        let started = std::time::Instant::now();
+        let response = engine.apply_storage_lifecycle(req);
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        let _ = response;
+        elapsed
+    }
+
+    for objects in [5_000usize, 20_000] {
+        let all_on = time_once(objects, request(true, true, true));
+        eprintln!("  [index_gc] {objects:>6} objects, all three on -> {all_on:>9.1} ms");
+        for (name, req) in [
+            ("purge_delayed_destroy", request(false, true, true)),
+            ("prune_manifests", request(true, false, true)),
+            ("roll_forward_installs", request(true, true, false)),
+            ("ALL THREE OFF", request(false, false, false)),
+        ] {
+            let without = time_once(objects, req);
+            eprintln!(
+                "  [index_gc] {objects:>6}   without {name:<22} {without:>9.1} ms   (costs {:>8.1} ms)",
+                all_on - without,
+            );
+        }
+    }
+}
+
 #[test]
 fn the_resident_bucket_count_is_not_the_routing_range() {
     // `slot_index_entry_count` was published from `bucket_entries`, which is the routing RANGE --
