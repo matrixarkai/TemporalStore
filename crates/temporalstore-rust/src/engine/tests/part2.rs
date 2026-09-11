@@ -2910,6 +2910,70 @@ fn a_bucket_remembers_its_oldest_undumped_write() {
     );
 }
 
+/// A capped dump takes the bucket that has held the log longest first.
+///
+/// What pins the log's reclaim floor is a bucket's OLDEST UNDUMPED WRITE. When a round can only
+/// dump some of the dirty buckets, dumping them in that order is what stops one bucket being
+/// starved for ever while newer ones are re-dirtied and dumped ahead of it -- the ordering the
+/// bucket node's `first_dirty_wal_sequence` exists to make possible.
+///
+/// The fixture writes three keys in a known order, dirtying three buckets at three known
+/// sequences, then asks for a plan that may dump only one. It must pick the oldest.
+#[test]
+fn a_capped_dump_takes_the_oldest_undumped_bucket_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // Three buckets, dirtied oldest-first.
+    write_string(&engine, "aaa-oldest", b"one");
+    write_string(&engine, "bbb-middle", b"two");
+    write_string(&engine, "ccc-newest", b"three");
+
+    let claims = engine.first_dirty_sequences_for_test(1);
+    let oldest = claims
+        .iter()
+        .filter(|(_, sequence)| *sequence > 0)
+        .min_by_key(|(_, sequence)| *sequence)
+        .map(|(routing_bucket, _)| *routing_bucket)
+        .expect("a bucket must hold a claim after three writes");
+
+    let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 1,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        purge_delayed_destroy: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
+        follower_replay_cursors: Vec::new(),
+        page_gc_shared_store_cursors: Vec::new(),
+        page_gc_raft_snapshot_refs: Vec::new(),
+        page_gc_checkpoint_floor_slab_id: None,
+        page_gc_raft_install_floor_slab_id: None,
+        page_gc_delayed_destroy_grace_ms: 0,
+        invalidate_cache: false,
+        warm_cache: false,
+    });
+    assert_eq!(
+        plan.selected_dump_buckets.len(),
+        1,
+        "the cap of one must select exactly one bucket: {:?}",
+        plan.selected_dump_buckets
+    );
+    assert_eq!(
+        plan.selected_dump_buckets[0], oldest,
+        "a round that can dump one bucket must dump the one holding the log's floor; claims were \
+         {claims:?}"
+    );
+}
+
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     engine.execute(ExecuteRequest {
         shard_id: 1,
