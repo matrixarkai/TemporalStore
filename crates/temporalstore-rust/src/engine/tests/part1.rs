@@ -7760,6 +7760,547 @@ saved {:>7.2} ms per round",
     }
 }
 
+/// Building the WAL reclaim plan must not get dearer for every dump manifest that is retained.
+///
+/// `bucket_generation_fingerprints_by_bucket` walks every live page in the shard. The plan used
+/// to call it once per retained manifest, EAGERLY, before knowing whether any bucket would consult
+/// them -- so the plan's cost scaled with how many manifests happened to be retained, a quantity
+/// that has nothing to do with what the round was asked to do.
+///
+/// The fingerprints are now computed on first use, and a manifest that carries no summary for a
+/// bucket is skipped before it is fingerprinted at all. This pins that: quadrupling the manifest
+/// count must not multiply the live-page scan volume.
+#[test]
+fn fingerprinting_does_not_scale_with_the_manifest_count() {
+    let scan_volume_for = |manifest_count: usize| -> (u64, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for round in 0..manifest_count {
+            // Write between manifests so each one lands on a distinct index-log sequence: the
+            // manifest id is {shard}-{sequence}-{ms}, and two built back to back inside one
+            // millisecond with no write between them would collide.
+            for index in 0..64 {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("fp-{round:03}-{index:04}"),
+                        value: vec![b'v'; 64],
+                    },
+                });
+                assert!(response.status.ok, "write: {:?}", response.status);
+            }
+            let _ = engine.create_bucket_dump_manifest(1, Vec::new());
+        }
+        let manifests = engine.list_bucket_dump_manifests(1).len();
+
+        crate::engine::reset_live_page_scan_entries();
+        let _ = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+        (crate::engine::live_page_scan_entries(), manifests)
+    };
+
+    let (few_volume, few_manifests) = scan_volume_for(2);
+    let (many_volume, many_manifests) = scan_volume_for(8);
+
+    // Denominators. Without these, a fixture that retained one manifest either way -- or that
+    // scanned nothing -- would satisfy the ratio below while measuring nothing at all.
+    assert!(
+        many_manifests > few_manifests,
+        "fixture did not actually retain more manifests: {few_manifests} then {many_manifests}",
+    );
+    assert!(
+        few_volume > 0 && many_volume > 0,
+        "the plan scanned no live pages, so this measures nothing: {few_volume} then {many_volume}",
+    );
+
+    // The 8-manifest shard also holds 4x the records, so its per-plan walk is legitimately
+    // larger. What must NOT happen is the walk multiplying by the MANIFEST count on top of that.
+    // Normalise by records to separate the two.
+    let few_per_record = few_volume as f64 / (2 * 64) as f64;
+    let many_per_record = many_volume as f64 / (8 * 64) as f64;
+    eprintln!(
+        "  {few_manifests} manifests -> {few_volume} entries ({few_per_record:.1}/record); \
+{many_manifests} manifests -> {many_volume} entries ({many_per_record:.1}/record)",
+    );
+    assert!(
+        many_per_record <= few_per_record * 1.5,
+        "the WAL reclaim plan's scan volume grew with the manifest count: \
+{few_manifests} manifests = {few_per_record:.1} entries/record, \
+{many_manifests} manifests = {many_per_record:.1} entries/record",
+    );
+}
+
+/// The object-lifecycle snapshot walks the shard ONCE, not three times.
+///
+/// It derives three things from the live-page set -- page ownership validation, the object
+/// lifecycle report, and the per-slab live-ref counts -- and used to call
+/// `collect_live_page_entries` separately for each. That materializes every live page in the
+/// shard into a fresh Vec, so the call cost 3x the shard, measured by `what_each_plan_call_walks`
+/// as the largest single piece of `apply_storage_lifecycle` (itself 12x).
+///
+/// All three read the SAME `&ShardState` under ONE read lock with nothing mutating between them,
+/// so one walk can serve all three. This pins that. It is deliberately an exact equality rather
+/// than a bound: the number should be the live page count, and a second walk creeping back in is
+/// exactly what this exists to catch.
+#[test]
+fn the_object_lifecycle_snapshot_walks_the_shard_once() {
+    const RECORDS: usize = 1_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("once-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    // Denominator: with no live pages every walk count is 0 and the equality below would hold
+    // for a shard that stored nothing.
+    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+
+    crate::engine::reset_live_page_scan_entries();
+    let report = engine.storage_object_lifecycle_snapshot(1);
+    let walked = crate::engine::live_page_scan_entries();
+
+    // The snapshot must still SAY something -- a call that returned an empty report would walk
+    // once trivially and pass.
+    assert!(
+        report.live_page_refs > 0 || report.live_object_ids > 0,
+        "the snapshot reported nothing, so the walk it did was not the real one: {report:?}",
+    );
+
+    assert_eq!(
+        walked, live_pages,
+        "storage_object_lifecycle_snapshot materialized {walked} live-page entries for a shard \
+holding {live_pages} live pages -- that is {:.1} walks, and it should be exactly one. Its three \
+consumers (ownership validation, the lifecycle report, the per-slab ref counts) share one walk; \
+if a fourth consumer was added, give it the slice rather than its own scan.",
+        walked as f64 / live_pages as f64,
+    );
+}
+
+/// `apply_storage_lifecycle` walks the shard TWELVE times. Which of its pieces? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_apply_storage_lifecycle_walks -- --ignored --nocapture
+///
+/// `what_each_plan_call_walks` measures the calls a round makes and finds one that dominates:
+/// `bucket_storage_summaries` 1.0x, `storage_wal_reclaim_plan` 2.0x, `storage_lifecycle_plan`
+/// 2.0x, `create_bucket_dump_manifest` 2.0x -- and `apply_storage_lifecycle` 12.0x. That single
+/// call is most of `reclaim_wal`'s 16x, and it is NOT the manifest fingerprinting an earlier
+/// attempt blamed (making that lazy left the stage figure unchanged).
+///
+/// Its pieces are mostly gated by request flags, so they can be subtracted one at a time through
+/// the public API rather than by reading the body and guessing which ones walk.
+///
+/// CAVEAT, the same one that made an earlier table misleading: a flag whose work would not have
+/// happened anyway contributes 0, and that zero means "this row measured nothing", not "this piece
+/// does not walk". The all-on row's own walk count is printed so the deltas can be read against
+/// something, and a delta of 0 should be treated as unproven rather than as evidence of absence.
+///
+/// Every arm builds a FRESH shard: `apply_storage_lifecycle` mutates (it dumps, writes manifests
+/// and clears dirty state), so reusing one engine would measure a different store each time.
+#[test]
+#[ignore]
+fn what_apply_storage_lifecycle_walks() {
+    const RECORDS: usize = 4_000;
+
+    let walks_for = |request: crate::engine::reports::StorageLifecycleRequest| -> (u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("applylc-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let live_pages: u64 = engine
+            .bucket_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.page_ref_count as u64)
+            .sum();
+        crate::engine::reset_live_page_scan_entries();
+        let _ = engine.apply_storage_lifecycle(request);
+        (crate::engine::live_page_scan_entries(), live_pages)
+    };
+
+    let all_on = || crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    };
+
+    let (baseline, live_pages) = walks_for(all_on());
+    assert!(live_pages > 0, "fixture stored no live pages");
+    assert!(baseline > 0, "apply_storage_lifecycle walked nothing; this attributes nothing");
+    eprintln!(
+        "  [apply-lc] everything on                        {baseline:>8} entries = {:>5.1}x the shard \
+({live_pages} live pages)",
+        baseline as f64 / live_pages as f64,
+    );
+
+    for (name, request) in [
+        (
+            "without purge_delayed_destroy",
+            crate::engine::reports::StorageLifecycleRequest { purge_delayed_destroy: false, ..all_on() },
+        ),
+        (
+            "without prune_bucket_dump_manifests",
+            crate::engine::reports::StorageLifecycleRequest { prune_bucket_dump_manifests: false, ..all_on() },
+        ),
+        (
+            "without roll_forward_bucket_dump_installs",
+            crate::engine::reports::StorageLifecycleRequest { roll_forward_bucket_dump_installs: false, ..all_on() },
+        ),
+        (
+            "with warm_cache",
+            crate::engine::reports::StorageLifecycleRequest { warm_cache: true, ..all_on() },
+        ),
+        (
+            "with invalidate_cache",
+            crate::engine::reports::StorageLifecycleRequest { invalidate_cache: true, ..all_on() },
+        ),
+    ] {
+        let (without, _) = walks_for(request);
+        let delta = baseline as i64 - without as i64;
+        eprintln!(
+            "  [apply-lc] {name:<40} {without:>8} entries (delta {delta:>+8}, {:>+5.1}x){}",
+            delta as f64 / live_pages as f64,
+            if delta == 0 { "   <- 0: unproven, not evidence of absence" } else { "" },
+        );
+    }
+}
+
+/// A compaction round's preamble shares one walk between its live-page consumers.
+///
+/// Before any budget is consulted, the stage builds several whole-shard reports under the shard
+/// WRITE lock, so every read and write on the shard queues behind them. Three of those reports
+/// take the same live-page set -- ownership validation, the compaction utility report, and the
+/// object lifecycle report -- and each used to call `collect_live_page_entries` for its own copy.
+///
+/// Measured at 4,000 objects, one round walked 9.0x the shard; sharing one walk between those
+/// three takes it to 7.0x. The bound below sits between the two, so losing the sharing fails.
+///
+/// It is a BOUND and not an equality, unlike `the_object_lifecycle_snapshot_walks_the_shard_once`.
+/// That one owns every walk in its function and can name the exact number; this round also walks
+/// for `object_manager_runtime_report` (2.0x) and for the relocation work itself, and those are
+/// legitimately outside what this change controls. Pinning the total exactly would make this test
+/// fail for unrelated reasons.
+#[test]
+fn a_compaction_round_shares_one_walk_across_its_live_page_consumers() {
+    const RECORDS: usize = 1_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("share-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+
+    crate::engine::reset_live_page_scan_entries();
+    let report = engine.compact_shard_pages_with_budgets(1, u64::MAX, usize::MAX);
+    let walked = crate::engine::live_page_scan_entries();
+    assert!(report.is_ok(), "compaction failed: {report:?}");
+
+    // Denominator: a round that did no walking at all would satisfy any upper bound.
+    assert!(
+        walked > 0,
+        "the compaction round materialized nothing, so the bound below measures nothing",
+    );
+
+    let multiple = walked as f64 / live_pages as f64;
+    assert!(
+        multiple <= 8.0,
+        "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_pages} \
+live pages). Its ownership validation, utility report and object lifecycle report share ONE \
+`collect_live_page_entries`; this was 9.0x when they each walked separately and 7.0x when they \
+share. If a new preamble report needs the live-page set, pass it the existing slice.",
+    );
+}
+
+/// What does COMPACTION's preamble walk, piece by piece? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_the_compaction_preamble_walks -- --ignored --nocapture
+///
+/// `compact_shard_pages_with_budgets` takes the shard WRITE lock and then, before any budget is
+/// consulted, builds six reports. A round's WORK is bounded and resumable -- `compaction_rounds`
+/// continues a round a budget cut short -- but this preamble is not: it runs in full every time
+/// the stage runs, and every read and write on the shard queues behind it.
+///
+/// Measured here the same way `what_each_plan_call_walks` measures the lifecycle path, because
+/// the fix that worked there (#1586: one walk shared by three consumers of the same immutable
+/// `&ShardState`) is only worth attempting here if these pieces are walking the same way.
+///
+/// Each row resets the live-page counter, makes ONE call, and reports what it materialized as a
+/// multiple of the shard's live page count. All of these take `&ShardState` and mutate nothing,
+/// so they can be measured in any order under a single read lock.
+#[test]
+#[ignore]
+fn what_the_compaction_preamble_walks() {
+    const RECORDS: usize = 4_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("preamble-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    assert!(live_pages > 0, "fixture stored no live pages");
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+
+    let mut total = 0u64;
+    let mut report = |label: &str, walked: u64| {
+        eprintln!(
+            "  [preamble] {label:<38} {walked:>8} entries = {:>5.1}x the shard",
+            walked as f64 / live_pages as f64,
+        );
+    };
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.validate_shard_page_ownership(1, shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("validate_shard_page_ownership", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::collect_live_block_slab_ids(shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("collect_live_block_slab_ids", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::compaction::compaction_utility_report(&engine.page_store, shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("compaction_utility_report", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::storage_reporting::storage_object_lifecycle_report(1, shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("storage_object_lifecycle_report", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::compaction::compaction_model_layout_reports(&engine.page_store, shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("compaction_model_layout_reports", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::storage_reporting::object_manager_runtime_report(1, shard, 0, u32::MAX);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("object_manager_runtime_report", walked);
+
+    eprintln!(
+        "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_pages} live pages)",
+        "SUM OF STANDALONE CALLS",
+        total as f64 / live_pages as f64,
+    );
+    assert!(total > 0, "the preamble walked nothing; this attributes nothing");
+
+    // THE NUMBER A HOIST ACTUALLY MOVES.
+    //
+    // The rows above call each report on its own, and each one walks for itself by design -- the
+    // `_from_entries` refactors keep a standalone wrapper precisely so callers with nothing to
+    // share are unaffected. So those rows do NOT change when the preamble starts sharing a walk,
+    // and reading them for that would show a fix doing nothing.
+    //
+    // What changes is the real call, where the sharing happens. Measured last because it takes the
+    // shard WRITE lock and mutates.
+    drop(shards);
+    crate::engine::reset_live_page_scan_entries();
+    let compaction = engine.compact_shard_pages_with_budgets(1, u64::MAX, usize::MAX);
+    let walked = crate::engine::live_page_scan_entries();
+    assert!(compaction.is_ok(), "compaction failed: {compaction:?}");
+    eprintln!(
+        "  [preamble] {:<38} {walked:>8} entries = {:>5.1}x the shard   <- the real one",
+        "compact_shard_pages_with_budgets",
+        walked as f64 / live_pages as f64,
+    );
+    assert!(
+        walked > 0,
+        "the compaction round walked nothing, so this measured nothing",
+    );
+}
+
+/// What does each individual plan call WALK? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_each_plan_call_walks -- --ignored --nocapture
+///
+/// `which_stages_walk_every_live_page` attributes a round's 35x live-page walk to two stages --
+/// `reclaim_index` 18x and `reclaim_wal` 16x -- but not to the CALLS inside them. An earlier
+/// attempt to explain reclaim_wal's 16x as per-manifest fingerprinting was arithmetic on an
+/// assumed manifest count, and measurement refuted it: making that fingerprinting lazy left the
+/// stage figure completely unchanged, because the fixture holds almost no manifests.
+///
+/// So this measures the pieces directly rather than inferring them. Each entry resets the
+/// live-page counter, makes ONE call, and reports what that call materialized, as a multiple of
+/// the shard's live page count.
+///
+/// Read-only calls come first. `create_bucket_dump_manifest` and `apply_storage_lifecycle`
+/// MUTATE (they dump, write manifests and clear dirty state), so they are measured last and in
+/// that order -- re-running this probe's earlier rows after them would measure a different shard.
+#[test]
+#[ignore]
+fn what_each_plan_call_walks() {
+    const RECORDS: usize = 4_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("percall-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    assert!(live_pages > 0, "fixture stored no live pages");
+
+    let lifecycle_request = || crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    };
+
+    let mut report = |label: &str, walked: u64| {
+        eprintln!(
+            "  [per-call] {label:<34} {walked:>8} entries = {:>5.1}x the shard",
+            walked as f64 / live_pages as f64,
+        );
+    };
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.bucket_storage_summaries(1);
+    report("bucket_storage_summaries", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+    report("storage_wal_reclaim_plan", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_lifecycle_plan(lifecycle_request());
+    report("storage_lifecycle_plan", crate::engine::live_page_scan_entries());
+
+    // The unconditional pieces of `apply_storage_lifecycle`. None of them is gated by a request
+    // flag -- `what_apply_storage_lifecycle_walks` subtracts every flag and moves nothing -- so
+    // they have to be measured directly rather than by toggling the request.
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_object_lifecycle_snapshot(1);
+    report("storage_object_lifecycle_snapshot", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(1, Vec::new());
+    report("bucket_dump_manifest_prune_plan", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.bucket_dump_install_roll_forward_reports(1);
+    report("bucket_dump_install_roll_forward_reports", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_cache_warmup_report(1, Vec::new());
+    report("storage_cache_warmup_report", crate::engine::live_page_scan_entries());
+
+    // MUTATING from here.
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.create_bucket_dump_manifest(1, Vec::new());
+    report("create_bucket_dump_manifest (mutates)", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.apply_storage_lifecycle(lifecycle_request());
+    report("apply_storage_lifecycle (mutates)", crate::engine::live_page_scan_entries());
+
+    eprintln!("  [per-call] shard holds {live_pages} live pages");
+}
+
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_slot_range_saves -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]

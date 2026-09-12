@@ -97,6 +97,21 @@ ONLY_TESTS_CALL = {
         "backend metadata interning, the encoder. PARKED ON PURPOSE, not forgotten: its own comment block says storage_options is the largest field in the store -- 2,139 KB, 13.2% of all record bytes, nine distinct values across 3,610 rows -- and that INTERN_METADATA_FIELDS already names it while the local JSONL codec already tokenises it, so the optimisation landed on the 7-day mirror and not the durable store. The write side is gated OFF because the codec's crash-safety argument does not carry over: the backend would rely on the engine's batch append being atomic, which that comment calls a different claim and unverified, ending 'Do not flip this default until that is settled.' Retiring it deletes measured work with a written open question",
     "backend_expand_records":
         "backend metadata interning, the decoder. Always on by design -- a store written with the flag ON still reads correctly if it is later turned OFF, the same asymmetry the JSONL codec uses",
+    # ADOPTED AND BANKED, so they are no longer on this list:
+    #
+    #   full_read_fallback_counts -- matrixarkai#1566 gave it a Prometheus family in
+    #   matrixark_temporal_direct_backend, so the degradation it measures is now reported.
+    #   embedding_cache_stats -- matrixarkai#1569 put it on the local adapter dashboard.
+    #   pipeline_task_footprint_stats -- matrixarkai#1570 put rows against distinct tasks on
+    #   the same dashboard. Third of three, and the third to leave within days of being
+    #   written down, which is the list working rather than the list being wrong.
+    #
+    # Both entries said the same thing in different words, "written to make something visible and
+    # reported nowhere", and both stopped being true within a week of being written down. That is
+    # what this list is FOR: it is not an inventory of debris, it is a queue, and an entry leaving
+    # it by gaining a production caller is the outcome. Removing them here is the banking -- the
+    # check fails on a list that has stopped matching the tree in EITHER direction, which is how
+    # this pair was noticed at all.
     "prepare_retrieval_request":
         "the unadopted part of a PARTLY-ADOPTED extraction. matrixark_mcp_retrieve_request is imported by five production modules; this step is the piece LocalAdapter.retrieve still does inline",
     "prepare_serving_refs":
@@ -105,14 +120,8 @@ ONLY_TESTS_CALL = {
         "the unadopted part of matrixark_mcp_retrieve_planning, and the one with a guard already maintaining it TOWARD adoption. test_a_tenant_override_reaches_the_extracted_ranking_limits calls that module 'a partly-adopted extraction' and exists because the builder once resolved no tenant override at all, so adopting it would have handed every tenant the build default while looking like a pure code move. Do not read this as debris",
     "merge_refreshed_summary_records":
         "the unadopted part of matrixark_mcp_retrieve_pre_refresh, which three production modules import. The same merge runs inline at matrixark_local_adapter_retrieve:1167-1196",
-    "full_read_fallback_counts":
-        "counts how often a scoped scan gave up and read the whole store. Its docstring says it is 'exposed because the fallback is otherwise undetectable from outside: a measured degraded window did TEN whole-corpus reads and wrote nothing at all'. Written to make an invisible degradation visible, and reported nowhere",
-    "embedding_cache_stats":
-        "hits, misses, evictions and size, 'so cache behaviour is observable' -- and nothing observes it",
     "secondary_index_bound_stats":
         "live posting counts by scope and ref_type. Its own docstring says 'used by the tests/harness', so this one is an affordance by design rather than a signal that went missing -- read the docstring before filing it as a gap",
-    "pipeline_task_footprint_stats":
-        "what pipeline tasks cost in the store; no surface prints the number",
     "env_int":
         "the typed integer env reader. env_bool has twenty-two production callers and this has none, so most integer flags are parsed at their own read site instead",
     "env_float":

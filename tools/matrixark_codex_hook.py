@@ -2227,10 +2227,21 @@ def local_backend_allowed() -> bool:
     there: a permission that half-applies, which is worse than one that does not apply, because
     each half looks correct on its own.
 
-    The wider set in `matrixark_mcp_env.TRUE_VALUES` is deliberately NOT used here. A permission
-    should not gain accepting spellings by inheriting a general helper -- every spelling it gains
-    is another way to turn a production guard off, and the safe direction for a disagreement about
-    a guard is the narrower one.
+    That paragraph described a disagreement this tree no longer has, and it described the fix in
+    the wrong direction. `matrixark_mcp_backends` does not spell the read itself: it imports
+    MATRIXARK_ALLOW_LOCAL_BACKEND from matrixark_mcp_core, which re-exports
+    matrixark_mcp_runtime_config's `env_bool("MATRIXARK_ALLOW_LOCAL_BACKEND", False)`. Both sides
+    go through the same helper and accept the same five spellings, "on" among them. Executing both
+    readers across on/ON/1/yes/true/""/off gives the same answer at every one.
+
+    So the note asserting that "on" is refused here was a recorded constraint outliving its
+    mechanism -- and a stale claim about a PERMISSION is the expensive kind, because someone
+    reading it believes a production guard is narrower than it is.
+
+    The agreement is now checked rather than described, in
+    test_a_permission_resolves_one_way_in_both_readers. Narrowing this function alone would
+    re-create the half-applied permission the original note was written about, in the other
+    direction; the test is what says so.
     """
     return env_bool("MATRIXARK_ALLOW_LOCAL_BACKEND", False)
 

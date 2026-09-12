@@ -77,6 +77,20 @@ def normalize_source_role_counts(raw_counts: Any, fallback_roles: list[str] | No
     return counts
 
 
+# NOT re-exported, and this is the one that goes the other way.
+#
+# matrixark_mcp_core_extraction defines normalize_extracted_entities too, and THIS copy is the
+# fuller one: it populates `source_roles` and `source_role_counts` on each entity and the live copy
+# does not. Those are not decorative -- `entity_retention_priority`, re-exported just above, ranks
+# on `"user" in source_roles`, so the field decides what survives a dedupe.
+#
+# It is not evidence of a live hole either: matrixark_mcp_core_codex_outcome and
+# matrixark_mcp_recovery both write source_roles onto entities on live paths, so entities reaching
+# that ranking are not all role-less. Whether THIS normaliser should populate it as well is a
+# question about the extraction path, not a consolidation, and consolidating toward the live copy
+# would silently drop the field.
+
+
 def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, source_refs: list[str], extracted_by: str) -> list[Json]:
     if not isinstance(raw_entities, list):
         return []
@@ -235,65 +249,6 @@ try:  # the set lives in matrixark_mcp_core_codex_outcome; this module re-export
     from .matrixark_mcp_core_codex_outcome import CODEX_OUTCOME_ENTITY_TYPES
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_codex_outcome import CODEX_OUTCOME_ENTITY_TYPES
-
-
-def codex_outcome_fact_entities(
-    text: str,
-    *,
-    role_name: str,
-    source_refs: list[str],
-    source_count: int,
-) -> list[Json]:
-    source_role = "tool" if role_name == "tool" else "assistant"
-    entities: list[Json] = []
-    seen: set[tuple[str, str, str]] = set()
-
-    def outcome_candidate_chunks(compact_line: str) -> list[str]:
-        chunks: list[str] = []
-        for semicolon_part in re.split(r"\s*;\s*", compact_line):
-            for sentence in re.split(
-                r"(?<=[.!?])\s+(?=(?:I|We|Codex|Assistant|Tool|Next|Changed|Outcome|Validation|Blocked|Implemented|Fixed|Added|Removed|Updated|Configured|Installed|Pushed|Published|Deployed|Merged|Rebased|Recovered|Promoted|Indexed|Budgeted|Batched|Flushed)\b)",
-                semicolon_part,
-            ):
-                chunk = sentence.strip()
-                if chunk:
-                    chunks.append(chunk)
-        return chunks or ([compact_line] if compact_line else [])
-
-    for raw_line in str(text or "").splitlines():
-        compact_line = " ".join(raw_line.split()).strip(" -*")
-        for candidate in outcome_candidate_chunks(compact_line):
-            line = summarize_text(re.sub(r"^(?:assistant|tool)\s*:\s*", "", candidate, flags=re.IGNORECASE), limit=220)
-            if not line:
-                continue
-            kind = codex_outcome_fact_kind(line)
-            if not kind:
-                continue
-            entity_type = codex_outcome_entity_type(kind)
-            normalized_fact = normalized_index_value(line)
-            key = (entity_type, source_role, normalized_fact)
-            if key in seen:
-                continue
-            seen.add(key)
-            state = summarize_text(f"{source_role} {kind}: {line}", limit=220)
-            entities.append(
-                {
-                    "entity_type": entity_type,
-                    "entity_name": summarize_text(f"{entity_type}:{normalized_fact or line}", limit=96),
-                    "state": state,
-                    "confidence": 0.9 if kind in {"outcome", "validation"} else 0.86,
-                    "source_refs": source_refs,
-                    "source_roles": [source_role],
-                    "source_role_counts": {source_role: source_count},
-                    "operator": normalize_entity_operator(None, entity_type),
-                    "field_patches": [entity_patch("", summarize_text(state, limit=180))],
-                }
-            )
-            if len(entities) >= 8:
-                break
-        if len(entities) >= 8:
-            break
-    return entities
 
 
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
@@ -606,49 +561,6 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     return dedupe_entities(entities)
 
 
-def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[Json]:
-    patches: list[Json] = []
-    correction = re.search(
-        r"\b(?:correction|correct|wrong|updated|changed)[:\s]+([^.;!?]+?)\s+(?:instead\s+of|not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if correction:
-        replace = clean_patch_value(correction.group(1))
-        search = clean_patch_value(correction.group(2))
-        patches.append(entity_patch(search, replace))
-    preference = re.search(
-        r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]+?)\s+(?:now|instead\s+of|not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if entity_type == "preference" and preference:
-        replace = clean_patch_value(preference.group(1))
-        search = clean_patch_value(preference.group(2))
-        patches.append(entity_patch(search, replace))
-    evolving_entity_types = {
-        "preference",
-        "location",
-        "job_status",
-        "current_plan",
-        "family_profile",
-        "identity_profile",
-        "communication_profile",
-        "memory_feature_profile",
-        "workspace_profile",
-        "relationship",
-        "approval_state",
-        "correction",
-        "confirmation",
-        "assistant_decision",
-        "tool_evidence",
-        *CODEX_OUTCOME_ENTITY_TYPES,
-    }
-    if entity_type in evolving_entity_types and not patches and value:
-        patches.append(entity_patch("", summarize_text(value, limit=180)))
-    return patches[:3]
-
-
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
     from .matrixark_mcp_core import clean_patch_value
 except ImportError:  # Direct script execution from tools/.
@@ -661,57 +573,55 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import canonical_entity_name
 
 
-def entity_retention_priority(entity: Json) -> int:
-    entity_type = str(entity.get("entity_type") or "").strip().lower()
-    entity_name = str(entity.get("entity_name") or "").strip().lower()
-    source_roles = {
-        str(role or "").strip().lower()
-        for role in entity.get("source_roles", [])
-        if str(role or "").strip()
-    }
-    if entity_type in {
-        "identity_profile",
-        "communication_profile",
-        "workspace_profile",
-        "preference",
-        "approval_state",
-        "correction",
-        "memory_feature_profile",
-    }:
-        return 0
-    if "user" in source_roles or entity_type in {"current_plan", "confirmation"}:
-        return 1
-    if entity_type in CODEX_OUTCOME_ENTITY_TYPES:
-        return 2
-    if entity_type in {"assistant_decision", "tool_evidence"} and ":" in entity_name:
-        return 2
-    if entity_type in {"assistant_decision", "tool_evidence"}:
-        return 3
-    return 4
+# `dedupe_entities` joined them, and the copy here was missing a whole step: the live one calls
+# `drop_directive_duplicates(out)` before ranking and this one did not. That is the example the
+# diverged-copy guard cites in its own docstring, and the function it dropped is defined only in
+# matrixark_mcp_core -- so the copy could not have called it without this import.
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import dedupe_entities
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import dedupe_entities
 
 
-def dedupe_entities(entities: list[Json]) -> list[Json]:
-    seen = set()
-    positions: dict[tuple[Any, str], int] = {}
-    out = []
-    for entity in entities:
-        key = (entity.get("entity_type"), str(entity.get("entity_name", "")).lower())
-        if key in seen:
-            existing = out[positions[key]]
-            if entity_retention_priority(entity) < entity_retention_priority(existing):
-                out[positions[key]] = entity
-                continue
-            if entity.get("entity_type") == "tool_evidence" and existing.get("state"):
-                continue
-            if entity.get("entity_name") == entity.get("entity_type"):
-                out[positions[key]] = entity
-            continue
-        seen.add(key)
-        positions[key] = len(out)
-        out.append(entity)
-    ranked = sorted(enumerate(out), key=lambda item: (entity_retention_priority(item[1]), item[0]))
-    kept_indexes = {index for index, _entity in ranked[:20]}
-    return [entity for index, entity in enumerate(out) if index in kept_indexes]
+# `entity_retention_priority` joined them, and this copy was the poorer one in a way that changes
+# what survives a dedupe. It normalised each source role with a bare `strip().lower()` where the
+# live copy calls `normalized_extraction_message_role`, which MAPS aliases -- human and prompt to
+# user, agent/ai/bot/llm/model to assistant, tool_result to tool. Executed both:
+#
+#     source_roles=["user"]     live 1   orphan 1
+#     source_roles=["human"]    live 1   orphan 4
+#     source_roles=["prompt"]   live 1   orphan 4
+#
+# Priority 1 against 4 is kept against dropped when dedupe_entities ranks, so an entity whose role
+# was recorded as "human" was retained through one path and discarded through the other.
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import entity_retention_priority
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import entity_retention_priority
+
+
+# `infer_entity_field_patches` joined them, and the live copy is better in two ways.
+#
+# It has a third branch this one lacked: a negative preference such as "we should avoid tabs in
+# this repository" produces a patch there and nothing here -- executed both ways.
+#
+# And it reads the document through `_whole_text_patch_scans`, an lru_cached helper whose docstring
+# records why: this function is called once per extracted entity and each call re-ran three
+# whole-document regexes, so the work grew as the square of the entity count -- ~33 seconds on a
+# 256 KB markdown ingest against ~1.2 s for a JSON document of the same size. The copy here still
+# inlined the three searches, so it never got that fix either.
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import infer_entity_field_patches
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import infer_entity_field_patches
+
+
+# `codex_outcome_fact_entities` differed only by inlining a local: the live copy binds
+# `entity_name` and then uses it, this one called summarize_text in place. Same value.
+try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
+    from .matrixark_mcp_core_codex_outcome import codex_outcome_fact_entities
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import codex_outcome_fact_entities
 
 
 def ordered_unique(values: list[str]) -> list[str]:

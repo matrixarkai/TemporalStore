@@ -267,15 +267,41 @@ class TheRankingWeightsAreWrittenOnceTest(unittest.TestCase):
     NAMES = ("DEFAULT_TIME_WEIGHT", "DEFAULT_BUSINESS_WEIGHT")
 
     @staticmethod
-    def _module_constants(stem):
+    def _module_constants(stem, _resolve_imports=True):
+        """Module-scope constants, INCLUDING ones this module gets by importing them.
+
+        A name a module imports from the other is that module's constant as far as any reader
+        is concerned, and it is the strongest form of agreement available: one definition, so
+        the two cannot drift. Reading only literal assignments made consolidation look like the
+        constant had vanished -- which is how this file failed on matrixarkai#1587, where
+        thirty-two duplicated literals were each reduced to a single definition.
+
+        The `differ` check below is unaffected: two INDEPENDENT literal assignments still have
+        to match, and that is the disagreement this file exists for. An imported name agreeing
+        with itself is not a weaker answer than agreeing by hand -- it is the answer the hand
+        version was approximating."""
         with io.open(os.path.join(TOOLS, stem + ".py"), encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
         found = {}
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and "matrixark_" in node.module:
+                for alias in node.names:
+                    if alias.name.isupper():
+                        imported.add((node.module.rsplit(".", 1)[-1],
+                                      alias.asname or alias.name, alias.name))
         for node in tree.body:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 \
                     and isinstance(node.targets[0], ast.Name) \
                     and isinstance(node.value, ast.Constant):
                 found[node.targets[0].id] = node.value.value
+        if _resolve_imports:
+            for module, bound, original in sorted(imported):
+                if bound in found:
+                    continue
+                source = TheRankingWeightsAreWrittenOnceTest._module_constants(module, False)
+                if original in source:
+                    found[bound] = source[original]
         return found
 
     @staticmethod
@@ -332,10 +358,22 @@ class TheRankingWeightsAreWrittenOnceTest(unittest.TestCase):
         # guard's business -- so this sees thirty of the seventy-eight names the two modules share.
         # An extractor that stopped matching returns approximately nothing; ten fails loudly on
         # that and does not move when a constant is added or folded.
+        # The floor is on the EXTRACTOR, not on the shared set.
+        #
+        # It required more than ten names in BOTH modules, reasoning that an extractor which had
+        # stopped matching returns approximately nothing. True while the two modules held thirty
+        # duplicated literals; false as a floor, because the shared set also falls when the
+        # duplication is REMOVED -- and it fell to zero in matrixarkai#1587, which gave each of
+        # those literals a single definition. A floor that cannot tell "the scan broke" from
+        # "there is nothing left to disagree" fails on the better outcome.
+        #
+        # So it asks what it was really asking: can this scan find constants at all.
+        runtime_only = self._module_constants("matrixark_mcp_runtime_config", False)
         self.assertGreater(
-            len(shared), 10,
-            "only %d constants are defined in both modules; the extractor has probably stopped "
-            "recognising them and this compares almost nothing" % len(shared))
+            len(runtime_only), 10,
+            "only %d literal constants were parsed out of matrixark_mcp_runtime_config; the "
+            "extractor has stopped recognising them and everything below compares nothing"
+            % len(runtime_only))
         differ = {name: (core[name], runtime[name])
                   for name in shared if core[name] != runtime[name]}
         self.assertEqual(

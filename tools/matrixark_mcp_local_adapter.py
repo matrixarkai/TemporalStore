@@ -5165,10 +5165,21 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "probe": bool(probe),
             "attempts": 1,
             "topology": {"mode": "local-jsonl", "event_log": str(self.event_log), "jsonl_guardrails": self._local_jsonl_guardrails()},
+            # Two of these were hard-coded True and neither had happened: this adapter has no
+            # namespace and no table to open, and it issues no warmup hset/hget, so
+            # `slot_coverage_verified_by_warmup_hset_hget` asserted a verification that cannot
+            # occur here. The engine adapters set both False and flip them True only after doing
+            # the work -- matrixark_temporal_direct_write initialises False and sets True once the
+            # warmup round-trips -- so False already means "not verified", not "failed".
+            #
+            # `status` stays "ready" and is the only field anything gates on:
+            # ensure_startup_backend_ready refuses on `status != "ready"` and never reads `checks`.
+            # A JSONL adapter with an openable event log IS ready; what it is not is verified by
+            # checks it does not run.
             "checks": {
                 "mcp_process_started": True,
-                "namespace_table_opened": True,
-                "slot_coverage_verified_by_warmup_hset_hget": True,
+                "namespace_table_opened": False,
+                "slot_coverage_verified_by_warmup_hset_hget": False,
             },
         }
 

@@ -111,14 +111,6 @@ INDEX_POSTING_LISTS = os.environ.get(
     "MATRIXARK_INDEX_POSTING_LISTS", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
 
-#: Read like INDEX_ONLY_CONSULTABLE_TERMS above: case folded, whitespace stripped, and every
-#: FALSE_VALUES spelling accepted. It used to be `not in {"0", "false", "False", ""}` with no
-#: strip or lower, so `=off`, `=no` and `=FALSE` all read as TRUE and left the flag on --
-#: a false spelling turning it on rather than off.
-DEDUPE_SKILL_CHUNK_EMBEDDING = os.environ.get(
-    "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING", "1"
-).strip().lower() not in {"0", "false", "no", "off"}
-
 # A skill chunk's text is written TWICE: once as `resource_chunk` and once as `skill_section`,
 # byte for byte. Measured on a 1.41 MB markdown skill: 411 chunks and 411 sections, and all 411
 # section texts identical to a chunk's -- `resource_chunk` is 42.1% of the bytes a skill ingest
@@ -139,14 +131,6 @@ except ImportError:  # top-level path
         MAX_SECONDARY_INDEX_REFS_PER_POSTING,
         _chunked_refs as chunked_posting_refs,
     )
-
-#: Read like INDEX_ONLY_CONSULTABLE_TERMS above: case folded, whitespace stripped, and every
-#: FALSE_VALUES spelling accepted. It used to be `not in {"0", "false", "False", ""}` with no
-#: strip or lower, so `=off`, `=no` and `=FALSE` all read as TRUE and left the flag on --
-#: a false spelling turning it on rather than off.
-DEDUPE_SKILL_CHUNK_TEXT = os.environ.get(
-    "MATRIXARK_DEDUPE_SKILL_CHUNK_TEXT", "1"
-).strip().lower() not in {"0", "false", "no", "off"}
 
 RESOURCE_APPEND_BATCH_RECORDS = 512
 
@@ -235,7 +219,9 @@ def append_resource_chunk_records(
         # above. Retrieval skips it (`resource_chunk` + `resource_type == "skill"` is filtered out
         # of the resource/skill scan) and the dashboard now reads the section, so writing it costs
         # 42.1% of a skill ingest's bytes for a duplicate nobody reads.
-        if skill_hash is None or not DEDUPE_SKILL_CHUNK_TEXT:
+        # The condition carried `or not <the text switch>` until it was folded. Turning that
+        # switch off did one thing: write the duplicate back.
+        if skill_hash is None:
             owner_record = (
                 resource_record_builders.resource_chunk_record(
                     import_task_hash=resource_import_task_hash,
@@ -280,7 +266,8 @@ def append_resource_chunk_records(
         # its vector map on ref_hash ALONE and both land in it, so the second copy only ever
         # overwrote the first with an identical value - about 37% of what a skill ingest
         # writes, for nothing. Skills now store the skill_section copy only.
-        if skill_hash is None or not DEDUPE_SKILL_CHUNK_EMBEDDING:
+        # The condition carried `or not <the embedding switch>` until it was folded.
+        if skill_hash is None:
             pending_records.append(
                 resource_record_builders.context_embedding_record(
                     embedding_type="resource_chunk",

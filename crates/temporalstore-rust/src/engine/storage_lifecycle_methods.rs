@@ -762,16 +762,24 @@ impl TemporalEngine {
         // finish in ten minutes with a core pegged at 100%. Reclaim is the only thing that
         // removes WAL and index-log bytes, so a shard large enough to need it was a shard on
         // which it could not run.
-        let manifest_fingerprints = manifests
-            .iter()
-            .map(|manifest| {
-                crate::engine::decode_index_bytes(&manifest.index_bytes)
-                    .ok()
-                    .map(|manifest_state| {
-                        bucket_generation_fingerprints_by_bucket(&manifest_state)
-                    })
-            })
-            .collect::<Vec<_>>();
+        // Fingerprint a manifest only when a bucket actually reaches it.
+        //
+        // This was an EAGER pass over every retained manifest, and each entry is a full
+        // shard-sized walk: `bucket_generation_fingerprints_by_bucket` calls
+        // `collect_live_page_entries`. So the plan paid one whole-shard walk PER RETAINED
+        // MANIFEST, every round, before knowing whether any bucket would consult them --
+        // measured by `which_stages_walk_every_live_page` as the bulk of reclaim_wal's 16x.
+        //
+        // The search below is newest-first and short-circuits, and most buckets match the
+        // newest manifest, so nearly all of those walks were computed and thrown away.
+        //
+        // `None` = not computed yet. `Some(None)` = computed, and its index would not decode
+        // (which matched nothing before and matches nothing now). `Some(Some(map))` = computed.
+        // The memo lives for THIS call only, so there is no cross-round staleness question: a
+        // manifest's index bytes cannot change while one plan is being built.
+        let mut manifest_fingerprints: Vec<
+            Option<Option<BTreeMap<u32, BTreeSet<String>>>>,
+        > = (0..manifests.len()).map(|_| None).collect();
 
         // Index each manifest's bucket summaries BY ROUTING BUCKET, once.
         //
@@ -802,32 +810,50 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
 
         for summary in &bucket_summaries {
-            let matching_manifest = manifests
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(manifest_index, manifest)| {
-                    // A manifest whose index will not decode matched nothing before and
-                    // matches nothing now.
-                    let Some(manifest_bucket_fingerprints) =
-                        manifest_fingerprints[*manifest_index].as_ref()
-                    else {
-                        return false;
-                    };
-                    manifest_summaries_by_bucket[*manifest_index]
-                        .get(&summary.routing_bucket)
-                        .is_some_and(|candidates| {
-                            candidates.iter().any(|manifest_summary| {
-                                bucket_dump_summary_matches_current_generation(
-                                    manifest_summary,
-                                    summary,
-                                    manifest_bucket_fingerprints,
-                                    &current_bucket_fingerprints,
-                                )
-                            })
-                        })
-                })
-                .map(|(_, manifest)| manifest);
+            // Same search as before -- newest manifest first, first match wins -- written as a
+            // loop rather than `find` so the fingerprint memo above can be filled on demand.
+            //
+            // The CHEAP test now comes first. A manifest carrying no summary for this bucket
+            // could never match (the predicate's first condition is that the routing buckets are
+            // equal), so asking that before fingerprinting skips the walk entirely for every
+            // manifest that does not cover this bucket.
+            let mut matching_manifest = None;
+            for (manifest_index, manifest) in manifests.iter().enumerate().rev() {
+                let Some(candidates) =
+                    manifest_summaries_by_bucket[manifest_index].get(&summary.routing_bucket)
+                else {
+                    continue;
+                };
+                if manifest_fingerprints[manifest_index].is_none() {
+                    manifest_fingerprints[manifest_index] = Some(
+                        crate::engine::decode_index_bytes(&manifest.index_bytes)
+                            .ok()
+                            .map(|manifest_state| {
+                                bucket_generation_fingerprints_by_bucket(&manifest_state)
+                            }),
+                    );
+                }
+                // A manifest whose index will not decode matched nothing before and matches
+                // nothing now.
+                let Some(manifest_bucket_fingerprints) = manifest_fingerprints[manifest_index]
+                    .as_ref()
+                    .expect("fingerprint memo filled above")
+                    .as_ref()
+                else {
+                    continue;
+                };
+                if candidates.iter().any(|manifest_summary| {
+                    bucket_dump_summary_matches_current_generation(
+                        manifest_summary,
+                        summary,
+                        manifest_bucket_fingerprints,
+                        &current_bucket_fingerprints,
+                    )
+                }) {
+                    matching_manifest = Some(manifest);
+                    break;
+                }
+            }
             let Some(manifest) = matching_manifest else {
                 // No manifest covers this bucket. It is still allowed to hold the logs only from
                 // its own oldest undumped write, PROVIDED it can name that point in both logs.

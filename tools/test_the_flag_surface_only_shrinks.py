@@ -86,7 +86,7 @@ _IDENTITY = re.compile(
 #: flags nothing sets, and 36 of those were the last read of their variable. Banked here in the
 #: same breath, because a ratchet that does not bank a reduction is the reduction nobody can see
 #: was made, and the check below refuses a ceiling left drifting above the truth.
-MAXIMUM_FLAGS_READ = 464
+MAXIMUM_FLAGS_READ = 462
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
@@ -308,7 +308,7 @@ def _is_tooling(module):
 #: which moves when a benchmark gains a knob. This one bounds what an OPERATOR is offered, and it
 #: is the number that answers "how many knobs does this thing have". They move independently and a
 #: single ceiling would hide one behind the other.
-MAXIMUM_CONFIGURABLE = 99
+MAXIMUM_CONFIGURABLE = 97
 
 #: Scan results that cost a tree walk, computed once per process.
 _CACHE: dict = {}
