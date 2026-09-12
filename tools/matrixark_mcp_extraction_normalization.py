@@ -140,17 +140,25 @@ def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, sourc
     return dedupe_entities(entities)
 
 
-def normalize_extracted_segments(raw_segments: Any, messages: list[Json]) -> list[Json]:
-    if isinstance(raw_segments, list):
-        try:
-            try:
-                from tools.matrixark_mcp_extraction_runtime import normalize_model_segments
-            except ModuleNotFoundError:  # Direct script execution from tools/.
-                from matrixark_mcp_extraction_runtime import normalize_model_segments
-            return normalize_model_segments({"segments": raw_segments}, messages)
-        except MatrixArkError:
-            return []
-    return []
+# The copy here differed by a lazy import of normalize_model_segments inside the function, where
+# the live one has the name at module scope. Plumbing, and the only difference.
+#
+# `extract_batch_entities` is NOT moved with it, and it is the one left in this file worth knowing
+# about: thirty-four hunks against matrixark_mcp_core's, with real work on both sides. The live one
+# has a content-matching lineage builder, an assistant-profile filter, and a location pattern that
+# stops at a clause boundary -- carrying a comment about why:
+#
+#     "I live in Seattle and prefer metric units"   live: Seattle
+#                                                 orphan: Seattle and prefer metric units
+#
+# This copy has helpers the live one does not (role_lineage, profile_lineage_for_match,
+# source_refs_for_match) and a tool_evidence pattern the live one lacks. Neither is the complete
+# one, so neither can be deleted without deciding what the extractor should do -- which is a
+# different job from removing a copy.
+try:  # the implementation lives in matrixark_mcp_core_extraction; this module re-exports it
+    from tools.matrixark_mcp_core_extraction import normalize_extracted_segments
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_extraction import normalize_extracted_segments
 
 
 # Not defined here: the implementation lives in matrixark_mcp_core_extraction and this module carried an
