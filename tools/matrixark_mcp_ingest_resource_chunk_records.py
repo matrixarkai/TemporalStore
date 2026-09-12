@@ -148,9 +148,7 @@ DEDUPE_SKILL_CHUNK_TEXT = os.environ.get(
     "MATRIXARK_DEDUPE_SKILL_CHUNK_TEXT", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
 
-RESOURCE_APPEND_BATCH_RECORDS = int(
-    os.environ.get("MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS", "").strip() or "512"
-)
+RESOURCE_APPEND_BATCH_RECORDS = 512
 
 
 def _flush_pending_records(adapter: Any, pending: list) -> list:

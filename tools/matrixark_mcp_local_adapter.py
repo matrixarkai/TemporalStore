@@ -159,9 +159,7 @@ LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_
 LOCAL_DURABLE_READ_CACHE_COMPRESS = os.environ.get(
     "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
-LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL = max(
-    1, min(9, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL", "").strip() or "6"))
-)
+LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL = 6
 #: Container prefix. A JSON snapshot always starts with `{`, so this can never be mistaken for one,
 #: and the codec byte after it leaves room for another encoding without a second format.
 _SNAPSHOT_CONTAINER_MAGIC = b"MASNAP\x01"
@@ -218,13 +216,9 @@ _SNAPSHOT_CODEC_BLOCKS = b"\x02"
 #: 256 records to a block. Measured on this corpus, per-block compression reaches 97% of its ceiling
 #: by 256 and the decoded transient is one block, so a larger block buys ratio the store will not
 #: notice and costs memory the cold read will.
-LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS = max(
-    1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS", "").strip() or "256")
-)
+LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS = 256
 
-LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
-    1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "").strip() or "250")
-)
+LOCAL_DURABLE_READ_CACHE_MAX_DELTA = 250
 # No floor by default. One was added because the fallback rewrote the WHOLE record set as JSON
 # whenever the append-only path could not apply, which was almost every append -- so a delay
 # between writes was the only thing keeping it bounded.

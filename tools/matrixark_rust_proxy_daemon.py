@@ -26,9 +26,7 @@ from typing import Any
 Json = dict[str, Any]
 
 
-_ARENA_TRIM_THRESHOLD_BYTES = max(
-    0, int(os.environ.get("MATRIXARK_PROXY_DAEMON_TRIM_BYTES", str(8 * 1024 * 1024)) or 0)
-)
+_ARENA_TRIM_THRESHOLD_BYTES = 8388608
 _LIBC_FOR_TRIM: Any = None
 _LIBC_LOOKED_UP = False
 

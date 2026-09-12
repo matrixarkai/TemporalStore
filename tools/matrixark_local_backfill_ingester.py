@@ -223,9 +223,9 @@ class Metrics:
 
 # Tool events carry real signal but are the bulk of local tokens, so we ingest them in a LEAN
 # form: tool_use -> "[tool:NAME] <key arg>"; tool_result -> head-truncated (pre-analysis, not the
-# full dump). Configurable via MATRIXARK_TOOL_LEAN_CHARS. This is what lets remote context return
+# full dump) at 240 characters. This is what lets remote context return
 # tool information at a fraction of the local verbose size.
-_TOOL_LEAN_CHARS = int(os.environ.get("MATRIXARK_TOOL_LEAN_CHARS", "").strip() or "240")
+_TOOL_LEAN_CHARS = 240
 _TOOL_ARG_KEYS = ("command", "file_path", "path", "pattern", "query", "url", "notebook_path", "description")
 
 
