@@ -903,6 +903,21 @@ pub struct StorageManagerOptions {
     #[serde(default)]
     #[serde(rename = "max_expire_cold_slots_per_round")]
     pub max_expire_cold_buckets_per_round: usize,
+    /// How many index-log records one round may reclaim.
+    ///
+    /// `apply_periodic_index_gc` built the cycle's request internally, so this loop could not
+    /// tune it: it was fixed at the cycle's 256. That is a value chosen for an on-demand call,
+    /// and a periodic loop racing live ingest is a different workload -- #1514 measured 2,000
+    /// records arriving per round against 256 removed.
+    ///
+    /// Defaults to the cycle's constant, so the shipped behaviour is unchanged and this only
+    /// makes the knob reachable.
+    #[serde(default = "default_storage_manager_index_gc_max_entries_per_round")]
+    pub index_gc_max_entries_per_round: usize,
+}
+
+fn default_storage_manager_index_gc_max_entries_per_round() -> usize {
+    crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND
 }
 
 /// Records that must be undumped before a dump is taken.
@@ -969,6 +984,8 @@ impl Default for StorageManagerOptions {
                 crate::engine::reports::DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND,
             max_expire_cold_buckets_per_round:
                 crate::engine::reports::DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND,
+            index_gc_max_entries_per_round:
+                crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
         }
     }
 }

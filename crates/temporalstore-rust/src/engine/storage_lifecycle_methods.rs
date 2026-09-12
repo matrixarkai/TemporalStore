@@ -1086,6 +1086,7 @@ impl TemporalEngine {
         &self,
         request: StorageLifecycleRequest,
         lifecycle_report: Option<&StorageLifecycleReport>,
+        max_entries_per_round: usize,
     ) -> StorageIndexGcReport {
         let shard_id = request.shard_id;
         let plan = self.storage_lifecycle_plan(request);
@@ -1096,6 +1097,7 @@ impl TemporalEngine {
             lifecycle_report,
             &StorageManagerCycleRequest {
                 shard_id,
+                index_gc_max_entries_per_round: max_entries_per_round,
                 ..StorageManagerCycleRequest::default()
             },
         )
