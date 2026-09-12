@@ -768,6 +768,13 @@ pub struct GcRequest {
     #[serde(alias = "retain_page_segments_from_id")]
     #[serde(rename = "retain_page_slabs_from_id")]
     pub retain_block_slabs_from_id: Option<u64>,
+    /// Move reclaimed slabs into quarantine instead of unlinking them there and then.
+    ///
+    /// Defaults to false, which is what this RPC has always done. The storage-manager cycle
+    /// quarantines, and the periodic loop now asks for the same thing; an operator collecting by
+    /// hand keeps the immediate unlink, because the space is usually why they called.
+    #[serde(default)]
+    pub page_gc_delayed_destroy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

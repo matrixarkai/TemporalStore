@@ -433,6 +433,12 @@ impl DataNodeRuntime {
                         .and_then(|report| report.dump_manifest.as_ref())
                         .map(|manifest| manifest.index_log_sequence),
                     retain_block_slabs_from_id,
+                    // Quarantine rather than unlink, as the cycle has always done. This stage
+                    // deleted a slab outright, so if the retain floor above was ever computed too
+                    // generously there was nothing left to recover from. The prepare stage passes
+                    // `purge_delayed_destroy` whenever page GC is on, so quarantined slabs are
+                    // still collected -- an hour later, not never.
+                    page_gc_delayed_destroy: true,
                 },
             );
             if !response.status.ok {

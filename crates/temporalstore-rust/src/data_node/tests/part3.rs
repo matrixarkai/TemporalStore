@@ -1139,6 +1139,7 @@ fn gc_does_not_clear_the_dirty_scheduling_tracker() {
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: None,
+            page_gc_delayed_destroy: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2145,6 +2146,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             retain_wal_from_sequence: Some(3),
             retain_index_log_from_sequence: Some(2),
             retain_block_slabs_from_id: Some(2),
+            page_gc_delayed_destroy: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2226,6 +2228,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: Some(u64::MAX),
+            page_gc_delayed_destroy: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2397,6 +2400,7 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
             retain_wal_from_sequence: Some(2),
             retain_index_log_from_sequence: Some(2),
             retain_block_slabs_from_id: None,
+            page_gc_delayed_destroy: false,
         }),
     };
     runtime
@@ -2508,6 +2512,7 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: None,
+            page_gc_delayed_destroy: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -4430,5 +4435,158 @@ fn what_the_stage_order_buys() {
     assert!(
         compacted_rounds > 0,
         "compaction never ran, so this measures nothing about the stage order"
+    );
+}
+
+/// Can the page-GC garbage floor ever exclude a slab? Prints.
+///
+///   cargo test -p temporalstore-rust --lib can_the_page_gc_garbage_floor_bind \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// The floor keeps a slab whose band is less than `min_slab_garbage_basis_points` garbage, and the
+/// band's live fraction is summed over the slabs in that band which are NOT collectable. So the
+/// floor can only bind where a band holds a MIX -- some collectable slabs, some not. This prints
+/// each candidate's band id against its own id, and the utility the floor is compared against.
+#[test]
+#[ignore]
+fn can_the_page_gc_garbage_floor_bind() {
+    const BATCH: usize = 400;
+    const ROUNDS: usize = 6;
+    const KEYSPACE: usize = 100;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+    let mut written = 0usize;
+    for _ in 0..ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("floor-{:06}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += BATCH;
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+
+    let engine = runtime.engine();
+    let live = engine.live_block_slab_ids_all_shards();
+    let plan = engine
+        .block_store()
+        .gc_policy_plan(
+            u64::MAX,
+            live.iter().copied(),
+            &crate::block_store::BlockStoreGcPolicy::with_slab_garbage_floor(
+                crate::engine::reports::DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS,
+                None,
+            ),
+        )
+        .expect("plan");
+
+    eprintln!(
+        "  candidates={} selected={} skipped_by_policy={}",
+        plan.candidate_count,
+        plan.selected_block_slab_ids.len(),
+        plan.skipped_by_policy_count
+    );
+    eprintln!("     slab   total_b    used_b   utility_bp   garbage_bp   floor_keeps_it");
+    for candidate in plan.candidates.iter() {
+        let garbage = 10_000u64.saturating_sub(candidate.utility_basis_points);
+        let kept = garbage < crate::engine::reports::DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS;
+        eprintln!(
+            "  {:>7}  {:>8}  {:>8}   {:>10}   {:>10}   {}",
+            candidate.block_slab_id,
+            candidate.total_bytes,
+            candidate.used_bytes,
+            candidate.utility_basis_points,
+            garbage,
+            kept
+        );
+    }
+    eprintln!(
+        "  VERDICT: the floor excluded {} of {} candidates",
+        plan.skipped_by_policy_count, plan.candidate_count
+    );
+}
+
+/// The reclaim_page stage quarantines the slabs it reclaims instead of unlinking them.
+///
+/// The stage reached `gc_slabs_before_with_live_refs`, which destroys immediately. The
+/// storage-manager cycle has always reached the delayed-destroy entry, so a slab it reclaimed
+/// stayed on disk until a later purge and could be recovered if the retain floor turned out to
+/// have been computed too generously. The periodic loop had no such second chance.
+///
+/// Quarantined slabs are still collected -- `DELAYED_DESTROY_MIN_AGE_MS` is an hour, and the
+/// prepare stage passes `purge_delayed_destroy` whenever page GC is on -- so this trades prompt
+/// space for recoverability, it does not leak.
+#[test]
+fn the_periodic_reclaim_quarantines_what_it_collects() {
+    const BATCH: usize = 400;
+    const ROUNDS: usize = 6;
+    // Smaller than BATCH so later rounds overwrite earlier keys and whole slabs fall out of use.
+    // With insert-only traffic every slab stays live, nothing is reclaimed at all, and the
+    // assertions below would be measuring an empty run.
+    const KEYSPACE: usize = 100;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+    let mut written = 0usize;
+    let mut removed = 0usize;
+    for _ in 0..ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("quarantine-{:06}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += BATCH;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if let Some(gc) = report.gc_report.as_ref() {
+            removed = removed.saturating_add(gc.block_slabs_removed);
+        }
+    }
+
+    // The denominator. Nothing below means anything if the stage reclaimed nothing.
+    assert!(
+        removed > 0,
+        "the stage reclaimed no slabs, so this measures nothing about how it disposes of them"
+    );
+
+    // Purging with a zero minimum age reports exactly what the stage left in quarantine. The
+    // loop's own purge cannot have taken them: it uses the one-hour minimum.
+    let quarantined = runtime
+        .engine()
+        .block_store()
+        .purge_delayed_destroy_slabs_older_than(0)
+        .map(|report| report.purged_block_slab_ids.len())
+        .unwrap_or(0);
+    assert!(
+        quarantined > 0,
+        "reclaimed {removed} slabs and quarantined none of them -- the stage unlinked them outright"
     );
 }

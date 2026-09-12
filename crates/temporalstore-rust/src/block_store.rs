@@ -525,6 +525,18 @@ impl BlockStoreGcPolicy {
     /// Reclaim eligible bands whose garbage ratio is at least
     /// `min_band_garbage_basis_points`, highest-garbage first, optionally bounded by a
     /// minimum band age. Mirrors selecting the maximum-garbage-rate zone under GC.
+    /// A garbage floor that CANNOT currently exclude anything. Measured, not assumed.
+    ///
+    /// The floor is compared against a BAND's live fraction, and a band's used bytes sum only the
+    /// slabs in it that are not collectable. `band_id_for_slab` is the identity function, so every
+    /// band holds exactly one slab -- and a candidate is by definition below the retention floor,
+    /// not current and not live, so its band's used bytes are zero. Utility is therefore 0, garbage
+    /// is 10,000 basis points, and every candidate clears every possible floor.
+    ///
+    /// `can_the_page_gc_garbage_floor_bind` prints this: the floor excluded 0 of 2 candidates, both
+    /// at 10,000 bp garbage with 0 used bytes. Setting this to a larger number changes nothing
+    /// today, and it will start to bite the moment a band holds more than one slab -- which is what
+    /// the knob was built for. It is left in place and documented rather than removed.
     pub fn with_slab_garbage_floor(
         min_slab_garbage_basis_points: u64,
         min_age_ms: Option<u64>,
