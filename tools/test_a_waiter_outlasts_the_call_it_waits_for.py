@@ -93,16 +93,32 @@ class EveryLaneServerUsesTheSharedDeadlineTest(unittest.TestCase):
             "found %d modules defining _read_json_line, expected at least %d -- this check has "
             "gone blind, or the lane moved and it needs re-aiming" % (len(servers), LANE_SERVER_FLOOR))
 
-    def test_no_lane_server_spells_the_deadline_itself(self) -> None:
-        """A module with its own copy of the formula is a module the next fix will miss."""
-        for stem in lane_servers():
+    def test_no_module_spells_the_deadline_itself(self) -> None:
+        """A module with its own copy of the formula is a module the next fix will miss.
+
+        This asked only `lane_servers()` -- the modules that define `_read_json_line` -- and the
+        three that had drifted were exactly the ones it did not look at. The fix for mx#1073
+        reached the two lane servers and left the formula written out in
+        `matrixark_mcp_rust_proxy_cache` (the ContextPack singleflight wait) and three times in
+        `matrixark_mcp_rust_proxy_coalesce` (the batch_hset, append and batch_hget coalescers),
+        plus a fifth copy in `matrixark_mcp_rust_proxy_config` whose docstring said "This is the ONLY
+        definition".
+
+        Every one of those is a waiter on the same lane as the holder. A scope drawn from who
+        defines `_read_json_line` describes how the modules were split, not who waits, so this
+        reads every production module instead.
+        """
+        for path in sorted(glob.glob(os.path.join(TOOLS, "*.py"))):
+            stem = os.path.basename(path)[:-3]
+            if stem.startswith("test_") or stem == "matrixark_json_lane":
+                continue
             with self.subTest(module=stem):
                 # assertTrue, not assertNotIn: the haystack is a 280 KB module and unittest
                 # prints the whole thing, which buries the one line that matters.
                 self.assertTrue(
                     INLINE_FORMULA not in source_of(stem),
-                    "%s spells the lane deadline out itself (%r). Both copies drifted apart "
-                    "last time; derive it from matrixark_json_lane instead."
+                    "%s spells the lane deadline out itself (%r). Copies of it drifted apart "
+                    "twice; derive it from matrixark_json_lane instead."
                     % (stem, INLINE_FORMULA))
 
     def test_every_lane_server_derives_it_from_the_shared_helper(self) -> None:

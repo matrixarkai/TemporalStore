@@ -14,8 +14,10 @@ from typing import Any, Iterable
 
 try:
     from tools.matrixark_mcp_core import Json, MatrixArkError
+    from tools.matrixark_json_lane import lane_response_deadline_s
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
+    from matrixark_json_lane import lane_response_deadline_s
 
 
 def string_cache_key_allowed(target: Any, key: str) -> bool:
@@ -210,7 +212,7 @@ def context_pack_response_singleflight_wait(target: Any, cache_key: str, infligh
     if not isinstance(event, threading.Event):
         raise MatrixArkError("invalid ContextPack singleflight state")
     started = time.perf_counter()
-    timeout_s = max(target._backpressure_timeout_s, target.request_timeout_ms / 1000.0 + 2.0)
+    timeout_s = max(target._backpressure_timeout_s, lane_response_deadline_s(target.request_timeout_ms))
     if not event.wait(timeout=timeout_s):
         raise MatrixArkError(f"Rust TemporalStore ContextPack singleflight timed out after {timeout_s:.1f}s")
     wait_ms = (time.perf_counter() - started) * 1000.0

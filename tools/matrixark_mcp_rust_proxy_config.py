@@ -29,18 +29,6 @@ except ImportError:  # pragma: no cover
 _ = LANE_RESPONSE_GRACE_S  # noqa: F401 - re-exported for readers of this module
 
 
-def _unused_lane_response_deadline_s(request_timeout_ms: int) -> float:
-    """How long one call may hold a lane waiting for the proxy to answer.
-
-    This is the ONLY definition. It used to be written out again inside `_read_json_line`, and the
-    backpressure timeout was derived from `request_timeout_ms` alone -- two seconds less. A waiter
-    that gives up before the holder's own deadline can never be granted the lane, so any call that
-    ran to its deadline rejected every caller queued behind it, reporting lane backpressure when
-    the truth was one slow call.
-    """
-    return max(LANE_RESPONSE_GRACE_S, request_timeout_ms / 1000.0 + LANE_RESPONSE_GRACE_S)
-
-
 def initialize_rust_proxy_config(target: Any, *, request_timeout_ms: int) -> None:
     # Defaults to the longest one in-flight call may legitimately take, so backpressure means the
     # lane is saturated rather than merely busy. An operator value still wins, in either spelling;
