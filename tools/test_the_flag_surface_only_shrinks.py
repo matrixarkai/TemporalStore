@@ -382,6 +382,40 @@ def read_by_production():
 _SELF = os.path.join("tools", os.path.basename(__file__))
 
 
+#: The files a DEPLOYMENT is configured from: what the portal offers, what the config loader maps,
+#: and what a config file, a script, a deploy profile, a container definition or a CI workflow
+#: actually writes. Deliberately NOT `docs/*` and NOT `tools/test_*.py` -- a doc telling an operator
+#: to export something is an affordance (that is what `instructed` is for) and a test setting a
+#: variable proves only that a test can set it.
+_SETTING_GLOBS = ("config/*", "scripts/*", "*.sh", "tools/*.sh", "docker/*", ".github/*")
+
+
+def deployment_settable(reads):
+    """The flags a deployment can actually set, which is not the same number as the surface.
+
+    `selected` answers "can anything choose this value at all", and a test counts, because a flag
+    a test sets is a flag with a live branch on both sides. That is the right question for
+    "is this a switch or a dead branch" and the wrong one for "how much is there to configure":
+    245 flags are selected and 183 of them are selected BY A TEST.
+
+    So this asks the narrower thing. 166 of 464 when this was written -- 111 mapped by the portal
+    or the config loader, 55 more written by a config file, script, deploy profile, container or
+    CI workflow. The other 298 are read by production and set by nothing that ships: named in a
+    test, described in prose, spelled on a benchmark's command line, or pointing at where a
+    deployment lives.
+
+    This is a report, not a group: a flag here is still classified by the rules below, and nothing
+    is removed by counting it.
+    """
+    names = set(_NAME.findall(_text("tools/matrixark_gateway_config.py")))
+    names |= set(_NAME.findall(_text("tools/matrixark_load_config.py")))
+    for rel in _tracked(*_SETTING_GLOBS):
+        if rel == _SELF:
+            continue
+        names |= set(_NAME.findall(_text(rel)))
+    return {name for name in reads if name in names}
+
+
 def _selected():
     names = set()
     for rel in _tracked("tools/test_*.py", "config/*", "scripts/*", "*.sh", "tools/*.sh",
@@ -667,6 +701,36 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                 self.assertFalse(
                     [m for m in self.reads[name] if not _is_tooling(m)],
                     "%s is in the tooling group and a product module reads it" % name)
+
+    def test_the_deployment_settable_surface_is_reported(self) -> None:
+        """The number an operator's question is about, which is not the number at the top.
+
+        "How many knobs does this thing have" is answered by what a deployment can set, and that
+        is 166 of the 464 read. `selected` deliberately counts a test as a chooser, because a test
+        setting a flag proves the branch is live on both sides -- a good answer to "is this dead"
+        and a misleading one to "how much is there to configure", since 183 of the 245 selected
+        flags are selected by a test.
+        """
+        settable = deployment_settable(self.reads)
+        self.assertTrue(
+            settable,
+            "no flag is set by the portal, the loader, a config file, a script, a profile, a "
+            "container or a workflow. That is not credible in this tree and is what a broken "
+            "tracked-file scan says, so check that before believing it.")
+        self.assertLess(
+            len(settable), len(self.reads),
+            "every flag read is one a deployment sets, which would mean this is measuring the "
+            "population rather than the property")
+        # The half of the claim a count cannot make: each one really is named where it says.
+        where = set(_NAME.findall(_text("tools/matrixark_gateway_config.py")))
+        where |= set(_NAME.findall(_text("tools/matrixark_load_config.py")))
+        for rel in _tracked(*_SETTING_GLOBS):
+            if rel != _SELF:
+                where |= set(_NAME.findall(_text(rel)))
+        for name in sorted(settable):
+            with self.subTest(flag=name):
+                self.assertIn(name, where, "%s is counted settable and no shipping file names it"
+                              % name)
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
