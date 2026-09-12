@@ -4010,6 +4010,125 @@ materialized {scanned:>8} live-page entries = {:>5.1}x the shard, stages {:?}",
     }
 }
 
+/// WHICH stages do the walking? Attributes the round's live-page scan volume per stage. Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib which_stages_walk_every_live_page -- --ignored --nocapture
+///
+/// `how_many_times_a_round_walks_every_live_page` establishes that one round materializes every
+/// live page ~35x. That number says a fix is worth doing but not where to apply it. This names the
+/// stages, by toggling each one off and diffing the scan counter -- the same subtract-one-stage
+/// shape `what_each_maintenance_stage_costs` uses for time, so the two can be read together.
+///
+/// Read the DELTA (all-on minus without-this-stage), not the without-column. A stage that shares
+/// its walks with another stage will under-report here, because switching it off leaves the other
+/// one still walking -- so the deltas are a lower bound per stage and need not sum to the total.
+/// That is a property worth seeing rather than hiding: where the deltas fall well short of the
+/// total, the walking is SHARED, and hoisting one materialization helps more than removing any
+/// single stage would.
+#[test]
+#[ignore]
+fn which_stages_walk_every_live_page() {
+    fn build(objects: usize) -> (tempfile::TempDir, DataNodeRuntime) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..objects {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("stage-scan-{index:06}"),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        (dir, runtime)
+    }
+
+    fn scan_once(objects: usize, options: StorageManagerOptions) -> (u64, Vec<String>) {
+        let (_dir, runtime) = build(objects);
+        crate::engine::reset_live_page_scan_entries();
+        let report = runtime.run_storage_manager_once(1, options);
+        (crate::engine::live_page_scan_entries(), report.executed_stages)
+    }
+
+    for objects in [4_000usize] {
+        let (all_on, stages) = scan_once(objects, StorageManagerOptions::default());
+        assert!(
+            all_on > 0,
+            "the round materialized nothing, so this attributes nothing",
+        );
+
+        // WHY the two stages below walk so much: they rebuild the same plans. Both counters
+        // already exist for exactly this question, and a COUNT is immune to whatever else is
+        // running on the box, where a timing would not be.
+        let (_dir, runtime) = build(objects);
+        crate::engine::reset_storage_plan_build_counts();
+        let _ = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let (lifecycle_builds, wal_builds) = crate::engine::storage_plan_build_counts();
+        eprintln!(
+            "  [stage-scan] {objects:>6}   ONE round builds the lifecycle plan {lifecycle_builds} \
+time(s) and the WAL reclaim plan {wal_builds} time(s); each walks the shard"
+        );
+        eprintln!(
+            "  [stage-scan] {objects:>6} objects, everything on -> {all_on:>9} live-page entries \
+= {:>5.1}x the shard, stages {stages:?}",
+            all_on as f64 / objects as f64,
+        );
+
+        for (name, off) in [
+            ("prepare", StorageManagerOptions { enable_prepare: false, ..Default::default() }),
+            ("reclaim_wal", StorageManagerOptions { enable_wal_reclaim: false, ..Default::default() }),
+            ("reclaim_memory", StorageManagerOptions { enable_memory_reclaim: false, ..Default::default() }),
+            ("expire", StorageManagerOptions { enable_expire: false, ..Default::default() }),
+            ("reclaim_page", StorageManagerOptions { enable_page_gc: false, ..Default::default() }),
+            ("compact_pages", StorageManagerOptions { enable_page_compaction: false, ..Default::default() }),
+            ("reclaim_index", StorageManagerOptions { enable_index_gc: false, ..Default::default() }),
+            ("reap_metrics", StorageManagerOptions { enable_metrics_reap: false, ..Default::default() }),
+        ] {
+            // A stage that did not RUN in the all-on round contributes 0 here, and that zero
+            // reads exactly like "this stage does no walking" while meaning "this row measured
+            // nothing". Say which it is. `compact_pages` is the one that matters: it does not run
+            // on this fixture, yet its preamble is six whole-shard passes when it does.
+            let ran = stages.iter().any(|stage| stage == name);
+            let (without, _) = scan_once(objects, off);
+            eprintln!(
+                "  [stage-scan] {objects:>6}   without {name:<15} {without:>9} \
+(stage accounts for {:>9} entries, {:>5.1}x the shard){}",
+                all_on.saturating_sub(without),
+                all_on.saturating_sub(without) as f64 / objects as f64,
+                if ran { "" } else { "   <- DID NOT RUN on this fixture; the zero measures nothing" },
+            );
+        }
+
+        // `enable_evict` is the ONE stage flag that defaults to false (manual `Default` impl, with
+        // a comment saying so), so a subtract-one row for it would toggle nothing and report a
+        // false zero. Measure it the other way round: what turning it ON adds.
+        let (with_evict, evict_stages) = scan_once(
+            objects,
+            StorageManagerOptions { enable_evict: true, ..Default::default() },
+        );
+        eprintln!(
+            "  [stage-scan] {objects:>6}   evict is OFF by default; ON -> {with_evict:>9} \
+(adds {:>9} entries, {:>5.1}x the shard), stages {evict_stages:?}",
+            with_evict.saturating_sub(all_on),
+            with_evict.saturating_sub(all_on) as f64 / objects as f64,
+        );
+    }
+}
+
 #[test]
 fn the_dump_cap_bounds_a_stage_but_not_a_round() {
     // Two facts, and the second is the surprising one.
