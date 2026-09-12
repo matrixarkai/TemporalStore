@@ -37,6 +37,11 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import build_segment_prompt
 
 
+# `semantic_saliency_score` had a copy here whose keyword list matched `control_state` where
+# core's matches `risk`. Neither is a typo: that is the same open question recorded against
+# RESOURCE_FACT_KEYWORDS in test_there_is_one_copy_of_each_helper, where it is blocked on
+# RESOURCE_FACT_SCHEMAS differing per host. Re-exporting does not answer it -- it takes this
+# module out of the argument, so the answer only has to be written in one place.
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
     from tools.matrixark_mcp_core import oss_model_memory_segments, semantic_saliency_score
 except ImportError:  # Direct script execution from tools/.
