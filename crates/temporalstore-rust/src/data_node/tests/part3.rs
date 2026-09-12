@@ -6224,3 +6224,85 @@ fn what_a_bucket_dump_costs() {
         assert!(!manifest.manifest_id.is_empty());
     }
 }
+
+/// Does an index-GC round cost the LOG or the records it removes? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_an_index_gc_round_costs \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// `index_gc_max_entries_per_round` bounds how many index-log records a round REMOVES -- 256 by
+/// default, reachable since #1524. What it does not bound is the read: the report opens with
+/// `scan(shard_id, 0, u64::MAX, u64::MAX)`, the whole log, every round, and there is no cursor
+/// anywhere to resume from.
+///
+/// The design being followed keeps a persistent `gc_scan_iterator_` and advances it with `Next()`
+/// for `index_gc_max_num_per_round` entries, so a round reads what it is budgeted for and the next
+/// round continues from there rather than starting over.
+///
+/// If the cost here grows with the LOG while the removal stays capped, this is the same shape as
+/// the expiry walk (#1545), the compaction scan (#1547) and the whole-shard dump (#1559): the work
+/// is bounded, the scan is not, and the knob counts the bounded half.
+#[test]
+#[ignore]
+fn what_an_index_gc_round_costs() {
+    eprintln!("  index_records   round_ms   removed");
+    for writes in [2_000usize, 8_000, 32_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        {
+            let engine = runtime.engine();
+            // Overwrite a bounded key space so records genuinely become garbage and the stage has
+            // something to remove; with distinct keys almost every record is the live version of a
+            // key and the removal would be zero for reasons that say nothing about scan cost.
+            for index in 0..writes {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("idxscan-{:08}", index % 500),
+                        value: vec![b'v'; 64],
+                    },
+                });
+            }
+        }
+        let before = runtime
+            .engine()
+            .index_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0);
+
+        // Only the index stage, so the number is this stage's and not a whole round's.
+        let options = StorageManagerOptions {
+            enable_prepare: false,
+            enable_wal_reclaim: false,
+            enable_memory_reclaim: false,
+            enable_expire: false,
+            enable_page_gc: false,
+            enable_page_compaction: false,
+            enable_metrics_reap: false,
+            ..StorageManagerOptions::default()
+        };
+        let started = Instant::now();
+        runtime.run_storage_manager_once(1, options);
+        let elapsed = started.elapsed().as_millis();
+
+        let after = runtime
+            .engine()
+            .index_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0);
+        eprintln!(
+            "  {before:>13}   {elapsed:>8}   {:>7}",
+            before.saturating_sub(after)
+        );
+    }
+}
