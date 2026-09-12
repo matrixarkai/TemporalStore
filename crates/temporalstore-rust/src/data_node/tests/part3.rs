@@ -5020,6 +5020,24 @@ fn what_a_page_gc_round_walks() {
 /// Each arm builds its OWN store. A first version shared one runtime across both arms, so the
 /// second arm inherited a cache the first had already drained and reported zeros that meant
 /// nothing.
+///
+/// WHY IT STALLS, which #1555 left open. Not pacing and not selection -- both of those match the
+/// design being followed already:
+///
+///   - pacing: #1555 gave the stage a count budget, so it keeps taking batches while they help.
+///   - selection: `evict_sampler` lives on `ShardState`, so the sampler's cursor and pool persist
+///     across calls. That is the same persistent-iterator shape their `PolicyLru` uses.
+///
+/// The ceiling is the MODE. With `eviction_delete_drop` false -- the shipped default, mode
+/// `evict_cache` -- a victim is handled by `cache.invalidate_slot(shard_id, routing_bucket)` and
+/// nothing else. Eviction can free exactly what is CACHED. Once the cached pages of the eligible
+/// buckets are gone, another batch frees nothing, `cooldown` is set, and the loop correctly stops.
+///
+/// So eviction cannot converge below the cached set by construction, and the bucket node itself is
+/// never dropped. That is the same architectural blocker as restore: there is no per-bucket
+/// load-back path, so nothing may evict a bucket node and expect to read it again. Raising the
+/// budget, changing the sampler, or looping harder cannot move this number -- the fix is a load
+/// path, or a deliberate decision to run this stage in `delete_drop`.
 #[test]
 #[ignore]
 fn how_long_eviction_takes_to_converge() {
