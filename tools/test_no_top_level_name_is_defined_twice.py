@@ -176,10 +176,16 @@ class NoTopLevelNameIsDefinedTwiceTest(unittest.TestCase):
             extends_the_earlier(copies[1], "C"),
             "a second definition naming the first as its base is no longer recognised, so the "
             "exemption has broken and the rule is about to reject a valid idiom")
-        self.assertNotIn(
-            "_HookStoreReader", {name for _, name, _, _ in collect_shadowed()},
-            "matrixark_http defines _HookStoreReader twice again -- see matrixarkai#1584 for why "
-            "the second copy was given its own name rather than exempted")
+        # Asked of the FILE, not of collect_shadowed(). The exemption removes the name from that
+        # set by construction, so a check against it can never fail and would be decoration.
+        http = ast.parse((REPO / "tools/matrixark_http.py").read_text(encoding="utf-8"))
+        again = [n.lineno for n in http.body
+                 if isinstance(n, ast.ClassDef) and n.name == "_HookStoreReader"]
+        self.assertLessEqual(
+            len(again), 1,
+            "matrixark_http defines _HookStoreReader at lines %s again. The idiom is exempt and "
+            "stays exempt -- but it is what made two later readers inherit the native reader "
+            "instead of the abstract one, so see matrixarkai#1584 before restoring it." % again)
 
     def test_the_exemption_reads_definition_time_and_not_the_body(self) -> None:
         """Positive control on the classifier, on both sides of the line it draws."""
