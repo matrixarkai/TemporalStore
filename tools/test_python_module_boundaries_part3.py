@@ -130,10 +130,9 @@ class _ModuleBoundaryPart3:
         metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
         temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
-        admin_mod = importlib.import_module("tools.matrixark_mcp_admin")
         backends_mod = importlib.import_module("tools.matrixark_mcp_backends")
         dispatch_mod = importlib.import_module("tools.matrixark_mcp_dispatch")
-        ingestion_mod = importlib.import_module("tools.matrixark_mcp_ingestion")
+        policy_mod = importlib.import_module("tools.matrixark_mcp_server_request_policy")
         retrieval_mod = importlib.import_module("tools.matrixark_mcp_retrieval")
         requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
 
@@ -162,9 +161,12 @@ class _ModuleBoundaryPart3:
             self.assertEqual(exported.__module__.rsplit(".", 1)[-1],
                              defined.__module__.rsplit(".", 1)[-1],
                              "%s is not re-exported from the split module" % name)
-        self.assertTrue(ingestion_mod.is_ingestion_tool("matrixark_ingest"))
-        self.assertTrue(retrieval_mod.is_retrieval_tool("matrixark_retrieve"))
-        self.assertTrue(admin_mod.is_admin_tool("matrixark_management_portal"))
+        # The three tool-class predicates live with the request policy that asks them, not
+        # in three modules of their own. What this still checks is that the entrypoint does
+        # not grow its own copies.
+        self.assertTrue(policy_mod.is_ingestion_tool("matrixark_ingest"))
+        self.assertTrue(policy_mod.is_retrieval_tool("matrixark_retrieve"))
+        self.assertTrue(policy_mod.is_admin_tool("matrixark_management_portal"))
         self.assertTrue(callable(backends_mod.build_mcp_adapter))
         self.assertTrue(callable(dispatch_mod.dispatch_matrixark_tool))
         self.assertTrue(callable(requests_mod.normalize_mcp_tool_request))
@@ -214,9 +216,8 @@ class _ModuleBoundaryPart3:
             "matrixark_mcp_backends.py",
             "matrixark_mcp_dispatch.py",
             "matrixark_mcp_requests.py",
-            "matrixark_mcp_ingestion.py",
             "matrixark_mcp_retrieval.py",
-            "matrixark_mcp_admin.py",
+            "matrixark_mcp_server_request_policy.py",
         ]
         offenders: list[str] = []
         for module_name in module_names:

@@ -23,11 +23,8 @@ try:
         require_string,
         stable_hash,
     )
-    from tools.matrixark_mcp_admin import is_admin_tool
-    from tools.matrixark_mcp_ingestion import is_ingestion_tool
     from tools.matrixark_mcp_native_pack_policy import native_context_pack_required_for_backend
     from tools.matrixark_mcp_requests import normalize_mcp_tool_request
-    from tools.matrixark_mcp_retrieval import is_retrieval_tool
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         DEFAULT_MAX_CONTEXT_TOKENS,
@@ -42,11 +39,42 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         require_string,
         stable_hash,
     )
-    from matrixark_mcp_admin import is_admin_tool
-    from matrixark_mcp_ingestion import is_ingestion_tool
     from matrixark_mcp_native_pack_policy import native_context_pack_required_for_backend
     from matrixark_mcp_requests import normalize_mcp_tool_request
-    from matrixark_mcp_retrieval import is_retrieval_tool
+
+
+# Which class of tool a request names. These were three modules -- matrixark_mcp_admin,
+# matrixark_mcp_ingestion and the tool-name half of matrixark_mcp_retrieval -- of seventeen,
+# eighteen and a handful of lines each: a set of names and a one-line `in` test. Every one was
+# imported by this file and by the entrypoint, and answering "which class is this tool" in three
+# files meant a fourth class would plausibly become a fourth file.
+#
+# The entrypoint imported all three and called none of them, which is the other half of why they
+# read as structure: the import list said the split was load-bearing and it was not.
+ADMIN_OPERATION_PREFIXES = ("matrixark_admin_", "matrixark_auth_")
+ADMIN_OPERATION_TOOLS = {
+    "matrixark_management_portal",
+    "matrixark_ingestion_dashboard",
+}
+INGEST_OPERATION_TOOLS = {
+    "matrixark_ingest",
+    "matrixark_batch_extract",
+    "matrixark_session_commit",
+    "matrixark_refresh_summaries",
+}
+RETRIEVAL_OPERATION_TOOLS = {"matrixark_retrieve"}
+
+
+def is_admin_tool(name: str) -> bool:
+    return name.startswith(ADMIN_OPERATION_PREFIXES) or name in ADMIN_OPERATION_TOOLS
+
+
+def is_ingestion_tool(name: str) -> bool:
+    return name in INGEST_OPERATION_TOOLS
+
+
+def is_retrieval_tool(name: str) -> bool:
+    return name in RETRIEVAL_OPERATION_TOOLS
 
 
 class MatrixArkBackpressureError(MatrixArkError):

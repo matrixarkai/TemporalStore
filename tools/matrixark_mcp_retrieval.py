@@ -13,7 +13,6 @@ except ImportError:  # Direct script execution from tools/.
 
 from typing import Any
 
-RETRIEVAL_OPERATION_TOOLS = {"matrixark_retrieve"}
 RETRIEVAL_NATIVE_API = "matrixark_retrieve_context_pack"
 RETRIEVAL_BROAD_SCAN_POLICY = "explicit_fallback_or_debug_only"
 RETRIEVAL_FALLBACK_FLAGS = {
@@ -21,10 +20,6 @@ RETRIEVAL_FALLBACK_FLAGS = {
     "allow_python_pack_fallback",
     "debug_broad_scan",
 }
-
-
-def is_retrieval_tool(name: str) -> bool:
-    return name in RETRIEVAL_OPERATION_TOOLS
 
 
 def native_retrieve_fallback_allowed(args: dict[str, Any]) -> bool:

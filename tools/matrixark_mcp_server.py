@@ -69,10 +69,7 @@ try:
         validate_mcp_backend_policy,
     )
     from tools.matrixark_mcp_dispatch import dispatch_matrixark_tool
-    from tools.matrixark_mcp_admin import is_admin_tool
-    from tools.matrixark_mcp_ingestion import is_ingestion_tool
     from tools.matrixark_mcp_requests import normalize_mcp_tool_request
-    from tools.matrixark_mcp_retrieval import is_retrieval_tool
     from tools.matrixark_mcp_server_request_policy import (
         MatrixArkBackpressureError,
         MatrixArkServerRequestPolicyMixin,
@@ -124,10 +121,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         validate_mcp_backend_policy,
     )
     from matrixark_mcp_dispatch import dispatch_matrixark_tool
-    from matrixark_mcp_admin import is_admin_tool
-    from matrixark_mcp_ingestion import is_ingestion_tool
     from matrixark_mcp_requests import normalize_mcp_tool_request
-    from matrixark_mcp_retrieval import is_retrieval_tool
     from matrixark_mcp_server_request_policy import (
         MatrixArkBackpressureError,
         MatrixArkServerRequestPolicyMixin,
