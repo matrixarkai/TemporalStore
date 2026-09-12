@@ -357,14 +357,78 @@ impl DataNodeRuntime {
         // reclaim_memory above relieves memory by invalidating cached pages, which frees the cache
         // and leaves the index untouched. This is the stage that can actually free a bucket -- and
         // dump it first, so freeing does not strand the log.
+        // Keep taking batches until the pressure is back under the threshold, the count budget
+        // is spent, or a batch stops helping.
+        //
+        // The stage used to take ONE batch and return, however far the pressure still was from the
+        // threshold -- 16 victims freeing about 4,800 bytes against a 1,775,000-byte overage, so
+        // roughly 370 rounds. The design being followed loops instead and stops on a per-call
+        // count budget.
+        //
+        // Three stopping conditions, and all three are needed. The budget bounds the work. The
+        // threshold is the goal. And a batch that frees nothing -- `cooldown`, or one that finds no
+        // victims at all -- means another batch will not help either, which is what stops this
+        // spinning on a shard whose memory is not reclaimable by eviction.
         let eviction = options.enable_evict.then(|| {
-            self.inner.engine.apply_storage_eviction(
+            let mut report = self.inner.engine.apply_storage_eviction(
                 shard_id,
                 options.eviction_memory_pressure_threshold,
                 options.eviction_batch_limit,
                 options.eviction_dump_before_evict,
                 options.eviction_delete_drop,
-            )
+            );
+            // The stage reports what the STAGE did, not what its last batch did.
+            //
+            // Returning the final report alone would describe the batch that stopped the loop --
+            // usually the unproductive one that tripped `cooldown` -- and hide every victim the
+            // earlier batches took. That is the shape of misreporting #1453-#1455 fixed
+            // elsewhere, so the counts are accumulated and `pressure_before` is kept from the
+            // FIRST batch while `pressure_after` comes from the last.
+            let first_pressure_before = report.pressure_before;
+            let mut victims = report.selected_victims.clone();
+            let mut dump_manifest_ids = report.dump_manifest_ids.clone();
+            let mut cache_entries_removed = report.cache_entries_removed;
+            let mut cache_disk_bytes_removed = report.cache_disk_bytes_removed;
+            let mut dropped_object_count = report.dropped_object_count;
+            loop {
+                let taken = victims.len();
+                let more_budget = options.eviction_count_limit > taken;
+                let still_over =
+                    report.pressure_after >= options.eviction_memory_pressure_threshold;
+                // A batch that freed nothing, or found nobody, means the next will not do better.
+                let made_progress = !report.cooldown && !report.selected_victims.is_empty();
+                if !(report.pressure_gate_open && more_budget && still_over && made_progress) {
+                    break;
+                }
+                report = self.inner.engine.apply_storage_eviction(
+                    shard_id,
+                    options.eviction_memory_pressure_threshold,
+                    options
+                        .eviction_batch_limit
+                        .min(options.eviction_count_limit.saturating_sub(taken)),
+                    options.eviction_dump_before_evict,
+                    options.eviction_delete_drop,
+                );
+                victims.extend(report.selected_victims.iter().cloned());
+                dump_manifest_ids.extend(report.dump_manifest_ids.iter().cloned());
+                cache_entries_removed =
+                    cache_entries_removed.saturating_add(report.cache_entries_removed);
+                cache_disk_bytes_removed =
+                    cache_disk_bytes_removed.saturating_add(report.cache_disk_bytes_removed);
+                dropped_object_count =
+                    dropped_object_count.saturating_add(report.dropped_object_count);
+            }
+            crate::engine::reports::StorageEvictionReport {
+                pressure_before: first_pressure_before,
+                selected_victims: victims,
+                dump_manifest_ids,
+                cache_entries_removed,
+                cache_disk_bytes_removed,
+                dropped_object_count,
+                // `cooldown` now means the STAGE freed nothing, not that its last batch did.
+                cooldown: report.pressure_after >= first_pressure_before,
+                ..report
+            }
         });
         if eviction.is_some() {
             executed_stages.push("evict".to_string());

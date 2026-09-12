@@ -904,6 +904,19 @@ pub struct StorageManagerOptions {
     /// Drop rather than dump. Off by default: this is the arm that can lose unflushed state.
     #[serde(default)]
     pub eviction_delete_drop: bool,
+    /// How many victims one evict STAGE may take in total, across repeated batches.
+    ///
+    /// The stage took a single batch of `eviction_batch_limit` and returned, however far the
+    /// pressure still was from the threshold. Measured: 16 victims freeing about 4,800 bytes a
+    /// round against a 1,775,000-byte overage -- roughly 370 rounds, or three hours at a round
+    /// every thirty seconds.
+    ///
+    /// The design being followed keeps taking batches until usage is back under the limit,
+    /// stopping on a per-call COUNT budget rather than after the first batch, and logs that it hit
+    /// the budget rather than that it finished. This is that budget. 0 keeps the old behaviour of
+    /// exactly one batch.
+    #[serde(default = "default_storage_manager_eviction_count_limit")]
+    pub eviction_count_limit: usize,
     /// How many hot buckets one expire stage may take. 0 means NO LIMIT, which is what this
     /// loop has always passed -- so expiry walked the whole deadline map, hot and cold, on every
     /// tick for every loaded shard. The on-demand cycle has always passed a bound (128) and
@@ -943,6 +956,15 @@ pub struct StorageManagerOptions {
     /// behaviour.
     #[serde(default)]
     pub index_gc_max_dump_buckets_per_round: usize,
+}
+
+/// Victims one evict stage may take in total, across repeated batches.
+///
+/// Matches the value the design being followed uses for the same budget.
+pub const DEFAULT_EVICTION_COUNT_LIMIT: usize = 100;
+
+fn default_storage_manager_eviction_count_limit() -> usize {
+    DEFAULT_EVICTION_COUNT_LIMIT
 }
 
 fn default_storage_manager_index_gc_max_entries_per_round() -> usize {
@@ -1004,6 +1026,7 @@ impl Default for StorageManagerOptions {
             eviction_batch_limit: crate::engine::reports::DEFAULT_EVICTION_BATCH_LIMIT,
             eviction_dump_before_evict: false,
             eviction_delete_drop: false,
+            eviction_count_limit: DEFAULT_EVICTION_COUNT_LIMIT,
             // 0 = unbounded, the behaviour this loop has always had. See the field docs.
             // Likewise the cycle's values. 0 meant the expire stage walked the WHOLE deadline
             // map, hot and cold, every tick for every loaded shard, which is what #1469 measured
