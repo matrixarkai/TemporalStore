@@ -46,17 +46,6 @@ RECORDED_PAIRS = {
     frozenset({"matrixark_mcp_async_ingest", "matrixark_mcp_session_runtime"}):
         "add_count, 9 statements. BOTH modules are recorded unreachable, so this is dead-vs-dead: "
         "consolidating it would move nothing and would promote one dead copy over another.",
-    frozenset({"matrixark_mcp_latest_context_state", "matrixark_temporal_direct_backend"}):
-        "_load_latest_context_state_records (22 statements) and "
-        "_latest_context_state_records_for_candidate_scan (17), byte-identical. The first copy of "
-        "each is a method on LatestContextStateAdapterMixin, which is named exactly once in the "
-        "repository -- its own class line -- so nothing inherits it. DO NOT resolve this by "
-        "adopting the mixin: the two classes share all SEVEN method names and only these two "
-        "bodies agree. On the other five the backend is the richer copy, and adopting would "
-        "revert _with_latest_context_state_records and _split_compacted_latest_context_state, "
-        "both of which run on the retrieval hot path. The mixin is the older variant the backend "
-        "has since grown past, not a shared home waiting to be used. See "
-        "test_the_unadopted_mixin_is_still_unadopted.",
 }
 
 
@@ -166,32 +155,31 @@ class ANestedHelperHasOneCopyToo(unittest.TestCase):
             "these are recorded as duplicated but no longer are -- take them out, so the list "
             "cannot carry a name that hides the next one: %s" % "; ".join(stale))
 
-    def test_the_unadopted_mixin_is_still_unadopted(self):
-        """Adopting LatestContextStateAdapterMixin would revert five methods, not share two.
+    def test_the_older_latest_state_variant_does_not_come_back(self):
+        """The seven latest context-state methods have one home, and it is the backend.
 
-        The obvious reading of the pair above is "the backend should inherit the mixin". It should
-        not. Measured: the two classes share all seven method names, two bodies are identical, and
-        on the other five the backend carries logic the mixin does not -- including the two that
-        run on the retrieval hot path. So this fails the moment anything inherits the mixin,
-        because at that point those five must be reconciled first.
+        `LatestContextStateAdapterMixin` used to carry a second copy of all seven, extracted and
+        never adopted -- named exactly once in the repository, its own class line. This entry
+        used to read "do not resolve this by adopting the mixin", because two of the seven bodies
+        agreed and on the other five the backend carried logic the mixin did not: the mixin's
+        `latest_context_state_payload` serialised the whole record where the backend serialises
+        `slim_persisted_record(record)` first, and `_with_latest_context_state_records` and
+        `_split_compacted_latest_context_state` both run on the retrieval hot path.
+
+        So the copy went instead of being shared, and this is what keeps it gone. A guard that
+        only DESCRIBES dead code also keeps it reachable to a word scan, which is how twelve
+        definitions stayed off the reachability list next door.
         """
         sources = _production_sources()
-        mixin_name = "LatestContextStateAdapterMixin"
-        inheritors = []
-        for stem, tree in sources.items():
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                for base in node.bases:
-                    if ast.unparse(base).split(".")[-1] == mixin_name:
-                        inheritors.append("%s.%s" % (stem, node.name))
+        carrying = sorted(
+            stem for stem, tree in sources.items()
+            if any(isinstance(node, ast.ClassDef) and node.name == "LatestContextStateAdapterMixin"
+                   for node in ast.walk(tree)))
         self.assertEqual(
-            [], sorted(inheritors),
-            "%s is now inherited by %s. Five of its seven methods are the OLDER variant of the "
-            "backend's -- reconcile _append_log_records, _latest_context_state_field, "
-            "_latest_context_state_key, _split_compacted_latest_context_state and "
-            "_with_latest_context_state_records before this lands, or the hot-path versions are "
-            "reverted." % (mixin_name, ", ".join(sorted(inheritors))))
+            [], carrying,
+            "%s is defined again in %s. The backend's seven methods are the variant that ships; "
+            "a second copy of them is not a shared home, it is the older one."
+            % ("LatestContextStateAdapterMixin", ", ".join(carrying)))
 
     def test_every_recorded_pair_says_why(self):
         thin = sorted(" + ".join(sorted(modules)) for modules, reason in RECORDED_PAIRS.items()
