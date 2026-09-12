@@ -5805,17 +5805,29 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 /// The design being followed bounds the scan too: it walks `page_compaction_max_slots_per_round`
 /// buckets through a PERSISTENT iterator and resumes where it stopped.
 ///
-/// ONE FIX WAS TRIED AND REVERTED -- do not repeat it. Skipping the slab roll when every live page
-/// already sits on the newest slab makes this probe read 1 round and 0 refs at every size, and it
-/// is WRONG: fourteen tests fail, among them
-/// `page_compaction_rewrites_live_addresses_and_allows_old_slab_gc` and
-/// `a_compaction_round_stops_at_the_page_ref_budget`.
+/// TWO "SKIP THE ROUND" CONDITIONS WERE TRIED AND BOTH REVERTED. Both make this probe read 1 round
+/// and 0 refs at every size -- 3,430 ms down to ~650 at 32,000 keys -- and both are wrong. The
+/// suite is what refused them, and between them they map out why the check is harder than it looks.
 ///
-/// The premise is the mistake. "Every live page is on the active slab" does not mean there is
-/// nothing to compact -- it means no live pages sit on OLDER slabs. The active slab itself can be
-/// mostly dead, and rolling so that its live pages move elsewhere is exactly what lets its dead
-/// space be reclaimed. The question is DEAD SPACE, not slab membership, so any real fix has to
-/// read something like `live_ref_density_basis_points` rather than which slab a page is on.
+///   1. "every live page is already on the newest slab" -- 14 tests fail. It reads slab
+///      MEMBERSHIP, so it skips a shard whose single slab is mostly garbage.
+///   2. "stale_page_estimate == 0 && live_block_slab_count <= 1" -- 3 tests fail, among them
+///      `feature_compaction_rewrites_shared_packed_page_once`. It reads dead space and spread, and
+///      still misses shards that are fully live, on one slab, and want REPACKING.
+///
+/// Compaction turns out to do three things, and a skip has to respect all of them:
+///
+///   - reclaim dead space inside slabs        (`stale_page_estimate`)
+///   - consolidate so older slabs become dead (`live_block_slab_count`)
+///   - repack page LAYOUT into shared pages   (neither metric sees this)
+///
+/// The third is the one that defeats a cheap check: `feature_compaction_rewrites_shared_packed_page_once`
+/// appends feature points that share a packed page and expects compaction to rewrite it once, with
+/// nothing dead and everything on one slab. Any real fix needs a layout signal -- something like the
+/// model layout reports compaction already produces -- not a density number.
+///
+/// The waste measured above is real and worth fixing. It is not fixable by asking a question about
+/// space alone, which is what both attempts did.
 ///
 /// This measures the difference the only way that separates them -- run compaction until there is
 /// nothing left to move, then time one more round. Whatever that round costs is scan, not work. If
