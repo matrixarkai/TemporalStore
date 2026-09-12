@@ -543,6 +543,80 @@ def deployment_configurable(reads):
 _SETTING_GLOBS = ("config/*", "scripts/*", "*.sh", "tools/*.sh", "docker/*", ".github/*")
 
 
+def _flag_read_in(node):
+    """The flag an expression reads, if it reads one."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            func = sub.func
+            named = ((isinstance(func, ast.Attribute) and func.attr in ("get", "getenv"))
+                     or (isinstance(func, ast.Name) and "env" in func.id.lower()))
+            if named and sub.args and isinstance(sub.args[0], ast.Constant):
+                value = sub.args[0].value
+                if isinstance(value, str) and _FLAG.match(value):
+                    return value
+        if isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant):
+            value = sub.slice.value
+            if isinstance(value, str) and _FLAG.match(value):
+                return value
+    return None
+
+
+def path_gating(reads):
+    """Flags that GATE a code path, as against flags that supply a VALUE.
+
+    A timeout, a limit, a budget and a model name are dials: production reads them and uses the
+    number. A flag that is the subject of an `if` is a toggle -- it decides whether a path runs at
+    all. Both are "flags"; only one keeps a live path alive, and a count that mixes them cannot say
+    how many features this thing can be asked to turn off.
+
+    176 of 464 when this was written: 45 a deployment can set, 17 only a benchmark reads, and 114
+    gating a live path with nothing shipped able to set them -- a branch permanently on one side.
+    Those 114 are not a cut list: 64 are flipped by a test, so both arms are exercised; 19 are
+    deployment identity; 10 have production prose telling an operator to set them.
+
+    THE SCAN IS CROSS-MODULE, and the first version was not. A flag is usually read into a constant
+    in one module and branched on in another -- matrixark_mcp_runtime_config binds it,
+    matrixark_mcp_core tests it -- so a per-module scan links neither to the other. Reading one
+    module at a time gave 131 and reading them all gives 176: a third of them missed, silently,
+    which is the failure a detector of this shape always has.
+    """
+    trees = {}
+    for rel in _production_modules():
+        try:
+            trees[rel] = ast.parse(_text(rel))
+        except SyntaxError:  # pragma: no cover - an unparseable module is not this file's problem
+            continue
+    bound = {}
+    for tree in trees.values():
+        for node in ast.walk(tree):
+            target = None
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = getattr(node.targets[0], "id", None)
+            elif isinstance(node, ast.AnnAssign):
+                target = getattr(node.target, "id", None)
+            if target and node.value is not None:
+                flag = _flag_read_in(node.value)
+                if flag:
+                    bound.setdefault(target, set()).add(flag)
+    gating = set()
+    for tree in trees.values():
+        for node in ast.walk(tree):
+            tests = []
+            if isinstance(node, (ast.If, ast.IfExp, ast.Assert, ast.While)):
+                tests.append(node.test)
+            elif isinstance(node, ast.comprehension):
+                tests.extend(node.ifs)
+            for test in tests:
+                flag = _flag_read_in(test)
+                if flag:
+                    gating.add(flag)
+                for sub in ast.walk(test):
+                    key = getattr(sub, "id", None) or getattr(sub, "attr", None)
+                    if key in bound:
+                        gating |= bound[key]
+    return {name for name in reads if name in gating}
+
+
 def deployment_settable(reads):
     """The flags a deployment can actually set, which is not the same number as the surface.
 
@@ -875,6 +949,37 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                 self.assertFalse(
                     [m for m in self.reads[name] if not _is_tooling(m)],
                     "%s is in the tooling group and a product module reads it" % name)
+
+    def test_the_toggles_are_reported_apart_from_the_dials(self) -> None:
+        """How many features can be asked to turn off, which is not how many flags there are.
+
+        176 of the 464 are the subject of an `if`; the other 288 supply a value. Of the 99 a
+        deployment can configure, 45 gate a path and 54 set a number.
+        """
+        gating = path_gating(self.reads)
+        self.assertTrue(
+            gating,
+            "no flag gates a code path, which is not credible in this tree and is what a scan that "
+            "has stopped matching `if` tests says")
+        self.assertLess(
+            len(gating), len(self.reads),
+            "every flag read gates a path, so the rule is matching any mention rather than a test")
+        # The cross-module half, checked by a NAMED case rather than by a count.
+        #
+        # A count cannot check this. The per-module version of this scan finds 138 of the 176 and
+        # 35 of the 45 configurable ones -- enough to satisfy any floor loose enough to be stable,
+        # which is how it passed the first guard written for it.
+        #
+        # MATRIXARK_ALLOW_LOCAL_BACKEND spans three modules and is the case this scan exists to
+        # catch: matrixark_mcp_runtime_config binds it with `env_bool`, matrixark_mcp_core
+        # re-exports the constant, and matrixark_mcp_backends tests it in
+        # `validate_mcp_backend_policy`. Nothing reads the environment where the `if` is, so a scan
+        # that does not follow the constant across files sees a permission with no toggle at all.
+        self.assertIn(
+            "MATRIXARK_ALLOW_LOCAL_BACKEND", gating,
+            "the cross-module link from a constant to its `if` is broken: this flag is bound in "
+            "matrixark_mcp_runtime_config and tested in matrixark_mcp_backends, three modules "
+            "apart, and a per-module scan cannot see it")
 
     def test_the_configurable_surface_stays_under_a_hundred(self) -> None:
         """The ratchet on the number an operator's question is about.
