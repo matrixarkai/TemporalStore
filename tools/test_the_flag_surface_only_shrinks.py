@@ -88,7 +88,7 @@ _IDENTITY = re.compile(
 #: flags nothing sets, and 36 of those were the last read of their variable. Banked here in the
 #: same breath, because a ratchet that does not bank a reduction is the reduction nobody can see
 #: was made, and the check below refuses a ceiling left drifting above the truth.
-MAXIMUM_FLAGS_READ = 484
+MAXIMUM_FLAGS_READ = 465
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
@@ -152,32 +152,6 @@ EXAMINED = {
         "an index-width bound; its neighbours in the same family are offered on the portal and this one bounds what they produce",
     "MATRIXARK_EMBEDDING_VECTOR_DECIMALS":
         "how many decimal places a stored vector keeps, which is a size-against-precision trade a deployment makes once and lives with",
-    "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MAX_BATCHES":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MIN_RECORDS":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
-    "MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE_MAX_ENTRIES":
-        "the rust proxy's coalescer and cache tuning. Its module is recorded in test_a_module_only_tests_reach_is_not_live -- unwired, not abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are its tuning surface",
     "MATRIXARK_ALLOW_PYTHON_RETRIEVAL_FALLBACK":
         "lets Python leave the native serving path; off is the default and on is what an operator reaches for when the native path refuses a request",
     "MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT":
@@ -216,12 +190,6 @@ EXAMINED = {
         "the companion window for prior-context events",
     "MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION":
         "six live branches in matrixark_mcp_core gate whether a model must produce the summary",
-    "MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE":
-        "one of the three proxy cache switches, each read inline at the branch it guards",
-    "MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE":
-        "one of the three proxy cache switches, each read inline at the branch it guards",
-    "MATRIXARK_RUST_PROXY_STRING_CACHE":
-        "one of the three proxy cache switches, each read inline at the branch it guards",
     "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_FULL_SCAN":
         "default ON; the daemon reads it to decide whether the startup warmup scans everything",
     "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_MAX_SELECTED_REFS":
@@ -244,8 +212,6 @@ EXAMINED = {
         "how many packs the local adapter keeps; the bound a deployment lowers when memory is tight",
     "MATRIXARK_CONTEXT_PACK_CACHE_TTL_S":
         "how long a cached pack stays valid, which is the freshness-against-cost trade for it",
-    "MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES":
-        "the same bound for the direct backend's response cache, defaulting to 256",
     "MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS":
         "the direct-write queue's capacity; read once through direct_write_queue_limits so the bound has one home rather than two",
     "MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS":
@@ -270,8 +236,6 @@ EXAMINED = {
         "selects how context index postings are written; a mode with more than two positions, read as a lowercase word rather than a boolean",
     "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH":
         "default OFF; turning it on refreshes summaries before a retrieve, which is the trade between a fresher pack and a slower one",
-    "MATRIXARK_LANE_INLINE_RECORDS":
-        "whether the proxy lane carries records inline; a transport shape switch in the client",
     "MATRIXARK_RESOURCE_STORAGE_POLICY":
         "which storage policy a resource takes when the request names none",
     "MATRIXARK_SKILL_RESERVED_REFS":
