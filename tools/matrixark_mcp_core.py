@@ -70,8 +70,83 @@ def _mcp_debug_log(message: str) -> None:
             fh.write(f"{time.time():.3f} {message}\n")
     except Exception:
         pass
-MAX_PRIOR_MESSAGES = 8
-MAX_PRIOR_CHARS = 4096
+# Thirty-two constants that this module and matrixark_mcp_runtime_config both spelled out, with
+# byte-identical text in each file. Every one is a pure literal -- no environment read anywhere in
+# the expression -- which is why they are moved together while the other forty-three are not: no
+# guard that asks "which module reads flag X" can change answer over these, because none of them
+# reads a flag.
+try:  # the values live in matrixark_mcp_runtime_config; this module re-exports them
+    from tools.matrixark_mcp_runtime_config import (
+        BACKEND_READINESS_CONNECT_TIMEOUT_MS,
+        DEFAULT_BUSINESS_WEIGHT,
+        DEFAULT_CROSS_SESSION_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS,
+        DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS,
+        DEFAULT_SHARED_RESOURCE_BUDGET_RATIO,
+        DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO,
+        DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS,
+        DEFAULT_SHARED_SKILL_BUDGET_RATIO,
+        DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO,
+        DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS,
+        DEFAULT_TIME_DECAY_HALFLIFE_MS,
+        DEFAULT_TIME_DECAY_TOLERANCE_MS,
+        DEFAULT_TIME_WEIGHT,
+        DIRECT_AUDIT_BUFFER_MAX_RECORDS,
+        DIRECT_AUDIT_FLUSH_INTERVAL_MS,
+        DIRECT_WRITE_BACKOFF_MS,
+        DIRECT_WRITE_RETRIES,
+        DIRECT_WRITE_THROTTLE_MS,
+        MAX_PRIOR_CHARS,
+        MAX_PRIOR_MESSAGES,
+        RESOURCE_ASYNC_DEFAULT_PATH_COUNT,
+        RESOURCE_ASYNC_DEFAULT_TEXT_CHARS,
+        SUMMARY_REFRESH_MAX_BACKOFF_MS,
+        SUMMARY_REFRESH_MAX_DUTY,
+        TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+        TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+        TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+        TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_runtime_config import (
+        BACKEND_READINESS_CONNECT_TIMEOUT_MS,
+        DEFAULT_BUSINESS_WEIGHT,
+        DEFAULT_CROSS_SESSION_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS,
+        DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS,
+        DEFAULT_SHARED_RESOURCE_BUDGET_RATIO,
+        DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO,
+        DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS,
+        DEFAULT_SHARED_SKILL_BUDGET_RATIO,
+        DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO,
+        DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS,
+        DEFAULT_TIME_DECAY_HALFLIFE_MS,
+        DEFAULT_TIME_DECAY_TOLERANCE_MS,
+        DEFAULT_TIME_WEIGHT,
+        DIRECT_AUDIT_BUFFER_MAX_RECORDS,
+        DIRECT_AUDIT_FLUSH_INTERVAL_MS,
+        DIRECT_WRITE_BACKOFF_MS,
+        DIRECT_WRITE_RETRIES,
+        DIRECT_WRITE_THROTTLE_MS,
+        MAX_PRIOR_CHARS,
+        MAX_PRIOR_MESSAGES,
+        RESOURCE_ASYNC_DEFAULT_PATH_COUNT,
+        RESOURCE_ASYNC_DEFAULT_TEXT_CHARS,
+        SUMMARY_REFRESH_MAX_BACKOFF_MS,
+        SUMMARY_REFRESH_MAX_DUTY,
+        TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+        TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+        TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+        TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS,
+    )
+
+
 # EMBEDDING_DIM lives with the encoder that uses it. core carried its own copy of this
 # constant, left from when it also carried its own embedding_for_text -- and because the
 # serving modules pull core in with `import *`, a copy here is the one they would resolve.
@@ -85,39 +160,63 @@ except ImportError:  # top-level path (direct tools/ execution)
 # reads a fraction of the store. It was 256 here, 4096 in the backfill (the only module that
 # honoured the environment variable) and 1024 in the engine, so which records a scan could see
 # depended on which module opened it.
-DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "").strip() or "256")
-DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "").strip() or "65536")
-DIRECT_RECORD_HOT_CACHE_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "").strip() or "20000")
-DIRECT_WRITE_RETRIES = 3
-DIRECT_WRITE_BACKOFF_MS = 25
-DIRECT_WRITE_THROTTLE_MS = 0
-DIRECT_AUDIT_MODE = (os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "").strip().lower() or "buffered")
-DIRECT_AUDIT_BUFFER_MAX_RECORDS = 128
-DIRECT_AUDIT_FLUSH_INTERVAL_MS = 1000
+# Twelve more duplicated constants take one definition. Every one reads an environment variable,
+# so unlike the thirty-two literals in matrixarkai#1587 this DOES change which module reads which
+# flag -- core stops reading twelve of them and matrixark_mcp_runtime_config goes on doing so. The
+# flag surface is unchanged because the read is not removed, only its second copy.
+#
+# Chosen as families rather than individually: the direct-record group, the summary refresh pair,
+# the time-compression trio, the backend-readiness pair and the resource async default. A family
+# moves or does not; splitting one across two modules is how the next divergence starts.
+try:  # the values live in matrixark_mcp_runtime_config; this module re-exports them
+    from tools.matrixark_mcp_runtime_config import (
+        BACKEND_READINESS_BACKOFF_MS,
+        BACKEND_READINESS_TIMEOUT_MS,
+        DIRECT_AUDIT_MODE,
+        DIRECT_RECORD_BUNDLE_MAX_BYTES,
+        DIRECT_RECORD_HOT_CACHE_MAX_RECORDS,
+        DIRECT_RECORD_LOG_SHARD_SIZE,
+        RESOURCE_ASYNC_DEFAULT_BYTES,
+        SUMMARY_REFRESH_INTERVAL_MS,
+        SUMMARY_REFRESH_LIMIT,
+        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+        TIME_COMPRESSION_MIN_EVENTS,
+        TIME_COMPRESSION_WINDOW_EVENTS,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_runtime_config import (
+        BACKEND_READINESS_BACKOFF_MS,
+        BACKEND_READINESS_TIMEOUT_MS,
+        DIRECT_AUDIT_MODE,
+        DIRECT_RECORD_BUNDLE_MAX_BYTES,
+        DIRECT_RECORD_HOT_CACHE_MAX_RECORDS,
+        DIRECT_RECORD_LOG_SHARD_SIZE,
+        RESOURCE_ASYNC_DEFAULT_BYTES,
+        SUMMARY_REFRESH_INTERVAL_MS,
+        SUMMARY_REFRESH_LIMIT,
+        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+        TIME_COMPRESSION_MIN_EVENTS,
+        TIME_COMPRESSION_WINDOW_EVENTS,
+    )
+
+
 CONTEXT_TELEMETRY_WRITE_MODE = (os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "").strip().lower() or "inline")
 # These four, and four more below, are defined here AND in matrixark_mcp_runtime_config. See the
 # single-source note beside DEFAULT_MAX_CONTEXT_TOKENS further down: that constant was read from
 # the same variable in both modules with different fallbacks, and an operator who set nothing got
 # one answer through core paths and another through runtime-config paths. Same shape, same file --
 # so take the value from there rather than writing a second literal that can drift the same way.
-SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "").strip() or "1000")
-SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "").strip() or "64")
 # Largest share of wall-clock the background summary refresher may occupy. A refresh pass
 # costs O(store) -- it reads the whole record log and writes the refreshed summaries back
 # through the same proxy lane the request path uses -- so at a fixed interval a pass that
 # grows past that interval turns the loop into a permanent occupant of the lane. See
 # MatrixArkMcpServer._next_summary_refresh_delay_s.
-SUMMARY_REFRESH_MAX_DUTY = 0.2
-SUMMARY_REFRESH_MAX_BACKOFF_MS = 300000
-BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "").strip() or "30000")
-BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "").strip() or "200")
 MATRIXARK_MCP_PROFILE = (os.environ.get("MATRIXARK_MCP_PROFILE", "").strip().lower() or "dev")
 # MATRIXARK_ALLOW_LOCAL_BACKEND comes from matrixark_mcp_runtime_config, above.
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
 MATRIXARK_ALLOW_PYTHON_HOT_CACHE = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", "").strip().lower()
-BACKEND_READINESS_CONNECT_TIMEOUT_MS = 1000
 
 # Single source of truth: reuse the runtime-config default so core and
 # matrixark_mcp_runtime_config agree out-of-the-box (both were previously
@@ -226,14 +325,7 @@ MAX_RESOURCE_FACT_CHUNKS = 8
 MAX_RESOURCE_FACTS_PER_RESOURCE = 8
 MAX_RESOURCE_FACTS_PER_CHUNK = 2
 ENABLE_GENERIC_RESOURCE_FACTS = env_bool("MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS", False)
-RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", "").strip() or str(2 * 1024 * 1024))
-RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = 200000
-RESOURCE_ASYNC_DEFAULT_PATH_COUNT = 32
 MAX_CONTEXT_REF_CHARS = 4096
-DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
-DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
-DEFAULT_TIME_WEIGHT = 0.18
-DEFAULT_BUSINESS_WEIGHT = 0.22
 # 0.05, which is what config/temporalstore.toml declares. The code said 0.20, the config said
 # 0.05, and the engine request builder sent a bare 0.0 that overrode both -- so the threshold a
 # deployment got depended on which surface the request came through.
@@ -253,13 +345,9 @@ DEFAULT_BUDGET_FILL_POLICY = (os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "")
 DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = float(
     os.environ.get("MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD", "").strip() or "0.85"
 )
-DEFAULT_CROSS_SESSION_BUDGET_RATIO = 0.12  # build default; live_float reads the environment
 DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "").strip() or "0.20")
 DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO", "").strip() or "0.20")
 DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "").strip() or "0.15")
-DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = 0.30  # build default; live_float reads the environment
-DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
-DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = 327680  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "").strip() or "3")
 DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "").strip() or "24")
 DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "").strip() or "2")
@@ -267,8 +355,6 @@ DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_
 DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "").strip() or "256")
 DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "").strip() or "0.20")
 DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE", "").strip() or "0.45")
-DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
-DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO = 0.60  # the guard, not the setting: the share below is what decides
 DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_SESSIONS", "").strip() or "6")
 DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", "").strip() or "48")
 DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS", "").strip() or "3")
@@ -277,20 +363,7 @@ DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
     for item in (os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "").strip() or "entity,summary,compression").split(",")
     if item.strip()
 )
-DEFAULT_SHARED_RESOURCE_BUDGET_RATIO = 0.25  # build default; live_float reads the environment
-DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
-DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
-DEFAULT_SHARED_SKILL_BUDGET_RATIO = 0.10  # build default; live_float reads the environment
-DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
-DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
 DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "").strip() or "0.20")
-TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "").strip() or "256")
-TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "").strip() or "64")
-TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "").strip() or "8")
-TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH = 4
-TIME_COMPRESSION_MIN_EVENT_AGE_MS = 0
-TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = 2592000000
-TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = 2592000000
 TIME_COMPRESSION_SUMMARY_PROVIDER = (os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER", "").strip().lower() or "deterministic")
 TIME_COMPRESSION_SUMMARY_MODEL = (
     os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_MODEL", "").strip()

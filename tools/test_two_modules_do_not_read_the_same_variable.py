@@ -32,8 +32,16 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 CORE = "matrixark_mcp_core.py"
 RUNTIME = "matrixark_mcp_runtime_config.py"
 
-#: Constants defined identically in both modules, counted 2026-09-12. May only go DOWN.
-RECORDED_DUPLICATED = 77
+#: Constants defined identically in both modules. May only go DOWN.
+#:
+#: 77 -> 75 when matrixarkai#1577 removed the two shadowed re-reads, then -> 43 when the
+#: thirty-two PURE LITERALS moved to one definition. Those thirty-two were separated on a
+#: rule, not by taste: no environment read anywhere in the expression, so no guard that asks
+#: "which module reads flag X" could change answer over them -- which is the objection this
+#: file raises against sweeping, and it does not apply to a constant that reads no flag.
+#:
+#: The remaining 43 DO read the environment, and they stay one at a time.
+RECORDED_DUPLICATED = 31
 
 #: Defined in both and NOT identical, with the reason. `matrixark_mcp_core` binds
 #: DEFAULT_MAX_CONTEXT_TOKENS to the value it imported from runtime_config under an alias, which is

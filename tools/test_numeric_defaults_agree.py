@@ -108,8 +108,23 @@ KNOWN_DISAGREEMENTS: Dict[str, str] = {
         "tool call. Said in the code at retrieval_deadline_ms.",
 }
 
-# 196 when this was written.
-EXPECTED_NUMERIC_READ_FLOOR = 120
+# A floor on the SCAN, set far from both failure modes rather than near the count.
+#
+# It was 120 against 196 when written, and the population has since fallen to 157 -- not because
+# the scan broke, but because matrixarkai#1540 folded flags nothing could set and matrixarkai#1587
+# gave thirty-two duplicated constants a single definition. Consolidating the forty-three that
+# remain would take it to roughly 114 and breach a floor of 120, which would be this file failing
+# on work that makes disagreement impossible: the same shape that broke
+# `test_flag_readers_agree` and this file's own shared-constant check earlier today.
+#
+# A read-shape scan that has stopped matching finds approximately NOTHING. Sixty is far below
+# anything consolidation reaches one module at a time, and far above zero.
+EXPECTED_NUMERIC_READ_FLOOR = 60
+
+#: And a positive control the count cannot give: matrixark_mcp_runtime_config is where these
+#: constants are being consolidated TO, so its own numeric reads only grow. 38 sites today. If the
+#: scan stops seeing that module it has stopped working, whatever the global count says.
+EXPECTED_RUNTIME_CONFIG_READ_FLOOR = 20
 
 
 def _production_sources() -> List[str]:
@@ -215,6 +230,15 @@ class NumericDefaultsAgreeTest(unittest.TestCase):
             "found %d variables read with a numeric default, expected at least %d -- if the read "
             "shape changed, the assertions below pass on an empty set"
             % (len(reads), EXPECTED_NUMERIC_READ_FLOOR))
+        # The named control. A global count falls when duplication is REMOVED as well as when the
+        # scan breaks; this module's own reads only grow as constants consolidate into it.
+        runtime_sites = sum(1 for entries in reads.values() for entry in entries
+                            if entry[0].endswith("matrixark_mcp_runtime_config.py"))
+        self.assertGreaterEqual(
+            runtime_sites, EXPECTED_RUNTIME_CONFIG_READ_FLOOR,
+            "only %d numeric reads found in matrixark_mcp_runtime_config, which is where these "
+            "constants live; below %d the scan has stopped matching the read shape rather than "
+            "the tree having changed" % (runtime_sites, EXPECTED_RUNTIME_CONFIG_READ_FLOOR))
 
     def test_the_list_has_not_emptied(self) -> None:
         self.assertTrue(
@@ -267,15 +291,41 @@ class TheRankingWeightsAreWrittenOnceTest(unittest.TestCase):
     NAMES = ("DEFAULT_TIME_WEIGHT", "DEFAULT_BUSINESS_WEIGHT")
 
     @staticmethod
-    def _module_constants(stem):
+    def _module_constants(stem, _resolve_imports=True):
+        """Module-scope constants, INCLUDING ones this module gets by importing them.
+
+        A name a module imports from the other is that module's constant as far as any reader
+        is concerned, and it is the strongest form of agreement available: one definition, so
+        the two cannot drift. Reading only literal assignments made consolidation look like the
+        constant had vanished -- which is how this file failed on matrixarkai#1587, where
+        thirty-two duplicated literals were each reduced to a single definition.
+
+        The `differ` check below is unaffected: two INDEPENDENT literal assignments still have
+        to match, and that is the disagreement this file exists for. An imported name agreeing
+        with itself is not a weaker answer than agreeing by hand -- it is the answer the hand
+        version was approximating."""
         with io.open(os.path.join(TOOLS, stem + ".py"), encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
         found = {}
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and "matrixark_" in node.module:
+                for alias in node.names:
+                    if alias.name.isupper():
+                        imported.add((node.module.rsplit(".", 1)[-1],
+                                      alias.asname or alias.name, alias.name))
         for node in tree.body:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 \
                     and isinstance(node.targets[0], ast.Name) \
                     and isinstance(node.value, ast.Constant):
                 found[node.targets[0].id] = node.value.value
+        if _resolve_imports:
+            for module, bound, original in sorted(imported):
+                if bound in found:
+                    continue
+                source = TheRankingWeightsAreWrittenOnceTest._module_constants(module, False)
+                if original in source:
+                    found[bound] = source[original]
         return found
 
     @staticmethod
@@ -332,10 +382,22 @@ class TheRankingWeightsAreWrittenOnceTest(unittest.TestCase):
         # guard's business -- so this sees thirty of the seventy-eight names the two modules share.
         # An extractor that stopped matching returns approximately nothing; ten fails loudly on
         # that and does not move when a constant is added or folded.
+        # The floor is on the EXTRACTOR, not on the shared set.
+        #
+        # It required more than ten names in BOTH modules, reasoning that an extractor which had
+        # stopped matching returns approximately nothing. True while the two modules held thirty
+        # duplicated literals; false as a floor, because the shared set also falls when the
+        # duplication is REMOVED -- and it fell to zero in matrixarkai#1587, which gave each of
+        # those literals a single definition. A floor that cannot tell "the scan broke" from
+        # "there is nothing left to disagree" fails on the better outcome.
+        #
+        # So it asks what it was really asking: can this scan find constants at all.
+        runtime_only = self._module_constants("matrixark_mcp_runtime_config", False)
         self.assertGreater(
-            len(shared), 10,
-            "only %d constants are defined in both modules; the extractor has probably stopped "
-            "recognising them and this compares almost nothing" % len(shared))
+            len(runtime_only), 10,
+            "only %d literal constants were parsed out of matrixark_mcp_runtime_config; the "
+            "extractor has stopped recognising them and everything below compares nothing"
+            % len(runtime_only))
         differ = {name: (core[name], runtime[name])
                   for name in shared if core[name] != runtime[name]}
         self.assertEqual(
