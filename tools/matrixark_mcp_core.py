@@ -4271,7 +4271,18 @@ def summarize_text(text: str, *, limit: int = 220) -> str:
     compact = " ".join(text.split())
     if len(compact) <= limit:
         return compact
-    return compact[: limit - 3] + "..."
+    # max(0, ...) rather than `limit - 3`. Below a limit of three that subtraction is NEGATIVE, and
+    # a negative slice keeps everything but the last few characters instead of keeping none:
+    #
+    #     summarize_text("abcdefghij", limit=0)  ->  "abcdefg..."    ten characters for a limit of 0
+    #     summarize_text("abcdefghij", limit=2)  ->  "abcdefghi..."  and it GROWS as the limit falls
+    #
+    # Not reachable today -- every call site passes a literal of 96 or more, and the one
+    # caller-supplied budget is floored before it arrives -- so this changes no output any path
+    # currently produces. It is here because the inversion is indefensible whatever the
+    # reachability, and because `preview_text` in matrixark_mcp_resources is a second copy of this
+    # function that already guards it: the extracted copy got the fix and the original never did.
+    return compact[: max(0, limit - 3)] + "..."
 
 
 def deterministic_time_compression_summary(
