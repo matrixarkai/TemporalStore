@@ -6316,3 +6316,103 @@ fn what_an_index_gc_round_costs() {
         );
     }
 }
+
+/// What does the page-GC retain floor authorise, round by round? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_the_retain_floor_authorises \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// #1563 measured eleven slabs left after ten idle rounds: compaction rolls one a round and page
+/// GC removes none, so `stale_page_pressure` never closes and compaction re-triggers for ever.
+///
+/// The floor is the first suspect. The periodic stage computes it as
+///
+///     stale_block_slab_ids.iter().min().saturating_add(1)
+///
+/// and `stale_block_slab_ids` is every slab NOT in the live set -- so the floor is derived FROM
+/// the stale set. Taking the minimum and adding one authorises deleting slabs strictly below the
+/// OLDEST stale slab, which is at most that one slab, however many are stale.
+///
+/// This prints, per round, how many slabs are stale, what floor that produces, and how many the
+/// collector actually removed. If removed stays at zero while stale climbs, the floor is not the
+/// whole story; if removed is one a round while compaction adds one, it is a treadmill.
+#[test]
+#[ignore]
+fn what_the_retain_floor_authorises() {
+    const KEYS: usize = 400;
+    const ROUNDS: usize = 10;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("retainfloor-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        engine
+            .block_store()
+            .roll_slab()
+            .expect("rolling a slab should succeed");
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("retainfloor-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'w'; 72],
+                },
+            });
+        }
+    }
+
+    eprintln!("  round  slabs  stale  floor  gc_ran  removed");
+    let options = StorageManagerOptions::default();
+    for round in 0..ROUNDS {
+        let plan = runtime
+            .engine()
+            .storage_lifecycle_plan(crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                ..Default::default()
+            });
+        let stale = plan.stale_block_slab_ids.len();
+        let floor = plan
+            .stale_block_slab_ids
+            .iter()
+            .min()
+            .map(|id| id.saturating_add(1))
+            .unwrap_or(0);
+        let slabs = runtime
+            .engine()
+            .block_store()
+            .slab_ids()
+            .map(|ids| ids.len())
+            .unwrap_or(0);
+
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let gc_ran = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_page");
+        let removed = report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.block_slabs_removed)
+            .unwrap_or(0);
+        eprintln!("  {round:>5}  {slabs:>5}  {stale:>5}  {floor:>5}  {gc_ran:>6}  {removed:>7}");
+    }
+}
