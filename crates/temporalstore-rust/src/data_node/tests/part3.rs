@@ -5847,6 +5847,28 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 /// The waste measured above is real and worth fixing. It is not fixable by asking a question about
 /// space alone, which is what both attempts did.
 ///
+/// WHERE THE ANSWER ACTUALLY LIVES, found later: the decision is PER OBJECT and belongs to the
+/// MODEL, not to the shard. Their compactor asks one per object and skips on an empty answer:
+///
+///     auto res = ModelManager::CompactPagesHint(model_id, object_pages[object_id]);
+///     if (page_indexes.empty()) { continue; }   // no need compaction
+///
+/// and a single-page model answers empty unconditionally -- their string model's whole
+/// implementation is `return {};` with the comment "we keep data in single page, so no need do
+/// compaction".
+///
+/// That is why all three global conditions were refused. There is no shard-wide predicate for
+/// "needs compacting", because two objects in the same shard, on the same slab, with the same
+/// staleness, get different answers depending on their model. It also explains why
+/// `feature_compaction_rewrites_shared_packed_page_once` survives a skip that a string would not:
+/// feature objects are packed across pages and genuinely have something to consolidate.
+///
+/// Ours has no such hint. `compact_shard_pages_with_budgets` walks `strings`, `hashes`, `zsets`,
+/// `lists` and `sets` and relocates every live page, so it rewrites single-page objects that
+/// cannot benefit. Adding the hint is not a small change -- declining to relocate an object leaves
+/// its pages on the old slab, which keeps that slab live and changes what page GC may collect --
+/// but it is the shape the answer has to take, and it is not the shape either attempt above tried.
+///
 /// This measures the difference the only way that separates them -- run compaction until there is
 /// nothing left to move, then time one more round. Whatever that round costs is scan, not work. If
 /// it grows with the shard, the scan is the cost; if it is flat, the budget already bounds
