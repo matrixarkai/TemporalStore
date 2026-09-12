@@ -1111,16 +1111,6 @@ SETTINGS.extend([
             "bad recall much later. Guards the locally loaded model only -- the hosted endpoint "
             "has its own MATRIXARK_REQUIRE_API_EMBEDDINGS, and MATRIXARK_REQUIRE_MODEL_EMBEDDINGS "
             "is the form that covers both."),
-    Setting("embedding.rust_proxy_native_c_api_compat", "embedding", "MATRIXARK_RUST_PROXY_NATIVE_MATRIXARK_C_API_COMPAT",
-            "Rust proxy native c api compat", "bool", "0", "live",
-            "Puts TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API=1 into the environment of "
-            "each proxy process as it is launched. Nothing in the Python side behaves "
-            "differently; this only hands the permission down to the engine. It is set with a "
-            "default, so a value already in the environment wins."),
-    Setting("embedding.text_prefix_share", "embedding", "MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE",
-            "Text prefix share", "float", "0.2", "restart",
-            "Text prefix share. Defaults to 0.2. Frozen when the process starts. Read by "
-            "matrixark_resource_parser."),
     Setting("embedding.vector_base64", "embedding", "MATRIXARK_EMBEDDING_VECTOR_BASE64",
             "Vector base64", "bool", "1", "restart",
             "Writes each stored vector as one base64 string instead of a JSON list of numbers. "
@@ -1136,31 +1126,6 @@ SETTINGS.extend([
             "loses half the top-10 -- top-1 correct 1 of 6 where scaled integers score 6 of 6. "
             "Prefer MATRIXARK_EMBEDDING_VECTOR_SCALE=100000, which is exact on that test and "
             "still 67.9% of the float size."),
-    Setting("extraction.require_llm_time_compression", "extraction", "MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION",
-            "Require llm time compression", "bool", "0", "restart",
-            "Turns the time-compression summary's fallbacks into errors. Off, an unsupported "
-            "provider, a missing API key or a failed call still returns a summary -- the "
-            "deterministic one -- carrying fallback_used and a warning naming the cause. On, "
-            "each of those raises instead, so a deployment that must not store a deterministic "
-            "stand-in fails loudly rather than storing one quietly."),
-    Setting("extraction.summary_dirty_debug_fields", "extraction", "MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS",
-            "Summary dirty debug fields", "bool", "0", "restart",
-            "Adds tracing fields to every summary DIRTY MARKER written -- depth, dirty_reason, "
-            "source_ref_type, changed_ref_count, propagate_depth and the source role, hook and "
-            "event counts. Any one of this, the summary refresh audit, or context debug records "
-            "turns them on, so they are already present if either of those is set."),
-    Setting("extraction.time_compression_max_windows_per_refresh", "extraction", "MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH",
-            "Time compression max windows per refresh", "int", "4", "restart",
-            "Time compression maximum windows per refresh. Defaults to 4. Frozen when the process starts. "
-            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("extraction.time_compression_min_event_age_ms", "extraction", "MATRIXARK_TIME_COMPRESSION_MIN_EVENT_AGE_MS",
-            "Time compression min event age ms", "int", "0", "restart",
-            "Time compression minimum event age milliseconds. Defaults to 0. Frozen when the process "
-            "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("extraction.time_compression_summary_timeout_sec", "extraction", "MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC",
-            "Time compression summary timeout sec", "float", "30.0", "restart",
-            "Time compression summary timeout seconds. Defaults to 30.0. Frozen when the process starts. "
-            "Read by matrixark_mcp_core."),
     Setting("ingestion.allow_local_backend", "ingestion", "MATRIXARK_ALLOW_LOCAL_BACKEND",
             "Allow local backend", "bool", "0", "restart",
             "Permits --backend local under the production or benchmark profile, which otherwise "
