@@ -7760,6 +7760,81 @@ saved {:>7.2} ms per round",
     }
 }
 
+/// Building the WAL reclaim plan must not get dearer for every dump manifest that is retained.
+///
+/// `bucket_generation_fingerprints_by_bucket` walks every live page in the shard. The plan used
+/// to call it once per retained manifest, EAGERLY, before knowing whether any bucket would consult
+/// them -- so the plan's cost scaled with how many manifests happened to be retained, a quantity
+/// that has nothing to do with what the round was asked to do.
+///
+/// The fingerprints are now computed on first use, and a manifest that carries no summary for a
+/// bucket is skipped before it is fingerprinted at all. This pins that: quadrupling the manifest
+/// count must not multiply the live-page scan volume.
+#[test]
+fn fingerprinting_does_not_scale_with_the_manifest_count() {
+    let scan_volume_for = |manifest_count: usize| -> (u64, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for round in 0..manifest_count {
+            // Write between manifests so each one lands on a distinct index-log sequence: the
+            // manifest id is {shard}-{sequence}-{ms}, and two built back to back inside one
+            // millisecond with no write between them would collide.
+            for index in 0..64 {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("fp-{round:03}-{index:04}"),
+                        value: vec![b'v'; 64],
+                    },
+                });
+                assert!(response.status.ok, "write: {:?}", response.status);
+            }
+            let _ = engine.create_bucket_dump_manifest(1, Vec::new());
+        }
+        let manifests = engine.list_bucket_dump_manifests(1).len();
+
+        crate::engine::reset_live_page_scan_entries();
+        let _ = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+        (crate::engine::live_page_scan_entries(), manifests)
+    };
+
+    let (few_volume, few_manifests) = scan_volume_for(2);
+    let (many_volume, many_manifests) = scan_volume_for(8);
+
+    // Denominators. Without these, a fixture that retained one manifest either way -- or that
+    // scanned nothing -- would satisfy the ratio below while measuring nothing at all.
+    assert!(
+        many_manifests > few_manifests,
+        "fixture did not actually retain more manifests: {few_manifests} then {many_manifests}",
+    );
+    assert!(
+        few_volume > 0 && many_volume > 0,
+        "the plan scanned no live pages, so this measures nothing: {few_volume} then {many_volume}",
+    );
+
+    // The 8-manifest shard also holds 4x the records, so its per-plan walk is legitimately
+    // larger. What must NOT happen is the walk multiplying by the MANIFEST count on top of that.
+    // Normalise by records to separate the two.
+    let few_per_record = few_volume as f64 / (2 * 64) as f64;
+    let many_per_record = many_volume as f64 / (8 * 64) as f64;
+    eprintln!(
+        "  {few_manifests} manifests -> {few_volume} entries ({few_per_record:.1}/record); \
+{many_manifests} manifests -> {many_volume} entries ({many_per_record:.1}/record)",
+    );
+    assert!(
+        many_per_record <= few_per_record * 1.5,
+        "the WAL reclaim plan's scan volume grew with the manifest count: \
+{few_manifests} manifests = {few_per_record:.1} entries/record, \
+{many_manifests} manifests = {many_per_record:.1} entries/record",
+    );
+}
+
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_slot_range_saves -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
