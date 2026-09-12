@@ -177,30 +177,35 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_codex_outcome import tool_evidence_memory_text
 
 
-def profile_entity_type_for_memory_text(text: str) -> str:
-    """Classify durable personal memory into profile layers used by retrieval."""
-    lower = " ".join(str(text or "").lower().split())
-    if not lower:
-        return ""
-    if re.search(r"\b(?:call me|my name is|i am called|i'm called|user(?:'s)? name|user goes by|pronouns?|address (?:me|the user)|nickname)\b", lower):
-        return "identity_profile"
-    if re.search(r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|language|locale|timezone|time zone|tone|style|format|bullets?|bullet points?|markdown|concise|brief|detailed)\b", lower):
-        return "communication_profile"
-    if re.search(r"\b(?:feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|mem0|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
-        return "memory_feature_profile"
-    if re.search(r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|folder|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
-        return "workspace_profile"
-    return ""
+# Two copies that classify the same text differently.
+#
+# profile_entity_type_for_memory_text tests the same branches as the live one in a
+# different ORDER: the live copy asks whether the text is about a memory feature before
+# asking whether it is about a response style, and this copy asked the other way round. Any
+# text that mentions both lands in a different class, and that is most of them --
+# "respond about long-term memory settings", "answer using session memory only",
+# "preferred language for profile memory" all classify as a communication profile here and
+# as a memory feature profile there.
+#
+# feature_scope_excludes_outcome_evidence had collapsed to a single expression that keeps
+# only one of the live copy's three tests, so "focus on features only" excludes outcome
+# evidence through the live path and does not through this one.
+try:  # the implementation lives in matrixark_mcp_core_codex_outcome; this module re-exports it
+    from tools.matrixark_mcp_core_codex_outcome import (
+        feature_scope_excludes_outcome_evidence,
+        profile_entity_type_for_memory_text,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_codex_outcome import (
+        feature_scope_excludes_outcome_evidence,
+        profile_entity_type_for_memory_text,
+    )
 
 
 FEATURE_SCOPE_EXCLUSION_RE = re.compile(
     r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
     r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
 )
-
-
-def feature_scope_excludes_outcome_evidence(text: str) -> bool:
-    return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(text or "").lower())) and profile_entity_type_for_memory_text(text) == "memory_feature_profile"
 
 
 #: Not an index value -- the one use is the dedup key in `codex_outcome_fact_entities` below. It

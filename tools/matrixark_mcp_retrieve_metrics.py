@@ -24,20 +24,18 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 
-def serving_memory_layer_budget(memory_layer_budget: Any) -> Json:
-    if not isinstance(memory_layer_budget, dict):
-        return {}
-    compact = dict(memory_layer_budget)
-    for field in [
-        "by_source_role",
-        "by_hook_type",
-        "by_codex_event",
-        "source_message_counts_by_role",
-        "source_hook_counts_by_type",
-        "source_codex_event_counts_by_event",
-    ]:
-        compact.pop(field, None)
-    return compact
+# The companion of serving_memory_layer_pressure above, and short in the same way: it
+# rebuilt the dict inline instead of calling compact_memory_layer_budget_roles, kept
+# `by_memory_selection_policy` that the live one drops, and skipped both
+# strip_default_debug_lineage_fields and the empty-sub-dict prune at the end.
+try:  # the implementation lives in matrixark_mcp_context_pack; this module re-exports it
+    from tools.matrixark_mcp_context_pack import (
+        serving_memory_layer_budget,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_context_pack import (
+        serving_memory_layer_budget,
+    )
 
 
 # The copy here stopped after the field-stripping loop. The live one also calls
