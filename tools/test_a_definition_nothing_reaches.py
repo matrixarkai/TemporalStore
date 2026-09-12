@@ -36,6 +36,15 @@ TESTS COUNT AS CALLERS, deliberately. A definition only its own test calls is no
 at module granularity that question belongs to the file next door, and at definition granularity
 it would flood this list with fixtures and leave the real ones unreadable.
 
+WHERE THIS STOPS. "Names the identifier" includes a STRING literal, because `getattr(self, "x")`
+and `importlib.import_module(...)` are real edges and a scan that reads only syntax misses them.
+The price is that a definition whose name appears only as a string reads as reached.
+`max_event_text_chars` is the worked example: nothing calls it, and it is absent from the list
+below because `matrixark_gateway_config` names it inside `KNOBS_READ_BY_NOTHING` -- a list that is
+asserted in both directions and answers "is this knob read by anything" better than this file
+could. So a tenant-policy knob whose reader is never called is that list's question, not this
+one's.
+
 WHY THIS FILE IS EXCLUDED FROM ITS OWN CORPUS
 ---------------------------------------------
 Every name below appears in this file, so a scan that read it would find each one "used
@@ -48,14 +57,14 @@ import ast
 import io
 import os
 import re
+import subprocess
 import sys
 import unittest
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
-_SELF = os.path.abspath(__file__)
+_SELF = os.path.join("tools", os.path.basename(__file__))
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_SKIP_DIRS = {".git", "__pycache__", "node_modules", "target"}
 _MAX_BYTES = 4_000_000
 
 sys.path.insert(0, TOOLS)
@@ -98,6 +107,12 @@ UNREACHED = {
     # Two whose docstrings say where they are applied, and neither is applied anywhere:
     # `clip_messages_for_ingest` says "Applied ONCE at the ingest boundary", and
     # `joined_summary_source_text` is the sentence-level summary dedup, measurement included.
+    #
+    # The first is not a loose end: it implements the `max_event_text_chars` tenant knob, which
+    # `matrixark_gateway_config.KNOBS_READ_BY_NOTHING` already records as offered and read by
+    # nothing, deliberately -- a deployment may have the value set, and hiding the field would
+    # take it out of view while leaving it in the file. Wiring the clip is what removes both
+    # entries, and that is a product decision about whether to start clipping.
     "matrixark_index_growth_bound.py": ("clip_messages_for_ingest", "joined_summary_source_text"),
     "matrixark_load_config.py": ("apply_from_file",),
     # `clear_user_policy_cache` stays: it is the twin of `clear_tenant_policy_cache`, which is
@@ -128,24 +143,29 @@ UNREACHED = {
 
 
 def _corpus(*, include_self: bool):
-    """Every tracked file as a set of identifiers, keyed by path."""
+    """Every TRACKED file as a set of identifiers, keyed by absolute path.
+
+    Tracked, not walked. A walk reads a developer's untracked scratch copy of a module as evidence
+    that a name is used, and clears entries from the list below -- under-reporting, which is the
+    direction that ships. The guards next door ask git the same way.
+    """
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=REPO,
+                            capture_output=True, text=True).stdout.split("\0")
     texts: dict = {}
     tokens: dict = {}
-    for root, dirs, names in os.walk(REPO):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-        for name in names:
-            path = os.path.join(root, name)
-            if not include_self and os.path.abspath(path) == _SELF:
+    for relative in listed:
+        if not relative or (not include_self and relative == _SELF):
+            continue
+        path = os.path.join(REPO, relative)
+        try:
+            if os.path.getsize(path) > _MAX_BYTES:
                 continue
-            try:
-                if os.path.getsize(path) > _MAX_BYTES:
-                    continue
-                with io.open(path, encoding="utf-8", errors="replace") as handle:
-                    text = handle.read()
-            except OSError:
-                continue
-            texts[path] = text
-            tokens[path] = set(_WORD.findall(text))
+            with io.open(path, encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        texts[path] = text
+        tokens[path] = set(_WORD.findall(text))
     return texts, tokens
 
 
@@ -241,7 +261,10 @@ class ADefinitionNothingReachesTest(unittest.TestCase):
     def test_the_scan_reaches_the_tree(self):
         """Zero findings is also what a scan that read nothing prints."""
         self.assertGreaterEqual(self.files, 1000,
-                                "only %d files read; the walk is not seeing the tree" % self.files)
+                                "only %d files read. `git ls-files` returning little or nothing "
+                                "is what a missing repository looks like, and this scan has no "
+                                "fallback on purpose: a substitute corpus would quietly clear the "
+                                "list below" % self.files)
         self.assertGreaterEqual(self.examined, 200,
                                 "only %d modules examined" % self.examined)
         self.assertTrue(_already_recorded(),
