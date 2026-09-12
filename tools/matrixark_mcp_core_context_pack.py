@@ -41,24 +41,6 @@ except ImportError:  # top-level path (matrixark_mcp_core)
 __all__ = ['selected_context_class_counts', '_positive_count_from_ref', '_attach_compact_profile_source_counts', '_context_memory_source_ref_is_debug_only', 'compact_context_pack_ref', 'compact_context_pack_refs', 'compact_context_pack_for_serving_flat', 'compact_context_pack_for_serving', 'normalized_role_int_map', 'normalized_string_int_map', 'budget_control_policy_summary']
 
 
-def selected_context_class_counts(refs: list[Json]) -> Json:
-    counts: Json = {
-        "event": 0,
-        "entity": 0,
-        "segment": 0,
-        "compression": 0,
-        "resource_fact": 0,
-        "resource_entity_fact": 0,
-        "resource_chunk": 0,
-        "skill_section": 0,
-        "summary": 0,
-    }
-    for ref in refs:
-        context_class = str(ref.get("context_class") or ref.get("ref_type") or "")
-        counts[context_class] = int(counts.get(context_class, 0)) + 1
-    return counts
-
-
 def _positive_count_from_ref(ref: Json, *fields: str, list_fields: tuple[str, ...] = ()) -> int:
     for field in fields:
         value = ref.get(field)
@@ -110,10 +92,12 @@ def _attach_compact_profile_source_counts(item: Json, ref: Json) -> None:
 try:
     from tools.matrixark_mcp_context_pack import (
         _context_memory_source_ref_is_debug_only,
+        selected_context_class_counts,
     )
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_context_pack import (
         _context_memory_source_ref_is_debug_only,
+        selected_context_class_counts,
     )
 
 def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:

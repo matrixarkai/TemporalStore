@@ -3420,11 +3420,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_scoring import normalized_dense_score
 
 
-def sparse_lexical_score(query_terms: set[str], text: str) -> float:
-    if not query_terms:
-        return 0.0
-    matched = len(query_terms.intersection(tokens(text)))
-    return clamp01(matched / max(len(query_terms), 1))
+try:  # the implementation lives in matrixark_mcp_scoring; this module re-exports it
+    from .matrixark_mcp_scoring import sparse_lexical_score
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import sparse_lexical_score
 
 
 def candidate_index_terms(
