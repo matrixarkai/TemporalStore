@@ -50,7 +50,10 @@ READERS = {"env_bool", "env_int", "env_float", "get", "getenv"}
 #: either number tracks the harness rather than the property. A parser that stopped recognising
 #: reads returns approximately nothing, and 60 still fails loudly on that while surviving both
 #: harnesses and the settings still to leave.
-EXPECTED_CHECKABLE_FLOOR = 60
+#: Set from what the floor is FOR. A parser that stopped recognising read sites returns
+#: approximately nothing; 20 fails loudly on that and does not move when the page does. It
+#: was 60, measured when 115 settings were comparable, and retiring knobs took it under.
+EXPECTED_CHECKABLE_FLOOR = 20
 
 
 def _tracked() -> list:

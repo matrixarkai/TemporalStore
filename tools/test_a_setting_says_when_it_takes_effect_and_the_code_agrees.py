@@ -129,7 +129,12 @@ class ASettingSaysWhenItTakesEffectAndTheCodeAgreesTest(unittest.TestCase):
         """A floor. With either side empty both assertions above pass over nothing."""
         settings = _settings()
         scopes = _read_scopes()
-        self.assertGreater(len(settings), 150, "the Setting scan came back nearly empty")
+        # A floor, and it says what it is FOR rather than what the page holds today. A scan
+        # that stopped recognising its shape returns approximately nothing, and that is the
+        # only thing this catches. Pinned to a measurement it tracks the tree instead of the
+        # property, and retiring knobs from the portal is exactly the legitimate move that
+        # walks such a number down into the count.
+        self.assertGreater(len(settings), 40, "the Setting scan came back nearly empty")
         self.assertGreater(len(scopes), 200, "the read scan came back nearly empty")
         self.assertGreater(
             sum(1 for s in settings if s.applies == "live"), 50,

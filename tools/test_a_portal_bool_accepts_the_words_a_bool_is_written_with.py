@@ -190,7 +190,13 @@ class APortalBoolAcceptsTheWordsABoolIsWrittenWithTest(unittest.TestCase):
         """A floor. With either side empty both assertions pass over nothing."""
         declared = _declared_bool_settings()
         reads = _hand_rolled_reads()
-        self.assertGreater(len(declared), 40,
+        # The numbers say what they are FOR, not what the page currently holds. A scan that
+        # stopped recognising its shape returns approximately nothing, and that is the only thing
+        # these three catch. A floor set from a measurement instead fails the day the count moves
+        # for a legitimate reason -- which is what happened here: this sat at 40 when 42 settings
+        # were bool, and retiring knobs took it under a number that was never about how many bools
+        # the page ought to offer.
+        self.assertGreater(len(declared), 15,
                            "the bool-Setting scan came back nearly empty")
         self.assertGreater(len(reads), 10,
                            "the hand-rolled read scan came back nearly empty, so every setting "

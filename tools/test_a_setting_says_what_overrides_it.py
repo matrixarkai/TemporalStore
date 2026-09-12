@@ -221,8 +221,13 @@ class ASettingOffersAVariableSomethingLiveReadsTest(unittest.TestCase):
 
     def test_the_scan_finds_the_settings_and_the_live_names(self) -> None:
         """A floor. With either side empty the check above passes over nothing."""
+        # A floor, and it says what it is FOR rather than what the page holds today. A scan
+        # that stopped recognising its shape returns approximately nothing, and that is the
+        # only thing this catches. Pinned to a measurement it tracks the tree instead of the
+        # property, and retiring knobs from the portal is exactly the legitimate move that
+        # walks such a number down into the count.
         self.assertGreater(
-            len(_declared_setting_variables()), 150,
+            len(_declared_setting_variables()), 40,
             "the Setting scan came back nearly empty")
         self.assertGreater(
             len(_flags_named_by_live_modules()), 300,

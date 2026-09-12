@@ -451,16 +451,6 @@ SETTINGS: List[Setting] = [
             "share above is set."),
 
     # ---- retrieval and context budget ----------------------------------------------------------
-    Setting("retrieval.project_scan_fields", "retrieval",
-            "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS",
-            "Carry only the fields the scan reads", "bool", "0", "live",
-            "Narrows each scanned row to the fields retrieval actually uses. OFF, and gated on the "
-            "one-box profile above -- it is only safe once the lexical term that reads the text is "
-            "gone.\n\n"
-            "It has been wrong once in a way worth remembering: the row the scan carries is the "
-            "row the pack is built from, so every field it drops is a field the answer cannot "
-            "print. Shipped once dropping the text, and retrieval returned an empty string for "
-            "every hit."),
     Setting("retrieval.timeout_ms", "retrieval", "MATRIXARK_RETRIEVAL_TIMEOUT_MS",
             "Retrieval deadline (ms)", "int", "0", "live",
             "How long a retrieve may keep working before it returns what it has. 0 means no "
@@ -1170,106 +1160,6 @@ SETTINGS.extend([
             "once never needs unsealing. The codec is a new codec BYTE rather than a new magic, "
             "so a build from before this raises on an unknown codec and the loader answers by "
             "re-deriving from the log."),
-    Setting("retrieval.allow_python_retrieval_fallback", "retrieval", "MATRIXARK_ALLOW_PYTHON_RETRIEVAL_FALLBACK",
-            "Allow python retrieval fallback", "bool", "0", "restart",
-            "Lets a retrieve leave the native serving path and finish in Python, for every "
-            "request. Off, a request may still ask for it per call by setting one of the "
-            "retrieval fallback arguments -- this turns that per-request choice into a "
-            "deployment-wide permission."),
-    Setting("retrieval.audit_debug_payload", "retrieval", "MATRIXARK_AUDIT_DEBUG_PAYLOAD",
-            "Audit debug payload", "bool", "0", "restart",
-            "Stores the WHOLE context-pack audit record instead of the compact subset -- "
-            "record type, pack id, query, summary text and the deadline fields. A single "
-            "replay can ask for the same per call with include_debug_records=true; this keeps "
-            "every audit verbose, which is a durable size cost on every retrieve."),
-    Setting("retrieval.audit_workers", "retrieval", "MATRIXARK_AUDIT_WORKERS",
-            "Audit workers", "int", "2", "restart",
-            "Threads in the pool that writes audit records. The pool tracks what it submitted "
-            "so a closing server can wait for exactly those writes within a deadline: its "
-            "executor's own shutdown neither cancels queued writes nor bounds in-flight ones, "
-            "and a server that closed without draining could still be appending into a "
-            "directory its caller had begun removing."),
-    Setting("retrieval.augment_cross_session_budget_ratio", "retrieval", "MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO",
-            "Augment cross session budget ratio", "float", "0.6", "restart",
-            "Augment cross session budget ratio. Defaults to 0.6. Frozen when the process starts. Read by "
-            "matrixark_mcp_runtime_config."),
-    Setting("retrieval.codex_hook_capture_raw_payload", "retrieval", "MATRIXARK_CODEX_HOOK_CAPTURE_RAW_PAYLOAD",
-            "Codex hook capture raw payload", "bool", "0", "restart",
-            "Stores the hook input as it arrived, under raw_hook_payload, beside the fields "
-            "derived from it. A diagnostic: it keeps whatever the hook was handed, including "
-            "anything in it that the derived fields leave out, so the records grow by the size "
-            "of the payload."),
-    Setting("retrieval.context_debug_records", "retrieval", "MATRIXARK_CONTEXT_DEBUG_RECORDS",
-            "Context debug records", "bool", "0", "restart",
-            "Writes the extra metadata_debug rows used when tracing what a pack was built "
-            "from. The serving pack strips metadata_debug from every item, so with this off "
-            "nothing reads them -- they were 12.1% of the cache while being carried and never "
-            "read. Turn it on only while tracing."),
-    Setting("retrieval.context_event_time_index_full_payload", "retrieval", "MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD",
-            "Context event time index full payload", "bool", "0", "live",
-            'The event-time index is an ORDERING structure: its field is '
-            '{timestamp:020d}:{event_hash}, so lexical order is chronological, and the slim '
-            'payload carries only what a reader needs to reach the canonical record -- '
-            'ref_hash, node_hash, scope_key, timestamp. On, every entry carries the full '
-            'record again, which is what it held before the slim payload.'),
-    Setting("retrieval.context_pack_cache_max_entries", "retrieval", "MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES",
-            "Context pack cache max entries", "int", "256", "live",
-            'Context pack cache maximum entries. Defaults to 256. Read by matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters.'),
-    Setting("retrieval.context_pack_cache_ttl_s", "retrieval", "MATRIXARK_CONTEXT_PACK_CACHE_TTL_S",
-            "Context pack cache ttl s", "float", "30.0", "live",
-            'Context pack cache time to live seconds. Defaults to 30.0. Read by matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters.'),
-    Setting("retrieval.context_pack_debug_refs", "retrieval", "MATRIXARK_CONTEXT_PACK_DEBUG_REFS",
-            "Context pack debug refs", "bool", "0", "restart",
-            "Serves the full ref detail rather than the compact form: hashes and matched "
-            "indexes, and the dropped-ref details, move from audit-only into the pack the "
-            "caller receives. A request can ask for the same per call with "
-            "include_debug_refs=true."),
-    Setting("retrieval.cross_session_broad_budget_ratio", "retrieval", "MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO",
-            "Cross session broad budget ratio", "float", "0.15", "restart",
-            "Cross session broad budget ratio. Defaults to 0.15. Frozen when the process starts. Read by "
-            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("retrieval.cross_session_current_state_budget_ratio", "retrieval", "MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO",
-            "Cross session current state budget ratio", "float", "0.2", "restart",
-            "Cross session current state budget ratio. Defaults to 0.2. Frozen when the process starts. "
-            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("retrieval.cross_session_min_budget_tokens", "retrieval", "MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS",
-            "Cross session min budget tokens", "int", "256", "restart",
-            "Cross session minimum budget tokens. Defaults to 256. Frozen when the process starts. Read "
-            "by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("retrieval.cross_session_min_entity_bridge_refs", "retrieval", "MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS",
-            "Cross session min entity bridge refs", "int", "2", "restart",
-            "Cross session minimum entity bridge refs. Defaults to 2. Frozen when the process starts. "
-            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("retrieval.cross_session_multi_hop_budget_ratio", "retrieval", "MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO",
-            "Cross session multi hop budget ratio", "float", "0.2", "restart",
-            "Cross session multi hop budget ratio. Defaults to 0.2. Frozen when the process starts. Read "
-            "by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("retrieval.cross_session_profile_min_entity_bridge_refs", "retrieval", "MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS",
-            "Cross session profile min entity bridge refs", "int", "3", "restart",
-            "Cross session profile minimum entity bridge refs. Defaults to 3. Frozen when the process "
-            "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("retrieval.cross_session_raw_evidence_min_score", "retrieval", "MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE",
-            "Cross session raw evidence min score", "float", "0.45", "restart",
-            "Cross session raw evidence minimum score. Defaults to 0.45. Frozen when the process starts. "
-            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("retrieval.direct_write_queue_allow_sync_context", "retrieval", "MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT",
-            "Direct write queue allow sync context", "bool", "0", "live",
-            "Decides which batches the direct write queue will take, and does nothing unless "
-            "MATRIXARK_DIRECT_WRITE_QUEUE is on. Off, a batch qualifies only if at least one "
-            "record's storage_route asks for a background write and none asks for a sync "
-            "write -- one record asking to be written synchronously keeps the WHOLE batch on "
-            "the calling thread. On, any batch of records qualifies and storage_route is not "
-            "consulted."),
-    Setting("retrieval.disable_native_context_pack", "retrieval", "MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK",
-            "Disable native context pack", "bool", "0", "live",
-            "Skips native ContextPack assembly so the retrieve falls back to the Python path, "
-            "even where the backend supports the native one. An escape hatch for a native "
-            "backend answering wrongly: the Python path does the same work in this process "
-            "instead of in the engine."),
-    Setting("retrieval.hard_max_children_scored_per_parent", "retrieval", "MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT",
-            "Hard max children scored per parent", "int", "100000", "restart",
-            "Hard maximum children scored per parent. Defaults to 100000. Frozen when the process starts. "
-            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("retrieval.hook_additional_context_char_limit", "retrieval", "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT",
             "Hook additional context char limit", "int", "40000", "live",
             "How many characters of retrieved context one hook invocation may hand back. The "
@@ -1281,71 +1171,6 @@ SETTINGS.extend([
             "failing hook blocks the operation it was called from. On is the safer default for "
             "an agent hook: a memory write that cannot happen should not stop the work that "
             "produced it."),
-    Setting("retrieval.pack_precision_expand_max_events", "retrieval", "MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS",
-            "Pack precision expand max events", "int", "12", "restart",
-            "Pack precision expand maximum events. Defaults to 12. Frozen when the process starts. Read "
-            "by matrixark_mcp_runtime_config."),
-    Setting("retrieval.pack_raw_precision", "retrieval", "MATRIXARK_PACK_RAW_PRECISION",
-            "Pack raw precision", "bool", "0", "restart",
-            "Shifts events up and summaries down in the pack ordering for precision questions, "
-            "where the exact wording of what was said matters more than a rollup of it."),
-    Setting("retrieval.query_rewrite_window", "retrieval", "MATRIXARK_QUERY_REWRITE_WINDOW",
-            "Query rewrite window", "int", "3", "restart",
-            "How many recent session turns the follow-up query rewrite reads, so a question "
-            "saying 'that' or 'the ones' carries its subject's terms. It does nothing unless "
-            "MATRIXARK_QUERY_REWRITE is on, which it is not by default. The rewrite changes the "
-            "RANKING query only, never the pack the model is given, so it costs no model "
-            "tokens."),
-    Setting("retrieval.remote_only_cross_session_budget_ratio", "retrieval", "MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO",
-            "Remote only cross session budget ratio", "float", "0.3", "restart",
-            "Remote only cross session budget ratio. Defaults to 0.3. Frozen when the process starts. "
-            "Read by matrixark_mcp_runtime_config."),
-    Setting("retrieval.remote_only_local_fallback_floor_tokens", "retrieval", "MATRIXARK_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS",
-            "Remote only local fallback floor tokens", "int", "2048", "restart",
-            "How small a remote-only pack may be before the request's local context is "
-            "re-admitted for that turn, so a cold start or a sparse-topic miss never leaves the "
-            "agent blind. It fires only on a request already resolved to remote_only -- where "
-            "local was set aside rather than absent -- and 0 disables the fallback."),
-    Setting("retrieval.resource_overlap_tokens", "retrieval", "MATRIXARK_RESOURCE_OVERLAP_TOKENS",
-            "Resource overlap tokens", "int", "24", "restart",
-            "How much of the previous chunk each chunk repeats, measured at the TOKEN split. "
-            "Text is split by tokens first and each piece then by characters, so this and "
-            "MATRIXARK_RESOURCE_OVERLAP_CHARS both apply, each at its own stage. It must be "
-            "smaller than MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS: a value at or above the cap is "
-            "not clamped, the import raises."),
-    Setting("retrieval.rust_proxy_dedicated_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
-            "Rust proxy dedicated pack lanes", "bool", "0", "live",
-            "Gives retrieve-pack its own warm pool of proxy processes instead of sharing the "
-            "single write/read/control process. Off by default, so pack shares that one "
-            "process. On avoids stdin/stdout head-of-line blocking under scale tests, at the "
-            "cost of several engines open on one store directory."),
-    Setting("retrieval.rust_proxy_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_PACK_LANES",
-            "Rust proxy pack lanes", "int", "8", "live",
-            "How many proxy processes serve retrieve-pack. The only lane count that can bind "
-            "while MATRIXARK_RUST_PROXY_SHARED_PROCESS is on, and only then with "
-            "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES also on -- without it, pack shares the "
-            "single process and this number is read and then not used."),
-    Setting("retrieval.segment_max_new_tokens", "retrieval", "MATRIXARK_SEGMENT_MAX_NEW_TOKENS",
-            "Segment max new tokens", "int", "512", "live",
-            'Segment maximum new tokens. Defaults to 512. Read by matrixark_mcp_core.'),
-    Setting("retrieval.summary_refresh_pass_budget_ms", "retrieval", "MATRIXARK_SUMMARY_REFRESH_PASS_BUDGET_MS",
-            "Summary refresh pass budget ms", "int", "30000", "live",
-            'Summary refresh pass budget milliseconds. Defaults to 30000. Read by matrixark_local_adapter_summaries.'),
-    Setting("retrieval.temporalstore_async_context_warmup", "retrieval", "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP",
-            "Temporalstore async context warmup", "bool", "1", "live",
-            "Lets a background thread read the durable record log after start so context is "
-            "warm before the first retrieve. This is the master switch and it is checked "
-            "FIRST: off, the warmup is skipped whatever else is set, including "
-            "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE. On, a storage-mode gate still "
-            "decides."),
-    Setting("retrieval.temporalstore_async_context_warmup_force", "retrieval", "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE",
-            "Temporalstore async context warmup force", "bool", "0", "live",
-            "Skips the storage-mode gate on the async context warmup. Without it the warmup "
-            "runs only for local, single_node, single, standalone, dev, debug or default "
-            "storage modes; it declines on distributed, multi_node, shared_store, replicated, "
-            "replication and raft -- and on any mode string it does not recognise. It cannot "
-            "force a warmup that MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP has turned off: "
-            "that check comes first."),
     Setting("skills.dedupe_skill_chunk_embedding", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING",
             "Dedupe skill chunk embedding", "bool", "1", "restart",
             "Stores one vector per skill chunk instead of two. A skill chunk used to store the "
