@@ -86,7 +86,7 @@ _IDENTITY = re.compile(
 #: flags nothing sets, and 36 of those were the last read of their variable. Banked here in the
 #: same breath, because a ratchet that does not bank a reduction is the reduction nobody can see
 #: was made, and the check below refuses a ceiling left drifting above the truth.
-MAXIMUM_FLAGS_READ = 462
+MAXIMUM_FLAGS_READ = 465
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
@@ -403,8 +403,22 @@ def _flag_of(call):
 
 
 def _production_modules():
-    return [rel for rel in _tracked("tools/*.py")
-            if not os.path.basename(rel).startswith("test_")]
+    """Python this product SHIPS, which is not the same as `tools/`.
+
+    This read `tools/*.py` alone. sdk/python/temporalstore is the client library the product
+    ships -- matrixark_http's native reader imports temporalstore.client to open a store -- and it
+    reads three variables of its own: TS_REDIS_HOST, TS_REDIS_PORT and TS_TENANT. None was counted,
+    so the surface this file reports was three short.
+
+    The same mistake the engine scan corrected one language along: a rule that reads one directory
+    and concludes about the product is measuring what it was pointed at. `examples/` stays out --
+    a sample is not shipped behaviour.
+    """
+    modules = [rel for rel in _tracked("tools/*.py")
+               if not os.path.basename(rel).startswith("test_")]
+    modules += [rel for rel in _tracked("sdk/python/temporalstore/*.py")
+                if not os.path.basename(rel).startswith("test_")]
+    return modules
 
 
 def read_by_production():
