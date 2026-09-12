@@ -1710,10 +1710,6 @@ SETTINGS.extend([
             "fold the owner always carries its vector, which is the condition the prefilter's "
             "owner branch is gated on, so that branch now reaches every chunk and the posting "
             "is a restatement. Set it off to write them again."),
-    Setting("storage_engine.max_secondary_index_records_per_operation", "storage_engine", "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION",
-            "Max secondary index records per operation", "int", "128", "restart",
-            "Maximum secondary index records per operation. Defaults to 128. Frozen when the process "
-            "starts. Read by matrixark_mcp_core, matrixark_mcp_indexing."),
     Setting("storage_engine.max_secondary_index_refs_per_posting", "storage_engine", "MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING",
             "Max secondary index refs per posting", "int", "512", "restart",
             "Maximum secondary index refs per posting. Defaults to 512. Frozen when the process starts. "
@@ -1722,32 +1718,6 @@ SETTINGS.extend([
             "Max secondary index terms per record", "int", "10", "restart",
             "Maximum secondary index terms per record. Defaults to 10. Frozen when the process starts. "
             "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
-    Setting("storage_engine.native_side_index_assume_fresh", "storage_engine", "MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH",
-            "Native side index assume fresh", "bool", "0", "live",
-            "Writes side-index entries from the new records alone, skipping the read of what is "
-            "already stored there. It saves a read per entry on ingest, and it is safe only "
-            "where nothing else writes those entries: the merge that preserves existing "
-            "references is handed an empty answer, so references already on an entry are "
-            "overwritten rather than kept."),
-    Setting("storage_engine.rust_proxy_startup_warmup_full_scan", "storage_engine", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_FULL_SCAN",
-            "Rust proxy startup warmup full scan", "bool", "1", "live",
-            "Chooses which retrieve the proxy daemon issues to warm itself: the full-scan "
-            "variant, or the ordinary one that consults the index. It only matters where the "
-            "warmup runs at all -- MATRIXARK_RUST_PROXY_STARTUP_WARMUP defaults to auto, which "
-            "warms on local and single-node deployments and declines on distributed, "
-            "replicated, raft, cluster or production ones."),
-    Setting("storage_engine.secondary_index_posting_bucket_ms", "storage_engine", "MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS",
-            "Secondary index posting bucket ms", "int", "60000", "restart",
-            "Secondary index posting bucket milliseconds. Defaults to 60000. Frozen when the process "
-            "starts. Read by matrixark_mcp_core, matrixark_mcp_indexing."),
-    Setting("storage_engine.secondary_index_time_bucket_ms", "storage_engine", "MATRIXARK_SECONDARY_INDEX_TIME_BUCKET_MS",
-            "Secondary index time bucket ms", "int", "60000", "restart",
-            "Secondary index time bucket milliseconds. Defaults to 60000. Frozen when the process starts. "
-            "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
-    Setting("storage_engine.stream_materialize_max_scopes", "storage_engine", "MATRIXARK_STREAM_MATERIALIZE_MAX_SCOPES",
-            "Stream materialize max scopes", "int", "20000", "restart",
-            "Stream materialize maximum scopes. Defaults to 20000. Frozen when the process starts. Read "
-            "by matrixark_mcp_server."),
 ])
 
 SETTINGS.extend(_knob_settings())
