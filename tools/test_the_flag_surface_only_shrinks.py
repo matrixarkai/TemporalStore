@@ -74,7 +74,14 @@ _HARNESS = re.compile(r"(benchmark|_report|^run_|^generate_|sweep|probe|soak|har
 _IDENTITY = re.compile(
     r"(API_KEY|_KEY_ENV|BASE_URL|_URL$|_URI$|ENDPOINT|PROVIDER|_MODEL$|_MODEL_|BUCKET|PREFIX"
     r"|HOST|_PORT$|_PATH$|_DIR$|_DB$|_CLIENT_ID$|COMMAND|TOKEN|SECRET|CREDENTIAL|REGION"
-    r"|ACCOUNT|TENANT|NAMESPACE|_ADDR$|METASERVER|_FILE$|_LOG$|_LIB$)")
+    r"|ACCOUNT|TENANT|NAMESPACE|_ADDR$|METASERVER|_FILE$|_LOG$|_LIB$"
+    # Found by reading the last twenty-nine candidates one at a time: nine of them were identity
+    # this pattern did not know the spelling of. MATRIXARK_REPO falls back to
+    # "/opt/github-services/TemporalStore" and MATRIXARK_WSL_MOUNT to "/mnt" -- writing either down
+    # hard-codes one machine's layout. STORAGE_FAMILY, STORAGE_MODE and REPLICATION_MODE say what
+    # the store IS on this deployment, which is the same kind of fact as where it lives.
+    r"|_REPO$|_MOUNT$|_BIN$|_SCOPE$|_HTTP$|STORAGE_FAMILY|STORAGE_FAMILIES|STORAGE_MODE"
+    r"|REPLICATION_MODE)")
 
 #: The ceiling. Lower it when you cut; a rise is the failure this file exists for.
 #: 520 when this was written, 484 now that matrixarkai#1540 has landed -- it folded 57 reads of
@@ -233,6 +240,46 @@ EXAMINED = {
         "read inline at the branch it guards, where the async context warmup is chosen",
     "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE":
         "the force half of the warmup pair, read inline",
+    "MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES":
+        "how many packs the local adapter keeps; the bound a deployment lowers when memory is tight",
+    "MATRIXARK_CONTEXT_PACK_CACHE_TTL_S":
+        "how long a cached pack stays valid, which is the freshness-against-cost trade for it",
+    "MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES":
+        "the same bound for the direct backend's response cache, defaulting to 256",
+    "MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS":
+        "the direct-write queue's capacity; read once through direct_write_queue_limits so the bound has one home rather than two",
+    "MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS":
+        "how long a writer waits for room in that queue before giving up",
+    "MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES":
+        "how many batches one drain pass takes, which bounds how long it holds the lane",
+    "MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS":
+        "the floor between idle drains; raising it is what an operator does when the drain is competing with request work",
+    "MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO":
+        "the share of a pack an augmenting cross-session query may take",
+    "MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO":
+        "the same share for a remote-only deployment, which has a different cost per candidate",
+    "MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS":
+        "how many events a precision question may expand to, bounding the widest pack it can ask for",
+    "MATRIXARK_QUERY_REWRITE_WINDOW":
+        "how many recent turns the follow-up rewrite reads, so a question saying 'that' carries its subject; it does nothing unless the rewrite itself is on",
+    "MATRIXARK_RESOURCE_MAX_CHUNK_CHARS":
+        "the character ceiling on a resource chunk, computed from the token ceiling when unset",
+    "MATRIXARK_RESOURCE_OVERLAP_CHARS":
+        "how much two adjacent chunks share; another setting's portal help names this one as applying alongside it, so it is documented to an operator through its neighbour",
+    "MATRIXARK_CONTEXT_INDEX_POSTINGS":
+        "selects how context index postings are written; a mode with more than two positions, read as a lowercase word rather than a boolean",
+    "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH":
+        "default OFF; turning it on refreshes summaries before a retrieve, which is the trade between a fresher pack and a slower one",
+    "MATRIXARK_LANE_INLINE_RECORDS":
+        "whether the proxy lane carries records inline; a transport shape switch in the client",
+    "MATRIXARK_RESOURCE_STORAGE_POLICY":
+        "which storage policy a resource takes when the request names none",
+    "MATRIXARK_SKILL_RESERVED_REFS":
+        "pack slots held for skills; it is a tenant knob and the v1 gateway surfaces its default, so a deployment sets it per tenant rather than per process",
+    "MATRIXARK_BENCHMARK_REPLICATION_MODE":
+        "the replication mode a benchmark run asks for; set when the benchmark is invoked, which is the harness rule wearing a name the harness pattern does not match",
+    "MATRIXARK_REQUIRE_RETRIEVAL_MEMORY_COVERAGE":
+        "a report gate: the workflow report reads it to decide whether missing coverage fails the run, and a gate exists to be turned on for a run",
 }
 
 def _tracked(*globs):
@@ -393,10 +440,15 @@ def classify():
             out["instructed"].add(name)
         elif name in harness:
             out["harness CLI"].add(name)
+        elif name in legacy:
+            # Before the identity test on purpose. Widening _IDENTITY to know STORAGE_FAMILY and
+            # REPLICATION_MODE emptied this group, because those names are BOTH identity and the
+            # later link of an alias chain -- and "kept so an older configuration keeps working"
+            # is the more specific thing to know about them. A group that quietly goes to zero is
+            # a classification that has stopped saying anything.
+            out["legacy spelling"].add(name)
         elif _IDENTITY.search(name):
             out["deployment identity"].add(name)
-        elif name in legacy:
-            out["legacy spelling"].add(name)
         elif name in EXAMINED:
             out["read one at a time"].add(name)
         else:
