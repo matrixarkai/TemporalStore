@@ -90,66 +90,21 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_identity import normalize_message_role
 
 
+# `prefer_profile_entities_for_current_state` joined it, and the copy here was NOT a spelling
+# difference. It tested `question_type not in {"current_state", "latest"}` where the live one also
+# lists "profile_memory" -- so a profile_memory query returned unchanged through this module and
+# never got the 0.18 boost the live path gives it. The other difference, an inlined
+# min/max instead of clamp01, does nothing.
 try:  # the implementation lives in matrixark_mcp_core_ref_selection; this module re-exports it
-    from .matrixark_mcp_core_ref_selection import entity_current_state_key
+    from .matrixark_mcp_core_ref_selection import (
+        entity_current_state_key,
+        prefer_profile_entities_for_current_state,
+    )
 except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_core_ref_selection import entity_current_state_key
-
-
-def prefer_profile_entities_for_current_state(candidates: list[Json], question_type: str) -> list[Json]:
-    if question_type not in {"current_state", "latest"}:
-        return candidates
-    latest_profile_by_entity: dict[tuple[str, str], Json] = {}
-    latest_profile_by_source_entity_hash: dict[Any, Json] = {}
-    for candidate in candidates:
-        key = entity_current_state_key(candidate)
-        if key is None:
-            continue
-        if str(candidate.get("memory_scope") or "") != "user_profile":
-            continue
-        if str(candidate.get("session_continuity") or "") != "cross_session":
-            continue
-        existing = latest_profile_by_entity.get(key)
-        if existing is None or int(candidate.get("updated_at_ms") or 0) >= int(existing.get("updated_at_ms") or 0):
-            latest_profile_by_entity[key] = candidate
-        for source_entity_hash in candidate.get("source_entity_hashes", []):
-            existing_by_source = latest_profile_by_source_entity_hash.get(source_entity_hash)
-            if existing_by_source is None or int(candidate.get("updated_at_ms") or 0) >= int(existing_by_source.get("updated_at_ms") or 0):
-                latest_profile_by_source_entity_hash[source_entity_hash] = candidate
-    if not latest_profile_by_entity:
-        return candidates
-    adjusted: list[Json] = []
-    for candidate in candidates:
-        key = entity_current_state_key(candidate)
-        profile = latest_profile_by_source_entity_hash.get(candidate.get("ref_hash"))
-        if profile is None and key is not None:
-            profile = latest_profile_by_entity.get(key)
-        if profile is None:
-            adjusted.append(candidate)
-            continue
-        if candidate is profile or candidate.get("ref_hash") == profile.get("ref_hash"):
-            adjusted.append({
-                **candidate,
-                "score": min(1.0, max(0.0, float(candidate.get("score", 0.0)) + 0.18)),
-                "profile_current_state_boost": 0.18,
-                "selection_reason": candidate.get("selection_reason") or "current profile entity preferred over session-local historical state",
-            })
-            continue
-        if str(candidate.get("memory_scope") or "") == "session":
-            adjusted.append({
-                **candidate,
-                "stale_or_superseded": True,
-                "profile_shadowed_by_ref_hash": profile.get("ref_hash"),
-                "profile_shadowed_reason": (
-                    "source_entity_lineage"
-                    if candidate.get("ref_hash") in set(profile.get("source_entity_hashes", []))
-                    else "same_entity_identity"
-                ),
-                "selection_reason": candidate.get("selection_reason") or "session-local entity kept as historical evidence behind current profile state",
-            })
-            continue
-        adjusted.append(candidate)
-    return adjusted
+    from matrixark_mcp_core_ref_selection import (
+        entity_current_state_key,
+        prefer_profile_entities_for_current_state,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_core_ref_selection; this module re-exports it

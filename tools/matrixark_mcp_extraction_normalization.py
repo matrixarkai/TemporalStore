@@ -661,6 +661,16 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import canonical_entity_name
 
 
+# `dedupe_entities` joined them, and the copy here was missing a whole step: the live one calls
+# `drop_directive_duplicates(out)` before ranking and this one did not. That is the example the
+# diverged-copy guard cites in its own docstring, and the function it dropped is defined only in
+# matrixark_mcp_core -- so the copy could not have called it without this import.
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import dedupe_entities
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import dedupe_entities
+
+
 def entity_retention_priority(entity: Json) -> int:
     entity_type = str(entity.get("entity_type") or "").strip().lower()
     entity_name = str(entity.get("entity_name") or "").strip().lower()
@@ -688,30 +698,6 @@ def entity_retention_priority(entity: Json) -> int:
     if entity_type in {"assistant_decision", "tool_evidence"}:
         return 3
     return 4
-
-
-def dedupe_entities(entities: list[Json]) -> list[Json]:
-    seen = set()
-    positions: dict[tuple[Any, str], int] = {}
-    out = []
-    for entity in entities:
-        key = (entity.get("entity_type"), str(entity.get("entity_name", "")).lower())
-        if key in seen:
-            existing = out[positions[key]]
-            if entity_retention_priority(entity) < entity_retention_priority(existing):
-                out[positions[key]] = entity
-                continue
-            if entity.get("entity_type") == "tool_evidence" and existing.get("state"):
-                continue
-            if entity.get("entity_name") == entity.get("entity_type"):
-                out[positions[key]] = entity
-            continue
-        seen.add(key)
-        positions[key] = len(out)
-        out.append(entity)
-    ranked = sorted(enumerate(out), key=lambda item: (entity_retention_priority(item[1]), item[0]))
-    kept_indexes = {index for index, _entity in ranked[:20]}
-    return [entity for index, entity in enumerate(out) if index in kept_indexes]
 
 
 def ordered_unique(values: list[str]) -> list[str]:

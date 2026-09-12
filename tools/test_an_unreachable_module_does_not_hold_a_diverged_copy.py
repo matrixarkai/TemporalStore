@@ -70,7 +70,13 @@ from collections import defaultdict
 #: six were diverged and two were verbatim, which is why the total falls by six and this number
 #: by four. The accessor STAYS there: candidate_index_terms still calls it and diverges by more
 #: than a spelling, so it is not part of that move.
-RECORDED_DIVERGED = 40
+#:
+#: 40 -> 38 for two that were NOT plumbing. matrixark_mcp_budget_pack's
+#: prefer_profile_entities_for_current_state omitted "profile_memory" from the question types it
+#: acts on, so that query returned unboosted through it -- 0.50 where the live path gives 0.68,
+#: executed both ways. And matrixark_mcp_extraction_normalization's dedupe_entities omitted the
+#: drop_directive_duplicates step entirely, which is the example this file's own docstring cites.
+RECORDED_DIVERGED = 38
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -78,7 +84,7 @@ RECORDED_DIVERGED = 40
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 50
+RECORDED_SHADOWED = 48
 
 _CACHE: dict[str, object] = {}
 
