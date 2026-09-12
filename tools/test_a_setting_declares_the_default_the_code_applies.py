@@ -39,7 +39,18 @@ READERS = {"env_bool", "env_int", "env_float", "get", "getenv"}
 
 #: 160 when this was written. A floor, so a parser that stops recognising reads fails here rather
 #: than passing with nothing to compare.
-EXPECTED_CHECKABLE_FLOOR = 120
+#:
+#: 60 after the portal stopped OFFERING a run of internal tuning knobs. The two ways this number
+#: falls are not the same thing and the message below only names one of them: a parser that stopped
+#: recognising read sites, and a setting that left the portal on purpose. The second is not a
+#: regression -- the variable and its reader are untouched, only the Setup page field is gone.
+#:
+#: Set from what the floor is FOR rather than from a measurement. 115 comparable running this file
+#: alone, fewer under `unittest discover` where the module set differs -- so a floor pinned to
+#: either number tracks the harness rather than the property. A parser that stopped recognising
+#: reads returns approximately nothing, and 60 still fails loudly on that while surviving both
+#: harnesses and the settings still to leave.
+EXPECTED_CHECKABLE_FLOOR = 60
 
 
 def _tracked() -> list:
