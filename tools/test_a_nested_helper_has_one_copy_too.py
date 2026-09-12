@@ -83,6 +83,41 @@ def _production_sources():
     return sources
 
 
+def same_module_duplicates():
+    """{module stem: [(name, name, ...)]} for identical bodies that never leave one file.
+
+    The two duplicate-body guards in this tree both require the copies to sit in two different
+    modules -- this file groups by `frozenset(module stems)` and refuses a group of one, and
+    `test_there_is_one_copy_of_each_helper` does the same. The comment there calls a pair inside
+    one module "a different fault", and it is, but nothing was reading it.
+
+    `matrixark_pipeline_task_slim` held `_task_scope_key` and `_audit_scope_key`: one function
+    under two names, five statements each, byte for byte the same, one caller apiece thirty lines
+    apart.
+
+    The corpus is `_production_sources()`, which leaves out `test_`, `run_` and `validate_`, and
+    that exclusion is measured rather than assumed: run the same scan over those buckets and the
+    gate scripts return NOTHING -- zero within-module duplicates across 39 `validate_`, 36 `run_`
+    and 3 `generate_` files. The only hits anywhere are repeated `__init__` and `setUp` bodies in
+    four test modules, which both guards exclude on purpose because a fixture spelled out where it
+    is used reads better than one imported from three files away.
+    """
+    found = {}
+    for stem, tree in _production_sources().items():
+        groups = collections.defaultdict(list)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = _body_statements(node)
+            if len(body) < MIN_BODY_STATEMENTS:
+                continue
+            groups["\n".join(ast.unparse(s) for s in body)].append(node.name)
+        pairs = sorted(tuple(sorted(set(names))) for names in groups.values() if len(names) > 1)
+        if pairs:
+            found[stem] = pairs
+    return found
+
+
 def nested_duplicate_pairs():
     """{frozenset(module stems): [names]} for duplicates with at least one NESTED copy.
 
@@ -180,6 +215,27 @@ class ANestedHelperHasOneCopyToo(unittest.TestCase):
             "%s is defined again in %s. The backend's seven methods are the variant that ships; "
             "a second copy of them is not a shared home, it is the older one."
             % ("LatestContextStateAdapterMixin", ", ".join(carrying)))
+
+    def test_no_module_holds_the_same_body_twice(self):
+        """A copy that never leaves its file is still a copy, and was the one nobody looked for.
+
+        Asserted EMPTY rather than ratcheted: the class had exactly one member when this was
+        written and it was consolidated in the same change, so there is nothing to record and a
+        new one should fail rather than be listed.
+        """
+        found = same_module_duplicates()
+        self.assertEqual(
+            {}, found,
+            "these modules define one body under more than one name. Neither duplicate-body guard "
+            "sees this -- both need the copies in two different modules -- so it is worth fixing "
+            "at the first instance rather than recording: %r" % (found,))
+
+    def test_the_same_module_scan_can_find_something(self):
+        """A positive control. Empty is also what a scan that stopped parsing reports."""
+        sources = _production_sources()
+        self.assertGreater(len(sources), 100,
+                           "the production corpus came back nearly empty, so the check above "
+                           "passes over nothing")
 
     def test_every_recorded_pair_says_why(self):
         thin = sorted(" + ".join(sorted(modules)) for modules, reason in RECORDED_PAIRS.items()

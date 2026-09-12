@@ -175,7 +175,19 @@ def collapse_pipeline_task_rows(records: list[Json]) -> list[Json]:
     return output
 
 
-def _task_scope_key(record: Json) -> str:
+def _scope_key(record: Json) -> str:
+    """The scope a row is grouped under, however the row spells it.
+
+    Both levers in this module group by scope before ageing anything out -- pipeline tasks in
+    `slim_terminal_pipeline_tasks`, audit rows in `slim_audit_payloads` -- and each had its own
+    copy of this under its own name, `_task_scope_key` and `_audit_scope_key`, byte for byte the
+    same five statements. Nothing read that: the duplicate-body guards next door both need the
+    copies to be in two different MODULES, and `test_a_nested_helper_has_one_copy_too` says so in
+    as many words -- "two defs in ONE module is a different fault".
+
+    If the two kinds of row ever should be grouped differently, that is now an edit somebody makes
+    on purpose rather than a change to whichever copy they happened to open.
+    """
     scope_key = record.get("scope_key")
     if scope_key:
         return str(scope_key)
@@ -209,7 +221,7 @@ def slim_terminal_pipeline_tasks(records: list[Json]) -> list[Json]:
         return records
     by_scope: dict[str, list[tuple[int, Json]]] = {}
     for entry in finished:
-        by_scope.setdefault(_task_scope_key(entry[1]), []).append(entry)
+        by_scope.setdefault(_scope_key(entry[1]), []).append(entry)
     slim_positions: set[int] = set()
     for entries in by_scope.values():
         if retain <= 0:
@@ -254,15 +266,6 @@ AUDIT_PAYLOAD_FIELDS = (
 )
 
 
-def _audit_scope_key(record: Json) -> str:
-    scope_key = record.get("scope_key")
-    if scope_key:
-        return str(scope_key)
-    scope = record.get("scope")
-    if isinstance(scope, dict):
-        return str(scope.get("scope_key") or f"{scope.get('tenant_id')}/{scope.get('user_id')}")
-    return ""
-
 
 def slim_audit_payloads(records: list[Json]) -> list[Json]:
     """Strip diagnostic payloads from audit/commit rows beyond the newest N per scope.
@@ -292,7 +295,7 @@ def slim_audit_payloads(records: list[Json]) -> list[Json]:
 
     by_scope: dict[str, list[tuple[int, Json]]] = {}
     for entry in candidates:
-        by_scope.setdefault(_audit_scope_key(entry[1]), []).append(entry)
+        by_scope.setdefault(_scope_key(entry[1]), []).append(entry)
 
     slim_positions: set[int] = set()
     for scope_key, entries in by_scope.items():
