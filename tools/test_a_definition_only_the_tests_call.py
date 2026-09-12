@@ -33,8 +33,26 @@ Four kinds turned up, and they want different answers:
     `test_a_tenant_override_reaches_the_extracted_ranking_limits` first: it calls its module "a
     partly-adopted extraction" and exists because the builder once resolved no tenant override at
     all, so adopting it would have handed every tenant the build default while looking like a pure
-    code move. Deleting these discards a consolidation in progress; adopting them changes the live
-    retrieve path. Neither is a tidy-up.
+    code move.
+
+    Adoption was priced rather than guessed at, for the ranking limits, which is the largest of the
+    four. The builder and the live block agree on all NINE fields across 90 combinations of ranking
+    dict and scope -- malformed values, a bad budget_fill_policy, a None scope, two tenants -- so
+    equivalence is not the obstacle. What it costs is this:
+
+      * `_tenant_retrieval_limit` stops being called by production and becomes a test-only
+        definition. The count does not fall; the function moves INTO this list.
+      * `test_matrixark_gateway_config_audit` reads the live module's SOURCE for
+        `_tenant_retrieval_limit("name", ...)` call sites and asserts it covers five budgets. With
+        the call sites gone it fails with "found no call sites; the scan is broken".
+      * `test_a_tenant_override_reaches_the_extracted_ranking_limits` compares live call sites
+        against extracted ones; with no live sites its floor of four fails.
+
+    So adoption is a four-file change that relocates one function and blinds two guards that read
+    the live call sites as their source of truth -- the shape
+    `a-mechanical-rewrite-blinds-every-guard-that-reads-that-shape` warns about. Worth doing as its
+    own piece of work, with those two guards redirected in the same commit. Not worth doing for a
+    smaller function count, because it does not produce one.
   * a statistic nobody reports -- four `*_stats` functions that compute a number no surface prints.
   * a test affordance on purpose -- cache clearers and record builders that exist so a test can
     reset state. These are fine, and saying so is what stops the next sweep deleting them.
