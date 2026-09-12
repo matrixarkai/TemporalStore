@@ -5156,3 +5156,244 @@ fn the_round_reports_what_eviction_did() {
         "the report belongs to the shard the round ran for"
     );
 }
+
+/// What share of a maintenance round is the index-GC gate now? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_share_of_a_round_is_the_index_gate \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// `storage_index_gc_report` opens with `scan(shard, 0, u64::MAX, u64::MAX)` -- the WHOLE index
+/// log -- and decodes every record twice to compute the ratio that decides whether GC should run
+/// at all. The design being followed estimates the same ratio from a maintained item count and two
+/// running averages: O(1), no scan, no decode.
+///
+/// That was measured once before, at 39 ms for 32,000 records, and DEFERRED -- because WAL reclaim
+/// was costing 21,448 ms in the same round and 39 ms against that is noise. #1516 has since fixed
+/// the frozen reclaim floor that made WAL reclaim cost what it did, so the denominator that
+/// justified deferring is gone. This re-measures the gate as a SHARE of the round rather than in
+/// isolation, because the share is what decides whether it is worth an exact counter.
+///
+/// The fixture deliberately does NOT run a round between writes: the gate's cost only shows on a
+/// log that has been allowed to grow, which is the state it exists to detect.
+#[test]
+#[ignore]
+fn what_share_of_a_round_is_the_index_gate() {
+    eprintln!("  records  index_gc_on_ms  index_gc_off_ms  gate_share");
+    for records in [2_000usize, 8_000, 32_000] {
+        // Two stores built identically, so the only difference is whether the stage runs.
+        let measure = |enable_index_gc: bool| -> u128 {
+            let engine = TemporalEngine::default();
+            engine.load_shard(1);
+            let runtime = DataNodeRuntime::new_without_workers_with_options(
+                engine,
+                DataNodeRuntimeOptions {
+                    worker_threads: 0,
+                    max_queue_depth: 4,
+                    max_background_queue_depth: 2,
+                },
+            );
+            {
+                let engine = runtime.engine();
+                for index in 0..records {
+                    engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: format!("idxgate-{:08}", index),
+                            value: vec![b'v'; 64],
+                        },
+                    });
+                }
+            }
+            let options = StorageManagerOptions {
+                enable_index_gc,
+                ..StorageManagerOptions::default()
+            };
+            let started = Instant::now();
+            runtime.run_storage_manager_once(1, options);
+            started.elapsed().as_millis()
+        };
+
+        let on = measure(true);
+        let off = measure(false);
+        let share = if on == 0 {
+            0.0
+        } else {
+            100.0 * (on.saturating_sub(off)) as f64 / on as f64
+        };
+        eprintln!("  {records:>7}  {on:>14}  {off:>15}  {share:>9.1}%");
+    }
+}
+
+/// Can the reclaim_index dump be capped now that the reclaim floor is no longer frozen? Prints.
+///
+///   cargo test -p temporalstore-rust --lib can_the_index_dump_be_capped_now \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// The stage dumps the WHOLE dirty set every round, which `what_share_of_a_round_is_the_index_gate`
+/// measures at ~68% of a round -- 14,579 ms of a 21,365 ms round on a 32,000-record log.
+///
+/// It is unbounded because #1500 tried capping it and index-log reclaim stopped dead: 16,000
+/// records before a round and 16,000 after. The reason given was coverage --
+/// `wal_plan.safe_to_reclaim` needs a durable manifest for every live generation, and the
+/// whole-dirty-set dump is what produced one.
+///
+/// #1516 then fixed the frozen reclaim frontier: a clean bucket no longer pins the floor for ever,
+/// and an unset floor no longer erases it. That is the mechanism that made a bounded dump fail to
+/// advance anything, so the constraint recorded in #1500 may simply no longer hold. This sweeps
+/// the cap and reports BOTH numbers that matter -- what the round costs, and whether the log still
+/// reclaims. A cap that makes rounds cheap by not reclaiming is not a win.
+#[test]
+#[ignore]
+fn can_the_index_dump_be_capped_now() {
+    const BATCH: usize = 2_000;
+    const ROUNDS: usize = 6;
+    // Smaller than BATCH so later rounds overwrite earlier keys and index records actually become
+    // garbage. A first version wrote 12,000 DISTINCT keys and every arm reported 12,000 records
+    // left -- correctly, because with unique keys almost every record is the live version of a
+    // key and there is nothing to reclaim. That fixture cannot tell a working cap from a broken
+    // one.
+    const KEYSPACE: usize = 500;
+
+    fn index_records(engine: &TemporalEngine) -> usize {
+        engine
+            .index_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0)
+    }
+
+    eprintln!("     cap   ingested   index_log   round_ms   verdict");
+    for cap in [0usize, 64, 256, 1_024] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let options = StorageManagerOptions {
+            index_gc_max_dump_buckets_per_round: cap,
+            ..StorageManagerOptions::default()
+        };
+        let mut written = 0usize;
+        let mut total_round_ms = 0u128;
+        for _ in 0..ROUNDS {
+            let engine = runtime.engine();
+            for index in 0..BATCH {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("dumpcap-{:08}", (written + index) % KEYSPACE),
+                        value: vec![b'v'; 64],
+                    },
+                });
+            }
+            written += BATCH;
+            let started = Instant::now();
+            runtime.run_storage_manager_once(1, options.clone());
+            total_round_ms += started.elapsed().as_millis();
+        }
+        let index = index_records(&runtime.engine());
+        // Reclaiming means the log is a bounded multiple of one batch, not of the total.
+        let verdict = if index < BATCH * 2 {
+            "reclaims"
+        } else if index < written / 2 {
+            "lagging"
+        } else {
+            "STOPPED"
+        };
+        let per_round = total_round_ms / ROUNDS as u128;
+        eprintln!("  {cap:>6}   {written:>8}   {index:>9}   {per_round:>8}   {verdict}");
+    }
+}
+
+/// A capped reclaim_index dump still reclaims the index log.
+///
+/// #1500 capped this dump and index-log reclaim stopped dead -- 16,000 records before a round and
+/// 16,000 after -- so the stage was left dumping the WHOLE dirty set with a comment saying not to
+/// cap it. That is ~68% of a maintenance round: 14,579 ms of a 21,365 ms round on a 32,000-record
+/// log.
+///
+/// The reason it broke was coverage: `wal_plan.safe_to_reclaim` needs a durable manifest for every
+/// live generation, and the whole-dirty-set dump was what produced one. #1516 then fixed the
+/// frozen reclaim frontier -- a clean bucket no longer pins the floor for ever, and an unset floor
+/// no longer erases it -- which is the mechanism that made a bounded dump fail to advance
+/// anything.
+///
+/// So the constraint recorded in #1500 no longer holds, and this is the guard that says so: a
+/// capped dump reclaims as well as an unbounded one.
+///
+/// What it does NOT do, despite being the obvious thing to claim, is detect a re-frozen frontier.
+/// That was checked rather than assumed: reverting #1516's `dirty_object_count > 0` condition
+/// leaves this test PASSING. The fixture overwrites a 500-key space, so every bucket is dirty
+/// every round, `dirty_object_count > 0` holds for all of them, and the condition being reverted
+/// never applies. Catching that regression needs a fixture with CLEAN buckets -- buckets dumped
+/// once and not written again -- which is the state where a clean bucket's stale manifest pins the
+/// floor. Worth building; not built here, and this guard should not be read as covering it.
+#[test]
+fn a_capped_index_dump_still_reclaims() {
+    const BATCH: usize = 2_000;
+    const ROUNDS: usize = 6;
+    // Overwrites, so records genuinely become garbage. With distinct keys almost every record is
+    // the live version of a key, nothing is reclaimable, and both arms below would report the full
+    // count while proving nothing.
+    const KEYSPACE: usize = 500;
+
+    fn run(cap: usize) -> (usize, usize) {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let options = StorageManagerOptions {
+            index_gc_max_dump_buckets_per_round: cap,
+            ..StorageManagerOptions::default()
+        };
+        let mut written = 0usize;
+        for _ in 0..ROUNDS {
+            let engine = runtime.engine();
+            for index in 0..BATCH {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("dumpcapguard-{:08}", (written + index) % KEYSPACE),
+                        value: vec![b'v'; 64],
+                    },
+                });
+            }
+            written += BATCH;
+            runtime.run_storage_manager_once(1, options.clone());
+        }
+        let remaining = runtime
+            .engine()
+            .index_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0);
+        (written, remaining)
+    }
+
+    let (written, unbounded) = run(0);
+    let (_, capped) = run(64);
+
+    // The denominator: the unbounded arm has to reclaim, or "the capped arm matches it" is a
+    // statement about two broken runs.
+    assert!(
+        unbounded < written / 2,
+        "the UNBOUNDED arm did not reclaim ({unbounded} of {written} left), so this fixture cannot \
+         tell whether the cap is what broke anything"
+    );
+    assert!(
+        capped < written / 2,
+        "a capped dump stopped index-log reclaim: {capped} of {written} records left, against \
+         {unbounded} with no cap -- the reclaim floor is not advancing on the bounded path"
+    );
+}

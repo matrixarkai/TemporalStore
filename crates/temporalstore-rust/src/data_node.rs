@@ -929,6 +929,20 @@ pub struct StorageManagerOptions {
     /// makes the knob reachable.
     #[serde(default = "default_storage_manager_index_gc_max_entries_per_round")]
     pub index_gc_max_entries_per_round: usize,
+    /// How many dirty buckets the reclaim_index stage may dump in one round. 0 = unbounded.
+    ///
+    /// This stage dumps the WHOLE dirty set, and that is ~68% of a maintenance round: measured at
+    /// 14,579 ms of a 21,365 ms round on a 32,000-record log. It is unbounded because capping it
+    /// was tried in #1500 and stopped index-log reclaim dead -- 16,000 records before a round and
+    /// 16,000 after -- since `wal_plan.safe_to_reclaim` needs a durable manifest for every live
+    /// generation and the whole-dirty-set dump is what produced one.
+    ///
+    /// #1516 has since fixed the frozen reclaim frontier, which is the mechanism that made a
+    /// bounded dump fail to advance the floor. Whether the cap works now is a question for
+    /// measurement, not for the old comment, so this makes it reachable and defaults to today's
+    /// behaviour.
+    #[serde(default)]
+    pub index_gc_max_dump_buckets_per_round: usize,
 }
 
 fn default_storage_manager_index_gc_max_entries_per_round() -> usize {
@@ -1001,6 +1015,7 @@ impl Default for StorageManagerOptions {
                 crate::engine::reports::DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND,
             index_gc_max_entries_per_round:
                 crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
+            index_gc_max_dump_buckets_per_round: 0,
         }
     }
 }

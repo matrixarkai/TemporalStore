@@ -568,8 +568,12 @@ impl DataNodeRuntime {
                 //
                 // The consequence is that `max_dump_buckets_per_round` bounds the reclaim_wal
                 // and reclaim_memory stages, not a ROUND: this stage still dumps the whole dirty
-                // set, deliberately.
-                max_dump_buckets_per_round: 0,
+                // set by default.
+                //
+                // #1516 fixed the frozen frontier that made a bounded dump fail to advance the
+                // floor, so the cap is now reachable and its effect is measurable rather than
+                // assumed. Defaults to 0, which is exactly the behaviour above.
+                max_dump_buckets_per_round: options.index_gc_max_dump_buckets_per_round,
                 min_undumped_wal_records: 0,
                 min_undumped_wal_bytes: 0,
                 purge_delayed_destroy: true,
