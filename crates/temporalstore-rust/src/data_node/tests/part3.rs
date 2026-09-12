@@ -6051,3 +6051,100 @@ fn the_evict_stage_keeps_going_while_batches_still_help() {
         eviction.memory_pressure_threshold,
     );
 }
+
+/// Does the PERIODIC loop reach compaction's wasted work? Prints.
+///
+///   cargo test -p temporalstore-rust --lib does_the_periodic_loop_reach_compaction \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// #1547 measured compaction never reaching a fixed point when called directly, and left one
+/// question open: whether the PERIODIC loop ever gets there. Two fixtures failed to open the
+/// stale-page gate and the answer was recorded as UNPROVEN.
+///
+/// This builds the condition deliberately instead of hoping for it. The gate wants a stale SLAB
+/// and `stale_block_slab_pressure` is 1, but a slab is a GiB by default, so no fixture of a
+/// reasonable size rolls one by writing. Rolling explicitly and then overwriting everything leaves
+/// the first slab holding nothing live -- which is a stale slab, cheaply.
+///
+/// Then it runs rounds over a store nobody is writing to, and reports whether compaction keeps
+/// firing. If it does, the direct-call waste is production behaviour and #1547's caveat can be
+/// closed the other way.
+#[test]
+#[ignore]
+fn does_the_periodic_loop_reach_compaction() {
+    const KEYS: usize = 400;
+    const ROUNDS: usize = 10;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("periodiccompact-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        // Force a roll so the writes above sit on a slab that is no longer active, then rewrite
+        // every key so that slab holds nothing live at all.
+        engine
+            .block_store()
+            .roll_slab()
+            .expect("rolling a slab should succeed");
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("periodiccompact-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'w'; 72],
+                },
+            });
+        }
+    }
+
+    eprintln!("  round  compact_ran  rewritten_page_refs  round_ms");
+    let options = StorageManagerOptions::default();
+    let mut rounds_that_compacted = 0usize;
+    let mut total_rewritten = 0usize;
+    for round in 0..ROUNDS {
+        let started = Instant::now();
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let elapsed = started.elapsed().as_millis();
+        let ran = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages");
+        let rewritten = report
+            .compaction_report
+            .as_ref()
+            .map(|compaction| compaction.rewritten_object_pages)
+            .unwrap_or(0);
+        if ran {
+            rounds_that_compacted += 1;
+        }
+        total_rewritten += rewritten;
+        eprintln!("  {round:>5}  {ran:>11}  {rewritten:>19}  {elapsed:>8}");
+    }
+    eprintln!(
+        "  VERDICT: compacted on {rounds_that_compacted} of {ROUNDS} rounds, {total_rewritten} \
+         page refs rewritten, over a store that stopped changing before round 0"
+    );
+    if rounds_that_compacted == 0 {
+        eprintln!(
+            "  NOTE: the gate still did not open, so this says nothing about the periodic path"
+        );
+    }
+}
