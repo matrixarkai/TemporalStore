@@ -368,11 +368,22 @@ def _tracked(*globs):
 
 
 def _text(rel):
-    try:
-        with io.open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as handle:
-            return handle.read()
-    except OSError:
-        return ""
+    """Read a tracked file, once per process.
+
+    Every rule on this page reads the tree and several read it per FLAG: this was called 11,200
+    times in one run, against about three hundred distinct paths. The content cannot change while
+    the process lives, so the reads after the first are pure cost -- and the cost was not academic.
+    Adding the tooling, engine, settable, configurable and gating scans took this file from 21
+    seconds to 68, and the ratchet job it runs in was cancelled twice at its 45-minute limit.
+    """
+    cached = _CACHE.setdefault("text", {})
+    if rel not in cached:
+        try:
+            with io.open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as handle:
+                cached[rel] = handle.read()
+        except OSError:
+            cached[rel] = ""
+    return cached[rel]
 
 
 def _flag_of(call):
@@ -439,7 +450,9 @@ def _portal_offers():
     Grepping the file gives 116 configurable; parsing the calls gives 105, and the eleven in the
     difference are variables that file reads rather than knobs it offers.
     """
-    offers = set()
+    if "portal_offers" in _CACHE:
+        return _CACHE["portal_offers"]
+    offers = _CACHE.setdefault("portal_offers", set())
     try:
         tree = ast.parse(_text("tools/matrixark_gateway_config.py"))
     except SyntaxError:  # pragma: no cover - a broken portal must not widen the surface
@@ -459,7 +472,9 @@ def _loader_maps():
     the bootstrap variable, not a mapped one. Same mistake as grepping the portal, and the same
     fix: read the mechanism, not the text around it.
     """
-    out = set()
+    if "loader_maps" in _CACHE:
+        return _CACHE["loader_maps"]
+    out = _CACHE.setdefault("loader_maps", set())
     try:
         tree = ast.parse(_text("tools/matrixark_load_config.py"))
     except SyntaxError:  # pragma: no cover
@@ -717,6 +732,13 @@ def _legacy_spellings():
 
 
 def classify():
+    """The whole page's classification, computed once per process.
+
+    Seven checks call this and each used to redo every rule -- the read scan, the four name scans,
+    the reachability walk and the engine walk. Nothing it reads can change while the process lives.
+    """
+    if "classify" in _CACHE:
+        return _CACHE["classify"]
     reads = read_by_production()
     selected = _selected()
     instructed = _instructed()
@@ -755,7 +777,8 @@ def classify():
             out["read one at a time"].add(name)
         else:
             out["candidate"].add(name)
-    return reads, out
+    _CACHE["classify"] = (reads, out)
+    return _CACHE["classify"]
 
 
 class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
