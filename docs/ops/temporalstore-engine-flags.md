@@ -64,7 +64,7 @@ Anything else is blank, and a blank means go and look.
 | booleans whose default this could read off the source | 53 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 7 |
-| offered on the portal | 28 |
+| offered on the portal | 27 |
 | **that nothing in this repository sets** | 167 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
@@ -381,7 +381,7 @@ Everything else that changes what the engine does.
 |---|---|---|---|---|
 | `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` | on | config | 5 | — |
 | `TS_RAFT_ALLOW_PLAINTEXT` | on | harness, script | 4 | — |
-| `MATRIXARK_BULK_INGEST` | off | config, test, portal | 3 | — |
+| `MATRIXARK_BULK_INGEST` | off | config, test | 3 | — |
 | `TS_RAFT_ELECTION_TICK_MS` | 50 | harness, script | 3 | — |
 | `TS_RAFT_ENABLE_LOCAL_ADMIN` | off | harness, script | 3 | — |
 | `TS_RAFT_RPC_DEADLINE_MS` | 1000 | harness, script | 3 | — |
