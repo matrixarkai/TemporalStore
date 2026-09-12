@@ -296,6 +296,20 @@ def _is_tooling(module):
     return stem.startswith(_TOOLING_PREFIXES) or any(m in stem for m in _TOOLING_MARKERS)
 
 
+#: The configurable surface's ceiling, and the only number on this page with a TARGET under it.
+#:
+#: 99, and it must stay under 100. That is not a round number chosen after the fact: the surface
+#: was 103 when it was first measured, and it reached 99 by two changes that are recorded in the
+#: commits -- two switches folded whose only off-state effect was to write a duplicate back, and a
+#: rule of this file corrected to stop counting a container's environment block as configuration
+#: when it already excluded a script's exports for the same reason.
+#:
+#: WHY A SEPARATE CEILING FROM MAXIMUM_FLAGS_READ. That one bounds what production Python reads,
+#: which moves when a benchmark gains a knob. This one bounds what an OPERATOR is offered, and it
+#: is the number that answers "how many knobs does this thing have". They move independently and a
+#: single ceiling would hide one behind the other.
+MAXIMUM_CONFIGURABLE = 99
+
 #: Scan results that cost a tree walk, computed once per process.
 _CACHE: dict = {}
 
@@ -861,6 +875,30 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                 self.assertFalse(
                     [m for m in self.reads[name] if not _is_tooling(m)],
                     "%s is in the tooling group and a product module reads it" % name)
+
+    def test_the_configurable_surface_stays_under_a_hundred(self) -> None:
+        """The ratchet on the number an operator's question is about.
+
+        Every other check here reports; this one holds. A surface that is measured but not bounded
+        drifts back, one Setting at a time, and each addition looks reasonable on its own -- which
+        is how it reached 520 the first time anybody counted.
+        """
+        configurable = deployment_configurable(self.reads)
+        self.assertLessEqual(
+            len(configurable), MAXIMUM_CONFIGURABLE,
+            "a deployment can now configure %d flags, above the recorded %d. Retire one, or raise "
+            "the ceiling deliberately and say what the new knob is for -- and note that above 100 "
+            "this surface stops meeting the target it was brought under."
+            % (len(configurable), MAXIMUM_CONFIGURABLE))
+        self.assertLess(
+            MAXIMUM_CONFIGURABLE, 100,
+            "the ceiling itself has been raised to %d. Under a hundred is the target; moving the "
+            "ceiling through it is not the same as meeting it." % MAXIMUM_CONFIGURABLE)
+        self.assertGreaterEqual(
+            len(configurable), MAXIMUM_CONFIGURABLE - 25,
+            "the surface is %d and the ceiling is %d. Lower it: a ratchet that does not bank a "
+            "reduction is the reduction nobody can see was made."
+            % (len(configurable), MAXIMUM_CONFIGURABLE))
 
     def test_every_container_only_control_is_still_one(self) -> None:
         """Each name in CONTAINER_ONLY_CONTROLS must still have no other surface.
