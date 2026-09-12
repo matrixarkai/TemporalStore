@@ -156,8 +156,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_MAX_CONTEXT_TOKENS as _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS,
     )
 DEFAULT_MAX_CONTEXT_TOKENS = _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS
-CONTEXT_PACK_DEBUG_REFS = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", False)
-AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
+# CONTEXT_PACK_DEBUG_REFS and AUDIT_DEBUG_PAYLOAD were re-read here, fifteen lines below the import
+# that already binds both. The import was dead: a second `env_bool` call on the same variable with
+# the same default, shadowing the name it had just been given. Identical on every spelling today --
+# "", 1, 0, on, off, true, yes and a word that parses as neither -- which is exactly why nobody
+# noticed, and exactly what makes it a trap: a change to either definition in
+# matrixark_mcp_runtime_config would never have reached this module.
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "").strip() or "10")
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "").strip() or "60000")
