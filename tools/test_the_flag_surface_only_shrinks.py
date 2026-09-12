@@ -282,6 +282,40 @@ EXAMINED = {
         "a report gate: the workflow report reads it to decide whether missing coverage fails the run, and a gate exists to be turned on for a run",
 }
 
+def _readers_all_unreachable(reads):
+    """Flags every reader of which sits in a module production cannot reach.
+
+    A flag is only a control if something can turn it. These nineteen gate code no request arrives
+    at, so turning them changes nothing that runs -- which makes them the one group on this page
+    that could be retired without removing a capability from anybody.
+
+    Not a removal list. Seventeen of the nineteen are in `matrixark_mcp_rust_proxy_config`, and
+    `test_a_module_only_tests_reach_is_not_live` records that module as unwired rather than
+    abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are
+    its tuning surface. Retiring them is a decision about whether that path is coming back, and
+    the point of naming the group is that the decision is now one decision rather than nineteen.
+
+    Computed from the reachability guard next door rather than restated, so a module that becomes
+    reachable takes its flags out of this group on the same day.
+    """
+    try:
+        import test_a_module_only_tests_reach_is_not_live as reachability
+    except Exception:  # pragma: no cover - the guard is absent
+        return set()
+    try:
+        _library, reached = reachability.reachable_from_production()
+    except Exception:  # pragma: no cover - a broken scan must not reclassify the page
+        return set()
+    if not reached:
+        return set()
+    out = set()
+    for name, modules in reads.items():
+        stems = {m[:-3] if m.endswith(".py") else m for m in modules}
+        if stems and not (stems & reached):
+            out.add(name)
+    return out
+
+
 def _tracked(*globs):
     return subprocess.run(["git", "ls-files", *globs], cwd=REPO,
                           capture_output=True, text=True).stdout.split()
@@ -432,9 +466,16 @@ def classify():
     legacy = _legacy_spellings()
     out = {"selected": set(), "instructed": set(), "harness CLI": set(),
            "deployment identity": set(), "legacy spelling": set(),
+           "readers all unreachable": set(),
            "read one at a time": set(), "candidate": set()}
+    unreachable = _readers_all_unreachable(reads)
     for name in reads:
-        if name in selected:
+        if name in unreachable:
+            # First, because it is the sharpest thing true of these. A flag whose every reader is
+            # unreachable is not held by a test naming it or by prose describing it -- nothing can
+            # turn it at all.
+            out["readers all unreachable"].add(name)
+        elif name in selected:
             out["selected"].add(name)
         elif name in instructed:
             out["instructed"].add(name)
@@ -568,6 +609,27 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                     elsewhere,
                     "%s is in this register and reads as selected, and nothing but this file "
                     "names it -- the register is classifying itself." % name)
+
+    def test_the_unreachable_group_is_computed_not_listed(self) -> None:
+        """It comes from the reachability guard, so it cannot go stale on its own.
+
+        A hand-written list here would keep naming flags after their module was wired up, and a
+        group that describes a tree which has moved is worse than no group.
+        """
+        _reads, groups = classify()
+        unreachable = groups["readers all unreachable"]
+        self.assertTrue(
+            unreachable,
+            "no flag has all its readers unreachable. That would be good news and is also what a "
+            "broken reachability scan says, so check that before believing it.")
+        import test_a_module_only_tests_reach_is_not_live as reachability
+        _library, reached = reachability.reachable_from_production()
+        for name in sorted(unreachable):
+            with self.subTest(flag=name):
+                stems = {m[:-3] if m.endswith(".py") else m for m in self.reads[name]}
+                self.assertFalse(
+                    stems & reached,
+                    "%s is in the unreachable group and %s is reachable" % (name, stems & reached))
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
