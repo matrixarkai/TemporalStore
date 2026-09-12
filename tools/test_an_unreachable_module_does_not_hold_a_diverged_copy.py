@@ -40,11 +40,22 @@ import pathlib
 import unittest
 from collections import defaultdict
 
-#: Diverged shadows counted 2026-09-06. May only go DOWN. Raising it needs a reason in the message.
-RECORDED_DIVERGED = 53
+#: Diverged shadows. May only go DOWN. Raising it needs a reason in the message.
+#:
+#: 53 on 2026-09-06, 51 now. The two that left are `oss_model_memory_segments` and
+#: `semantic_saliency_score`: matrixark_mcp_segments held a copy of each, and both copies were the
+#: STALE side, so the module re-exports matrixark_mcp_core's instead -- which is the pattern that
+#: file already used for `detect_memory_segments` and `build_segment_prompt`, with the comment
+#: "the implementation lives in matrixark_mcp_core; this module re-exports it" written above them.
+RECORDED_DIVERGED = 51
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
-RECORDED_SHADOWED = 129
+#:
+#: 129 on 2026-09-06 and 63 now, and only two of that fall are from the change that lowered the
+#: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
+#: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
+#: that will pass whatever happens next.
+RECORDED_SHADOWED = 63
 
 _CACHE: dict[str, object] = {}
 

@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import os
-import re
 from typing import Any
 
 Json = dict[str, Any]
@@ -27,9 +25,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_summaries import summarize_text
 
 
-_OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
-
-
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
     from tools.matrixark_mcp_core import detect_memory_segments
 except ImportError:  # Direct script execution from tools/.
@@ -42,45 +37,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import build_segment_prompt
 
 
-def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: str = "", max_new_tokens: int = 512, local_only: bool = False) -> Json:
-    try:
-        import torch  # type: ignore
-        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
-    except Exception as exc:  # pragma: no cover - depends on optional OSS stack.
-        raise MatrixArkError("torch and transformers are required for segment_provider=oss") from exc
-
-    target = model_path or model
-    cache_key = f"{target}:{max_new_tokens}"
-    cached = _OSS_SEGMENT_MODEL_CACHE.get(cache_key)
-    if cached is None:
-        local_only = bool(local_only) or bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
-        tokenizer = AutoTokenizer.from_pretrained(target, local_files_only=local_only)
-        model_obj = AutoModelForCausalLM.from_pretrained(target, local_files_only=local_only)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model_obj.to(device)
-        model_obj.eval()
-        cached = {"tokenizer": tokenizer, "model": model_obj, "device": device}
-        _OSS_SEGMENT_MODEL_CACHE[cache_key] = cached
-    tokenizer = cached["tokenizer"]
-    model_obj = cached["model"]
-    device = cached["device"]
-    prompt = build_segment_prompt(messages)
-    if getattr(tokenizer, "chat_template", None):
-        chat = [
-            {"role": "system", "content": "Return only JSON. No markdown."},
-            {"role": "user", "content": prompt},
-        ]
-        input_ids = tokenizer.apply_chat_template(chat, add_generation_prompt=True, return_tensors="pt").to(device)
-        outputs = model_obj.generate(input_ids, max_new_tokens=max_new_tokens, do_sample=False)
-        generated = outputs[0][input_ids.shape[-1]:]
-        response = tokenizer.decode(generated, skip_special_tokens=True)
-    else:
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
-        inputs = {key: value.to(device) for key, value in inputs.items()}
-        outputs = model_obj.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
-        generated = outputs[0][inputs["input_ids"].shape[-1]:]
-        response = tokenizer.decode(generated, skip_special_tokens=True)
-    return parse_first_json_object(response)
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from tools.matrixark_mcp_core import oss_model_memory_segments, semantic_saliency_score
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import oss_model_memory_segments, semantic_saliency_score
 
 
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
@@ -99,6 +59,29 @@ try:  # the implementation lives in matrixark_mcp_core; this module re-exports i
     from .matrixark_mcp_core import normalize_message_indexes
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import normalize_message_indexes
+
+# NOT re-exported, unlike the four names above, and this is the interesting one.
+#
+# matrixark_mcp_core defines `intelligent_memory_segments` too, and the two bodies differ by two
+# dict fields that ONLY this copy sets:
+#
+#     "segment_origin": "semantic_derived_from_events",
+#     "derived_from_context_events": True,
+#
+# Those two fields are read by live code -- matrixark_mcp_context_pack copies them onto pack items
+# in three places, matrixark_local_adapter_retrieve emits them, and
+# matrixark_mcp_local_batch_extract_runtime falls back through `segment_origin` to `detected_by`.
+# So the ORPHAN is the fuller copy here, which is exactly the case the guard in
+# test_an_unreachable_module_does_not_hold_a_diverged_copy warns about and the reason the other two
+# were checked one at a time rather than swept.
+#
+# It also says something about the LIVE path rather than this one: matrixark_mcp_core sets
+# segment_origin="fallback_derived_from_events" on its fallback segment path and sets nothing on
+# the semantic path, so a live semantic segment reaches the pack with no origin at all. Whether
+# that is a hole or a deliberate silence is a question about the pack, not about this module, and
+# adopting these two fields into the live function would change what every pack carries. That is
+# not a consolidation, so it is not done here.
+
 
 def intelligent_memory_segments(messages: list[Json]) -> list[Json]:
     """Segment a batch into salient, event-centric memories.
@@ -142,39 +125,6 @@ def intelligent_memory_segments(messages: list[Json]) -> list[Json]:
         )
     segments.sort(key=lambda item: (-item["saliency_score"], item["topic"]))
     return segments[:12]
-
-
-def semantic_saliency_score(text: str) -> float:
-    lower = text.lower().strip()
-    if not lower:
-        return 0.0
-    filler = {
-        "hi",
-        "hello",
-        "hey",
-        "thanks",
-        "thank you",
-        "ok",
-        "okay",
-        "cool",
-        "great",
-        "sounds good",
-    }
-    compact = re.sub(r"[^a-z0-9 ]+", "", lower).strip()
-    if compact in filler or len(compact) < 8:
-        return 0.0
-    score = 0.2
-    if re.search(r"\b(recursion|base case|merge sort|algorithm|complexity|efficiency|dynamic programming|graph|game)\b", lower):
-        score += 0.55
-    if re.search(r"\b(prefer|favorite|approved|budget|plan|correction|instead|current|remember|important|moved|moving|located|location|live|lives|staying|deadline|owner|owns|reviewer|checklist|decision|decided|require|requires|required|incident|runbook|alert|outage|rollback|metric|latency|p95|p99|sla|policy|control_state|blocked|blocker)\b", lower):
-        score += 0.45
-    if re.search(r"\b(is|means|because|therefore|warning|avoid|must|should|cannot|can|require|requires|required|blocked|blocker)\b", lower):
-        score += 0.2
-    if re.search(r"\b(\d{2,}|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b", lower):
-        score += 0.1
-    if len(tokens(text)) >= 8:
-        score += 0.15
-    return min(score, 1.0)
 
 
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
