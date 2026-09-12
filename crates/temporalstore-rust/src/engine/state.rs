@@ -1364,6 +1364,31 @@ pub(super) struct BucketNode {
     pub(super) dirty: bool,
     #[serde(default)]
     pub(super) deleted: bool,
+    /// The three flags of a per-bucket residency lifecycle that does not exist yet.
+    ///
+    /// They describe a bucket whose metadata is known while its data is not resident, which is
+    /// what a load-on-demand store needs: evict a bucket's data, keep enough to find it again,
+    /// load it back when someone asks. The design being followed has exactly that --
+    /// `SlotStore::LoadSlot` reads a slot's page indexes with `index_->GetSlotPages(slot_id)` and
+    /// loads only those pages, and `Index::EvictSlot` drops the node.
+    ///
+    /// WHAT BLOCKS IT HERE is not the missing function. It is where the page list lives.
+    /// `GetSlotPages` answers from the INDEX, which holds per-slot page metadata whether or not
+    /// the slot is resident. Our equivalent, `bucket_index.bucket_map`, is DERIVED:
+    /// `rebuild_bucket_page_ownership` clears it and rebuilds it by walking
+    /// `collect_model_live_page_entries`, which iterates `strings`, `hashes`, `zsets` and the rest
+    /// -- the resident address maps themselves.
+    ///
+    /// So a bucket's page list is a view of its resident data. Evicting the data destroys the only
+    /// record of which pages were the bucket's, and nothing could load it back. That is why these
+    /// flags are never set, and why eviction in the shipped mode drops CACHED PAGES
+    /// (`invalidate_slot`) and never a bucket node -- see the eviction ceiling recorded on
+    /// `how_long_eviction_takes_to_converge`.
+    ///
+    /// Closing it means giving the index a per-bucket page list that survives the bucket leaving
+    /// memory, which is a durable-format change and not a wiring one. Until then, the recorded
+    /// finding that the bucket index is never evicted (~760 B a key) has no mechanism that could
+    /// evict it.
     pub(super) meta_loaded: bool,
     pub(super) loading: bool,
     pub(super) in_memory: bool,
