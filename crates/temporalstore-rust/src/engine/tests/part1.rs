@@ -8010,14 +8010,15 @@ fn what_apply_storage_lifecycle_walks() {
 /// take the same live-page set -- ownership validation, the compaction utility report, and the
 /// object lifecycle report -- and each used to call `collect_live_page_entries` for its own copy.
 ///
-/// Measured at 4,000 objects, one round walked 9.0x the shard; sharing one walk between those
-/// three takes it to 7.0x. The bound below sits between the two, so losing the sharing fails.
+/// Measured at 4,000 objects, one round walked 9.0x the shard when each report walked for itself.
+/// Sharing one walk across the three took it to 7.0x; giving `object_manager_runtime_report` the
+/// same slice -- and stopping its tail from walking again purely to COUNT eight kinds of entry --
+/// took it to 4.0x. The bound below sits between 4 and 7, so losing any of that sharing fails.
 ///
 /// It is a BOUND and not an equality, unlike `the_object_lifecycle_snapshot_walks_the_shard_once`.
 /// That one owns every walk in its function and can name the exact number; this round also walks
-/// for `object_manager_runtime_report` (2.0x) and for the relocation work itself, and those are
-/// legitimately outside what this change controls. Pinning the total exactly would make this test
-/// fail for unrelated reasons.
+/// for the relocation work itself, which is legitimately outside what these changes control.
+/// Pinning the total exactly would make this test fail for unrelated reasons.
 #[test]
 fn a_compaction_round_shares_one_walk_across_its_live_page_consumers() {
     const RECORDS: usize = 1_000;
@@ -8061,11 +8062,12 @@ fn a_compaction_round_shares_one_walk_across_its_live_page_consumers() {
 
     let multiple = walked as f64 / live_pages as f64;
     assert!(
-        multiple <= 8.0,
+        multiple <= 5.0,
         "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_pages} \
-live pages). Its ownership validation, utility report and object lifecycle report share ONE \
-`collect_live_page_entries`; this was 9.0x when they each walked separately and 7.0x when they \
-share. If a new preamble report needs the live-page set, pass it the existing slice.",
+live pages). Its ownership validation, utility report, object lifecycle report and object-manager \
+report all share ONE `collect_live_page_entries`: 9.0x when each walked for itself, 7.0x with \
+three sharing, 4.0x with all four. If a new preamble report needs the live-page set, pass it the \
+existing slice rather than calling `collect_live_page_entries` again.",
     );
 }
 
@@ -8162,6 +8164,27 @@ fn what_the_compaction_preamble_walks() {
     let walked = crate::engine::live_page_scan_entries();
     total += walked;
     report("object_manager_runtime_report", walked);
+
+    // Split that 2.0x between its two callees rather than inferring which one walks. It calls
+    // exactly these two, and `object_manager::runtime_report` iterates `bucket_index.bucket_map`
+    // directly rather than the live-page set -- so it SHOULD contribute nothing here, and if it
+    // does the assumption is wrong. These two rows are not added to the total above; they are a
+    // breakdown OF it.
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::storage_reporting::bucket_object_page_ownership_report(
+        1, shard, 0, u32::MAX,
+    );
+    report(
+        "  of which: bucket_object_page_ownership",
+        crate::engine::live_page_scan_entries(),
+    );
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::object_manager::runtime_report(shard);
+    report(
+        "  of which: object_manager::runtime_report",
+        crate::engine::live_page_scan_entries(),
+    );
 
     eprintln!(
         "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_pages} live pages)",

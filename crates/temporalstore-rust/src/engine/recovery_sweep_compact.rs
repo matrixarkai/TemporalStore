@@ -734,12 +734,19 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         let before_slabs = collect_live_block_slab_ids(shard);
         let before = compaction_utility_report_from_entries(&self.page_store, shard, &entries);
+        let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
+        // Ordered so the ONE consumer that takes the Vec by value goes last. These are read-only
+        // reports over unchanged state, so the order among them carries no meaning beyond that.
+        let object_manager_before = object_manager_runtime_report_from_entries(
+            shard_id,
+            shard,
+            &entries,
+            start_routing_bucket,
+            end_routing_bucket,
+        );
         let delete_marked_object_ids_before =
             object_lifecycle_report_from_entries(shard_id, shard, entries, &BTreeSet::new(), |_| 0)
                 .delete_marked_object_ids;
-        let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
-        let object_manager_before =
-            object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let bucket_layout_transition_count_before = object_manager_before.layout_transition_count;
         // Start a round, or continue the one a budget cut short.
         //

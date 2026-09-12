@@ -502,8 +502,35 @@ pub(super) fn object_manager_runtime_report(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> ObjectManagerRuntimeReport {
-    let ownership =
-        bucket_object_page_ownership_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
+    object_manager_runtime_report_from_entries(
+        shard_id,
+        shard,
+        &collect_live_page_entries(shard),
+        start_routing_bucket,
+        end_routing_bucket,
+    )
+}
+
+/// The same report, from live-page entries the caller ALREADY has.
+///
+/// This walked the shard TWICE: once for the ownership report below, and once more at the very end
+/// purely to COUNT entries of eight timestamped kinds. Measured at 2.0x the shard
+/// (`what_the_compaction_preamble_walks`), which is why the compaction preamble could not get
+/// below 7.0x while calling the wrapper form.
+pub(super) fn object_manager_runtime_report_from_entries(
+    shard_id: ShardId,
+    shard: &ShardState,
+    entries: &[LiveBlockEntry],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> ObjectManagerRuntimeReport {
+    let ownership = bucket_object_page_ownership_report_from_entries(
+        shard_id,
+        shard,
+        entries,
+        start_routing_bucket,
+        end_routing_bucket,
+    );
     let object_runtime = object_manager::runtime_report(shard);
     let mut report = ObjectManagerRuntimeReport {
         shard_id,
@@ -602,7 +629,7 @@ pub(super) fn object_manager_runtime_report(
         "context_summary",
         "context_compression",
     ];
-    report.packed_timestamped_page_count = collect_live_page_entries(shard)
+    report.packed_timestamped_page_count = entries
         .iter()
         .filter(|entry| TIMESTAMPED_KINDS.contains(&entry.kind.as_ref()))
         .count() as u64;
@@ -616,13 +643,29 @@ pub(super) fn bucket_object_page_ownership_report(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> BucketObjectPageOwnershipReport {
+    bucket_object_page_ownership_report_from_entries(
+        shard_id,
+        shard,
+        &collect_live_page_entries(shard),
+        start_routing_bucket,
+        end_routing_bucket,
+    )
+}
+
+/// The same report, from live-page entries the caller ALREADY has.
+pub(super) fn bucket_object_page_ownership_report_from_entries(
+    shard_id: ShardId,
+    shard: &ShardState,
+    entries: &[LiveBlockEntry],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> BucketObjectPageOwnershipReport {
     let mut report = BucketObjectPageOwnershipReport {
         shard_id,
         first_class_index_present: !shard.bucket_index.bucket_map.is_empty(),
         derived_from_model_maps: shard.bucket_index.bucket_map.is_empty(),
         ..BucketObjectPageOwnershipReport::default()
     };
-    let entries = collect_live_page_entries(shard);
     report.page_ref_count = entries.len();
     for entry in entries {
         let routing_bucket = entry.address.routing_bucket().unwrap_or_default();
