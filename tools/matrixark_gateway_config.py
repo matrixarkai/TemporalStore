@@ -1171,21 +1171,6 @@ SETTINGS.extend([
             "failing hook blocks the operation it was called from. On is the safer default for "
             "an agent hook: a memory write that cannot happen should not stop the work that "
             "produced it."),
-    Setting("skills.dedupe_skill_chunk_embedding", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING",
-            "Dedupe skill chunk embedding", "bool", "1", "restart",
-            "Stores one vector per skill chunk instead of two. A skill chunk used to store the "
-            "SAME vector twice -- once as embedding_type resource_chunk, once as skill_section, "
-            "under the same ref_hash -- and retrieval keys its vector map on ref_hash alone, so "
-            "the second copy only ever overwrote the first with an identical value. About 37% "
-            "of what a skill ingest writes, for nothing. Off restores the second copy."),
-    Setting("skills.dedupe_skill_chunk_text", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_TEXT",
-            "Dedupe skill chunk text", "bool", "1", "restart",
-            "Stores a skill chunk's text once instead of twice. It used to be written byte for "
-            "byte as both resource_chunk and skill_section: measured on a 1.41 MB markdown "
-            "skill, 411 chunks and 411 sections with all 411 section texts identical to a "
-            "chunk's, and resource_chunk was 42.1% of the bytes that ingest wrote. Retrieval "
-            "does not read it -- the skill scan skips resource_chunk and serves the section. "
-            "Off restores the second copy."),
     Setting("storage_engine.index_keyword_limit", "storage_engine", "MATRIXARK_INDEX_KEYWORD_LIMIT",
             "Index keyword limit", "int", "12", "restart",
             "How many terms per chunk reach the lexical index. 12 covers little more than a "
