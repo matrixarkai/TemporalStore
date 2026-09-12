@@ -200,24 +200,17 @@ def _cloud_resource_bucket(args: Json, envelope: Json) -> str:
     return bucket
 
 
-def _cloud_resource_prefix(args: Json, envelope: Json) -> str:
-    prefix = str(
-        args.get("s3_prefix")
-        or envelope.get("metadata", {}).get("s3_prefix")
-        or os.environ.get("MATRIXARK_RESOURCE_S3_PREFIX")
-        or "matrixark/raw"
-    ).strip().strip("/")
-    scope = envelope.get("scope", {}) if isinstance(envelope.get("scope", {}), dict) else {}
-    parts = [
-        prefix,
-        safe_identifier(str(scope.get("account_id") or "acct"), default="acct"),
-        safe_identifier(str(scope.get("tenant_id") or "tenant"), default="tenant"),
-        safe_identifier(str(scope.get("user_id") or "user"), default="user"),
-    ]
-    session_id = str(scope.get("session_id") or "")
-    if session_id:
-        parts.append(safe_identifier(session_id, default="session"))
-    return "/".join(part for part in parts if part)
+# The copy here was missing the mem0 agent segment. The live one appends a safe_identifier of
+# `scope["agent_id"]` between the user and the session when one is supplied -- "per-agent raw-blob
+# isolation", added so that agent-less layouts stay byte-identical -- and this copy went straight
+# from user to session, so every agent shared one raw-blob prefix.
+#
+# Not a live defect: nothing production reaches this module. It is a copy that would have lost the
+# isolation silently on the day it was wired up.
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from tools.matrixark_mcp_core_resource_io import _cloud_resource_prefix
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import _cloud_resource_prefix
 
 
 def _s3_client() -> Any:

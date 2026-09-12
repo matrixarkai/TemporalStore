@@ -53,7 +53,7 @@ from collections import defaultdict
 #: defined in that file, a nine-line duplicate of matrixark_mcp_indexing.ordered_unique, where the
 #: live copies call the shared one. Same pattern again: that module was ALREADY re-exporting two
 #: names from the same live file, with the same comment above them.
-RECORDED_DIVERGED = 46
+RECORDED_DIVERGED = 45
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -61,7 +61,7 @@ RECORDED_DIVERGED = 46
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 58
+RECORDED_SHADOWED = 57
 
 _CACHE: dict[str, object] = {}
 
