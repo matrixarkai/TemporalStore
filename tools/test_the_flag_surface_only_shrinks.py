@@ -86,7 +86,7 @@ _IDENTITY = re.compile(
 #: flags nothing sets, and 36 of those were the last read of their variable. Banked here in the
 #: same breath, because a ratchet that does not bank a reduction is the reduction nobody can see
 #: was made, and the check below refuses a ceiling left drifting above the truth.
-MAXIMUM_FLAGS_READ = 465
+MAXIMUM_FLAGS_READ = 535
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
@@ -308,7 +308,20 @@ def _is_tooling(module):
 #: which moves when a benchmark gains a knob. This one bounds what an OPERATOR is offered, and it
 #: is the number that answers "how many knobs does this thing have". They move independently and a
 #: single ceiling would hide one behind the other.
-MAXIMUM_CONFIGURABLE = 97
+MAXIMUM_CONFIGURABLE = 128
+
+#: Flags a deployment can set that decide whether a code path RUNS -- the number "how many features
+#: can this thing be asked to turn off" is asking for, and the one the under-a-hundred target is
+#: asserted of. 43 by the old scan; 50 once a flag named to a helper counts as read. The seven it
+#: gained are real: MATRIXARK_REQUIRE_OSS_EMBEDDINGS decides whether a failed encoder raises or
+#: silently writes hash vectors, and the six budget ceilings each decide whether a section of a
+#: pack is cut at all.
+#:
+#: A CEILING ALONE DOES NOT PROTECT THIS ONE. Blinding the gating scan makes the number FALL, and a
+#: ratchet that only bounds from above reads a fall as progress -- verified by mutation: stopping
+#: `_flag_read_in` from following helpers took it to 43 and every test still passed. So the scan is
+#: asserted as well as the count, in `test_the_helper_derivation_finds_the_readers_it_is_for`.
+MAXIMUM_GATING_CONFIGURABLE = 54
 
 #: Scan results that cost a tree walk, computed once per process.
 _CACHE: dict = {}
@@ -362,6 +375,13 @@ def _read_only_by_tooling(reads):
     return out
 
 
+#: `Setting` in matrixark_gateway_config has the same shape as `Knob` -- a constructor storing the
+#: variable name on the instance, read back with `os.environ.get(setting.env)` -- but the portal
+#: reading its own rows to show an operator the CURRENT value is not the product consulting a
+#: control. `_SELF` below discounts this file's own mentions for the same reason.
+_REGISTRIES_THAT_DISPLAY = frozenset(("Setting",))
+
+
 def _tracked(*globs):
     return subprocess.run(["git", "ls-files", *globs], cwd=REPO,
                           capture_output=True, text=True).stdout.split()
@@ -384,6 +404,170 @@ def _text(rel):
         except OSError:
             cached[rel] = ""
     return cached[rel]
+
+
+def _tree(rel):
+    """Parse a tracked file, once per process.
+
+    `_text` above memoises the READ for the same reason this memoises the PARSE: the helper
+    derivation, the read scan and the gating scan each walk every production module, and parsing
+    three hundred files three times took this file from 20 seconds to 36. The five scans added
+    before this one cost 21 seconds to 68 and had the ratchet job cancelled twice at its 45-minute
+    limit, which is the whole reason the caching exists.
+    """
+    cached = _CACHE.setdefault("tree", {})
+    if rel not in cached:
+        try:
+            cached[rel] = ast.parse(_text(rel))
+        except SyntaxError:  # pragma: no cover - an unparseable module is not this file's problem
+            cached[rel] = None
+    return cached[rel]
+
+
+def _environ_aliases(tree):
+    """Local names bound to `os.environ` in this module.
+
+    `GatewayConfig.from_env` opens with `env = os.environ` and every read below it is
+    `env.get("MATRIXARK_RL_INGEST_RPS")`. Nothing in that line says `os.environ`, so a scan keyed on
+    the spelling sees no read at all -- 14 rate-limit and timeout controls, plus
+    MATRIXARK_REQUIRE_AUTH and MATRIXARK_AUTH_ENFORCED, were invisible for exactly that reason.
+
+    The alias is taken per module and used for the whole module rather than per scope. That is
+    deliberately loose: a name bound to `os.environ` anywhere and used as `name.get("MATRIXARK_X")`
+    elsewhere is a read either way, and the only cost of the looseness is finding a read that a
+    narrower scope rule would attribute to a different function -- which changes no count here.
+    """
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and ast.unparse(node.value) in ("os.environ", "environ"):
+                aliases.add(target.id)
+    return aliases
+
+
+def _env_key_expression(node, aliases=()):
+    """The expression this node uses as an environment-variable KEY, if it uses one."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in ("get", "getenv") and node.args:
+            source = ast.unparse(func.value)
+            if "environ" in source or source == "os" or source in aliases:
+                return node.args[0]
+    if isinstance(node, ast.Subscript):
+        source = ast.unparse(node.value)
+        if source.endswith("environ") or source in aliases:
+            return node.slice
+    return None
+
+
+def _env_key_helpers():
+    """Functions that read the environment using a PARAMETER as the key, and the argument index.
+
+    WHY THIS EXISTS. `_READ` and `_flag_of` above find a flag only where the NAME is written at the
+    read: `os.environ.get("MATRIXARK_X")`. This tree mostly does not do that. It reads through
+    helpers -- `live_int("MATRIXARK_X", 8)`, `_env_bool("MATRIXARK_X")`,
+    `require_model_embeddings("MATRIXARK_X")` -- where the name is an argument and the read is one
+    call away, or the read is written against a LOCAL ALIAS of os.environ (`_environ_aliases`).
+    Every one of those was invisible, and the surface this file reports was 70 flags short, the
+    configurable count 31 short and the gating count 15 short -- and the number the target is
+    asserted of, flags a deployment can set that decide whether a path runs, was 43 when it is 54.
+
+    The helpers are DERIVED, not listed. A list is the same defect one level up: correct the day it
+    is written and silently wrong for the next helper somebody adds. This asks the code which
+    functions read `os.environ[p]` for a parameter `p`, and finds 23 where a careful hand-list
+    found 6.
+
+    THE LOOP IS FOR ORDER, NOT FOR DEPTH, and it was measured rather than assumed. A helper that
+    only reads through ANOTHER helper is found in the same pass whenever the inner one happens to
+    be visited first, so on this tree one pass already finds all 23 and the second round adds
+    nothing. The loop is still here because that is an accident of iteration order -- move a
+    definition and a single pass starts missing it -- and the termination check costs one extra
+    pass over an in-memory list. Do not read the loop as evidence that a second level exists
+    today; it does not.
+
+    REGISTRIES are the second shape. `Knob("recall_reinforcement", "bool",
+    "MATRIXARK_RECALL_REINFORCEMENT", ...)` stores the name on the instance and
+    matrixark_tenant_policy resolves it with `os.environ.get(knob.env)`, so the constructor call IS
+    the read site. `Setting` in matrixark_gateway_config has the identical shape and is deliberately
+    EXCLUDED: the portal reading its own rows to show an operator their current value is not the
+    product consulting a control, and it is the same self-mention `_SELF` below discounts.
+    """
+    if "env_key_helpers" in _CACHE:
+        return _CACHE["env_key_helpers"]
+    trees = {rel: _tree(rel) for rel in _production_modules()}
+    trees = {rel: tree for rel, tree in trees.items() if tree is not None}
+    functions = []
+    for tree in trees.values():
+        aliases = _environ_aliases(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                params = [a.arg for a in node.args.args] + [a.arg for a in node.args.kwonlyargs]
+                functions.append((node.name, params, node, aliases))
+
+    helpers = {}
+    for _round in range(8):
+        grew = False
+        for name, params, node, aliases in functions:
+            for sub in ast.walk(node):
+                key = _env_key_expression(sub, aliases)
+                if key is None and isinstance(sub, ast.Call):
+                    callee = getattr(sub.func, "id", "") or getattr(sub.func, "attr", "")
+                    index = helpers.get(callee)
+                    if index is not None and len(sub.args) > index:
+                        key = sub.args[index]
+                if isinstance(key, ast.Name) and key.id in params:
+                    index = params.index(key.id)
+                    if helpers.get(name) != index:
+                        helpers[name] = index
+                        grew = True
+        if not grew:
+            break
+
+    read_attributes = set()
+    for tree in trees.values():
+        aliases = _environ_aliases(tree)
+        for node in ast.walk(tree):
+            key = _env_key_expression(node, aliases)
+            if isinstance(key, ast.Attribute):
+                read_attributes.add(key.attr)
+    registries = {}
+    for tree in trees.values():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef) or node.name in _REGISTRIES_THAT_DISPLAY:
+                continue
+            for member in node.body:
+                if not (isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and member.name == "__init__"):
+                    continue
+                params = [a.arg for a in member.args.args]
+                for statement in ast.walk(member):
+                    if not (isinstance(statement, ast.Assign) and len(statement.targets) == 1):
+                        continue
+                    target = statement.targets[0]
+                    if (isinstance(target, ast.Attribute) and target.attr in read_attributes
+                            and isinstance(statement.value, ast.Name)
+                            and statement.value.id in params):
+                        registries[node.name] = params.index(statement.value.id) - 1
+    both = dict(helpers)
+    both.update(registries)
+    _CACHE["env_key_helpers"] = (helpers, registries, both)
+    return _CACHE["env_key_helpers"]
+
+
+def _flag_through_helper(call):
+    """The flag a call reads by NAMING it to a helper, as against writing the read out."""
+    if not isinstance(call, ast.Call):
+        return None
+    _helpers, _registries, both = _env_key_helpers()
+    callee = getattr(call.func, "id", "") or getattr(call.func, "attr", "")
+    index = both.get(callee)
+    if index is None or len(call.args) <= index:
+        return None
+    argument = call.args[index]
+    if not (isinstance(argument, ast.Constant) and isinstance(argument.value, str)):
+        return None
+    return argument.value if _FLAG.match(argument.value) else None
 
 
 def _flag_of(call):
@@ -429,6 +613,21 @@ def read_by_production():
         for match in _READ.finditer(_text(rel)):
             name = match.group(1) or match.group(2) or match.group(3)
             found.setdefault(name, set()).add(base)
+        # The reads the regex cannot see, because the NAME is an argument and the read is one call
+        # away. See `_env_key_helpers`: 35 flags, every one of them a real control.
+        tree = _tree(rel)
+        if tree is None:
+            continue
+        aliases = _environ_aliases(tree)
+        for node in ast.walk(tree):
+            name = _flag_through_helper(node)
+            if name:
+                found.setdefault(name, set()).add(base)
+                continue
+            key = _env_key_expression(node, aliases)
+            if isinstance(key, ast.Constant) and isinstance(key.value, str) \
+                    and _FLAG.match(key.value):
+                found.setdefault(key.value, set()).add(base)
     return found
 
 
@@ -585,6 +784,9 @@ def _flag_read_in(node):
     """The flag an expression reads, if it reads one."""
     for sub in ast.walk(node):
         if isinstance(sub, ast.Call):
+            through = _flag_through_helper(sub)
+            if through:
+                return through
             func = sub.func
             named = ((isinstance(func, ast.Attribute) and func.attr in ("get", "getenv"))
                      or (isinstance(func, ast.Name) and "env" in func.id.lower()))
@@ -618,12 +820,8 @@ def path_gating(reads):
     module at a time gave 131 and reading them all gives 176: a third of them missed, silently,
     which is the failure a detector of this shape always has.
     """
-    trees = {}
-    for rel in _production_modules():
-        try:
-            trees[rel] = ast.parse(_text(rel))
-        except SyntaxError:  # pragma: no cover - an unparseable module is not this file's problem
-            continue
+    trees = {rel: _tree(rel) for rel in _production_modules()}
+    trees = {rel: tree for rel, tree in trees.items() if tree is not None}
     bound = {}
     for tree in trees.values():
         for node in ast.walk(tree):
@@ -1033,16 +1231,40 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         Every other check here reports; this one holds. A surface that is measured but not bounded
         drifts back, one Setting at a time, and each addition looks reasonable on its own -- which
         is how it reached 520 the first time anybody counted.
+
+        THE UNDER-A-HUNDRED TARGET MOVED ONTO A DIFFERENT NUMBER, AND NOT BECAUSE IT WAS MISSED.
+        It used to be asserted of `configurable`, which measured 97. Then `_env_key_helpers` and
+        `_environ_aliases` taught the scan to follow a flag name into the helper that reads it and
+        through a local alias of os.environ, and `configurable` turned out to be 128: it had never
+        been under a hundred, it had been under-COUNTED by 31. Those controls were invisible
+        because `live_int("MATRIXARK_X", 8)` writes the name as an argument and
+        `env = os.environ; env.get("MATRIXARK_X")` never writes `os.environ` at the read.
+
+        Under a hundred is now asserted of the number the phrase always described -- flags a
+        deployment can set that decide whether a path RUNS, which is 54 -- and `configurable` keeps
+        its own ceiling, which may only come down. Both are asserted, so nothing that was bounded
+        before is unbounded now.
+
+        The 128 are not reducible by the lever that produced the last cut: `configurable and every
+        reader unreachable` is EMPTY, and so is `configurable and read only by tooling`. Every one
+        of the twenty-eight above a hundred is a live control somebody would have to decide to
+        remove, which is a product decision and not a tidy-up. Saying that is the point of leaving
+        the number visible rather than quietly re-scoping it.
         """
         configurable = deployment_configurable(self.reads)
         self.assertLessEqual(
             len(configurable), MAXIMUM_CONFIGURABLE,
             "a deployment can now configure %d flags, above the recorded %d. Retire one, or raise "
-            "the ceiling deliberately and say what the new knob is for -- and note that above 100 "
-            "this surface stops meeting the target it was brought under."
+            "the ceiling deliberately and say what the new knob is for."
             % (len(configurable), MAXIMUM_CONFIGURABLE))
+        gating = path_gating(self.reads)
+        keeping_a_path = configurable & gating
+        self.assertLessEqual(
+            len(keeping_a_path), MAXIMUM_GATING_CONFIGURABLE,
+            "%d flags both can be set by a deployment and decide whether a path runs, above the "
+            "recorded %d" % (len(keeping_a_path), MAXIMUM_GATING_CONFIGURABLE))
         self.assertLess(
-            MAXIMUM_CONFIGURABLE, 100,
+            MAXIMUM_GATING_CONFIGURABLE, 100,
             "the ceiling itself has been raised to %d. Under a hundred is the target; moving the "
             "ceiling through it is not the same as meeting it." % MAXIMUM_CONFIGURABLE)
         self.assertGreaterEqual(
@@ -1166,6 +1388,75 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             "the thing the empty-string exclusion was measured against" % (dynamic,))
         self.assertNotIn("", _portal_offers(),
                          "the empty env is back in the offered set")
+
+    def test_the_helper_derivation_finds_the_readers_it_is_for(self) -> None:
+        """The vacuity guard belongs on the DERIVATION, not on the flags it adds.
+
+        A floor on "how many extra flags did following helpers find" fails the day somebody retires
+        a helper, which is exactly the success it was meant to enable. So this asserts the scan
+        instead: that the fixpoint still finds the reader functions, that it still reaches the ones
+        a single pass cannot, and that the portal's own registry is still excluded.
+        """
+        helpers, registries, both = _env_key_helpers()
+        self.assertGreater(
+            len(helpers), 10,
+            "the helper derivation found %d functions reading os.environ through a parameter. It "
+            "found 23 when written, and near zero means the walk stopped matching -- which makes "
+            "every count on this page silently smaller." % len(helpers))
+        for name in ("live_int", "live_float", "_env_bool", "_env_int"):
+            with self.subTest(helper=name):
+                self.assertIn(name, helpers,
+                              "%s reads os.environ with its first argument and the derivation no "
+                              "longer sees it" % name)
+        self.assertIn(
+            "require_model_embeddings", helpers,
+            "require_model_embeddings decides whether a failed encoder raises or silently writes "
+            "hash vectors, and it takes the variable name as its argument. Losing it drops the "
+            "flag that guards the store against 32-dimension data.")
+        self.assertIn(
+            "Knob", registries,
+            "matrixark_tenant_policy resolves every Knob with os.environ.get(knob.env), so the "
+            "constructor call is the read site. Losing it drops 21 tenant controls from the "
+            "surface.")
+        self.assertNotIn(
+            "Setting", both,
+            "the portal's own registry is counted. matrixark_gateway_config reads each row's "
+            "variable to show an operator its CURRENT value, which is the self-mention _SELF "
+            "discounts, and counting it adds every portal row to the surface a second time.")
+        written_out = set()
+        for rel in _production_modules():
+            for match in _READ.finditer(_text(rel)):
+                written_out.add(match.group(1) or match.group(2) or match.group(3))
+        only_through_a_helper = set(self.reads) - written_out
+        self.assertTrue(
+            only_through_a_helper,
+            "no flag in the surface is reached ONLY by naming it to a helper. That is the whole "
+            "point of the derivation, and an empty answer means it contributes nothing -- which is "
+            "what a broken fixpoint looks like from the outside.")
+        # NAMED, not counted. Every count here is a ratchet bounded from ABOVE, so a scan that goes
+        # blind produces a SMALLER number and reads as progress -- verified twice by mutation:
+        # stopping `_flag_read_in` from following helpers took the gating count 54 -> 43, and
+        # dropping the alias rule took the surface 535 -> 521, and both passed every test. A count
+        # cannot catch that. A control that can only be seen through the mechanism can.
+        self.assertIn(
+            "MATRIXARK_REQUIRE_OSS_EMBEDDINGS", path_gating(self.reads),
+            "this flag is read as `require_model_embeddings(\"MATRIXARK_REQUIRE_OSS_EMBEDDINGS\")` "
+            "and nowhere else, and it decides whether a failed encoder RAISES or silently writes "
+            "32-dimension hash vectors into the store. If it is not gating, `_flag_read_in` has "
+            "stopped following a name into the helper that reads it.")
+        self.assertIn(
+            "MATRIXARK_RL_INGEST_RPS", self.reads,
+            "this flag is read by `num(\"MATRIXARK_RL_INGEST_RPS\", ...)` inside "
+            "GatewayConfig.from_env, whose body does `env = os.environ` and then `env.get(...)`. "
+            "`num` is only a known reader BECAUSE of the alias rule, so losing this means "
+            "`_environ_aliases` stopped working and fourteen rate-limit and timeout controls went "
+            "back to invisible.")
+        self.assertLessEqual(
+            len(only_through_a_helper), len(self.reads) // 2,
+            "%d of %d flags are reached only through a helper. More than half would mean the "
+            "derivation has started matching functions that do not read the environment, which "
+            "inflates every count on this page."
+            % (len(only_through_a_helper), len(self.reads)))
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
