@@ -6166,3 +6166,61 @@ fn does_the_periodic_loop_reach_compaction() {
         );
     }
 }
+
+/// Does a bucket dump cost the BUCKETS it was asked for, or the whole shard? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_a_bucket_dump_costs \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// `create_bucket_dump_manifest` takes a list of buckets, and `max_dump_buckets_per_round` exists
+/// to bound how many a round takes. But the manifest is built around `export_index_bytes(shard_id)`
+/// -- the WHOLE shard index, serialised and hashed -- whatever that list contains.
+///
+/// The design being followed dumps per slot: `DumpSlotNotInMemory` reads that slot's marked pages
+/// and metas out of the index and writes them without materialising the bucket, so a dump of one
+/// slot costs one slot.
+///
+/// If the cost here is flat in the number of buckets, then bounding the round by bucket count
+/// bounds the wrong thing, and it is the same shape as the expiry scan and the compaction scan:
+/// the WORK is bounded and the SCAN is not.
+#[test]
+#[ignore]
+fn what_a_bucket_dump_costs() {
+    const KEYS: usize = 20_000;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..KEYS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dumpcost-{index:08}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    // Which buckets exist, so the counts below ask for real ones.
+    let all_buckets = engine
+        .bucket_storage_summaries(1)
+        .into_iter()
+        .map(|summary| summary.routing_bucket)
+        .collect::<Vec<_>>();
+    eprintln!("  keys={KEYS} buckets={}", all_buckets.len());
+    eprintln!("  buckets_asked   dump_ms");
+
+    for count in [1usize, 8, 64, 512] {
+        if count > all_buckets.len() {
+            continue;
+        }
+        let selected = all_buckets.iter().copied().take(count).collect::<Vec<_>>();
+        let started = Instant::now();
+        let manifest = engine
+            .create_bucket_dump_manifest(1, selected)
+            .expect("dump should succeed");
+        let elapsed = started.elapsed().as_millis();
+        eprintln!("  {count:>13}   {elapsed:>7}");
+        // Keep the manifest alive so the work is not optimised away.
+        assert!(!manifest.manifest_id.is_empty());
+    }
+}
