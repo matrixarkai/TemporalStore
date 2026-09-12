@@ -5581,3 +5581,100 @@ fn eviction_opens_its_gate_when_the_cache_is_still_there() {
         eviction.skipped_reason,
     );
 }
+
+/// How long does an expired key survive when the keyspace is large? Prints.
+///
+///   cargo test -p temporalstore-rust --lib how_long_an_expired_key_survives \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// `expires_at_ms` is a `BTreeMap<String, u64>` -- keyed by KEY, with the deadline as the value --
+/// and `expiry_window` walks it in KEY order from a cursor, bounded by a scan budget. The caller
+/// then tests `expires_at <= now` on what came back. So a key whose deadline has passed is found
+/// only when the cursor happens to reach it, and every key that is NOT due is walked and charged
+/// against the same budget on the way.
+///
+/// That makes time-to-expire a function of how many keys carry deadlines, not of how many are
+/// actually due. The design being followed stores TTLs per bucket and keeps a per-bucket MINIMUM,
+/// so a whole bucket that cannot contain anything due is skipped in one comparison and never
+/// loaded.
+///
+/// This measures the consequence directly: a handful of already-expired keys hidden in a large
+/// keyspace of live ones, and how many maintenance rounds pass before they are actually removed.
+/// At 30 s a round, a round count IS a latency.
+#[test]
+#[ignore]
+fn how_long_an_expired_key_survives() {
+    const DUE_KEYS: usize = 10;
+    const MAX_ROUNDS: usize = 60;
+
+    for live_keys in [1_000usize, 10_000, 40_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        {
+            let engine = runtime.engine();
+            // Live keys with a long TTL: never due, but every one of them carries a deadline and
+            // so sits in the map the sweep walks.
+            for index in 0..live_keys {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSetEx {
+                        key: format!("live-{:08}", index),
+                        value: vec![b'v'; 32],
+                        ttl_ms: 3_600_000,
+                    },
+                });
+            }
+            // The keys under test, with a TTL that has already passed by the time the first round
+            // runs. "zzz" so they sort AFTER the live ones -- the cursor has to walk the whole
+            // live set to reach them, which is the cost being measured.
+            for index in 0..DUE_KEYS {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSetEx {
+                        key: format!("zzz-due-{:04}", index),
+                        value: vec![b'v'; 32],
+                        ttl_ms: 1,
+                    },
+                });
+            }
+        }
+
+        let options = StorageManagerOptions::default();
+        // Count what the SWEEP removed, never a read.
+        //
+        // A `StringGet` on an expired key triggers lazy expiry (`remove_if_expired`), so probing
+        // for presence would delete the very keys under measurement and make the sweep look as
+        // though it had found them. The stat counts only what the sweep itself removed.
+        let before = runtime.stats().expired_records_removed;
+        let mut rounds_until_gone: Option<usize> = None;
+        for round in 0..MAX_ROUNDS {
+            runtime.run_storage_manager_once(1, options.clone());
+            let removed = runtime
+                .stats()
+                .expired_records_removed
+                .saturating_sub(before);
+            if removed >= DUE_KEYS as u64 {
+                rounds_until_gone = Some(round + 1);
+                break;
+            }
+        }
+        match rounds_until_gone {
+            Some(rounds) => eprintln!(
+                "  live_keys={live_keys:>6}  expired after {rounds:>3} round(s)  (~{}s at 30s/round)",
+                rounds * 30
+            ),
+            None => eprintln!(
+                "  live_keys={live_keys:>6}  STILL PRESENT after {MAX_ROUNDS} rounds (~{}s)",
+                MAX_ROUNDS * 30
+            ),
+        }
+    }
+}
