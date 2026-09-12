@@ -350,6 +350,12 @@ def _namespace_and_table(args: Json) -> tuple[str, str]:
     )
 
 
+# The abstract reader. It used to be REBOUND immediately below by `class _HookStoreReader(
+# _HookStoreReader)`, the native reader taking its base's name -- which is legal, and meant the two
+# Rust readers further down declared `(_HookStoreReader)` and inherited the NATIVE one instead of
+# this. Harmless only because all three override every member; a method added to the native reader
+# would have been handed to both of them silently, and `isinstance(x, _HookStoreReader)` meant "is
+# the native reader" rather than "is a reader at all".
 class _HookStoreReader:
     name = "unknown"
 
@@ -360,7 +366,7 @@ class _HookStoreReader:
         raise NotImplementedError
 
 
-class _HookStoreReader(_HookStoreReader):
+class _NativeHookStoreReader(_HookStoreReader):
     name = "native"
 
     def __init__(self, args: Json) -> None:
@@ -682,7 +688,7 @@ def query_codex_hook_messages(args: Json) -> Json:
     errors: list[Json] = []
     if backend in {"both", "native"}:
         try:
-            readers.append(("native", _HookStoreReader(args)))
+            readers.append(("native", _NativeHookStoreReader(args)))
         except Exception as exc:
             errors.append({"backend": "native", "error": str(exc)})
     if backend in {"both", "rust", "rust-service"}:

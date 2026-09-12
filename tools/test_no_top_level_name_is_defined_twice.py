@@ -46,6 +46,15 @@ SELF = Path(__file__).name
 
 #: 167 modules when this was written. A floor, so a scan that stops reaching the tree fails here
 #: rather than passing with nothing to look at.
+#: The exempt idiom as source, so the control below does not need a live instance of it.
+IDIOM_SNIPPET = """class C:
+    pass
+
+
+class C(C):
+    pass
+"""
+
 EXPECTED_MODULE_FLOOR = 120
 
 Definition = "ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef"
@@ -141,27 +150,36 @@ class NoTopLevelNameIsDefinedTwiceTest(unittest.TestCase):
             "pass below means nothing" % (len(modules), EXPECTED_MODULE_FLOOR))
 
     def test_the_scan_still_finds_duplicates_and_still_exempts_the_idiom(self) -> None:
-        """Mechanism control, and the only case in the tree that exercises the exemption.
+        """Mechanism control. SYNTHETIC now, for the same reason the overload branch above is.
 
-        `matrixark_http._HookStoreReader` is defined twice, deliberately, the second naming the
-        first as its base. It must be SEEN as a duplicate and then EXEMPTED. If it stops being
-        seen, the scan has stopped finding duplicates and the rule below is vacuous; if it stops
-        being exempted, the exemption has broken and the rule is about to reject a valid idiom.
+        `matrixark_http._HookStoreReader` used to be the one real case: defined twice, the second
+        naming the first as its base. It is gone -- not because the exemption is wrong, but because
+        the exemption answers a narrower question than the one that mattered there.
+
+        WHAT IT ESTABLISHES is that the FIRST definition stays reachable, as the base of the
+        second. True, and enough to say the earlier code is not dead. WHAT IT DOES NOT TOUCH is
+        what the NEXT class inherits. Two more readers below declared `(_HookStoreReader)` meaning
+        the abstract one and got the native one, because by then the name had been rebound, so
+        their MRO ran through an __init__ that opens libtemporalstore.so. Nothing broke -- all
+        three override every member -- but a method added to the native reader would have been
+        handed to both of them silently.
+
+        So the idiom is still valid Python and still exempt; it simply has no instance here any
+        more. Controlled synthetically rather than deleted, because a branch that never runs is a
+        branch nobody notices breaking -- the argument this file already makes for
+        `_is_overload_or_property_pair`.
         """
-        tree = ast.parse((REPO / "tools/matrixark_http.py").read_text(encoding="utf-8"))
-        copies = [n for n in tree.body
-                  if isinstance(n, ast.ClassDef) and n.name == "_HookStoreReader"]
-        self.assertEqual(
-            2, len(copies),
-            "matrixark_http no longer defines _HookStoreReader twice, so nothing in the tree "
-            "exercises the exemption -- point this control at whatever uses the idiom now, or "
-            "drop the exemption if nothing does")
+        snippet = ast.parse(IDIOM_SNIPPET)
+        copies = [n for n in snippet.body if isinstance(n, ast.ClassDef) and n.name == "C"]
+        self.assertEqual(2, len(copies), "the synthetic snippet no longer defines C twice")
         self.assertTrue(
-            extends_the_earlier(copies[1], "_HookStoreReader"),
-            "the second _HookStoreReader no longer names the first in its bases")
+            extends_the_earlier(copies[1], "C"),
+            "a second definition naming the first as its base is no longer recognised, so the "
+            "exemption has broken and the rule is about to reject a valid idiom")
         self.assertNotIn(
             "_HookStoreReader", {name for _, name, _, _ in collect_shadowed()},
-            "the exemption stopped applying to the idiom it was derived for")
+            "matrixark_http defines _HookStoreReader twice again -- see matrixarkai#1584 for why "
+            "the second copy was given its own name rather than exempted")
 
     def test_the_exemption_reads_definition_time_and_not_the_body(self) -> None:
         """Positive control on the classifier, on both sides of the line it draws."""
