@@ -11,6 +11,11 @@ except ImportError:
     from matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
 
 try:  # package path
+    from tools.matrixark_pipeline_task_slim import pipeline_task_footprint_stats
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_pipeline_task_slim import pipeline_task_footprint_stats
+
+try:  # package path
     from tools.matrixark_mcp_embeddings import embedding_cache_stats
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_embeddings import embedding_cache_stats
@@ -877,6 +882,19 @@ class _LocalAdapterDashboardMixin:
             "totals": totals,
             "rows": page,
             "record_count": len(records),
+            # What the STORE holds, against what this page shows, from records already read.
+            #
+            # `totals["async_pipeline"]` is the collapsed view: `_dashboard_rows_for_table` folds
+            # re-stamped rows to the latest one, so forty rows for one task appear as one. That is
+            # right for a page and it is why the page cannot show the footprint -- the number looks
+            # fine precisely because the collapse worked. This reports both, so the saving is
+            # visible rather than invisible. The two knobs that trade this footprint --
+            # collapse_pipeline_task_rows and slim_terminal_pipeline_tasks -- are reported with it,
+            # because a control whose unit is invisible on the same page asks the reader to decide
+            # blind, which is the argument `_footprint_summary` makes in the gateway.
+            #
+            # pipeline_task_footprint_stats computed all of this already and no surface carried it.
+            "pipeline_task_footprint": pipeline_task_footprint_stats(records),
         }
 
     # A response this size is a deliberate ceiling, not a guess: a skill or attachment can be
