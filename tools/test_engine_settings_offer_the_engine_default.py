@@ -29,8 +29,10 @@ present itself as a finding.
 """
 from __future__ import annotations
 
+import io
 import os
 import re
+import sys
 import unittest
 from typing import Dict, Optional
 
@@ -38,6 +40,8 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
 STORAGE_CONFIG = os.path.join(
     REPO, "crates", "temporalstore-rust", "src", "storage_config.rs")
+CONFIG_FILE = os.path.join(REPO, "config", "temporalstore.toml")
+sys.path.insert(0, TOOLS)
 
 _NAME_CONST = re.compile(
     r'pub const (TS_[A-Z0-9_]+)\s*:\s*&str\s*=\s*"([A-Z0-9_]+)"\s*;')
@@ -121,6 +125,80 @@ class EngineSettingsOfferTheEngineDefaultTest(unittest.TestCase):
         self.assertTrue(
             checked, "no engine setting on the portal matched a name in storage_config.rs, so "
                      "this compared nothing at all")
+
+
+#: Keys the shipped config file sets to something OTHER than the engine's default, with the reason.
+#: Not a skip list -- the set is asserted exactly, so a new disagreement fails here and a resolved
+#: one fails too. The file's own header says it "documents and pins the defaults", so a key that
+#: pins something else is either a deliberate deployment choice that should say so, or drift.
+CONFIG_DISAGREES = {
+    # The engine defaults this ON -- a cold scan does not evict warm entries for pages it will not
+    # read again. The file pins it OFF, actively, while its neighbours in the same block
+    # (stream_max_blob_size, compaction_watermark_bytes, page_index_cache_bytes,
+    # block_index_cache_bytes) are all commented out with "0/unset = engine default", which is the
+    # file's convention for leaving the engine alone. So this one line makes every deployment
+    # launched through with_config.sh fill the cache on cold scans, while the portal displays 1.
+    # Unexplained: it reads as an accident rather than a choice, and flipping it is a behaviour
+    # change on the serving path, so it is recorded here for a decision rather than corrected in
+    # passing.
+    "TS_COLD_SCAN_NO_CACHE_FILL": ("1", "0"),
+}
+
+
+class TheShippedConfigMatchesTheEngineTest(unittest.TestCase):
+    """The file a deployment loads must not quietly pin something the engine does not default to.
+
+    `test_the_portal_offers_what_the_engine_uses` above compares the PORTAL against the engine, and
+    that is a different surface from the one a deployment reads. `tools/deploy_config.sh` installs
+    `config/temporalstore.toml` beside `scripts/with_config.sh`, and that script exports every
+    active key before the service starts -- so the file wins over the engine's default and loses to
+    an explicit environment variable. A disagreement there is invisible to the portal check and to
+    the operator, who sees the portal's number.
+    """
+
+    @staticmethod
+    def _file_values():
+        """env var -> the value the shipped file sets ACTIVELY (commented-out keys are not set)."""
+        import matrixark_load_config as loader
+
+        with io.open(CONFIG_FILE, encoding="utf-8") as handle:
+            text = handle.read()
+        by_env = {}
+        for key, env in dict(getattr(loader, "ENV_MAP", {})).items():
+            by_env.setdefault(env, []).append(key)
+        values = {}
+        for env, keys in by_env.items():
+            for key in keys:
+                name = key.split(".", 1)[1]
+                match = re.search(r"^[ \t]*%s[ \t]*=[ \t]*([^#\n]+)" % re.escape(name),
+                                  text, re.M)
+                if match:
+                    values[env] = match.group(1).strip()
+                    break
+        return values
+
+    def test_it_is_comparing_something(self) -> None:
+        """A file whose keys stopped resolving would agree with everything."""
+        shared = set(self._file_values()) & set(_engine_defaults())
+        self.assertGreaterEqual(
+            len(shared), 3,
+            "only %d engine knobs are set actively by the shipped file and resolvable from "
+            "storage_config.rs, so this compares almost nothing" % len(shared))
+
+    def test_the_file_pins_what_the_engine_defaults_to(self) -> None:
+        values = self._file_values()
+        disagreeing = {}
+        for env, engine in _engine_defaults().items():
+            declared = values.get(env)
+            if declared is None:
+                continue
+            if str(declared) != str(engine):
+                disagreeing[env] = (str(engine), str(declared))
+        self.assertEqual(
+            CONFIG_DISAGREES, disagreeing,
+            "the shipped config file pins a value the engine does not default to. Every "
+            "deployment launched through with_config.sh gets the file's value while the portal "
+            "displays the engine's -- so say why here, or make the file agree.")
 
 
 if __name__ == "__main__":
