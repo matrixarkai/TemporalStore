@@ -58,7 +58,19 @@ pub(super) fn compaction_utility_report(
     page_store: &LocalBlockStore,
     shard: &ShardState,
 ) -> ShardCompactionUtilityReport {
-    let entries = collect_live_page_entries(shard);
+    compaction_utility_report_from_entries(page_store, shard, &collect_live_page_entries(shard))
+}
+
+/// The same report, from live-page entries the caller ALREADY has.
+///
+/// `collect_live_page_entries` materializes every live page in the shard. The compaction preamble
+/// builds several reports from that same set, so one walk can serve them all; the wrapper above
+/// keeps the old signature for callers with nothing to share.
+pub(super) fn compaction_utility_report_from_entries(
+    page_store: &LocalBlockStore,
+    shard: &ShardState,
+    entries: &[LiveBlockEntry],
+) -> ShardCompactionUtilityReport {
     let addresses = entries
         .iter()
         .filter(|entry| !entry.deleted)
