@@ -493,20 +493,29 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let hot_limit = request.max_hot_buckets_per_round;
         let cold_limit = request.max_cold_buckets_per_round;
         let scan_budget = Self::expiry_scan_budget(hot_limit.max(cold_limit));
-        let (hot_selected, next_hot_cursor) = crate::engine::expiry_window(
-            &shard.expires_at_ms,
-            request.hot_cursor.as_deref(),
-            hot_limit,
-            scan_budget,
-            |key| record_exists(shard, key),
-        );
-        let (cold_selected, next_cold_cursor) = crate::engine::expiry_window(
-            &shard.expires_at_ms,
-            request.cold_cursor.as_deref(),
-            cold_limit,
-            scan_budget,
-            |key| !record_exists(shard, key),
-        );
+        // Read the DUE keys, not a window of the keyspace that might contain some.
+        //
+        // These windows used to walk `expires_at_ms` in KEY order from a cursor, testing each
+        // deadline as they went, so a key that was not due was still walked and charged against
+        // the budget. That made time-to-expire a function of the keyspace: measured at
+        // keyspace/scan_budget rounds, with ten expired keys behind 10,000 live ones surviving
+        // more than sixty rounds.
+        //
+        // `expiry_by_deadline` orders the same deadlines by deadline, so the due keys are a
+        // PREFIX and the walk stops at the first one in the future. The cursors are no longer
+        // needed for correctness -- a due key is at the front, not somewhere ahead of a cursor --
+        // and the request/report fields are kept so the wire format does not change.
+        crate::engine::ensure_expiry_order(shard);
+        let hot_selected =
+            crate::engine::due_window(shard, now, hot_limit, scan_budget, |key| {
+                record_exists(shard, key)
+            });
+        let cold_selected =
+            crate::engine::due_window(shard, now, cold_limit, scan_budget, |key| {
+                !record_exists(shard, key)
+            });
+        let next_hot_cursor: Option<String> = None;
+        let next_cold_cursor: Option<String> = None;
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
         let mut loaded_for_expire = 0usize;
@@ -531,7 +540,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         expired_records_removed += 1;
                         expired_keys.push(key.clone());
                     } else {
-                        shard.expires_at_ms.remove(key);
+                        crate::engine::clear_expiry(shard, key);
                     }
                 } else {
                     skipped_records = skipped_records.saturating_add(1);

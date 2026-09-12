@@ -3412,18 +3412,27 @@ fn the_periodic_loop_can_evict_when_the_operator_asks() {
 }
 
 #[test]
-fn the_periodic_expire_stage_takes_a_bounded_window_and_resumes_past_it() {
+fn the_periodic_expire_stage_takes_a_bounded_window_each_round() {
     // The periodic loop passed `ShardExpirySweepRequest::default()`, whose limits are 0 -- and the
     // window code says plainly that "zero limits mean no limit". So every tick walked the WHOLE
     // deadline map, hot and cold, for every loaded shard, while the on-demand cycle passed 128 and
     // carried a cursor. Measured by ablation, that stage was 201.5 ms at 20k objects.
     //
-    // The fixture is built to make the CURSOR the thing under test. A first attempt used only
-    // expired keys and passed with resuming disabled -- removing a key deletes it, so the next
-    // round finds the next one whether or not it resumed. The cursor only earns its keep when a
-    // round EXAMINES keys it does not remove: here a long-lived prefix that the window selects
-    // (they exist) but the sweep never deletes (they are not due). Without resuming, every round
-    // re-examines that same prefix and never reaches anything expired.
+    // This test was originally built around a CURSOR, and that mechanism is gone.
+    //
+    // The sweep used to walk the deadlines in KEY order, so a window from the start landed on
+    // whatever sorted first -- live or not -- and only a resuming cursor let later rounds reach
+    // the expired tail. The fixture below still carries a live prefix sorted ahead of the expired
+    // keys because of that.
+    //
+    // Since the deadlines gained a deadline-ordered view, the due keys ARE the front: the live
+    // prefix is never examined, the walk stops at the first deadline in the future, and progress
+    // needs no cursor because removing a due key shrinks the prefix. The live prefix is kept as a
+    // control -- it must still be there afterwards, untouched -- rather than as the obstacle it
+    // used to be.
+    //
+    // What remains worth asserting is the BOUND: one round must take at most its window, and
+    // successive rounds must finish the job.
     const LIVE_PREFIX: usize = 20;
     const EXPIRED: usize = 20;
     const WINDOW: usize = 4;
@@ -3507,29 +3516,45 @@ fn the_periodic_expire_stage_takes_a_bounded_window_and_resumes_past_it() {
         "the shipped default must clear a store smaller than its own per-round bound"
     );
 
-    // Bounded: each round takes a window of live-but-not-due keys and RESUMES past them, so it
-    // eventually reaches the expired tail. Without resuming this stays at 0 for ever.
+    // Bounded, ONE round: the window is what limits it.
+    //
+    // The old form of this assertion ran many rounds and required that they had NOT finished,
+    // which only held because each round wasted its window on live keys it could not remove.
+    // Now a round spends its whole window on due keys, so "not finished yet" is no longer a
+    // statement about the bound -- the bound is what ONE round takes.
     let bounded = runtime_with_a_live_prefix();
     let options = StorageManagerOptions {
         max_expire_hot_buckets_per_round: WINDOW,
         max_expire_cold_buckets_per_round: WINDOW,
         ..StorageManagerOptions::default()
     };
-    let rounds = LIVE_PREFIX / WINDOW + 3;
+    bounded.run_storage_manager_once(1, options.clone());
+    let after_one = bounded.stats().expired_records_removed;
+    assert!(
+        after_one > 0,
+        "a bounded round removed nothing, so the window is not reaching the expired keys at all"
+    );
+    assert!(
+        after_one <= WINDOW as u64,
+        "one bounded round removed {after_one} with a window of {WINDOW} -- the bound is not \
+         binding"
+    );
+
+    // And successive rounds finish the job, so the bound paces the work without stalling it.
+    let rounds = EXPIRED / WINDOW + 3;
     for _ in 0..rounds {
         bounded.run_storage_manager_once(1, options.clone());
     }
     let removed = bounded.stats().expired_records_removed;
-    assert!(
-        removed > 0,
-        "after {rounds} bounded rounds the sweep must have resumed past the {LIVE_PREFIX} \
-         live keys and reached the expired tail, but removed {removed}"
+    assert_eq!(
+        removed, EXPIRED as u64,
+        "after {rounds} further bounded rounds the sweep should have cleared all {EXPIRED} \
+         expired keys, but removed {removed}"
     );
-    assert!(
-        removed < EXPIRED as u64,
-        "a bounded sweep must not clear the whole tail at once -- that would mean the bound \
-         is not binding: removed {removed} of {EXPIRED}"
-    );
+
+    // That equality is also the control on the live prefix: those {LIVE_PREFIX} keys carry no
+    // deadline at all, so removing one would be counted here and push the total ABOVE
+    // {EXPIRED}. Exactly {EXPIRED} means the sweep took the due keys and nothing else.
 }
 
 /// Does the PERIODIC loop -- the one `bin/server.rs` starts -- actually reclaim the logs?
@@ -5677,4 +5702,91 @@ fn how_long_an_expired_key_survives() {
             ),
         }
     }
+}
+
+/// An expired key is removed in a bounded number of rounds, whatever the keyspace.
+///
+/// The sweep used to walk `expires_at_ms` in KEY order from a cursor, testing deadlines as it
+/// went, so a key that was not due was still walked and charged against the round's scan budget.
+/// Time-to-expire was therefore keyspace/scan_budget rounds: ten expired keys behind 10,000 live
+/// ones survived more than sixty rounds, and behind 40,000 they survived just as long.
+///
+/// `expiry_by_deadline` orders the same deadlines by deadline, so the due keys are a PREFIX and
+/// the walk stops at the first one in the future. Measured after the change: one round at 1,000,
+/// 10,000 and 40,000 live keys alike.
+///
+/// This guards the property that matters -- that the bound does not depend on the keyspace -- by
+/// hiding the due keys behind a large live set and sorting them AFTER it, which is exactly the
+/// arrangement the key-ordered scan was worst at.
+#[test]
+fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
+    const LIVE_KEYS: usize = 5_000;
+    const DUE_KEYS: usize = 5;
+    // Generous next to the measured 1, so this fails on a return to keyspace-proportional
+    // latency (which would need ~39 rounds at this size) and not on a round of slack.
+    const ROUND_BUDGET: usize = 3;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..LIVE_KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: format!("live-{index:08}"),
+                    value: vec![b'v'; 16],
+                    ttl_ms: 3_600_000,
+                },
+            });
+        }
+        // "zzz" so the due keys sort AFTER every live one: a key-ordered cursor has to traverse
+        // the whole live set to reach them.
+        for index in 0..DUE_KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: format!("zzz-due-{index:04}"),
+                    value: vec![b'v'; 16],
+                    ttl_ms: 1,
+                },
+            });
+        }
+    }
+
+    // Count what the SWEEP removed. A `StringGet` would expire the key lazily on the way through
+    // and make the sweep look as though it had found it.
+    let before = runtime.stats().expired_records_removed;
+    let options = StorageManagerOptions::default();
+    let mut rounds_used = 0usize;
+    for round in 0..ROUND_BUDGET {
+        runtime.run_storage_manager_once(1, options.clone());
+        rounds_used = round + 1;
+        if runtime
+            .stats()
+            .expired_records_removed
+            .saturating_sub(before)
+            >= DUE_KEYS as u64
+        {
+            break;
+        }
+    }
+
+    let removed = runtime
+        .stats()
+        .expired_records_removed
+        .saturating_sub(before);
+    assert!(
+        removed >= DUE_KEYS as u64,
+        "the sweep removed {removed} of {DUE_KEYS} expired keys in {rounds_used} round(s) behind \
+         {LIVE_KEYS} live ones -- time-to-expire is scaling with the keyspace again"
+    );
 }

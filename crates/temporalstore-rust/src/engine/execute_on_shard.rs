@@ -193,7 +193,7 @@ pub(crate) fn execute_on_shard(
             let expires_at = resolve_now_ms().saturating_add(ttl_ms);
             for record_key in associated_record_keys(&key) {
                 if record_exists_exact(shard, &record_key) {
-                    shard.expires_at_ms.insert(record_key, expires_at);
+                    crate::engine::set_expiry(shard, record_key, expires_at);
                 }
             }
             mutated = true;
@@ -223,7 +223,7 @@ pub(crate) fn execute_on_shard(
             } else {
                 let mut removed = false;
                 for record_key in associated_record_keys(&key) {
-                    if shard.expires_at_ms.remove(&record_key).is_some()
+                    if crate::engine::clear_expiry(shard, &record_key)
                         && record_exists_exact(shard, &record_key)
                     {
                         removed = true;
@@ -325,7 +325,7 @@ pub(crate) fn execute_on_shard(
                 );
                 shard.strings.insert(key.clone(), address);
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
-                shard.expires_at_ms.insert(key.clone(), expires_at);
+                crate::engine::set_expiry(shard, key.clone(), expires_at);
                 // This write sets a value AND a deadline. Recording only the page passes a probe
                 // that asks whether the record said anything, and produces a recovered key that
                 // never expires -- so the deadline is recorded too, already resolved, exactly as
@@ -388,7 +388,7 @@ pub(crate) fn execute_on_shard(
                     shard.strings.insert(key.clone(), address);
                     if let Some(ttl_ms) = ttl_ms {
                         let expires_at = resolve_now_ms().saturating_add(ttl_ms);
-                        shard.expires_at_ms.insert(key.clone(), expires_at);
+                        crate::engine::set_expiry(shard, key.clone(), expires_at);
                         // A conditional write that refreshes a deadline records the refreshed
                         // one. Recording only the page leaves a replay installing the value over
                         // a LAPSED deadline from an earlier record, and the key reads as expired
@@ -404,7 +404,7 @@ pub(crate) fn execute_on_shard(
                             false,
                         );
                     } else {
-                        shard.expires_at_ms.remove(&key);
+                        crate::engine::clear_expiry(shard, &key);
                         // No deadline is equally a result. An object outcome carrying neither a
                         // deadline nor a deletion says exactly that.
                         stage_meta_outcome(
@@ -1926,7 +1926,7 @@ pub(crate) fn execute_on_shard(
             hll::record_change(shard, &key, bucket_ms, value);
             if let Some(ttl_ms) = ttl_ms {
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
-                shard.expires_at_ms.insert(key.clone(), expires_at);
+                crate::engine::set_expiry(shard, key.clone(), expires_at);
                 stage_meta_outcome(
                     shard_id,
                     "object",
@@ -2266,7 +2266,7 @@ pub(crate) fn execute_on_shard(
             }
             if ttl_ms > 0 {
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
-                shard.expires_at_ms.insert(key.clone(), expires_at);
+                crate::engine::set_expiry(shard, key.clone(), expires_at);
                 stage_meta_outcome(
                     shard_id,
                     "object",

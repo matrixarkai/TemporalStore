@@ -8595,3 +8595,78 @@ fn emptied_buckets_are_dropped_without_walking_the_map() {
         "per-write cost grew {growth:.2}x from a 2k to a 20k corpus. This asserts a RATIO and \n         cannot say what caused it: the by-name drop this test was written for is intact \n         (storage_bucket_internals.rs, `Drop buckets this call emptied -- BY NAME`), and \n         the growth reproduces at load 5 and at load 15 alike, so it is neither that walk \n         nor machine noise. Look for other per-write work that scales with the corpus."
     );
 }
+
+/// The two expiry indexes agree after a workload that touches every path that writes one.
+///
+/// `expires_at_ms` (key-ordered, for the point lookup `ttl_ms` needs) and `expiry_by_deadline`
+/// (deadline-ordered, so the due keys are a prefix) hold the same facts twice. They are kept in
+/// step by `set_expiry`/`clear_expiry`, and a mutation site that bypassed those would leave keys
+/// that silently never expire -- the failure mode is invisible from outside, which is why this
+/// asserts the invariant directly rather than asserting on behaviour that happens to depend on it.
+///
+/// The workload is chosen to hit each kind of write: a fresh deadline, a deadline REPLACED by a
+/// second set (the case where the old entry must be removed from the ordered view, not just
+/// overwritten in the map), a deadline removed by a persist without one, and a key deleted
+/// outright.
+#[test]
+fn the_two_expiry_indexes_agree() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    for index in 0..200usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("agree-{index:04}"),
+                value: b"v".to_vec(),
+                ttl_ms: 60_000,
+            },
+        });
+    }
+    // Replace the deadline on half of them: the old (deadline, key) entry has to go.
+    for index in 0..100usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("agree-{index:04}"),
+                value: b"v2".to_vec(),
+                ttl_ms: 120_000,
+            },
+        });
+    }
+    // Drop the deadline entirely by writing without one.
+    for index in 100..150usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("agree-{index:04}"),
+                value: b"v3".to_vec(),
+            },
+        });
+    }
+    // And delete some outright.
+    for index in 150..200usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete {
+                key: format!("agree-{index:04}"),
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    // The denominator: an empty index agrees with an empty index, and proves nothing.
+    assert!(
+        !shard.expires_at_ms.is_empty(),
+        "no deadlines survived the workload, so agreement here is vacuous"
+    );
+    assert_eq!(
+        crate::engine::expiry_index_disagreements(shard),
+        0,
+        "the key-ordered and deadline-ordered expiry indexes disagree: {} deadlines vs {} ordered \
+         entries -- a write path is bypassing set_expiry/clear_expiry",
+        shard.expires_at_ms.len(),
+        shard.expiry_by_deadline.len(),
+    );
+}

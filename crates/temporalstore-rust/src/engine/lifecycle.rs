@@ -916,13 +916,13 @@ impl TemporalEngine {
                 // a lapsed deadline from an earlier record outlives the write that removed it.
                 let Some(expires_at) = item.ttl else {
                     for record_key in super::associated_record_keys(&item.object_key) {
-                        shard.expires_at_ms.remove(&record_key);
+                        crate::engine::clear_expiry(shard, &record_key);
                     }
                     return true;
                 };
                 for record_key in super::associated_record_keys(&item.object_key) {
                     if super::record_exists_exact(shard, &record_key) {
-                        shard.expires_at_ms.insert(record_key, expires_at);
+                        crate::engine::set_expiry(shard, record_key, expires_at);
                     }
                 }
                 true
