@@ -1132,9 +1132,6 @@ SETTINGS.extend([
             "refuses it and requires temporalstore-direct or temporalstore-rust. The refusal "
             "exists because a deployed gateway must never silently fall back to the O(store) "
             "JSONL local backend. For debugging only."),
-    Setting("ingestion.idle_drain_min_interval_ms", "ingestion", "MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS",
-            "Idle drain min interval ms", "int", "1000", "live",
-            'Idle drain minimum interval milliseconds. Defaults to 1000. Read by matrixark_local_adapter_retrieval.'),
     Setting("ingestion.local_binary_vectors", "ingestion", "MATRIXARK_LOCAL_BINARY_VECTORS",
             "Local binary vectors", "bool", "1", "restart",
             "Stores vectors packed rather than as JSON numbers. Within one build the round "
@@ -1142,12 +1139,6 @@ SETTINGS.extend([
             "reader from before this change finds no `vector` on a packed record and carries "
             "on without one -- lost recall, and no error anywhere. Turn it off only while "
             "older readers are still running against the same store."),
-    Setting("ingestion.local_durable_read_cache_block_records", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS",
-            "Local durable read cache block records", "int", "256", "restart",
-            "How many records share one compressed block in the durable read-cache snapshot. "
-            "Measured on this corpus, per-block compression reaches 97% of its ceiling by 256, "
-            "and a cold read decodes one block at a time -- so a larger block buys a ratio the "
-            "store will not notice at memory the read will."),
     Setting("ingestion.local_durable_read_cache_compress", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS",
             "Local durable read cache compress", "bool", "1", "restart",
             "Stores the durable read cache in its compressed container rather than as JSON. "
@@ -1155,17 +1146,6 @@ SETTINGS.extend([
             "loader decides by what the bytes say they are -- so a store written across a "
             "change of this setting reads either way, and anything written before it needs no "
             "migration. It is rewritten in the container on the next full write."),
-    Setting("ingestion.local_durable_read_cache_compress_level", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL",
-            "Local durable read cache compress level", "int", "6", "restart",
-            "The zlib level the snapshot container is written at, clamped to 1-9. It applies "
-            "only where MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS is on, and READING never "
-            "depends on either setting: the loader decides from what the stored form says "
-            "it is, so a store written across a change reads both ways and turning "
-            "compression off again is not a one-way door."),
-    Setting("ingestion.local_durable_read_cache_max_delta", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA",
-            "Local durable read cache max delta", "int", "250", "restart",
-            "Local durable read cache maximum delta. Defaults to 250. Frozen when the process starts. "
-            "Read by matrixark_mcp_local_adapter."),
     Setting("ingestion.local_jsonl_block_log", "ingestion", "MATRIXARK_LOCAL_JSONL_BLOCK_LOG",
             "Local jsonl block log", "bool", "1", "restart",
             "Writes the local log in blocks rather than one record per line. REVERSIBLE: the "
@@ -1180,45 +1160,6 @@ SETTINGS.extend([
             "once never needs unsealing. The codec is a new codec BYTE rather than a new magic, "
             "so a build from before this raises on an unknown codec and the loader answers by "
             "re-deriving from the log."),
-    Setting("ingestion.pre_retrieval_summary_refresh", "ingestion", "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH",
-            "Pre retrieval summary refresh", "bool", "0", "restart",
-            "Refreshes summaries a retrieve is about to read, before serving it. This value is "
-            "the LAST of three: the request's own argument wins, then the tenant ranking "
-            "policy, then this -- so a deployment can leave it off here and still have it on "
-            "for one tenant. How many are refreshed is "
-            "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT (2), which rises to at least 4 for a "
-            "profile-memory query that did not ask for a limit of its own."),
-    Setting("ingestion.rust_proxy_read_lanes", "ingestion", "MATRIXARK_RUST_PROXY_READ_LANES",
-            "Rust proxy read lanes", "int", "4", "live",
-            "How many proxy processes serve reads when each lane group runs its own pool. It "
-            "binds only with MATRIXARK_RUST_PROXY_SHARED_PROCESS off: on -- the default -- "
-            "reads share the single process with writes and control, and this number is read "
-            "and then not used."),
-    Setting("ingestion.rust_proxy_write_lanes", "ingestion", "MATRIXARK_RUST_PROXY_WRITE_LANES",
-            "Rust proxy write lanes", "int", "4", "live",
-            "How many proxy processes serve writes when each lane group runs its own pool. "
-            "Like the read count, it binds only with MATRIXARK_RUST_PROXY_SHARED_PROCESS off. "
-            "That default is deliberate: with the engine embedded in the proxy process, a "
-            "multi-process write pool can hide writes from reads until a real shared server "
-            "sits behind it."),
-    Setting("ingestion.stream_materialize_interval_ms", "ingestion", "MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS",
-            "Stream materialize interval ms", "int", "1500", "restart",
-            "Stream materialize interval milliseconds. Defaults to 1500. Frozen when the process starts. "
-            "Read by matrixark_mcp_server."),
-    Setting("ingestion.summary_refresh_audit", "ingestion", "MATRIXARK_SUMMARY_REFRESH_AUDIT",
-            "Summary refresh audit", "bool", "0", "restart",
-            "Records what each background summary refresh did, and carries the same tracing "
-            "fields onto dirty markers that the summary dirty debug setting adds -- either one "
-            "is enough to turn those on. A refresh pass already costs O(store); this adds a "
-            "durable record of every one."),
-    Setting("ingestion.summary_refresh_max_backoff_ms", "ingestion", "MATRIXARK_SUMMARY_REFRESH_MAX_BACKOFF_MS",
-            "Summary refresh max backoff ms", "int", "300000", "restart",
-            "Summary refresh maximum backoff milliseconds. Defaults to 300000. Frozen when the process "
-            "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("ingestion.summary_refresh_max_duty", "ingestion", "MATRIXARK_SUMMARY_REFRESH_MAX_DUTY",
-            "Summary refresh max duty", "float", "0.2", "restart",
-            "Summary refresh maximum duty. Defaults to 0.2. Frozen when the process starts. Read by "
-            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
     Setting("limits.admin_timeout_ms", "limits", "MATRIXARK_ADMIN_TIMEOUT_MS",
             "Admin timeout ms", "int", "10000", "restart",
             "Admin timeout milliseconds. Defaults to 10000. Frozen when the process starts. Read by "
