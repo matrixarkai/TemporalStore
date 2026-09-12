@@ -129,10 +129,31 @@ def read_by_production():
     return found
 
 
+#: This file, relative to the repository. It NAMES flags in its own prose -- it has to, because a
+#: rule is unreadable without the example that made it -- and its own mention scan reads every
+#: tracked `tools/test_*.py`. So the moment it was committed it credited
+#: `MATRIXARK_BACKFILL_BENCH_RECORDS` and `MATRIXARK_RESOURCE_EVENT_TEXT_CHARS`, the two examples
+#: below, with being selected by a test. Both were then classified `selected` for no reason except
+#: that this file explains them.
+#:
+#: The fourth instance of a guard feeding on its own list in this tree, after mx#910,
+#: `test_no_module_is_orphaned_quietly._SELF`, and the reachability guard that listed unreachable
+#: modules and thereby reached them. It is worth stating as a rule rather than a fix: **a file that
+#: decides about names must not count its own mention of them**, and the way that shows up is a
+#: category getting quietly larger the better the prose gets.
+#:
+#: It also settles a thing that looked tempting: recording examined flags in a dict HERE, so the
+#: candidate count becomes the number nobody has read. Every name written into that dict would
+#: classify itself as selected. The record belongs somewhere this scan does not read.
+_SELF = os.path.join("tools", os.path.basename(__file__))
+
+
 def _selected():
     names = set()
     for rel in _tracked("tools/test_*.py", "config/*", "scripts/*", "*.sh", "tools/*.sh",
                         "docker/*", ".github/*", "docs/*"):
+        if rel == _SELF:
+            continue
         names |= set(_NAME.findall(_text(rel)))
     names |= set(_NAME.findall(_text("tools/matrixark_gateway_config.py")))
     names |= set(_NAME.findall(_text("tools/matrixark_load_config.py")))
@@ -281,6 +302,32 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             len(self.reads), counted,
             "the groups hold %d of %d flags, so the classification is not a partition and the "
             "candidate count below cannot be read" % (counted, len(self.reads)))
+
+    def test_this_file_does_not_credit_its_own_examples(self) -> None:
+        """The rule a guard that lists names has to follow, checked rather than remembered.
+
+        This file names flags in its prose because a rule is unreadable without the example that
+        made it. Its own mention scan reads every tracked `tools/test_*.py`, so without the
+        exclusion those examples classify themselves as selected -- which is how a category grows
+        because somebody improved a comment.
+        """
+        own = set(_NAME.findall(_text(_SELF)))
+        self.assertTrue(
+            own, "this file names no flag at all, so either the prose lost its examples or the "
+                 "scan stopped reading -- and the exclusion below is then hiding nothing")
+        selected = _selected()
+        leaked = sorted(own & selected & set(self.reads))
+        for name in leaked:
+            with self.subTest(flag=name):
+                elsewhere = any(
+                    name in _text(rel)
+                    for rel in _tracked("tools/test_*.py", "config/*", "scripts/*", "*.sh",
+                                        "tools/*.sh", "docker/*", ".github/*", "docs/*")
+                    if rel != _SELF)
+                self.assertTrue(
+                    elsewhere,
+                    "%s is classified as selected and the only thing naming it is this file. "
+                    "The exclusion is not working." % name)
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
