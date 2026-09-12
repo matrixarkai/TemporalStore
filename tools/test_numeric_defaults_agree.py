@@ -108,8 +108,23 @@ KNOWN_DISAGREEMENTS: Dict[str, str] = {
         "tool call. Said in the code at retrieval_deadline_ms.",
 }
 
-# 196 when this was written.
-EXPECTED_NUMERIC_READ_FLOOR = 120
+# A floor on the SCAN, set far from both failure modes rather than near the count.
+#
+# It was 120 against 196 when written, and the population has since fallen to 157 -- not because
+# the scan broke, but because matrixarkai#1540 folded flags nothing could set and matrixarkai#1587
+# gave thirty-two duplicated constants a single definition. Consolidating the forty-three that
+# remain would take it to roughly 114 and breach a floor of 120, which would be this file failing
+# on work that makes disagreement impossible: the same shape that broke
+# `test_flag_readers_agree` and this file's own shared-constant check earlier today.
+#
+# A read-shape scan that has stopped matching finds approximately NOTHING. Sixty is far below
+# anything consolidation reaches one module at a time, and far above zero.
+EXPECTED_NUMERIC_READ_FLOOR = 60
+
+#: And a positive control the count cannot give: matrixark_mcp_runtime_config is where these
+#: constants are being consolidated TO, so its own numeric reads only grow. 38 sites today. If the
+#: scan stops seeing that module it has stopped working, whatever the global count says.
+EXPECTED_RUNTIME_CONFIG_READ_FLOOR = 20
 
 
 def _production_sources() -> List[str]:
@@ -215,6 +230,15 @@ class NumericDefaultsAgreeTest(unittest.TestCase):
             "found %d variables read with a numeric default, expected at least %d -- if the read "
             "shape changed, the assertions below pass on an empty set"
             % (len(reads), EXPECTED_NUMERIC_READ_FLOOR))
+        # The named control. A global count falls when duplication is REMOVED as well as when the
+        # scan breaks; this module's own reads only grow as constants consolidate into it.
+        runtime_sites = sum(1 for entries in reads.values() for entry in entries
+                            if entry[0].endswith("matrixark_mcp_runtime_config.py"))
+        self.assertGreaterEqual(
+            runtime_sites, EXPECTED_RUNTIME_CONFIG_READ_FLOOR,
+            "only %d numeric reads found in matrixark_mcp_runtime_config, which is where these "
+            "constants live; below %d the scan has stopped matching the read shape rather than "
+            "the tree having changed" % (runtime_sites, EXPECTED_RUNTIME_CONFIG_READ_FLOOR))
 
     def test_the_list_has_not_emptied(self) -> None:
         self.assertTrue(
