@@ -201,5 +201,160 @@ class TheShippedConfigMatchesTheEngineTest(unittest.TestCase):
             "displays the engine's -- so say why here, or make the file agree.")
 
 
+ENGINE_SRC = os.path.join(REPO, "crates", "temporalstore-rust", "src")
+
+_READ_SITE = re.compile(r'std::env::var\s*\(\s*"([A-Z0-9_]+)"\s*\)')
+_WORD_SET = re.compile(r'(?:"[a-z0-9]+"\s*\|\s*)+"[a-z0-9]+"')
+_UNWRAP_OR = re.compile(r'\.unwrap_or\s*\(\s*([0-9_]+)\s*\)')
+
+#: The two vocabularies a boolean read compares against, and what each says about the default.
+#: `!matches!(value, "0"|"false"|"no"|"off")` is a flag that OPTS OUT -- unset reads as on. Its
+#: mirror `matches!(value, "1"|"true"|"yes"|"on")` OPTS IN -- unset reads as off. Any other word
+#: set is left uncompared rather than guessed at, which is the rule the const reader above
+#: applies to a non-literal expression.
+_OPT_OUT_WORDS = frozenset(("0", "false", "no", "off"))
+_OPT_IN_WORDS = frozenset(("1", "true", "yes", "on"))
+
+#: A floor for the read-site scan. Set from what it is FOR, not from a measurement: a scan that
+#: stopped recognising the shapes returns approximately nothing, and one that still reads the
+#: tree returns many times this. 20 fails loudly on the first and never tracks the second.
+EXPECTED_READ_SITE_FLOOR = 20
+
+#: Portal settings in the storage_engine section that no engine read site names. Asserted
+#: exactly, so a NEW engine knob arriving on the page without a comparable read fails here
+#: rather than joining a silent majority -- which is what fourteen of the twenty-two were.
+#:
+#: All six are MATRIXARK_ rather than TS_, and that is the reason: they are read by the Python
+#: index writer, not by the Rust engine. They sit in the storage_engine SECTION because that is
+#: what they decide about, not because the engine reads them.
+UNCOMPARED_ENGINE_SETTINGS = (
+    "MATRIXARK_INDEX_KEYWORD_LIMIT",
+    "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS",
+    "MATRIXARK_INDEX_POSTING_LISTS",
+    "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS",
+    "MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING",
+    "MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD",
+)
+
+#: env name -> (what the read site applies, what the portal declares), with the reason beside it.
+#: Asserted exactly in both directions, like CONFIG_DISAGREES above.
+INLINE_DISAGREES = {
+    # The portal says 128000, and so does the PYTHON resolver it was written from:
+    # `matrixark_mcp_runtime_config.DEFAULT_HOOK_MAX_CONTEXT_TOKENS`. The RUST codex context hook
+    # falls back to 1024 at its own read site, in bin/codex_context_hook.rs, so on a deployment
+    # that has not set the variable the budget an agent gets is decided by which hook binary ran
+    # -- 128000 or 1024, a factor of 125.
+    #
+    # The help text on this setting already carries the 10000-against-500000 story the
+    # installation manual creates. This is a THIRD number, and none of that prose mentions it,
+    # because nothing compared the portal against a read site until now. Which fallback is right
+    # for an unconfigured agent hook is a product decision, so it is recorded rather than changed
+    # in a test.
+    "MATRIXARK_HOOK_MAX_CONTEXT_TOKENS": ("1024", "128000"),
+}
+
+
+def _read_site_defaults() -> Dict[str, str]:
+    """env name -> the default its OWN read site applies, for reads outside storage_config.rs.
+
+    `_engine_defaults` above answers for one family: the knobs whose name and default are
+    declared as neighbouring consts. Most engine reads are not in that family -- they call
+    `std::env::var` where they are used and keep the fallback at the call. That is where the
+    other fourteen of the portal twenty-two storage_engine knobs live, and none was compared
+    against anything.
+
+    A name read in more than one place must agree with itself, or it is left out. That rule does
+    real work rather than being careful in the abstract: a `#[cfg(test)]` block that sets a flag
+    and reads it back would otherwise be able to supply the default this compares against.
+    """
+    sites: Dict[str, set] = {}
+    for base, _dirs, files in os.walk(ENGINE_SRC):
+        for name in sorted(files):
+            if not name.endswith(".rs"):
+                continue
+            with io.open(os.path.join(base, name), encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+            for found in _READ_SITE.finditer(text):
+                variable = found.group(1)
+                before = text[max(0, found.start() - 60):found.start()]
+                after = text[found.end():found.end() + 260]
+                value = None
+                if "matches!" in before:
+                    words = _WORD_SET.search(after)
+                    if words:
+                        got = frozenset(part.strip().strip(chr(34))
+                                        for part in words.group(0).split("|"))
+                        if "!matches!" in before and got == _OPT_OUT_WORDS:
+                            value = "1"
+                        elif "!matches!" not in before and got == _OPT_IN_WORDS:
+                            value = "0"
+                else:
+                    number = _UNWRAP_OR.search(after)
+                    if number:
+                        value = str(int(number.group(1).replace("_", "")))
+                if value is not None:
+                    sites.setdefault(variable, set()).add(value)
+    return {variable: next(iter(values))
+            for variable, values in sites.items() if len(values) == 1}
+
+
+class ThePortalIsComparedToTheReadSiteTooTest(unittest.TestCase):
+    """The same question as the first test, asked of the reads that declare no const.
+
+    Eight of the portal twenty-two storage_engine knobs were compared against the engine. The
+    other fourteen sat on the page under the same mirror design and were checked by nothing,
+    because the const reader can only see the family that declares a name const and a default
+    const side by side.
+    """
+
+    def test_the_scan_reads_the_engine(self) -> None:
+        found = _read_site_defaults()
+        self.assertGreaterEqual(
+            len(found), EXPECTED_READ_SITE_FLOOR,
+            "only %d engine read sites resolved to a default, so the comparison below is about "
+            "almost nothing -- the shapes this recognises have probably changed" % len(found))
+
+    def test_it_reaches_the_knobs_the_const_reader_cannot(self) -> None:
+        """A positive control. Agreement is also what a scan that matched nothing reports."""
+        import matrixark_gateway_config as cfgmod
+        consts, sites = _engine_defaults(), _read_site_defaults()
+        reached = [setting.env for setting in cfgmod.SETTINGS
+                   if setting.env in sites and setting.env not in consts]
+        self.assertGreaterEqual(
+            len(reached), 8,
+            "this reaches %d portal settings the const reader does not; it reached twelve when "
+            "it was written, and below eight it has stopped adding coverage: %r"
+            % (len(reached), reached))
+
+    def test_the_portal_offers_what_the_read_site_uses(self) -> None:
+        import matrixark_gateway_config as cfgmod
+        sites = _read_site_defaults()
+        disagreeing = {}
+        for setting in cfgmod.SETTINGS:
+            engine = sites.get(setting.env)
+            if engine is None or str(engine) == str(setting.default):
+                continue
+            disagreeing[setting.env] = (str(engine), str(setting.default))
+        self.assertEqual(
+            INLINE_DISAGREES, disagreeing,
+            "the portal displays a default that the code reading the variable does not apply. An "
+            "operator who has not set it sees this number and gets the other one, so say why "
+            "here, or make them agree.")
+
+    def test_every_engine_setting_is_compared_or_named(self) -> None:
+        import matrixark_gateway_config as cfgmod
+        consts, sites = _engine_defaults(), _read_site_defaults()
+        uncompared = tuple(
+            setting.env for setting in cfgmod.SETTINGS
+            if setting.key.split(".", 1)[0] == "storage_engine"
+            and setting.env not in consts and setting.env not in sites)
+        self.assertEqual(
+            UNCOMPARED_ENGINE_SETTINGS, uncompared,
+            "a storage_engine setting is compared against nothing. The claim the section makes is "
+            "that the page mirrors what the engine does, so either the read is findable and this "
+            "should compare it, or it is not an engine knob and belongs beside the six above "
+            "with the reason why.")
+
+
 if __name__ == "__main__":
     unittest.main()
