@@ -13,8 +13,10 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import Json, MatrixArkError
+    from tools.matrixark_json_lane import lane_response_deadline_s
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
+    from matrixark_json_lane import lane_response_deadline_s
 
 
 def coalesced_batch_hset(target: Any, compact_entries: list[list[str]]) -> None:
@@ -34,7 +36,7 @@ def coalesced_batch_hset(target: Any, compact_entries: list[list[str]]) -> None:
     if became_leader:
         drain_batch_hset_coalescer(target)
     else:
-        timeout_s = max(target._backpressure_timeout_s, target.request_timeout_ms / 1000.0 + 2.0)
+        timeout_s = max(target._backpressure_timeout_s, lane_response_deadline_s(target.request_timeout_ms))
         if not event.wait(timeout=timeout_s):
             raise MatrixArkError(f"Rust TemporalStore batch_hset coalescer timed out after {timeout_s:.1f}s")
     wait_ms = (time.perf_counter() - queued_at) * 1000.0
@@ -145,7 +147,7 @@ def coalesced_matrixark_batch_append_records(
     if became_leader:
         drain_append_coalescer(target)
     else:
-        timeout_s = max(target._backpressure_timeout_s, target.request_timeout_ms / 1000.0 + 2.0)
+        timeout_s = max(target._backpressure_timeout_s, lane_response_deadline_s(target.request_timeout_ms))
         if not event.wait(timeout=timeout_s):
             raise MatrixArkError(f"Rust TemporalStore matrixark append coalescer timed out after {timeout_s:.1f}s")
     wait_ms = (time.perf_counter() - queued_at) * 1000.0
@@ -247,7 +249,7 @@ def coalesced_batch_hget(target: Any, compact_entries: list[list[str]]) -> list[
     if became_leader:
         drain_batch_hget_coalescer(target)
     else:
-        timeout_s = max(target._backpressure_timeout_s, target.request_timeout_ms / 1000.0 + 2.0)
+        timeout_s = max(target._backpressure_timeout_s, lane_response_deadline_s(target.request_timeout_ms))
         if not event.wait(timeout=timeout_s):
             raise MatrixArkError(f"Rust TemporalStore batch_hget coalescer timed out after {timeout_s:.1f}s")
     wait_ms = (time.perf_counter() - queued_at) * 1000.0
