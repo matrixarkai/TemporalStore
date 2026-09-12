@@ -4976,3 +4976,183 @@ fn what_a_page_gc_round_walks() {
         eprintln!("  {round:>5}  {walked:>12}  {retained:>8}  {removed:>7}  {micros:>9}");
     }
 }
+
+/// How many rounds does eviction need to get back under its memory limit? Prints.
+///
+///   cargo test -p temporalstore-rust --lib how_long_eviction_takes_to_converge \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// `apply_storage_eviction` selects up to `eviction_batch_limit` victims, evicts them once, and
+/// returns -- even when the pressure it just measured is still far above the threshold. It reports
+/// `cooldown: pressure_after >= pressure_before`, so it knows when a round freed nothing, and
+/// nothing acts on that. The design being followed loops instead, taking batches until usage is
+/// back under the limit and stopping on a per-call count budget rather than on the first batch.
+///
+/// Each arm builds its OWN store. A first version shared one runtime across both arms, so the
+/// second arm inherited a cache the first had already drained and reported zeros that meant
+/// nothing.
+#[test]
+#[ignore]
+fn how_long_eviction_takes_to_converge() {
+    const KEYS: usize = 4_000;
+    const ROUNDS: usize = 10;
+
+    fn arm(memory_reclaim: bool) {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        {
+            let engine = runtime.engine();
+            for index in 0..KEYS {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("evictconv-{:08}", index),
+                        value: vec![b'v'; 256],
+                    },
+                });
+            }
+            for index in 0..KEYS {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("evictconv-{:08}", index),
+                    },
+                });
+            }
+        }
+        let start = runtime.engine().cache().stats().memory_bytes;
+        let threshold = (start / 4).max(1);
+        eprintln!(
+            "  -- enable_memory_reclaim={memory_reclaim}  start={start}  threshold={threshold} --"
+        );
+        eprintln!("  round  gate_open  before  after  victims  cooldown  skipped");
+
+        let options = StorageManagerOptions {
+            enable_evict: true,
+            enable_memory_reclaim: memory_reclaim,
+            eviction_memory_pressure_threshold: threshold,
+            ..StorageManagerOptions::default()
+        };
+        let mut converged: Option<usize> = None;
+        for round in 0..ROUNDS {
+            // Re-warm before each round, so the question is what EVICTION does with a warm cache
+            // rather than what an earlier stage left behind.
+            let engine = runtime.engine();
+            for index in 0..KEYS {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("evictconv-{:08}", index),
+                    },
+                });
+            }
+            let report = runtime.run_storage_manager_once(1, options.clone());
+            let Some(eviction) = report.eviction.as_ref() else {
+                eprintln!("  {round:>5}  (evict stage did not run)");
+                continue;
+            };
+            eprintln!(
+                "  {round:>5}  {:>9}  {:>6}  {:>5}  {:>7}  {:>8}  {}",
+                eviction.pressure_gate_open,
+                eviction.pressure_before,
+                eviction.pressure_after,
+                eviction.selected_victims.len(),
+                eviction.cooldown,
+                if eviction.skipped_reason.is_empty() {
+                    "-"
+                } else {
+                    eviction.skipped_reason.as_str()
+                },
+            );
+            if eviction.pressure_after < threshold && converged.is_none() {
+                converged = Some(round + 1);
+            }
+        }
+        match converged {
+            Some(n) => eprintln!("  VERDICT: under the limit after {n} round(s)"),
+            None => eprintln!("  VERDICT: still OVER after {ROUNDS} rounds"),
+        }
+    }
+
+    arm(true);
+    arm(false);
+}
+
+/// The round reports what eviction did, including when it declined to do anything.
+///
+/// Every other stage puts its report on `StorageManagerLoopReport`. The evict stage built a full
+/// one -- victims, pressure before and after, `cooldown` for a round that freed nothing, and
+/// `skipped_reason` for a round that never started -- and the loop dropped it, keeping only "did
+/// it run" for `executed_stages`. So the one stage whose purpose is relieving memory was the one
+/// stage whose outcome nobody could see.
+///
+/// That is not cosmetic. On the shipped configuration this stage NEVER opens its gate:
+/// `reclaim_memory` runs earlier in the round and invalidates the whole shard cache, and
+/// eviction's threshold is compared against exactly that cache, so it reads 0 and skips with
+/// `memory_pressure_below_threshold` every time. Measured over ten rounds in
+/// `how_long_eviction_takes_to_converge`. With the report discarded there was no way to learn this
+/// from a running server -- `executed_stages` says "evict" either way.
+#[test]
+fn the_round_reports_what_eviction_did() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    for index in 0..400usize {
+        let engine = runtime.engine();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("evictreport-{:06}", index % 100),
+                value: vec![b'v'; 96],
+            },
+        });
+    }
+
+    // Eviction ships disabled, so without this the stage would not run and the assertion would
+    // be about a round that never reached it.
+    let options = StorageManagerOptions {
+        enable_evict: true,
+        ..StorageManagerOptions::default()
+    };
+    let report = runtime.run_storage_manager_once(1, options);
+
+    assert!(
+        report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "evict"),
+        "the evict stage did not run, so there is no report to carry: {:?}",
+        report.executed_stages
+    );
+    let eviction = report
+        .eviction
+        .as_ref()
+        .expect("the round ran the evict stage but carried no eviction report");
+
+    // A skipped round must say why. `pressure_gate_open` and `skipped_reason` are the two fields
+    // that distinguish "evicted nothing because there was nothing to evict" from "never looked",
+    // and on the shipped configuration it is always the latter.
+    assert!(
+        eviction.pressure_gate_open || !eviction.skipped_reason.is_empty(),
+        "eviction neither opened its gate nor said why it skipped -- the report cannot be acted on"
+    );
+    assert_eq!(
+        eviction.shard_id, 1,
+        "the report belongs to the shard the round ran for"
+    );
+}

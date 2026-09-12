@@ -1193,6 +1193,16 @@ pub struct StorageManagerLoopReport {
     pub compaction_report: Option<CompactionResponse>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gc_report: Option<GcResponse>,
+    /// What the evict stage did, when it ran.
+    ///
+    /// Every other stage reports itself here. This one computed a full report -- the victims it
+    /// picked, the pressure before and after, whether the round relieved anything at all -- and
+    /// the loop dropped it on the floor, keeping only "did it run" for `executed_stages`. So the
+    /// one stage whose whole purpose is relieving memory was also the one stage an operator could
+    /// not see the result of, and `cooldown` (pressure_after >= pressure_before, i.e. the round
+    /// freed nothing) reached nobody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eviction: Option<crate::engine::reports::StorageEvictionReport>,
     pub status: Status,
 }
 
