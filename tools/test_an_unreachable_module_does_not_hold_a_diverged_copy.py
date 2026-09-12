@@ -47,7 +47,13 @@ from collections import defaultdict
 #: STALE side, so the module re-exports matrixark_mcp_core's instead -- which is the pattern that
 #: file already used for `detect_memory_segments` and `build_segment_prompt`, with the comment
 #: "the implementation lives in matrixark_mcp_core; this module re-exports it" written above them.
-RECORDED_DIVERGED = 51
+#:
+#: 51 -> 48 for the three `*_candidates_from_query` functions, whose copies in matrixark_mcp_query
+#: differed from matrixark_mcp_core_query_analysis's by ONE token -- a private `_ordered_unique`
+#: defined in that file, a nine-line duplicate of matrixark_mcp_indexing.ordered_unique, where the
+#: live copies call the shared one. Same pattern again: that module was ALREADY re-exporting two
+#: names from the same live file, with the same comment above them.
+RECORDED_DIVERGED = 48
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -55,7 +61,7 @@ RECORDED_DIVERGED = 51
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 63
+RECORDED_SHADOWED = 60
 
 _CACHE: dict[str, object] = {}
 
