@@ -465,8 +465,28 @@ def _loader_maps():
     return out
 
 
+#: Genuine controls whose ONLY surface is a container's environment block -- no portal Setting, no
+#: ENV_MAP key. Named one at a time, because each is a documentation hole as much as a control: an
+#: operator cannot discover it without reading a compose file.
+#:
+#: A container's `environment:` block is the LAUNCHER supplying a value, which is the same argument
+#: that keeps `scripts/*` out of this number. Counting scripts as launchers and containers as
+#: configuration was an inconsistency in this rule, and it was worth four flags:
+#: MATRIXARK_RUST_SERVICE_PROXY_ADDR ("proxy:17100"), TEMPORALSTORE_HF_READER_HOST,
+#: TEMPORALSTORE_HF_READER_PORT and TEMPORALSTORE_READER_MODEL -- a bind address, a host, a port
+#: and a model name, which are where the process points and what it loads.
+#:
+#: Judged by READING them, not by `_IDENTITY`. That pattern is calibrated for its own group and
+#: over-matches here: it calls MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS identity on `TOKEN` and
+#: MATRIXARK_REQUIRE_MODEL_SUMMARIES identity on `_MODEL_`, and using it would drop seven working
+#: knobs -- a smaller number bought with a miscategorisation.
+CONTAINER_ONLY_CONTROLS = frozenset((
+    "MATRIXARK_ACCESS_MODE",
+))
+
+
 def deployment_configurable(reads):
-    """The configurable surface: 103 of the 464, and the narrowest honest number on this page.
+    """The configurable surface: what the portal offers or the config loader maps.
 
     Every part of it is read from a MECHANISM rather than grepped for flag-shaped words: the `env`
     argument of each `Setting(...)`, the values of `ENV_MAP`, and the environment blocks of the
@@ -498,15 +518,7 @@ def deployment_configurable(reads):
         105   what a deployment's own artefacts     how much is there to CONFIGURE?
               carry
     """
-    names = _portal_offers() | _loader_maps()
-    for rel in _tracked("docker/*"):
-        # A benchmark's compose file is not a deployment artefact. It is the only thing that made
-        # TEMPORALSTORE_READER_BASE_URL look configurable, and two benchmark scripts are all that
-        # read it -- the same argument `tooling only` makes, one directory along.
-        if "benchmark" in rel:
-            continue
-        names |= set(_NAME.findall(_text(rel)))
-    return {name for name in reads if name in names}
+    return {name for name in reads if name in (_portal_offers() | _loader_maps())} | CONTAINER_ONLY_CONTROLS
 
 
 #: The files a DEPLOYMENT is configured from: what the portal offers, what the config loader maps,
@@ -849,6 +861,24 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                 self.assertFalse(
                     [m for m in self.reads[name] if not _is_tooling(m)],
                     "%s is in the tooling group and a product module reads it" % name)
+
+    def test_every_container_only_control_is_still_one(self) -> None:
+        """Each name in CONTAINER_ONLY_CONTROLS must still have no other surface.
+
+        The moment one gains a portal Setting or an ENV_MAP key it is configurable by the rule and
+        the entry is dead weight -- and dead entries are how a hand-written list stops describing
+        the tree. The check fails in both directions.
+        """
+        offered = _portal_offers() | _loader_maps()
+        for name in sorted(CONTAINER_ONLY_CONTROLS):
+            with self.subTest(flag=name):
+                self.assertIn(name, self.reads,
+                              "%s is recorded as a container-only control and production no "
+                              "longer reads it" % name)
+                self.assertNotIn(
+                    name, offered,
+                    "%s now has a portal Setting or an ENV_MAP key, so it is configurable by the "
+                    "rule -- drop the entry rather than counting it twice" % name)
 
     def test_the_configurable_surface_is_the_narrowest_honest_number(self) -> None:
         """105 of 464, and it is a strict subset of the 166 rather than a different measurement.
