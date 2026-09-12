@@ -24,7 +24,11 @@ MODULES = (
     # application's own import order to resolve a cycle, and fail the same way on pristine main.
     "matrixark_mcp_serving_records",
     "matrixark_mcp_core_compact",
-    "matrixark_mcp_latest_context_state",
+    # `matrixark_mcp_latest_context_state` was a third name here. It never implemented the
+    # function -- it imported it for a mixin that nothing inherited, and both went together with
+    # that mixin. A module that does not resolve the name cannot be the one the write path picks
+    # up, so dropping it costs no coverage; the two that CAN disagree are both still here, and
+    # `_resolved_all` below fails if either stops resolving it.
 )
 
 # One per record type that carries an identity, plus one that must not.
