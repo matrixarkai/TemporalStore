@@ -448,19 +448,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
     return item
 
 
-def session_continuity_counts(refs: list[Json]) -> Json:
-    counts: Json = {}
-    for ref in refs:
-        if not isinstance(ref, dict):
-            continue
-        metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
-        value = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
-        if not value:
-            continue
-        counts[value] = int(counts.get(value, 0)) + 1
-    return counts
-
-
 def default_session_continuity_for_pack(refs: list[Json]) -> str:
     counts = session_continuity_counts(refs)
     if not counts:
@@ -569,10 +556,12 @@ def serving_ref_groups_for_pack(
 try:
     from tools.matrixark_mcp_context_pack import (
         selected_ref_count_from_pack,
+        session_continuity_counts,
     )
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_context_pack import (
         selected_ref_count_from_pack,
+        session_continuity_counts,
     )
 
 

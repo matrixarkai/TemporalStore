@@ -140,13 +140,6 @@ def metaserver_reachable(address: str, timeout_ms: int = BACKEND_READINESS_CONNE
         return {"ok": False, "address": address, "error": str(exc)}
 
 
-def require_string(data: Json, field: str) -> str:
-    value = data.get(field)
-    if not isinstance(value, str) or not value:
-        raise MatrixArkError(f"{field} must be a non-empty string")
-    return value
-
-
 def normalize_message_role(role: Any) -> str:
     role_name = str(role or "").strip().lower()
     role_aliases = {
@@ -208,11 +201,13 @@ try:
     from tools.matrixark_mcp_validation import (
         optional_string,
         optional_string_list,
+        require_string,
     )
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_validation import (
         optional_string,
         optional_string_list,
+        require_string,
     )
 
 
