@@ -24,7 +24,11 @@ WHAT IS RECORDED AND WHY THE GROUPS MATTER
 
 Four kinds turned up, and they want different answers:
 
-  * built and unwired -- the interning trio. A product decision: wire it or retire it.
+  * built and PARKED, with the blocking question written down -- the interning pair. Read the
+    comment block above them before deciding anything: it names the measured prize (storage_options
+    is 13.2% of all record bytes) and the reason the write side is off (the JSONL codec's
+    crash-safety argument relies on an ordering the backend does not have). Retiring this deletes
+    measured work whose open question is stated; wiring it needs that question answered first.
   * the unadopted part of a PARTLY-ADOPTED extraction -- `prepare_retrieval_request`,
     `retrieval_ranking_limits`, `prepare_serving_refs`, `merge_refreshed_summary_records`. All four
     modules are imported by production; these are the pieces the live path still does inline. This
@@ -90,9 +94,9 @@ EXPECTED_FILE_FLOOR = 400
 #: tree that no longer exists.
 ONLY_TESTS_CALL = {
     "backend_intern_records":
-        "backend metadata interning, the encoder. A flag, a sidecar record type, a token table and a decoder exist; the two production modules importing matrixark_mcp_temporal_append take only slim_persisted_record. Wire it or retire it -- both are product calls",
+        "backend metadata interning, the encoder. PARKED ON PURPOSE, not forgotten: its own comment block says storage_options is the largest field in the store -- 2,139 KB, 13.2% of all record bytes, nine distinct values across 3,610 rows -- and that INTERN_METADATA_FIELDS already names it while the local JSONL codec already tokenises it, so the optimisation landed on the 7-day mirror and not the durable store. The write side is gated OFF because the codec's crash-safety argument does not carry over: the backend would rely on the engine's batch append being atomic, which that comment calls a different claim and unverified, ending 'Do not flip this default until that is settled.' Retiring it deletes measured work with a written open question",
     "backend_expand_records":
-        "backend metadata interning, the decoder half of the same unwired feature",
+        "backend metadata interning, the decoder. Always on by design -- a store written with the flag ON still reads correctly if it is later turned OFF, the same asymmetry the JSONL codec uses",
     "prepare_retrieval_request":
         "the unadopted part of a PARTLY-ADOPTED extraction. matrixark_mcp_retrieve_request is imported by five production modules; this step is the piece LocalAdapter.retrieve still does inline",
     "prepare_serving_refs":
