@@ -6156,9 +6156,19 @@ fn does_the_periodic_loop_reach_compaction() {
         total_rewritten += rewritten;
         eprintln!("  {round:>5}  {ran:>11}  {rewritten:>19}  {elapsed:>8}");
     }
+    // Does the collector take away the slab each round leaves behind? If it did, the stale
+    // pressure would clear and the next round would have no reason to run. If the count has
+    // climbed with the rounds, compaction is outrunning page GC and that is what sustains it.
+    let slabs_at_end = runtime
+        .engine()
+        .block_store()
+        .slab_ids()
+        .map(|ids| ids.len())
+        .unwrap_or(0);
     eprintln!(
         "  VERDICT: compacted on {rounds_that_compacted} of {ROUNDS} rounds, {total_rewritten} \
-         page refs rewritten, over a store that stopped changing before round 0"
+         page refs rewritten, over a store that stopped changing before round 0; \
+         {slabs_at_end} slabs remain"
     );
     if rounds_that_compacted == 0 {
         eprintln!(
