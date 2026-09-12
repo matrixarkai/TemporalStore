@@ -94,12 +94,89 @@ def every_silent_branch_now_announces():
           "the helper must still count the fallback it takes")
 
 
+def _direct_backend_probe():
+    """A direct backend far enough along to render its own metrics.
+
+    `_backend_prometheus` lives on the mixin and `_ensure_backend_metric_fields` on the adapter
+    that mixes it in, so neither alone can render. Borrowing the real initialiser keeps this
+    honest: a hand-written stub would let the metric pass here while the shipped path skipped it.
+    """
+    import matrixark_mcp_temporal_adapters as adapters
+    import matrixark_temporal_direct_backend as backend
+
+    initialiser = None
+    for name in dir(adapters):
+        candidate = getattr(adapters, name, None)
+        if isinstance(candidate, type) and "_ensure_backend_metric_fields" in candidate.__dict__:
+            initialiser = candidate.__dict__["_ensure_backend_metric_fields"]
+            break
+    if initialiser is None:
+        return None
+    probe = object.__new__(backend._TemporalDirectBackendMixin)
+    probe.__dict__["_adapters_for_test"] = sys.modules[backend._ADAPTERS_MODULE]
+    probe._client = None
+    probe._backend_ready = True
+    probe._backend_label = lambda: "temporalstore-direct"
+    # `_backend_prometheus` calls this itself, so binding it matters more than calling it once.
+    probe._ensure_backend_metric_fields = lambda: initialiser(probe)
+    initialiser(probe)
+    return probe
+
+
+def the_whole_store_fallback_reaches_the_metrics_surface():
+    """Counting it was half the fix. The window this file exists for stayed invisible because the
+    number was reported on no surface at all."""
+    probe = _direct_backend_probe()
+    if probe is None:
+        check(False, "no class defines _ensure_backend_metric_fields, so this rendered nothing")
+        return
+    # Reported through the module object the BACKEND resolved, not the one this file imported.
+    # Both spellings of matrixark_mcp_temporal_adapters load here, because the harness puts the
+    # repository root and tools/ on the path, and each has its own counter. A deployment loads one
+    # and the distinction does not arise; a test that ignores it watches an empty metric and
+    # concludes the wiring is broken, which is exactly what happened while this was written.
+    adapters = probe.__dict__["_adapters_for_test"]
+    adapters._note_full_read_fallback("a_scan_that_gave_up")
+    adapters._note_full_read_fallback("a_scan_that_gave_up")
+    adapters._note_full_read_fallback("a_different_scan")
+    rendered = probe._backend_prometheus()
+
+    check("# TYPE matrixark_full_read_fallbacks_total counter" in rendered,
+          "the fallback counter is not declared on the metrics surface")
+    check('matrixark_full_read_fallbacks_total{backend="native",scan="a_scan_that_gave_up"} 2'
+          in rendered,
+          "the count for a named scan is missing or wrong:\n%s"
+          % "\n".join(l for l in rendered.splitlines() if "full_read_fallbacks" in l))
+    check('scan="a_different_scan"} 1' in rendered,
+          "one series per scan site: which scan gave up is the part that says where to look")
+
+
+def the_counter_is_what_is_being_read():
+    """A positive control. A metric block built from a literal would pass the check above."""
+    probe = _direct_backend_probe()
+    if probe is None:
+        return
+    adapters = probe.__dict__["_adapters_for_test"]
+    before = adapters.full_read_fallback_counts().get("a_control_scan", 0)
+    rendered = probe._backend_prometheus()
+    check('scan="a_control_scan"' not in rendered,
+          "a scan nothing has reported is already on the surface, so this is not reading the "
+          "counter")
+    adapters._note_full_read_fallback("a_control_scan")
+    rendered = probe._backend_prometheus()
+    check('matrixark_full_read_fallbacks_total{backend="native",scan="a_control_scan"} %d'
+          % (before + 1) in rendered,
+          "reporting one more fallback did not change the surface")
+
+
 for test in (
     a_named_fallback_is_counted_without_any_debug_log,
     an_unnamed_fallback_takes_the_calling_functions_name,
     counting_a_fallback_never_raises,
     the_detail_line_still_needs_the_debug_log,
     every_silent_branch_now_announces,
+    the_whole_store_fallback_reaches_the_metrics_surface,
+    the_counter_is_what_is_being_read,
 ):
     test()
     print("  ran %s" % test.__name__)

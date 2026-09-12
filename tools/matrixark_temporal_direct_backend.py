@@ -3,6 +3,8 @@
 """_TemporalDirectBackendMixin methods split from matrixark_mcp_temporal_adapters.MatrixArkTemporalStoreDirectAdapter (mixin)."""
 from __future__ import annotations
 
+import sys as _sys
+
 try:
     from tools.matrixark_mcp_env import env_bool
 except ImportError:  # Direct script execution from tools/.
@@ -21,6 +23,14 @@ try:  # package path
 except ImportError:
     from matrixark_temporal_location_codec import compact_location, compact_location_list
 
+#: Which spelling of `matrixark_mcp_temporal_adapters` THIS process resolved to. Both can be
+#: loaded at once -- the suite puts the repository root and tools/ on the path -- and they
+#: are two module objects with two separate copies of any module-level state. Anything that
+#: reaches back into that module later has to reach the same one, and a symbol's __module__
+#: will not say which: every name imported below is itself re-exported from somewhere else,
+#: so MatrixArkLocalAdapter.__module__ answers matrixark_mcp_local_adapter.
+_ADAPTERS_MODULE = "tools.matrixark_mcp_temporal_adapters"
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
     MatrixArkLocalAdapter,
@@ -36,6 +46,7 @@ try:  # names owned by the parent module
     time,
 )
 except ImportError:
+    _ADAPTERS_MODULE = "matrixark_mcp_temporal_adapters"
     from matrixark_mcp_temporal_adapters import (
     MatrixArkLocalAdapter,
     MatrixArkServiceMetrics,
@@ -275,6 +286,38 @@ class _TemporalDirectBackendMixin:
                     f'matrixark_backend_append_engine_ms{{backend="{backend}"}} {round(self._append_engine_ms_avg(), 3)}',
                 ]
             )
+            # The counter exists, is tested, and was reported nowhere. Its own docstring says why
+            # it was written: "the fallback is otherwise undetectable from outside: a measured
+            # degraded window did TEN whole-corpus reads and wrote nothing at all, and from the
+            # caller it looked like a normal request that was merely slow." A number kept for that
+            # reason and printed on no surface leaves the window just as invisible.
+            #
+            # One series per scan site rather than a total, because which scan gave up is the part
+            # that says where to look; a total only says the store got slower.
+            # Resolved here rather than imported at module scope, for two separate reasons.
+            #
+            # matrixark_mcp_temporal_adapters imports this module back, and the counter is
+            # defined after that point, so a module-level import of the NAME fails on a
+            # partially initialised module -- the same reason expand_record_bundles is
+            # imported inside its caller below.
+            #
+            # And it comes from `_ADAPTERS_MODULE`, the module object this file imported,
+            # rather than a fresh import by name. A fresh `from tools.X import y` reads
+            # whichever spelling that import reaches, which can be the OTHER module object
+            # with its own empty counter -- the metric then renders empty while the count is
+            # being kept a few frames away. That is what this rendered before.
+            adapters = _sys.modules.get(_ADAPTERS_MODULE)
+            fallbacks = adapters.full_read_fallback_counts() if adapters is not None else {}
+            if fallbacks:
+                lines.append(
+                    "# HELP matrixark_full_read_fallbacks_total Scoped scans that gave up and "
+                    "read the whole store instead.")
+                lines.append("# TYPE matrixark_full_read_fallbacks_total counter")
+                for scan, count in sorted(fallbacks.items()):
+                    safe = str(scan).replace("\\", "").replace('"', "").replace("\n", "")
+                    lines.append(
+                        f'matrixark_full_read_fallbacks_total{{backend="{backend}",'
+                        f'scan="{safe}"}} {int(count)}')
             return "\n".join(lines) + "\n"
 
     def backend_metrics(self) -> Json:
