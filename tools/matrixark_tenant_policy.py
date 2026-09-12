@@ -399,7 +399,14 @@ def _validated(policy: Any, *, source: str, tenant: str) -> Json:
 
 
 def _load_file_policies() -> tuple[Json, dict[str, Json]]:
-    """File defaults and per-tenant overrides. `_load_file_users` reads the same file's users."""
+    """File defaults, per-tenant overrides and the per-user overrides in the same file.
+
+    This used to say `_load_file_users` reads the users half. There is no such function --
+    the users live under `users` in this same file and are read below, into the same cache
+    entry, off the same stat. A reader who went looking for that name would find nothing and
+    could reasonably write a second reader of the same file, which is the one thing the
+    single stat and single cache here exist to avoid.
+    """
     path = os.environ.get("MATRIXARK_TENANT_POLICY_PATH", "").strip()
     if not path:
         return {}, {}
