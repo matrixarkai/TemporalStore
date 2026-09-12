@@ -87,9 +87,25 @@ pub(super) struct ShardState {
     /// full sweep, so a fresh process starts from fully recomputed flags.
     #[serde(skip)]
     pub(super) buckets_pending_flag_refresh: BTreeSet<u32>,
-    /// Deadlines, kept in key order so a sweep can resume from its cursor and look at the
-    /// window rather than at everything.
+    /// Deadlines, kept in key order for the point lookup `ttl_ms` needs.
+    ///
+    /// MUTATE THIS THROUGH `set_expiry` / `clear_expiry`, never directly: `expiry_by_deadline`
+    /// below mirrors it and the two must agree. `the_two_expiry_indexes_agree` fails if they
+    /// drift.
     pub(super) expires_at_ms: BTreeMap<String, u64>,
+    /// The same deadlines, DEADLINE-ordered, so the keys that are due are a PREFIX.
+    ///
+    /// Walking `expires_at_ms` in key order to find due keys made time-to-expire a function of
+    /// the keyspace rather than of how many keys were actually due: measured at
+    /// keyspace/scan_budget rounds, so ten expired keys behind 10,000 live ones survived more
+    /// than sixty rounds. Ordered by deadline, finding them costs the number that are due.
+    ///
+    /// The same pair as `SeenSet`'s `by_member`/`by_time`, for the same reason.
+    ///
+    /// Derived, never persisted: it is rebuilt from `expires_at_ms` on first use after a load,
+    /// so no snapshot or wire format changes and an older snapshot needs no migration.
+    #[serde(skip)]
+    pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
     pub(super) strings: HashMap<String, BlockAddress>,
     // Rebuildable from the durable bucket/page index on load; do not duplicate in checkpoints.
     #[serde(default, skip_serializing)]

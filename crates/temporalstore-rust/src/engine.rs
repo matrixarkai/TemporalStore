@@ -3263,6 +3263,100 @@ where
     (selected, next_cursor)
 }
 
+/// How many deadlines disagree between the two expiry indexes. Zero is the invariant.
+///
+/// Exposed so a guard can assert it after a real workload: the two maps are kept in step by
+/// `set_expiry`/`clear_expiry`, and a mutation site that bypassed them would show up here rather
+/// than as keys that silently never expire.
+pub(in crate::engine) fn expiry_index_disagreements(shard: &ShardState) -> usize {
+    let mut disagreements = 0usize;
+    for (key, expires_at) in shard.expires_at_ms.iter() {
+        if !shard
+            .expiry_by_deadline
+            .contains_key(&(*expires_at, key.clone()))
+        {
+            disagreements = disagreements.saturating_add(1);
+        }
+    }
+    for ((expires_at, key), ()) in shard.expiry_by_deadline.iter() {
+        if shard.expires_at_ms.get(key) != Some(expires_at) {
+            disagreements = disagreements.saturating_add(1);
+        }
+    }
+    disagreements
+}
+
+/// Record a deadline for `key`, keeping both expiry indexes in step.
+pub(in crate::engine) fn set_expiry(shard: &mut ShardState, key: String, expires_at: u64) {
+    ensure_expiry_order(shard);
+    if let Some(previous) = shard.expires_at_ms.insert(key.clone(), expires_at) {
+        shard.expiry_by_deadline.remove(&(previous, key.clone()));
+    }
+    shard.expiry_by_deadline.insert((expires_at, key), ());
+}
+
+/// Drop any deadline for `key`. Returns whether there was one.
+pub(in crate::engine) fn clear_expiry(shard: &mut ShardState, key: &str) -> bool {
+    ensure_expiry_order(shard);
+    match shard.expires_at_ms.remove(key) {
+        Some(previous) => {
+            shard.expiry_by_deadline.remove(&(previous, key.to_string()));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Rebuild the deadline-ordered view if a load left it empty.
+///
+/// It carries `#[serde(skip)]`, so a shard restored from a snapshot has the key-ordered map and
+/// not this one. Rebuilding on first use keeps the persisted format unchanged and costs one pass
+/// per load rather than a migration.
+pub(in crate::engine) fn ensure_expiry_order(shard: &mut ShardState) {
+    if shard.expiry_by_deadline.is_empty() && !shard.expires_at_ms.is_empty() {
+        for (key, expires_at) in shard.expires_at_ms.iter() {
+            shard
+                .expiry_by_deadline
+                .insert((*expires_at, key.clone()), ());
+        }
+    }
+}
+
+/// The keys whose deadline has passed, cheapest first, up to `limit` that `keep` accepts.
+///
+/// Due keys are a PREFIX of the deadline-ordered view, so this stops at the first deadline in the
+/// future instead of walking the keyspace. `scan_budget` still bounds the walk, because `keep`
+/// can reject a long run of due keys belonging to the other class.
+pub(in crate::engine) fn due_window<F>(
+    shard: &ShardState,
+    now: u64,
+    limit: usize,
+    scan_budget: usize,
+    keep: F,
+) -> Vec<(String, u64)>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut selected = Vec::new();
+    let mut walked = 0usize;
+    for ((expires_at, key), ()) in shard.expiry_by_deadline.iter() {
+        if *expires_at > now {
+            break;
+        }
+        if limit > 0 && selected.len() >= limit {
+            break;
+        }
+        if scan_budget > 0 && walked >= scan_budget {
+            break;
+        }
+        walked = walked.saturating_add(1);
+        if keep(key.as_str()) {
+            selected.push((key.clone(), *expires_at));
+        }
+    }
+    selected
+}
+
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
     // Use the replay-aware clock: during WAL replay this resolves to the per-record leader
     // timestamp so lazy expiry reproduces the leader's original branch. Using the real
@@ -3326,7 +3420,7 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
 fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
     removed |= mark_bucket_index_object_deleted(shard, key);
-    removed |= shard.expires_at_ms.remove(key).is_some();
+    removed |= clear_expiry(shard, key);
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.hashes.remove(key).is_some();
     removed |= shard.sets.remove(key).is_some();
