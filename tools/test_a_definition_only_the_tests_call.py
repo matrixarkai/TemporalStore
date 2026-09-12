@@ -77,11 +77,11 @@ ONLY_TESTS_CALL = {
     "merge_refreshed_summary_records":
         "an extracted pre-refresh merge; the live path does not call it",
     "full_read_fallback_counts":
-        "counts how often a read fell back to a full read; no surface prints the number",
+        "counts how often a scoped scan gave up and read the whole store. Its docstring says it is 'exposed because the fallback is otherwise undetectable from outside: a measured degraded window did TEN whole-corpus reads and wrote nothing at all'. It was written to make an invisible degradation visible, and nothing reports it, so the degradation is still invisible",
     "embedding_cache_stats":
-        "embedding cache hits and misses; no surface prints the number",
+        "hits, misses, evictions and size, 'so cache behaviour is observable' -- and nothing observes it",
     "secondary_index_bound_stats":
-        "how close the secondary index is to its bound; no surface prints the number, which is a pity given the index is the thing that grows",
+        "live posting counts by scope and ref_type. Its own docstring says 'used by the tests/harness', so this one is an affordance by design rather than a signal that went missing -- read the docstring before filing it as a gap",
     "pipeline_task_footprint_stats":
         "what pipeline tasks cost in the store; no surface prints the number",
     "env_int":
@@ -101,7 +101,7 @@ ONLY_TESTS_CALL = {
     "retrieval_records_cache_key":
         "builds a cache key for retrieval records; nothing caches them by it",
     "skill_ingest_envelope":
-        "wraps a skill for ingestion; the skill ingest path builds its envelope elsewhere",
+        "builds the kind='skill' ingest envelope and its docstring says it is 'for the live import path (ingest_resource_or_skill_if_needed)'. That function IS live, called from matrixark_mcp_local_ingest -- with the envelope the REQUEST carried. 'kind': 'skill' appears in exactly one non-test place, inside this function, so nothing bridges skill DISCOVERY to ingestion: a caller has to send the envelope itself",
     "clear_tenant_policy_cache":
         "a test affordance: resets the tenant policy cache between cases, so a test does not inherit the previous one's policy",
     "_reset_live_cache":
