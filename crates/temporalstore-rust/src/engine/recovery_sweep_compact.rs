@@ -204,19 +204,58 @@ impl TemporalEngine {
         let Some(shard) = shards.get(&shard_id) else {
             return StorageObjectLifecycleReport::default();
         };
-        let ownership = self.validate_shard_page_ownership(shard_id, shard);
-        let mut report = storage_object_lifecycle_report(shard_id, shard);
-        report.owner_mismatch_page_refs = ownership.mismatches.len() as u64;
-        report.missing_owner_page_refs = ownership.missing_owner_page_refs as u64;
+        // ONE walk, three consumers.
+        //
+        // This used to walk the shard THREE times over identical, immutable state: once inside
+        // `validate_shard_page_ownership`, once inside `storage_object_lifecycle_report`, and once
+        // in `collect_live_page_addresses`. Each call to `collect_live_page_entries` materializes
+        // every live page in the shard into a fresh Vec, and measured at 4,000 objects this single
+        // function accounted for 3.0x the shard -- the largest piece of `apply_storage_lifecycle`,
+        // itself 12.0x (`what_each_plan_call_walks`).
+        //
+        // Hoisting is safe HERE in a way it is not across a maintenance round: the read lock is
+        // held for all three, `&ShardState` is immutable throughout, and nothing between them can
+        // change what a walk would find. Elsewhere in the round the stages genuinely mutate
+        // between calls, which is why this is a hoist and not a cache.
+        //
+        // Order matters only because the report CONSUMES the entries: borrow for the two cheap
+        // derivations first, then hand the Vec over last.
+        let entries = collect_live_page_entries(shard);
+
+        let (start_routing_bucket, end_routing_bucket) = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+            .unwrap_or((0, u32::MAX));
+        let ownership = validate_bucket_ownership_index_from_entries(
+            shard_id,
+            shard,
+            &entries,
+            start_routing_bucket,
+            end_routing_bucket,
+        );
+
         // stale_object_ids is the per-slab shortfall of live refs against the slab's own page
         // count, summed. An address naming a slab the store has no report for contributes
         // nothing (the report path gives it page_count 0, so its shortfall saturates to 0).
         let mut live_page_refs_by_slab = BTreeMap::<u64, u64>::new();
-        for address in collect_live_page_addresses(shard) {
+        for entry in &entries {
             *live_page_refs_by_slab
-                .entry(address.block_slab_id)
+                .entry(entry.address.block_slab_id)
                 .or_default() += 1;
         }
+
+        let mut report = object_lifecycle_report_from_entries(
+            shard_id,
+            shard,
+            entries,
+            &BTreeSet::new(),
+            |_| 0,
+        );
+        report.owner_mismatch_page_refs = ownership.mismatches.len() as u64;
+        report.missing_owner_page_refs = ownership.missing_owner_page_refs as u64;
         report.stale_object_ids = block_slab_counts
             .iter()
             .map(|(block_slab_id, _physical_bytes, block_count)| {

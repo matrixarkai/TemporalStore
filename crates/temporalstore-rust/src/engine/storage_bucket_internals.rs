@@ -2763,9 +2763,30 @@ pub(super) fn validate_bucket_ownership_index(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> StoragePageOwnershipValidation {
+    validate_bucket_ownership_index_from_entries(
+        shard_id,
+        shard,
+        &collect_live_page_entries(shard),
+        start_routing_bucket,
+        end_routing_bucket,
+    )
+}
+
+/// The same validation against live-page entries the caller ALREADY has.
+///
+/// `collect_live_page_entries` materializes every live page in the shard, and callers that need
+/// several derived reports were each walking for their own copy. Taking a slice lets one walk
+/// serve all of them. The wrapper above keeps the old signature for callers with nothing to share.
+pub(super) fn validate_bucket_ownership_index_from_entries(
+    shard_id: ShardId,
+    shard: &ShardState,
+    entries: &[LiveBlockEntry],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> StoragePageOwnershipValidation {
     let mut validation = StoragePageOwnershipValidation::default();
-    for entry in collect_live_page_entries(shard) {
-        let expected_object_id = expected_live_page_object_id(shard_id, &entry);
+    for entry in entries {
+        let expected_object_id = expected_live_page_object_id(shard_id, entry);
         let expected_routing_bucket =
             page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
         let expected_page_id = entry.address.page_id();

@@ -7835,6 +7835,71 @@ fn fingerprinting_does_not_scale_with_the_manifest_count() {
     );
 }
 
+/// The object-lifecycle snapshot walks the shard ONCE, not three times.
+///
+/// It derives three things from the live-page set -- page ownership validation, the object
+/// lifecycle report, and the per-slab live-ref counts -- and used to call
+/// `collect_live_page_entries` separately for each. That materializes every live page in the
+/// shard into a fresh Vec, so the call cost 3x the shard, measured by `what_each_plan_call_walks`
+/// as the largest single piece of `apply_storage_lifecycle` (itself 12x).
+///
+/// All three read the SAME `&ShardState` under ONE read lock with nothing mutating between them,
+/// so one walk can serve all three. This pins that. It is deliberately an exact equality rather
+/// than a bound: the number should be the live page count, and a second walk creeping back in is
+/// exactly what this exists to catch.
+#[test]
+fn the_object_lifecycle_snapshot_walks_the_shard_once() {
+    const RECORDS: usize = 1_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("once-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    // Denominator: with no live pages every walk count is 0 and the equality below would hold
+    // for a shard that stored nothing.
+    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+
+    crate::engine::reset_live_page_scan_entries();
+    let report = engine.storage_object_lifecycle_snapshot(1);
+    let walked = crate::engine::live_page_scan_entries();
+
+    // The snapshot must still SAY something -- a call that returned an empty report would walk
+    // once trivially and pass.
+    assert!(
+        report.live_page_refs > 0 || report.live_object_ids > 0,
+        "the snapshot reported nothing, so the walk it did was not the real one: {report:?}",
+    );
+
+    assert_eq!(
+        walked, live_pages,
+        "storage_object_lifecycle_snapshot materialized {walked} live-page entries for a shard \
+holding {live_pages} live pages -- that is {:.1} walks, and it should be exactly one. Its three \
+consumers (ownership validation, the lifecycle report, the per-slab ref counts) share one walk; \
+if a fourth consumer was added, give it the slice rather than its own scan.",
+        walked as f64 / live_pages as f64,
+    );
+}
+
 /// `apply_storage_lifecycle` walks the shard TWELVE times. Which of its pieces? Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_apply_storage_lifecycle_walks -- --ignored --nocapture
