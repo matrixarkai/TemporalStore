@@ -5790,3 +5790,157 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
          {LIVE_KEYS} live ones -- time-to-expire is scaling with the keyspace again"
     );
 }
+
+/// Does a compaction round cost the SHARD or the WORK? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_a_compaction_round_costs \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// #1465 gave compaction a budget of 2,048 page refs a round, and the round CONTINUES on the same
+/// slab rather than re-rolling, so the work each round does is bounded and makes progress. What
+/// that does not bound is the SCAN: the relocation walks `shard.hashes`, `shard.zsets`,
+/// `shard.lists` and `shard.sets` from the start every round, so a page already sitting on the
+/// target slab is still visited before being skipped.
+///
+/// The design being followed bounds the scan too: it walks `page_compaction_max_slots_per_round`
+/// buckets through a PERSISTENT iterator and resumes where it stopped.
+///
+/// This measures the difference the only way that separates them -- run compaction until there is
+/// nothing left to move, then time one more round. Whatever that round costs is scan, not work. If
+/// it grows with the shard, the scan is the cost; if it is flat, the budget already bounds
+/// everything that matters and there is nothing to fix here.
+#[test]
+#[ignore]
+fn what_a_compaction_round_costs() {
+    eprintln!("  keys   converge_rounds   idle_round_ms   moved_on_idle_round");
+    for keys in [2_000usize, 8_000, 32_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..keys {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("compactscan-{:08}", index),
+                    field: "f".to_string(),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+
+        // Compact until a round moves nothing: that is convergence, and everything after it is
+        // pure scan.
+        let mut converge_rounds = 0usize;
+        for _ in 0..64 {
+            let report = engine
+                .compact_shard_pages(1)
+                .expect("compaction should succeed");
+            converge_rounds += 1;
+            if report.rewritten_object_pages == 0 {
+                break;
+            }
+        }
+
+        let started = Instant::now();
+        let idle = engine
+            .compact_shard_pages(1)
+            .expect("compaction should succeed");
+        let idle_ms = started.elapsed().as_millis();
+        eprintln!(
+            "  {keys:>5}   {converge_rounds:>15}   {idle_ms:>13}   {:>19}",
+            idle.rewritten_object_pages
+        );
+    }
+}
+
+/// Does compaction keep re-triggering itself on the PERIODIC path? Prints.
+///
+///   cargo test -p temporalstore-rust --lib does_compaction_retrigger_itself \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// `what_a_compaction_round_costs` shows compaction never reaching a fixed point when called
+/// directly: 64 rounds, every one relocating all 2,000 live page refs. The code says why --
+/// "a round that relocated everything closes, and the next starts fresh" -- so a completed round
+/// drops its continuation state and the next rolls a FRESH slab and moves everything again.
+///
+/// Called directly that is merely wasteful. The question that decides whether it matters is
+/// whether the PERIODIC loop keeps reaching it, because that stage only runs under
+/// `stale_page_pressure` -- and rolling a fresh slab is precisely what leaves the previous one
+/// stale. If compaction manufactures the pressure that triggers compaction, the loop rewrites the
+/// whole live set every round for ever; if the gate shuts after a round or two, the direct-call
+/// behaviour is a curiosity and not a defect.
+///
+/// WRITES NOTHING after the fixture: every round below acts on a store that is not changing, so
+/// any repeated work is the loop's own doing.
+///
+/// MEASURED, and the answer is that this probe CANNOT reach the behaviour: `compact_ran` is false
+/// on every round, with an insert-only fixture and with an overwrite-heavy one alike. The gate
+/// counts stale SLABS, not stale pages, and a couple of thousand small records fit inside one
+/// slab -- so no fixture of this size opens it.
+///
+/// What that establishes: the no-fixed-point behaviour `what_a_compaction_round_costs` measures is
+/// reachable through a DIRECT call -- the on-demand cycle and the operator compact RPC -- and is
+/// NOT demonstrated on the periodic loop. The hypothesis that compaction manufactures the
+/// stale-page pressure that re-triggers compaction is UNPROVEN, not confirmed: reaching it needs a
+/// store spanning several slabs, which this fixture deliberately does not build.
+///
+/// Left in place because the negative is worth keeping: anyone reading the direct-call numbers
+/// will want to know whether the periodic path shares them, and the answer so far is that nobody
+/// has shown it does.
+#[test]
+#[ignore]
+fn does_compaction_retrigger_itself() {
+    const KEYS: usize = 2_000;
+    const ROUNDS: usize = 12;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("retrigger-{:08}", index),
+                    field: "f".to_string(),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+    }
+
+    eprintln!("  round  compact_ran  rewritten_page_refs  round_ms");
+    let options = StorageManagerOptions::default();
+    let mut rounds_that_compacted = 0usize;
+    let mut total_rewritten = 0usize;
+    for round in 0..ROUNDS {
+        let started = Instant::now();
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let elapsed = started.elapsed().as_millis();
+        let ran = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages");
+        let rewritten = report
+            .compaction_report
+            .as_ref()
+            .map(|compaction| compaction.rewritten_object_pages)
+            .unwrap_or(0);
+        if ran {
+            rounds_that_compacted += 1;
+        }
+        total_rewritten += rewritten;
+        eprintln!("  {round:>5}  {ran:>11}  {rewritten:>19}  {elapsed:>8}");
+    }
+    eprintln!(
+        "  VERDICT: compacted on {rounds_that_compacted} of {ROUNDS} rounds, \
+         {total_rewritten} page refs rewritten in total, over a store of {KEYS} that never changed"
+    );
+}
