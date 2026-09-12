@@ -161,47 +161,29 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_serving_records import _record_debug_ref
 
 
-def context_event_timestamp_ms(record: Json) -> int:
-    envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
-    for value in (
-        envelope.get("ingestion_time_ms") if isinstance(envelope, dict) else None,
-        record.get("timestamp_key_ms"),
-        record.get("updated_at_ms"),
-        record.get("created_at_ms"),
-        record.get("event_time_ms"),
-    ):
-        try:
-            timestamp = int(value)
-        except (TypeError, ValueError):
-            continue
-        if timestamp > 0:
-            return timestamp
-    return now_ms()
-
-
-def context_event_time_key(timestamp_ms: int, event_id_hash: Any) -> int:
-    try:
-        event_hash = int(event_id_hash or 0)
-    except (TypeError, ValueError):
-        event_hash = 0
-    disambiguator = stable_hash(f"context_event_time_key:{event_hash}") if event_hash else 0
-    return int(timestamp_ms) * CONTEXT_TIMELINE_FANOUT + (disambiguator % CONTEXT_TIMELINE_FANOUT)
-
-
 # Not defined here: the implementation lives in matrixark_mcp_event_keys and this module carried an
 # identical second copy of each. Every caller importing these names from here is
 # unaffected -- it is the same code, and the free names each body reads are bound the
 # same way in both modules, which is what makes re-exporting a no-op rather than a
 # swap.
+#
+# `context_event_timestamp_ms` and `context_event_time_key` joined them. Checked rather than
+# assumed, because "bound the same way" is the whole of the argument: the two bodies read
+# {Json, now_ms} and {Any, CONTEXT_TIMELINE_FANOUT, stable_hash}, both modules bind every one,
+# CONTEXT_TIMELINE_FANOUT is 1048576 in both, and the pairs return the same value on real input.
 try:
     from tools.matrixark_mcp_event_keys import (
         attach_context_event_time_key,
         attach_context_placement,
+        context_event_time_key,
+        context_event_timestamp_ms,
     )
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_event_keys import (
         attach_context_event_time_key,
         attach_context_placement,
+        context_event_time_key,
+        context_event_timestamp_ms,
     )
 
 
@@ -339,17 +321,6 @@ def materialize_serving_records(record: Json) -> list[Json]:
     return [debug_record, serving]
 
 
-def context_index_timestamp_key(record: Json) -> int:
-    for field in ("timestamp_key_ms", "updated_at_ms", "created_at_ms", "event_time_ms"):
-        try:
-            value = int(record.get(field) or 0)
-        except (TypeError, ValueError):
-            value = 0
-        if value > 0:
-            return value
-    return now_ms()
-
-
 def context_index_posting_bucket(timestamp_ms: int) -> int:
     bucket_ms = max(1, int(SECONDARY_INDEX_POSTING_BUCKET_MS))
     return int(timestamp_ms) - (int(timestamp_ms) % bucket_ms)
@@ -368,10 +339,12 @@ def context_index_posting_bucket(timestamp_ms: int) -> int:
 try:
     from tools.matrixark_mcp_indexing import (
         context_index_ref_hashes,
+        context_index_timestamp_key,
     )
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_indexing import (
         context_index_ref_hashes,
+        context_index_timestamp_key,
     )
 
 
