@@ -212,7 +212,12 @@ def raw_message_marker(
     event_key_hash = int(event_id_hash)
     payload_size = raw_message_payload_size_bytes(message)
     inline_limit = raw_message_max_inline_bytes(target) if max_inline_bytes is None else max(1, int(max_inline_bytes))
-    spill = target.backend in {"s3", "objectstore"} or payload_size > inline_limit
+    # The same decision as `raw_message_should_spill_to_object_store` above, which used to be
+    # written out again here. Only the tests called the named one, so the rule a request
+    # actually took was this copy -- and a fix aimed at the tested function would have
+    # changed nothing that runs.
+    spill = raw_message_should_spill_to_object_store(
+        message, target, max_inline_bytes=inline_limit)
     selected = target
     if spill and selected.backend in KV_INLINE_BACKENDS:
         selected = RawMessageStorageTarget.objectstore()
