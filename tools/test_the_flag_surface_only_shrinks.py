@@ -382,6 +382,67 @@ def read_by_production():
 _SELF = os.path.join("tools", os.path.basename(__file__))
 
 
+#: What a DEPLOYMENT'S OWN ARTEFACTS carry: the portal's writable knobs, the config loader's map,
+#: a config file, a container definition. Deliberately NOT `scripts/*` -- a repo script exporting a
+#: variable before it launches something is the launcher SUPPLYING a value, not an operator
+#: configuring one, and 61 flags are settable only that way.
+def _portal_offers():
+    """Flags the portal actually OFFERS: the `env` argument of each `Setting(...)`.
+
+    Read out of the syntax rather than grepped, because matrixark_gateway_config READS flags of its
+    own and names others in prose, and crediting those to the portal is the same mistake `_SELF`
+    below exists to stop -- a file that decides about names counting its own mention of them.
+    Grepping the file gives 116 configurable; parsing the calls gives 105, and the eleven in the
+    difference are variables that file reads rather than knobs it offers.
+    """
+    offers = set()
+    try:
+        tree = ast.parse(_text("tools/matrixark_gateway_config.py"))
+    except SyntaxError:  # pragma: no cover - a broken portal must not widen the surface
+        return offers
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Setting"):
+            continue
+        if len(node.args) >= 3 and isinstance(node.args[2], ast.Constant):
+            offers.add(node.args[2].value)
+    return offers
+
+
+def deployment_configurable(reads):
+    """The configurable surface: 105 of the 464, and the narrowest honest number on this page.
+
+    `deployment_settable` above counts anything a shipping file writes, scripts included, and gets
+    166. Reading those 61 script-only flags one at a time is what produced this narrower rule:
+    almost all of them are identity and wiring -- MATRIXARK_ACCOUNT_ID, MATRIXARK_API_KEY,
+    MATRIXARK_TENANT_ID, MATRIXARK_USER_ID, the metaserver, the namespace, the table, the prefix,
+    the paths to the Rust CLI, proxy and hook roots. Writing any of them down hard-codes where one
+    deployment points and who it authenticates as. They are not knobs anybody turns; they are how
+    the process is told what it is.
+
+    The portal half is read out of the SYNTAX -- the `env` argument of each `Setting(...)` -- not
+    grepped, because that file reads flags of its own; see `_portal_offers`.
+
+    22 of the 61 match `_IDENTITY` already. The other 39 are identity spellings that pattern does
+    not know -- `_STORE_BASE`, `_HOOK_ROOT`, `_SOCKET`, MATRIXARK_HOME, MATRIXARK_TEAM, TS_ROOT --
+    which is the same thing the note above `_IDENTITY` records happening once before. Widening it
+    is a separate change: it emptied `legacy spelling` last time it was widened, and a group that
+    empties for the wrong reason is how a classification stops saying anything.
+
+    So there are three numbers on this page and they answer three questions:
+
+        464   what production Python reads          has the surface grown?
+        166   what any shipping file writes         what can be set at all?
+        105   what a deployment's own artefacts     how much is there to CONFIGURE?
+              carry
+    """
+    names = _portal_offers()
+    names |= set(_NAME.findall(_text("tools/matrixark_load_config.py")))
+    for rel in _tracked("config/*", "docker/*"):
+        if rel != _SELF:
+            names |= set(_NAME.findall(_text(rel)))
+    return {name for name in reads if name in names}
+
+
 #: The files a DEPLOYMENT is configured from: what the portal offers, what the config loader maps,
 #: and what a config file, a script, a deploy profile, a container definition or a CI workflow
 #: actually writes. Deliberately NOT `docs/*` and NOT `tools/test_*.py` -- a doc telling an operator
@@ -701,6 +762,38 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                 self.assertFalse(
                     [m for m in self.reads[name] if not _is_tooling(m)],
                     "%s is in the tooling group and a product module reads it" % name)
+
+    def test_the_configurable_surface_is_the_narrowest_honest_number(self) -> None:
+        """105 of 464, and it is a strict subset of the 166 rather than a different measurement.
+
+        The 61 in the difference are settable only because a repo script exports them before
+        launching something, and reading them one at a time is what made this rule: they are
+        identity and wiring -- the account, the tenant, the API key, the metaserver, the namespace,
+        the table, the path to the Rust CLI. Not knobs anybody turns.
+        """
+        # The vacuity guard is on the PARSE, not on the result. A `Setting` class that gets
+        # renamed or wrapped makes `_portal_offers` return nothing, and the configurable number
+        # then falls silently -- which is the one way this report can be wrong in the direction
+        # that looks like progress. Asserting the SET is non-empty does not catch it: the loader
+        # and the config files alone still leave 60-odd flags.
+        offers = _portal_offers()
+        self.assertGreater(
+            len(offers), 50,
+            "only %d portal Settings were parsed out of matrixark_gateway_config. Below this the "
+            "Setting call has been renamed or wrapped and the configurable surface is being "
+            "under-reported, which is the failure that looks like a reduction." % len(offers))
+        configurable = deployment_configurable(self.reads)
+        settable = deployment_settable(self.reads)
+        self.assertTrue(configurable, "nothing is configurable, which is what a broken scan says")
+        self.assertTrue(
+            configurable <= settable,
+            "the configurable surface is not a subset of the settable one, so the two rules "
+            "disagree about what a shipping file is: %s"
+            % ", ".join(sorted(configurable - settable)))
+        self.assertLess(
+            len(configurable), len(settable),
+            "every settable flag is also configurable, which would mean scripts/* has stopped "
+            "being excluded and the narrower number has stopped being narrower")
 
     def test_the_deployment_settable_surface_is_reported(self) -> None:
         """The number an operator's question is about, which is not the number at the top.
