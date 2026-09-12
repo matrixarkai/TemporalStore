@@ -103,7 +103,8 @@ ONLY_TESTS_CALL = {
     #   matrixark_temporal_direct_backend, so the degradation it measures is now reported.
     #   embedding_cache_stats -- matrixarkai#1569 put it on the local adapter dashboard.
     #   pipeline_task_footprint_stats -- matrixarkai#1570 put rows against distinct tasks on
-    #   the same dashboard.
+    #   the same dashboard. Third of three, and the third to leave within days of being
+    #   written down, which is the list working rather than the list being wrong.
     #
     # Both entries said the same thing in different words, "written to make something visible and
     # reported nowhere", and both stopped being true within a week of being written down. That is
