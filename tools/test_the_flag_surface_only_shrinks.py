@@ -77,10 +77,11 @@ _IDENTITY = re.compile(
     r"|ACCOUNT|TENANT|NAMESPACE|_ADDR$|METASERVER|_FILE$|_LOG$|_LIB$)")
 
 #: The ceiling. Lower it when you cut; a rise is the failure this file exists for.
-#: 520 on main when this was written. matrixarkai#1540 folds 57 reads of flags nothing sets and
-#: takes it to 481 -- lower this in the same commit that merges it, because a ratchet that does
-#: not bank a reduction is the reduction nobody can see was made.
-MAXIMUM_FLAGS_READ = 520
+#: 520 when this was written, 484 now that matrixarkai#1540 has landed -- it folded 57 reads of
+#: flags nothing sets, and 36 of those were the last read of their variable. Banked here in the
+#: same breath, because a ratchet that does not bank a reduction is the reduction nobody can see
+#: was made, and the check below refuses a ceiling left drifting above the truth.
+MAXIMUM_FLAGS_READ = 484
 
 
 def _tracked(*globs):
