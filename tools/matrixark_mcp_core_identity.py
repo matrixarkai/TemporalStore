@@ -46,14 +46,20 @@ except ImportError:  # Direct script execution from tools/.
 
 
 # Not defined here: the implementation lives in matrixark_mcp_identity and this module carried an
-# identical second copy of each.
+# identical second copy of each -- same body, same docstring, and the free names each body reads
+# are bound the same way in both modules, which is what makes re-exporting a no-op rather than a
+# swap.
 try:
     from tools.matrixark_mcp_identity import (
+        json_text,
         role_allows_scopes,
+        session_scope_mode,
     )
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import (
+        json_text,
         role_allows_scopes,
+        session_scope_mode,
     )
 
 
@@ -72,17 +78,6 @@ def make_api_key(prefix: str = "mk_test") -> str:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
-
-
-def json_text(value: Json) -> Json:
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": json.dumps(value, sort_keys=True),
-            }
-        ]
-    }
 
 
 # One class, not two. This was written out here as well as in matrixark_mcp_errors, and two
@@ -280,18 +275,6 @@ try:  # the implementation lives in matrixark_mcp_identity; this module re-expor
     from .matrixark_mcp_identity import parse_scope_key
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import parse_scope_key
-
-
-def session_scope_mode(query_scope: Json) -> str:
-    mode = str(
-        query_scope.get("_session_scope")
-        or query_scope.get("session_scope")
-        or query_scope.get("_session_filter_mode")
-        or "only"
-    ).strip().lower()
-    if mode in {"prefer", "preferred", "soft", "continuity"}:
-        return "prefer"
-    return "only"
 
 
 def scope_key_matches_query(record_scope_key: str, query_scope: Json, explicit_keys: set[str]) -> bool:
