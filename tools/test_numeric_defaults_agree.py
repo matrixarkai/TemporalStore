@@ -304,6 +304,48 @@ class TheRankingWeightsAreWrittenOnceTest(unittest.TestCase):
                     "a request gets depends on which module served it."
                     % (name, core[name], runtime[name]))
 
+    def test_the_two_modules_agree_about_EVERY_shared_constant(self) -> None:
+        """Not only the two weights. Thirty bare literals are defined in both, pinned by nothing.
+
+        `matrixark_mcp_core` and `matrixark_mcp_runtime_config` define **78** module constants
+        under the same names. Forty-three of those read an environment variable, which is the shape
+        `test_no_new_variable_disagrees_about_its_default` above compares, so those were covered.
+        Thirty are bare literals and five are expressions, and nothing looked at either.
+
+        That split moved recently and not by accident. matrixarkai#1540 folded fifty-seven flags
+        that nothing sets into the value they already produced -- correct on its own terms, and
+        every folded value was compared against pristine main before it shipped -- but a read like
+        `int(os.environ.get("MATRIXARK_DIRECT_WRITE_THROTTLE_MS", "") or "0")` becoming `0` turns a
+        duplication this file could see into one it could not. The values are identical today
+        because the fold could not change them. Keeping them identical is what stopped having a
+        check.
+
+        The two modules are deliberately duplicated -- core says so in its own comment -- so the
+        rule is not "there must not be two". It is that the two must agree, which is exactly what a
+        deliberate duplication needs and the one thing nobody was asserting.
+        """
+        core = self._module_constants("matrixark_mcp_core")
+        runtime = self._module_constants("matrixark_mcp_runtime_config")
+        shared = sorted(set(core) & set(runtime))
+        # A floor from what it is FOR, not from a count. `_module_constants` reads plain literal
+        # assignments only, which is exactly the uncovered set -- the env reads above are the other
+        # guard's business -- so this sees thirty of the seventy-eight names the two modules share.
+        # An extractor that stopped matching returns approximately nothing; ten fails loudly on
+        # that and does not move when a constant is added or folded.
+        self.assertGreater(
+            len(shared), 10,
+            "only %d constants are defined in both modules; the extractor has probably stopped "
+            "recognising them and this compares almost nothing" % len(shared))
+        differ = {name: (core[name], runtime[name])
+                  for name in shared if core[name] != runtime[name]}
+        self.assertEqual(
+            {}, differ,
+            "these constants are defined in BOTH matrixark_mcp_core and "
+            "matrixark_mcp_runtime_config with different values. Both modules are read as the "
+            "default for a deployment that sets nothing, so which one a request gets depends on "
+            "which module served it -- the failure this file's own docstring describes, between "
+            "two modules instead of two readers: %r" % (differ,))
+
     def test_the_signature_defaults_are_the_constants(self) -> None:
         core = self._module_constants("matrixark_mcp_core")
         signature = self._signature_defaults("matrixark_mcp_scoring", "final_recall_score")
