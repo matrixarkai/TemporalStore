@@ -8670,3 +8670,63 @@ fn the_two_expiry_indexes_agree() {
         shard.expiry_by_deadline.len(),
     );
 }
+
+/// What does carrying the page in the WAL record cost? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_carrying_the_page_in_the_record_costs \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// A synchronous write calls `append_value`, which writes the page to the BLOCK STORE with
+/// `append_with_page_metadata` and -- when `block_in_wal()` is on, which is the default -- also
+/// stages those same bytes into the WAL record. The code says why: the single barrier acks on the
+/// WAL fsync and defers the block fsync, so at ack time the block store holds the page in buffers
+/// and nowhere else. Carrying it makes the record self-sufficient.
+///
+/// The design being followed does not carry: `WritePage` puts the page in the oplog, the page
+/// index addresses it THERE (`stage_page.page_info.address = log_id` in `Commit`), reads serve
+/// from the oplog via `ReadPage`, and the dump is what moves it into the page store. One copy,
+/// moved later, rather than two copies at once.
+///
+/// So the comparison is not "they batch and we do not" -- it is where the page lives between the
+/// write and the dump. This prints what the carry costs on both sides of the log.
+#[test]
+#[ignore]
+fn what_carrying_the_page_in_the_record_costs() {
+    const WRITES: usize = 2_000;
+
+    fn run(carry: bool, value_len: usize) -> (u64, u64) {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        if !carry {
+            engine.block_store().stop_putting_pages_in_the_log_for_test();
+        }
+        for index in 0..WRITES {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("walcarry-{index:07}"),
+                    value: vec![b'v'; value_len],
+                },
+            });
+        }
+        let wal_bytes = engine.write_ahead_log_store().stats(1).bytes_written;
+        let block_bytes = engine
+            .block_store()
+            .slab_ids()
+            .map(|ids| ids.len() as u64)
+            .unwrap_or(0);
+        (wal_bytes, block_bytes)
+    }
+
+    eprintln!("  value_b   carried_wal_b   uncarried_wal_b   ratio");
+    for value_len in [64usize, 256, 1024] {
+        let (carried, _) = run(true, value_len);
+        let (uncarried, _) = run(false, value_len);
+        let ratio = if uncarried == 0 {
+            0.0
+        } else {
+            carried as f64 / uncarried as f64
+        };
+        eprintln!("  {value_len:>7}   {carried:>13}   {uncarried:>15}   {ratio:>5.2}x");
+    }
+}
