@@ -25,9 +25,16 @@ WHAT IS RECORDED AND WHY THE GROUPS MATTER
 Four kinds turned up, and they want different answers:
 
   * built and unwired -- the interning trio. A product decision: wire it or retire it.
-  * an extracted step nobody adopted -- `prepare_retrieval_request`, `retrieval_ranking_limits`,
-    `prepare_serving_refs`, `merge_refreshed_summary_records`. This tree does that repeatedly, and
-    the danger is the extraction quietly becoming the WEAKER copy while the inline original drifts.
+  * the unadopted part of a PARTLY-ADOPTED extraction -- `prepare_retrieval_request`,
+    `retrieval_ranking_limits`, `prepare_serving_refs`, `merge_refreshed_summary_records`. All four
+    modules are imported by production; these are the pieces the live path still does inline. This
+    is the group to be most careful with, and my first note on them read "the live path does not
+    call it", which invites exactly the wrong action. Read
+    `test_a_tenant_override_reaches_the_extracted_ranking_limits` first: it calls its module "a
+    partly-adopted extraction" and exists because the builder once resolved no tenant override at
+    all, so adopting it would have handed every tenant the build default while looking like a pure
+    code move. Deleting these discards a consolidation in progress; adopting them changes the live
+    retrieve path. Neither is a tidy-up.
   * a statistic nobody reports -- four `*_stats` functions that compute a number no surface prints.
   * a test affordance on purpose -- cache clearers and record builders that exist so a test can
     reset state. These are fine, and saying so is what stops the next sweep deleting them.
@@ -69,15 +76,15 @@ ONLY_TESTS_CALL = {
     "backend_expand_records":
         "backend metadata interning, the decoder half of the same unwired feature",
     "prepare_retrieval_request":
-        "an extracted retrieval-request step; the live path does not call it, and the danger is the extraction drifting from whatever the live path does instead",
+        "the unadopted part of a PARTLY-ADOPTED extraction. matrixark_mcp_retrieve_request is imported by five production modules; this step is the piece LocalAdapter.retrieve still does inline",
     "prepare_serving_refs":
-        "an extracted serving-ref step in the pack builder; the live path does not call it",
+        "the unadopted part of matrixark_mcp_retrieve_pack_builder, which three production modules import. The live retrieve calls both functions it wraps, back to back, at matrixark_local_adapter_retrieve:3678",
     "retrieval_ranking_limits":
-        "an extracted ranking-limit resolver; the live path does not call it",
+        "the unadopted part of matrixark_mcp_retrieve_planning, and the one with a guard already maintaining it TOWARD adoption. test_a_tenant_override_reaches_the_extracted_ranking_limits calls that module 'a partly-adopted extraction' and exists because the builder once resolved no tenant override at all, so adopting it would have handed every tenant the build default while looking like a pure code move. Do not read this as debris",
     "merge_refreshed_summary_records":
-        "an extracted pre-refresh merge; the live path does not call it",
+        "the unadopted part of matrixark_mcp_retrieve_pre_refresh, which three production modules import. The same merge runs inline at matrixark_local_adapter_retrieve:1167-1196",
     "full_read_fallback_counts":
-        "counts how often a scoped scan gave up and read the whole store. Its docstring says it is 'exposed because the fallback is otherwise undetectable from outside: a measured degraded window did TEN whole-corpus reads and wrote nothing at all'. It was written to make an invisible degradation visible, and nothing reports it, so the degradation is still invisible",
+        "counts how often a scoped scan gave up and read the whole store. Its docstring says it is 'exposed because the fallback is otherwise undetectable from outside: a measured degraded window did TEN whole-corpus reads and wrote nothing at all'. Written to make an invisible degradation visible, and reported nowhere",
     "embedding_cache_stats":
         "hits, misses, evictions and size, 'so cache behaviour is observable' -- and nothing observes it",
     "secondary_index_bound_stats":
