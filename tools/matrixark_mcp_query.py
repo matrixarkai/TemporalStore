@@ -9,10 +9,10 @@ import re
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_indexing import benchmark_quality_index_terms, context_index_name, normalized_index_value
+    from tools.matrixark_mcp_indexing import benchmark_quality_index_terms, context_index_name, normalized_index_value, ordered_unique
     from tools.matrixark_mcp_scoring import tokens
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_indexing import benchmark_quality_index_terms, context_index_name, normalized_index_value
+    from matrixark_mcp_indexing import benchmark_quality_index_terms, context_index_name, normalized_index_value, ordered_unique
     from matrixark_mcp_scoring import tokens
 
 
@@ -109,17 +109,6 @@ QUERY_INDEX_LABELS: dict[str, str] = {
 }
 
 
-def _ordered_unique(values: list[str]) -> list[str]:
-    output: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        output.append(value)
-    return output
-
-
 RESOURCE_TYPE_QUERY_ALIASES: dict[str, str] = {
     "pdf": "pdf",
     "markdown": "md",
@@ -165,28 +154,23 @@ QUERY_INDEX_STOPWORDS = {
 }
 
 
-def slug_candidates_from_query(query: str) -> list[str]:
-    lower = query.lower()
-    candidates: list[str] = []
-    for pattern in [
-        r"(?:heading|section|chapter)\s+['\"]?([a-z0-9][a-z0-9 _./:-]{1,80})",
-        r"#\s*([a-z0-9][a-z0-9 _./:-]{1,80})",
-    ]:
-        for match in re.finditer(pattern, lower):
-            raw_value = re.split(r"\b(?:in|from|for|about|with|under)\b", match.group(1).split("?")[0], maxsplit=1)[0]
-            value = normalized_index_value(raw_value)
-            if value:
-                candidates.append(value)
-    return _ordered_unique(candidates)[:4]
-
-
-def path_candidates_from_query(query: str) -> list[str]:
-    values: list[str] = []
-    for raw in re.findall(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_./-]+|[a-zA-Z0-9_.-]+\.(?:md|txt|pdf|csv|tsv|json|jsonl|yaml|yml|html|docx|pptx|xlsx|py|js|ts|go|rs|native|h)", query):
-        normalized = normalized_index_value(raw)
-        if normalized:
-            values.append(normalized)
-    return _ordered_unique(values)[:6]
+# The three *_candidates_from_query functions had copies here that differed from
+# matrixark_mcp_core_query_analysis's by ONE token: they called a private `_ordered_unique` defined
+# in this file, a nine-line duplicate of matrixark_mcp_indexing.ordered_unique, where the live
+# copies call the shared one. Same behaviour, two implementations, and nothing saying which was
+# current -- so they join the two names already re-exported below, and the private helper goes.
+try:  # the implementation lives in matrixark_mcp_core_query_analysis; this module re-exports it
+    from tools.matrixark_mcp_core_query_analysis import (
+        keyword_candidates_from_query,
+        path_candidates_from_query,
+        slug_candidates_from_query,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_query_analysis import (
+        keyword_candidates_from_query,
+        path_candidates_from_query,
+        slug_candidates_from_query,
+    )
 
 
 try:  # the implementation lives in matrixark_mcp_core_query_analysis; this module re-exports it
@@ -201,24 +185,6 @@ except ImportError:  # Direct script execution from tools/.
 # keyword index was write-only. Measured on a CN/EN corpus: 60.2% of emitted keyword terms
 # were under four characters, and a pure Chinese query produced ZERO lookup terms.
 _QUERY_CJK_RUN_RE = _re_for_cjk_runs()
-
-
-def keyword_candidates_from_query(query: str) -> list[str]:
-    values = []
-    for term in tokens(query):
-        if len(term) < 4 or term in QUERY_INDEX_STOPWORDS:
-            continue
-        values.append(context_index_name("keyword", term))
-    # Mirror the ingest side exactly: same bigrams, or the two halves cannot meet.
-    seen: set[str] = set()
-    for run in _QUERY_CJK_RUN_RE.findall(str(query or "")):
-        for index in range(len(run) - 1):
-            bigram = run[index : index + 2]
-            if bigram in seen:
-                continue
-            seen.add(bigram)
-            values.append(context_index_name("keyword", bigram))
-    return _ordered_unique(values)[:8]
 
 
 def codex_outcome_fact_index_terms(*values: Any) -> set[str]:
@@ -431,7 +397,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         for size in (3, 2):
             trigger_values.extend("_".join(query_tokens[index : index + size]) for index in range(0, max(0, len(query_tokens) - size + 1)))
         trigger_values.extend(query_tokens)
-        trigger_terms = [context_index_name("skill_trigger", term) for term in _ordered_unique(trigger_values)]
+        trigger_terms = [context_index_name("skill_trigger", term) for term in ordered_unique(trigger_values)]
         if tool_terms:
             add_group(*tool_terms[:6])
         if trigger_terms:
