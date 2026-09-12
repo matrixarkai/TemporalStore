@@ -68,8 +68,6 @@ _INSTRUCTION = re.compile(
 _INSTRUCTION_REACH = 90
 
 #: A module whose env reads ARE its command line rather than its configuration.
-_HARNESS = re.compile(r"(benchmark|_report|^run_|^generate_|sweep|probe|soak|harness)")
-
 #: Where a deployment points, who it authenticates as, what it loads.
 _IDENTITY = re.compile(
     r"(API_KEY|_KEY_ENV|BASE_URL|_URL$|_URI$|ENDPOINT|PROVIDER|_MODEL$|_MODEL_|BUCKET|PREFIX"
@@ -246,6 +244,46 @@ EXAMINED = {
         "a report gate: the workflow report reads it to decide whether missing coverage fails the run, and a gate exists to be turned on for a run",
 }
 
+#: Module prefixes and markers that make a file a TOOL rather than the product: a benchmark, a
+#: conformance gate, a report builder, a sweep. It replaces a narrower rule that read the same thing and
+#: caught 8 of these 77 -- not because it looked in the wrong place, but because `selected` and
+#: `instructed` are tested first, and a benchmark's flags are named by tests and described in prose
+#: like any others. That group went to zero once this one existed, and a group that has quietly
+#: emptied is a classification that has stopped saying anything, so it is gone.
+_TOOLING_PREFIXES = (
+    "run_", "validate_", "generate_", "probe_", "summarize_", "compare_", "convert_",
+    "check_", "resolve_", "download_", "analyze_", "mock_", "build_", "redis_",
+)
+_TOOLING_MARKERS = ("benchmark", "microbench", "_bench", "_harness", "_report", "sweep", "soak")
+
+
+def _is_tooling(module):
+    stem = module[:-3] if module.endswith(".py") else module
+    return stem.startswith(_TOOLING_PREFIXES) or any(m in stem for m in _TOOLING_MARKERS)
+
+
+def _read_only_by_tooling(reads):
+    """Flags no PRODUCT module reads -- only a benchmark, a gate or a report builder.
+
+    A flag nothing in the product reads cannot configure the product, whatever else names it. That
+    is a sharper thing to know than "a test names it" or "its reader addresses an operator", both
+    of which are true of most of these and neither of which tells you it is a tool's own command
+    line spelled as an environment variable.
+
+    Ordered ahead of `selected` for the same reason `readers all unreachable` is: those two rules
+    describe how a flag is DOCUMENTED, and this one describes whether the product can see it at
+    all.
+
+    77 of 464 when this was written -- 21 in the context backfill benchmark alone, 17 in the
+    dual-write ingestion benchmark, 15 in the locomo ingest harness.
+    """
+    out = set()
+    for name, modules in reads.items():
+        if modules and all(_is_tooling(m) for m in modules):
+            out.add(name)
+    return out
+
+
 def _tracked(*globs):
     return subprocess.run(["git", "ls-files", *globs], cwd=REPO,
                           capture_output=True, text=True).stdout.split()
@@ -356,11 +394,6 @@ def _instructed():
     return names
 
 
-def _harness_only(reads):
-    return {name for name, mods in reads.items()
-            if mods and all(_HARNESS.search(m) for m in mods)}
-
-
 def _legacy_spellings():
     """Every flag that appears only as a LATER link of an alias chain."""
     first, later = set(), set()
@@ -392,18 +425,19 @@ def classify():
     reads = read_by_production()
     selected = _selected()
     instructed = _instructed()
-    harness = _harness_only(reads)
     legacy = _legacy_spellings()
-    out = {"selected": set(), "instructed": set(), "harness CLI": set(),
+    tooling = _read_only_by_tooling(reads)
+    out = {"tooling only": set(),
+           "selected": set(), "instructed": set(),
            "deployment identity": set(), "legacy spelling": set(),
            "read one at a time": set(), "candidate": set()}
     for name in reads:
-        if name in selected:
+        if name in tooling:
+            out["tooling only"].add(name)
+        elif name in selected:
             out["selected"].add(name)
         elif name in instructed:
             out["instructed"].add(name)
-        elif name in harness:
-            out["harness CLI"].add(name)
         elif name in legacy:
             # Before the identity test on purpose. Widening _IDENTITY to know STORAGE_FAMILY and
             # REPLICATION_MODE emptied this group, because those names are BOTH identity and the
@@ -532,6 +566,30 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                     elsewhere,
                     "%s is in this register and reads as selected, and nothing but this file "
                     "names it -- the register is classifying itself." % name)
+
+    def test_the_product_surface_is_reported_apart_from_the_tools(self) -> None:
+        """The number a reduction target is about is the PRODUCT's, and it is not the total.
+
+        A flag only a benchmark reads is that benchmark's command line spelled as an environment
+        variable. Counting it alongside the controls a deployment sets makes the surface look
+        larger than the thing anybody configures.
+        """
+        _reads, groups = classify()
+        tooling = groups["tooling only"]
+        self.assertTrue(
+            tooling,
+            "no flag is read only by tooling. That would be a surprise in a tree with this many "
+            "benchmarks, and it is also what a broken module-role test says.")
+        product = len(self.reads) - len(tooling)
+        self.assertGreater(
+            product, len(tooling),
+            "more flags belong to tools than to the product (%d against %d), which would mean the "
+            "role test has started matching product modules" % (len(tooling), product))
+        for name in sorted(tooling):
+            with self.subTest(flag=name):
+                self.assertFalse(
+                    [m for m in self.reads[name] if not _is_tooling(m)],
+                    "%s is in the tooling group and a product module reads it" % name)
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
