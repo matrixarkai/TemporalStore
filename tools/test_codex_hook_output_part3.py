@@ -1341,7 +1341,9 @@ class _CodexHookOutputPart3:
 
 
     def test_codex_hook_messages_both_skips_local_proxy_debug_reader(self) -> None:
-        original_native = matrixark_http._HookStoreReader
+        # The native reader is _NativeHookStoreReader; `_HookStoreReader` is the abstract base
+        # all three subclass. It used to be both, because the native class took its base's name.
+        original_native = matrixark_http._NativeHookStoreReader
         original_service = matrixark_http._RustServiceHookStoreReader
         original_local = matrixark_http._RustLocalHookStoreReader
         calls = []
@@ -1356,7 +1358,7 @@ class _CodexHookOutputPart3:
                 return None
 
         try:
-            matrixark_http._HookStoreReader = lambda args: calls.append("native") or EmptyReader()
+            matrixark_http._NativeHookStoreReader = lambda args: calls.append("native") or EmptyReader()
             matrixark_http._RustServiceHookStoreReader = lambda args: calls.append("rust-service") or EmptyReader()
 
             def fail_local(args):
@@ -1365,7 +1367,7 @@ class _CodexHookOutputPart3:
             matrixark_http._RustLocalHookStoreReader = fail_local
             matrixark_http.query_codex_hook_messages({"backend": "both", "top_k": 1})
         finally:
-            matrixark_http._HookStoreReader = original_native
+            matrixark_http._NativeHookStoreReader = original_native
             matrixark_http._RustServiceHookStoreReader = original_service
             matrixark_http._RustLocalHookStoreReader = original_local
 
