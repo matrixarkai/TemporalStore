@@ -44,24 +44,26 @@ UNDERSTANDING_LABELS: dict[str, str] = {
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
 
 
-def _core_runtime() -> Any:
-    try:
-        from tools import matrixark_mcp_core as core
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        import matrixark_mcp_core as core
-    return core
-
-
 def require_oss_understanding() -> bool:
     return os.getenv("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Not defined here: the implementation lives in matrixark_mcp_core and this module carried an
 # identical second copy of each.
+#
+# The last two joined them by losing a lazy accessor -- import matrixark_mcp_core inside the call
+# and reach names off the module object. The only thing it bought was that this module's copies
+# could say `core.dedupe_entities(...)` where the live ones say `dedupe_entities(...)`. That one
+# token was the entire divergence between them.
+#
+# It looked like cycle avoidance and was not: this import block already binds core at module scope,
+# and matrixark_mcp_core does not import this module at all.
 try:
     from tools.matrixark_mcp_core import (
         oss_encoder_compact_extraction,
         oss_encoder_event_type,
+        oss_encoder_extract_batch_entities,
+        oss_encoder_memory_segments,
         oss_encoder_rank_labels,
         prototype_vectors,
         understanding_provider,
@@ -70,89 +72,11 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         oss_encoder_compact_extraction,
         oss_encoder_event_type,
+        oss_encoder_extract_batch_entities,
+        oss_encoder_memory_segments,
         oss_encoder_rank_labels,
         prototype_vectors,
         understanding_provider,
     )
 
 
-def oss_encoder_extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
-    core = _core_runtime()
-    text = text_from_messages(messages)
-    ranked = oss_encoder_rank_labels(text, UNDERSTANDING_LABELS, limit=8)
-    source_event_ids = envelope.get("source_event_ids", [])
-    source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
-    entities: list[Json] = []
-    for item in ranked:
-        label = str(item["label"])
-        if label == "approval":
-            entity_type = "approval_state"
-        elif label == "status_update":
-            entity_type = "job_status"
-        elif label == "plan_update":
-            entity_type = "current_plan"
-        elif label == "preference_update":
-            entity_type = "preference"
-        else:
-            entity_type = label
-        if float(item["score"]) < 0.42 and entity_type != "session":
-            continue
-        state = summarize_text(f"{entity_type}: {text}", limit=220)
-        entities.append(
-            {
-                "entity_type": entity_type,
-                "entity_name": core.canonical_entity_name(entity_type, state) or entity_type,
-                "state": state,
-                "confidence": round(float(item["score"]), 6),
-                "source_refs": source_refs,
-                "operator": core.normalize_entity_operator(None, entity_type),
-                "field_patches": [entity_patch("", state)] if entity_type != "session" else [],
-                "extracted_by": "oss_encoder",
-            }
-        )
-    if not entities:
-        entities.append(
-            {
-                "entity_type": "session",
-                "entity_name": "session_memory",
-                "state": summarize_text(text, limit=220),
-                "confidence": 0.5,
-                "source_refs": source_refs,
-                "operator": core.normalize_entity_operator(None, "session"),
-                "field_patches": [],
-                "extracted_by": "oss_encoder",
-            }
-        )
-    return core.dedupe_entities(entities)
-
-
-def oss_encoder_memory_segments(messages: list[Json]) -> list[Json]:
-    core = _core_runtime()
-    labeled: dict[str, list[tuple[int, Json, float]]] = {}
-    for index, message in enumerate(messages):
-        text = str(message.get("content", ""))
-        if not text.strip():
-            continue
-        ranked = oss_encoder_rank_labels(text, UNDERSTANDING_LABELS, limit=1)
-        label = str(ranked[0]["label"]) if ranked else "session"
-        score = float(ranked[0]["score"]) if ranked else 0.5
-        labeled.setdefault(label, []).append((index, message, score))
-    segments = []
-    for label, items in labeled.items():
-        indexes = [index for index, _message, _score in items]
-        ranges = core.contiguous_ranges(indexes)
-        segment_text = "\n".join(f"{index}: {message.get('content', '')}" for index, message, _score in items)
-        segments.append(
-            {
-                "topic": label,
-                "coordinate_tuples": ranges,
-                "message_indexes": indexes,
-                "saliency_score": round(sum(score for _index, _message, score in items) / max(len(items), 1), 6),
-                "summary_text": summarize_text(segment_text, limit=420),
-                "text": segment_text,
-                "non_contiguous": len(ranges) > 1,
-                "detected_by": "oss_encoder",
-            }
-        )
-    segments.sort(key=lambda item: (-item["saliency_score"], item["topic"]))
-    return segments[:12]

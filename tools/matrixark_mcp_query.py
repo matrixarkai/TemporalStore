@@ -159,16 +159,38 @@ QUERY_INDEX_STOPWORDS = {
 # in this file, a nine-line duplicate of matrixark_mcp_indexing.ordered_unique, where the live
 # copies call the shared one. Same behaviour, two implementations, and nothing saying which was
 # current -- so they join the two names already re-exported below, and the private helper goes.
+# Six more joined these three by losing a lazy accessor: import matrixark_mcp_core inside the call
+# and reach names off the module object, so a copy said `core.understanding_provider()` where the
+# live one says `understanding_provider()`. That token was their whole divergence.
+#
+# It looked like cycle avoidance and was not. NOTHING imports matrixark_mcp_query at module scope,
+# and this file already binds matrixark_mcp_core_query_analysis here -- which itself imports
+# matrixark_mcp_core at module scope, under a docstring saying "No import-time cycle".
+#
+# The accessor itself STAYS: candidate_index_terms still calls it, and that one diverges from
+# matrixark_mcp_core's by more than a spelling, so it is not part of this move.
 try:  # the implementation lives in matrixark_mcp_core_query_analysis; this module re-exports it
     from tools.matrixark_mcp_core_query_analysis import (
+        build_structured_query_plan,
+        infer_query_type,
+        infer_secondary_index_filter_groups,
         keyword_candidates_from_query,
+        oss_encoder_query_type,
+        oss_encoder_secondary_index_filter_groups,
         path_candidates_from_query,
+        secondary_filter_terms_to_fields,
         slug_candidates_from_query,
     )
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_query_analysis import (
+        build_structured_query_plan,
+        infer_query_type,
+        infer_secondary_index_filter_groups,
         keyword_candidates_from_query,
+        oss_encoder_query_type,
+        oss_encoder_secondary_index_filter_groups,
         path_candidates_from_query,
+        secondary_filter_terms_to_fields,
         slug_candidates_from_query,
     )
 
@@ -407,52 +429,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     return groups
 
 
-def secondary_filter_terms_to_fields(groups: list[set[str]]) -> Json:
-    fields: Json = {}
-    for group in groups:
-        for term in sorted(group):
-            if ":" not in term:
-                continue
-            field, value = term.split(":", 1)
-            if not field or not value:
-                continue
-            fields.setdefault(field, [])
-            if value not in fields[field]:
-                fields[field].append(value)
-    return fields
-
-
 try:  # the implementation lives in matrixark_mcp_core_query_analysis; this module re-exports it
     from .matrixark_mcp_core_query_analysis import infer_temporal_window
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_query_analysis import infer_temporal_window
-
-
-def build_structured_query_plan(
-    query: str,
-    *,
-    question_type: str,
-    secondary_index_filter_groups: list[set[str]],
-    secondary_index_filter_mode: str,
-    reference_time_ms: int,
-) -> Json:
-    secondary_filters = secondary_filter_terms_to_fields(secondary_index_filter_groups)
-    return {
-        "query_type": question_type,
-        "secondary_filters": secondary_filters,
-        "secondary_filter_groups": [sorted(group) for group in secondary_index_filter_groups],
-        "secondary_filter_mode": secondary_index_filter_mode,
-        "temporal_window": infer_temporal_window(query, question_type, reference_time_ms=reference_time_ms),
-        "execution_order": [
-            "query_understanding",
-            "scope_filter",
-            "secondary_index_prefilter",
-            "l0_l1_node_traversal",
-            "leaf_candidate_fetch",
-            "embedding_similarity_time_decay_business_score",
-            "budget_pack_contextpack",
-        ],
-    }
 
 
 def _core_query_runtime() -> Any:
@@ -461,75 +441,6 @@ def _core_query_runtime() -> Any:
     except ModuleNotFoundError:  # Direct script execution from tools/.
         import matrixark_mcp_core as core
     return core
-
-
-def infer_query_type(query: str) -> str:
-    core = _core_query_runtime()
-    lower = query.lower()
-    if (
-        PROFILE_MEMORY_QUERY_RE.search(lower)
-        or PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(lower)
-        or ACTIVE_MEMORY_GOAL_QUERY_RE.search(lower)
-    ):
-        return "profile_memory"
-    if re.search(r"\b(benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
-        return "benchmark_quality"
-    if core.understanding_provider() == "oss_encoder":
-        return oss_encoder_query_type(query)
-    if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session|cross session|cross-session|previous sessions|other sessions)\b", lower):
-        return "multi_hop"
-    if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week|before|after|as of|valid as of)\b", lower):
-        return "date"
-    if CODEX_OUTCOME_QUERY_RE.search(lower):
-        return "evidence"
-    if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is|goal|task|requirement|user request|asked codex)\b", lower):
-        return "current_state"
-    if re.search(r"\b(?:assistant|codex)\b.{0,64}\b(?:decide|decided|decision|done|implemented|fixed|push(?:ed)?|commit(?:ted)?|changed|updated|validated|verified)\b", lower):
-        return "current_state"
-    if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
-        return "why_emotion"
-    if re.search(r"\b(overview|summarize|summary|explore|broad|what is in|what do we know|topics|map|inventory)\b", lower):
-        return "broad_exploration"
-    if re.search(r"\b(evidence|quote|exactly|what did .* say|conversation|dialogue|message)\b", lower):
-        return "evidence"
-    if re.search(r"\b(procedure|steps?|how to|troubleshoot|debug|rollback|runbook|playbook|checklist|fix|remediate|mitigate)\b", lower):
-        return "procedure"
-    return "fact"
-
-
-def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
-    core = _core_query_runtime()
-    if core.understanding_provider() == "oss_encoder":
-        return oss_encoder_secondary_index_filter_groups(query, question_type)
-    return deterministic_secondary_index_filter_groups(query, question_type)
-
-
-def oss_encoder_query_type(query: str) -> str:
-    core = _core_query_runtime()
-    ranked = core.oss_encoder_rank_labels(query, QUERY_TYPE_LABELS, limit=2)
-    if not ranked:
-        return "fact"
-    top = str(ranked[0]["label"])
-    if len(ranked) > 1 and top == "fact" and float(ranked[1]["score"]) >= float(ranked[0]["score"]) - 0.015:
-        return str(ranked[1]["label"])
-    return top
-
-
-def oss_encoder_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
-    core = _core_query_runtime()
-    ranked = core.oss_encoder_rank_labels(f"{question_type}: {query}", QUERY_INDEX_LABELS, limit=5)
-    selected = [str(item["label"]) for item in ranked if float(item["score"]) >= 0.46]
-    if not selected and ranked:
-        selected = [str(ranked[0]["label"])]
-    groups: list[set[str]] = deterministic_secondary_index_filter_groups(query, question_type)
-    by_prefix: dict[str, set[str]] = {}
-    for label in selected:
-        prefix = label.split(":", 1)[0]
-        by_prefix.setdefault(prefix, set()).add(label)
-    for labels in by_prefix.values():
-        if labels and labels not in groups:
-            groups.append(labels)
-    return groups[:8]
 
 
 def candidate_index_terms(

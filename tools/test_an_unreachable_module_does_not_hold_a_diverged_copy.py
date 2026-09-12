@@ -53,7 +53,39 @@ from collections import defaultdict
 #: defined in that file, a nine-line duplicate of matrixark_mcp_indexing.ordered_unique, where the
 #: live copies call the shared one. Same pattern again: that module was ALREADY re-exporting two
 #: names from the same live file, with the same comment above them.
-RECORDED_DIVERGED = 48
+#:
+#: 48 -> 46 for `summary_provider` and `synthesize_context_node_summary` in matrixark_mcp_summaries,
+#: a module ALREADY re-exporting four names from matrixark_mcp_core. Third module, same shape: the
+#: copies differed by which spelling of require_oss_understanding they called, and in one case by a
+#: lazy-import shim for a name core resolves at module scope. Same implementation, different
+#: plumbing -- which is the hardest kind to read, because the diff is real and means nothing.
+#:
+#: 46 -> 44 for the same reason one file along: matrixark_mcp_oss_understanding kept copies of
+#: oss_encoder_memory_segments and oss_encoder_extract_batch_entities that differed only by
+#: reaching their helpers through a lazy `core.` accessor. That accessor looked like cycle
+#: avoidance and was not -- the file already binds core at module scope, and core does not
+#: import it at all -- so it went with them.
+#:
+#: 44 -> 40 for six more in matrixark_mcp_query, the same accessor one more time. Four of the
+#: six were diverged and two were verbatim, which is why the total falls by six and this number
+#: by four. The accessor STAYS there: candidate_index_terms still calls it and diverges by more
+#: than a spelling, so it is not part of that move.
+#:
+#: 40 -> 38 for two that were NOT plumbing. matrixark_mcp_budget_pack's
+#: prefer_profile_entities_for_current_state omitted "profile_memory" from the question types it
+#: acts on, so that query returned unboosted through it -- 0.50 where the live path gives 0.68,
+#: executed both ways. And matrixark_mcp_extraction_normalization's dedupe_entities omitted the
+#: drop_directive_duplicates step entirely, which is the example this file's own docstring cites.
+#:
+#: 38 -> 36 for two more in the same file. entity_retention_priority normalised source roles
+#: with a bare strip().lower() where the live copy maps aliases, so an entity recorded with
+#: role "human" scored priority 4 here and 1 there -- dropped against kept, when
+#: dedupe_entities ranks. codex_outcome_fact_entities differed only by inlining a local.
+#:
+#: 36 -> 35 for infer_entity_field_patches, where the live copy has a branch this one lacked
+#: (a negative preference produces a patch there and nothing here) AND an lru_cached helper
+#: that fixed a quadratic scan -- 33 s against 1.2 s on a 256 KB ingest. The copy had neither.
+RECORDED_DIVERGED = 35
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -61,7 +93,7 @@ RECORDED_DIVERGED = 48
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 60
+RECORDED_SHADOWED = 45
 
 _CACHE: dict[str, object] = {}
 
