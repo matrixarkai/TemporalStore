@@ -174,6 +174,47 @@ class EmbeddingRouteTest(unittest.TestCase):
         self.assertEqual("backend_error", json.loads(body)["error"])
 
 
+class TheEncoderCacheReportsItsOwnNumbersTest(unittest.TestCase):
+    """The cache kept hits, misses and a hit rate, and no surface carried them.
+
+    Its docstring says it exists "so cache behaviour is observable". Nothing observed it, which
+    leaves the one number that says whether the capacity is wrong -- the hit rate -- visible only
+    to a debugger.
+    """
+
+    @staticmethod
+    def _cache_module():
+        """The module object the DASHBOARD imported, not a fresh one.
+
+        Both spellings of a tools module can be loaded at once here, and each keeps its own cache
+        counters. Reading the wrong one shows an empty cache and reads as broken wiring -- which
+        is exactly what happened to the same shape in matrixarkai#1566.
+        """
+        import matrixark_local_adapter_dashboard as dashboard
+        return sys.modules[dashboard.embedding_cache_stats.__module__]
+
+    def test_the_status_payload_carries_the_cache(self) -> None:
+        status = _adapter([_embedding()]).embedding_status({})
+        self.assertIn("cache", status, "the encoder cache numbers are not on the payload")
+        for field in ("hits", "misses", "evictions", "entries", "capacity", "hit_rate"):
+            with self.subTest(field=field):
+                self.assertIn(field, status["cache"])
+
+    def test_the_payload_reads_the_cache_rather_than_a_literal(self) -> None:
+        """The positive control. A dict of zeros written inline would pass the check above."""
+        cache = self._cache_module()
+        before = dict(_adapter([_embedding()]).embedding_status({})["cache"])
+        stats = cache._EMBEDDING_CACHE_STATS
+        stats["hits"] = int(stats.get("hits", 0)) + 3
+        after = _adapter([_embedding()]).embedding_status({})["cache"]
+        self.assertEqual(
+            int(before["hits"]) + 3, int(after["hits"]),
+            "three more hits did not reach the payload, so it is not reading the cache")
+        self.assertNotEqual(
+            before.get("hit_rate"), after.get("hit_rate"),
+            "the hit rate did not move with the hits, so it is not derived from them")
+
+
 class EmbeddingToolRegistrationTest(unittest.TestCase):
     def test_the_tool_is_gated_like_any_other_read_of_the_store(self) -> None:
         from matrixark_mcp_core import MATRIXARK_TOOL_SCOPES
