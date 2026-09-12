@@ -414,6 +414,53 @@ impl DataNodeRuntime {
             (!options.enable_expire).then(|| "expire_disabled".to_string()),
         ));
 
+        // Evict, when the operator has asked for it -- beside expire, and before the stages
+        // that rewrite pages.
+        //
+        // Expire drops what has died of old age and evict drops what is merely cold; they are two
+        // halves of relieving memory, and the design runs them together at this point in the
+        // round. This stage ran LAST, after the metrics reap, which put it after every stage that
+        // rewrites pages: it decided what to drop from a state compaction had just churned, and
+        // the memory it frees arrived too late to spare those stages any work. It has no data
+        // dependency on any of them -- it reads options and engine state only -- so the position
+        // was incidental.
+        //
+        // reclaim_memory above relieves memory by invalidating cached pages, which frees the cache
+        // and leaves the index untouched. This is the stage that can actually free a bucket -- and
+        // dump it first, so freeing does not strand the log.
+        let eviction = options.enable_evict.then(|| {
+            self.inner.engine.apply_storage_eviction(
+                shard_id,
+                options.eviction_memory_pressure_threshold,
+                options.eviction_batch_limit,
+                options.eviction_dump_before_evict,
+                options.eviction_delete_drop,
+            )
+        });
+        if eviction.is_some() {
+            executed_stages.push("evict".to_string());
+            self.inner
+                .stats
+                .lock()
+                .expect("data node stats lock poisoned")
+                .storage_manager_evict_runs += 1;
+        } else {
+            skipped_stages.push("evict_disabled".to_string());
+        }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "evict",
+            options.enable_evict,
+            true,
+            options.enable_evict,
+            vec![storage_manager_pressure_signal(
+                "cache_memory_bytes",
+                options.eviction_memory_pressure_threshold,
+                1,
+            )],
+            vec!["operator_enabled_eviction".to_string()],
+            (!options.enable_evict).then(|| "evict_disabled".to_string()),
+        ));
+
         if options.enable_page_gc && stale_page_pressure {
             let retain_block_slabs_from_id = lifecycle_plan
                 .stale_block_slab_ids
@@ -728,43 +775,6 @@ impl DataNodeRuntime {
             (!options.enable_metrics_reap).then(|| "reap_metrics_disabled".to_string()),
         ));
 
-        // Evict, when the operator has asked for it.
-        //
-        // The stage above this one relieves memory by invalidating cached pages, which frees the
-        // cache and leaves the index untouched. This is the stage that can actually free a bucket
-        // -- and dump it first, so freeing does not strand the log.
-        let eviction = options.enable_evict.then(|| {
-            self.inner.engine.apply_storage_eviction(
-                shard_id,
-                options.eviction_memory_pressure_threshold,
-                options.eviction_batch_limit,
-                options.eviction_dump_before_evict,
-                options.eviction_delete_drop,
-            )
-        });
-        if eviction.is_some() {
-            executed_stages.push("evict".to_string());
-            self.inner
-                .stats
-                .lock()
-                .expect("data node stats lock poisoned")
-                .storage_manager_evict_runs += 1;
-        } else {
-            skipped_stages.push("evict_disabled".to_string());
-        }
-        pressure_decisions.push(storage_manager_pressure_decision(
-            "evict",
-            options.enable_evict,
-            true,
-            options.enable_evict,
-            vec![storage_manager_pressure_signal(
-                "cache_memory_bytes",
-                options.eviction_memory_pressure_threshold,
-                1,
-            )],
-            vec!["operator_enabled_eviction".to_string()],
-            (!options.enable_evict).then(|| "evict_disabled".to_string()),
-        ));
 
         {
             // Recorded beside the round counter, so every caller gets it: the per-shard

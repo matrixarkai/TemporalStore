@@ -4590,3 +4590,89 @@ fn the_periodic_reclaim_quarantines_what_it_collects() {
         "reclaimed {removed} slabs and quarantined none of them -- the stage unlinked them outright"
     );
 }
+
+/// The maintenance round runs its stages in the intended order.
+///
+/// Every other assertion about stages in this suite asks whether one RAN -- `.any(|s| s == ..)` --
+/// and none of them asks what ran before what, so the round could be reshuffled without a single
+/// test noticing. Two stages have already been in the wrong place: the index reclaim ran after
+/// compaction, and evict ran last of all, after the metrics reap.
+///
+/// Evict's position was the more interesting of the two. Expire drops what has died of old age and
+/// evict drops what is merely cold; they are two halves of relieving memory and belong together,
+/// ahead of the stages that rewrite pages. Running evict last meant it chose victims from a state
+/// compaction had just churned, and the memory it freed arrived too late to spare any of those
+/// stages work.
+///
+/// This pins the sequence itself. It asserts relative order and not an exact list, so a new stage
+/// can be added without editing it -- only MOVING one of these breaks it.
+#[test]
+fn the_maintenance_round_runs_its_stages_in_order() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    for index in 0..600usize {
+        let engine = runtime.engine();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("order-guard-{:06}", index % 100),
+                value: vec![b'v'; 96],
+            },
+        });
+    }
+    // Every stage on, so the round has something to order. Eviction ships DISABLED, so without
+    // this the evict stage would be absent and the assertion about it would be vacuous.
+    let options = StorageManagerOptions {
+        enable_evict: true,
+        ..StorageManagerOptions::default()
+    };
+    let report = runtime.run_storage_manager_once(1, options);
+    let stages = report.executed_stages.clone();
+
+    // The order the design intends. Some of these are pressure-gated and legitimately skip a
+    // round -- `reclaim_memory` does exactly that on this fixture -- so the check is on the
+    // stages that RAN, in the order they ran. Requiring all nine made the guard fail for a
+    // reason that had nothing to do with ordering.
+    let expected = [
+        "prepare",
+        "reclaim_wal",
+        "reclaim_memory",
+        "expire",
+        "evict",
+        "reclaim_page",
+        "reclaim_index",
+        "compact_pages",
+        "reap_metrics",
+    ];
+    let mut previous: Option<(&str, usize)> = None;
+    for name in expected {
+        let Some(position) = stages.iter().position(|stage| stage == name) else {
+            continue;
+        };
+        if let Some((earlier, earlier_position)) = previous {
+            assert!(
+                earlier_position < position,
+                "{earlier} must run before {name}, but the round executed {stages:?}"
+            );
+        }
+        previous = Some((name, position));
+    }
+
+    // The denominator. Skipping absent stages is what makes the loop above robust, and it is
+    // also what would let it pass a round that ran nothing worth ordering -- so require the
+    // three this change is actually about.
+    for required in ["expire", "evict", "reclaim_page"] {
+        assert!(
+            stages.iter().any(|stage| stage == required),
+            "{required} did not run, so the order assertion above proved nothing: {stages:?}"
+        );
+    }
+}
