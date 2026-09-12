@@ -5968,3 +5968,86 @@ fn does_compaction_retrigger_itself() {
          {total_rewritten} page refs rewritten in total, over a store of {KEYS} that never changed"
     );
 }
+
+/// The evict stage keeps taking batches while they still help.
+///
+/// The stage used to take ONE batch of `eviction_batch_limit` and return, however far the pressure
+/// still was from the threshold: measured at 16 victims freeing about 4,800 bytes against a
+/// 1,775,000-byte overage, roughly 370 rounds at a round every thirty seconds. The design being
+/// followed loops until usage is back under the limit and stops on a per-call COUNT budget --
+/// `evict_count_limit` 100 against a batch size of 10 -- rather than after the first batch.
+///
+/// `eviction_count_limit` is that budget. What this asserts is that a round actually spends more
+/// than one batch when the pressure warrants it, and that the report describes the STAGE rather
+/// than its final batch: returning the last report alone would show only the unproductive batch
+/// that stopped the loop and hide every victim taken before it.
+#[test]
+fn the_evict_stage_keeps_going_while_batches_still_help() {
+    const KEYS: usize = 3_000;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("evictloop-{index:08}"),
+                    value: vec![b'v'; 128],
+                },
+            });
+        }
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("evictloop-{index:08}"),
+                },
+            });
+        }
+    }
+
+    let warm = runtime.engine().cache().stats().memory_bytes;
+    // The denominator: with an empty cache the gate stays shut and nothing below means anything.
+    assert!(
+        warm > 0,
+        "the cache held nothing after reading every key back, so eviction has nothing to work on"
+    );
+
+    let options = StorageManagerOptions {
+        enable_evict: true,
+        // A threshold far below what the fixture built, so one batch cannot possibly reach it and
+        // the loop has a reason to keep going.
+        eviction_memory_pressure_threshold: warm / 8,
+        ..StorageManagerOptions::default()
+    };
+    let batch_limit = options.eviction_batch_limit;
+    let report = runtime.run_storage_manager_once(1, options);
+    let eviction = report
+        .eviction
+        .as_ref()
+        .expect("the round ran the evict stage but carried no eviction report");
+
+    assert!(
+        eviction.pressure_gate_open,
+        "eviction did not open its gate on a cache of {warm} bytes, so the loop never ran: {:?}",
+        eviction.skipped_reason
+    );
+    assert!(
+        eviction.selected_victims.len() > batch_limit,
+        "the stage took {} victims with a batch limit of {batch_limit} -- it stopped after one \
+         batch while the pressure was still {} against a threshold of {}",
+        eviction.selected_victims.len(),
+        eviction.pressure_after,
+        eviction.memory_pressure_threshold,
+    );
+}
