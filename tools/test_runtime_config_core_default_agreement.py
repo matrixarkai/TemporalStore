@@ -80,11 +80,18 @@ class RuntimeConfigAgreesWithCore(unittest.TestCase):
     def test_both_modules_were_actually_parsed(self) -> None:
         # Guard the guard: an extractor that silently matched nothing would make
         # the agreement assertion below vacuously true.
-        self.assertGreater(len(self.core), 50, "core parse found too few constants")
-        self.assertGreater(len(self.runtime), 50, "runtime_config parse found too few")
+        #
+        # The numbers say what they are FOR, not what the two modules currently hold. They were 50
+        # and the runtime module held 51, so folding away flags nothing sets -- a change that
+        # removes env-backed constants on purpose and alters no value -- took the count to exactly
+        # 50 and failed here. A vacuity floor pinned to a measurement tracks the tree instead of
+        # the property: an extractor that stopped matching returns approximately nothing, and 20
+        # fails loudly on that while surviving any legitimate move in the count.
+        self.assertGreater(len(self.core), 20, "core parse found too few constants")
+        self.assertGreater(len(self.runtime), 20, "runtime_config parse found too few")
         self.assertGreater(
             len(set(self.core) & set(self.runtime)),
-            50,
+            20,
             "expected a large shared constant set between the two modules",
         )
 

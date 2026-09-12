@@ -176,10 +176,10 @@ __all__ = [
 # `idle_commit_task_records`) -- never Python `read_all`, and never a full-store scan. It is
 # started per worker process and wired into the gateway lifespan (see
 # matrixark_v1_gateway.create_v1_app / the ASGI lifespan handler). 0 disables the loop.
-STREAM_MATERIALIZE_INTERVAL_MS = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS", "").strip() or "1500")
+STREAM_MATERIALIZE_INTERVAL_MS = 1500
 # Hard cap on tracked pending scopes so a slow/stuck backend cannot grow the registry without
 # bound; the durable scheduled-task record + retrieve-time flush remain the backstop.
-STREAM_MATERIALIZE_MAX_SCOPES = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_MAX_SCOPES", "").strip() or "20000")
+STREAM_MATERIALIZE_MAX_SCOPES = 20000
 
 
 try:
