@@ -859,9 +859,13 @@ impl TemporalEngine {
             };
             retained_manifest_ids.insert(manifest.manifest_id.clone());
             covered_bucket_count = covered_bucket_count.saturating_add(1);
-            durable_wal_frontier = durable_wal_frontier.min(manifest.wal_sequence);
-            durable_index_log_frontier =
-                durable_index_log_frontier.min(manifest.index_log_sequence);
+            // EXPERIMENT: a bucket that is CLEAN has no undumped write, so it needs nothing
+            // retained on its behalf and must not hold the floor.
+            if summary.dirty_object_count > 0 {
+                durable_wal_frontier = durable_wal_frontier.min(manifest.wal_sequence);
+                durable_index_log_frontier =
+                    durable_index_log_frontier.min(manifest.index_log_sequence);
+            }
         }
 
         let mut blocker_reasons = Vec::new();
@@ -875,10 +879,15 @@ impl TemporalEngine {
         }
 
         if durable_wal_frontier == u64::MAX {
-            durable_wal_frontier = 0;
+            // EXPERIMENT 2: no bucket held the floor, which means every bucket is dumped and
+            // nothing needs the log retained -- so the floor is the CURRENT position, not zero.
+            // Zero here reads as "retain everything" and is what took the plan unsafe in the
+            // first experiment.
+            durable_wal_frontier = current_wal_sequence;
         }
         if durable_index_log_frontier == u64::MAX {
-            durable_index_log_frontier = 0;
+            // EXPERIMENT 2, the index-log half, same reasoning.
+            durable_index_log_frontier = current_index_log_sequence;
         }
         let mut follower_cursor_block_count = 0usize;
         for cursor in follower_replay_cursors
