@@ -33,12 +33,12 @@ SUPPORTED_FILE_TYPES = SUPPORTED_TEXT_TYPES | SUPPORTED_BINARY_TYPES
 SUPPORTED_DIRECTORY_TYPES = {"md", "txt", "pdf", "html", "csv", "tsv", "json", "jsonl", "docx", "pptx", "xlsx", "skill"}
 SKIP_DIRECTORY_NAMES = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
 DEFAULT_MAX_FILE_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_FILE_BYTES", "").strip() or str(20 * 1024 * 1024))
-DEFAULT_MAX_DIRECTORY_FILES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_FILES", "").strip() or "256")
-DEFAULT_MAX_DIRECTORY_DEPTH = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_DEPTH", "").strip() or "8")
+DEFAULT_MAX_DIRECTORY_FILES = 256
+DEFAULT_MAX_DIRECTORY_DEPTH = 8
 DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS", "").strip() or "2048")
 DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", "").strip() or str(5 * 1024 * 1024))
-DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "").strip() or "20")
-DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "").strip() or "20")
+DEFAULT_TABLE_ROWS_PER_CHUNK = 20
+DEFAULT_JSON_RECORDS_PER_CHUNK = 20
 #: `.strip().lower()` and the full FALSE_VALUES vocabulary -- the previous form folded no
 #: case and rejected "no" and "off", so those read as TRUE and switched the flag ON. The
 #: empty string stays false, as it was here.
@@ -112,7 +112,7 @@ DEFAULT_MAX_CHUNK_CHARS = int(
 )
 DEFAULT_OVERLAP_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_CHARS", "").strip() or "120")
 EMBEDDING_TEXT_PREFIX_SHARE = float(os.environ.get("MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE", "").strip() or "0.2")
-DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "").strip() or "30")
+DEFAULT_OCR_TIMEOUT_S = 30.0
 
 
 class ResourceParserError(RuntimeError):
