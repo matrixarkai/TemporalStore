@@ -800,6 +800,7 @@ impl DataNodeRuntime {
             metrics_reap,
             compaction_report,
             gc_report,
+            eviction,
             status,
         }
     }
