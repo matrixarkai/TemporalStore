@@ -185,13 +185,24 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             for manifest in inner.engine.list_bucket_dump_manifests(request.shard_id) {
                 live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
             }
-            match inner
-                .engine
-                .block_store()
-                .gc_slabs_before_with_live_refs(
-                    retain_from_block_slab_id,
-                    live_block_slab_ids,
-                ) {
+            // Quarantine or unlink, nothing else: both entries take the same path and differ
+            // only in what they do with a slab once it has been selected, so a request that does
+            // not ask for quarantine runs exactly the code it ran before.
+            let gc_result = if request.page_gc_delayed_destroy {
+                inner
+                    .engine
+                    .block_store()
+                    .gc_slabs_before_with_live_refs_delayed_destroy(
+                        retain_from_block_slab_id,
+                        live_block_slab_ids,
+                    )
+            } else {
+                inner
+                    .engine
+                    .block_store()
+                    .gc_slabs_before_with_live_refs(retain_from_block_slab_id, live_block_slab_ids)
+            };
+            match gc_result {
                 Ok(report) => {
                     block_slabs_removed = report.removed_block_slab_ids.len();
                     block_slabs_removed_physical_bytes = report.removed_physical_bytes;
