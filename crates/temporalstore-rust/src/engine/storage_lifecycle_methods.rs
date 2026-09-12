@@ -1110,6 +1110,63 @@ impl TemporalEngine {
         lifecycle_report: Option<&StorageLifecycleReport>,
         request: &StorageManagerCycleRequest,
     ) -> StorageIndexGcReport {
+        // THE CHEAP QUESTIONS FIRST.
+        //
+        // Everything below this point reads the WHOLE index log and decodes every record, and
+        // this report is built on EVERY maintenance round -- every 30 s on the periodic loop --
+        // whether or not the collector can possibly run. With the shipped defaults
+        // (`enable_index_gc: true`, a 768 KiB byte threshold) a shard whose index log is under
+        // that threshold paid a full scan and a full decode, every round, purely to establish
+        // that it was never eligible. `what_the_index_gc_gate_costs` measures that round.
+        //
+        // WHY THE CHEAP BYTE TEST IS SOUND, which is the part worth checking rather than
+        // assuming. `log_len_bytes` is the FILE length. `bytes_before` below sums what `scan`
+        // hands back, which is each record's FRAMED LINE (`decode_line` is applied to it further
+        // down, so it is the on-disk line, not the payload inside it). The file holds those lines
+        // plus the `\n` terminating each one, and nothing the scan drops is subtracted from the
+        // file, so
+        //
+        //     log_len_bytes >= bytes_before,   always.
+        //
+        // If the file length is already under the threshold then `bytes_before` is under it too,
+        // so the old code would have set `threshold_triggered = false` and skipped. Skipping here
+        // can therefore only ever AGREE with what the scan would have concluded; it cannot skip a
+        // round the scan would have run. The inequality is the whole argument, and it holds in one
+        // direction only -- do NOT invert this to fire EARLY on the cheap number, because a file
+        // length above the threshold does not imply `bytes_before` is.
+        //
+        // ONLY TWO CONDITIONS SKIP, deliberately. `dry_run` does NOT: a dry run exists to report
+        // what a real round WOULD do, so it still pays for the numbers it was asked for. Nor does
+        // an unsafe WAL/index frontier: those counts are the diagnosis for why the frontier is
+        // stuck. The two below are the cases where nobody is asking for a number -- the feature is
+        // off, or the log is too small to be worth collecting.
+        let quick_bytes = self.index_log_store.log_len_bytes(request.shard_id);
+        let quick_threshold_missed = request.index_gc_index_log_bytes_threshold != 0
+            && quick_bytes < request.index_gc_index_log_bytes_threshold;
+        let quick_skip_reason = if !request.enable_index_gc {
+            "index GC disabled"
+        } else if quick_threshold_missed {
+            "index-log byte threshold not reached"
+        } else {
+            ""
+        };
+        if !quick_skip_reason.is_empty() {
+            return StorageIndexGcReport {
+                shard_id: request.shard_id,
+                enabled: request.enable_index_gc,
+                bytes_threshold: request.index_gc_index_log_bytes_threshold,
+                usage_ratio_trigger_basis_points: request
+                    .index_gc_usage_ratio_trigger_basis_points,
+                max_entries_per_round: request.index_gc_max_entries_per_round,
+                retain_from_index_log_sequence: wal_plan.retain_from_index_log_sequence,
+                bytes_before: quick_bytes,
+                bytes_after: quick_bytes,
+                threshold_triggered: !quick_threshold_missed,
+                skipped_reason: quick_skip_reason.to_string(),
+                ..StorageIndexGcReport::default()
+            };
+        }
+
         let records = self
             .index_log_store
             .scan(request.shard_id, 0, u64::MAX, u64::MAX)

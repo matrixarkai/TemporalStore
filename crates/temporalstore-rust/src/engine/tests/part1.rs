@@ -7666,6 +7666,100 @@ fn what_a_bucket_costs() {
     }
 }
 
+/// What the cheap index-GC gate SAVES, measured as two arms in ONE process. Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_the_cheap_index_gc_gate_saves -- --ignored --nocapture
+///
+/// Two arms, differing only in the byte threshold:
+///
+///   SCAN  threshold 0        -- never missed, so the cheap skip does not fire and the gate reads
+///                               and decodes the whole index log. This is EXACTLY what every round
+///                               did before the skip existed, which is what makes it the baseline.
+///   SKIP  threshold u64::MAX -- always missed, so the gate returns on a file-length check alone.
+///
+/// Run ABBA (skip, scan, scan, skip) inside one process rather than as a before/after across two
+/// builds. This box is shared and its load moves a lot -- another session had a release build
+/// running at load 19 while this was written -- so a sequential before/after measures the box as
+/// much as the change. Interleaving inside one process gives both arms the same machine.
+///
+/// The fixture is deliberately one where the collector CANNOT fire, so the SCAN arm pays for the
+/// scan and nothing else. Both arms are asserted not to have collected, because if either did,
+/// the difference would include collection work and would not be a gate measurement at all.
+#[test]
+#[ignore]
+fn what_the_cheap_index_gc_gate_saves() {
+    for records in [4_000usize, 16_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("gate-save-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+
+        let log_bytes = engine.index_log_store.log_len_bytes(1);
+        // Denominator: an empty index log would make both arms trivially equal and the whole
+        // comparison vacuous.
+        assert!(log_bytes > 0, "fixture wrote no index log, nothing to scan");
+
+        let plan = engine.storage_lifecycle_plan(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            ..crate::engine::reports::StorageLifecycleRequest::default()
+        });
+        let wal_plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+
+        // Time ONLY the gate, with both plans hoisted out. Timing the enclosing periodic call
+        // would bury the difference under `storage_lifecycle_plan`, which dominates it and which
+        // this change does not touch.
+        let arm = |threshold: u64| -> (f64, bool) {
+            let request = crate::engine::reports::StorageManagerCycleRequest {
+                shard_id: 1,
+                index_gc_index_log_bytes_threshold: threshold,
+                index_gc_max_entries_per_round:
+                    crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
+                ..crate::engine::reports::StorageManagerCycleRequest::default()
+            };
+            let started = std::time::Instant::now();
+            let mut applied = false;
+            for _ in 0..5 {
+                let report = engine.storage_index_gc_report(&plan, &wal_plan, None, &request);
+                applied |= report.applied;
+            }
+            (started.elapsed().as_micros() as f64 / 5.0 / 1000.0, applied)
+        };
+
+        let (skip_a, applied_1) = arm(u64::MAX);
+        let (scan_a, applied_2) = arm(0);
+        let (scan_b, applied_3) = arm(0);
+        let (skip_b, applied_4) = arm(u64::MAX);
+        let skip_ms = (skip_a + skip_b) / 2.0;
+        let scan_ms = (scan_a + scan_b) / 2.0;
+
+        assert!(
+            !(applied_1 || applied_2 || applied_3 || applied_4),
+            "fixture let the collector fire; this probe measures the GATE only",
+        );
+
+        eprintln!(
+            "  [gate-save] {records:>6} records, log {log_bytes:>9} B -> scan {scan_ms:>7.2} ms \
+(arms {scan_a:>6.2}/{scan_b:>6.2})  skip {skip_ms:>7.2} ms (arms {skip_a:>6.2}/{skip_b:>6.2})  \
+saved {:>7.2} ms per round",
+            scan_ms - skip_ms,
+        );
+    }
+}
+
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_slot_range_saves -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
