@@ -1714,8 +1714,10 @@
      The strip is the one element on every page, and it said "live" whenever the socket was open --
      so a gateway that stopped producing frames left every page green. The page-side client learned
      this in mx#1189; the strip runs its own client, because five of the seven pages never load the
-     other one, so it has to learn it too. `test_both_stream_clients_agree_when_a_stream_is_quiet`
-     is what stops the two rules drifting apart. */
+     other one, so it has to learn it too. `TheTwoClientsAgreeTest` in
+     test_matrixark_the_strip_notices_a_quiet_stream_too is what stops the two rules drifting
+     apart: both must read tick_s off the frame, both must stamp on every block rather than on
+     frames, and neither may write the interval down. */
   var blockAt = 0, tickMs = 0, quietTimer = null;
   /* Set when the gateway says it is closing on purpose, cleared by the reopen it
      causes. A planned recycle and a gateway that stopped answering look identical
