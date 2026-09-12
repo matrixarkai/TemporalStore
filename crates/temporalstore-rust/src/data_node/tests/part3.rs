@@ -4140,3 +4140,100 @@ fn what_gates_the_periodic_truncation() {
         );
     }
 }
+
+/// Do BOTH logs stay bounded while ingestion keeps going? Prints a per-round table.
+///
+///   cargo test -p temporalstore-rust --lib do_both_logs_stay_bounded_under_ingestion \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// Everything this session wired -- #1470 (WAL reclaim on the periodic loop), #1490 (index-log
+/// reclaim), #1500 (the dump cap bounds a stage not a round), #1503 (the cycle's round bounds) --
+/// was verified one stage at a time on a STATIC store: write everything, then run rounds. That is
+/// not how a server runs. The question this answers is the one that actually matters: with writes
+/// arriving continuously, do the logs reach a steady state, or do they grow for ever anyway?
+///
+/// The shape is deliberate. Each round writes a batch and THEN runs one maintenance round, which
+/// is the real interleaving -- the dump, the reclaim and the next batch all racing the same shard
+/// lock. A test that writes everything first cannot see a reclaim that is always one round behind
+/// its own ingest.
+#[test]
+#[ignore]
+fn do_both_logs_stay_bounded_under_ingestion() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    fn wal_records(engine: &TemporalEngine) -> usize {
+        engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0)
+    }
+    fn index_records(engine: &TemporalEngine) -> usize {
+        engine
+            .index_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0)
+    }
+
+    const BATCH: usize = 2_000;
+    const ROUNDS: usize = 12;
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+
+    eprintln!("  round   written      wal   index    wal_peak  index_peak");
+    let mut written = 0usize;
+    let mut wal_peak = 0usize;
+    let mut index_peak = 0usize;
+    for round in 1..=ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            let key = format!("soak-{:08}", written + index);
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet { key, value: vec![b'v'; 96] },
+            });
+            assert!(response.status.ok, "write failed: {:?}", response.status);
+        }
+        written += BATCH;
+
+        // One maintenance round, exactly as the scheduler runs it.
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+
+        let engine = runtime.engine();
+        let wal = wal_records(&engine);
+        let index = index_records(&engine);
+        wal_peak = wal_peak.max(wal);
+        index_peak = index_peak.max(index);
+        // WHY, per round. A log that never shrinks under ingestion is either being declined by
+        // the plan or never reaching a threshold, and those want different fixes.
+        let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+        eprintln!(
+            "  {round:>5}   {written:>7}   {wal:>6}  {index:>6}   safe={} cov={} uncov={} \
+             retain_wal={} retain_idx={} blockers={:?}",
+            plan.safe_to_reclaim,
+            plan.covered_bucket_count,
+            plan.uncovered_bucket_count,
+            plan.retain_from_wal_sequence,
+            plan.retain_from_index_log_sequence,
+            plan.blocker_reasons,
+        );
+    }
+
+    let engine = runtime.engine();
+    let wal = wal_records(&engine);
+    let index = index_records(&engine);
+    eprintln!(
+        "  ingested {written}, wal ends at {wal} (peak {wal_peak}), index ends at {index} (peak {index_peak})"
+    );
+    // Deliberately no assertion yet: this prints first so the steady state can be READ off a real
+    // interleaving before anything is pinned to a number picked from a static fixture.
+}
