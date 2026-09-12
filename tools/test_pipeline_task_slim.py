@@ -231,5 +231,69 @@ class EndToEndTest(unittest.TestCase):
                          "readiness / dashboard / positional / extraction-signal answers must be identical")
 
 
+class TheDashboardSaysRowsAgainstDistinctTasksTest(unittest.TestCase):
+    """`totals["async_pipeline"]` counts rows. It cannot say whether forty rows are forty tasks
+    or one task written forty times, and those are different problems.
+
+    pipeline_task_footprint_stats worked that out already and no surface carried it.
+    """
+
+    @staticmethod
+    def _adapter(rows):
+        import matrixark_mcp_local_adapter as adapter_module
+
+        class _Fixed(adapter_module.MatrixArkLocalAdapter):  # type: ignore[misc]
+            def __init__(self, records):
+                self._rows = records
+
+            def read_all(self):
+                return self._rows
+
+        return _Fixed(rows)
+
+    @staticmethod
+    def _task(identity, status):
+        return {"record_type": slim.PIPELINE_TASK_RECORD_TYPE, "task_hash": identity,
+                "status": status, "scope_key": "tenant/user"}
+
+    def test_the_payload_separates_rows_from_tasks(self):
+        rows = [self._task(1, "queued"), self._task(1, "running"),
+                self._task(1, "committed"), self._task(2, "queued")]
+        out = self._adapter(rows).ingestion_dashboard({"table": "async_pipeline"})
+        footprint = out.get("pipeline_task_footprint")
+        self.assertIsNotNone(footprint, "the dashboard does not carry the pipeline-task footprint")
+        self.assertEqual(4, footprint["pipeline_tasks"], "rows")
+        self.assertEqual(2, footprint["distinct_tasks"], "distinct tasks")
+        self.assertEqual(1, footprint["finished"],
+                         "only 'committed' is in FINISHED_STATUSES here")
+
+    def test_it_reports_what_the_store_holds_not_what_the_page_shows(self):
+        """The point of carrying it, and the thing I had backwards at first.
+
+        `totals["async_pipeline"]` is the COLLAPSED view -- `_dashboard_rows_for_table` already
+        folds re-stamped rows to the latest one, so four rows for one task show as one. That is
+        right for a page, and it means the page cannot show what the store is actually holding.
+        The footprint reports both, so the saving the collapse knob is making is visible instead
+        of being the reason the number looks fine.
+        """
+        one_task_many_rows = [self._task(7, "queued"), self._task(7, "running"),
+                              self._task(7, "running"), self._task(7, "committed")]
+        out = self._adapter(one_task_many_rows).ingestion_dashboard({"table": "async_pipeline"})
+        footprint = out["pipeline_task_footprint"]
+        self.assertEqual(1, out["totals"]["async_pipeline"],
+                         "the table collapses re-stamped rows to the latest")
+        self.assertEqual(4, footprint["pipeline_tasks"],
+                         "the store holds four rows, which the collapsed table cannot say")
+        self.assertEqual(1, footprint["distinct_tasks"], "for one task")
+
+    def test_the_two_knobs_that_trade_this_are_reported_with_it(self):
+        """A control whose unit is invisible on the same page asks the reader to decide blind."""
+        out = self._adapter([]).ingestion_dashboard({"table": "async_pipeline"})
+        footprint = out["pipeline_task_footprint"]
+        for knob in ("collapse_enabled", "slim_enabled"):
+            with self.subTest(knob=knob):
+                self.assertIn(knob, footprint)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
