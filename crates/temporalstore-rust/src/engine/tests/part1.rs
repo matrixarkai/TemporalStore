@@ -8293,6 +8293,26 @@ fn what_each_plan_call_walks() {
     let _ = engine.storage_lifecycle_plan(lifecycle_request());
     report("storage_lifecycle_plan", crate::engine::live_page_scan_entries());
 
+    // Split that 2.0x across the three calls it makes. `bucket_storage_summaries` is measured
+    // above at 1.0x, so ONE of the other two carries the second walk -- and neither is an obvious
+    // candidate: `live_block_slab_ids` walks the model maps (which this counter cannot see) and
+    // `storage_reclaim_slab_reports` is documented as a header walk of the page store. Measured
+    // rather than reasoned about, because reasoning about this counter has been wrong before:
+    // `object_manager_runtime_report`'s second walk turned out to be a bare expression at the end
+    // of the function that every grep had missed.
+    //
+    // These rows are a breakdown OF the row above, not additions to the total.
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.live_block_slab_ids(1);
+    report("  of which: live_block_slab_ids", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_reclaim_slab_reports(1);
+    report(
+        "  of which: storage_reclaim_slab_reports",
+        crate::engine::live_page_scan_entries(),
+    );
+
     // The unconditional pieces of `apply_storage_lifecycle`. None of them is gated by a request
     // flag -- `what_apply_storage_lifecycle_walks` subtracts every flag and moves nothing -- so
     // they have to be measured directly rather than by toggling the request.
