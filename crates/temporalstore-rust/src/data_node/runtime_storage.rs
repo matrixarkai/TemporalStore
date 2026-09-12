@@ -486,6 +486,10 @@ impl DataNodeRuntime {
                     // `purge_delayed_destroy` whenever page GC is on, so quarantined slabs are
                     // still collected -- an hour later, not never.
                     page_gc_delayed_destroy: true,
+                    // This stage ran every round page pressure held, and each run emptied the
+                    // shard's cache outright -- memory, pmem and disk tiers alike -- however few
+                    // slabs it went on to reclaim. Invalidate what was reclaimed instead.
+                    page_gc_invalidate_removed_slabs_only: true,
                 },
             );
             if !response.status.ok {

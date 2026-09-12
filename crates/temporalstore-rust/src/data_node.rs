@@ -775,6 +775,14 @@ pub struct GcRequest {
     /// hand keeps the immediate unlink, because the space is usually why they called.
     #[serde(default)]
     pub page_gc_delayed_destroy: bool,
+    /// Invalidate only the cache entries for slabs this round actually reclaimed.
+    ///
+    /// Defaults to false, which drops the WHOLE shard's cache -- every memory, pmem and disk
+    /// entry the shard holds, across all three tiers. That is defensible for an operator who
+    /// asked for a collection by hand and wants the caches clean afterwards, so the RPC keeps
+    /// it. It is harder to defend on a loop that runs every thirty seconds.
+    #[serde(default)]
+    pub page_gc_invalidate_removed_slabs_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

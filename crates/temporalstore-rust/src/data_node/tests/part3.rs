@@ -1140,6 +1140,7 @@ fn gc_does_not_clear_the_dirty_scheduling_tracker() {
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: None,
             page_gc_delayed_destroy: false,
+            page_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2147,6 +2148,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             retain_index_log_from_sequence: Some(2),
             retain_block_slabs_from_id: Some(2),
             page_gc_delayed_destroy: false,
+            page_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2229,6 +2231,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: Some(u64::MAX),
             page_gc_delayed_destroy: false,
+            page_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2401,6 +2404,7 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
             retain_index_log_from_sequence: Some(2),
             retain_block_slabs_from_id: None,
             page_gc_delayed_destroy: false,
+            page_gc_invalidate_removed_slabs_only: false,
         }),
     };
     runtime
@@ -2513,6 +2517,7 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: None,
             page_gc_delayed_destroy: false,
+            page_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -4675,4 +4680,236 @@ fn the_maintenance_round_runs_its_stages_in_order() {
             "{required} did not run, so the order assertion above proved nothing: {stages:?}"
         );
     }
+}
+
+
+/// Who actually drops the shard cache during a maintenance round? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_drops_the_shard_cache \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// `run_gc_inner` opens by calling `invalidate_shard`, which empties the whole shard. But
+/// `reclaim_memory` ALSO passes `invalidate_cache: true` and runs earlier in the round, so on any
+/// round where that stage fires the cache is already gone by the time page GC looks at it. This
+/// prints, per round, which stages ran, how warm the cache was, and what each invalidation
+/// actually removed -- so the size of the page-GC drop is measured rather than assumed.
+#[test]
+#[ignore]
+fn what_drops_the_shard_cache() {
+    const BATCH: usize = 300;
+    const ROUNDS: usize = 8;
+    const KEYSPACE: usize = 100;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+
+    eprintln!("  round  warm_bytes  mem_ran  gc_ran  gc_cache_removed  slabs_removed");
+    let mut written = 0usize;
+    for round in 0..ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("whodrops-{:06}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += BATCH;
+        for key_index in 0..KEYSPACE {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("whodrops-{:06}", key_index),
+                },
+            });
+        }
+        let warm = engine.cache().stats().memory_bytes;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let mem_ran = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_memory");
+        let gc_ran = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_page");
+        let gc_removed = report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.cache_entries_removed)
+            .unwrap_or(0);
+        let slabs = report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.block_slabs_removed)
+            .unwrap_or(0);
+        eprintln!(
+            "  {round:>5}  {warm:>10}  {mem_ran:>7}  {gc_ran:>6}  {gc_removed:>16}  {slabs:>13}"
+        );
+    }
+
+    // Scenario two: reclaim_memory SKIPPED.
+    //
+    // That stage is pressure-gated. When it fires it invalidates the whole shard itself, which is
+    // why page GC's own drop removes nothing above. The question this scenario answers is what
+    // page GC does on a round where the earlier stage did NOT run and the cache is still warm.
+    eprintln!("  -- with reclaim_memory disabled --");
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions {
+        enable_memory_reclaim: false,
+        ..StorageManagerOptions::default()
+    };
+    let mut written = 0usize;
+    for round in 0..ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("whodrops2-{:06}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += BATCH;
+        for key_index in 0..KEYSPACE {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("whodrops2-{:06}", key_index),
+                },
+            });
+        }
+        let warm = engine.cache().stats().memory_bytes;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let mem_ran = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_memory");
+        let gc_ran = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_page");
+        let gc_removed = report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.cache_entries_removed)
+            .unwrap_or(0);
+        let slabs = report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.block_slabs_removed)
+            .unwrap_or(0);
+        eprintln!(
+            "  {round:>5}  {warm:>10}  {mem_ran:>7}  {gc_ran:>6}  {gc_removed:>16}  {slabs:>13}"
+        );
+    }
+}
+
+/// A page-GC round invalidates the slabs it reclaimed, not the whole shard's cache.
+///
+/// `run_gc_inner` opened by calling `invalidate_shard`, which empties every memory, pmem and disk
+/// entry the shard holds. It runs BEFORE the collection, because at that point nothing knows what
+/// will be reclaimed -- so it takes everything, including on a round that goes on to reclaim
+/// nothing at all. The storage-manager cycle has always invalidated per reclaimed slab instead.
+///
+/// `enable_memory_reclaim: false` is load-bearing, not incidental. `reclaim_memory` passes
+/// `invalidate_cache: true` and runs earlier in the round, so when it fires it empties the shard
+/// itself and page GC's drop removes nothing -- measured, zero entries on every round. Two earlier
+/// versions of this guard passed under mutation for exactly that reason: they were watching a
+/// cache that an earlier stage had already emptied. Disabling that stage is what isolates the
+/// behaviour under test. `what_drops_the_shard_cache` prints both arrangements.
+///
+/// The assertion is the invariant that separates them: a round that reclaimed NOTHING must
+/// invalidate nothing. Measured, whole-shard drops 200-400 entries on such a round.
+#[test]
+fn a_page_gc_round_invalidates_only_what_it_reclaimed() {
+    const BATCH: usize = 300;
+    const ROUNDS: usize = 6;
+    const KEYSPACE: usize = 100;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions {
+        enable_memory_reclaim: false,
+        ..StorageManagerOptions::default()
+    };
+
+    let mut written = 0usize;
+    let mut checked_rounds = 0usize;
+    for _ in 0..ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("cachescope-{:06}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += BATCH;
+        // Warm the cache before each round, so a whole-shard drop always has something to take.
+        for key_index in 0..KEYSPACE {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("cachescope-{:06}", key_index),
+                },
+            });
+        }
+        assert!(
+            engine.cache().stats().memory_bytes > 0,
+            "the cache held nothing after reading every key, so this round proves nothing"
+        );
+
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let Some(gc) = report.gc_report.as_ref() else {
+            continue;
+        };
+        if gc.block_slabs_removed == 0 {
+            checked_rounds += 1;
+            assert_eq!(
+                gc.cache_entries_removed, 0,
+                "a round that reclaimed no slabs invalidated {} cache entries -- that is the \
+                 whole shard being dropped, not what this round collected",
+                gc.cache_entries_removed
+            );
+        }
+    }
+
+    // The denominator. The assertion only fires on rounds that reclaimed nothing, so without one
+    // of those it checked nothing at all.
+    assert!(
+        checked_rounds > 0,
+        "no round reclaimed zero slabs, so the invariant was never exercised"
+    );
 }
