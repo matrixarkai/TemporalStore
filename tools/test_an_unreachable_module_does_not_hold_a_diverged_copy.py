@@ -59,7 +59,13 @@ from collections import defaultdict
 #: copies differed by which spelling of require_oss_understanding they called, and in one case by a
 #: lazy-import shim for a name core resolves at module scope. Same implementation, different
 #: plumbing -- which is the hardest kind to read, because the diff is real and means nothing.
-RECORDED_DIVERGED = 46
+#:
+#: 46 -> 44 for the same reason one file along: matrixark_mcp_oss_understanding kept copies of
+#: oss_encoder_memory_segments and oss_encoder_extract_batch_entities that differed only by
+#: reaching their helpers through a lazy `core.` accessor. That accessor looked like cycle
+#: avoidance and was not -- the file already binds core at module scope, and core does not
+#: import it at all -- so it went with them.
+RECORDED_DIVERGED = 44
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -67,7 +73,7 @@ RECORDED_DIVERGED = 46
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 58
+RECORDED_SHADOWED = 56
 
 _CACHE: dict[str, object] = {}
 
