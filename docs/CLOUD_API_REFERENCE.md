@@ -234,7 +234,6 @@ You cannot address another tenant's namespace; `tenant_id` is set from your API 
 |---|---|
 | `MATRIXARK_HOOK_FAST_ASYNC_INGEST=1` | ingest stores raw and returns — **no inline model** |
 | `MATRIXARK_HOOK_AUTO_BATCH_EXTRACT=1` | extraction runs **batched**, on commit/timeout |
-| `MATRIXARK_DIRECT_RAW_INGESTION_QUEUE=1` | raw-write fast path |
 | `MATRIXARK_RUST_PROXY_ASYNC_STORAGE=1` | async storage |
 | `MATRIXARK_BULK_INGEST=1` | group-commit durability |
 

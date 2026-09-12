@@ -1294,12 +1294,6 @@ SETTINGS.extend([
             "on the queue path, which is off by default too. On costs a second store write on "
             "every ingest, under MATRIXARK_DIRECT_RAW_STORAGE_PREFIX, which must differ from "
             "the serving prefix or the first raw append raises."),
-    Setting("limits.direct_raw_ingestion_queue", "limits", "MATRIXARK_DIRECT_RAW_INGESTION_QUEUE",
-            "Direct raw ingestion queue", "bool", "0", "live",
-            "Sends raw ingestion batches through the background write queue instead of writing "
-            "them inline. It does NOTHING on its own: the branch also requires "
-            "MATRIXARK_DIRECT_WRITE_QUEUE to be on and its mode to be memory, so turning only "
-            "this one on changes nothing and reports nothing."),
     Setting("limits.direct_record_log_shard_size", "limits", "MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE",
             "Direct record log shard size", "int", "256", "restart",
             "Records per shard in the direct record log. Frozen when the process starts. Declared "

@@ -208,7 +208,6 @@ timeout/size threshold. Enable the fast-ack path:
 ```bash
 MATRIXARK_HOOK_FAST_ASYNC_INGEST=1      # ingest stores raw and returns, no inline model
 MATRIXARK_HOOK_AUTO_BATCH_EXTRACT=1     # extraction batched on commit/timeout
-MATRIXARK_DIRECT_RAW_INGESTION_QUEUE=1  # raw-write fast path
 MATRIXARK_RUST_PROXY_ASYNC_STORAGE=1
 MATRIXARK_BULK_INGEST=1                 # group-commit durability
 ```

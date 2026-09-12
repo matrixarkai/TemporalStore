@@ -95,8 +95,6 @@ class _TemporalDirectBackendMixin:
             self._direct_write_queue_autostart = True
         if not hasattr(self, "_native_side_index_assume_fresh"):
             self._native_side_index_assume_fresh = env_bool("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", False)
-        if not hasattr(self, "_direct_raw_ingestion_queue_enabled"):
-            self._direct_raw_ingestion_queue_enabled = env_bool("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", False)
         if not hasattr(self, "_direct_write_queue_key"):
             self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
         if not hasattr(self, "_direct_write_queue_done_key"):
@@ -758,9 +756,13 @@ class _TemporalDirectBackendMixin:
         self._ensure_raw_ingestion_fields()
         if self._raw_ingestion_prefix == self._storage_prefix:
             raise MatrixArkError("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX must differ from the serving storage prefix")
+        # Raw batches follow the write queue. They used to need a third switch,
+        # MATRIXARK_DIRECT_RAW_INGESTION_QUEUE, which could not act on its own -- it was the only
+        # flag in tools/ whose branch also required another flag -- so an operator turning it on
+        # got no queue and no error. The mode condition stays: the durable queue path has never
+        # carried a raw batch, and matrixark_codex_dual_hook.sh runs in temporalstore mode.
         if (
             allow_queue
-            and bool(getattr(self, "_direct_raw_ingestion_queue_enabled", False))
             and bool(getattr(self, "_direct_write_queue_enabled", False))
             and getattr(self, "_direct_write_queue_mode", "memory") == "memory"
         ):
