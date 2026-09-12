@@ -244,6 +244,40 @@ EXAMINED = {
         "a report gate: the workflow report reads it to decide whether missing coverage fails the run, and a gate exists to be turned on for a run",
 }
 
+def _readers_all_unreachable(reads):
+    """Flags every reader of which sits in a module production cannot reach.
+
+    A flag is only a control if something can turn it. These nineteen gate code no request arrives
+    at, so turning them changes nothing that runs -- which makes them the one group on this page
+    that could be retired without removing a capability from anybody.
+
+    Not a removal list. Seventeen of the nineteen are in `matrixark_mcp_rust_proxy_config`, and
+    `test_a_module_only_tests_reach_is_not_live` records that module as unwired rather than
+    abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are
+    its tuning surface. Retiring them is a decision about whether that path is coming back, and
+    the point of naming the group is that the decision is now one decision rather than nineteen.
+
+    Computed from the reachability guard next door rather than restated, so a module that becomes
+    reachable takes its flags out of this group on the same day.
+    """
+    try:
+        import test_a_module_only_tests_reach_is_not_live as reachability
+    except Exception:  # pragma: no cover - the guard is absent
+        return set()
+    try:
+        _library, reached = reachability.reachable_from_production()
+    except Exception:  # pragma: no cover - a broken scan must not reclassify the page
+        return set()
+    if not reached:
+        return set()
+    out = set()
+    for name, modules in reads.items():
+        stems = {m[:-3] if m.endswith(".py") else m for m in modules}
+        if stems and not (stems & reached):
+            out.add(name)
+    return out
+
+
 #: Module prefixes and markers that make a file a TOOL rather than the product: a benchmark, a
 #: conformance gate, a report builder, a sweep. It replaces a narrower rule that read the same thing and
 #: caught 8 of these 77 -- not because it looked in the wrong place, but because `selected` and
@@ -430,9 +464,18 @@ def classify():
     out = {"tooling only": set(),
            "selected": set(), "instructed": set(),
            "deployment identity": set(), "legacy spelling": set(),
+           "readers all unreachable": set(),
            "read one at a time": set(), "candidate": set()}
+    unreachable = _readers_all_unreachable(reads)
     for name in reads:
-        if name in tooling:
+        if name in unreachable:
+            # First, because it is the sharpest thing true of these. A flag whose every reader is
+            # unreachable is not held by a test naming it or by prose describing it -- nothing can
+            # turn it at all.
+            out["readers all unreachable"].add(name)
+        elif name in tooling:
+            # Second: the product cannot see these either, but a benchmark can, so they are a
+            # tool's command line rather than a control nothing can reach.
             out["tooling only"].add(name)
         elif name in selected:
             out["selected"].add(name)
@@ -566,6 +609,40 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                     elsewhere,
                     "%s is in this register and reads as selected, and nothing but this file "
                     "names it -- the register is classifying itself." % name)
+
+    def test_the_unreachable_group_is_computed_not_listed(self) -> None:
+        """It comes from the reachability guard, so it cannot go stale on its own.
+
+        A hand-written list here would keep naming flags after their module was wired up, and a
+        group that describes a tree which has moved is worse than no group.
+        """
+        _reads, groups = classify()
+        unreachable = groups["readers all unreachable"]
+        import test_a_module_only_tests_reach_is_not_live as reachability
+        library, reached = reachability.reachable_from_production()
+        # The vacuity guard is on the SCAN, not on the group.
+        #
+        # It used to require the group to be non-empty, with the reasoning that an empty one is
+        # what a broken reachability scan looks like. That was true when it was written and is
+        # not any more: this group held nineteen flags, all of them in the unwired proxy config,
+        # and folding those to the values they already produced emptied it -- which is the
+        # outcome naming the group was FOR. An assertion that cannot tell "the scan broke" from
+        # "we retired them all" fails on the success it was built to enable.
+        #
+        # So it asks the scan instead. A scan that has stopped matching reaches approximately
+        # nothing, and that is the failure this file cannot otherwise see. The group is computed
+        # rather than listed, so it refills the day a module stops being reachable.
+        self.assertGreater(
+            len(reached), len(library) // 2,
+            "the reachability scan reaches %d of %d library modules. Below half, believe the scan "
+            "is broken before believing the tree changed shape."
+            % (len(reached), len(library)))
+        for name in sorted(unreachable):
+            with self.subTest(flag=name):
+                stems = {m[:-3] if m.endswith(".py") else m for m in self.reads[name]}
+                self.assertFalse(
+                    stems & reached,
+                    "%s is in the unreachable group and %s is reachable" % (name, stems & reached))
 
     def test_the_product_surface_is_reported_apart_from_the_tools(self) -> None:
         """The number a reduction target is about is the PRODUCT's, and it is not the total.
