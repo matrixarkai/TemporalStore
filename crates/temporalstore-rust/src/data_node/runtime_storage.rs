@@ -601,7 +601,11 @@ impl DataNodeRuntime {
             let index_gc = self
                 .inner
                 .engine
-                .apply_periodic_index_gc(index_gc_request, Some(&response.report));
+                .apply_periodic_index_gc(
+                    index_gc_request,
+                    Some(&response.report),
+                    options.index_gc_max_entries_per_round,
+                );
             if index_gc.applied {
                 tracing::debug!(
                     shard_id,

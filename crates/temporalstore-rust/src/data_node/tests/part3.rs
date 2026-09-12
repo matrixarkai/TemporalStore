@@ -3806,6 +3806,7 @@ fn what_the_index_gc_gate_says() {
                 ..crate::engine::reports::StorageLifecycleRequest::default()
             },
             None,
+            crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
         );
         eprintln!(
             "  {records:>6} records -> enabled={} applied={} safe_dirty={} bytes_before={} \
@@ -3884,7 +3885,7 @@ fn what_the_index_gc_gate_costs() {
         let started = std::time::Instant::now();
         let mut applied_any = false;
         for _ in 0..5 {
-            let report = engine.apply_periodic_index_gc(lifecycle_request(), None);
+            let report = engine.apply_periodic_index_gc(lifecycle_request(), None, crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND);
             applied_any |= report.applied;
         }
         let per_call = started.elapsed().as_micros() as f64 / 5.0 / 1000.0;
@@ -4021,6 +4022,7 @@ fn what_one_round_rebuilds() {
                 ..crate::engine::reports::StorageLifecycleRequest::default()
             },
             None,
+            crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
         );
         let (lifecycle, wal) = crate::engine::storage_plan_build_counts();
         eprintln!(
@@ -4236,4 +4238,97 @@ fn do_both_logs_stay_bounded_under_ingestion() {
     );
     // Deliberately no assertion yet: this prints first so the steady state can be READ off a real
     // interleaving before anything is pinned to a number picked from a static fixture.
+}
+
+/// How large must the index-GC round cap be to KEEP UP with ingestion? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_index_gc_cap_keeps_up \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// #1516 unfroze the reclaim floor and both logs started reclaiming. The WAL reaches a steady
+/// state; the index log does not, because `index_gc_max_entries_per_round` removes 256 records a
+/// round while ingest adds 2,000. This sweeps the cap on the same interleaved fixture -- write a
+/// batch, run one maintenance round -- and reports whether the log converges or diverges.
+///
+/// 256 is the CYCLE's default, chosen for an on-demand call. A periodic loop racing live ingest
+/// is a different workload, and the question is what value makes the log stop growing rather than
+/// what value is tidy.
+///
+/// MEASURED -- and the answer is that no value does:
+///
+///      cap   ingested    index_log   verdict
+///      256      16000        15488   diverging
+///     1024      16000        13952   diverging
+///     2048      16000        11904   diverging
+///     4096      16000        11904   diverging
+///
+/// Removal rises with the cap up to 2,048 and then stops dead: 4,096 leaves the log at exactly the
+/// same size, so on this workload, above 2,048 the cap is not what binds -- 512 records a round
+/// against 2,000 arriving, and raising the constant does not reach it.
+///
+/// Two limits on how far to read that. This fixture writes 16,000 DISTINCT keys, so almost every
+/// index record is the current version of a live key and there is legitimately little to reclaim:
+/// "diverging" here is not by itself evidence of a defect. And `what_the_stage_order_buys`, whose
+/// fixture overwrites a small key space so records actually become garbage, reclaims 1,765 records
+/// a round rather than 64 on the same batch size. So what binds at 512 is specific to insert-only
+/// traffic and is NOT identified here -- do not read this as a general ceiling upstream of the
+/// knob. What it does establish is that this knob is not the lever on that shape of load, and a
+/// future round of tuning should re-run the sweep rather than assume the cap was left too low.
+#[test]
+#[ignore]
+fn what_index_gc_cap_keeps_up() {
+    const BATCH: usize = 2_000;
+    const ROUNDS: usize = 8;
+
+    fn index_records(engine: &TemporalEngine) -> usize {
+        engine
+            .index_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or(0)
+    }
+
+    eprintln!("     cap   ingested    index_log   verdict");
+    for cap in [256usize, 1_024, 2_048, 4_096] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let options = StorageManagerOptions {
+            index_gc_max_entries_per_round: cap,
+            ..StorageManagerOptions::default()
+        };
+        let mut written = 0usize;
+        for _ in 0..ROUNDS {
+            let engine = runtime.engine();
+            for index in 0..BATCH {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("cap-{:08}", written + index),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += BATCH;
+            runtime.run_storage_manager_once(1, options.clone());
+        }
+        let engine = runtime.engine();
+        let index = index_records(&engine);
+        // Converging means the log is a bounded multiple of one batch rather than of the total.
+        let verdict = if index < BATCH * 2 {
+            "bounded"
+        } else if index < written / 2 {
+            "lagging"
+        } else {
+            "diverging"
+        };
+        eprintln!("  {cap:>6}   {written:>8}   {index:>10}   {verdict}");
+    }
 }
