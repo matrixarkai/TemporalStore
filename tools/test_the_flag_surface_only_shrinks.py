@@ -296,6 +296,31 @@ def _is_tooling(module):
     return stem.startswith(_TOOLING_PREFIXES) or any(m in stem for m in _TOOLING_MARKERS)
 
 
+#: Scan results that cost a tree walk, computed once per process.
+_CACHE: dict = {}
+
+
+def _engine_reads():
+    """Flag names the RUST engine mentions, cached. The half of the product this file cannot see.
+
+    Everything else on this page scans production PYTHON, which is the right scope for a count of
+    what Python reads and the WRONG scope for the claim "no product module reads this". The engine
+    is production too, and `TS_SERVER_WORKER_THREADS` is the proof: `server.rs` reads it,
+    `config/temporalstore.toml` sets it, and the only Python that names it is an inventory builder
+    -- so the tooling rule called a live server control a benchmark's command line.
+
+    Four of the seventy-seven were wrong this way. A rule that reads one language and concludes
+    about the product is measuring what it can see.
+    """
+    if "engine" not in _CACHE:
+        names = set()
+        for rel in _tracked("crates/*", "*.rs"):
+            if rel.endswith(".rs"):
+                names |= set(_NAME.findall(_text(rel)))
+        _CACHE["engine"] = names
+    return _CACHE["engine"]
+
+
 def _read_only_by_tooling(reads):
     """Flags no PRODUCT module reads -- only a benchmark, a gate or a report builder.
 
@@ -308,11 +333,16 @@ def _read_only_by_tooling(reads):
     describe how a flag is DOCUMENTED, and this one describes whether the product can see it at
     all.
 
-    77 of 464 when this was written -- 21 in the context backfill benchmark alone, 17 in the
-    dual-write ingestion benchmark, 15 in the locomo ingest harness.
+    73 of 464 when this was written -- 21 in the context backfill benchmark alone, 17 in the
+    dual-write ingestion benchmark, 15 in the locomo ingest harness. It was 77 until the Rust
+    engine was consulted; see `_engine_reads` for the four it was wrong about.
     """
+    engine = _engine_reads()
     out = set()
     for name, modules in reads.items():
+        if name in engine:
+            # The engine is production. See `_engine_reads`.
+            continue
         if modules and all(_is_tooling(m) for m in modules):
             out.add(name)
     return out
@@ -738,6 +768,27 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
                 self.assertFalse(
                     stems & reached,
                     "%s is in the unreachable group and %s is reachable" % (name, stems & reached))
+
+    def test_no_tooling_flag_is_read_by_the_engine(self) -> None:
+        """The product is not only Python, and this page can only see Python.
+
+        `TS_SERVER_WORKER_THREADS` is read by crates/temporalstore-rust/src/bin/server.rs and set
+        in config/temporalstore.toml. The only PYTHON that names it is an inventory builder, so
+        the tooling rule called a live server control a benchmark's command line. Four of the
+        seventy-seven were wrong that way.
+        """
+        engine = _engine_reads()
+        self.assertGreater(
+            len(engine), 100,
+            "only %d flag names found in the Rust tree. Below this the engine scan has stopped "
+            "matching, and the exclusion it feeds silently stops excluding -- which puts live "
+            "server controls back into the tooling group without anything saying so." % len(engine))
+        _reads, groups = classify()
+        for name in sorted(groups["tooling only"]):
+            with self.subTest(flag=name):
+                self.assertNotIn(
+                    name, engine,
+                    "%s is called tooling-only and the engine reads it" % name)
 
     def test_the_product_surface_is_reported_apart_from_the_tools(self) -> None:
         """The number a reduction target is about is the PRODUCT's, and it is not the total.
