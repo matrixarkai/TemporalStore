@@ -59,14 +59,16 @@ try:
     )
     from tools.matrixark_access import MatrixArkAccessManager
     from tools.matrixark_http import make_matrixark_http_handler
+    # backend_ready_required, default_mcp_backend and validate_mcp_backend_policy are NOT imported
+    # here, deliberately. This module defines all three itself, below, and those definitions are
+    # what `__all__` re-exports. Importing them as well bound the names and threw them away six
+    # hundred lines before anything could use them -- see test_two_backend_policies_are_declared
+    # for what the two versions actually disagree about.
     from tools.matrixark_mcp_backends import (
         add_backend_arguments,
-        backend_ready_required,
         build_mcp_adapter,
-        default_mcp_backend,
         ensure_startup_backend_ready,
         production_profile_enabled,
-        validate_mcp_backend_policy,
     )
     from tools.matrixark_mcp_dispatch import dispatch_matrixark_tool
     from tools.matrixark_mcp_requests import normalize_mcp_tool_request
@@ -113,12 +115,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_http import make_matrixark_http_handler
     from matrixark_mcp_backends import (
         add_backend_arguments,
-        backend_ready_required,
         build_mcp_adapter,
-        default_mcp_backend,
         ensure_startup_backend_ready,
         production_profile_enabled,
-        validate_mcp_backend_policy,
     )
     from matrixark_mcp_dispatch import dispatch_matrixark_tool
     from matrixark_mcp_requests import normalize_mcp_tool_request
