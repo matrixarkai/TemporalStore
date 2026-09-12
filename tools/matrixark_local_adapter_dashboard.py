@@ -10,6 +10,11 @@ except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
     from matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
 
+try:  # package path
+    from tools.matrixark_mcp_embeddings import embedding_cache_stats
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_embeddings import embedding_cache_stats
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
     Any,
@@ -819,6 +824,15 @@ class _LocalAdapterDashboardMixin:
             "deferred_tasks": deferred_tasks,
             "deferred_stages": deferred_stages,
             "record_count": len(records),
+            # The encoder cache's own numbers, which existed and were printed nowhere. Its
+            # docstring says it reports "hits, misses, evictions and current size -- so cache
+            # behaviour is observable", and nothing observed it: a cache whose hit rate no surface
+            # carries is one whose capacity nobody can tell is wrong.
+            #
+            # Here rather than on the Prometheus surface because it belongs with the other
+            # embedding numbers -- how much of the scope is encoded, at which widths, by which
+            # model -- and this is the payload an operator already opens to ask that.
+            "cache": embedding_cache_stats(),
         }
 
     def ingestion_dashboard(self, args: Json) -> Json:
