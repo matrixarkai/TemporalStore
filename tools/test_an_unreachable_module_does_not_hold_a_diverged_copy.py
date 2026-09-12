@@ -81,7 +81,11 @@ from collections import defaultdict
 #: with a bare strip().lower() where the live copy maps aliases, so an entity recorded with
 #: role "human" scored priority 4 here and 1 there -- dropped against kept, when
 #: dedupe_entities ranks. codex_outcome_fact_entities differed only by inlining a local.
-RECORDED_DIVERGED = 36
+#:
+#: 36 -> 35 for infer_entity_field_patches, where the live copy has a branch this one lacked
+#: (a negative preference produces a patch there and nothing here) AND an lru_cached helper
+#: that fixed a quadratic scan -- 33 s against 1.2 s on a 256 KB ingest. The copy had neither.
+RECORDED_DIVERGED = 35
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -89,7 +93,7 @@ RECORDED_DIVERGED = 36
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 46
+RECORDED_SHADOWED = 45
 
 _CACHE: dict[str, object] = {}
 

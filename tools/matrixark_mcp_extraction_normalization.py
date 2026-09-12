@@ -77,6 +77,20 @@ def normalize_source_role_counts(raw_counts: Any, fallback_roles: list[str] | No
     return counts
 
 
+# NOT re-exported, and this is the one that goes the other way.
+#
+# matrixark_mcp_core_extraction defines normalize_extracted_entities too, and THIS copy is the
+# fuller one: it populates `source_roles` and `source_role_counts` on each entity and the live copy
+# does not. Those are not decorative -- `entity_retention_priority`, re-exported just above, ranks
+# on `"user" in source_roles`, so the field decides what survives a dedupe.
+#
+# It is not evidence of a live hole either: matrixark_mcp_core_codex_outcome and
+# matrixark_mcp_recovery both write source_roles onto entities on live paths, so entities reaching
+# that ranking are not all role-less. Whether THIS normaliser should populate it as well is a
+# question about the extraction path, not a consolidation, and consolidating toward the live copy
+# would silently drop the field.
+
+
 def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, source_refs: list[str], extracted_by: str) -> list[Json]:
     if not isinstance(raw_entities, list):
         return []
@@ -547,49 +561,6 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     return dedupe_entities(entities)
 
 
-def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[Json]:
-    patches: list[Json] = []
-    correction = re.search(
-        r"\b(?:correction|correct|wrong|updated|changed)[:\s]+([^.;!?]+?)\s+(?:instead\s+of|not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if correction:
-        replace = clean_patch_value(correction.group(1))
-        search = clean_patch_value(correction.group(2))
-        patches.append(entity_patch(search, replace))
-    preference = re.search(
-        r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]+?)\s+(?:now|instead\s+of|not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if entity_type == "preference" and preference:
-        replace = clean_patch_value(preference.group(1))
-        search = clean_patch_value(preference.group(2))
-        patches.append(entity_patch(search, replace))
-    evolving_entity_types = {
-        "preference",
-        "location",
-        "job_status",
-        "current_plan",
-        "family_profile",
-        "identity_profile",
-        "communication_profile",
-        "memory_feature_profile",
-        "workspace_profile",
-        "relationship",
-        "approval_state",
-        "correction",
-        "confirmation",
-        "assistant_decision",
-        "tool_evidence",
-        *CODEX_OUTCOME_ENTITY_TYPES,
-    }
-    if entity_type in evolving_entity_types and not patches and value:
-        patches.append(entity_patch("", summarize_text(value, limit=180)))
-    return patches[:3]
-
-
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
     from .matrixark_mcp_core import clean_patch_value
 except ImportError:  # Direct script execution from tools/.
@@ -627,6 +598,22 @@ try:  # the implementation lives in matrixark_mcp_core; this module re-exports i
     from .matrixark_mcp_core import entity_retention_priority
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core import entity_retention_priority
+
+
+# `infer_entity_field_patches` joined them, and the live copy is better in two ways.
+#
+# It has a third branch this one lacked: a negative preference such as "we should avoid tabs in
+# this repository" produces a patch there and nothing here -- executed both ways.
+#
+# And it reads the document through `_whole_text_patch_scans`, an lru_cached helper whose docstring
+# records why: this function is called once per extracted entity and each call re-ran three
+# whole-document regexes, so the work grew as the square of the entity count -- ~33 seconds on a
+# 256 KB markdown ingest against ~1.2 s for a JSON document of the same size. The copy here still
+# inlined the three searches, so it never got that fix either.
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from .matrixark_mcp_core import infer_entity_field_patches
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import infer_entity_field_patches
 
 
 # `codex_outcome_fact_entities` differed only by inlining a local: the live copy binds
