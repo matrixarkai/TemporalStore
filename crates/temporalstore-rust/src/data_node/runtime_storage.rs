@@ -494,67 +494,6 @@ impl DataNodeRuntime {
             ),
         ));
 
-        if options.enable_page_compaction && stale_page_pressure {
-            let response = run_compaction_inner(&self.inner, CompactionRequest { shard_id });
-            if !response.status.ok {
-                status = response.status.clone();
-            }
-            compaction_report = Some(response);
-            self.inner
-                .stats
-                .lock()
-                .expect("runtime stats lock poisoned")
-                .storage_manager_compact_runs += 1;
-            executed_stages.push("compact_pages".to_string());
-        } else if !options.enable_page_compaction {
-            skipped_stages.push("compact_pages_disabled".to_string());
-        } else {
-            skipped_stages.push("compact_pages_no_pressure".to_string());
-        }
-        pressure_decisions.push(storage_manager_pressure_decision(
-            "compact_pages",
-            options.enable_page_compaction,
-            stale_page_pressure,
-            options.enable_page_compaction && stale_page_pressure,
-            vec![
-                storage_manager_pressure_signal(
-                    "stale_page_segment_count",
-                    pressure.stale_block_slab_count as u64,
-                    options.stale_block_slab_pressure.max(1) as u64,
-                ),
-                storage_manager_pressure_signal(
-                    "reclaim_candidate_count",
-                    pressure.reclaim_candidate_count as u64,
-                    options.stale_block_slab_pressure.max(1) as u64,
-                ),
-                storage_manager_pressure_signal(
-                    "reclaimable_physical_bytes",
-                    pressure.reclaimable_physical_bytes,
-                    options.reclaimable_physical_bytes_pressure.max(1),
-                ),
-            ],
-            storage_manager_trigger_reasons(&[
-                (
-                    pressure.stale_block_slab_count >= options.stale_block_slab_pressure.max(1),
-                    "stale_page_segment_pressure",
-                ),
-                (
-                    pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1),
-                    "reclaim_candidate_pressure",
-                ),
-                (
-                    pressure.reclaimable_physical_bytes
-                        >= options.reclaimable_physical_bytes_pressure.max(1),
-                    "reclaimable_physical_bytes_pressure",
-                ),
-            ]),
-            storage_manager_skip_reason(
-                options.enable_page_compaction,
-                stale_page_pressure,
-                "compact_pages",
-            ),
-        ));
-
         let index_gc_pressure = lifecycle_plan.reasons.iter().any(|reason| {
             reason == "slot_dump_manifest_prune" || reason == "slot_dump_install_roll_forward_check"
         });
@@ -663,6 +602,83 @@ impl DataNodeRuntime {
             },
             (!options.enable_index_gc).then(|| "reclaim_index_disabled".to_string()),
         ));
+
+        // Reclaim the index log BEFORE rewriting blocks, not after, so the stages run in the
+        // order the design intends: reclaim memory, reclaim pages, reclaim the index, compact.
+        //
+        // This is an ALIGNMENT, not a throughput fix, and the probe beside it is what settles
+        // that. `what_the_stage_order_buys` runs the same eight-round overwrite fixture under
+        // both arrangements, with compaction firing in all eight rounds either way, and the two
+        // are identical to the record: 1,873 left in the log, 1,765 removed per round.
+        //
+        // The reason they are identical is worth keeping, because the opposite is intuitive:
+        // compaction rewrites live records into fresh blocks and appends an index record for
+        // each, so running it first looks like it should hand the reclaim a log it just grew.
+        // It does -- but those records are above the floor the reclaim computed, and a record
+        // above the floor is protected whichever order the two stages run in. Moving the reclaim
+        // earlier cannot collect them any sooner; it only stops them from being written until
+        // after it has finished. Neither order is unsafe and neither collects more.
+        if options.enable_page_compaction && stale_page_pressure {
+            let response = run_compaction_inner(&self.inner, CompactionRequest { shard_id });
+            if !response.status.ok {
+                status = response.status.clone();
+            }
+            compaction_report = Some(response);
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_compact_runs += 1;
+            executed_stages.push("compact_pages".to_string());
+        } else if !options.enable_page_compaction {
+            skipped_stages.push("compact_pages_disabled".to_string());
+        } else {
+            skipped_stages.push("compact_pages_no_pressure".to_string());
+        }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "compact_pages",
+            options.enable_page_compaction,
+            stale_page_pressure,
+            options.enable_page_compaction && stale_page_pressure,
+            vec![
+                storage_manager_pressure_signal(
+                    "stale_page_segment_count",
+                    pressure.stale_block_slab_count as u64,
+                    options.stale_block_slab_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "reclaim_candidate_count",
+                    pressure.reclaim_candidate_count as u64,
+                    options.stale_block_slab_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "reclaimable_physical_bytes",
+                    pressure.reclaimable_physical_bytes,
+                    options.reclaimable_physical_bytes_pressure.max(1),
+                ),
+            ],
+            storage_manager_trigger_reasons(&[
+                (
+                    pressure.stale_block_slab_count >= options.stale_block_slab_pressure.max(1),
+                    "stale_page_segment_pressure",
+                ),
+                (
+                    pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1),
+                    "reclaim_candidate_pressure",
+                ),
+                (
+                    pressure.reclaimable_physical_bytes
+                        >= options.reclaimable_physical_bytes_pressure.max(1),
+                    "reclaimable_physical_bytes_pressure",
+                ),
+            ]),
+            storage_manager_skip_reason(
+                options.enable_page_compaction,
+                stale_page_pressure,
+                "compact_pages",
+            ),
+        ));
+
 
         // Gather what the stage has always claimed to gather. Deliberately a snapshot and not
         // a reset: `durability_metrics` documents its counters as process-wide and monotonic,

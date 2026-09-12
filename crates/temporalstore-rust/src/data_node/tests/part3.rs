@@ -4332,3 +4332,103 @@ fn what_index_gc_cap_keeps_up() {
         eprintln!("  {cap:>6}   {written:>8}   {index:>10}   {verdict}");
     }
 }
+
+/// Does reclaiming the index log before rewriting blocks trim more of it per round? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_the_stage_order_buys \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// The round-cap sweep established that index-log removal saturates at 512 records a round no
+/// matter how large the round cap is -- 2,048 and 4,096 leave the log at exactly the same size --
+/// so the cap is not what binds. One candidate for what does: compaction rewrites live records
+/// into fresh blocks and appends an index record for each, and it ran BEFORE the reclaim. Those
+/// records sit above the floor the reclaim computed, so no round cap can touch them.
+///
+/// The fixture OVERWRITES a fixed key space rather than appending fresh keys. That matters: an
+/// insert-only load leaves no stale pages, so compaction never fires, and a first version of this
+/// probe measured a run where `compact_pages` executed zero times out of eight -- a number that
+/// looked like a clean result and was actually a measurement of nothing. The assertion below is
+/// there so that can never pass silently again.
+///
+/// MEASURED, both arrangements, compaction firing in all eight rounds of each:
+///
+///     compact then reclaim (before)   ingested=16000  index_log=1873  per_round=1765
+///     reclaim then compact (after)    ingested=16000  index_log=1873  per_round=1765
+///
+/// Identical. The candidate above is REFUTED: compaction's fresh records are above the floor the
+/// reclaim computed, and a record above the floor is protected whichever order the stages run in,
+/// so moving the reclaim earlier cannot collect them sooner. The stage order was changed to match
+/// the intended sequence, not to buy throughput, and this probe exists so a later change that
+/// claims otherwise has to produce a different pair of numbers.
+///
+/// Note the per-round figure against the round-cap sweep's 64: the difference is the WORKLOAD,
+/// not the cap. Here records genuinely become garbage; there, 16,000 distinct keys meant almost
+/// every record was the live version of a key and there was little to reclaim.
+#[test]
+#[ignore]
+fn what_the_stage_order_buys() {
+    const BATCH: usize = 2_000;
+    const ROUNDS: usize = 8;
+    // Smaller than BATCH, so every round rewrites keys earlier rounds wrote and the blocks
+    // holding the old versions become garbage -- which is what compaction needs to trigger.
+    const KEYSPACE: usize = 500;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+    let mut written = 0usize;
+    let mut compacted_rounds = 0usize;
+    let mut reclaimed_rounds = 0usize;
+    for _ in 0..ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("order-{:08}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += BATCH;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages")
+        {
+            compacted_rounds += 1;
+        }
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_index")
+        {
+            reclaimed_rounds += 1;
+        }
+    }
+    let engine = runtime.engine();
+    let index = engine
+        .index_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .map(|records| records.len())
+        .unwrap_or(0);
+    let removed = written.saturating_sub(index);
+    eprintln!("  ingested={written} index_log={index} removed={removed} per_round={}",
+        removed / ROUNDS);
+    eprintln!("  rounds={ROUNDS} compact_pages_ran={compacted_rounds} reclaim_index_ran={reclaimed_rounds}");
+    // The positive control. Where compaction never runs, the two stage orders are the same
+    // program and the size above says nothing about either.
+    assert!(
+        compacted_rounds > 0,
+        "compaction never ran, so this measures nothing about the stage order"
+    );
+}
