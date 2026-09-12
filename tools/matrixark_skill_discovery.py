@@ -53,7 +53,20 @@ except ModuleNotFoundError:  # pragma: no cover - exercised via direct tools/ im
         import hashlib
 
         def stable_hash(value: Any) -> int:  # type: ignore
-            return int(hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:15], 16)
+            # The SAME function the builders would have supplied, not merely a hash.
+            #
+            # This returned int(sha1(value)[:15], 16) where matrixark_mcp_core_identity returns
+            # the first eight bytes of sha256 masked to 63 bits. Different algorithm, different
+            # digest, different width -- so the two never agree on any input, and this branch
+            # computes skill, node, raw-uri, section and content hashes.
+            #
+            # Nothing persisted diverges today: append_discovered_skill_records raises when
+            # _HAVE_BUILDERS is false, so no record is written in this mode. But `content_hash` is
+            # computed above that gate, and a fallback whose answer differs from the thing it
+            # falls back to is not a fallback -- it is a second implementation waiting for the day
+            # someone reads its output as the real one.
+            digest = hashlib.sha256(str(value).encode("utf-8")).digest()
+            return int.from_bytes(digest[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
 
         skill_manifest_record = skill_registry_record = skill_section_record = None  # type: ignore
         _HAVE_BUILDERS = False
