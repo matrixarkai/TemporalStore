@@ -53,7 +53,13 @@ from collections import defaultdict
 #: defined in that file, a nine-line duplicate of matrixark_mcp_indexing.ordered_unique, where the
 #: live copies call the shared one. Same pattern again: that module was ALREADY re-exporting two
 #: names from the same live file, with the same comment above them.
-RECORDED_DIVERGED = 48
+#:
+#: 48 -> 46 for `summary_provider` and `synthesize_context_node_summary` in matrixark_mcp_summaries,
+#: a module ALREADY re-exporting four names from matrixark_mcp_core. Third module, same shape: the
+#: copies differed by which spelling of require_oss_understanding they called, and in one case by a
+#: lazy-import shim for a name core resolves at module scope. Same implementation, different
+#: plumbing -- which is the hardest kind to read, because the diff is real and means nothing.
+RECORDED_DIVERGED = 46
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -61,7 +67,7 @@ RECORDED_DIVERGED = 48
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 60
+RECORDED_SHADOWED = 58
 
 _CACHE: dict[str, object] = {}
 
