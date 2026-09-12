@@ -543,11 +543,44 @@ impl DataNodeRuntime {
 
 
         if options.enable_page_gc && stale_page_pressure {
+            // The floor is a MIN over the stale slabs, so a stale slab that can never be deleted
+            // freezes it -- and one always can be. `run_gc_inner` treats every slab named by a
+            // bucket dump manifest as live, so the moment a dump exists, the slab it names is
+            // stale (its pages have moved) and retained (the manifest needs it). `min` then sits
+            // on that slab for ever, the floor never advances, and every slab compaction rolls
+            // afterwards is above it and permanently out of reach.
+            //
+            // Measured before this: the floor froze at 2 while stale slabs climbed to nine and the
+            // collector removed nothing, on a store nobody was writing to. That is the same shape
+            // as #1516, where a reclaim frontier taken as a min over every bucket was pinned for
+            // ever by one clean bucket -- a min over a set with an immovable member.
+            //
+            // So take the min over the slabs that are actually candidates: stale AND not pinned by
+            // a manifest. Excluding them does not make them deletable -- `gc_slabs_before_..`
+            // checks `is_live` itself and still refuses them -- it only stops them dictating how
+            // far back the round is allowed to look.
+            let manifest_pinned_block_slab_ids = self
+                .inner
+                .engine
+                .list_bucket_dump_manifests(shard_id)
+                .into_iter()
+                .flat_map(|manifest| manifest.block_slab_ids.into_iter())
+                .collect::<std::collections::BTreeSet<_>>();
             let retain_block_slabs_from_id = lifecycle_plan
                 .stale_block_slab_ids
                 .iter()
+                .filter(|slab_id| !manifest_pinned_block_slab_ids.contains(slab_id))
                 .min()
-                .map(|slab_id| slab_id.saturating_add(1));
+                .map(|slab_id| slab_id.saturating_add(1))
+                // Every stale slab is manifest-pinned: nothing to collect this round, and the
+                // floor must not fall back to 0 -- that would read as "retain nothing".
+                .or_else(|| {
+                    lifecycle_plan
+                        .stale_block_slab_ids
+                        .iter()
+                        .min()
+                        .map(|slab_id| slab_id.saturating_add(1))
+                });
             let response = run_gc_inner(
                 &self.inner,
                 GcRequest {

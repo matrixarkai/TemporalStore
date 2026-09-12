@@ -6316,3 +6316,308 @@ fn what_an_index_gc_round_costs() {
         );
     }
 }
+
+/// What does the page-GC retain floor authorise, round by round? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_the_retain_floor_authorises \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// #1563 measured eleven slabs left after ten idle rounds: compaction rolls one a round and page
+/// GC removes none, so `stale_page_pressure` never closes and compaction re-triggers for ever.
+///
+/// The floor is the first suspect. The periodic stage computes it as
+///
+///     stale_block_slab_ids.iter().min().saturating_add(1)
+///
+/// and `stale_block_slab_ids` is every slab NOT in the live set -- so the floor is derived FROM
+/// the stale set. Taking the minimum and adding one authorises deleting slabs strictly below the
+/// OLDEST stale slab, which is at most that one slab, however many are stale.
+///
+/// This prints, per round, how many slabs are stale, what floor that produces, and how many the
+/// collector actually removed. If removed stays at zero while stale climbs, the floor is not the
+/// whole story; if removed is one a round while compaction adds one, it is a treadmill.
+#[test]
+#[ignore]
+fn what_the_retain_floor_authorises() {
+    const KEYS: usize = 400;
+    const ROUNDS: usize = 10;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("retainfloor-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        engine
+            .block_store()
+            .roll_slab()
+            .expect("rolling a slab should succeed");
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("retainfloor-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'w'; 72],
+                },
+            });
+        }
+    }
+
+    eprintln!("  round  slabs  stale  floor  gc_ran  removed");
+    let options = StorageManagerOptions::default();
+    for round in 0..ROUNDS {
+        let plan = runtime
+            .engine()
+            .storage_lifecycle_plan(crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                ..Default::default()
+            });
+        let stale = plan.stale_block_slab_ids.len();
+        let floor = plan
+            .stale_block_slab_ids
+            .iter()
+            .min()
+            .map(|id| id.saturating_add(1))
+            .unwrap_or(0);
+        let slabs = runtime
+            .engine()
+            .block_store()
+            .slab_ids()
+            .map(|ids| ids.len())
+            .unwrap_or(0);
+
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let gc_ran = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_page");
+        let removed = report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.block_slabs_removed)
+            .unwrap_or(0);
+        eprintln!("  {round:>5}  {slabs:>5}  {stale:>5}  {floor:>5}  {gc_ran:>6}  {removed:>7}");
+    }
+}
+
+/// Why does a stale slab below the retain floor survive? Prints.
+///
+///   cargo test -p temporalstore-rust --lib why_a_stale_slab_below_the_floor_survives \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// #1564 measured the page-GC retain floor freezing at 2 while stale slabs climbed to nine and the
+/// collector removed nothing. The floor freezes because it is `min(stale) + 1`, so it cannot rise
+/// past the oldest stale slab -- but that only explains the freeze if the oldest stale slab is
+/// itself unremovable, and it sits BELOW the floor, which the formula does authorise.
+///
+/// `gc_slabs_before_with_live_refs_selected` keeps a slab below the floor for exactly two reasons,
+/// and the report names both: it is the CURRENT slab, or it is LIVE. And the periodic stage widens
+/// "live" beyond pages -- `run_gc_inner` adds every slab named by a bucket dump manifest:
+///
+///     for manifest in inner.engine.list_bucket_dump_manifests(request.shard_id) {
+///         live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
+///     }
+///
+/// So a manifest written before compaction relocated the pages still names the OLD slabs. This
+/// separates the three: live-by-page, live-by-manifest, and current.
+#[test]
+#[ignore]
+fn why_a_stale_slab_below_the_floor_survives() {
+    const KEYS: usize = 400;
+    const ROUNDS: usize = 6;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("whysurvive-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        engine
+            .block_store()
+            .roll_slab()
+            .expect("rolling a slab should succeed");
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("whysurvive-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'w'; 72],
+                },
+            });
+        }
+    }
+
+    eprintln!("  round  slabs  floor  live_by_page  live_by_manifest  manifests  removed  ret_live  ret_current");
+    let options = StorageManagerOptions::default();
+    for round in 0..ROUNDS {
+        let engine = runtime.engine();
+        let plan = engine.storage_lifecycle_plan(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            ..Default::default()
+        });
+        let floor = plan
+            .stale_block_slab_ids
+            .iter()
+            .min()
+            .map(|id| id.saturating_add(1))
+            .unwrap_or(0);
+        let live_by_page = engine.live_block_slab_ids_all_shards();
+        let manifests = engine.list_bucket_dump_manifests(1);
+        let live_by_manifest = manifests
+            .iter()
+            .flat_map(|manifest| manifest.block_slab_ids.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>();
+        let slabs = engine
+            .block_store()
+            .slab_ids()
+            .map(|ids| ids.len())
+            .unwrap_or(0);
+
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let gc = report.gc_report.as_ref();
+        let removed = gc.map(|g| g.block_slabs_removed).unwrap_or(0);
+        let ret_live = gc.map(|g| g.block_slabs_retained_live).unwrap_or(0);
+        eprintln!(
+            "  {round:>5}  {slabs:>5}  {floor:>5}  {:>12}  {:>16}  {:>9}  {removed:>7}  {ret_live:>8}  {:>11}",
+            live_by_page.len(),
+            live_by_manifest.len(),
+            manifests.len(),
+            "-"
+        );
+    }
+}
+
+/// An idle shard stops accumulating slabs: the collector keeps pace with compaction.
+///
+/// The page-GC retain floor is a MIN over the stale slabs, and `run_gc_inner` treats every slab
+/// named by a bucket dump manifest as live. So once a dump exists, the slab it names is stale (its
+/// pages have moved) and retained (the manifest needs it) -- and `min` sat on that slab for ever.
+/// The floor never advanced, every slab compaction rolled afterwards was above it, and the store
+/// grew a slab a round on a shard nobody was writing to: measured at eleven slabs after ten rounds,
+/// with the collector removing nothing after the first.
+///
+/// Same shape as #1516, where a reclaim frontier taken as a min over every bucket was pinned by one
+/// clean bucket. The floor now takes its min over stale slabs that are NOT manifest-pinned, so it
+/// advances past them; they stay protected by the `is_live` check that was already refusing them.
+///
+/// This asserts the property that failed: an idle shard reaches a steady slab count instead of
+/// climbing. It writes NOTHING after the fixture, so any growth is the loop's own doing.
+#[test]
+fn an_idle_shard_stops_accumulating_slabs() {
+    const KEYS: usize = 400;
+    const ROUNDS: usize = 10;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("idleslabs-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        // Roll, then rewrite everything: the first slab holds nothing live, which is a stale slab
+        // for a few hundred records instead of the gigabyte a natural roll would need.
+        engine
+            .block_store()
+            .roll_slab()
+            .expect("rolling a slab should succeed");
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("idleslabs-{index:05}"),
+                    field: "f".to_string(),
+                    value: vec![b'w'; 72],
+                },
+            });
+        }
+    }
+
+    let slabs_before = runtime
+        .engine()
+        .block_store()
+        .slab_ids()
+        .map(|ids| ids.len())
+        .unwrap_or(0);
+    let options = StorageManagerOptions::default();
+    let mut compacted_rounds = 0usize;
+    for _ in 0..ROUNDS {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages")
+        {
+            compacted_rounds += 1;
+        }
+    }
+    let slabs_after = runtime
+        .engine()
+        .block_store()
+        .slab_ids()
+        .map(|ids| ids.len())
+        .unwrap_or(0);
+
+    // The denominator: if compaction never ran it rolled no slabs, and a flat count would say
+    // nothing about whether the collector can keep up with it.
+    assert!(
+        compacted_rounds > 0,
+        "compaction never ran, so nothing rolled a slab and this measures an idle collector"
+    );
+    // A slab a round would be {ROUNDS} more. Steady state is a small constant; the bound is
+    // deliberately loose so this fails on GROWTH, not on one slab of slack.
+    assert!(
+        slabs_after <= slabs_before + 2,
+        "an idle shard grew from {slabs_before} to {slabs_after} slabs over {ROUNDS} rounds \
+         ({compacted_rounds} of them compacting) -- the collector is not keeping pace, so the \
+         retain floor has stopped advancing again"
+    );
+}
