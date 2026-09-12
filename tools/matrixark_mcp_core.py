@@ -172,10 +172,41 @@ try:  # the values live in matrixark_mcp_runtime_config; this module re-exports 
     from tools.matrixark_mcp_runtime_config import (
         BACKEND_READINESS_BACKOFF_MS,
         BACKEND_READINESS_TIMEOUT_MS,
+        CONTEXT_TELEMETRY_WRITE_MODE,
+        DEFAULT_BUDGET_FILL_POLICY,
+        DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_MAX_CANDIDATES,
+        DEFAULT_CROSS_SESSION_MAX_SESSIONS,
+        DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS,
+        DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS,
+        DEFAULT_CROSS_SESSION_MIN_SCORE,
+        DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_PARALLELISM,
+        DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES,
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES,
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS,
+        DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS,
+        DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE,
+        DEFAULT_ENTITY_MERGE_OPERATOR,
+        DEFAULT_MAX_CANDIDATES_PER_NODE,
+        DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
+        DEFAULT_MAX_GLOBAL_CANDIDATES,
+        DEFAULT_MAX_SELECTED_REFS,
+        DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
+        DEFAULT_RETRIEVAL_MIN_SCORE,
+        DEFAULT_SHARED_CONTEXT_MIN_SCORE,
+        DEFAULT_TOP_K_PER_LAYER,
         DIRECT_AUDIT_MODE,
         DIRECT_RECORD_BUNDLE_MAX_BYTES,
         DIRECT_RECORD_HOT_CACHE_MAX_RECORDS,
         DIRECT_RECORD_LOG_SHARD_SIZE,
+        HARD_MAX_CHILDREN_SCORED_PER_PARENT,
+        MATRIXARK_ALLOW_PYTHON_HOT_CACHE,
+        MATRIXARK_MCP_PROFILE,
+        MATRIXARK_REQUIRE_BACKEND_READY,
+        MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER,
+        MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
         RESOURCE_ASYNC_DEFAULT_BYTES,
         SUMMARY_REFRESH_INTERVAL_MS,
         SUMMARY_REFRESH_LIMIT,
@@ -187,10 +218,41 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_runtime_config import (
         BACKEND_READINESS_BACKOFF_MS,
         BACKEND_READINESS_TIMEOUT_MS,
+        CONTEXT_TELEMETRY_WRITE_MODE,
+        DEFAULT_BUDGET_FILL_POLICY,
+        DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_MAX_CANDIDATES,
+        DEFAULT_CROSS_SESSION_MAX_SESSIONS,
+        DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS,
+        DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS,
+        DEFAULT_CROSS_SESSION_MIN_SCORE,
+        DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO,
+        DEFAULT_CROSS_SESSION_PARALLELISM,
+        DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES,
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES,
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS,
+        DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS,
+        DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE,
+        DEFAULT_ENTITY_MERGE_OPERATOR,
+        DEFAULT_MAX_CANDIDATES_PER_NODE,
+        DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
+        DEFAULT_MAX_GLOBAL_CANDIDATES,
+        DEFAULT_MAX_SELECTED_REFS,
+        DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
+        DEFAULT_RETRIEVAL_MIN_SCORE,
+        DEFAULT_SHARED_CONTEXT_MIN_SCORE,
+        DEFAULT_TOP_K_PER_LAYER,
         DIRECT_AUDIT_MODE,
         DIRECT_RECORD_BUNDLE_MAX_BYTES,
         DIRECT_RECORD_HOT_CACHE_MAX_RECORDS,
         DIRECT_RECORD_LOG_SHARD_SIZE,
+        HARD_MAX_CHILDREN_SCORED_PER_PARENT,
+        MATRIXARK_ALLOW_PYTHON_HOT_CACHE,
+        MATRIXARK_MCP_PROFILE,
+        MATRIXARK_REQUIRE_BACKEND_READY,
+        MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER,
+        MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
         RESOURCE_ASYNC_DEFAULT_BYTES,
         SUMMARY_REFRESH_INTERVAL_MS,
         SUMMARY_REFRESH_LIMIT,
@@ -200,7 +262,6 @@ except ImportError:  # Direct script execution from tools/.
     )
 
 
-CONTEXT_TELEMETRY_WRITE_MODE = (os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "").strip().lower() or "inline")
 # These four, and four more below, are defined here AND in matrixark_mcp_runtime_config. See the
 # single-source note beside DEFAULT_MAX_CONTEXT_TOKENS further down: that constant was read from
 # the same variable in both modules with different fallbacks, and an operator who set nothing got
@@ -211,12 +272,7 @@ CONTEXT_TELEMETRY_WRITE_MODE = (os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRIT
 # through the same proxy lane the request path uses -- so at a fixed interval a pass that
 # grows past that interval turns the loop into a permanent occupant of the lane. See
 # MatrixArkMcpServer._next_summary_refresh_delay_s.
-MATRIXARK_MCP_PROFILE = (os.environ.get("MATRIXARK_MCP_PROFILE", "").strip().lower() or "dev")
 # MATRIXARK_ALLOW_LOCAL_BACKEND comes from matrixark_mcp_runtime_config, above.
-MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
-MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
-MATRIXARK_ALLOW_PYTHON_HOT_CACHE = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
-MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", "").strip().lower()
 
 # Single source of truth: reuse the runtime-config default so core and
 # matrixark_mcp_runtime_config agree out-of-the-box (both were previously
@@ -270,8 +326,6 @@ MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERM
 MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION = 128
 MAX_SECONDARY_INDEX_REFS_PER_POSTING = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING", "").strip() or "512")
 SECONDARY_INDEX_TIME_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_TIME_BUCKET_MS", "").strip() or "60000")
-DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "").strip() or "100000")
-HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "").strip() or "100000")
 # ------------------------------------------------------------------------------------------------
 # Secondary-index dimension pruning (Lever 2).
 #
@@ -330,40 +384,12 @@ MAX_CONTEXT_REF_CHARS = 4096
 # 0.05, and the engine request builder sent a bare 0.0 that overrode both -- so the threshold a
 # deployment got depended on which surface the request came through.
 # test_the_score_threshold_has_one_value pins the file and the code together.
-DEFAULT_RETRIEVAL_MIN_SCORE = float(os.environ.get("MATRIXARK_RETRIEVAL_MIN_SCORE", "").strip() or "0.05")
-DEFAULT_TOP_K_PER_LAYER = int(os.environ.get("MATRIXARK_TOP_K_PER_LAYER", "").strip() or "8")
-DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_PER_NODE", "").strip() or "1024")
-DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "").strip() or "512")
 # 1000, matching config/temporalstore.toml. The config declared 1000 while this said 64 and
 # the engine used 24, so the number a deployment got depended on which surface it came from.
 # test_the_ref_cap_has_one_value pins all of them together.
-DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "").strip() or "1000")
-DEFAULT_BUDGET_FILL_POLICY = (os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "").strip().lower() or "quality_first")
 # Near-duplicate suppression threshold (see matrixark_mcp_runtime_config for the
 # canonical definition). Reused here so the ref-selection path shares one source
 # of truth for the knob.
-DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = float(
-    os.environ.get("MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD", "").strip() or "0.85"
-)
-DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "").strip() or "0.20")
-DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO", "").strip() or "0.20")
-DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "").strip() or "0.15")
-DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "").strip() or "3")
-DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "").strip() or "24")
-DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "").strip() or "2")
-DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "").strip() or "4")
-DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "").strip() or "256")
-DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "").strip() or "0.20")
-DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE", "").strip() or "0.45")
-DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_SESSIONS", "").strip() or "6")
-DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", "").strip() or "48")
-DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS", "").strip() or "3")
-DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
-    item.strip()
-    for item in (os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "").strip() or "entity,summary,compression").split(",")
-    if item.strip()
-)
-DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "").strip() or "0.20")
 TIME_COMPRESSION_SUMMARY_PROVIDER = (os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER", "").strip().lower() or "deterministic")
 TIME_COMPRESSION_SUMMARY_MODEL = (
     os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_MODEL", "").strip()
@@ -433,7 +459,6 @@ SUMMARY_LLM_PROVIDER = (
 SUMMARY_LLM_MODEL = EXTRACTION_LLM_MODEL
 SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "").strip() or "900")
 # ENABLE_LLM_MERGE_OPERATOR comes from matrixark_mcp_runtime_config, above.
-DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
 _EMBEDDING_VECTOR_CACHE: dict[tuple[str, str], list[float]] = {}

@@ -41,7 +41,7 @@ RUNTIME = "matrixark_mcp_runtime_config.py"
 #: file raises against sweeping, and it does not apply to a constant that reads no flag.
 #:
 #: The remaining 43 DO read the environment, and they stay one at a time.
-RECORDED_DUPLICATED = 31
+RECORDED_DUPLICATED = 0
 
 #: Defined in both and NOT identical, with the reason. `matrixark_mcp_core` binds
 #: DEFAULT_MAX_CONTEXT_TOKENS to the value it imported from runtime_config under an alias, which is
