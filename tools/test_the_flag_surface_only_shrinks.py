@@ -463,6 +463,10 @@ def _portal_offers():
     below exists to stop -- a file that decides about names counting its own mention of them.
     Grepping the file gives 116 configurable; parsing the calls gives 105, and the eleven in the
     difference are variables that file reads rather than knobs it offers.
+
+    121 of the calls pass `env` positionally and none passes it by keyword, so reading args[2] sees
+    every one of them. That is asserted below rather than assumed, because a single keyword call
+    would be invisible here and would look exactly like a knob the portal does not offer.
     """
     if "portal_offers" in _CACHE:
         return _CACHE["portal_offers"]
@@ -475,7 +479,12 @@ def _portal_offers():
         if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Setting"):
             continue
         if len(node.args) >= 3 and isinstance(node.args[2], ast.Constant):
-            offers.add(node.args[2].value)
+            # Three settings carry env="": the registry's way of saying "dynamic", where `_env_name`
+            # routes the value to whichever variable the selected provider reads. The empty string
+            # is not a variable, and putting it in a set of variable names is a placeholder waiting
+            # for the first caller who unions this set with anything.
+            if isinstance(node.args[2].value, str) and node.args[2].value:
+                offers.add(node.args[2].value)
     return offers
 
 
@@ -1128,6 +1137,35 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             with self.subTest(flag=name):
                 self.assertIn(name, where, "%s is counted settable and no shipping file names it"
                               % name)
+
+    def test_every_portal_setting_names_its_variable_positionally(self) -> None:
+        """`_portal_offers` reads the third positional argument, so a keyword `env=` is invisible.
+
+        A setting the portal offers but this scan cannot see is counted as unconfigurable, which
+        moves the number the goal is about in the flattering direction for no reason but a call
+        style. The empty `env` is separately excluded there: three settings use it to mean "the
+        variable depends on the provider selected", and the empty string is not a variable name.
+        """
+        tree = ast.parse(_text("tools/matrixark_gateway_config.py"))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "Setting"]
+        self.assertGreater(len(calls), 100,
+                           "the portal registry stopped parsing as Setting(...) calls, which would "
+                           "empty this scan silently")
+        by_keyword = [n for n in calls if any(k.arg == "env" for k in n.keywords)]
+        self.assertEqual(
+            [], [n.lineno for n in by_keyword],
+            "a Setting names its variable with a keyword, which _portal_offers cannot see")
+        without = [n.lineno for n in calls if len(n.args) < 3]
+        self.assertEqual([], without, "a Setting call has no third positional argument")
+        dynamic = [n.lineno for n in calls
+                   if isinstance(n.args[2], ast.Constant) and n.args[2].value == ""]
+        self.assertEqual(
+            3, len(dynamic),
+            "the number of provider-routed settings changed (lines %s). That is fine, but it is "
+            "the thing the empty-string exclusion was measured against" % (dynamic,))
+        self.assertNotIn("", _portal_offers(),
+                         "the empty env is back in the offered set")
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
