@@ -137,8 +137,10 @@ UNREACHED = {
         "model_registry_map",
     ),
     # `require_int_between` stays for the same reason as the cache clearer above: its neighbour
-    # `require_string_set` is used, and half a validation vocabulary is worse than all of it.
-    "validate_context_resource_skill_scale.py": ("require_int_between",),
+    # `require_string_set` is used, and half a validation vocabulary is worse than all of it. It
+    # moved here when the gates stopped each carrying their own copy of that vocabulary, and the
+    # reason reads better from the shared home than it did from one of the two scripts.
+    "matrixark_validation_requirements.py": ("require_int_between",),
 }
 
 
