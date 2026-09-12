@@ -140,25 +140,43 @@ def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, sourc
     return dedupe_entities(entities)
 
 
-# The copy here differed by a lazy import of normalize_model_segments inside the function, where
-# the live one has the name at module scope. Plumbing, and the only difference.
+# NOT re-exported, and the reason is the opposite of how it reads.
 #
-# `extract_batch_entities` is NOT moved with it, and it is the one left in this file worth knowing
-# about: thirty-four hunks against matrixark_mcp_core's, with real work on both sides. The live one
-# has a content-matching lineage builder, an assistant-profile filter, and a location pattern that
-# stops at a clause boundary -- carrying a comment about why:
+# This copy differs from matrixark_mcp_core_extraction's by ONE thing: a lazy import of
+# normalize_model_segments from matrixark_mcp_extraction_runtime, inside the function, where the
+# live one has the name at module scope. Pure plumbing -- and it was moved on that basis, until
+# test_no_module_is_orphaned_quietly failed naming matrixark_mcp_extraction_runtime as a NEW
+# orphan.
 #
-#     "I live in Seattle and prefer metric units"   live: Seattle
-#                                                 orphan: Seattle and prefer metric units
+# That lazy import is the last reference to that module anywhere in the tree. KNOWN_ORPHANS is
+# empty, so consolidating this would create the first orphan in a tree that has none -- and the
+# module it orphans holds diverged copies of live names, one_pass_memory_extraction and
+# openai_compatible_resource_facts among them. That guard's docstring calls the combination the
+# worst one: a copy that is both wrong and unreachable cannot fail today, and is what somebody
+# reaches for tomorrow.
 #
-# This copy has helpers the live one does not (role_lineage, profile_lineage_for_match,
-# source_refs_for_match) and a tool_evidence pattern the live one lacks. Neither is the complete
-# one, so neither can be deleted without deciding what the extractor should do -- which is a
-# different job from removing a copy.
-try:  # the implementation lives in matrixark_mcp_core_extraction; this module re-exports it
-    from tools.matrixark_mcp_core_extraction import normalize_extracted_segments
-except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_core_extraction import normalize_extracted_segments
+# So a difference that reads as plumbing was load-bearing. Removing this copy is a decision about
+# whether matrixark_mcp_extraction_runtime should exist, not a cleanup.
+#
+# `extract_batch_entities` is the other one left here, for a different reason: thirty-four hunks
+# against matrixark_mcp_core's, with real work on both sides. The live one has a content-matching
+# lineage builder, an assistant-profile filter, and a location pattern stopping at a clause
+# boundary -- "I live in Seattle and prefer metric units" captures Seattle there and
+# "Seattle and prefer metric units" here. This copy has helpers the live one does not. Neither is
+# the complete one.
+
+
+def normalize_extracted_segments(raw_segments: Any, messages: list[Json]) -> list[Json]:
+    if isinstance(raw_segments, list):
+        try:
+            try:
+                from tools.matrixark_mcp_extraction_runtime import normalize_model_segments
+            except ModuleNotFoundError:  # Direct script execution from tools/.
+                from matrixark_mcp_extraction_runtime import normalize_model_segments
+            return normalize_model_segments({"segments": raw_segments}, messages)
+        except MatrixArkError:
+            return []
+    return []
 
 
 # Not defined here: the implementation lives in matrixark_mcp_core_extraction and this module carried an
