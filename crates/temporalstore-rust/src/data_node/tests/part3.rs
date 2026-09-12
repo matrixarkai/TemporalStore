@@ -3934,6 +3934,82 @@ fn what_the_index_gc_gate_costs() {
     }
 }
 
+/// How many times does ONE maintenance round materialize EVERY live page? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib how_many_times_a_round_walks_every_live_page -- --ignored --nocapture
+///
+/// `collect_live_page_entries` builds a fresh `Vec<LiveBlockEntry>` holding every live page in the
+/// shard. It has roughly twenty call sites, and a single periodic round reaches many of them:
+/// `storage_wal_reclaim_plan` (via `bucket_storage_summaries`), `storage_lifecycle_plan`, the
+/// compaction preamble, eviction victim selection, dump-manifest creation. None of them shares a
+/// result with the next.
+///
+/// This is why the stage timings look the way they do. `what_the_index_gc_gate_costs` attributes
+/// the index-GC stage as roughly 60% `storage_wal_reclaim_plan` and 30% `storage_lifecycle_plan`
+/// at every corpus size, both scaling linearly with the record count -- 234 ms and 120 ms
+/// respectively at 16,000 records, on a loop whose period is 30 s. Neither number is bounded by
+/// anything the round was asked to do.
+///
+/// The multiplier below is the thing to fix, and it is the honest way to size it: not "this stage
+/// is slow" but "the round walks the whole shard N times, and N is a property of how the stages
+/// are wired rather than of how much work the round was asked to do".
+#[test]
+#[ignore]
+fn how_many_times_a_round_walks_every_live_page() {
+    for records in [2_000usize, 8_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("walks-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+
+        // Measured BEFORE the runtime takes the engine, and before the counter is reset, so this
+        // report's own walk is not counted against the round.
+        let live_pages: u64 = engine
+            .bucket_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.page_ref_count as u64)
+            .sum();
+
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+
+        crate::engine::reset_live_page_scan_entries();
+        let started = std::time::Instant::now();
+        let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let round_ms = started.elapsed().as_micros() as f64 / 1000.0;
+        let scanned = crate::engine::live_page_scan_entries();
+
+        // Denominators. A shard with no live pages, or a round that walked nothing, would make
+        // the ratio below meaningless rather than zero.
+        assert!(live_pages > 0, "fixture stored no live pages");
+        assert!(
+            scanned > 0,
+            "the round materialized no live-page entries, so it never reached the stages this measures",
+        );
+
+        eprintln!(
+            "  [walks] {records:>6} records, {live_pages:>6} live pages -> round {round_ms:>8.1} ms \
+materialized {scanned:>8} live-page entries = {:>5.1}x the shard, stages {:?}",
+            scanned as f64 / live_pages as f64,
+            report.executed_stages,
+        );
+    }
+}
+
 #[test]
 fn the_dump_cap_bounds_a_stage_but_not_a_round() {
     // Two facts, and the second is the surprising one.
