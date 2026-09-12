@@ -45,7 +45,7 @@ pub(super) fn storage_object_lifecycle_report_for_buckets_from_model_maps(
     )
 }
 
-fn object_lifecycle_report_from_entries(
+pub(super) fn object_lifecycle_report_from_entries(
     shard_id: ShardId,
     shard: &ShardState,
     entries: Vec<LiveBlockEntry>,
