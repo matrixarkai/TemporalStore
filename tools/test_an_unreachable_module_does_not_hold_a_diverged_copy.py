@@ -65,7 +65,12 @@ from collections import defaultdict
 #: reaching their helpers through a lazy `core.` accessor. That accessor looked like cycle
 #: avoidance and was not -- the file already binds core at module scope, and core does not
 #: import it at all -- so it went with them.
-RECORDED_DIVERGED = 44
+#:
+#: 44 -> 40 for six more in matrixark_mcp_query, the same accessor one more time. Four of the
+#: six were diverged and two were verbatim, which is why the total falls by six and this number
+#: by four. The accessor STAYS there: candidate_index_terms still calls it and diverges by more
+#: than a spelling, so it is not part of that move.
+RECORDED_DIVERGED = 40
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -73,7 +78,7 @@ RECORDED_DIVERGED = 44
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 56
+RECORDED_SHADOWED = 50
 
 _CACHE: dict[str, object] = {}
 
