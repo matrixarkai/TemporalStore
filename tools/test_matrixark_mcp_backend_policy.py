@@ -774,7 +774,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         client = _HashStoreClient()
         adapter = _direct_adapter_for_hash_store(client)
         adapter._direct_write_queue_enabled = True
-        adapter._direct_raw_ingestion_queue_enabled = True
         adapter._direct_write_queue_mode = "memory"
         adapter._direct_write_queue_autostart = False
         adapter._direct_write_queue_put_timeout_s = 0.1
@@ -825,7 +824,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         client = _HashStoreClient()
         adapter = _direct_adapter_for_hash_store(client)
         adapter._direct_write_queue_enabled = False
-        adapter._direct_raw_ingestion_queue_enabled = False
 
         adapter._append_raw_ingestion_records(
             [

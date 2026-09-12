@@ -67,7 +67,13 @@ ONE_VOCABULARY = ("<env_bool>",)
 # was not in the scan at all -- while its two readers disagreed about "on". A step UP here
 # means the scan sees a read it could not see before, which is the only reason this number
 # should ever rise without new code.
-EXPECTED_SHARED_FLOOR = 15
+#
+# 14 after MATRIXARK_DIRECT_RAW_INGESTION_QUEUE was retired. It had two readers and they
+# agreed; what it did not have was any way to act -- its branch also required
+# MATRIXARK_DIRECT_WRITE_QUEUE and a memory queue mode, so an operator turning it on got
+# nothing and no error. Raw batches follow the write queue now. A step DOWN is a flag leaving
+# the tree, and it should arrive with the commit that removed it, as this one did.
+EXPECTED_SHARED_FLOOR = 14
 
 
 def _production_sources() -> List[str]:

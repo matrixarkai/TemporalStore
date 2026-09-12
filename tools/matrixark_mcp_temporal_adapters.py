@@ -3048,7 +3048,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._direct_write_queue_allow_sync_context = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", False)
         self._direct_write_queue_autostart = True
         self._native_side_index_assume_fresh = env_bool("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", False)
-        self._direct_raw_ingestion_queue_enabled = env_bool("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", False)
         # "on" added: the set accepted "yes" and not "on", so `=on` left this off. Its
         # neighbour on the line above reads the queue flag through env_bool, which accepts
         # both.
