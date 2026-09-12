@@ -4913,3 +4913,66 @@ fn a_page_gc_round_invalidates_only_what_it_reclaimed() {
         "no round reclaimed zero slabs, so the invariant was never exercised"
     );
 }
+
+/// Does a page-GC round's cost grow with the number of slabs the store holds? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_a_page_gc_round_walks \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// `gc_slabs_before_with_live_refs` lists every slab file under the block-store root and stats each
+/// one, every round, with no bound and no cursor -- the report's retained + removed IS the walk.
+/// The design it converges on does one zone per round and resumes an in-progress zone from a stored
+/// cursor, so its per-round cost does not grow with the store.
+///
+/// This prints the walk width and the wall time of the call as slabs accumulate, so the question
+/// "does it matter here" is answered with numbers rather than from the shape of the code.
+#[test]
+#[ignore]
+fn what_a_page_gc_round_walks() {
+    const BATCH: usize = 400;
+    const ROUNDS: usize = 12;
+    const KEYSPACE: usize = 200;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+
+    eprintln!("  round  slabs_walked  retained  removed  gc_micros");
+    let mut written = 0usize;
+    for round in 0..ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("gcwalk-{:06}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += BATCH;
+        runtime.run_storage_manager_once(1, options.clone());
+
+        // Time the walk directly, with a floor that retains everything, so the measurement is the
+        // SCAN and not the deletion: retain_from 0 makes every slab ineligible.
+        let engine = runtime.engine();
+        let started = std::time::Instant::now();
+        let report = engine
+            .block_store()
+            .gc_slabs_before_with_live_refs(0, std::iter::empty())
+            .expect("gc");
+        let micros = started.elapsed().as_micros();
+        let retained = report.retained_block_slab_ids.len();
+        let removed = report.removed_block_slab_ids.len();
+        let walked = retained + removed;
+        eprintln!("  {round:>5}  {walked:>12}  {retained:>8}  {removed:>7}  {micros:>9}");
+    }
+}
