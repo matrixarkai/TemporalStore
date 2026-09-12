@@ -51,6 +51,24 @@ except ImportError:
 )
 
 
+def direct_write_queue_limits() -> "tuple[int, float, int]":
+    """The queue's three size bounds, read the same way wherever the queue is set up.
+
+    Both places that set a direct-write queue up read these three variables, and both wrote the
+    expression out: `_ensure_direct_write_queue_fields` here and
+    `MatrixArkTemporalStoreDirectAdapter.__init__` next door, which inherits this very mixin. Two
+    copies of a bound means a change to one is a change to one, and the copies answer identically
+    for the ordinary input -- which is how a pair like this stops agreeing without anything
+    failing.
+
+    The env vars keep working exactly as they did; what stops being duplicated is the reading.
+    """
+    max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "").strip() or "10000"))
+    put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "").strip() or "1000") / 1000.0)
+    drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "").strip() or "64"))
+    return max_records, put_timeout_s, drain_max_batches
+
+
 class _TemporalDirectBackendMixin:
     def _matrixark_batch_append_records_with_options(
         self,
@@ -79,16 +97,17 @@ class _TemporalDirectBackendMixin:
     def _ensure_direct_write_queue_fields(self) -> None:
         if not hasattr(self, "_direct_write_queue_enabled"):
             self._direct_write_queue_enabled = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE", False)
+        limit_records, limit_put_timeout_s, limit_drain_batches = direct_write_queue_limits()
         if not hasattr(self, "_direct_write_queue_max_records"):
-            self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "").strip() or "10000"))
+            self._direct_write_queue_max_records = limit_records
         if not hasattr(self, "_direct_write_queue_put_timeout_s"):
-            self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "").strip() or "1000") / 1000.0)
+            self._direct_write_queue_put_timeout_s = limit_put_timeout_s
         if not hasattr(self, "_direct_write_queue_mode"):
             self._direct_write_queue_mode = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MODE", "memory").strip().lower() or "memory"
         if self._direct_write_queue_mode not in {"memory", "temporalstore"}:
             self._direct_write_queue_mode = "memory"
         if not hasattr(self, "_direct_write_queue_drain_max_batches"):
-            self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "").strip() or "64"))
+            self._direct_write_queue_drain_max_batches = limit_drain_batches
         if not hasattr(self, "_direct_write_queue_allow_sync_context"):
             self._direct_write_queue_allow_sync_context = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", False)
         if not hasattr(self, "_direct_write_queue_autostart"):
