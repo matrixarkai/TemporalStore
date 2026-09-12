@@ -499,36 +499,21 @@ def embedding_model_conflicts(stored_model: str, active_model: str) -> bool:
     return not same_embedding_model(stored, active)
 
 
-def context_model_registry_record(model_name: str, *, model_kind: str = "embedding", updated_at_ms: int | None = None) -> Json:
-    model_name = str(model_name or "").strip()
-    model_hash = stable_hash(f"{model_kind}_model:{model_name}")
-    return {
-        "record_type": "context_model_registry",
-        "model_kind": model_kind,
-        "model_ref": embedding_model_ref_for_name(model_name) if model_kind == "embedding" else f"{model_kind}:{compact_model_slug(model_name)}:{model_hash % 10000:04d}",
-        "model_name": model_name,
-        "model_hash": model_hash,
-        "provider": (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip() or "deterministic") if model_kind == "embedding" else "",
-        "execution_mode": embedding_execution_mode_name() if model_kind == "embedding" else "",
-        "updated_at_ms": int(updated_at_ms or now_ms()),
-    }
-
-
-def context_model_registry_records(records: list[Json]) -> list[Json]:
-    models: dict[str, int] = {}
-    for record in records:
-        if str(record.get("record_type") or "") != "context_embedding":
-            continue
-        model_name = str(record.get("model") or "").strip()
-        if not model_name:
-            continue
-        updated_at_ms = record.get("updated_at_ms") or record.get("created_at_ms") or now_ms()
-        try:
-            timestamp = int(updated_at_ms)
-        except (TypeError, ValueError):
-            timestamp = now_ms()
-        models[model_name] = max(models.get(model_name, 0), timestamp)
-    return [context_model_registry_record(model_name, updated_at_ms=timestamp) for model_name, timestamp in sorted(models.items())]
+# Not defined here: both implementations live in matrixark_mcp_model_registry and this module
+# carried identical second copies -- same bodies, same docstrings, and the owner binds every free
+# name each reads. The import edge did not exist before, so it was added only after computing the
+# closure over top-level imports in both directions: matrixark_mcp_model_registry does not reach
+# this module by any chain.
+try:  # package path
+    from .matrixark_mcp_model_registry import (
+        context_model_registry_record,
+        context_model_registry_records,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_model_registry import (
+        context_model_registry_record,
+        context_model_registry_records,
+    )
 
 
 def entity_patch(search: str, replace: str, *, field: str = "state") -> Json:

@@ -98,14 +98,14 @@ def is_pending_async_candidate(candidate: Json) -> bool:
     )
 
 
-def bounded_max_children_scored_per_parent(value: int) -> int:
-    hard_cap = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
-    if value > hard_cap:
-        raise MatrixArkError(
-            "max_children_scored_per_parent must be <= "
-            f"{hard_cap}; split over-wide ContextNode children into deeper node layers"
-        )
-    return value
+# Not defined here: the implementation lives in matrixark_mcp_budget_policies and this module
+# carried an identical second copy. The import edge did not exist before, so it was added only
+# after computing the closure over top-level imports in both directions -- matrixark_mcp_budget
+# _policies does not reach this module by any chain, so the new edge cannot close a cycle.
+try:  # package path
+    from .matrixark_mcp_budget_policies import bounded_max_children_scored_per_parent
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_budget_policies import bounded_max_children_scored_per_parent
 
 
 def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms: int) -> Json:
