@@ -73,7 +73,15 @@ ONE_VOCABULARY = ("<env_bool>",)
 # MATRIXARK_DIRECT_WRITE_QUEUE and a memory queue mode, so an operator turning it on got
 # nothing and no error. Raw batches follow the write queue now. A step DOWN is a flag leaving
 # the tree, and it should arrive with the commit that removed it, as this one did.
-EXPECTED_SHARED_FLOOR = 14
+#: 14 until matrixarkai#1575 consolidated matrixark_mcp_segments onto matrixark_mcp_core, which took
+#: MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY from two reading sites to one -- the flag did not go anywhere,
+#: one of the two copies of the function reading it did. So the number fell because the tree got
+#: better, which is the failure mode a floor set from a MEASUREMENT always has.
+#:
+#: What the floor is FOR is catching a read-shape scan that has stopped matching: that finds
+#: approximately nothing, not one fewer. Ten is far below anything consolidation will reach one pair
+#: at a time and far above what a broken scan returns.
+EXPECTED_SHARED_FLOOR = 10
 
 
 def _production_sources() -> List[str]:

@@ -7835,6 +7835,215 @@ fn fingerprinting_does_not_scale_with_the_manifest_count() {
     );
 }
 
+/// `apply_storage_lifecycle` walks the shard TWELVE times. Which of its pieces? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_apply_storage_lifecycle_walks -- --ignored --nocapture
+///
+/// `what_each_plan_call_walks` measures the calls a round makes and finds one that dominates:
+/// `bucket_storage_summaries` 1.0x, `storage_wal_reclaim_plan` 2.0x, `storage_lifecycle_plan`
+/// 2.0x, `create_bucket_dump_manifest` 2.0x -- and `apply_storage_lifecycle` 12.0x. That single
+/// call is most of `reclaim_wal`'s 16x, and it is NOT the manifest fingerprinting an earlier
+/// attempt blamed (making that lazy left the stage figure unchanged).
+///
+/// Its pieces are mostly gated by request flags, so they can be subtracted one at a time through
+/// the public API rather than by reading the body and guessing which ones walk.
+///
+/// CAVEAT, the same one that made an earlier table misleading: a flag whose work would not have
+/// happened anyway contributes 0, and that zero means "this row measured nothing", not "this piece
+/// does not walk". The all-on row's own walk count is printed so the deltas can be read against
+/// something, and a delta of 0 should be treated as unproven rather than as evidence of absence.
+///
+/// Every arm builds a FRESH shard: `apply_storage_lifecycle` mutates (it dumps, writes manifests
+/// and clears dirty state), so reusing one engine would measure a different store each time.
+#[test]
+#[ignore]
+fn what_apply_storage_lifecycle_walks() {
+    const RECORDS: usize = 4_000;
+
+    let walks_for = |request: crate::engine::reports::StorageLifecycleRequest| -> (u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("applylc-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let live_pages: u64 = engine
+            .bucket_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.page_ref_count as u64)
+            .sum();
+        crate::engine::reset_live_page_scan_entries();
+        let _ = engine.apply_storage_lifecycle(request);
+        (crate::engine::live_page_scan_entries(), live_pages)
+    };
+
+    let all_on = || crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    };
+
+    let (baseline, live_pages) = walks_for(all_on());
+    assert!(live_pages > 0, "fixture stored no live pages");
+    assert!(baseline > 0, "apply_storage_lifecycle walked nothing; this attributes nothing");
+    eprintln!(
+        "  [apply-lc] everything on                        {baseline:>8} entries = {:>5.1}x the shard \
+({live_pages} live pages)",
+        baseline as f64 / live_pages as f64,
+    );
+
+    for (name, request) in [
+        (
+            "without purge_delayed_destroy",
+            crate::engine::reports::StorageLifecycleRequest { purge_delayed_destroy: false, ..all_on() },
+        ),
+        (
+            "without prune_bucket_dump_manifests",
+            crate::engine::reports::StorageLifecycleRequest { prune_bucket_dump_manifests: false, ..all_on() },
+        ),
+        (
+            "without roll_forward_bucket_dump_installs",
+            crate::engine::reports::StorageLifecycleRequest { roll_forward_bucket_dump_installs: false, ..all_on() },
+        ),
+        (
+            "with warm_cache",
+            crate::engine::reports::StorageLifecycleRequest { warm_cache: true, ..all_on() },
+        ),
+        (
+            "with invalidate_cache",
+            crate::engine::reports::StorageLifecycleRequest { invalidate_cache: true, ..all_on() },
+        ),
+    ] {
+        let (without, _) = walks_for(request);
+        let delta = baseline as i64 - without as i64;
+        eprintln!(
+            "  [apply-lc] {name:<40} {without:>8} entries (delta {delta:>+8}, {:>+5.1}x){}",
+            delta as f64 / live_pages as f64,
+            if delta == 0 { "   <- 0: unproven, not evidence of absence" } else { "" },
+        );
+    }
+}
+
+/// What does each individual plan call WALK? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_each_plan_call_walks -- --ignored --nocapture
+///
+/// `which_stages_walk_every_live_page` attributes a round's 35x live-page walk to two stages --
+/// `reclaim_index` 18x and `reclaim_wal` 16x -- but not to the CALLS inside them. An earlier
+/// attempt to explain reclaim_wal's 16x as per-manifest fingerprinting was arithmetic on an
+/// assumed manifest count, and measurement refuted it: making that fingerprinting lazy left the
+/// stage figure completely unchanged, because the fixture holds almost no manifests.
+///
+/// So this measures the pieces directly rather than inferring them. Each entry resets the
+/// live-page counter, makes ONE call, and reports what that call materialized, as a multiple of
+/// the shard's live page count.
+///
+/// Read-only calls come first. `create_bucket_dump_manifest` and `apply_storage_lifecycle`
+/// MUTATE (they dump, write manifests and clear dirty state), so they are measured last and in
+/// that order -- re-running this probe's earlier rows after them would measure a different shard.
+#[test]
+#[ignore]
+fn what_each_plan_call_walks() {
+    const RECORDS: usize = 4_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("percall-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    assert!(live_pages > 0, "fixture stored no live pages");
+
+    let lifecycle_request = || crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    };
+
+    let mut report = |label: &str, walked: u64| {
+        eprintln!(
+            "  [per-call] {label:<34} {walked:>8} entries = {:>5.1}x the shard",
+            walked as f64 / live_pages as f64,
+        );
+    };
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.bucket_storage_summaries(1);
+    report("bucket_storage_summaries", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+    report("storage_wal_reclaim_plan", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_lifecycle_plan(lifecycle_request());
+    report("storage_lifecycle_plan", crate::engine::live_page_scan_entries());
+
+    // The unconditional pieces of `apply_storage_lifecycle`. None of them is gated by a request
+    // flag -- `what_apply_storage_lifecycle_walks` subtracts every flag and moves nothing -- so
+    // they have to be measured directly rather than by toggling the request.
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_object_lifecycle_snapshot(1);
+    report("storage_object_lifecycle_snapshot", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(1, Vec::new());
+    report("bucket_dump_manifest_prune_plan", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.bucket_dump_install_roll_forward_reports(1);
+    report("bucket_dump_install_roll_forward_reports", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.storage_cache_warmup_report(1, Vec::new());
+    report("storage_cache_warmup_report", crate::engine::live_page_scan_entries());
+
+    // MUTATING from here.
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.create_bucket_dump_manifest(1, Vec::new());
+    report("create_bucket_dump_manifest (mutates)", crate::engine::live_page_scan_entries());
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.apply_storage_lifecycle(lifecycle_request());
+    report("apply_storage_lifecycle (mutates)", crate::engine::live_page_scan_entries());
+
+    eprintln!("  [per-call] shard holds {live_pages} live pages");
+}
+
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_slot_range_saves -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]

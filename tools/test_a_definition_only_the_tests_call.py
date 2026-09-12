@@ -102,6 +102,8 @@ ONLY_TESTS_CALL = {
     #   full_read_fallback_counts -- matrixarkai#1566 gave it a Prometheus family in
     #   matrixark_temporal_direct_backend, so the degradation it measures is now reported.
     #   embedding_cache_stats -- matrixarkai#1569 put it on the local adapter dashboard.
+    #   pipeline_task_footprint_stats -- matrixarkai#1570 put rows against distinct tasks on
+    #   the same dashboard.
     #
     # Both entries said the same thing in different words, "written to make something visible and
     # reported nowhere", and both stopped being true within a week of being written down. That is
@@ -119,8 +121,6 @@ ONLY_TESTS_CALL = {
         "the unadopted part of matrixark_mcp_retrieve_pre_refresh, which three production modules import. The same merge runs inline at matrixark_local_adapter_retrieve:1167-1196",
     "secondary_index_bound_stats":
         "live posting counts by scope and ref_type. Its own docstring says 'used by the tests/harness', so this one is an affordance by design rather than a signal that went missing -- read the docstring before filing it as a gap",
-    "pipeline_task_footprint_stats":
-        "what pipeline tasks cost in the store; no surface prints the number",
     "env_int":
         "the typed integer env reader. env_bool has twenty-two production callers and this has none, so most integer flags are parsed at their own read site instead",
     "env_float":
