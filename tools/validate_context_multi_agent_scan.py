@@ -6,10 +6,30 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Any
+
+try:
+    from tools.matrixark_validation_requirements import (
+        load_report,
+        require_bool,
+        require_distribution_count,
+        require_int_at_least,
+        require_int_equal,
+        require_int_map,
+        require_string_set,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_validation_requirements import (
+        load_report,
+        require_bool,
+        require_distribution_count,
+        require_int_at_least,
+        require_int_equal,
+        require_int_map,
+        require_string_set,
+    )
 
 
 REQUIRED_LAYERS = {"agent", "user", "workspace", "global"}
@@ -20,75 +40,6 @@ REQUIRED_SELECTED_SCOPE_KEYS = {"agent:codex", "user:user", "workspace:context",
 def fail(message: str) -> int:
     print(f"context multi-agent scan validation failed: {message}", file=sys.stderr)
     return 1
-
-
-def load_report(path: Path) -> dict[str, Any]:
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            report = json.load(handle)
-    except FileNotFoundError:
-        raise ValueError(f"report not found: {path}")
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"report is not valid JSON: {exc}") from exc
-    if not isinstance(report, dict):
-        raise ValueError("report root must be a JSON object")
-    return report
-
-
-def require_bool(report: dict[str, Any], field: str) -> bool:
-    value = report.get(field)
-    if value is not True:
-        raise ValueError(f"{field} must be true, got {value!r}")
-    return True
-
-
-def require_int_at_least(report: dict[str, Any], field: str, minimum: int) -> int:
-    value = report.get(field)
-    if not isinstance(value, int):
-        raise ValueError(f"{field} must be an integer, got {value!r}")
-    if value < minimum:
-        raise ValueError(f"{field} must be >= {minimum}, got {value}")
-    return value
-
-
-def require_string_set(report: dict[str, Any], field: str, required: set[str]) -> set[str]:
-    value = report.get(field)
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"{field} must be a string array")
-    observed = set(value)
-    missing = sorted(required - observed)
-    if missing:
-        raise ValueError(f"{field} missing required entries: {missing}")
-    return observed
-
-
-def require_int_equal(report: dict[str, Any], field: str, expected: int) -> None:
-    value = report.get(field)
-    if value != expected:
-        raise ValueError(f"{field} must be {expected}, got {value!r}")
-
-
-def require_distribution_count(report: dict[str, Any], field: str, key: str, expected: int) -> None:
-    value = report.get(field)
-    if not isinstance(value, dict):
-        raise ValueError(f"{field} must be an object")
-    observed = value.get(key, 0)
-    if observed != expected:
-        raise ValueError(f"{field}[{key!r}] must be {expected}, got {observed!r}")
-
-
-def require_int_map(report: dict[str, Any], field: str) -> dict[str, int]:
-    value = report.get(field)
-    if not isinstance(value, dict):
-        raise ValueError(f"{field} must be an object")
-    bad_items = {
-        key: item
-        for key, item in value.items()
-        if not isinstance(key, str) or not isinstance(item, int)
-    }
-    if bad_items:
-        raise ValueError(f"{field} must map strings to integers, got {bad_items!r}")
-    return value
 
 
 def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: int) -> None:

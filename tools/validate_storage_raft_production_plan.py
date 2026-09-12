@@ -7,6 +7,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+try:
+    from tools.matrixark_validation_requirements import (
+        require_snippets,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_validation_requirements import (
+        require_snippets,
+    )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -92,18 +101,6 @@ REQUIRED_SCALE_SLO_SNIPPETS = (
     "p99_write_us",
     "error_budget_remaining_percent",
 )
-
-
-def require_snippets(path: Path, snippets: tuple[str, ...], label: str) -> int:
-    if not path.exists():
-        raise SystemExit(f"{label}: missing {path.relative_to(ROOT)}")
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    missing = [snippet for snippet in snippets if snippet not in text]
-    if missing:
-        raise SystemExit(
-            f"{label}: {path.relative_to(ROOT)} missing snippets: {', '.join(missing)}"
-        )
-    return len(snippets)
 
 
 def main() -> None:

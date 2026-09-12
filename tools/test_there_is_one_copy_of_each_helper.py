@@ -36,6 +36,19 @@ MIN_BODY_STATEMENTS = 4
 #: helper that exists to bootstrap importing cannot itself be imported from a shared module.
 NON_PRODUCTION_PREFIXES = ("test_", "run_", "validate_")
 
+#: The same list, minus the gate scripts -- used by the FUNCTION-BODY check below and by nothing
+#: else. The distinction is the point of the split: a `run_` or `validate_` script's module-scope
+#: constants are its own configuration, so two gates each naming `REQUIRED_DOC_SNIPPETS` for their
+#: own document is not drift and the constant checks would report it as if it were. A copied
+#: FUNCTION body is a copied helper wherever it sits.
+#:
+#: Leaving the gates out of the body check as well was the exclusion doing more than its reason:
+#: 75 scripts carrying 855 definitions sat outside every duplicate check in the tree. Including
+#: them here takes this one corpus from 217 modules to 292, and it found five copied bodies --
+#: every one a `require_*` shape check that both context gates or both readiness gates had
+#: written out twice. They live once now, in `matrixark_validation_requirements`.
+BODY_CHECK_PREFIXES = ("test_",)
+
 #: Empty, and meant to stay that way. It held thirty-three pairs: every one is now a single
 #: definition that the other module re-exports or delegates to.
 #:
@@ -88,10 +101,19 @@ def _tracked_production_modules() -> list[str]:
     return out
 
 
+def _tracked_modules_with_gates() -> list[str]:
+    """`_tracked_production_modules` plus the `run_` and `validate_` gate scripts."""
+    listed = subprocess.run(
+        ["git", "ls-files", "tools/*.py"], cwd=REPO_ROOT,
+        capture_output=True, text=True, check=False).stdout.split()
+    return [rel for rel in listed
+            if not os.path.basename(rel).startswith(BODY_CHECK_PREFIXES)]
+
+
 def _duplicate_pairs() -> set[tuple[str, tuple[str, ...]]]:
-    """Every function body that appears at module scope in more than one production module."""
+    """Every function body that appears at module scope in more than one non-test module."""
     by_shape: dict[str, list[tuple[str, str]]] = {}
-    for rel in _tracked_production_modules():
+    for rel in _tracked_modules_with_gates():
         try:
             with open(os.path.join(REPO_ROOT, rel), encoding="utf-8", errors="replace") as handle:
                 tree = ast.parse(handle.read())
