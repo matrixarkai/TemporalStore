@@ -2384,6 +2384,48 @@ mod tests {
     }
 
     #[test]
+    fn a_gc_round_that_reclaimed_nothing_does_not_rewrite_the_manifest() {
+        // The sibling test above keeps the full manifest re-serialize off the APPEND path. The
+        // page-GC path had no such guard and rewrote it unconditionally, once per round, on a
+        // stage the periodic loop runs whenever page pressure holds.
+        //
+        // It is not a cheap write: it serialises every band, fsyncs the temp file, renames it and
+        // fsyncs the parent directory -- two fsyncs. A round that reclaimed nothing rewrites it
+        // with byte-identical content, so unlike the append test the BYTES cannot tell the two
+        // apart and the modification time is the observable.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        for index in 0..8u64 {
+            store.append(format!("record-{index}").as_bytes()).unwrap();
+        }
+        store.sync_durable().unwrap();
+        let manifest = slab_manifest_path(dir.path());
+        assert!(manifest.exists(), "expected the manifest to exist after a durable sync");
+        let before = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+
+        // `retain_from` 0 leaves every slab above the floor, so this round walks and reclaims
+        // nothing.
+        let report = store.gc_slabs_before(0).unwrap();
+        assert!(
+            report.removed_block_slab_ids.is_empty(),
+            "the fixture was supposed to reclaim nothing, but removed {:?}",
+            report.removed_block_slab_ids
+        );
+        // The denominator: a round that walked no slabs at all would satisfy the assertion below
+        // for the wrong reason.
+        assert!(
+            !report.retained_block_slab_ids.is_empty(),
+            "the round walked no slabs, so it proves nothing about skipping the write"
+        );
+
+        let after = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+        assert_eq!(
+            before, after,
+            "a page-GC round that reclaimed nothing rewrote the slab manifest"
+        );
+    }
+
+    #[test]
     fn per_append_does_not_reserialize_the_slab_manifest_on_the_default_path() {
         // MANIFEST-CONFORMANCE FOLD no-O(n) proof: on the default single-barrier path the per-append
         // band-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
