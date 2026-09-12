@@ -430,9 +430,6 @@ SETTINGS: List[Setting] = [
     Setting("skills.chunks_per_skill", "skills", "MATRIXARK_SKILL_CHUNKS_PER_SKILL",
             "Chunks per skill", "int", "3", "live",
             "How many sections of one skill a pack may carry."),
-    Setting("skills.reserved_refs", "skills", "MATRIXARK_SKILL_RESERVED_REFS",
-            "Reserved skill references", "int", "3", "live",
-            "Skill references held back for the pack even under budget pressure."),
     Setting("skills.description_always", "skills", "MATRIXARK_SKILL_DESCRIPTION_ALWAYS",
             "Always list skill descriptions", "bool", "1", "live",
             "Include every visible skill's name and description in each pack even when no section "
@@ -958,6 +955,45 @@ def _build_default(name: str) -> Optional[str]:
     return _build_constant("DEFAULT_" + name.upper())
 
 
+#: Tenant knobs that do NOT get a portal field. The knob keeps working -- the tenant record, the
+#: env var and every reader are untouched; what it stops having is a row on the operator page.
+#:
+#: Until this existed the generator below offered EVERY knob a field, which is not the rule the
+#: rest of the tree follows. `test_an_addressed_flag_is_offered` states it from the other side:
+#: "the property is not that every flag is on the portal; most flags are internal and should stay
+#: that way." These nine are that -- checked against the six things that hold a field, and held by
+#: none of them: not the shipped config file, not a document, no sentence addressed to an operator
+#: near a read, no test naming the portal key, no value on this deployment that differs from the
+#: default, and none is a default-ON switch whose only off-selector is the page.
+#:
+#: What is NOT here, and why:
+#:
+#: * `max_event_text_chars`, `max_summary_text_chars` and `summary_levels` meet the same test and
+#:   stay, because KNOBS_READ_BY_NOTHING already decides their case the other way and says why --
+#:   a deployment may have one set, and a field that vanishes takes its value out of view while
+#:   leaving it in the file. That is a recorded decision, not an oversight to sweep up.
+#: * every knob whose help carries a measured recommendation. A field is the only surface that
+#:   advice appears on, so removing the field deletes the finding rather than a control.
+#: * `extract_segments` and `store_event_summary_text`, which were on this list until
+#:   `test_matrixark_knobs_apply_live.test_the_wired_storage_knobs_are_advertised_live` refused
+#:   them by name. They are WIRED to what gets stored, the suite above measures both flipping
+#:   mid-flight, and the portal has to say so. A knob no criterion holds can still be one an
+#:   operator needs to see, and that test is where the tree records which.
+INTERNAL_KNOBS = frozenset({
+    # This one was a hand-written `skills.reserved_refs` Setting, and deleting that declaration did
+    # not remove the field: the generator below offers every knob whose env is not already taken,
+    # so the moment the literal went the knob supplied the same variable again as
+    # `behaviour.skill_reserved_refs`. The count moved by eight, not nine, and nothing said so.
+    "skill_reserved_refs",
+    "max_secondary_index_records_per_session",
+    "max_secondary_index_records_per_tenant",
+    "return_all_candidate_threshold",
+    "return_all_candidates",
+    "share_serving_values",
+    "slim_terminal_pipeline_tasks",
+})
+
+
 def _knob_settings() -> List[Setting]:
     try:
         try:
@@ -970,7 +1006,7 @@ def _knob_settings() -> List[Setting]:
     derived: List[Setting] = []
     for name, knob in sorted(getattr(policy, "KNOBS", {}).items()):
         env = getattr(knob, "env", "")
-        if not env or env in taken:
+        if not env or env in taken or name in INTERNAL_KNOBS:
             continue
         taken.add(env)
         kind = {"bool": "bool", "int": "int", "choice": "str"}.get(knob.kind, "str")
