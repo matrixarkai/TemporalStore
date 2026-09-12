@@ -9899,4 +9899,64 @@ mod tests {
         }
         set_wal_segment_bytes_for_test(None);
     }
+
+    /// What does writing one record per command cost against batching them? Prints.
+    ///
+    ///   cargo test -p temporalstore-rust --lib what_per_command_records_cost \
+    ///       -- --ignored --nocapture --test-threads=1
+    ///
+    /// `append_batch_as_one_record` puts N commands in ONE record, and the design being followed
+    /// works that way for every write: items accumulate into one oplog and `Commit` serialises the
+    /// batch as a single stream append. Ours reaches the batch entries only from the explicit
+    /// stream-batch API -- an ordinary write takes `append_with_sync` and gets a record to itself.
+    ///
+    /// The difference is per-record framing, paid once per command instead of once per batch. This
+    /// measures it directly: the same commands down both paths, same store settings, comparing
+    /// BYTES ON DISK.
+    ///
+    /// Compression is deliberately left at the store default for both arms. An earlier probe in
+    /// this area reported compression as batching, so the two must not move together here.
+    #[test]
+    #[ignore]
+    fn what_per_command_records_cost() {
+        fn commands(count: usize, value_len: usize) -> Vec<Command> {
+            (0..count)
+                .map(|index| Command::StringSet {
+                    key: format!("walbatch-{index:06}"),
+                    value: vec![b'v'; value_len],
+                })
+                .collect()
+        }
+
+        eprintln!("  value_b  count   one_by_one_b   batch_atomic_b   records   ratio");
+        for value_len in [16usize, 64, 256] {
+            for count in [64usize, 512] {
+                let one_by_one_dir = tempfile::tempdir().expect("temp dir");
+                let one_by_one = LocalWriteAheadLogStore::new(one_by_one_dir.path());
+                for command in commands(count, value_len) {
+                    one_by_one
+                        .append_with_sync(1, command, false)
+                        .expect("append");
+                }
+                let one_by_one_bytes = one_by_one.stats(1).bytes_written;
+
+                let batched_dir = tempfile::tempdir().expect("temp dir");
+                let batched = LocalWriteAheadLogStore::new(batched_dir.path());
+                let records = batched
+                    .append_batch_atomic(1, commands(count, value_len), false)
+                    .expect("append batch");
+                let batched_bytes = batched.stats(1).bytes_written;
+
+                let ratio = if batched_bytes == 0 {
+                    0.0
+                } else {
+                    one_by_one_bytes as f64 / batched_bytes as f64
+                };
+                eprintln!(
+                    "  {value_len:>7}  {count:>5}   {one_by_one_bytes:>12}   {batched_bytes:>14}   {:>7}   {ratio:>5.2}x",
+                    records.len()
+                );
+            }
+        }
+    }
 }
