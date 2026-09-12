@@ -91,13 +91,19 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     let mut block_slabs_retained_physical_bytes = 0;
     let mut block_slabs_retained_live = 0;
     let mut block_slabs_retained_live_physical_bytes = 0;
-    match inner.engine.cache().invalidate_shard(request.shard_id) {
-        Ok(report) => {
-            cache_entries_removed = report.memory_entries_removed;
-            cache_disk_bytes_removed = report.disk_bytes_removed;
-        }
-        Err(err) => {
-            status = Status::error("cache_gc_failed", &err.to_string());
+    // Dropping the whole shard's cache has to happen BEFORE the collection when it happens at
+    // all: it cannot know what will be reclaimed, so it takes everything. Scoping it to what was
+    // actually reclaimed means doing it after, which is why this is a branch here and a second
+    // block below rather than a narrower call in the same place.
+    if !request.page_gc_invalidate_removed_slabs_only {
+        match inner.engine.cache().invalidate_shard(request.shard_id) {
+            Ok(report) => {
+                cache_entries_removed = report.memory_entries_removed;
+                cache_disk_bytes_removed = report.disk_bytes_removed;
+            }
+            Err(err) => {
+                status = Status::error("cache_gc_failed", &err.to_string());
+            }
         }
     }
     // Both reclaims below delete durable log records on an operator's say-so, and until now
@@ -204,6 +210,33 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             };
             match gc_result {
                 Ok(report) => {
+                    if request.page_gc_invalidate_removed_slabs_only {
+                        // The entries that went stale are the ones whose slab went away, and
+                        // nothing else in the shard did.
+                        //
+                        // `removed_block_slab_ids` alone, NOT chained with the delayed-destroy
+                        // list: a quarantined slab is pushed onto BOTH, so chaining them -- as the
+                        // cycle does -- visits it twice. Harmless for the invalidation itself,
+                        // which is idempotent, but it would double-count the totals reported here.
+                        for block_slab_id in report.removed_block_slab_ids.iter() {
+                            match inner
+                                .engine
+                                .cache()
+                                .invalidate_page_segment(request.shard_id, *block_slab_id)
+                            {
+                                Ok(cache_report) => {
+                                    cache_entries_removed = cache_entries_removed
+                                        .saturating_add(cache_report.memory_entries_removed);
+                                    cache_disk_bytes_removed = cache_disk_bytes_removed
+                                        .saturating_add(cache_report.disk_bytes_removed);
+                                }
+                                Err(err) => {
+                                    status =
+                                        Status::error("cache_gc_failed", &err.to_string());
+                                }
+                            }
+                        }
+                    }
                     block_slabs_removed = report.removed_block_slab_ids.len();
                     block_slabs_removed_physical_bytes = report.removed_physical_bytes;
                     block_slabs_retained_physical_bytes = report.retained_physical_bytes;
