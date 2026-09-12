@@ -5397,3 +5397,103 @@ fn a_capped_index_dump_still_reclaims() {
          {unbounded} with no cap -- the reclaim floor is not advancing on the bounded path"
     );
 }
+
+/// A bucket that stopped being written does not pin the reclaim floor for ever.
+///
+/// #1514 measured both logs growing linearly under continuous ingestion while the plan reported
+/// safe=true, full coverage, no blockers -- and a frontier frozen at 2001 for twelve rounds.
+/// #1516 fixed it: the floor is a minimum over DIRTY buckets only, and an unset floor means "no
+/// constraint" rather than zero. It shipped as 14 lines in one file with NO test, which is why
+/// this exists.
+///
+/// The bug needs CLEAN buckets to show itself -- buckets dumped once and never written again. A
+/// dirty-everything fixture cannot reproduce it: every bucket constrains the floor legitimately,
+/// so including clean ones changes nothing. That is not hypothetical; the guard beside this one
+/// (`a_capped_index_dump_still_reclaims`) overwrites a small key space, and reverting #1516 leaves
+/// it passing.
+///
+/// So: write widely, dump everything, then keep writing to a SMALL subset. The buckets left behind
+/// are clean, and their manifests hold sequence numbers from the first phase. Before #1516 those
+/// stale manifests pinned the floor and neither log could ever be reclaimed past them.
+#[test]
+fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
+    const WIDE_KEYS: usize = 2_000;
+    const HOT_KEYS: usize = 20;
+    const ROUNDS: usize = 8;
+    const BATCH: usize = 1_000;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+
+    // Phase one: write widely, so many buckets carry a sequence, then dump them all.
+    {
+        let engine = runtime.engine();
+        for index in 0..WIDE_KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("quiet-wide-{:08}", index),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+    }
+    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+
+    // Phase two: keep writing, but only to a handful of keys. Every bucket the wide phase touched
+    // and this one does not is now CLEAN, holding a manifest from phase one.
+    let mut written = 0usize;
+    for _ in 0..ROUNDS {
+        let engine = runtime.engine();
+        for index in 0..BATCH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("quiet-hot-{:04}", (written + index) % HOT_KEYS),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        written += BATCH;
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    }
+
+    let engine = runtime.engine();
+    let wal_records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .map(|records| records.len())
+        .unwrap_or(0);
+    let index_records = engine
+        .index_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .map(|records| records.len())
+        .unwrap_or(0);
+
+    // The denominator: phase two has to have written enough that a frozen floor is visible as
+    // growth rather than lost in the noise of phase one.
+    assert!(
+        written >= BATCH * ROUNDS,
+        "phase two wrote {written} records, too few to tell a frozen floor from a moving one"
+    );
+    // Neither log may hold everything phase two wrote. A floor pinned by the quiet buckets from
+    // phase one cannot advance, and both logs then grow with the total.
+    assert!(
+        wal_records < written,
+        "the write-ahead log holds {wal_records} records against {written} written -- a bucket \
+         that went quiet is pinning the reclaim floor"
+    );
+    assert!(
+        index_records < written,
+        "the index log holds {index_records} records against {written} written -- a bucket that \
+         went quiet is pinning the reclaim floor"
+    );
+}
