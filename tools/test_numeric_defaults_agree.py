@@ -55,6 +55,7 @@ started outside every shipped path, and the resolver now agrees at 60000.
 from __future__ import annotations
 
 import ast
+import io
 import collections
 import os
 import re
@@ -244,3 +245,105 @@ class NumericDefaultsAgreeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheRankingWeightsAreWrittenOnceTest(unittest.TestCase):
+    """`DEFAULT_TIME_WEIGHT` and `DEFAULT_BUSINESS_WEIGHT` are written in four places.
+
+    Two are module constants -- `matrixark_mcp_core` and `matrixark_mcp_runtime_config` -- which
+    core's own comment says are deliberately defined in both. The other two are the keyword
+    defaults in `matrixark_mcp_scoring.final_recall_score`, spelled 0.18 and 0.22.
+
+    `test_no_new_variable_disagrees_about_its_default` above cannot see the last two: it compares
+    the fallback of an ENVIRONMENT READ, and a signature default is not one. So four numbers that
+    have to move together had a check over two of them.
+
+    They agree today, and only because the single caller of that function passes the constants in
+    explicitly. A new caller that omits them gets 0.18 and 0.22 whatever the constants say, for
+    every deployment that configures no weights -- which is most of them, and the one nobody tests.
+    That is the failure this file's own docstring describes for numbers, one layer further in.
+    """
+
+    NAMES = ("DEFAULT_TIME_WEIGHT", "DEFAULT_BUSINESS_WEIGHT")
+
+    @staticmethod
+    def _module_constants(stem):
+        with io.open(os.path.join(TOOLS, stem + ".py"), encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        found = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name) \
+                    and isinstance(node.value, ast.Constant):
+                found[node.targets[0].id] = node.value.value
+        return found
+
+    @staticmethod
+    def _signature_defaults(stem, function):
+        with io.open(os.path.join(TOOLS, stem + ".py"), encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function:
+                names = [a.arg for a in node.args.kwonlyargs]
+                values = [d.value if isinstance(d, ast.Constant) else None
+                          for d in node.args.kw_defaults]
+                return dict(zip(names, values))
+        return {}
+
+    def test_the_two_modules_agree_about_the_weights(self) -> None:
+        core = self._module_constants("matrixark_mcp_core")
+        runtime = self._module_constants("matrixark_mcp_runtime_config")
+        for name in self.NAMES:
+            with self.subTest(constant=name):
+                self.assertIn(name, core, "%s is no longer a plain constant in core" % name)
+                self.assertIn(name, runtime, "%s is no longer a plain constant in runtime" % name)
+                self.assertEqual(
+                    core[name], runtime[name],
+                    "%s is %r in matrixark_mcp_core and %r in matrixark_mcp_runtime_config. Both "
+                    "are read as the default weight for a deployment that sets none, so which one "
+                    "a request gets depends on which module served it."
+                    % (name, core[name], runtime[name]))
+
+    def test_the_signature_defaults_are_the_constants(self) -> None:
+        core = self._module_constants("matrixark_mcp_core")
+        signature = self._signature_defaults("matrixark_mcp_scoring", "final_recall_score")
+        for name, keyword in zip(self.NAMES, ("default_time_weight", "default_business_weight")):
+            with self.subTest(keyword=keyword):
+                self.assertIn(keyword, signature,
+                              "final_recall_score no longer takes %s" % keyword)
+                self.assertEqual(
+                    core[name], signature[keyword],
+                    "final_recall_score defaults %s to %r while %s is %r. Every caller passes the "
+                    "constant in today, so the two agree by habit rather than by construction -- "
+                    "and a caller that omits it silently ranks on the older number."
+                    % (keyword, signature[keyword], name, core[name]))
+
+    def test_there_is_one_blend(self) -> None:
+        """A delegation is an import and a return; a second implementation is not.
+
+        matrixark_mcp_core_scoring held its own copy of the arithmetic until this was written.
+        """
+        implementations = []
+        for entry in sorted(os.listdir(TOOLS)):
+            if not entry.startswith("matrixark_") or not entry.endswith(".py"):
+                continue
+            try:
+                with io.open(os.path.join(TOOLS, entry), encoding="utf-8",
+                             errors="replace") as handle:
+                    tree = ast.parse(handle.read())
+            except (SyntaxError, OSError):
+                continue
+            for node in tree.body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if node.name != "final_recall_score":
+                    continue
+                body = [s for s in node.body
+                        if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+                if len(body) > 3:
+                    implementations.append(entry[:-3])
+        self.assertEqual(
+            ["matrixark_mcp_scoring"], sorted(implementations),
+            "the ranking blend has more than one implementation: %r. The rule is the strong form "
+            "test_there_is_one_cosine states -- not that the copies must agree, but that there "
+            "must not be two." % (sorted(implementations),))

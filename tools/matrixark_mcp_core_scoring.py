@@ -194,16 +194,27 @@ except ImportError:  # Direct script execution from tools/.
 
 
 def final_recall_score(origin_score: float, time_score: float, business_score: float, weights: Json) -> float:
-    time_weight = clamp01(weights.get("time", DEFAULT_TIME_WEIGHT), DEFAULT_TIME_WEIGHT)
-    business_weight = clamp01(weights.get("business", DEFAULT_BUSINESS_WEIGHT), DEFAULT_BUSINESS_WEIGHT)
-    if time_weight + business_weight > 1.0:
-        scale = 1.0 / (time_weight + business_weight)
-        time_weight *= scale
-        business_weight *= scale
-    origin_weight = 1.0 - time_weight - business_weight
-    return round(
-        origin_weight * origin_score + time_weight * time_score + business_weight * business_score,
-        6,
+    """This build's ranking blend, with the weights this module's constants carry.
+
+    The arithmetic used to be written out here as well as in `matrixark_mcp_scoring`, and the two
+    copies differed only in where the defaults came from: this one read
+    `DEFAULT_TIME_WEIGHT`/`DEFAULT_BUSINESS_WEIGHT`, the other had 0.18 and 0.22 in its signature.
+    They answered identically for every caller, because the one caller of the other copy passes the
+    constants in -- which is the same shape the two `cosine` implementations had before one of them
+    was fixed and the other was not. `test_there_is_one_cosine` states the rule this follows: not
+    "the two must agree" but "there must not be two".
+    """
+    try:  # package path (tools.matrixark_mcp_scoring)
+        from .matrixark_mcp_scoring import final_recall_score as _blend
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_scoring import final_recall_score as _blend
+    return _blend(
+        origin_score,
+        time_score,
+        business_score,
+        weights,
+        default_time_weight=DEFAULT_TIME_WEIGHT,
+        default_business_weight=DEFAULT_BUSINESS_WEIGHT,
     )
 
 
