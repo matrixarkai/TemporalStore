@@ -454,17 +454,6 @@ SETTINGS: List[Setting] = [
             "share above is set."),
 
     # ---- retrieval and context budget ----------------------------------------------------------
-    Setting("retrieval.onebox_embedding_first", "retrieval",
-            "MATRIXARK_ONEBOX_EMBEDDING_FIRST",
-            "One-box profile: score on the vector alone", "bool", "1", "live",
-            "ON by default, and it decides how every result on this deployment is ranked. With it "
-            "on, a candidate's score is its vector similarity and nothing else; with it off, the "
-            "score is a blend -- 0.72 of the vector plus 0.28 of a lexical match on the node's "
-            "text.\n\n"
-            "Turning it off gives a query that shares WORDS with a memory a way to find it when "
-            "the encoder does not think the two are close. Leaving it on is what a one-box "
-            "deployment wants when the encoder is good and the scan should not pay to read text "
-            "it will not otherwise use."),
     Setting("retrieval.project_scan_fields", "retrieval",
             "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS",
             "Carry only the fields the scan reads", "bool", "0", "live",
@@ -695,10 +684,6 @@ SETTINGS: List[Setting] = [
             "Every path the ingestion page accepts is resolved inside this directory. With it "
             "unset, submitting server-side paths is refused outright rather than defaulting to the "
             "whole filesystem — so bulk import does not work until you set it."),
-    Setting("ingestion.bulk_ingest", "ingestion", "MATRIXARK_BULK_INGEST",
-            "Bulk ingest mode", "bool", "0", "restart",
-            "Trades per-record durability acknowledgement for throughput during a large import. "
-            "Turn it off again for steady-state serving."),
     Setting("ingestion.resource_async_default_bytes", "ingestion",
             "MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES",
             "Async parse threshold (bytes)", "int", "2097152", "restart",
@@ -930,10 +915,6 @@ SETTINGS: List[Setting] = [
     Setting("limits.max_blob_bytes", "limits", "MATRIXARK_QUOTA_MAX_BLOB_BYTES",
             "Max blob size (bytes)", "int", "5368709120", "restart",
             "Ceiling on a single streamed blob."),
-    Setting("limits.backend_timeout_ms", "limits", "MATRIXARK_GATEWAY_BACKEND_TIMEOUT_MS",
-            "Backend timeout (ms)", "int", "30000", "restart",
-            "How long the edge waits for the backend before answering 504. Worth raising only if "
-            "an extraction model in the path is genuinely slower than this."),
 ]
 
 # ---- retrieval behaviour, DERIVED from the tenant-policy registry ------------------------------
@@ -1089,13 +1070,6 @@ _apply_build_defaults(SETTINGS)
 #: here -- a declared default is written as an explicit value when a deployment is
 #: cloned, so a guessed one would reconfigure the clone.
 SETTINGS.extend([
-    Setting("embedding.cache_entries", "embedding", "MATRIXARK_EMBEDDING_CACHE_ENTRIES",
-            "Cache entries", "int", "8192", "live",
-            "How many encoded vectors the in-process cache holds before evicting the least "
-            "recently used. This is real memory -- an entry is a 384-float vector, so the "
-            "default is roughly 25 MB per worker. 0 turns the cache off. The policy used to "
-            "clear the WHOLE cache on overflow, which discarded every warm entry at the moment "
-            "it began paying off."),
     Setting("embedding.dims", "embedding", "MATRIXARK_EMBEDDING_DIMS",
             "Dims", "int", "512", "live",
             "How many leading dimensions of a vector are stored; 0 stores whatever the model "
@@ -1214,13 +1188,6 @@ SETTINGS.extend([
             "Direct write backoff ms", "int", "25", "restart",
             "Direct write backoff milliseconds. Defaults to 25. Frozen when the process starts. Read by "
             "matrixark_mcp_core, matrixark_mcp_runtime_config."),
-    Setting("limits.direct_write_queue", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE",
-            "Direct write queue", "bool", "0", "live",
-            "Hands a qualifying append batch to a daemon worker thread instead of writing it "
-            "on the calling thread. The queue holds MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS "
-            "records and an append waits _PUT_TIMEOUT_MS for room; the worker drains up to "
-            "_DRAIN_MAX_BATCHES at a time, into an in-memory queue or a durable one in the "
-            "store as _MODE says. Which batches qualify is the allow-sync-context setting."),
     Setting("limits.direct_write_queue_drain_max_batches", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES",
             "Direct write queue drain max batches", "int", "64", "live",
             'Direct write queue drain maximum batches. Defaults to 64. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend.'),
@@ -1249,15 +1216,6 @@ SETTINGS.extend([
             "Ingest timeout ms", "int", "30000", "restart",
             "Ingest timeout milliseconds. Defaults to 30000. Frozen when the process starts. Read by "
             "matrixark_mcp_server."),
-    Setting("limits.intern_backend_metadata", "limits", "MATRIXARK_INTERN_BACKEND_METADATA",
-            "Intern backend metadata", "bool", "0", "restart",
-            "Replaces repeated storage_options with a token and a sidecar dict record. "
-            "DO NOT TURN THIS ON YET. It is off because its crash-safety is UNVERIFIED: the "
-            "JSONL codec is safe because the dict record precedes the data record under the "
-            "event-log lock, and the backend has no such ordering -- it would rely on the "
-            "engine's batch append being atomic, which is a different claim nobody has "
-            "established. A reader that meets a token whose dict never landed cannot resolve "
-            "the field."),
     Setting("limits.max_concurrent_ingest", "limits", "MATRIXARK_MAX_CONCURRENT_INGEST",
             "Max concurrent ingest", "int", "32", "restart",
             "Maximum concurrent ingest. Defaults to 32. Frozen when the process starts. Read by "
@@ -1388,13 +1346,6 @@ SETTINGS.extend([
             "failing hook blocks the operation it was called from. On is the safer default for "
             "an agent hook: a memory write that cannot happen should not stop the work that "
             "produced it."),
-    Setting("retrieval.memory_purge_threshold", "retrieval", "MATRIXARK_MEMORY_PURGE_THRESHOLD",
-            "Memory purge threshold", "int", "0", "live",
-            "How many raw tombstones may accumulate before the local JSONL event log is "
-            "physically rewritten without the records they retire. 0, the default, never "
-            "purges. It applies only where the local JSONL is in use, is best-effort -- it "
-            "never raises into the write path that triggered it -- and the rewrite itself is "
-            "crash-safe: temp file, fsync, atomic replace."),
     Setting("retrieval.pack_precision_expand_max_events", "retrieval", "MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS",
             "Pack precision expand max events", "int", "12", "restart",
             "Pack precision expand maximum events. Defaults to 12. Frozen when the process starts. Read "
@@ -1442,11 +1393,6 @@ SETTINGS.extend([
     Setting("retrieval.segment_max_new_tokens", "retrieval", "MATRIXARK_SEGMENT_MAX_NEW_TOKENS",
             "Segment max new tokens", "int", "512", "live",
             'Segment maximum new tokens. Defaults to 512. Read by matrixark_mcp_core.'),
-    Setting("retrieval.session_commit_threshold", "retrieval", "MATRIXARK_SESSION_COMMIT_THRESHOLD",
-            "Session commit threshold", "int", "20", "live",
-            "How many buffered messages a session accumulates before it is committed. Both "
-            "hooks read it as the DEFAULT for their --session-commit-threshold argument, so a "
-            "caller passing that flag overrides this for that invocation."),
     Setting("retrieval.summary_refresh_pass_budget_ms", "retrieval", "MATRIXARK_SUMMARY_REFRESH_PASS_BUDGET_MS",
             "Summary refresh pass budget ms", "int", "30000", "live",
             'Summary refresh pass budget milliseconds. Defaults to 30000. Read by matrixark_local_adapter_summaries.'),
@@ -1518,13 +1464,6 @@ SETTINGS.extend([
             "checked, ahead of MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES and "
             "MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT, and an explicit wait argument skips "
             "all of them."),
-    Setting("skills.resource_event_text_chars", "skills", "MATRIXARK_RESOURCE_EVENT_TEXT_CHARS",
-            "Resource event text chars", "int", "4096", "restart",
-            "How much of a resource or skill document its context_event keeps, with a pointer "
-            "to the rest. The document used to be stored three times -- once in the chunks, "
-            "once in the event, once inside the session buffer envelope -- and on a 66.2 KB "
-            "file the event alone was 1.05x the source. Set 0 to store the full text. Message "
-            "records are not bounded by this."),
     Setting("skills.resource_import_queue_max", "skills", "MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX",
             "Resource import queue max", "int", "64", "live",
             'Resource import queue maximum. Defaults to 64. Read by matrixark_mcp_local_adapter.'),
@@ -1539,10 +1478,6 @@ SETTINGS.extend([
             "How many JSON or JSONL records are grouped into one unit before chunking. The "
             "group is rendered as text and then split by the chunk caps, so this sets the "
             "granularity a record can be retrieved at, not the size of a chunk."),
-    Setting("skills.resource_max_chunk_tokens", "skills", "MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS",
-            "Resource max chunk tokens", "int", "240", "restart",
-            "Resource maximum chunk tokens. Defaults to 240. Frozen when the process starts. Read by "
-            "matrixark_resource_parser."),
     Setting("skills.resource_max_directory_depth", "skills", "MATRIXARK_RESOURCE_MAX_DIRECTORY_DEPTH",
             "Resource max directory depth", "int", "8", "restart",
             "Resource maximum directory depth. Defaults to 8. Frozen when the process starts. Read by "
@@ -1550,10 +1485,6 @@ SETTINGS.extend([
     Setting("skills.resource_max_directory_files", "skills", "MATRIXARK_RESOURCE_MAX_DIRECTORY_FILES",
             "Resource max directory files", "int", "256", "restart",
             "Resource maximum directory files. Defaults to 256. Frozen when the process starts. Read by "
-            "matrixark_resource_parser."),
-    Setting("skills.resource_max_total_chunks", "skills", "MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS",
-            "Resource max total chunks", "int", "2048", "restart",
-            "Resource maximum total chunks. Defaults to 2048. Frozen when the process starts. Read by "
             "matrixark_resource_parser."),
     Setting("skills.resource_overlap_chars", "skills", "MATRIXARK_RESOURCE_OVERLAP_CHARS",
             "Resource overlap chars", "int", "120", "restart",
