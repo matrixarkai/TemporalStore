@@ -700,7 +700,29 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
-        let ownership = self.validate_shard_page_ownership(shard_id, shard);
+        // ONE walk for the preamble's live-page consumers.
+        //
+        // Before any budget is consulted, this stage builds several whole-shard reports, and each
+        // one called `collect_live_page_entries` for its own copy -- measured by
+        // `what_the_compaction_preamble_walks` as 5.0x the shard. All of them run under the same
+        // WRITE lock on an unchanged `&ShardState`, so every read and write on the shard queues
+        // behind the lot. Three of them take the same live-page set and now share one walk.
+        //
+        // `object_manager_runtime_report` (2.0x) and `collect_live_block_slab_ids` still walk on
+        // their own: the first needs `_from_entries` forms of two nested reports, and the second
+        // walks the model maps directly rather than the live-page set, so it is not the same walk
+        // and cannot share this one.
+        //
+        // Order is forced by the last consumer taking the Vec BY VALUE: the two that borrow go
+        // first, so nothing is cloned.
+        let entries = collect_live_page_entries(shard);
+        let ownership = validate_bucket_ownership_index_from_entries(
+            shard_id,
+            shard,
+            &entries,
+            start_routing_bucket,
+            end_routing_bucket,
+        );
         if !ownership.mismatches.is_empty() {
             return Err(Status::error(
                 "page_compaction_owner_mismatch",
@@ -711,9 +733,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
             ));
         }
         let before_slabs = collect_live_block_slab_ids(shard);
-        let before = compaction_utility_report(&self.page_store, shard);
+        let before = compaction_utility_report_from_entries(&self.page_store, shard, &entries);
         let delete_marked_object_ids_before =
-            storage_object_lifecycle_report(shard_id, shard).delete_marked_object_ids;
+            object_lifecycle_report_from_entries(shard_id, shard, entries, &BTreeSet::new(), |_| 0)
+                .delete_marked_object_ids;
         let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
         let object_manager_before =
             object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);

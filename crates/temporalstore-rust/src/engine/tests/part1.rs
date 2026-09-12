@@ -8003,6 +8003,198 @@ fn what_apply_storage_lifecycle_walks() {
     }
 }
 
+/// A compaction round's preamble shares one walk between its live-page consumers.
+///
+/// Before any budget is consulted, the stage builds several whole-shard reports under the shard
+/// WRITE lock, so every read and write on the shard queues behind them. Three of those reports
+/// take the same live-page set -- ownership validation, the compaction utility report, and the
+/// object lifecycle report -- and each used to call `collect_live_page_entries` for its own copy.
+///
+/// Measured at 4,000 objects, one round walked 9.0x the shard; sharing one walk between those
+/// three takes it to 7.0x. The bound below sits between the two, so losing the sharing fails.
+///
+/// It is a BOUND and not an equality, unlike `the_object_lifecycle_snapshot_walks_the_shard_once`.
+/// That one owns every walk in its function and can name the exact number; this round also walks
+/// for `object_manager_runtime_report` (2.0x) and for the relocation work itself, and those are
+/// legitimately outside what this change controls. Pinning the total exactly would make this test
+/// fail for unrelated reasons.
+#[test]
+fn a_compaction_round_shares_one_walk_across_its_live_page_consumers() {
+    const RECORDS: usize = 1_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("share-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+
+    crate::engine::reset_live_page_scan_entries();
+    let report = engine.compact_shard_pages_with_budgets(1, u64::MAX, usize::MAX);
+    let walked = crate::engine::live_page_scan_entries();
+    assert!(report.is_ok(), "compaction failed: {report:?}");
+
+    // Denominator: a round that did no walking at all would satisfy any upper bound.
+    assert!(
+        walked > 0,
+        "the compaction round materialized nothing, so the bound below measures nothing",
+    );
+
+    let multiple = walked as f64 / live_pages as f64;
+    assert!(
+        multiple <= 8.0,
+        "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_pages} \
+live pages). Its ownership validation, utility report and object lifecycle report share ONE \
+`collect_live_page_entries`; this was 9.0x when they each walked separately and 7.0x when they \
+share. If a new preamble report needs the live-page set, pass it the existing slice.",
+    );
+}
+
+/// What does COMPACTION's preamble walk, piece by piece? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_the_compaction_preamble_walks -- --ignored --nocapture
+///
+/// `compact_shard_pages_with_budgets` takes the shard WRITE lock and then, before any budget is
+/// consulted, builds six reports. A round's WORK is bounded and resumable -- `compaction_rounds`
+/// continues a round a budget cut short -- but this preamble is not: it runs in full every time
+/// the stage runs, and every read and write on the shard queues behind it.
+///
+/// Measured here the same way `what_each_plan_call_walks` measures the lifecycle path, because
+/// the fix that worked there (#1586: one walk shared by three consumers of the same immutable
+/// `&ShardState`) is only worth attempting here if these pieces are walking the same way.
+///
+/// Each row resets the live-page counter, makes ONE call, and reports what it materialized as a
+/// multiple of the shard's live page count. All of these take `&ShardState` and mutate nothing,
+/// so they can be measured in any order under a single read lock.
+#[test]
+#[ignore]
+fn what_the_compaction_preamble_walks() {
+    const RECORDS: usize = 4_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("preamble-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    assert!(live_pages > 0, "fixture stored no live pages");
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+
+    let mut total = 0u64;
+    let mut report = |label: &str, walked: u64| {
+        eprintln!(
+            "  [preamble] {label:<38} {walked:>8} entries = {:>5.1}x the shard",
+            walked as f64 / live_pages as f64,
+        );
+    };
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.validate_shard_page_ownership(1, shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("validate_shard_page_ownership", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::collect_live_block_slab_ids(shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("collect_live_block_slab_ids", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::compaction::compaction_utility_report(&engine.page_store, shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("compaction_utility_report", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::storage_reporting::storage_object_lifecycle_report(1, shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("storage_object_lifecycle_report", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::compaction::compaction_model_layout_reports(&engine.page_store, shard);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("compaction_model_layout_reports", walked);
+
+    crate::engine::reset_live_page_scan_entries();
+    let _ = crate::engine::storage_reporting::object_manager_runtime_report(1, shard, 0, u32::MAX);
+    let walked = crate::engine::live_page_scan_entries();
+    total += walked;
+    report("object_manager_runtime_report", walked);
+
+    eprintln!(
+        "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_pages} live pages)",
+        "SUM OF STANDALONE CALLS",
+        total as f64 / live_pages as f64,
+    );
+    assert!(total > 0, "the preamble walked nothing; this attributes nothing");
+
+    // THE NUMBER A HOIST ACTUALLY MOVES.
+    //
+    // The rows above call each report on its own, and each one walks for itself by design -- the
+    // `_from_entries` refactors keep a standalone wrapper precisely so callers with nothing to
+    // share are unaffected. So those rows do NOT change when the preamble starts sharing a walk,
+    // and reading them for that would show a fix doing nothing.
+    //
+    // What changes is the real call, where the sharing happens. Measured last because it takes the
+    // shard WRITE lock and mutates.
+    drop(shards);
+    crate::engine::reset_live_page_scan_entries();
+    let compaction = engine.compact_shard_pages_with_budgets(1, u64::MAX, usize::MAX);
+    let walked = crate::engine::live_page_scan_entries();
+    assert!(compaction.is_ok(), "compaction failed: {compaction:?}");
+    eprintln!(
+        "  [preamble] {:<38} {walked:>8} entries = {:>5.1}x the shard   <- the real one",
+        "compact_shard_pages_with_budgets",
+        walked as f64 / live_pages as f64,
+    );
+    assert!(
+        walked > 0,
+        "the compaction round walked nothing, so this measured nothing",
+    );
+}
+
 /// What does each individual plan call WALK? Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_each_plan_call_walks -- --ignored --nocapture
