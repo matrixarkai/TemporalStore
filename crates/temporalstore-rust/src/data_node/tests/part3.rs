@@ -4649,9 +4649,13 @@ fn the_maintenance_round_runs_its_stages_in_order() {
     let expected = [
         "prepare",
         "reclaim_wal",
-        "reclaim_memory",
+        // Expire and evict come BEFORE the blanket cache invalidation, not after it: the
+        // invalidation zeroes the very number eviction's gate reads, so running it first meant
+        // eviction never opened its gate at all. See
+        // `eviction_opens_its_gate_when_the_cache_is_still_there`.
         "expire",
         "evict",
+        "reclaim_memory",
         "reclaim_page",
         "reclaim_index",
         "compact_pages",
@@ -5495,5 +5499,85 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
         index_records < written,
         "the index log holds {index_records} records against {written} written -- a bucket that \
          went quiet is pinning the reclaim floor"
+    );
+}
+
+/// Eviction opens its gate, because the cache it measures still exists when it looks.
+///
+/// `apply_storage_eviction` compares `eviction_memory_pressure_threshold` against the shard's
+/// cache bytes. The `reclaim_memory` stage is a blanket whole-shard cache invalidation, and it
+/// used to run FIRST -- so eviction read 0 and skipped with `memory_pressure_below_threshold`
+/// every round, whatever the threshold was. Measured over ten rounds in #1536: the gate never
+/// opened once. Eviction had never evicted anything on a default server, and `executed_stages`
+/// said "evict" either way.
+///
+/// The confusing part is the name. The `ReclaimMemory` our stage is named after CONTAINS expire
+/// and evict and invalidates no cache at all -- there, those two ARE the memory relief. Our
+/// blanket invalidation is a separate mechanism with no counterpart, so there was never an
+/// ordering to match, only an input not to destroy.
+#[test]
+fn eviction_opens_its_gate_when_the_cache_is_still_there() {
+    const KEYS: usize = 1_000;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    {
+        let engine = runtime.engine();
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("evictgate-{:06}", index),
+                    value: vec![b'v'; 128],
+                },
+            });
+        }
+        // Read everything back, so there is a populated cache for the gate to measure.
+        for index in 0..KEYS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("evictgate-{:06}", index),
+                },
+            });
+        }
+    }
+
+    let warm = runtime.engine().cache().stats().memory_bytes;
+    // The denominator. With an empty cache the gate is correct to stay shut and this proves
+    // nothing about ordering.
+    assert!(
+        warm > 0,
+        "the cache held nothing after reading every key back, so the gate has nothing to measure"
+    );
+
+    // A threshold below what the fixture actually built, so a gate reading the real cache must
+    // open and a gate reading a zeroed one cannot.
+    let options = StorageManagerOptions {
+        enable_evict: true,
+        eviction_memory_pressure_threshold: warm / 4,
+        ..StorageManagerOptions::default()
+    };
+    let report = runtime.run_storage_manager_once(1, options);
+    let eviction = report
+        .eviction
+        .as_ref()
+        .expect("the round ran the evict stage but carried no eviction report");
+
+    assert!(
+        eviction.pressure_gate_open,
+        "eviction did not open its gate: it measured {} against a threshold of {} on a cache \
+         holding {warm} bytes, and skipped with {:?} -- an earlier stage has zeroed what it reads",
+        eviction.pressure_before,
+        eviction.memory_pressure_threshold,
+        eviction.skipped_reason,
     );
 }

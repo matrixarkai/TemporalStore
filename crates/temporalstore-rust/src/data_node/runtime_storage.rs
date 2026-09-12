@@ -311,77 +311,6 @@ impl DataNodeRuntime {
             ),
         ));
 
-        if options.enable_memory_reclaim && cache_pressure {
-            let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
-                shard_id,
-                selected_dump_buckets: Vec::new(),
-                // The cap, not 0. This stage dumps before it invalidates, and an unbounded dump
-                // here made the cap `reclaim_wal` respects meaningless: measured, one round with
-                // every stage on dumped 1,280 of 1,280 dirty buckets, while `reclaim_wal` alone
-                // dumped exactly 64. Bounding is safe -- invalidation drops CACHED pages, and the
-                // data is in the write-ahead log whether or not its bucket was dumped this round.
-                max_dump_buckets_per_round: options.max_dump_buckets_per_round,
-                min_undumped_wal_records: 0,
-                min_undumped_wal_bytes: 0,
-                purge_delayed_destroy: false,
-                prune_bucket_dump_manifests: false,
-                roll_forward_bucket_dump_installs: false,
-                follower_replay_cursors: Vec::new(),
-                page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: Vec::new(),
-                page_gc_checkpoint_floor_slab_id: None,
-                page_gc_raft_install_floor_slab_id: None,
-                page_gc_delayed_destroy_grace_ms: 0,
-                invalidate_cache: true,
-                warm_cache: false,
-            });
-            let mut stats = self
-                .inner
-                .stats
-                .lock()
-                .expect("runtime stats lock poisoned");
-            stats.storage_manager_reclaim_memory_runs += 1;
-            lifecycle_report = Some(response.report);
-            executed_stages.push("reclaim_memory".to_string());
-        } else if !options.enable_memory_reclaim {
-            skipped_stages.push("reclaim_memory_disabled".to_string());
-        } else {
-            skipped_stages.push("reclaim_memory_no_pressure".to_string());
-        }
-        pressure_decisions.push(storage_manager_pressure_decision(
-            "reclaim_memory",
-            options.enable_memory_reclaim,
-            cache_pressure,
-            options.enable_memory_reclaim && cache_pressure,
-            vec![
-                storage_manager_pressure_signal(
-                    "cache_memory_bytes",
-                    pressure.cache_memory_bytes,
-                    options.cache_memory_bytes_pressure.max(1),
-                ),
-                storage_manager_pressure_signal(
-                    "cache_disk_bytes",
-                    pressure.cache_disk_bytes,
-                    options.cache_disk_bytes_pressure.max(1),
-                ),
-            ],
-            storage_manager_trigger_reasons(&[
-                (
-                    pressure.cache_memory_bytes >= options.cache_memory_bytes_pressure.max(1),
-                    "cache_memory_pressure",
-                ),
-                (
-                    pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1),
-                    "cache_disk_pressure",
-                ),
-            ]),
-            storage_manager_skip_reason(
-                options.enable_memory_reclaim,
-                cache_pressure,
-                "reclaim_memory",
-            ),
-        ));
-
         if options.enable_expire {
             expired_records_removed = self.sweep_expired_records_bounded(
                 options.max_expire_hot_buckets_per_round,
@@ -460,6 +389,94 @@ impl DataNodeRuntime {
             vec!["operator_enabled_eviction".to_string()],
             (!options.enable_evict).then(|| "evict_disabled".to_string()),
         ));
+
+        // Expire and evict run BEFORE the cache invalidation below, not after it.
+        //
+        // `reclaim_memory` is a blanket whole-shard cache invalidation. Eviction's gate
+        // compares its threshold against exactly that cache, so running it afterwards handed
+        // it a zero: measured over ten rounds, the gate never opened once and every round
+        // skipped with `memory_pressure_below_threshold`, whatever the threshold was set to.
+        // Eviction had therefore never evicted anything on a default server, and
+        // `executed_stages` said "evict" either way, which is why it went unnoticed.
+        //
+        // The name collision is what makes this confusing. The `ReclaimMemory` this stage is
+        // named after CONTAINS expire and evict and invalidates nothing -- there, those two
+        // ARE the memory relief. Our blanket invalidation is a separate mechanism with no
+        // counterpart, so there is no ordering to match, only an input not to destroy.
+        //
+        // `enable_evict` ships false, so no default server changes behaviour here. What
+        // changes is that the knob now means something when an operator turns it on.
+        if options.enable_memory_reclaim && cache_pressure {
+            let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+                shard_id,
+                selected_dump_buckets: Vec::new(),
+                // The cap, not 0. This stage dumps before it invalidates, and an unbounded dump
+                // here made the cap `reclaim_wal` respects meaningless: measured, one round with
+                // every stage on dumped 1,280 of 1,280 dirty buckets, while `reclaim_wal` alone
+                // dumped exactly 64. Bounding is safe -- invalidation drops CACHED pages, and the
+                // data is in the write-ahead log whether or not its bucket was dumped this round.
+                max_dump_buckets_per_round: options.max_dump_buckets_per_round,
+                min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
+                purge_delayed_destroy: false,
+                prune_bucket_dump_manifests: false,
+                roll_forward_bucket_dump_installs: false,
+                follower_replay_cursors: Vec::new(),
+                page_gc_shared_store_cursors: Vec::new(),
+                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_checkpoint_floor_slab_id: None,
+                page_gc_raft_install_floor_slab_id: None,
+                page_gc_delayed_destroy_grace_ms: 0,
+                invalidate_cache: true,
+                warm_cache: false,
+            });
+            let mut stats = self
+                .inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned");
+            stats.storage_manager_reclaim_memory_runs += 1;
+            lifecycle_report = Some(response.report);
+            executed_stages.push("reclaim_memory".to_string());
+        } else if !options.enable_memory_reclaim {
+            skipped_stages.push("reclaim_memory_disabled".to_string());
+        } else {
+            skipped_stages.push("reclaim_memory_no_pressure".to_string());
+        }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "reclaim_memory",
+            options.enable_memory_reclaim,
+            cache_pressure,
+            options.enable_memory_reclaim && cache_pressure,
+            vec![
+                storage_manager_pressure_signal(
+                    "cache_memory_bytes",
+                    pressure.cache_memory_bytes,
+                    options.cache_memory_bytes_pressure.max(1),
+                ),
+                storage_manager_pressure_signal(
+                    "cache_disk_bytes",
+                    pressure.cache_disk_bytes,
+                    options.cache_disk_bytes_pressure.max(1),
+                ),
+            ],
+            storage_manager_trigger_reasons(&[
+                (
+                    pressure.cache_memory_bytes >= options.cache_memory_bytes_pressure.max(1),
+                    "cache_memory_pressure",
+                ),
+                (
+                    pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1),
+                    "cache_disk_pressure",
+                ),
+            ]),
+            storage_manager_skip_reason(
+                options.enable_memory_reclaim,
+                cache_pressure,
+                "reclaim_memory",
+            ),
+        ));
+
 
         if options.enable_page_gc && stale_page_pressure {
             let retain_block_slabs_from_id = lifecycle_plan
