@@ -438,8 +438,41 @@ def _portal_offers():
     return offers
 
 
+def _loader_maps():
+    """Env vars `matrixark_load_config.ENV_MAP` maps a config key ONTO, read out of the syntax.
+
+    Grepping that module credits it with MATRIXARK_CONFIG_FILE, which it READS to find the file --
+    the bootstrap variable, not a mapped one. Same mistake as grepping the portal, and the same
+    fix: read the mechanism, not the text around it.
+    """
+    out = set()
+    try:
+        tree = ast.parse(_text("tools/matrixark_load_config.py"))
+    except SyntaxError:  # pragma: no cover
+        return out
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        else:
+            continue
+        if getattr(target, "id", "") != "ENV_MAP" or not isinstance(value, ast.Dict):
+            continue
+        for item in value.values:
+            if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                out.add(item.value)
+    return out
+
+
 def deployment_configurable(reads):
-    """The configurable surface: 105 of the 464, and the narrowest honest number on this page.
+    """The configurable surface: 103 of the 464, and the narrowest honest number on this page.
+
+    Every part of it is read from a MECHANISM rather than grepped for flag-shaped words: the `env`
+    argument of each `Setting(...)`, the values of `ENV_MAP`, and the environment blocks of the
+    containers that are not benchmarks. Grepping the same files gives 105, and the two in the
+    difference are a variable the loader READS to find its file and a variable only a benchmark's
+    compose file sets.
 
     `deployment_settable` above counts anything a shipping file writes, scripts included, and gets
     166. Reading those 61 script-only flags one at a time is what produced this narrower rule:
@@ -465,11 +498,14 @@ def deployment_configurable(reads):
         105   what a deployment's own artefacts     how much is there to CONFIGURE?
               carry
     """
-    names = _portal_offers()
-    names |= set(_NAME.findall(_text("tools/matrixark_load_config.py")))
-    for rel in _tracked("config/*", "docker/*"):
-        if rel != _SELF:
-            names |= set(_NAME.findall(_text(rel)))
+    names = _portal_offers() | _loader_maps()
+    for rel in _tracked("docker/*"):
+        # A benchmark's compose file is not a deployment artefact. It is the only thing that made
+        # TEMPORALSTORE_READER_BASE_URL look configurable, and two benchmark scripts are all that
+        # read it -- the same argument `tooling only` makes, one directory along.
+        if "benchmark" in rel:
+            continue
+        names |= set(_NAME.findall(_text(rel)))
     return {name for name in reads if name in names}
 
 
@@ -827,6 +863,13 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         # then falls silently -- which is the one way this report can be wrong in the direction
         # that looks like progress. Asserting the SET is non-empty does not catch it: the loader
         # and the config files alone still leave 60-odd flags.
+        mapped = _loader_maps()
+        self.assertGreater(
+            len(mapped), 60,
+            "only %d ENV_MAP entries were parsed out of matrixark_load_config. Below this the dict "
+            "has been renamed or built at runtime and the configurable surface is being "
+            "under-reported -- the same failure as the portal parse below, one file along."
+            % len(mapped))
         offers = _portal_offers()
         self.assertGreater(
             len(offers), 50,
