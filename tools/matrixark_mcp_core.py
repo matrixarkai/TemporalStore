@@ -137,6 +137,7 @@ try:
         MATRIXARK_ALLOW_LOCAL_BACKEND,
         live_float,
         live_int,
+        python_hot_cache_allowed,
         DEFAULT_MAX_CONTEXT_TOKENS as _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -151,6 +152,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MATRIXARK_ALLOW_LOCAL_BACKEND,
         live_float,
         live_int,
+        python_hot_cache_allowed,
         DEFAULT_MAX_CONTEXT_TOKENS as _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS,
     )
 DEFAULT_MAX_CONTEXT_TOKENS = _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS
@@ -375,26 +377,11 @@ def matrixark_production_profile_enabled() -> bool:
     return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
 
 
-def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
-    """Whether the record cache may serve a read. Native backends are excluded BY POLICY.
-
-    The cache itself is safe on any backend: it is validated by the record COUNT read fresh from
-    the store on every call, and the record log is append-only -- a delete is a tombstone append --
-    so any write anywhere moves the count and the entry misses. The mutable half, the
-    latest-context-state store, is never cached; it is re-read and re-folded even on a hit.
-
-    It is nonetheless off for the native backends on purpose, matching
-    `native_candidate_prefilter_required`: TemporalStore serving is meant to read through native
-    pushdown rather than a Python-side cache. `test_python_hot_cache_default_policy` pins that.
-
-    Turning it on is a measured, one-variable win if a deployment wants it --
-    MATRIXARK_ALLOW_PYTHON_HOT_CACHE=1. Over the mem0 surface, 4 users x a 10-turn conversation:
-    get_all 1491->326 ms, get 1677->402 ms, update 5050->1218 ms, users 1512->475 ms,
-    batch_update 7782->3144 ms, search 710->510 ms, with all 15 APIs still correct on both arms.
-    """
-    if MATRIXARK_ALLOW_PYTHON_HOT_CACHE:
-        return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in {"1", "true", "yes"}
-    return backend_label == "local"
+# `python_hot_cache_allowed` is not defined here: it is imported from
+# matrixark_mcp_runtime_config with the constants above, and this module carried an identical
+# second copy -- the same body and the same docstring, including the mem0 measurement table. The
+# note above is about exactly this hazard: the two modules read the same variable, and a second
+# literal here is what lets the answers drift apart.
 
 
 def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
