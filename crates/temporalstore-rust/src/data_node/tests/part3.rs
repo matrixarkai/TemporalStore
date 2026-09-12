@@ -5805,6 +5805,18 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 /// The design being followed bounds the scan too: it walks `page_compaction_max_slots_per_round`
 /// buckets through a PERSISTENT iterator and resumes where it stopped.
 ///
+/// ONE FIX WAS TRIED AND REVERTED -- do not repeat it. Skipping the slab roll when every live page
+/// already sits on the newest slab makes this probe read 1 round and 0 refs at every size, and it
+/// is WRONG: fourteen tests fail, among them
+/// `page_compaction_rewrites_live_addresses_and_allows_old_slab_gc` and
+/// `a_compaction_round_stops_at_the_page_ref_budget`.
+///
+/// The premise is the mistake. "Every live page is on the active slab" does not mean there is
+/// nothing to compact -- it means no live pages sit on OLDER slabs. The active slab itself can be
+/// mostly dead, and rolling so that its live pages move elsewhere is exactly what lets its dead
+/// space be reclaimed. The question is DEAD SPACE, not slab membership, so any real fix has to
+/// read something like `live_ref_density_basis_points` rather than which slab a page is on.
+///
 /// This measures the difference the only way that separates them -- run compaction until there is
 /// nothing left to move, then time one more round. Whatever that round costs is scan, not work. If
 /// it grows with the shard, the scan is the cost; if it is flat, the budget already bounds
