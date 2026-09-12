@@ -17923,3 +17923,85 @@ fn what_a_packed_page_looks_like_in_the_index() {
         series.len()
     );
 }
+
+/// Does a DELETE leave its bucket able to place itself in both logs? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_a_delete_leaves_claimed -- --ignored --nocapture
+///
+/// A bucket is covered for reclaim by a durable dump manifest, or failing that by BOTH of its
+/// first-dirty claims being non-zero (#1440 for the WAL half, #1444 for the index-log half).
+/// A bucket with only one of them is uncovered, and one uncovered bucket blocks the whole
+/// shard's reclaim with `slot_generation_without_durable_dump`.
+///
+/// #1505 measured a delete-heavy shard reporting 1,000 uncovered buckets against exactly 1,000
+/// deleted keys, which is the correlation this checks directly: the WAL claim is stamped from
+/// `appended_sequence`, the index-log claim only when `append_delta` returned non-zero.
+#[test]
+#[ignore]
+fn what_a_delete_leaves_claimed() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    for index in 0..8u32 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("claim-{index:03}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    let after_writes = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+    eprintln!(
+        "  after 8 writes:  covered={} uncovered={} safe={} blockers={:?}",
+        after_writes.covered_bucket_count,
+        after_writes.uncovered_bucket_count,
+        after_writes.safe_to_reclaim,
+        after_writes.blocker_reasons
+    );
+
+    // A DUMP FIRST. This is the step the first attempt missed: `apply_storage_lifecycle` clears
+    // both claims on the buckets it dumps (storage_lifecycle_methods.rs:546), so before a dump
+    // every bucket still carries the claims its original write stamped and nothing can be
+    // uncovered. The interesting state is a bucket dirtied AFTER its claims were cleared.
+    let dump = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    });
+    eprintln!(
+        "  dumped: manifest={} buckets",
+        dump
+            .dump_manifest
+            .as_ref()
+            .map(|manifest| manifest.bucket_ids.len())
+            .unwrap_or(0)
+    );
+    let after_dump = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+    eprintln!(
+        "  after dump:      covered={} uncovered={} safe={} blockers={:?}",
+        after_dump.covered_bucket_count,
+        after_dump.uncovered_bucket_count,
+        after_dump.safe_to_reclaim,
+        after_dump.blocker_reasons
+    );
+
+    // Now delete. If a delete stamps only the WAL claim, each deleted key's bucket becomes
+    // uncovered and the count should track the number of deletes.
+    for index in (0..8u32).step_by(2) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete {
+                key: format!("claim-{index:03}"),
+            },
+        });
+        assert!(response.status.ok, "delete {index}: {:?}", response.status);
+    }
+    let after_deletes = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+    eprintln!(
+        "  after 4 deletes: covered={} uncovered={} safe={} blockers={:?}",
+        after_deletes.covered_bucket_count,
+        after_deletes.uncovered_bucket_count,
+        after_deletes.safe_to_reclaim,
+        after_deletes.blocker_reasons
+    );
+}
