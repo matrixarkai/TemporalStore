@@ -4,61 +4,52 @@
 //! WAL-replay recovery under the single write-path durability barrier -- now the DEFAULT (only the
 //! WAL takes a synchronous fdatasync per write; the data-page fdatasync and the served-index delta
 //! fdatasync are both deferred, and recovery is base-only). After a crash, EVERY acked write must
-//! be reconstructed -- the WAL is self-sufficient (it embeds the full command payload), so even if
+//! be reconstructed -- the WAL is self-sufficient (a record states its RESULTS: an outcome item
+//! naming the page's address and, when no page backs it, carrying the bytes themselves), so even if
 //! the deferred-fsync index-log tail AND, as a stronger stress, the pages are lost to a simulated
 //! power cut, replay rebuilds every key. A final phase exercises the TS_WAL_LEGACY_RECOVERY escape
 //! hatch (legacy multi-barrier write + delta-fold recovery) so the fallback stays covered. Each
 //! phase runs in its own subprocess so any mode env var never leaks into the rest of the suite.
 //!
-//! # The premise above no longer holds, and five of these fail because of it
+//! # The hole this header used to describe is FIXED
 //!
-//! "The WAL is self-sufficient (it embeds the full command payload)" was true when this was
-//! written. It is not true now, and nothing here was changed to say so -- these tests have been
-//! failing on main ever since, and the CI step that runs them carries `continue-on-error: true`.
+//! This header used to open "the premise above no longer holds, and five of these fail because of
+//! it", and described a default-path hole in which every acked write was unrecoverable after a
+//! power cut. It then told the reader the CI step carried `continue-on-error: true`, which made it
+//! read as a suppressed data-loss bug sitting on main.
 //!
-//! Three defaults meet to produce it:
-//!
-//!   * single-barrier acks once the WAL is fsynced; the data-page fdatasync is deferred BY DESIGN,
-//!     which is the whole point of the mode and is what the power-loss step models by deleting the
-//!     pages;
-//!   * `TS_WAL_OUTCOME_ITEMS` (default ON) records what a write DID rather than what it was;
-//!   * `TS_WAL_DATA_ONLY` (default ON) then removes the command -- "stop writing the operation into
-//!     a record that already states its results ... the operation is consulted only when there are
-//!     none."
-//!
-//! An outcome states "this object's page is at this address". With the page write deferred and then
-//! lost, the address names nothing and the command that could have re-derived the value is gone.
-//! Staged pages would carry the bytes, but staging happens on the ASYNC storage path; a
-//! synchronous write stages nothing. (This said `TS_BLOCK_IN_WAL` gated it. That flag is gone --
-//! two mentions survive in the whole tree and neither is code, `block_in_wal::stage` is
-//! unconditional, and the inventory does not list it. Anyone deciding the question below by
-//! looking for that switch would find nothing and conclude the analysis was stale, when only the
-//! name was: the async/sync split IS the whole of it.)
-//!
-//! Measured on the store these tests leave behind, with `examples/wal_scan_probe.rs`:
+//! IT IS FIXED. Measured 2026-09-12 on this file, with no mode env set:
 //!
 //! ```text
-//! scan returned 300 record(s)
-//!   carrying a COMMAND to re-run          0
-//!   carrying OUTCOMES                     300  (300 items)
-//!      of those items, carrying a VALUE   0
-//!   carrying STAGED PAGES                 0  (0 bytes)
-//!   undecodable                           0
+//! test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 //! ```
 //!
-//! So the log is intact and complete -- 300 records, all decoding, `last_sequence` agreeing -- and
-//! holds nothing any replay could rebuild a value from. The failure is not the harness: its
-//! `abort()` models process loss faithfully, the WAL survives it, and the records are all there.
+//! including `wal_is_self_sufficient_when_all_non_wal_state_is_wiped`, which is the strongest case
+//! in the file -- every non-WAL byte removed, replay rebuilding each acked key. A passing run of
+//! that test IS the premise the old header said had stopped being true.
 //!
-//! `legacy_recovery_escape_hatch_delta_fold_recovers_every_ack` still passes, which is the shape of
-//! the thing: the hatch recovers where the default does not.
+//! What closed it: `WalOutcomeItem` carries a `value` beside its `address` (#380, "a record can now
+//! say what a write DID, and a shard can be rebuilt from that alone"). The old analysis was right
+//! that an outcome naming only an address states nothing recoverable when the page write is
+//! deferred and then lost -- the answer was to let the outcome carry the bytes, which is what the
+//! design being followed does with a `value` beside its `page` and a `meta_log` flag to tell them
+//! apart.
 //!
-//! Fixing it is a choice about what an ack means, not a tidy-up -- an outcome could carry the value
-//! when the page it names is not yet durable; the sync path could stage pages as the async path
-//! does; the command could stay while single-barrier is on; or the page fsync could stop being
-//! deferred in this mode. Each trades write cost against the promise. Whoever takes it should start
-//! from the probe output above rather than from the assertion message, which only says a key was
-//! missing.
+//! The CI note was accurate and remains so, but it is about the BASELINE, not about this file:
+//! `continue-on-error` is set on the whole suite step while a small number of pre-existing lib
+//! failures stand, and the workflow says to flip it off once the baseline is green. None of those
+//! failures is here.
+//!
+//! Left as a warning rather than deleted, because the failure mode it describes is real whenever
+//! an outcome can name a page that is not yet durable. If a future change makes outcomes
+//! address-only again on the synchronous path, this is the file that will catch it, and
+//! `examples/wal_scan_probe.rs` prints exactly what a record is carrying:
+//!
+//! ```text
+//! carrying a COMMAND to re-run / carrying OUTCOMES / of those items, carrying a VALUE
+//! ```
+//!
+//! A run where outcomes carry no value and no command is the shape of the old bug.
 
 use std::process::Command;
 
