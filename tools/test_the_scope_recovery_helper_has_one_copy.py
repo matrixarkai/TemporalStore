@@ -14,8 +14,47 @@ The three statements the shorter copy lacks are one block. For a record of type
 `context_summary` that carries no scope, the longer copy looks the record's owner up in
 `embedding_scope_by_ref` -- a map from (ref type, ref hash) to the scope recovered from that
 record's embedding -- and returns it. The shorter copy has no such branch, and
-`embedding_scope_by_ref` is a name that does not appear ANYWHERE in its module. The mechanism is
-absent, not just the branch.
+`embedding_scope_by_ref` is a name that does not appear ANYWHERE in its module.
+
+WHICH DIRECTION IS MISSING, stated precisely, because "the mechanism is absent" was too coarse.
+Both modules build a ref-keyed scope map and both build it with the same five ref types and the
+same hash fields. They differ in DIRECTION:
+
+    ref_scope_by_key          owner record -> its scope.  Built by BOTH modules, and consulted
+                              for a `context_embedding`, to give an embedding its owner's scope.
+    embedding_scope_by_ref    embedding -> its scope.  Built ONLY by the longer module, and
+                              consulted for an OWNER, to give an owner its embedding's scope.
+
+So the shorter module is not missing scope recovery. It is missing the embedding-to-owner
+direction of it. It also builds its maps from a different population: the longer module walks
+`self.read_all()`, the whole store; the shorter walks the records its own upstream call already
+returned.
+
+DOES THE SHORTER COPY'S CALLER EVER NEED IT? Asked because an absence that the caller never
+reaches is correct rather than behind, and the first version of this record implied a missing
+feature without checking. The chain, read rather than executed, and labelled as such:
+
+  * `retrieve` gets its records from `self.retrieval_records(...)` -- the function the LONGER copy
+    lives in (`records = retrieval_record_result["records"]`).
+  * `retrieval_records` gates owner records through `recovered_scope_matches`, which is where the
+    longer copy's extra block does its work; one of those gates is spelled `owner_record`.
+  * That gate produces a BOOL. `recovered_scope_for_query` is never written back onto the record,
+    so a record admitted because its embedding's scope was recoverable arrives downstream still
+    carrying no scope of its own.
+  * `retrieve` then re-gates those same records through its OWN `recovered_scope_matches` at nine
+    sites, most of them `if not recovered_scope_matches(record, scope): continue`.
+
+MEASURED, and this is the part that decides the direction of the consequence: an unrecovered scope
+does not fall through as permissive. `scope_matches({}, query)` is False for every non-empty query
+tried -- the retrieval default `prefer`, `only`, and a tenant-only query -- and True only for an
+empty query. So at those nine gates an unrecovered record is DROPPED, not kept.
+
+WHAT IS THEREFORE CLAIMED, and what is not. Claimed, and asserted below: the two copies resolve
+differently for the same record, and an unresolved scope is a drop rather than a pass. NOT claimed:
+that a live corpus contains such a record. The shorter copy keeps two further fallbacks -- a
+`node_hash` shared with an already-scoped record in the filtered set, and a `node_path` carrying
+`tenant:`/`user:`/`session:` -- so the loss needs a record that reaches none of them. Establishing
+that requires a live retrieve against a real store, which this file does not do.
 
 MEASURED BY EXECUTION. A nested function cannot be imported, so each copy is lifted out of its own
 module's source by AST and compiled against the same synthetic enclosing scope, using the real
@@ -82,8 +121,12 @@ COPIES = (
 )
 LONGER, SHORTER = COPIES[0][0], COPIES[1][0]
 
-#: The map the longer copy consults and the shorter module does not have.
+#: The embedding-to-owner direction: built and consulted only by the longer module.
 OWNER_MAP = "embedding_scope_by_ref"
+
+#: The owner-to-embedding direction: built by BOTH modules, consulted for a context_embedding.
+#: Named here so the record says which half is shared and which half is missing.
+OTHER_DIRECTION_MAP = "ref_scope_by_key"
 
 SCOPE = {"tenant_hash": 111, "user_hash": 222, "session_hash": 333, "agent_hash": 444}
 
@@ -283,6 +326,54 @@ class TheScopeRecoveryHelperHasOneCopy(unittest.TestCase):
             _mentions(SHORTER, OWNER_MAP),
             "%s now names %s. The mechanism the shorter path lacked is being built; check whether "
             "the helper still diverges" % (SHORTER, OWNER_MAP))
+
+    def test_only_one_module_builds_the_embedding_to_owner_direction(self) -> None:
+        """The absence is a DIRECTION, not the whole mechanism.
+
+        Both modules build the owner-to-scope map and consult it for an embedding. Only the longer
+        one builds the embedding-to-scope map and consults it for an owner. If the shorter module
+        ever binds the second, the record above is stale.
+        """
+        for stem in (LONGER, SHORTER):
+            with self.subTest(module=stem, direction="owner to scope"):
+                self.assertTrue(
+                    _binds(stem, OTHER_DIRECTION_MAP),
+                    "%s no longer builds %s, so the two modules no longer share the direction "
+                    "this record says they share" % (stem, OTHER_DIRECTION_MAP))
+        self.assertTrue(
+            _binds(LONGER, OWNER_MAP),
+            "%s no longer builds %s" % (LONGER, OWNER_MAP))
+        self.assertFalse(
+            _mentions(SHORTER, OWNER_MAP),
+            "%s now names %s -- the missing direction is being built; check whether the helper "
+            "still diverges" % (SHORTER, OWNER_MAP))
+
+    def test_an_unrecovered_scope_is_dropped_not_kept(self) -> None:
+        """The direction of the consequence, which the first version of this record left open.
+
+        Every caller of the shorter copy spells its gate `if not recovered_scope_matches(...)`, so
+        what an empty scope MEANS at that gate decides whether the divergence loses records or
+        merely relabels them. It is a drop.
+        """
+        access_scope = importlib.import_module("matrixark_mcp_access_scope")
+        recovered = dict(SCOPE)
+        for label, query in (
+                ("prefer, the retrieval default",
+                 dict(SCOPE, _session_scope="prefer",
+                      _explicit_scope_keys=["tenant_id", "user_id"])),
+                ("only", dict(SCOPE, _session_scope="only",
+                              _explicit_scope_keys=["tenant_id", "user_id", "session_id"])),
+                ("tenant only", {"tenant_hash": SCOPE["tenant_hash"]})):
+            with self.subTest(query=label):
+                self.assertTrue(
+                    access_scope.scope_matches(dict(recovered), query),
+                    "a RECOVERED scope no longer matches the %s query, so this fixture cannot "
+                    "show what failing to recover costs" % label)
+                self.assertFalse(
+                    access_scope.scope_matches({}, query),
+                    "an unrecovered scope now MATCHES the %s query. The divergence would then "
+                    "keep records rather than drop them, which is the opposite consequence and "
+                    "this record has to be rewritten" % label)
 
     def test_the_older_nested_guard_structurally_cannot_see_this(self) -> None:
         """The reason this needed its own file, asserted instead of described.
