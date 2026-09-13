@@ -846,6 +846,103 @@ mod tests {
         );
     }
 
+    /// `GETEX key PERSIST` must make the key permanent.
+    ///
+    /// NON-VACUITY. Every half is asserted SEPARATELY, and each half states its denominator
+    /// first: the deadline was really set (PTTL is a positive number, not -1 and not -2), the
+    /// key really exists at the moment PERSIST is asked for, and only then is the removal of
+    /// the deadline claimed. A single combined assertion would pass with the key already gone.
+    ///
+    /// WHY IT MATTERS. `PERSIST` is the caller saying "keep this forever". A spelling that
+    /// accepts the request and leaves the deadline armed loses the value later, silently, with
+    /// no error anywhere -- the worst shape a storage defect can take.
+    #[test]
+    fn getex_persist_makes_the_key_permanent() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let pttl = |state: &mut RedisCommandState, key: &str| match run(state, vec!["PTTL", key]) {
+            RespValue::Integer(value) => value,
+            other => panic!("PTTL {key} answered {other:?}"),
+        };
+
+        // DENOMINATOR 1: the key exists and carries a real deadline. Both halves separately.
+        assert_eq!(
+            run(&mut state, vec!["SETEX", "persist:key", "600", "v"]),
+            RespValue::SimpleString("OK".to_string()),
+        );
+        assert_eq!(
+            run(&mut state, vec!["GET", "persist:key"]),
+            RespValue::Bulk(Some(b"v".to_vec())),
+            "the key must exist before PERSIST is asked for anything",
+        );
+        let armed = pttl(&mut state, "persist:key");
+        assert!(
+            armed > 0,
+            "the deadline must be ARMED before this test can say anything about removing it, \
+             PTTL read {armed} (-1 is no deadline, -2 is no key)",
+        );
+
+        // THE CLAIM: GETEX ... PERSIST returns the value AND disarms the deadline.
+        assert_eq!(
+            run(&mut state, vec!["GETEX", "persist:key", "PERSIST"]),
+            RespValue::Bulk(Some(b"v".to_vec())),
+            "GETEX still answers with the value",
+        );
+        assert_eq!(
+            pttl(&mut state, "persist:key"),
+            -1,
+            "after PERSIST the key must exist with NO deadline (-1), not still be counting down",
+        );
+
+        // POSITIVE CONTROL: the same spelling with a duration still ARMS a deadline, so the
+        // assertion above cannot be passing because GETEX stopped doing anything at all.
+        assert_eq!(
+            run(&mut state, vec!["GETEX", "persist:key", "EX", "600"]),
+            RespValue::Bulk(Some(b"v".to_vec())),
+        );
+        let rearmed = pttl(&mut state, "persist:key");
+        assert!(
+            rearmed > 0,
+            "GETEX EX must still arm a deadline, PTTL read {rearmed}",
+        );
+
+        // And PERSIST on a key that has no deadline is a no-op, not an error or a deletion.
+        assert_eq!(
+            run(&mut state, vec!["SET", "persist:plain", "v"]),
+            RespValue::SimpleString("OK".to_string()),
+        );
+        assert_eq!(pttl(&mut state, "persist:plain"), -1);
+        assert_eq!(
+            run(&mut state, vec!["GETEX", "persist:plain", "PERSIST"]),
+            RespValue::Bulk(Some(b"v".to_vec())),
+        );
+        assert_eq!(pttl(&mut state, "persist:plain"), -1);
+        assert_eq!(
+            run(&mut state, vec!["GET", "persist:plain"]),
+            RespValue::Bulk(Some(b"v".to_vec())),
+            "a no-op PERSIST must not remove the key",
+        );
+    }
+
     #[test]
     fn resp_parser_reads_array_command() {
         let mut input = BufReader::new(&b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n"[..]);

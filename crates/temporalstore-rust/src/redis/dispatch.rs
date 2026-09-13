@@ -217,13 +217,23 @@ pub fn execute_redis_command_with_state(
             match execute(Command::StringGet { key: key.clone() }) {
                 Ok(CommandResponse::Bytes { value }) => {
                     if value.is_some() {
-                        let ttl_ms = match parse_getex_ttl_ms(&args[2..]) {
+                        let deadline = match parse_getex_ttl_ms(&args[2..]) {
                             Ok(value) => value,
                             Err(err) => return RespValue::Error(err),
                         };
-                        if let Some(ttl_ms) = ttl_ms {
-                            if let Err(err) = execute(Command::CommonExpire { key, ttl_ms }) {
-                                return RespValue::Error(format!("ERR {err}"));
+                        // PERSIST is its own outcome, and it is the one this used to lose:
+                        // it shared a `None` with "no option words" and so cleared nothing.
+                        match deadline {
+                            GetExDeadline::Unchanged => {}
+                            GetExDeadline::Persist => {
+                                if let Err(err) = execute(Command::CommonPersist { key }) {
+                                    return RespValue::Error(format!("ERR {err}"));
+                                }
+                            }
+                            GetExDeadline::Arm(ttl_ms) => {
+                                if let Err(err) = execute(Command::CommonExpire { key, ttl_ms }) {
+                                    return RespValue::Error(format!("ERR {err}"));
+                                }
                             }
                         }
                     }
