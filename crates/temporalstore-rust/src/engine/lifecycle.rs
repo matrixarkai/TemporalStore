@@ -76,6 +76,7 @@ impl TemporalEngine {
             compaction_rounds: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             expiry_index_flush_under_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            warm_cache_under_shard_guard: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             expiry_index_flush_whole: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             // Sampled by default. The exhaustive alternative calls `bucket_storage_summaries`,
             // which reads EVERY live page in the shard to rank every bucket, and then keeps at
@@ -158,6 +159,17 @@ impl TemporalEngine {
     #[cfg(test)]
     pub(crate) fn flush_expiry_index_under_lock_for_test(&self) {
         self.expiry_index_flush_under_lock
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Read the warm-up's pages while the shard-table read guard is still held, the way it was
+    /// done before the reads were moved out. Scoped to this engine.
+    ///
+    /// Kept for the same reason: a guard asserting zero reads under the lock is vacuous unless
+    /// an arm in the same process, on the same fixture, can still produce a non-zero one.
+    #[cfg(test)]
+    pub(crate) fn warm_cache_under_shard_guard_for_test(&self) {
+        self.warm_cache_under_shard_guard
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
