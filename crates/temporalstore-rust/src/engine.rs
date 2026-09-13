@@ -52,7 +52,8 @@ pub use storage_bucket_internals::{
     reset_live_page_scan_entries, reset_live_page_scan_sites,
 };
 pub use shard_write_guard::{
-    index_encode_counts, maintenance_page_read_counts, reset_index_encode_counts,
+    index_encode_counts, maintenance_mirror_sink_lookups, maintenance_page_read_counts,
+    reset_index_encode_counts, reset_maintenance_mirror_sink_lookups,
     reset_maintenance_page_read_counts, IndexEncodeCounts, MaintenancePageReadCounts,
 };
 mod compaction;
@@ -328,14 +329,30 @@ impl TemporalEngine {
     /// Called after the local append succeeds, so the mirror never learns of a deletion the
     /// local log does not already hold.
     pub(crate) fn mirror_maintenance_write(&self, shard_id: ShardId, command: &Command) {
-        let sink = self
-            .maintenance_mirror
-            .read()
-            .expect("maintenance mirror lock poisoned")
-            .clone();
-        if let Some(sink) = sink {
+        if let Some(sink) = self.maintenance_mirror_sink() {
             sink.record_write(shard_id, command);
         }
+    }
+
+    /// Look the mirror sink up ONCE, for a caller that is about to mirror a run of commands.
+    ///
+    /// The per-key form above takes the mirror lock and bumps an `Arc` refcount for every
+    /// command, and the two callers that mirror a run of them -- the expiry sweep and the
+    /// delete-drop eviction -- do it from inside the shard-table WRITE guard, so a round
+    /// removing N keys took N+1 locks while holding the one lock that excludes everyone.
+    ///
+    /// Hoisting is not merely cheaper, it is more correct for a run: a sink swapped by
+    /// `set_maintenance_wal_mirror` halfway through a loop would send some of one round's
+    /// tombstones to the old sink and the rest to the new one, and neither would have the whole
+    /// deletion. One lookup gives the whole run one destination.
+    pub(crate) fn maintenance_mirror_sink(
+        &self,
+    ) -> Option<Arc<dyn crate::data_node::SharedWalSink>> {
+        shard_write_guard::note_mirror_sink_lookup();
+        self.maintenance_mirror
+            .read()
+            .expect("maintenance mirror lock poisoned")
+            .clone()
     }
 
     /// Set a shard's read and write rate limits, on a running engine.
@@ -2299,6 +2316,30 @@ pub mod shard_write_guard {
     pub fn reset_maintenance_page_read_counts() {
         PAGE_READS_UNDER_GUARD.with(|count| count.set(0));
         PAGE_READS_TOTAL.with(|count| count.set(0));
+    }
+
+    thread_local! {
+        /// Times this thread took the maintenance-mirror lock to look the sink up.
+        ///
+        /// A different shape of cost from the two above: not one big thing under the guard but a
+        /// small one repeated per item. A round that deletes N keys can take this lock once or N
+        /// times, and only a count distinguishes them -- N uncontended acquisitions are
+        /// invisible to wall-clock on a loaded box and exactly as invisible when they are gone.
+        static MIRROR_SINK_LOOKUPS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn note_mirror_sink_lookup() {
+        MIRROR_SINK_LOOKUPS.with(|count| count.set(count.get().saturating_add(1)));
+    }
+
+    /// Maintenance-mirror lock acquisitions on this thread since the last reset.
+    pub fn maintenance_mirror_sink_lookups() -> u64 {
+        MIRROR_SINK_LOOKUPS.with(|count| count.get())
+    }
+
+    /// Clear this thread's mirror-lookup tally. For a test measuring one round.
+    pub fn reset_maintenance_mirror_sink_lookups() {
+        MIRROR_SINK_LOOKUPS.with(|count| count.set(0));
     }
 }
 

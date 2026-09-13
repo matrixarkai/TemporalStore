@@ -631,6 +631,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // the tombstones so a restart does not resurrect the key by replaying the
             // earlier SET/EXPIRE records.
             if !replaying_wal() {
+                // ONE mirror lookup for the whole run, taken before the loop.
+                //
+                // The per-key form takes the mirror lock and bumps an Arc refcount for every
+                // tombstone, and this loop runs inside the shard-table WRITE guard -- the one
+                // lock that excludes every reader and writer on the shard -- so a round removing
+                // N keys took N of them in the worst place to take a lock. One lookup also gives
+                // the whole run ONE destination, where a sink swapped mid-loop would split a
+                // single round's tombstones across two mirrors and leave neither complete.
+                let mirror = self.maintenance_mirror_sink();
                 for key in &expired_keys {
                     let command = Command::CommonDelete { key: key.clone() };
                     let appended = self
@@ -639,7 +648,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     // An expiry is a real deletion, so it has to reach every log that a
                     // successor might replay -- not only this node's.
                     if appended.is_ok() {
-                        self.mirror_maintenance_write(request.shard_id, &command);
+                        if let Some(sink) = mirror.as_ref() {
+                            sink.record_write(request.shard_id, &command);
+                        }
                     }
                 }
                 shard.applied_wal_sequence =

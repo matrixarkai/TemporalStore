@@ -2866,6 +2866,109 @@ fn an_expiry_deletion_reaches_the_maintenance_mirror() {
     );
 }
 
+/// The mirror sink is looked up ONCE per round, not once per expired key.
+///
+/// The lookup takes a lock and clones an `Arc`, and the loop that used to do it per key runs
+/// inside the shard-table WRITE guard -- the one lock that excludes every reader and writer on
+/// the shard. N uncontended acquisitions in that position are invisible to wall-clock on a
+/// loaded box, and exactly as invisible once they are gone, so this counts them instead.
+///
+/// The POSITIVE CONTROL is the per-call form itself: the same counter is driven `RECORDS` times
+/// through `mirror_maintenance_write` and has to reach `RECORDS`, so a zero from the sweep below
+/// cannot be a counter that stopped counting.
+#[test]
+fn the_maintenance_mirror_is_looked_up_once_per_round_not_once_per_key() {
+    const RECORDS: usize = 200;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let sink = std::sync::Arc::new(RecordingWalSink::default());
+    engine.set_maintenance_wal_mirror(sink.clone());
+
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("mirror-{index:06}"),
+                value: b"gone".to_vec(),
+                ttl_ms: 1,
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    crate::engine::reset_maintenance_mirror_sink_lookups();
+    let report = engine
+        .sweep_expired_records_with_request(ShardExpirySweepRequest {
+            shard_id: 1,
+            load_cold_buckets: true,
+            max_hot_buckets_per_round: RECORDS,
+            max_cold_buckets_per_round: RECORDS,
+            ..ShardExpirySweepRequest::default()
+        })
+        .expect("sweep");
+    let sweep_lookups = crate::engine::maintenance_mirror_sink_lookups();
+    let mirrored = sink
+        .seen
+        .lock()
+        .expect("recording sink lock poisoned")
+        .len();
+
+    eprintln!(
+        "[mirror lookup] {sweep_lookups} lookup(s) for {} expired record(s), {mirrored} \
+command(s) mirrored",
+        report.expired_records_removed,
+    );
+
+    // DENOMINATORS FIRST. A sweep that expired nothing takes no lookups at all and would satisfy
+    // "one lookup" by never reaching the loop.
+    assert_eq!(
+        report.expired_records_removed, RECORDS,
+        "the sweep removed {} of {RECORDS} records, so the mirror loop did not run over the set \
+this is measuring",
+        report.expired_records_removed,
+    );
+    assert_eq!(
+        mirrored, RECORDS,
+        "the mirror received {mirrored} of {RECORDS} tombstones, so the hoisted lookup is not \
+delivering what the per-key one did",
+    );
+
+    // POSITIVE CONTROL: the counter can reach RECORDS, because here it does.
+    crate::engine::reset_maintenance_mirror_sink_lookups();
+    for index in 0..RECORDS {
+        engine.mirror_maintenance_write(
+            1,
+            &Command::CommonDelete {
+                key: format!("control-{index:06}"),
+            },
+        );
+    }
+    let control_lookups = crate::engine::maintenance_mirror_sink_lookups();
+    assert_eq!(
+        control_lookups, RECORDS as u64,
+        "the per-call form was driven {RECORDS} times and the counter saw {control_lookups}. The \
+measurement is broken, not the code under it: the assertion below would pass against a counter \
+that had stopped counting entirely",
+    );
+
+    // THE ASSERTION THE HOIST MADE.
+    assert_eq!(
+        sweep_lookups, 1,
+        "the expiry sweep took the maintenance-mirror lock {sweep_lookups} time(s) to delete \
+{RECORDS} keys, while holding the shard-table write guard. Look the sink up ONCE before the loop \
+and reuse it: besides the lock, a sink swapped mid-loop would split one round's tombstones \
+across two mirrors and leave neither with the whole deletion",
+    );
+}
+
 /// With no mirror attached the sweep behaves exactly as it did before one existed.
 #[test]
 fn an_expiry_sweep_without_a_mirror_is_unchanged() {
