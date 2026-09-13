@@ -6780,13 +6780,20 @@ fn an_idle_shard_stops_accumulating_slabs() {
                 },
             });
         }
-        // Roll, then rewrite everything: the first slab holds nothing live, which is a stale slab
-        // for a few hundred records instead of the gigabyte a natural roll would need.
+        // Roll, then rewrite HALF: the first slab is left holed -- some live pages, some dead --
+        // which is a stale slab for a few hundred records instead of the gigabyte a natural roll
+        // would need, and is a slab compaction can still do something about.
+        //
+        // It used to rewrite ALL of them, leaving the first slab holding nothing live. That is a
+        // slab only the COLLECTOR can act on: no object has a page there, so there is nothing for
+        // compaction to relocate off it, and the relocation hint now correctly declines the round.
+        // The assertion this test exists for is unchanged; its denominator
+        // (`compacted_rounds > 0`) is what stopped being reachable on the old fixture.
         engine
             .block_store()
             .roll_slab()
             .expect("rolling a slab should succeed");
-        for index in 0..KEYS {
+        for index in 0..KEYS / 2 {
             engine.execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::HashSet {
@@ -6836,5 +6843,392 @@ fn an_idle_shard_stops_accumulating_slabs() {
         "an idle shard grew from {slabs_before} to {slabs_after} slabs over {ROUNDS} rounds \
          ({compacted_rounds} of them compacting) -- the collector is not keeping pace, so the \
          retain floor has stopped advancing again"
+    );
+}
+/// An idle shard stops growing its index log, because compaction stops running on it.
+///
+/// THE DEFECT THIS HOLDS SHUT, as measured. A cadence fixture that writes 8,000 records,
+/// overwrites a third, STOPS WRITING and runs twelve maintenance rounds. `compact_pages` executed
+/// in all twelve, on a shard nobody was touching, and the index log climbed 63 bytes every one of
+/// them -- 693 bytes over eleven rounds, about 181 KB a day per idle shard at a thirty-second
+/// cadence, unbounded. The same fixture with compaction disabled grew by ZERO bytes, which is what
+/// attributes the growth: compaction relocates pages and persists a fresh index record each round,
+/// and it kept re-triggering itself because the slab it had just emptied was still a reclaim
+/// candidate, and `stale_page_pressure` counts candidates.
+///
+/// So the index log is the INDEPENDENT witness here, and it is the reason this guard asserts on
+/// bytes rather than on the stage list. A stage list can be made to look right by moving the name
+/// out of it; the log only stops growing if the work actually stopped.
+///
+/// WRITES NOTHING after the fixture. Every round below acts on a store that is not changing, so
+/// any growth is the loop's own doing.
+#[test]
+fn an_idle_shard_stops_growing_its_index_log() {
+    const RECORDS: usize = 1_200;
+    const SETTLE_ROUNDS: usize = 6;
+    const IDLE_ROUNDS: usize = 6;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("idle-index-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Overwrite a third, so compaction has genuine garbage to reclaim and the settle rounds below
+    // are doing real work rather than proving that an empty store compacts cheaply.
+    for index in 0..RECORDS / 3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("idle-index-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+        assert!(response.status.ok, "overwrite {index}: {:?}", response.status);
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+
+    // Let compaction do the work it legitimately has: drain the slab the overwrites left holed.
+    // That work is bounded -- a round relocates at most COMPACTION_ROUND_PAGE_REFS refs and this
+    // fixture's live set fits inside one round -- so the settle window does not have to be
+    // generous, only finite.
+    let mut settle_compactions = 0_usize;
+    for _ in 0..SETTLE_ROUNDS {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages")
+        {
+            settle_compactions += 1;
+        }
+    }
+
+    let index_log_before = engine.index_log_store().log_len_bytes(1);
+    let mut idle_rounds_that_compacted = Vec::new();
+    let mut index_log_by_round = Vec::new();
+    let mut candidates_by_round = Vec::new();
+    for round in 0..IDLE_ROUNDS {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages")
+        {
+            idle_rounds_that_compacted.push(round);
+        }
+        candidates_by_round.push(report.pressure.reclaim_candidate_count);
+        index_log_by_round.push(engine.index_log_store().log_len_bytes(1));
+    }
+    let index_log_after = engine.index_log_store().log_len_bytes(1);
+
+    // DENOMINATORS. Both of these can make every assertion below hold for a reason that has
+    // nothing to do with the defect.
+    assert!(
+        settle_compactions > 0,
+        "compaction never ran even while the shard had a holed slab to drain, so the flat index \
+         log below says nothing about compaction stopping -- it says the fixture never started it"
+    );
+    assert!(
+        index_log_before > 0,
+        "the index log is empty, so it cannot be observed not to grow"
+    );
+
+    assert_eq!(
+        index_log_after,
+        index_log_before,
+        "the index log of an IDLE shard grew {} bytes over {IDLE_ROUNDS} rounds ({index_log_before} \
+         -> {index_log_after}, {} a round), with nobody writing to it. Per round: \
+         {index_log_by_round:?}; reclaim candidates per round: {candidates_by_round:?}; compaction \
+         ran in rounds {idle_rounds_that_compacted:?}",
+        index_log_after.saturating_sub(index_log_before),
+        index_log_after.saturating_sub(index_log_before) / IDLE_ROUNDS as u64,
+    );
+
+    assert!(
+        idle_rounds_that_compacted.is_empty(),
+        "compaction ran again on an idle shard, in rounds {idle_rounds_that_compacted:?} of \
+         {IDLE_ROUNDS}, after {settle_compactions} settling rounds had already drained it -- it is \
+         re-triggering on its own residue"
+    );
+}
+
+/// The hint the maintenance round takes off its plan is the same answer as asking every object.
+///
+/// The round does not walk the shard to decide whether to compact -- it sums `live_page_refs`
+/// over the reclaim candidates it already built, which costs nothing. The NORMATIVE definition is
+/// the per-object one: for each object, are any of its pages on a slab someone wants emptied?
+/// This holds the cheap form to the normative one, so a change that separates them fails here
+/// rather than in a shipped round.
+///
+/// It also pins the distinction the whole fix rests on. After compaction has drained the holed
+/// slab, that slab is still a reclaim candidate -- it is nothing but dead space until the
+/// collector destroys it -- so `stale_page_pressure` is still open. The hint is nevertheless
+/// zero, because no object has a page left there. That is the difference between "this shard has
+/// stale pages" and "there is something for compaction to move", and no shard-wide predicate can
+/// express it.
+#[test]
+fn the_relocation_hint_agrees_with_the_plan_it_is_taken_from() {
+    const RECORDS: usize = 400;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("hint-agree-{index:05}"),
+                value: vec![b'v'; 128],
+            },
+        });
+    }
+    for index in 0..RECORDS / 2 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("hint-agree-{index:05}"),
+                value: vec![b'w'; 192],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+
+    let (_pressure, plan) = runtime.storage_manager_pressure_snapshot(1, &options);
+    let from_plan = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
+    let hint = engine.compaction_relocation_hint(1, &plan.reclaim_candidates);
+    assert!(
+        hint.examined_object_count > 0,
+        "the hint saw no objects at all, so agreeing on zero proves nothing: {hint:?}"
+    );
+    assert!(
+        from_plan > 0,
+        "the fixture left nothing to relocate before compaction ran, so the two forms would agree \
+         on zero for the wrong reason: {plan:?}"
+    );
+    assert_eq!(
+        from_plan, hint.relocatable_page_refs,
+        "the round's cheap form and the per-object walk disagree: {from_plan} against {hint:?}"
+    );
+
+    // Now drain it, and ask again.
+    for _ in 0..4 {
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+    let (pressure_after, plan_after) = runtime.storage_manager_pressure_snapshot(1, &options);
+    let from_plan_after =
+        crate::engine::compaction_relocatable_page_refs(&plan_after.reclaim_candidates);
+    let hint_after = engine.compaction_relocation_hint(1, &plan_after.reclaim_candidates);
+    assert_eq!(
+        from_plan_after, hint_after.relocatable_page_refs,
+        "the two forms disagree once the shard is drained: {from_plan_after} against {hint_after:?}"
+    );
+    assert_eq!(
+        hint_after.relocatable_page_refs, 0,
+        "the shard was drained and nobody wrote to it, so no object should have a page on a slab \
+         worth emptying: {hint_after:?}"
+    );
+    assert!(
+        hint_after.examined_object_count > 0,
+        "the objects vanished, so the zero above is not the one this test is about: {hint_after:?}"
+    );
+    let _ = pressure_after;
+}
+
+/// Does the idle shard settle at a corpus ten times bigger? Prints, and asserts. Release only.
+///
+///   cargo test --release -p temporalstore-rust --lib an_idle_shard_settles_at_both_corpus_sizes \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// WHY A SECOND SIZE. At 8,000 records a compaction round relocates the whole live set inside
+/// COMPACTION_ROUND_PAGE_REFS x 4 rounds, so the drain finishes fast and the shard reaches the
+/// state where the self-retrigger is visible. At 80,000 it takes about forty rounds, and a run of
+/// thirty-two never gets there: it shows source slab 0 -> destination slab 1 in every round, no
+/// fully-stale slab in any round, nothing collected, and slab bytes climbing 60%.
+///
+/// THAT IS NOT A SECOND DEFECT AND THIS SAYS SO IN COLUMNS. It is ONE bounded relocation still in
+/// progress. A round that spends its ref budget stays open and the next resumes onto the same
+/// destination slab -- which is exactly why the source and destination do not advance -- and the
+/// source slab cannot go stale until the last of its live pages has moved. The peak footprint
+/// while that happens is the live set twice over, once on each slab, and it comes back down when
+/// the drain completes and the source is collected.
+///
+/// What the two sizes have in common is the END of the drain, and that is where the defect lives:
+/// the round closes, the shard is as compact as this compactor can make it, and the next round
+/// rolls a fresh slab and moves everything again. This runs each size until the drain is done and
+/// then keeps going with NO WRITER, so the tail is what the assertions read.
+#[test]
+#[ignore]
+fn an_idle_shard_settles_at_both_corpus_sizes() {
+    for records in [8_000usize, 80_000usize] {
+        settle_one_corpus(records);
+    }
+}
+
+fn settle_one_corpus(records: usize) {
+    // Enough rounds for the drain (records / COMPACTION_ROUND_PAGE_REFS, about 40 at 80,000) plus
+    // a tail. The loop stops early once the tail is established, so the cap only has to be big
+    // enough not to cut the drain short.
+    let max_rounds = records / 1_024 + 24;
+    const TAIL: usize = 8;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..records {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("settle-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    for index in 0..records / 3 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("settle-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+
+    eprintln!("  [settle] {records} records written, then NO further writes");
+    eprintln!(
+        "  [settle] {:>5} {:>7} {:>9} {:>9} {:>6} {:>12} {:>6} {:>11} {:>11} {:>10}",
+        "round", "compact", "rewritten", "src->dst", "slabs", "slab_bytes", "stale", "candidates",
+        "relocatable", "idx_bytes",
+    );
+
+    let mut rounds_that_compacted = 0usize;
+    let mut last_compacting_round: Option<usize> = None;
+    let mut index_log_by_round: Vec<u64> = Vec::new();
+    let mut slab_bytes_by_round: Vec<u64> = Vec::new();
+    let mut rounds_run = 0usize;
+    for round in 0..max_rounds {
+        rounds_run = round + 1;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let compacted = report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages");
+        if compacted {
+            rounds_that_compacted += 1;
+            last_compacting_round = Some(round);
+        }
+        let (rewritten, source, destination) = report
+            .compaction_report
+            .as_ref()
+            .map(|compaction| {
+                (
+                    compaction.rewritten_object_pages,
+                    compaction.previous_block_slab_id,
+                    compaction.compacted_block_slab_id,
+                )
+            })
+            .unwrap_or((0, 0, 0));
+        let slab_ids = engine.page_store().slab_ids().unwrap_or_default();
+        let slab_bytes: u64 = engine
+            .page_store()
+            .slab_block_counts()
+            .unwrap_or_default()
+            .iter()
+            .map(|(_id, physical_bytes, _count)| *physical_bytes)
+            .sum();
+        let relocatable = crate::engine::compaction_relocatable_page_refs(
+            &report.lifecycle_plan.reclaim_candidates,
+        );
+        let index_log_bytes = engine.index_log_store().log_len_bytes(1);
+        index_log_by_round.push(index_log_bytes);
+        slab_bytes_by_round.push(slab_bytes);
+        eprintln!(
+            "  [settle] {round:>5} {compacted:>7} {rewritten:>9} {:>9} {:>6} {slab_bytes:>12} \
+{:>6} {:>11} {relocatable:>11} {index_log_bytes:>10}",
+            format!("{source}->{destination}"),
+            slab_ids.len(),
+            report.pressure.stale_block_slab_count,
+            report.pressure.reclaim_candidate_count,
+        );
+        if round + 1 >= TAIL
+            && last_compacting_round
+                .map(|last| round.saturating_sub(last) >= TAIL)
+                .unwrap_or(false)
+        {
+            break;
+        }
+    }
+
+    // DENOMINATOR. A run where compaction never fired says nothing about it settling.
+    assert!(
+        rounds_that_compacted > 0,
+        "compaction never ran at {records} records, so this measures an idle collector and not a \
+         settled compactor"
+    );
+    let last_compacting_round =
+        last_compacting_round.expect("a compacting round, since one was counted");
+    assert!(
+        rounds_run.saturating_sub(last_compacting_round) > TAIL,
+        "compaction was still running at round {last_compacting_round} of {rounds_run} at \
+         {records} records -- the drain did not finish inside the cap, so the tail below is not a \
+         settled shard. index log per round: {index_log_by_round:?}"
+    );
+
+    let tail_first_index_log = index_log_by_round[rounds_run - TAIL];
+    let tail_last_index_log = index_log_by_round[rounds_run - 1];
+    assert_eq!(
+        tail_first_index_log,
+        tail_last_index_log,
+        "the index log of a SETTLED idle shard at {records} records grew {} bytes over the last \
+         {TAIL} rounds, with nobody writing: {index_log_by_round:?}",
+        tail_last_index_log.saturating_sub(tail_first_index_log),
+    );
+    let tail_first_slab_bytes = slab_bytes_by_round[rounds_run - TAIL];
+    let tail_last_slab_bytes = slab_bytes_by_round[rounds_run - 1];
+    assert!(
+        tail_last_slab_bytes <= tail_first_slab_bytes,
+        "slab bytes of a SETTLED idle shard at {records} records grew from {tail_first_slab_bytes} \
+         to {tail_last_slab_bytes} over the last {TAIL} rounds: {slab_bytes_by_round:?}"
+    );
+    eprintln!(
+        "  [settle] {records} records: compacted in {rounds_that_compacted} rounds, last at \
+{last_compacting_round}, then FLAT for {} rounds -- index log {tail_last_index_log} bytes, slab \
+bytes {tail_last_slab_bytes}",
+        rounds_run.saturating_sub(last_compacting_round + 1),
     );
 }

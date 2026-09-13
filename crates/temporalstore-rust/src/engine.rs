@@ -52,6 +52,8 @@ pub use storage_bucket_internals::{
     reset_live_page_scan_entries, reset_live_page_scan_sites,
 };
 mod compaction;
+// The maintenance round in `data_node` asks this before compacting; see the function's doc.
+pub use compaction::compaction_relocatable_page_refs;
 mod storage_reporting;
 pub(crate) mod hashing;
 mod bucket_store;

@@ -656,6 +656,29 @@ fn expiry_scan_budget(limit: usize) -> usize {
         validate_bucket_ownership_index(shard_id, shard, start_routing_bucket, end_routing_bucket)
     }
 
+    /// What a compaction round would relocate on this shard, asked one object at a time.
+    ///
+    /// Takes the reclaim candidates rather than computing them, because every caller already has
+    /// a lifecycle plan holding them and recomputing means another whole-shard walk.
+    ///
+    /// NOT what `compact_shard_pages` consults. A direct compaction -- the operator RPC, the
+    /// on-demand cycle, and the suite -- is an instruction, not a suggestion, and still relocates
+    /// everything. This is what the PERIODIC loop asks before deciding to issue one.
+    pub fn compaction_relocation_hint(
+        &self,
+        shard_id: ShardId,
+        reclaim_candidates: &[StorageReclaimCandidate],
+    ) -> ShardCompactionRelocationHint {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return ShardCompactionRelocationHint {
+                shard_id,
+                ..ShardCompactionRelocationHint::default()
+            };
+        };
+        compaction_relocation_hint_per_object(shard_id, shard, reclaim_candidates)
+    }
+
     pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
         self.compact_shard_pages_with_budgets(
             shard_id,

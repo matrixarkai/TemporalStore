@@ -1035,6 +1035,29 @@ pub struct StorageReclaimCandidate {
     pub reason: String,
 }
 
+/// What a compaction round would relocate, and why, composed from per-object answers.
+///
+/// `relocatable_page_refs` is the whole decision: zero means no object holds a page on a slab
+/// anyone wants emptied, so a round would roll a fresh slab, copy every live page onto it
+/// verbatim, and leave the slab it emptied behind as the reason the next round runs.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardCompactionRelocationHint {
+    pub shard_id: ShardId,
+    /// Objects the hint was asked about. The denominator: zero here makes every count below
+    /// trivially zero for a reason that has nothing to do with compaction.
+    pub examined_object_count: u64,
+    pub relocatable_object_count: u64,
+    pub relocatable_page_refs: u64,
+    /// Slabs carrying dead space that objects still hold pages on: compaction's job.
+    #[serde(rename = "drain_page_segment_ids")]
+    pub drain_block_slab_ids: Vec<u64>,
+    /// Slabs holding nothing but dead space: the collector's job, and nothing compaction can act
+    /// on. A round triggered by these is the self-retrigger.
+    #[serde(rename = "collector_only_page_segment_ids")]
+    pub collector_only_block_slab_ids: Vec<u64>,
+    pub relocatable_page_refs_by_model: BTreeMap<String, u64>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoragePageGcReplayCursor {
     pub cursor_id: String,

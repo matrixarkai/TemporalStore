@@ -672,3 +672,126 @@ pub(super) fn compact_feature_page_addresses(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------
+// THE RELOCATION HINT: which pages a round would move, and WHY, asked one object at a time.
+// ---------------------------------------------------------------------------------------------
+
+/// The slabs a relocation round could actually empty.
+///
+/// A reclaim candidate is any slab carrying dead space, and that is TWO different situations the
+/// maintenance round has never told apart:
+///
+///   - a slab with dead space that objects STILL HOLD PAGES ON. Only relocation empties it, so
+///     it is compaction's job.
+///   - a slab holding nothing but dead space. No object has a page left on it, so there is
+///     nothing for compaction to relocate; destroying it is the COLLECTOR's job.
+///
+/// The second is the one a compaction round manufactures FOR ITSELF. A round relocates a slab's
+/// live pages onto a fresh one, and the slab it just emptied stays a reclaim candidate until the
+/// collector destroys it. `stale_page_pressure` counts candidates without asking which kind they
+/// are, so the round that emptied a slab is the reason the next round runs -- on a shard nobody
+/// is writing to, for ever, each round persisting another index record.
+///
+/// No threshold here, and no shard-wide question about staleness or density: the three predicates
+/// of that shape were each refused by the suite. This is the drain SET, and what makes a slab a
+/// member of it is that some object still has a page there.
+pub(super) fn compaction_drain_block_slab_ids(
+    reclaim_candidates: &[StorageReclaimCandidate],
+) -> BTreeSet<u64> {
+    reclaim_candidates
+        .iter()
+        .filter(|candidate| candidate.live_page_refs > 0)
+        .map(|candidate| candidate.block_slab_id)
+        .collect()
+}
+
+/// What a relocation round should move FOR THIS OBJECT, as indexes into `object_pages`.
+///
+/// The decision belongs at this granularity and not to the shard. An object's pages are worth
+/// relocating when they sit on a slab the collector wants emptied, because vacating that slab is
+/// the only thing a relocation achieves for them: `compact_page_addresses` copies a page's bytes
+/// verbatim and appends them elsewhere, so a page that moves off a slab nobody is draining comes
+/// out byte for byte what it went in as, on a slab that is now the one carrying dead space.
+///
+/// `model_id` is the second half of the question and has no answer to give yet IN THIS TREE, for
+/// the reason just given -- every model's pages are copied verbatim, so no model can improve
+/// itself by being rewritten in place. A model that PACKED several components into one page on
+/// rewrite could, and this is where it says so: it would name its own pages here whether or not
+/// their slab is being drained. The hint carries a per-model tally so the answer stays
+/// attributable when that arrives.
+pub(super) fn compaction_object_page_hint(
+    model_id: &str,
+    object_pages: &[BlockAddress],
+    drain_block_slab_ids: &BTreeSet<u64>,
+) -> Vec<usize> {
+    let _ = model_id;
+    object_pages
+        .iter()
+        .enumerate()
+        .filter(|(_, address)| drain_block_slab_ids.contains(&address.block_slab_id))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The shard's answer, composed from the per-object ones. Walks the live page set once.
+///
+/// This is the NORMATIVE definition of the hint. The maintenance round does not call it -- it
+/// takes the same number off the reclaim plan it has already built, which costs no walk at all --
+/// and `the_relocation_hint_agrees_with_the_plan_it_is_taken_from` is what holds the two to the
+/// same answer, so a change that separates them fails there rather than in a shipped round.
+pub(super) fn compaction_relocation_hint_per_object(
+    shard_id: ShardId,
+    shard: &ShardState,
+    reclaim_candidates: &[StorageReclaimCandidate],
+) -> ShardCompactionRelocationHint {
+    let drain_block_slab_ids = compaction_drain_block_slab_ids(reclaim_candidates);
+    let mut object_pages: BTreeMap<(String, String), Vec<BlockAddress>> = BTreeMap::new();
+    for entry in collect_live_page_entries(shard) {
+        object_pages
+            .entry((entry.kind.to_string(), entry.object_key.to_string()))
+            .or_default()
+            .push(entry.address);
+    }
+    let examined_object_count = object_pages.len() as u64;
+    let mut relocatable_object_count = 0_u64;
+    let mut relocatable_page_refs = 0_u64;
+    let mut by_model: BTreeMap<String, u64> = BTreeMap::new();
+    for ((model_id, _object_key), pages) in &object_pages {
+        let hint = compaction_object_page_hint(model_id, pages, &drain_block_slab_ids);
+        if hint.is_empty() {
+            continue;
+        }
+        relocatable_object_count = relocatable_object_count.saturating_add(1);
+        relocatable_page_refs = relocatable_page_refs.saturating_add(hint.len() as u64);
+        *by_model.entry(model_id.clone()).or_default() += hint.len() as u64;
+    }
+    let collector_only_block_slab_ids = reclaim_candidates
+        .iter()
+        .filter(|candidate| candidate.live_page_refs == 0)
+        .map(|candidate| candidate.block_slab_id)
+        .collect::<Vec<_>>();
+    ShardCompactionRelocationHint {
+        shard_id,
+        examined_object_count,
+        relocatable_object_count,
+        relocatable_page_refs,
+        drain_block_slab_ids: drain_block_slab_ids.into_iter().collect(),
+        collector_only_block_slab_ids,
+        relocatable_page_refs_by_model: by_model,
+    }
+}
+
+/// The same count, off the reclaim plan the maintenance round has already built.
+///
+/// `live_page_refs` on a candidate is the tally of live page addresses that landed on that slab,
+/// summed over the same live page set `compaction_relocation_hint_per_object` walks -- so summing
+/// it over the drain set is the per-object answer, aggregated, for no extra walk of the shard.
+/// The round runs eight of those already; a ninth to ask whether it should run is not a trade
+/// worth making on a loop that ticks every thirty seconds per shard.
+pub fn compaction_relocatable_page_refs(reclaim_candidates: &[StorageReclaimCandidate]) -> u64 {
+    reclaim_candidates
+        .iter()
+        .filter(|candidate| candidate.live_page_refs > 0)
+        .map(|candidate| candidate.live_page_refs)
+        .fold(0_u64, |total, refs| total.saturating_add(refs))
+}

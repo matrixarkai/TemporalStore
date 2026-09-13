@@ -793,7 +793,32 @@ impl DataNodeRuntime {
         // above the floor is protected whichever order the two stages run in. Moving the reclaim
         // earlier cannot collect them any sooner; it only stops them from being written until
         // after it has finished. Neither order is unsafe and neither collects more.
-        if options.enable_page_compaction && stale_page_pressure {
+        // WHAT WOULD THIS ROUND RELOCATE? Asked before issuing a compaction, and not the same
+        // question as `stale_page_pressure`.
+        //
+        // `stale_page_pressure` counts reclaim candidates, and a candidate is any slab carrying
+        // dead space. That lumps together the slab compaction must empty and the slab compaction
+        // has ALREADY emptied -- and the second is its own residue: a round relocates a slab's
+        // live pages onto a fresh one, and the vacated slab stays a candidate until the collector
+        // destroys it, which is the pressure that runs the next round. Measured on an idle
+        // 8,000-record shard: `compact_pages` executed in all twelve rounds with nobody writing,
+        // the whole live set rewritten every four rounds, and the index log growing 63 bytes a
+        // round for ever -- about 181 KB a day per idle shard at this cadence -- because each of
+        // those rounds persists a fresh index record. With compaction off over the identical
+        // fixture the index log grew by zero, which is what attributes it.
+        //
+        // The question below is answered PER OBJECT: does any object still hold a page on a slab
+        // someone wants emptied? A slab holding nothing but dead space answers no -- no object has
+        // a page there, nothing can be relocated off it, and destroying it is `reclaim_page`'s
+        // job, not this stage's. That is the distinction three shard-wide predicates could not
+        // make, which is why they were each refused by the suite (#1550, #1553): they asked about
+        // the shard's staleness, and the shard is stale either way.
+        //
+        // Costs no walk: `live_page_refs` per candidate is already in the plan this round built.
+        let compaction_relocatable_page_refs =
+            crate::engine::compaction_relocatable_page_refs(&lifecycle_plan.reclaim_candidates);
+        let compaction_has_work = compaction_relocatable_page_refs > 0;
+        if options.enable_page_compaction && stale_page_pressure && compaction_has_work {
             let response = run_compaction_inner(&self.inner, CompactionRequest { shard_id });
             if !response.status.ok {
                 status = response.status.clone();
@@ -807,15 +832,22 @@ impl DataNodeRuntime {
             executed_stages.push("compact_pages".to_string());
         } else if !options.enable_page_compaction {
             skipped_stages.push("compact_pages_disabled".to_string());
-        } else {
+        } else if !stale_page_pressure {
             skipped_stages.push("compact_pages_no_pressure".to_string());
+        } else {
+            skipped_stages.push("compact_pages_nothing_to_relocate".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
             "compact_pages",
             options.enable_page_compaction,
             stale_page_pressure,
-            options.enable_page_compaction && stale_page_pressure,
+            options.enable_page_compaction && stale_page_pressure && compaction_has_work,
             vec![
+                storage_manager_pressure_signal(
+                    "relocatable_page_refs",
+                    compaction_relocatable_page_refs,
+                    1,
+                ),
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
                     pressure.stale_block_slab_count as u64,
@@ -851,7 +883,11 @@ impl DataNodeRuntime {
                 options.enable_page_compaction,
                 stale_page_pressure,
                 "compact_pages",
-            ),
+            )
+            .or_else(|| {
+                (!compaction_has_work)
+                    .then(|| "compact_pages_nothing_to_relocate".to_string())
+            }),
         ));
 
 
