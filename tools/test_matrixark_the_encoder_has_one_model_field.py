@@ -24,6 +24,18 @@ import os
 import sys
 import unittest
 
+_PROVIDER = "MATRIXARK_EMBEDDING_PROVIDER"
+
+try:  # package path
+    from tools import matrixark_mcp_embeddings as _embeddings
+    from tools import matrixark_mcp_local_adapter as _adapter
+    from tools import matrixark_mcp_model_registry as _registry
+except ImportError:  # Direct script execution from tools/.
+    import matrixark_mcp_embeddings as _embeddings
+    import matrixark_mcp_local_adapter as _adapter
+    import matrixark_mcp_model_registry as _registry
+
+
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 
@@ -219,6 +231,67 @@ class ALauncherSetPathIsReportedTest(Case):
         for provider in ("oss", "openai_compatible", "deterministic"):
             with self.subTest(provider=provider):
                 self.assertEqual([], self.warnings_about_the_path(provider))
+
+class TheRegistryRecordsTheProviderThatWillRun(unittest.TestCase):
+    """One encoder must produce one registry identity, however its name is capitalised.
+
+    `matrixark_mcp_local_adapter._model_registry_identity` puts the record's `provider` string
+    straight into the tuple it de-duplicates `context_model_registry` rows by. The record used to
+    take that string RAW from the environment, so a deployment that wrote `openai` once and
+    `OpenAI` later had two identities for one encoder and wrote a duplicate row:
+
+        openai      -> provider='openai'      three distinct identities
+        OpenAI      -> provider='OpenAI'
+        ' OPENAI '  -> provider='OPENAI'
+
+    `embedding_provider_name` already draws the line this sits on: sites that REPORT what is set
+    keep the raw spelling, sites that DISPATCH on it use the normalised name. An identity is not a
+    reporting field, so this one is on the dispatch side.
+    """
+
+    def setUp(self) -> None:
+        self._saved = os.environ.get(_PROVIDER)
+
+    def tearDown(self) -> None:
+        if self._saved is None:
+            os.environ.pop(_PROVIDER, None)
+        else:
+            os.environ[_PROVIDER] = self._saved
+
+    def test_one_encoder_has_one_registry_identity(self) -> None:
+        identities = set()
+        for spelling in ("openai", "OpenAI", " OPENAI ", "openai "):
+            os.environ[_PROVIDER] = spelling
+            record = _registry.context_model_registry_record("some-model")
+            identities.add(_adapter._model_registry_identity(record))
+        self.assertEqual(
+            1, len(identities),
+            "%d registry identities for one encoder spelled four ways, so a deployment that "
+            "retypes its provider with different capitalisation writes a duplicate "
+            "context_model_registry row every time." % len(identities))
+
+    def test_the_recorded_provider_is_the_one_that_dispatches(self) -> None:
+        """Equal to what the encoder resolves, not merely self-consistent.
+
+        Lowercasing here and lowercasing in the encoder are two rules, and two rules agree until one
+        of them learns a spelling. This asks the encoder.
+        """
+        for spelling in ("OpenAI", "VOYAGE", " oss ", ""):
+            with self.subTest(spelling=spelling):
+                os.environ[_PROVIDER] = spelling
+                record = _registry.context_model_registry_record("some-model")
+                self.assertEqual(
+                    _embeddings.embedding_provider_name(), record.get("provider"),
+                    "the registry recorded %r where the encoder will dispatch on %r"
+                    % (record.get("provider"), _embeddings.embedding_provider_name()))
+
+    def test_a_non_embedding_record_still_carries_no_provider(self) -> None:
+        """The field is empty for other kinds and must stay empty: the change above moved where the
+        value comes from, and a normaliser that answers `deterministic` for everything would fill a
+        field that is meant to be blank."""
+        os.environ[_PROVIDER] = "openai"
+        record = _registry.context_model_registry_record("some-model", model_kind="summary")
+        self.assertEqual("", record.get("provider"))
 
 
 if __name__ == "__main__":
