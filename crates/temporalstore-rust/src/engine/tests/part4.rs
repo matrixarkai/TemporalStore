@@ -18465,3 +18465,292 @@ fn a_shard_released_and_reloaded_comes_back_whole() {
     );
 }
 
+/// What the index-GC GATE costs, measured both ways in one binary, at two log sizes.
+///
+/// #1634 made reclaim cost what it REMOVES: the index log rolls into sealed pieces named
+/// `shard-{id}.indexlog.{start}-{end}-{max_wal_anchor}.bin`, and a round unlinks whole pieces
+/// without opening them. It left the CALLER alone. `storage_index_gc_report` decides whether to
+/// call the collector on a removable-record RATIO, and it got that ratio by scanning the whole log
+/// and decoding every record -- so the maintenance round stayed O(log size) and the cost simply
+/// moved from the collector to the gate.
+///
+/// The ratio is now arithmetic on the piece names plus the one piece being written: a piece holds
+/// `end - start` records because sequences have no holes, and `min(end, floor) - start` of them are
+/// below the floor. Only the active piece is opened.
+///
+/// FOUR ARMS, two shapes by two log sizes, all in this binary:
+///
+/// - `TS_INDEX_LOG_SEGMENT_BYTES = 0` is ONE FILE per shard -- the shape every store written
+///   before pieces has, and the shape in which the gate has no names to read and must decode. It
+///   is the control that proves the instrument can SEE a whole-log decode: without it, a treatment
+///   arm that silently measured nothing would read as a win.
+/// - 64 KiB pieces is the shipped default.
+///
+/// The measurement is BYTES DECODED and RECORDS DECODED, off the store's own counters, not
+/// milliseconds: counts are deterministic and this box's timings are not. The PIECES column is the
+/// marker that says which arm actually ran.
+///
+/// `dry_run` is set, so the collector never runs and what is measured is the GATE alone -- which
+/// is also the round that happens most: a gate that declines still pays for the numbers it
+/// declined on, every 30 s, on every shard.
+#[test]
+fn the_index_gc_gate_costs_pieces_not_records() {
+    /// Restores the rolling threshold on drop. It is per THREAD and `--test-threads=1` runs this
+    /// binary on one, so a test that set it and walked away would decide how every test after it
+    /// rolls.
+    struct RollingThreshold;
+    impl Drop for RollingThreshold {
+        fn drop(&mut self) {
+            crate::index_log::set_index_log_segment_bytes_for_test(None);
+        }
+    }
+
+    // Past `DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD` (768 KiB) in EVERY arm, or the gate's own
+    // cheap byte test skips before it measures anything and every number below is zero. Asserted,
+    // not assumed -- and the assertion earned itself: the first fixture here was 4,000 records,
+    // which is 755,234 B, and every arm read zero bytes decoded because the round never got past
+    // that test. A record is about 189 B, so 6,000 is 1.13 MB and clears it with room.
+    let small = 6_000usize;
+    let large = 18_000usize;
+    let threshold = crate::engine::reports::DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD;
+
+    struct Arm {
+        label: &'static str,
+        records: usize,
+        log_bytes: u64,
+        pieces: usize,
+        bytes_decoded: u64,
+        records_decoded: u64,
+        records_before: usize,
+        removable: usize,
+        ratio_basis_points: u64,
+        skipped_reason: String,
+    }
+
+    let mut arms: Vec<Arm> = Vec::new();
+    for (label, roll) in [
+        ("one file", 0u64),
+        (
+            "64 KiB pieces",
+            crate::index_log::DEFAULT_INDEX_LOG_SEGMENT_BYTES,
+        ),
+    ] {
+        for records in [small, large] {
+            let _rolling = RollingThreshold;
+            crate::index_log::set_index_log_segment_bytes_for_test(Some(roll));
+
+            let engine = TemporalEngine::default();
+            engine.load_shard(1);
+            let store = engine.index_log_store();
+            for value in 0..records {
+                store
+                    .append_json(
+                        1,
+                        format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                    )
+                    .expect("index-log append");
+            }
+
+            // Sequences run 1..=records; a floor at 60% leaves a removable ratio of 6,000 basis
+            // points, past the 4,000 the gate wants -- so the gate is answering a real question
+            // rather than declining on a number that could be anything.
+            let floor = (records * 6 / 10) as u64;
+            let log_bytes = store.log_len_bytes(1);
+            let pieces = store.piece_count(1);
+            let before = store.stats(1);
+            let report = engine.storage_index_gc_report(
+                &crate::engine::reports::StorageLifecyclePlan {
+                    shard_id: 1,
+                    ..crate::engine::reports::StorageLifecyclePlan::default()
+                },
+                &crate::engine::reports::StorageWalReclaimPlan {
+                    shard_id: 1,
+                    safe_to_reclaim: true,
+                    retain_from_index_log_sequence: floor,
+                    ..crate::engine::reports::StorageWalReclaimPlan::default()
+                },
+                None,
+                &crate::engine::reports::StorageManagerCycleRequest {
+                    shard_id: 1,
+                    dry_run: true,
+                    ..crate::engine::reports::StorageManagerCycleRequest::default()
+                },
+            );
+            let after = store.stats(1);
+
+            arms.push(Arm {
+                label,
+                records,
+                log_bytes,
+                pieces,
+                bytes_decoded: after.bytes_read.saturating_sub(before.bytes_read),
+                records_decoded: after.records_read.saturating_sub(before.records_read),
+                records_before: report.records_before,
+                removable: report.removable_records_before_budget,
+                ratio_basis_points: report.usage_ratio_basis_points,
+                skipped_reason: report.skipped_reason.clone(),
+            });
+        }
+    }
+
+    println!(
+        "\n  {:<16} {:>8} {:>7} {:>12} {:>14} {:>16} {:>8}",
+        "shape", "records", "pieces", "log bytes", "bytes decoded", "records decoded", "ratio"
+    );
+    for arm in &arms {
+        println!(
+            "  {:<16} {:>8} {:>7} {:>12} {:>14} {:>16} {:>7}bp",
+            arm.label,
+            arm.records,
+            arm.pieces,
+            arm.log_bytes,
+            arm.bytes_decoded,
+            arm.records_decoded,
+            arm.ratio_basis_points
+        );
+    }
+
+    // THE DENOMINATORS, before any bound. Each one of these is a way for every assertion below to
+    // pass while measuring nothing: a log under the byte threshold is skipped before the gate
+    // measures, a gate that declined for some other reason never reached the ratio, and "no more
+    // than one piece" is vacuously true of a log that IS one piece.
+    for arm in &arms {
+        assert!(
+            arm.log_bytes > threshold,
+            "{} at {} records wrote only {} B, under the {threshold} B gate -- the round would \
+             skip before measuring and every bound below is vacuous",
+            arm.label,
+            arm.records,
+            arm.log_bytes
+        );
+        assert_eq!(
+            arm.skipped_reason, "dry_run",
+            "{} at {} records: the gate declined for `{}` rather than reaching the ratio, so it \
+             measured nothing",
+            arm.label, arm.records, arm.skipped_reason
+        );
+        assert_eq!(
+            (arm.records_before, arm.removable),
+            (arm.records, arm.records * 6 / 10 - 1),
+            "{} at {} records: the gate counted {}/{} records/removable, and sequences run \
+             1..={} against a floor of {}",
+            arm.label,
+            arm.records,
+            arm.records_before,
+            arm.removable,
+            arm.records,
+            arm.records * 6 / 10
+        );
+    }
+
+    let one_file_small = &arms[0];
+    let one_file_large = &arms[1];
+    let pieces_small = &arms[2];
+    let pieces_large = &arms[3];
+
+    assert_eq!(
+        (one_file_small.pieces, one_file_large.pieces),
+        (1, 1),
+        "the control arm must be ONE file or it is not the shape this replaces: {} and {} pieces",
+        one_file_small.pieces,
+        one_file_large.pieces
+    );
+    assert!(
+        pieces_small.pieces >= 10 && pieces_large.pieces >= pieces_small.pieces * 2,
+        "the treatment arm must have ROLLED, and the large log must be many more pieces than the \
+         small one, or the bounds below say nothing: {} and {} piece(s)",
+        pieces_small.pieces,
+        pieces_large.pieces
+    );
+    assert!(
+        pieces_large.log_bytes > pieces_small.log_bytes * 2,
+        "the two log sizes must differ or 'did not grow with the log' is vacuous: {} B against \
+         {} B",
+        pieces_small.log_bytes,
+        pieces_large.log_bytes
+    );
+
+    // THE CONTROL PROVES THE INSTRUMENT. One file per shard has no names to read, so the gate
+    // decodes the log -- and the counters see it. Without this, a treatment arm reading zero could
+    // mean the gate got cheap or could mean nothing was measured at all.
+    for arm in [one_file_small, one_file_large] {
+        assert!(
+            arm.bytes_decoded * 10 > arm.log_bytes * 9 && arm.records_decoded == arm.records as u64,
+            "the one-file arm at {} records must decode the whole {} B log, or the counters are \
+             not watching the gate: {} B / {} records decoded",
+            arm.records,
+            arm.log_bytes,
+            arm.bytes_decoded,
+            arm.records_decoded
+        );
+    }
+    assert!(
+        one_file_large.bytes_decoded > one_file_small.bytes_decoded * 2,
+        "in the one-file arm the gate's cost must track the LOG -- that is the defect: {} B at {} \
+         records against {} B at {} records",
+        one_file_small.bytes_decoded,
+        one_file_small.records,
+        one_file_large.bytes_decoded,
+        one_file_large.records
+    );
+
+    // THE TREATMENT. What the gate decodes is the piece being written, whatever the log holds.
+    let piece = crate::index_log::DEFAULT_INDEX_LOG_SEGMENT_BYTES;
+    for arm in [pieces_small, pieces_large] {
+        assert!(
+            arm.bytes_decoded <= piece,
+            "the gate decoded {} B of a {} B log in {} pieces ({} records); it is reading the \
+             whole log again (piece size {piece} B)",
+            arm.bytes_decoded,
+            arm.log_bytes,
+            arm.pieces,
+            arm.records
+        );
+        assert!(
+            arm.bytes_decoded * 10 < arm.log_bytes && arm.records_decoded * 10 < arm.records as u64,
+            "the gate decoded {} B / {} records of a {} B / {} record log in {} pieces -- one \
+             piece is a small fraction of that, so anything near a tenth is a whole-log walk",
+            arm.bytes_decoded,
+            arm.records_decoded,
+            arm.log_bytes,
+            arm.records,
+            arm.pieces
+        );
+    }
+    assert!(
+        pieces_large.bytes_decoded <= pieces_small.bytes_decoded.saturating_add(piece),
+        "the gate's cost grew with the LOG: {} B decoded on a {} B log against {} B on a {} B \
+         one -- it tracks records again",
+        pieces_small.bytes_decoded,
+        pieces_small.log_bytes,
+        pieces_large.bytes_decoded,
+        pieces_large.log_bytes
+    );
+
+    // AND IT IS THE SAME DECISION. The cheap question has to answer what the dear one answered:
+    // the one-file arm read every record, the piece arm read one piece, and at each log size they
+    // must agree about the log -- record count, removable count and the ratio the gate fires on.
+    for (dear, cheap) in [
+        (one_file_small, pieces_small),
+        (one_file_large, pieces_large),
+    ] {
+        assert_eq!(
+            (
+                cheap.records_before,
+                cheap.removable,
+                cheap.ratio_basis_points
+            ),
+            (dear.records_before, dear.removable, dear.ratio_basis_points),
+            "at {} records the gate reached a DIFFERENT decision from names ({}/{}/{}bp) than \
+             from reading every record ({}/{}/{}bp)",
+            dear.records,
+            cheap.records_before,
+            cheap.removable,
+            cheap.ratio_basis_points,
+            dear.records_before,
+            dear.removable,
+            dear.ratio_basis_points
+        );
+    }
+}
+

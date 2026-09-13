@@ -1037,7 +1037,43 @@ pub struct IndexLogStats {
     pub scans: u64,
     pub bytes_written: u64,
     pub bytes_read: u64,
+    /// Records this store has read back and handed to a decoder.
+    ///
+    /// Beside `bytes_read`, which is the same work measured the other way. Both are what makes a
+    /// claim about what a round COSTS checkable without a clock: a guard that asserts a bound on
+    /// milliseconds asserts something about the machine, and this box cannot hold one still.
+    #[serde(default)]
+    pub records_read: u64,
     pub last_sequence: u64,
+}
+
+/// What the index-GC gate needs, and what answering it cost.
+///
+/// The gate decides on a REMOVABLE-RECORD RATIO, which is two counts. Getting them by scanning
+/// and decoding the whole log made the maintenance round O(log size) even after reclaim itself
+/// stopped being -- the cost moved from the collector to the thing that decides whether to
+/// collect. Every one of these numbers except the last two is arithmetic on piece NAMES plus the
+/// one piece being written.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexLogGateSummary {
+    pub shard_id: ShardId,
+    /// The retain floor the counts below were taken against.
+    pub retain_from_sequence: u64,
+    /// On-disk bytes of the whole log: one `stat` per piece, nothing opened.
+    pub bytes: u64,
+    /// How many records the log holds.
+    pub records: usize,
+    /// How many of them sit below the floor.
+    pub removable_records: usize,
+    /// Files the log is in, the one being written included. This is what the gate now costs.
+    pub pieces: usize,
+    /// How many of those were answered from the NAME alone -- every sealed one.
+    pub pieces_named: usize,
+    /// Bytes read and decoded: the piece being written, and nothing else. Bounded by the rolling
+    /// threshold, not by the log.
+    pub bytes_decoded: u64,
+    /// Records read and decoded, bounded the same way.
+    pub records_decoded: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1817,7 +1853,112 @@ impl LocalIndexLogStore {
         }
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
+        inner.stats.records_read += records.len() as u64;
         Ok((records, truncated))
+    }
+
+    /// Answer the index-GC gate from the piece NAMES plus the piece being written.
+    ///
+    /// The gate wants three numbers -- the log's size, how many records it holds, and how many of
+    /// them sit below a retain floor -- and used to get the last two by scanning the whole log and
+    /// decoding every record. That is the cost `drop_covered_index_segments` stopped paying: a
+    /// sealed piece's name already carries `start`, `end` and its highest WAL anchor, so
+    ///
+    /// - the piece holds `end - start` records, because sequences are assigned `last + 1` with no
+    ///   holes -- the same arithmetic a round already reports its removals with, so the gate and the
+    ///   collector cannot disagree about a piece;
+    /// - the records in it below a floor are `min(end, floor) - start`, saturating, for exactly the
+    ///   same reason: contiguity makes a count out of a subtraction, and a floor at or under
+    ///   `start` leaves none.
+    ///
+    /// Only the piece being WRITTEN has no numbers in its name, so only that one is opened. It is
+    /// at most the rolling threshold (64 KiB shipped), whatever the log has grown to, which is
+    /// what makes this cost the number of PIECES rather than the number of records.
+    ///
+    /// THE ONE SHAPE THIS DOES NOT BOUND, said plainly rather than left to be discovered: a log
+    /// that has never rolled is ONE piece and that piece is the whole log, so this decodes all of
+    /// it -- exactly what the old gate did, no better and no worse. `TS_INDEX_LOG_SEGMENT_BYTES=0`
+    /// and any store written before pieces are that shape. The bound is on the ROLLED log, and a
+    /// guard asserting it has to say how many pieces its fixture actually had.
+    ///
+    /// Infallible on purpose. This is a GC-pressure metric, not the recovery path: a corrupt frame
+    /// in the piece being written stops the walk and leaves the sealed pieces counted, where
+    /// returning an error would have the caller read the whole log as EMPTY -- which reads as a
+    /// log with nothing to collect rather than as a log that could not be measured. Replay is
+    /// where a corrupt record is surfaced, and it still surfaces it.
+    pub fn gate_summary(
+        &self,
+        shard_id: ShardId,
+        retain_from_sequence: u64,
+    ) -> IndexLogGateSummary {
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let root = inner.root.clone();
+        let active = index_log_path(&root, shard_id);
+        let mut summary = IndexLogGateSummary {
+            shard_id,
+            retain_from_sequence,
+            ..IndexLogGateSummary::default()
+        };
+        for path in index_log_segment_paths(&root, shard_id) {
+            // A `stat`, and for a sealed piece that is the whole of it. A piece that has just been
+            // unlinked out from under this walk is simply not counted, the same way
+            // `index_log_total_bytes` does not count it.
+            let Ok(metadata) = path.metadata() else {
+                continue;
+            };
+            summary.pieces += 1;
+            summary.bytes = summary.bytes.saturating_add(metadata.len());
+            if path != active {
+                let Some(span) = sealed_index_log_span(&path, shard_id) else {
+                    continue;
+                };
+                summary.pieces_named += 1;
+                let held = span.end.saturating_sub(span.start);
+                let removable = span.end.min(retain_from_sequence).saturating_sub(span.start);
+                summary.records = summary.records.saturating_add(held as usize);
+                summary.removable_records = summary
+                    .removable_records
+                    .saturating_add(removable as usize);
+                continue;
+            }
+            let Ok(file) = File::open(&path) else {
+                continue;
+            };
+            let mut reader = BufReader::new(file);
+            // By FRAME, not by newline, for the reason every other walk of this log gives: a
+            // binary payload may contain the delimiter a newline scan would stop at.
+            while let Ok(Some((frame_bytes, payload))) = crate::log_framing::read_frame(&mut reader)
+            {
+                summary.bytes_decoded = summary.bytes_decoded.saturating_add(frame_bytes as u64);
+                if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    continue;
+                }
+                summary.records_decoded += 1;
+                summary.records += 1;
+                // Through the index log's own decoder, and only the HEAD of the record: two shapes
+                // share this log and both carry a sequence. A record that will not decode is
+                // COUNTED but not called removable, which is what the scan this replaces did -- it
+                // makes the ratio smaller, so it can only ever decline a round, never fire one.
+                if let Ok(head) = decode_index_payload::<IndexRecordHead>(&payload) {
+                    if head.sequence < retain_from_sequence {
+                        summary.removable_records += 1;
+                    }
+                }
+            }
+        }
+        inner.stats.scans += 1;
+        inner.stats.bytes_read += summary.bytes_decoded;
+        inner.stats.records_read += summary.records_decoded as u64;
+        summary
+    }
+
+    /// How many files this shard's log is in, the one being written included.
+    pub fn piece_count(&self, shard_id: ShardId) -> usize {
+        let inner = self.inner.lock().expect("index log lock poisoned");
+        index_log_segment_paths(&inner.root, shard_id)
+            .into_iter()
+            .filter(|path| path.exists())
+            .count()
     }
 
     pub fn gc_before_sequence(
@@ -3729,6 +3870,160 @@ mod tests {
         assert_eq!(
             remove_all.records_after, 1,
             "the piece being written keeps exactly the record above the floor"
+        );
+    }
+
+    /// The gate's counts come from the piece NAMES and agree with reading every record.
+    ///
+    /// `gate_summary` is only worth having if it answers the same question the whole-log scan it
+    /// replaces answered. Two halves, and both are needed:
+    ///
+    /// - AGREEMENT. The counts are checked against the scan-and-decode this replaces, run here
+    ///   over the same log. Filename arithmetic that is one out reads as a cheaper gate rather
+    ///   than as an error, which is the way this fails silently.
+    /// - COST. What it decodes is bounded by ONE piece, and does not grow when the log does. The
+    ///   second log is three times the first; if the bound tracked records it would be three
+    ///   times as much.
+    #[test]
+    fn the_gate_reads_piece_names_not_every_record() {
+        let piece = 8 * 1024u64;
+        let _rolling = roll_at(piece);
+        // A record is roughly 120 B here, so the small log is about 60 pieces and the large one
+        // about 180. Both are far enough past `piece` that "no more than one piece" says something.
+        let small = 4_000usize;
+        let large = 12_000usize;
+
+        /// The shape this replaces, run here as the thing to agree with: the whole log into a
+        /// vector, then a decode of every record to count the ones below the floor.
+        fn by_reading_every_record(
+            store: &LocalIndexLogStore,
+            shard_id: ShardId,
+            floor: u64,
+        ) -> (usize, usize, u64) {
+            let records = store.scan(shard_id, 0, u64::MAX, u64::MAX).unwrap();
+            let bytes = records.iter().map(|(_, raw)| raw.len() as u64).sum::<u64>();
+            let removable = records
+                .iter()
+                .filter_map(|(_, raw)| {
+                    let payload = crate::log_framing::decode_line(raw).ok()?;
+                    decode_index_payload::<IndexRecordHead>(payload).ok()
+                })
+                .filter(|head| head.sequence < floor)
+                .count();
+            (records.len(), removable, bytes)
+        }
+
+        let mut arms = Vec::new();
+        for records in [small, large] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalIndexLogStore::new(dir.path());
+            for value in 0..records {
+                store
+                    .append_json(
+                        7,
+                        format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(48)).as_bytes(),
+                    )
+                    .unwrap();
+            }
+            // Sequences run 1..=records, so a floor at 60% leaves `floor - 1` below it -- a
+            // removable ratio of neither nothing nor everything, which is where an off-by-a-piece
+            // shows up.
+            let floor = (records * 6 / 10) as u64;
+            let written = store.log_len_bytes(7);
+            let pieces = store.piece_count(7);
+            let gate = store.gate_summary(7, floor);
+            let (scanned_records, scanned_removable, scanned_bytes) =
+                by_reading_every_record(&store, 7, floor);
+
+            // THE DENOMINATORS, before any bound that mentions a piece. "No more than one piece"
+            // is vacuously true of a log that IS one piece, and "did not grow" is vacuous if the
+            // two logs are the same size.
+            assert!(
+                pieces >= 20 && written > piece * 20,
+                "the log must be many pieces deep or every bound below is vacuous: {records} \
+                 records, {written} B in {pieces} piece(s), piece size {piece} B"
+            );
+            assert_eq!(
+                gate.pieces, pieces,
+                "the gate must have walked every piece: {} of {pieces}",
+                gate.pieces
+            );
+            assert_eq!(
+                gate.pieces_named,
+                pieces - 1,
+                "every piece but the one being written must be answered from its NAME: {} named \
+                 of {pieces}",
+                gate.pieces_named
+            );
+
+            // AGREEMENT with reading every record, and with the arithmetic said out loud.
+            assert_eq!(
+                (gate.records, gate.removable_records),
+                (scanned_records, scanned_removable),
+                "the gate disagrees with a full scan of the same log ({records} records, floor \
+                 {floor}): names say {}/{} records/removable, reading says \
+                 {scanned_records}/{scanned_removable}",
+                gate.records,
+                gate.removable_records
+            );
+            assert_eq!(
+                (gate.records, gate.removable_records),
+                (records, floor as usize - 1),
+                "sequences run 1..={records} and the floor is {floor}, so the log holds {records} \
+                 records of which {} are below it",
+                floor - 1
+            );
+            assert_eq!(
+                (gate.bytes, gate.bytes.min(scanned_bytes)),
+                (written, scanned_bytes),
+                "the gate's byte count must be the log's on-disk length ({written} B) and must \
+                 not be under what the records themselves occupy ({scanned_bytes} B), got {}",
+                gate.bytes
+            );
+
+            // COST. What it decoded is the piece being written, and nothing else.
+            assert!(
+                gate.bytes_decoded <= piece,
+                "the gate decoded {} B of a {written} B log ({records} records, {pieces} pieces); \
+                 it is reading the whole log again (piece size {piece} B)",
+                gate.bytes_decoded
+            );
+            assert!(
+                gate.bytes_decoded * 4 < written && gate.records_decoded * 4 < records,
+                "the gate decoded {} B / {} records of a {written} B / {records} record log in \
+                 {pieces} pieces -- at this piece count one piece is a twentieth of the log, so \
+                 anything near a quarter of it is a whole-log walk",
+                gate.bytes_decoded,
+                gate.records_decoded
+            );
+            arms.push((records, written, pieces, gate));
+        }
+
+        let (_, small_written, small_pieces, small_gate) = arms[0];
+        let (_, large_written, large_pieces, large_gate) = arms[1];
+
+        // THE DENOMINATOR for "did not grow": the second log really is much bigger, in bytes,
+        // records and pieces. Without this the comparison below could pass on two equal logs.
+        assert!(
+            large_written > small_written * 2
+                && large_gate.records > small_gate.records * 2
+                && large_pieces > small_pieces * 2,
+            "the two log sizes must differ or the bound below is vacuous: {small_written} B / \
+             {} records / {small_pieces} pieces against {large_written} B / {} records / \
+             {large_pieces} pieces",
+            small_gate.records,
+            large_gate.records
+        );
+        // The log tripled and what the gate decoded did not. The bound is one piece either way,
+        // which is the whole claim: the cost is a property of the PIECE SIZE, not of the log.
+        assert!(
+            large_gate.bytes_decoded <= small_gate.bytes_decoded.saturating_add(piece),
+            "the gate's cost grew with the LOG: {} B / {} records decoded on a {small_written} B \
+             log against {} B / {} records on a {large_written} B one -- it tracks records again",
+            small_gate.bytes_decoded,
+            small_gate.records_decoded,
+            large_gate.bytes_decoded,
+            large_gate.records_decoded
         );
     }
 
