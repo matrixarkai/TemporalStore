@@ -1500,6 +1500,38 @@ impl LocalBlockStore {
         })
     }
 
+    /// Move every quarantined slab's stamp `age_ms` into the past, so a test can reach the far
+    /// side of [`DELAYED_DESTROY_MIN_AGE_MS`] without an hour of wall clock.
+    ///
+    /// This does NOT shorten the age the purge enforces. The scheduled round still calls
+    /// `purge_delayed_destroy_slabs_with_report()` with the shipped one-hour minimum; what moves
+    /// is the slab's own arrival time. So a purge observed after this is the real gate firing on
+    /// a slab that is genuinely old by its own clock, which is a different and stronger claim
+    /// than `purge_delayed_destroy_slabs_older_than(0)` -- that one proves only that a purge with
+    /// the delay removed removes things.
+    ///
+    /// Returns how many descriptors moved, and a caller MUST assert that count before reading a
+    /// purge result. A purge reporting zero because nothing was backdated looks exactly like a
+    /// purge reporting zero because the mechanism is broken.
+    #[cfg(test)]
+    pub(crate) fn backdate_delayed_destroy_stamps_for_test(
+        &self,
+        age_ms: u64,
+    ) -> Result<usize, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let root = inner.root.clone();
+        let quarantined = delayed_destroy_slab_ids_at(&root)?;
+        let mut moved = 0usize;
+        for block_slab_id in quarantined {
+            if let Some(band) = inner.bands.get_mut(&block_slab_id) {
+                let stamp = band.updated_unix_ms.unwrap_or_else(now_unix_ms);
+                band.updated_unix_ms = Some(stamp.saturating_sub(age_ms));
+                moved += 1;
+            }
+        }
+        persist_slab_manifest(&root, &inner.bands)?;
+        Ok(moved)
+    }
 
     /// Per-slab size and block count, without decoding any block.
     ///
