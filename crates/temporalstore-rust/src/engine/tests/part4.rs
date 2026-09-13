@@ -18754,3 +18754,215 @@ fn the_index_gc_gate_costs_pieces_not_records() {
     }
 }
 
+
+/// CHARACTERIZATION: a restore is an install of a dump manifest PLUS a replay of the WAL
+/// suffix the manifest's embedded index does not already cover.
+///
+/// The manifest replay watermark is derived from the anchor INSIDE the embedded index, so
+/// every record written after the dump lives only in the log. A restore that installs the
+/// manifest and stops reconstructs the shard as it was AT THE DUMP, and that is
+/// indistinguishable from a working restore if you only count the pre-dump records -- which
+/// is why this counts both halves separately.
+///
+/// `reclaim_dumped_prefix` drops the log below the anchor, the way a live shard does once a
+/// dump is durable, leaving the suffix as the ONLY thing the log holds: a restore that replays
+/// nothing then cannot pass by re-running the prefix, and one that replays from zero hits a
+/// sequence hole instead of quietly succeeding. `install_before_load` picks which order the
+/// restore runs in -- the manifest arriving before the shard is loaded, or landing on a shard
+/// that is already up and already holds the suffix.
+fn restore_round_trip_counts(
+    install_before_load: bool,
+    reclaim_dumped_prefix: bool,
+) -> (usize, usize, usize, usize) {
+    const BEFORE_DUMP: usize = 6;
+    const AFTER_DUMP: usize = 4;
+    const SHARD: ShardId = 7;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source_index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        &source_index_dir,
+    );
+    engine.load_shard(SHARD);
+    for i in 0..BEFORE_DUMP {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet {
+                key: format!("pre-{i}"),
+                value: format!("pre-value-{i}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "pre-write {i} failed: {response:?}");
+    }
+    let manifest = engine
+        .create_bucket_dump_manifest(SHARD, Vec::new())
+        .expect("dump manifest should persist");
+    for i in 0..AFTER_DUMP {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet {
+                key: format!("post-{i}"),
+                value: format!("post-value-{i}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "post-write {i} failed: {response:?}");
+    }
+    engine.wal_store().flush(SHARD).expect("flush wal");
+
+    // VACUITY GUARD with its denominator. If the manifest already covered the tail there is
+    // no suffix to lose and every assertion below would pass without restore replaying a
+    // single record.
+    let (all_records, _truncated) = engine
+        .wal_store()
+        .scan_decoded(SHARD, 0, u64::MAX, u64::MAX)
+        .expect("scan source wal");
+    let total_records = all_records.len();
+    let suffix_records = all_records
+        .iter()
+        .filter(|(_, record)| record.sequence > manifest.wal_sequence)
+        .count();
+    assert!(
+        manifest.wal_sequence > 0,
+        "the dump must cover something: anchor 0 over {total_records} records"
+    );
+    assert!(
+        suffix_records > 0,
+        "fixture has NO post-dump WAL suffix -- the restore assertions would be vacuous \
+         (log holds {total_records} records, manifest anchor {})",
+        manifest.wal_sequence
+    );
+
+    if reclaim_dumped_prefix {
+        // Reclaim everything the manifest already covers, the way a live shard does once a
+        // dump is durable. The log now holds the suffix and nothing else, so a restore that
+        // replays nothing cannot pass by re-running the prefix.
+        let anchor =
+            crate::wal::DurableIndexAnchor::proven_durable_through(SHARD, manifest.wal_sequence);
+        engine
+            .wal_store()
+            .gc_before_sequence(SHARD, manifest.wal_sequence.saturating_add(1), &anchor)
+            .expect("reclaim the dumped prefix");
+        engine.wal_store().flush(SHARD).expect("flush after reclaim");
+        let (retained, _truncated) = engine
+            .wal_store()
+            .scan_decoded(SHARD, 0, u64::MAX, u64::MAX)
+            .expect("rescan source wal");
+        let retained_records = retained.len();
+        assert_eq!(
+            retained_records, suffix_records,
+            "reclaim should retain exactly the suffix (had {total_records}, suffix {suffix_records})"
+        );
+    }
+
+    // The restore target: the dump's pages, a fresh index dir, and the retained log. The
+    // manifest and the log are the only things that travel.
+    let restore_index_dir = dir.path().join("restore-indexes");
+    std::fs::create_dir_all(&restore_index_dir).unwrap();
+    copy_dir_recursive(&source_index_dir.join("wals"), &restore_index_dir.join("wals"));
+
+    let restored = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("restore-cache"),
+        dir.path().join("pages"),
+        &restore_index_dir,
+    );
+    if install_before_load {
+        restored
+            .install_bucket_dump_manifest(&manifest)
+            .expect("manifest should install into a fresh restore target");
+        restored.load_shard(SHARD);
+        // Proof the replay ran FROM the dump's anchor rather than from zero (which the
+        // reclaimed log could not satisfy) or from the tail (which would replay nothing).
+        assert_eq!(
+            crate::engine::lifecycle::LAST_REPLAY_WATERMARK
+                .load(std::sync::atomic::Ordering::SeqCst),
+            manifest.wal_sequence,
+            "load after install should replay from the manifest's anchor"
+        );
+    } else {
+        restored.load_shard(SHARD);
+        restored
+            .install_bucket_dump_manifest(&manifest)
+            .expect("manifest should install into a fresh restore target");
+    }
+
+    let mut found_pre = 0usize;
+    for i in 0..BEFORE_DUMP {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet {
+                key: format!("pre-{i}"),
+            },
+        });
+        if response.response
+            == (CommandResponse::Bytes {
+                value: Some(format!("pre-value-{i}").into_bytes()),
+            })
+        {
+            found_pre += 1;
+        }
+    }
+    let mut found_post = 0usize;
+    for i in 0..AFTER_DUMP {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet {
+                key: format!("post-{i}"),
+            },
+        });
+        if response.response
+            == (CommandResponse::Bytes {
+                value: Some(format!("post-value-{i}").into_bytes()),
+            })
+        {
+            found_post += 1;
+        }
+    }
+    (found_pre, BEFORE_DUMP, found_post, AFTER_DUMP)
+}
+
+fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("create copy target");
+    for entry in std::fs::read_dir(from).expect("read copy source") {
+        let entry = entry.expect("copy source entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_dir_recursive(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy file");
+        }
+    }
+}
+
+/// The production restore: install the manifest, then load. Load reads the installed index,
+/// finds its anchor at the dump, and replays the log from there. The log here holds ONLY the
+/// suffix, so every post-dump record counted below was replayed, not re-read.
+#[test]
+fn restore_installs_the_manifest_then_replays_the_wal_suffix_on_load() {
+    let (found_pre, expect_pre, found_post, expect_post) = restore_round_trip_counts(true, true);
+    assert_eq!(
+        (found_pre, found_post),
+        (expect_pre, expect_post),
+        "install-then-load restore recovered {found_pre}/{expect_pre} pre-dump and \
+         {found_post}/{expect_post} post-dump records"
+    );
+}
+
+/// The other order, which is what the dump-install endpoint does to a running shard: the shard
+/// is already loaded and already holds records past the manifest's anchor. Installing the
+/// manifest swaps in an index that describes the shard AS IT WAS AT THE DUMP; without a replay
+/// of the suffix on top, those later records vanish from the serving shard while the install
+/// reports success.
+#[test]
+fn restore_keeps_the_wal_suffix_when_the_manifest_lands_on_an_already_loaded_shard() {
+    let (found_pre, expect_pre, found_post, expect_post) = restore_round_trip_counts(false, false);
+    assert_eq!(
+        (found_pre, found_post),
+        (expect_pre, expect_post),
+        "load-then-install restore recovered {found_pre}/{expect_pre} pre-dump and \
+         {found_post}/{expect_post} post-dump records"
+    );
+}

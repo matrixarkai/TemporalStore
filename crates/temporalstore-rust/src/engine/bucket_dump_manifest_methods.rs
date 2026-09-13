@@ -1346,19 +1346,69 @@ impl TemporalEngine {
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         self.persist_bucket_dump_install_marker(manifest, "install")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
-        if self
+        let shard_was_loaded = self
             .shards
             .read()
             .expect("engine lock poisoned")
-            .contains_key(&manifest.shard_id)
-        {
+            .contains_key(&manifest.shard_id);
+        if shard_was_loaded {
+            // Gate serving off BEFORE the swap, the way load_shard_with does. Between the swap
+            // and the replay below the shard describes itself as it was AT THE DUMP, which is
+            // not what it holds; a read served from that window answers with the post-dump
+            // records missing, and a write interleaved with the replay regresses the anchor.
+            // Set on the info row first so a concurrent execute() that observes the swapped
+            // shard is guaranteed (happens-before via the shards lock) to observe this too.
+            if let Some(info) = self
+                .infos
+                .write()
+                .expect("info lock poisoned")
+                .get_mut(&manifest.shard_id)
+            {
+                info.recovering = true;
+            }
             self.shards
                 .write()
                 .expect("engine lock poisoned")
                 .insert(manifest.shard_id, restored);
         }
+        // Persist the manifest BEFORE the replay. If the replay below fails, the durable state
+        // is the embedded index anchored at the dump plus this manifest -- behind the log, never
+        // ahead of it -- so a later load finds the manifest, installs it, and re-derives the
+        // suffix from the WAL. Persisting it after the replay would leave a failed install with
+        // no lineage to recover from.
         self.persist_bucket_dump_manifest(manifest)
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
+        if shard_was_loaded {
+            // A RESTORE IS THE INSTALL PLUS THE REPLAY. The manifest's watermark is the anchor
+            // carried INSIDE its embedded index, so every record written after the dump lives
+            // only in the WAL. Installing the index and stopping reconstructs the shard as it
+            // was at the dump and reports success -- which is indistinguishable from a correct
+            // restore unless you count the post-dump records separately.
+            //
+            // Only reached when the shard is already loaded. When it is not, the durable index
+            // written above carries the dump's anchor and the next load_shard_with replays the
+            // same suffix from it; replaying here as well would be the same work done twice.
+            //
+            // A log holding nothing past the anchor replays nothing and costs a scan.
+            self.rehydrate_wal_resident_pages(manifest.shard_id);
+            if let Err(status) =
+                self.replay_wal_into_shard(manifest.shard_id, manifest.wal_sequence)
+            {
+                // Leave the shard gated. Replay refuses on a WAL hole / an outcome it cannot
+                // install, and serving a shard that is missing its tail is the failure this
+                // whole path exists to prevent. The durable anchor is still the dump's, so a
+                // reload re-derives what the snapshot describes.
+                return Err(status);
+            }
+            if let Some(info) = self
+                .infos
+                .write()
+                .expect("info lock poisoned")
+                .get_mut(&manifest.shard_id)
+            {
+                info.recovering = false;
+            }
+        }
         self.persist_bucket_dump_install_marker(manifest, "commit")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         Ok(())
