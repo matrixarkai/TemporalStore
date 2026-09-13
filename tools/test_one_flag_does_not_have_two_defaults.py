@@ -59,7 +59,12 @@ if TOOLS not in sys.path:
     sys.path.insert(0, TOOLS)
 
 import matrixark_tenant_policy as tenant_policy
-import test_the_flag_surface_only_shrinks as flag_surface
+
+# NOT imported at module scope. `test_the_flag_surface_only_shrinks` is a TEST module, and under
+# `unittest discover` a module is reachable as both `tools.X` and bare `X`, so importing one test
+# module from another pulls a second copy into the run and shifts what every later module sees.
+# `test_matrixark_no_cross_test_imports` guards exactly this, and it caught this file in CI with a
+# failure the diff could not explain -- which is the symptom that guard is named for.
 
 #: The one flag whose literal fallbacks differ across modules and is not declared layering.
 RECORDED = {
@@ -79,11 +84,17 @@ def _layered_envs():
             if name in tenant_policy.KNOBS and tenant_policy.KNOBS[name].env}
 
 
+def _fallback_scan():
+    """The flag surface's own per-site fallback scan, imported lazily -- see the note above."""
+    import test_the_flag_surface_only_shrinks as flag_surface
+    return flag_surface.code_fallbacks()
+
+
 def _cross_module_divergences():
     """Flags whose literal fallback differs BETWEEN modules, layering excused."""
     layered = _layered_envs()
     out = {}
-    for flag, values in flag_surface.code_fallbacks().items():
+    for flag, values in _fallback_scan().items():
         by_module = {}
         for value, module in values:
             by_module.setdefault(module, set()).add(value)
@@ -100,7 +111,7 @@ class OneFlagDoesNotHaveTwoDefaults(unittest.TestCase):
     def test_the_fallback_scan_is_actually_reading_something(self) -> None:
         """A floor. Every assertion below passes over an empty scan."""
         self.assertGreater(
-            len(flag_surface.code_fallbacks()), 50,
+            len(_fallback_scan()), 50,
             "the fallback scan sees almost nothing, so this file is comparing almost nothing")
 
     def test_the_layering_is_still_declared(self) -> None:
