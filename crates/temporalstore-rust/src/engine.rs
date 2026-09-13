@@ -48,7 +48,8 @@ pub(crate) use storage_bucket_internals::uncovered_maintenance;
 mod storage_bucket_internals;
 pub use storage_bucket_internals::{
     bucket_page_index_visits, bucket_visit_sites, layout_by_caller, live_page_scan_entries,
-    reset_bucket_page_index_visits, reset_live_page_scan_entries,
+    live_page_scan_sites_snapshot, reset_bucket_page_index_visits,
+    reset_live_page_scan_entries, reset_live_page_scan_sites,
 };
 mod compaction;
 mod storage_reporting;

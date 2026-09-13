@@ -9,11 +9,13 @@ import os
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_embeddings import embedding_execution_mode_name
+    from tools.matrixark_mcp_embeddings import (embedding_execution_mode_name,
+                                                embedding_provider_name)
     from tools.matrixark_mcp_identity import now_ms, stable_hash
     from tools.matrixark_mcp_models import compact_model_slug, embedding_model_ref_for_name
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_embeddings import embedding_execution_mode_name
+    from matrixark_mcp_embeddings import (embedding_execution_mode_name,
+                                          embedding_provider_name)
     from matrixark_mcp_identity import now_ms, stable_hash
     from matrixark_mcp_models import compact_model_slug, embedding_model_ref_for_name
 
@@ -37,7 +39,13 @@ def context_model_registry_record(
         else f"{model_kind}:{compact_model_slug(model_name)}:{model_hash % 10000:04d}",
         "model_name": model_name,
         "model_hash": model_hash,
-        "provider": (os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "").strip() or "deterministic") if model_kind == "embedding" else "",
+        # WHAT WILL RUN, not what is typed. `embedding_provider_name` draws that line and this
+        # field is on the dispatch side of it: matrixark_mcp_local_adapter._model_registry_identity
+        # puts this string straight into the tuple it de-duplicates registry rows by, so a
+        # deployment that wrote `openai` once and `OpenAI` later got two identities for one encoder
+        # and a duplicate context_model_registry row. A reporting field would be right to keep the
+        # raw spelling; an identity is not a reporting field.
+        "provider": embedding_provider_name() if model_kind == "embedding" else "",
         "execution_mode": embedding_execution_mode_name() if model_kind == "embedding" else "",
         "updated_at_ms": int(updated_at_ms or now_ms()),
     }

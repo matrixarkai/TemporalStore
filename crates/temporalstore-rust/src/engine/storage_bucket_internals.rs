@@ -815,6 +815,41 @@ fn note_site(site: &std::sync::atomic::AtomicU64, count: usize) {
     note_bucket_page_visits(count);
 }
 
+/// Per-CALLER attribution for [`LIVE_PAGE_SCAN_ENTRIES`], keyed by the source location that asked.
+///
+/// The total alone says a round walks the shard N times; it does not say WHO. Attributing it by
+/// hand hit a wall: `apply_storage_lifecycle` measures 10.0x while every one of its callees sums
+/// to 6.0x, and the remaining four walks are inside the body where no probe row can reach them.
+/// Two earlier attributions failed the same way and were only closed by finding a call that no
+/// grep had matched -- once a bare expression at the end of a function.
+///
+/// `#[track_caller]` gives the answer with NO call-site changes, which matters because this
+/// function has about twenty of them and a threaded-through label would have to be right at every
+/// one to be trustworthy. The location is resolved at compile time; the cost here is one map
+/// update per CALL, on a path that is already walking every live page in the shard.
+fn live_page_scan_sites() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, u64>> {
+    static SITES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
+    > = std::sync::OnceLock::new();
+    SITES.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+}
+
+/// Entries materialized per calling site since the last reset, as `file:line -> entries`.
+pub fn live_page_scan_sites_snapshot() -> std::collections::BTreeMap<String, u64> {
+    live_page_scan_sites()
+        .lock()
+        .map(|sites| sites.clone())
+        .unwrap_or_default()
+}
+
+/// Clear the per-site tallies. Pairs with [`reset_live_page_scan_entries`].
+pub fn reset_live_page_scan_sites() {
+    if let Ok(mut sites) = live_page_scan_sites().lock() {
+        sites.clear();
+    }
+}
+
+#[track_caller]
 pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let entries = if !shard.bucket_index.bucket_map.is_empty() {
         collect_bucket_index_live_page_entries(shard)
@@ -822,6 +857,12 @@ pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LiveBlockEntr
         collect_model_live_page_entries(shard)
     };
     LIVE_PAGE_SCAN_ENTRIES.fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    let caller = std::panic::Location::caller();
+    if let Ok(mut sites) = live_page_scan_sites().lock() {
+        *sites
+            .entry(format!("{}:{}", caller.file(), caller.line()))
+            .or_insert(0) += entries.len() as u64;
+    }
     entries
 }
 
