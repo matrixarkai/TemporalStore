@@ -4779,19 +4779,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
 
+        // Ask the production namer which files are sealed pieces instead of re-spelling the
+        // suffix here. Spelling it out is what broke this test. It used to read
+        // `ends_with(".jsonl") && name != "shard-1.wal.jsonl"`, which was right while the pieces
+        // were named that way. When they were renamed to `.bin` the exclusion was updated and the
+        // suffix test was not, leaving `ends_with(".jsonl") && name != "shard-1.wal.bin"` -- a
+        // filter no file can satisfy. It then counted zero forever: the "nothing has rolled yet"
+        // check below passed vacuously and the roll loop ran to its bound while the log rolled
+        // underneath it, so the invariant this test exists for was never once evaluated.
+        // `sealed_wal_start_log_id` is the predicate the log itself reads its pieces with, it
+        // accepts both names, and it already rejects the active piece and the lock file, so this
+        // cannot drift from the naming again.
         let sealed_count = || {
-            std::fs::read_dir(dir.path())
+            let entries = std::fs::read_dir(dir.path())
                 .unwrap()
                 .flatten()
-                .filter(|entry| {
-                    // A sealed piece, not the active one and not the append LOCK file --
-                    // `shard-1.wal.lock` also contains "wal." and counted as a sealed piece,
-                    // which made this read as rolled before anything had rolled.
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    name.starts_with("shard-1.wal.")
-                        && name.ends_with(".jsonl")
-                        && name != "shard-1.wal.bin"
-                })
+                .collect::<Vec<_>>();
+            // The denominator. Zero sealed out of zero files means this was not looking where it
+            // thought it was, which is a different answer from "nothing has rolled".
+            assert!(
+                !entries.is_empty(),
+                "the log directory must hold files for a count of sealed pieces to mean anything"
+            );
+            entries
+                .iter()
+                .filter(|entry| sealed_wal_start_log_id(&entry.path(), 1).is_some())
                 .count()
         };
         let append = |index: usize, sync: bool| {
@@ -4833,7 +4845,28 @@ mod tests {
             assert!(index < 40_000, "the log must roll within a bounded number of appends");
         }
 
+        // The roll loop above exits on a count, and a count can be wrong in the direction that
+        // ends the loop as well as the one that hangs it. Name what it saw.
+        let rolled = sealed_count();
+        assert!(
+            rolled >= 1,
+            "the roll loop must have exited because a piece sealed, and it saw {rolled}"
+        );
+
         let info = store.info(1).unwrap();
+        // Positive control on the comparison below. `a <= b` is also satisfied by `0 <= 0`, and a
+        // durable extent of zero is exactly what a reset -- rather than a correct reset -- would
+        // leave. Both sides have to carry bytes before the inequality says anything.
+        assert!(
+            info.persistent_length_bytes > 0,
+            "the durable extent must be non-zero across the roll, or the inequality is arithmetic \
+             rather than the invariant; the log holds {} bytes over {rolled} sealed piece(s)",
+            info.length_bytes
+        );
+        assert!(
+            info.length_bytes > 0,
+            "the log must hold bytes for its durable extent to be compared against"
+        );
         assert!(
             info.persistent_length_bytes <= info.length_bytes,
             "durable bytes ({}) must not exceed what the log holds ({}) -- the piece that just \
