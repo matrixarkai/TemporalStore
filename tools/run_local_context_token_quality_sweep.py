@@ -324,7 +324,7 @@ def build_segments(events: list[ContextEvent], chunk_size: int) -> list[ContextS
 
 
 TOPIC_TERMS = {
-    "rust": "rust_temporalstore", "native": "native_temporalstore", "native": "native_temporalstore",
+    "rust": "rust_temporalstore", "native": "native_temporalstore",
     "parity": "native_rust_parity", "temporalstore": "temporalstore", "hook": "codex_hook",
     "userpromptsubmit": "codex_hook", "codex": "codex_agent", "claude": "claude_agent",
     # OSS-reader / memory benchmarking consolidated into one strong entity so it ranks for q_bench

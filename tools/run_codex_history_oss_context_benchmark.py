@@ -241,7 +241,6 @@ def build_entities(events: list[ContextEvent], max_entities: int) -> list[Contex
     topic_terms = {
         "rust": "rust_temporalstore",
         "native": "native_temporalstore",
-        "native": "native_temporalstore",
         "temporalstore": "temporalstore",
         "hook": "codex_hook",
         "codex": "codex_hook",

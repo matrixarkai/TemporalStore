@@ -586,14 +586,6 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "reader_fallback_allowed": False,
             "contract_required": True,
         },
-        "external_baseline_stack": {
-            "reader_model": reader_model,
-            "embedding_model": embedding_model,
-            "encoding_model": embedding_model,
-            "reader_max_tokens": args.reader_max_tokens,
-            "reader_fallback_allowed": False,
-            "contract_required": True,
-        },
         "contract_validators": [
             validator,
         ],
