@@ -36,6 +36,23 @@ export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_TEMPORALSTORE_PREFIX:-matrixa
 export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS:-60000}"
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS:-60000}"
 export MATRIXARK_HOOK_FAIL_OPEN="${MATRIXARK_HOOK_FAIL_OPEN:-1}"
+
+# Same vocabulary as the shared Python `env_bool`, because MATRIXARK_HOOK_FAIL_OPEN is read on both
+# sides: matrixark_codex_hook reads it with env_bool, this wrapper reads it here. Testing for the
+# literal "1" made `=true` mean fail-open to Python and fail-CLOSED here -- a hook error then blocks
+# the turn this wrapper's own header promises it will never block.
+#
+# An UNRECOGNISED value falls back to the default rather than counting as off, which is
+# what env_bool does and matters more than it looks: a typo -- FAIL_OPEN=ture -- would
+# otherwise start blocking turns. env_bool's sets are narrow on purpose; `y` and `n` are
+# not in either, and fall back too.
+matrixark_flag_on() {  # $1 = value, $2 = default ("1" means on)
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    *) [ "${2:-1}" = "1" ] ;;
+  esac
+}
 export MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"
 export MATRIXARK_HOOK_FAST_ASYNC_INGEST="${MATRIXARK_HOOK_FAST_ASYNC_INGEST:-1}"
 export MATRIXARK_HOOK_AUTOSTART_NATIVE="${MATRIXARK_HOOK_AUTOSTART_NATIVE:-0}"
@@ -171,7 +188,7 @@ python3 "$ROOT/tools/matrixark_codex_hook.py" "$@" || status=$?
 if [[ "$status" == "0" ]]; then
   exit 0
 fi
-if [[ "$MATRIXARK_HOOK_FAIL_OPEN" == "1" ]]; then
+if matrixark_flag_on "$MATRIXARK_HOOK_FAIL_OPEN"; then
   printf '{"status":"warning","component":"matrixark_codex_rust_hook","reason":"hook_failed_fail_open","exit_code":%s}
 ' "$status"
   exit 0
