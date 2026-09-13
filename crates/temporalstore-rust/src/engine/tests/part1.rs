@@ -8218,6 +8218,85 @@ fn what_the_compaction_preamble_walks() {
     );
 }
 
+/// What does ONE write cost in durability barriers, and where do they land? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib what_a_write_costs_in_barriers -- --ignored --nocapture
+///
+/// "COMMAND BATCHING" IS THE WRONG AXIS FOR THIS LOG, and an earlier note used it anyway.
+///
+/// A record here states its RESULTS, not the operation that produced them: `outcomes` carry an
+/// address and, where no page backs the state, the bytes themselves, plus a `meta` flag. The
+/// `command` field is an `Option` and is ABSENT by default -- `TS_WAL_DATA_ONLY` is on -- so
+/// "batch N commands into one record" describes a log this is not.
+///
+/// What is worth separating is these two, because only one of them is a sync question:
+///
+///   * GROUP COMMIT -- many appends, one fsync. `engine_wal_group_commit` implements it: a waiter
+///     whose `durable_seq` already covers its required sequence returns without syncing, so
+///     concurrent writers share one barrier.
+///   * RECORD AGGREGATION -- many writes' results in ONE record, and therefore one barrier. That
+///     is a record-shape question. The design being followed aggregates its log items this way,
+///     which is where the earlier note's framing came from.
+///
+/// Group commit only helps when writers OVERLAP. A single-threaded writer waits for nobody, so it
+/// cannot share a barrier with anyone, and the per-write cost is whatever one write takes on its
+/// own. That is the case this measures, because it is the one the ingest path actually runs.
+///
+/// `durability_metrics` counts barriers BY SITE, so this says which sync is paid rather than just
+/// how many. Read the per-write column: a value near 1.0 for a site means every single write pays
+/// that barrier.
+#[test]
+#[ignore]
+fn what_a_write_costs_in_barriers() {
+    for records in [500usize, 2_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        // Reset AFTER load_shard: opening the store takes barriers of its own, and counting those
+        // against the writes would overstate the per-write cost on the smaller fixture.
+        crate::durability_metrics::reset();
+        let started = std::time::Instant::now();
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("barrier-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let elapsed_ms = started.elapsed().as_micros() as f64 / 1000.0;
+        let counts = crate::durability_metrics::snapshot();
+        let total: u64 = counts.values().copied().sum();
+
+        // Denominator: a run that took no barriers at all would make every ratio below zero and
+        // say nothing about what a write costs.
+        assert!(
+            total > 0,
+            "no durability barriers were recorded, so this measures nothing",
+        );
+
+        eprintln!(
+            "  [barriers] {records:>5} writes in {elapsed_ms:>8.1} ms -> {total:>6} barriers = \
+{:>5.2} per write",
+            total as f64 / records as f64,
+        );
+        for (site, count) in counts {
+            eprintln!(
+                "  [barriers]          {site:<38} {count:>6} = {:>5.2} per write",
+                count as f64 / records as f64,
+            );
+        }
+    }
+}
+
 /// What does each individual plan call WALK? Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_each_plan_call_walks -- --ignored --nocapture

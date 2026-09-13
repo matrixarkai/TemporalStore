@@ -655,7 +655,10 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
         # Ask for record payloads as documents rather than JSON strings, so this side parses
         # the envelope once instead of parsing every record again. Off by default: the readers
         # accept both shapes, but the switch is only worth taking where it has been measured.
-        inline = os.environ.get("MATRIXARK_LANE_INLINE_RECORDS", "").strip().lower() in {"1", "true", "yes", "on"}
+        # Folded to the value it already produced: this module is unreachable from production, so
+        # the variable could not be set. The comment above still describes the choice, which is
+        # now a code change rather than an export.
+        inline = False
         response = self._call_hash_batch_json(
             "batch_hget",
             compact_entries,
