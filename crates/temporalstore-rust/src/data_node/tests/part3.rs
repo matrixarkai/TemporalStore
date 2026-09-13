@@ -5223,16 +5223,21 @@ fn what_a_page_gc_round_walks() {
 ///   - selection: `evict_sampler` lives on `ShardState`, so the sampler's cursor and pool persist
 ///     across calls. That is the same persistent-iterator shape their `PolicyLru` uses.
 ///
-/// The ceiling is the MODE. With `eviction_delete_drop` false -- the shipped default, mode
-/// `evict_cache` -- a victim is handled by `cache.invalidate_slot(shard_id, routing_bucket)` and
-/// nothing else. Eviction can free exactly what is CACHED. Once the cached pages of the eligible
-/// buckets are gone, another batch frees nothing, `cooldown` is set, and the loop correctly stops.
+/// The ceiling WAS the MODE, and it has moved. With `eviction_delete_drop` false -- the shipped
+/// default, mode `evict_cache` -- a victim used to be handled by
+/// `cache.invalidate_slot(shard_id, routing_bucket)` and nothing else, so eviction could free
+/// exactly what was CACHED. Once the cached pages of the eligible buckets were gone another batch
+/// freed nothing, `cooldown` was set, and the loop correctly stopped -- below the cached set, with
+/// every bucket node still whole. Raising the budget, changing the sampler or looping harder could
+/// not move it, because the missing piece was neither pacing nor selection but a per-bucket
+/// load-back path: nothing could drop a bucket node and expect to read it again.
 ///
-/// So eviction cannot converge below the cached set by construction, and the bucket node itself is
-/// never dropped. That is the same architectural blocker as restore: there is no per-bucket
-/// load-back path, so nothing may evict a bucket node and expect to read it again. Raising the
-/// budget, changing the sampler, or looping harder cannot move this number -- the fix is a load
-/// path, or a deliberate decision to run this stage in `delete_drop`.
+/// That path exists now -- `release_bucket_pages` / `reload_released_bucket` -- and `evict_cache`
+/// uses it: a victim is dumped, cleared, and has its page list RELEASED, while the node stays
+/// routable and the next write through it loads the list back from the model maps. The gate counts
+/// the resident bucket index as part of its pressure now, so a round can reduce the thing that
+/// actually grows with the corpus. What this measurement is for has changed with it: the question
+/// is no longer why it cannot converge but how many rounds it takes to.
 #[test]
 #[ignore]
 fn how_long_eviction_takes_to_converge() {

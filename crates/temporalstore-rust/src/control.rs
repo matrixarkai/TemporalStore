@@ -253,6 +253,11 @@ pub struct ShardCanonicalStorageStats {
     /// roughly 3.5x this; `what_a_bucket_costs` prints both. Do not gate on it as though it were
     /// the whole figure -- it is published to make a growing index visible, not to size it.
     ///
+    /// It also cannot move when a bucket is RELEASED, which is now a state a bucket can be in: a
+    /// release frees the per-page entries and keeps the node, and this counts only nodes. The
+    /// eviction gate uses `TemporalEngine::bucket_index_resident_bytes` instead, which counts both
+    /// -- a gate reading this one would see a release free nothing and fire for ever.
+    ///
     /// O(1): a count the stats path already holds, times a compile-time size.
     #[serde(default)]
     pub bucket_index_resident_bytes_floor: u64,

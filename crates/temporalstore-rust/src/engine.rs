@@ -1929,6 +1929,91 @@ impl TemporalEngine {
         page_routing_bucket(key, start, end)
     }
 
+    /// What the resident bucket index costs on this shard: one node per bucket, plus one entry
+    /// per page the bucket holds.
+    ///
+    /// The published `bucket_index_resident_bytes_floor` counts NODES only. That is a floor and
+    /// says so, but it also cannot move when a bucket is released -- the node is exactly what a
+    /// release keeps. The per-page entries are what grows with the corpus and what a release
+    /// frees, so this is the number to gate on and to assert against.
+    pub fn bucket_index_resident_bytes(&self, shard_id: ShardId) -> u64 {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .get(&shard_id)
+            .map(crate::engine::storage_bucket_internals::bucket_index_resident_bytes)
+            .unwrap_or_default()
+    }
+
+    /// Release the named buckets' resident page lists, keeping each node routable and reloadable.
+    ///
+    /// Returns `(buckets released, pages released, candidates refused)`. Every precondition is
+    /// checked against live state inside; naming a bucket that cannot be released is refused, not
+    /// forced.
+    pub fn release_bucket_index_pages(
+        &self,
+        shard_id: ShardId,
+        buckets: Vec<u32>,
+    ) -> (usize, usize, usize) {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return (0, 0, 0);
+        };
+        let outcome = crate::engine::storage_bucket_internals::release_bucket_pages(shard, &buckets);
+        (
+            outcome.released_buckets.len(),
+            outcome.released_pages,
+            outcome.refused_buckets,
+        )
+    }
+
+    /// Offer every bucket on the shard for release. The whole-shard form of the call above.
+    pub fn release_all_releasable_bucket_index_pages(
+        &self,
+        shard_id: ShardId,
+    ) -> (usize, usize, usize) {
+        let candidates = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            shards
+                .get(&shard_id)
+                .map(|shard| shard.bucket_index.bucket_map.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        self.release_bucket_index_pages(shard_id, candidates)
+    }
+
+    /// Load a released bucket's page list back. False when the bucket was not released.
+    pub fn reload_released_bucket_index_pages(
+        &self,
+        shard_id: ShardId,
+        routing_bucket: u32,
+    ) -> bool {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return false;
+        };
+        crate::engine::storage_bucket_internals::reload_released_bucket(
+            shard,
+            shard_id,
+            routing_bucket,
+        )
+    }
+
+    /// The buckets currently released on this shard, in routing order.
+    pub fn released_bucket_index_buckets(&self, shard_id: ShardId) -> Vec<u32> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .get(&shard_id)
+            .map(|shard| {
+                shard
+                    .bucket_index
+                    .released_buckets
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
 }
 
 /// Inclusive `[start, end]` timestamp bounds for `BTreeMap::range` that yield an EMPTY range

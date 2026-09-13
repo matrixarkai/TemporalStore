@@ -2964,6 +2964,27 @@ pub struct StorageEvictionReport {
     pub cache_entries_removed: usize,
     pub cache_disk_bytes_removed: u64,
     pub dropped_object_count: usize,
+    /// Victims whose resident page list was RELEASED: the node stays routable, its per-page
+    /// entries are gone, and the next read through it loads them back.
+    ///
+    /// Distinct from `cache_entries_removed`, which is what `evict_cache` has always freed. Until
+    /// this existed the two were the same number by construction -- eviction could free only what
+    /// the cache held, and the index, which grows one entry per record and is never in the cache,
+    /// was untouchable at any setting.
+    #[serde(default)]
+    pub bucket_index_buckets_released: usize,
+    #[serde(default)]
+    pub bucket_index_pages_released: usize,
+    /// Victims a release was attempted on and refused -- dirty, deleted, already released, or
+    /// holding a page the model maps could not rebuild. A release that did nothing and a release
+    /// that was declined are different answers and a round that reports only the first cannot be
+    /// acted on.
+    #[serde(default)]
+    pub bucket_index_release_refused: usize,
+    #[serde(default)]
+    pub bucket_index_bytes_before: u64,
+    #[serde(default)]
+    pub bucket_index_bytes_after: u64,
     pub cooldown: bool,
     pub skipped_reason: String,
 }

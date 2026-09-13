@@ -995,6 +995,10 @@ pub(super) fn rebuild_bucket_page_ownership(
         })
         .collect();
     shard.bucket_index.bucket_map.clear();
+    // The rebuild re-derives every bucket from the model maps, which is what a reload does one
+    // bucket at a time. Nothing is released afterwards, and a registry that outlived the map it
+    // names would make the page walk supplement buckets that are already whole.
+    shard.bucket_index.released_buckets.clear();
     for entry in collect_model_live_page_entries(shard) {
         let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
             page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
@@ -1068,12 +1072,24 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
     }
     let bucket_index_missing_entry = shard.bucket_index.bucket_map.is_empty()
         || model_entries.iter().any(|entry| {
-            !shard.bucket_index.contains_object_page_address(
-                &entry.kind,
-                &entry.object_key,
-                entry.component.as_deref(),
-                &entry.address,
-            )
+            // A RELEASED bucket is absent on purpose. Without this the first command after a
+            // release would find every released page "missing" from the index and rebuild the
+            // whole shard -- which is a correct index and a release that never survives one
+            // execute.
+            let released = entry
+                .address
+                .routing_bucket()
+                .map(|routing_bucket| {
+                    shard.bucket_index.released_buckets.contains(&routing_bucket)
+                })
+                .unwrap_or(false);
+            !released
+                && !shard.bucket_index.contains_object_page_address(
+                    &entry.kind,
+                    &entry.object_key,
+                    entry.component.as_deref(),
+                    &entry.address,
+                )
         });
     if !bucket_index_missing_entry {
         return false;
@@ -1160,7 +1176,385 @@ pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<
             });
         }
     }
+    // A RELEASED bucket holds no page entries, and every caller of this walk -- the dump
+    // manifest, WAL reclaim, compaction, the GC snapshot -- reads "no entries" as "no live
+    // pages". Left alone that is not a cheaper index, it is a page whose backing record may be
+    // reclaimed. So the released buckets are supplemented from the model maps, which is the same
+    // source `reload_released_bucket` would rebuild them from: what this returns is what the
+    // bucket index WOULD say if nothing were released.
+    //
+    // Exact, not approximate, because release refuses any bucket whose pages do not each carry an
+    // explicit routing bucket equal to the bucket's own -- so the filter below needs no hash
+    // fallback and cannot claim a page for the wrong bucket.
+    if !shard.bucket_index.released_buckets.is_empty() {
+        for entry in collect_model_live_page_entries(shard) {
+            let Some(routing_bucket) = entry.address.routing_bucket() else {
+                continue;
+            };
+            if shard.bucket_index.released_buckets.contains(&routing_bucket) {
+                entries.push(entry);
+            }
+        }
+    }
     entries
+}
+
+/// The identity a released page is compared by, so a release can prove it is reversible.
+///
+/// `object_id` is deliberately NOT part of it: the bucket index stamps one into the address it
+/// files (`upsert_bucket_index_page_with` calls `set_object_id`), and the model map's copy of the
+/// same page may not carry it. Comparing on it would refuse every release for a difference that
+/// reload reproduces on its own.
+type ReleasedPageIdentity = (String, String, Option<String>, u64, u64, u64, Option<u64>, Option<u64>);
+
+fn released_page_identity(
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+    address: &BlockAddress,
+) -> ReleasedPageIdentity {
+    (
+        model_id.to_string(),
+        object_key.to_string(),
+        component.map(str::to_string),
+        address.block_slab_id,
+        address.offset,
+        address.length,
+        address.page_id(),
+        address.generation(),
+    )
+}
+
+/// Model kinds a bucket may be released while holding.
+///
+/// An ALLOW-list, not a deny-list, and deliberately short. Two independent things have to be true
+/// of a kind before a bucket holding it can lose its page entries, and both are properties of the
+/// kind rather than of the bucket:
+///
+///   1. ITS MAP MUST SURVIVE SERIALIZATION. `hashes`, `context_events` and `context_indexes` are
+///      `skip_serializing` on `ShardState` and are rebuilt FROM the bucket index on load, so a
+///      released bucket of one of those kinds would have nothing to rebuild from the moment the
+///      index was written and read back.
+///   2. A READ MUST STILL RESOLVE IT. `bucket_index_page_address` -- the slow read path -- looks
+///      an address up THROUGH the bucket index, so a released page has to be findable in its model
+///      map by `(kind, object_key, component)` alone. `model_map_page_address` is that lookup, and
+///      it is a point lookup, not a scan. Kinds whose objects span components or timestamps
+///      (`set`, `zset`, `list`, `feature`, the context series) are also read whole through
+///      `bucket_index_component_page_addresses`, which has no equivalent point lookup, so they
+///      stay out until one exists.
+///
+/// That leaves the two component-less, single-page, serialized kinds -- which is also where the
+/// index cost being reclaimed actually is: one page and one node per key.
+fn released_model_kind_is_addressable(kind: &str) -> bool {
+    matches!(kind, "string" | "context_node")
+}
+
+/// The address of a page held by a RELEASED bucket, from the model map the page lives in.
+///
+/// The counterpart to `bucket_index_page_address`: same question, asked of the maps instead of the
+/// index. Only the kinds `released_model_kind_is_addressable` admits are answerable here, and that
+/// is not a coincidence -- it is the same list, for this reason.
+pub(super) fn model_map_page_address(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> Option<BlockAddress> {
+    match (model_id, component) {
+        ("string", None) => shard.strings.get(object_key).cloned(),
+        ("context_node", None) => shard.context_nodes.get(object_key).cloned(),
+        _ => None,
+    }
+}
+
+/// The same, but only when the page really does belong to a released bucket.
+///
+/// The guard matters: without it this would answer for a page whose bucket is resident and whose
+/// index entry is absent for some other reason -- which is a disagreement the promote reconcile
+/// exists to find and repair, not one to paper over on the read path.
+pub(super) fn released_bucket_page_address(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> Option<BlockAddress> {
+    if shard.bucket_index.released_buckets.is_empty() {
+        return None;
+    }
+    let address = model_map_page_address(shard, model_id, object_key, component)?;
+    let routing_bucket = address.routing_bucket()?;
+    shard
+        .bucket_index
+        .released_buckets
+        .contains(&routing_bucket)
+        .then_some(address)
+}
+
+/// What one call to [`release_bucket_pages`] managed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct BucketReleaseOutcome {
+    pub(super) released_buckets: Vec<u32>,
+    pub(super) released_pages: usize,
+    /// Candidates that failed a precondition. A release that quietly did nothing and a release
+    /// that was refused are different answers, and the eviction report publishes both.
+    pub(super) refused_buckets: usize,
+}
+
+/// Dump-and-release: drop the named buckets' resident page lists, keeping the nodes routable.
+///
+/// This is the half that was missing. `evict_cache` drops CACHED PAGES and leaves every
+/// `BucketNode` whole, so eviction could free only what the cache held and the index -- the part
+/// that actually grows one entry per record -- was untouchable. Releasing a bucket frees its
+/// `page_index` and its lookup refs while the node, its `object_index` and its durable watermarks
+/// stay, so the next read through `reload_released_bucket` rebuilds exactly what was dropped.
+///
+/// Every precondition is CHECKED here, against this shard's live state, rather than assumed from
+/// how the caller chose its candidates. See the residency-flag doc on `BucketNode` for why each
+/// one is needed.
+pub(super) fn release_bucket_pages(
+    shard: &mut ShardState,
+    candidates: &[u32],
+) -> BucketReleaseOutcome {
+    let mut outcome = BucketReleaseOutcome::default();
+    if candidates.is_empty() {
+        return outcome;
+    }
+    let wanted: BTreeSet<u32> = candidates.iter().copied().collect();
+    // One model-map walk for the whole batch, not one per bucket. This is the set a reload would
+    // rebuild from, so comparing the resident pages against it is the proof the release is
+    // reversible.
+    let mut derived: BTreeMap<u32, BTreeSet<ReleasedPageIdentity>> = BTreeMap::new();
+    for entry in collect_model_live_page_entries(shard) {
+        let Some(routing_bucket) = entry.address.routing_bucket() else {
+            continue;
+        };
+        if !wanted.contains(&routing_bucket) {
+            continue;
+        }
+        derived
+            .entry(routing_bucket)
+            .or_default()
+            .insert(released_page_identity(
+                &entry.kind,
+                &entry.object_key,
+                entry.component.as_deref(),
+                &entry.address,
+            ));
+    }
+    let lookup_established = !shard.bucket_index.object_page_lookup.is_empty();
+    for routing_bucket in wanted {
+        let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
+            continue;
+        };
+        if !bucket.in_memory
+            || bucket.loading
+            || bucket.dirty
+            || bucket.deleted
+            || bucket.page_index.is_empty()
+        {
+            outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
+            continue;
+        }
+        let page_shape_allows_release = bucket.page_index.values().all(|page| {
+            !page.dirty
+                && !page.deleted
+                && page.address.routing_bucket() == Some(routing_bucket)
+                && released_model_kind_is_addressable(&page.model_id)
+        });
+        if !page_shape_allows_release {
+            outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
+            continue;
+        }
+        // The lookup refs for each page must point at THIS bucket, or dropping the page's lookup
+        // entry below would also drop a ref some other bucket still owns.
+        let lookup_is_local = !lookup_established
+            || bucket.page_index.values().all(|page| {
+                shard
+                    .bucket_index
+                    .page_refs_for(&page.model_id, &page.object_key, page.component.as_deref())
+                    .map(|refs| refs.iter().all(|page_ref| page_ref.routing_bucket == routing_bucket))
+                    .unwrap_or(false)
+            });
+        if !lookup_is_local {
+            outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
+            continue;
+        }
+        let resident: BTreeSet<ReleasedPageIdentity> = bucket
+            .page_index
+            .values()
+            .map(|page| {
+                released_page_identity(
+                    &page.model_id,
+                    &page.object_key,
+                    page.component.as_deref(),
+                    &page.address,
+                )
+            })
+            .collect();
+        if derived.get(&routing_bucket) != Some(&resident) {
+            // The model maps would not rebuild what is resident. Whatever the disagreement is,
+            // it is not this function's to resolve -- and releasing across it would lose pages.
+            outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
+            continue;
+        }
+        let dropped: Vec<(Arc<str>, Arc<str>, Option<Arc<str>>)> = bucket
+            .page_index
+            .values()
+            .map(|page| {
+                (
+                    page.model_id.clone(),
+                    page.object_key.clone(),
+                    page.component.clone(),
+                )
+            })
+            .collect();
+        let page_count = dropped.len();
+        if lookup_established {
+            for (model_id, object_key, component) in &dropped {
+                shard.bucket_index.remove_object_page_lookup_entry(
+                    model_id,
+                    object_key,
+                    component.as_deref(),
+                );
+            }
+        }
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .get_mut(&routing_bucket)
+            .expect("bucket read immutably above");
+        bucket.page_index = crate::engine::state::BlockIndexMap::Empty;
+        bucket.meta_loaded = true;
+        bucket.loading = false;
+        bucket.in_memory = false;
+        // `object_index` is deliberately kept: it is what keeps the bucket countable and is the
+        // only thing distinguishing a released bucket from one that legitimately holds nothing.
+        bucket.layout = classify_bucket_layout(bucket.object_index.len(), 0);
+        shard.bucket_index.released_buckets.insert(routing_bucket);
+        outcome.released_buckets.push(routing_bucket);
+        outcome.released_pages = outcome.released_pages.saturating_add(page_count);
+    }
+    outcome
+}
+
+/// Load a released bucket's page list back, from the maps a read already resolves through.
+///
+/// The mirror of [`release_bucket_pages`], and the reason releasing is safe. Returns false when
+/// the bucket is not released -- an already-resident bucket is a no-op, not an error, which is
+/// what lets every mutation site call this unconditionally.
+pub(super) fn reload_released_bucket(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+) -> bool {
+    if !shard.bucket_index.released_buckets.contains(&routing_bucket) {
+        return false;
+    }
+    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        // Held across the derivation below. Under the shard write lock nothing can observe it
+        // today; it is the state a queued concurrent loader would wait on if this ever became
+        // asynchronous, and setting it is what makes that a wiring change rather than a design.
+        bucket.loading = true;
+    } else {
+        shard.bucket_index.released_buckets.remove(&routing_bucket);
+        return false;
+    }
+    let mut pages: Vec<(BlockIndex, u64)> = Vec::new();
+    for entry in collect_model_live_page_entries(shard) {
+        if entry.address.routing_bucket() != Some(routing_bucket) {
+            continue;
+        }
+        let object_id = entry.address.object_id().unwrap_or_else(|| {
+            stable_page_object_id(
+                shard_id,
+                &entry.kind,
+                &entry.object_key,
+                entry.component.as_deref(),
+            )
+        });
+        let mut address = entry.address;
+        address.set_object_id(Some(object_id));
+        pages.push((
+            BlockIndex {
+                object_key: entry.object_key,
+                model_id: entry.kind,
+                component: entry.component,
+                address,
+                // The model maps carry no per-page dirty/deleted bit, which is exactly why
+                // release refuses a bucket holding either. Reloaded pages are clean and live,
+                // which is the state they were released in.
+                dirty: false,
+                deleted: false,
+                log_backed: entry.log_backed,
+            },
+            object_id,
+        ));
+    }
+    let bucket = shard
+        .bucket_index
+        .bucket_map
+        .get_mut(&routing_bucket)
+        .expect("bucket present: checked above and the shard is locked");
+    let mut installed: Vec<(u64, BlockIndex)> = Vec::with_capacity(pages.len());
+    for (page, object_id) in pages {
+        bucket.object_index.insert(object_id);
+        let handle = bucket.page_index.insert(page.clone());
+        installed.push((handle, page));
+    }
+    bucket.meta_loaded = true;
+    bucket.in_memory = !bucket.page_index.is_empty();
+    bucket.loading = false;
+    if bucket.page_index.is_empty() {
+        // Everything the bucket held was deleted while it was released. Nothing routes here any
+        // more, so the node goes rather than lingering with a stale object index.
+        shard.bucket_index.bucket_map.remove(&routing_bucket);
+        shard.bucket_index.released_buckets.remove(&routing_bucket);
+        return true;
+    }
+    update_bucket_layout(bucket);
+    for (handle, page) in installed {
+        shard
+            .bucket_index
+            .insert_object_page_lookup(routing_bucket, handle, &page);
+    }
+    shard.bucket_index.released_buckets.remove(&routing_bucket);
+    note_bucket_flags_stale(shard, routing_bucket);
+    true
+}
+
+/// Reload every released bucket. For the paths that are about to treat the bucket index as a
+/// complete picture and have no single routing bucket to name.
+pub(super) fn reload_all_released_buckets(shard: &mut ShardState, shard_id: ShardId) -> usize {
+    if shard.bucket_index.released_buckets.is_empty() {
+        return 0;
+    }
+    let released: Vec<u32> = shard.bucket_index.released_buckets.iter().copied().collect();
+    let mut reloaded = 0usize;
+    for routing_bucket in released {
+        if reload_released_bucket(shard, shard_id, routing_bucket) {
+            reloaded = reloaded.saturating_add(1);
+        }
+    }
+    reloaded
+}
+
+/// What the resident bucket index costs: one node per bucket plus one entry per page it holds.
+///
+/// The published `bucket_index_resident_bytes_floor` counts NODES only, so it cannot move when a
+/// bucket is released -- the node stays. The per-page entries are the part that grows with the
+/// corpus and the part a release actually frees, so the eviction gate needs this number and not
+/// that one.
+pub(super) fn bucket_index_resident_bytes(shard: &ShardState) -> u64 {
+    let nodes = shard.bucket_index.bucket_map.len() as u64;
+    let pages: u64 = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .map(|bucket| bucket.page_index.len() as u64)
+        .sum();
+    nodes
+        .saturating_mul(std::mem::size_of::<BucketNode>() as u64)
+        .saturating_add(pages.saturating_mul(std::mem::size_of::<BlockIndex>() as u64))
 }
 
 /// Cheap O(1)-per-map check for whether the shard holds ANY live model-map entry that
@@ -1635,6 +2029,10 @@ pub(super) fn upsert_bucket_index_page_with(
     let routing_bucket = address
         .routing_bucket()
         .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
+    // Filing a page into a RELEASED bucket would leave the node holding one page and claiming to
+    // be resident, with the rest of its pages still only in the model maps -- neither released
+    // nor whole. Load it back first; a no-op for every bucket that was never released.
+    reload_released_bucket(shard, shard_id, routing_bucket);
     let object_id = address
         .object_id()
         .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
@@ -1806,6 +2204,17 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
 ) {
     let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
+    // Same reason as `upsert_bucket_index_page_with`: publish into a released bucket and the node
+    // is left half-resident. Reload every bucket these addresses land in first.
+    if !shard.bucket_index.released_buckets.is_empty() {
+        let landing: BTreeSet<u32> = addresses
+            .iter()
+            .filter_map(|address| address.routing_bucket())
+            .collect();
+        for routing_bucket in landing {
+            reload_released_bucket(shard, shard_id, routing_bucket);
+        }
+    }
     // An empty lookup means "not established yet", which callers read as a signal to fall back to
     // scanning. Establishing it still walks the buckets; maintaining an established one must not.
     //

@@ -18005,3 +18005,463 @@ fn what_a_delete_leaves_claimed() {
         after_deletes.blocker_reasons
     );
 }
+
+
+// ---------------------------------------------------------------------------
+// Bucket release and reload.
+//
+// `evict_cache` -- the shipped mode -- handled a victim with
+// `cache.invalidate_slot(shard_id, routing_bucket)` and nothing else, so eviction could free
+// exactly what the cache held and every `BucketNode` survived untouched. The index grows one entry
+// per record and is in none of the numbers the gate reads, so it was both the largest reclaimable
+// thing on the shard and the one thing eviction could not reach. The only mode that shrank it,
+// `delete_drop`, does so by destroying data.
+//
+// These four are the guard on the mechanism that closes it: release a bucket's page list, keep the
+// node routable, load the list back from the model maps on the next write, and read every key
+// through it unchanged the whole time.
+// ---------------------------------------------------------------------------
+
+/// Build a shard whose buckets are clean, so a release is not refused for being dirty.
+///
+/// Every write marks its bucket dirty, and release refuses a dirty bucket -- the model maps carry
+/// no per-page dirty bit, so a reload could not restore one. A dump is what makes a bucket clean,
+/// and it is also what makes the release durable: the pages are on disk and the manifest names
+/// them before anything is dropped.
+fn dumped_shard_with_keys(keys: usize, value_len: usize) -> (tempfile::TempDir, TemporalEngine) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..keys {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("released-{index:06}"),
+                value: released_value(index, value_len),
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let manifest = engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("a loaded shard can be dumped");
+    engine.clear_dumped_bucket_dirty_state(1, &manifest);
+    (dir, engine)
+}
+
+/// A value that is a function of its key, so a read returning the WRONG key's bytes fails just as
+/// loudly as one returning none. A fixture of identical values cannot tell those apart.
+fn released_value(index: usize, value_len: usize) -> Vec<u8> {
+    let seed = format!("{index:06}:");
+    let mut value = seed.into_bytes();
+    value.resize(value_len, b'v');
+    value[value_len - 1] = (index % 251) as u8;
+    value
+}
+
+fn released_read(engine: &TemporalEngine, index: usize) -> Option<Vec<u8>> {
+    match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("released-{index:06}"),
+            },
+        })
+        .response
+    {
+        CommandResponse::Bytes { value } => value,
+        other => panic!("a string read answered {other:?}"),
+    }
+}
+
+/// THE CORRECTNESS BAR. A released bucket serves reads identically to a resident one.
+///
+/// Not "returns something" -- returns the same bytes, for every key, with the index holding no
+/// page entry for any of them. The value is derived from the key so a read that resolved through
+/// the wrong page fails here rather than passing on a lucky length.
+#[test]
+fn a_released_bucket_serves_every_key_it_held() {
+    const KEYS: usize = 400;
+    const VALUE_LEN: usize = 96;
+    let (_dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
+
+    // THE DENOMINATOR. If nothing releases, reading every key back afterwards proves nothing --
+    // it is the same assertion against the same resident index.
+    let (released_buckets, released_pages, refused) =
+        engine.release_all_releasable_bucket_index_pages(1);
+    assert!(
+        released_buckets > 0 && released_pages > 0,
+        "nothing was released ({released_buckets} buckets / {released_pages} pages, \
+         {refused} refused), so the read-back below is not about a released bucket"
+    );
+    assert_eq!(
+        engine.released_bucket_index_buckets(1).len(),
+        released_buckets,
+        "the released registry disagrees with what the release reported"
+    );
+
+    // CONTROL: the pages really are gone from the index. Without this the test passes on a
+    // release that reported a number and dropped nothing.
+    let resident_pages: usize = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        shards
+            .get(&1)
+            .expect("loaded shard")
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.page_index.len())
+            .sum()
+    };
+    assert_eq!(
+        resident_pages, 0,
+        "{released_pages} pages were reported released but {resident_pages} are still filed"
+    );
+
+    for index in 0..KEYS {
+        assert_eq!(
+            released_read(&engine, index),
+            Some(released_value(index, VALUE_LEN)),
+            "key {index} did not read back through a released bucket"
+        );
+    }
+
+    // And the buckets are still routable: every node is where it was, holding its objects.
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+    assert_eq!(
+        shard.bucket_index.bucket_map.len(),
+        released_buckets,
+        "a released bucket must stay in the map -- a node that leaves is not reloadable"
+    );
+    assert!(
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .all(|bucket| !bucket.in_memory && bucket.meta_loaded && !bucket.loading),
+        "the residency flags do not say released"
+    );
+    assert!(
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .all(|bucket| !bucket.object_index.is_empty()),
+        "a released bucket kept no object index, so nothing can tell it from an empty one"
+    );
+}
+
+/// THE CORRECTNESS BAR, second half. Releasing REDUCES resident index memory, not cache bytes.
+///
+/// This is the assertion the shipped behaviour could not pass at any setting. It is deliberately
+/// made against the index alone -- the cache is dropped first, so the number that moves cannot be
+/// a cache number -- and it checks the reload puts the memory back, because a release that frees
+/// memory it cannot restore is `delete_drop` with better manners.
+#[test]
+fn releasing_a_bucket_reduces_resident_index_memory_and_reloading_restores_it() {
+    const KEYS: usize = 400;
+    let (_dir, engine) = dumped_shard_with_keys(KEYS, 64);
+
+    // Drop the cache FIRST. Whatever moves below is the index, because the cache is already at
+    // its floor when the measurement starts.
+    let _ = engine.cache().invalidate_shard(1);
+    let cache_before = engine.cache().stats().memory_bytes;
+    let index_before = engine.bucket_index_resident_bytes(1);
+    assert!(
+        index_before > 0,
+        "the fixture left no resident index to release"
+    );
+
+    let (released_buckets, released_pages, _) = engine.release_all_releasable_bucket_index_pages(1);
+    assert!(released_buckets > 0, "nothing was released");
+
+    let index_after = engine.bucket_index_resident_bytes(1);
+    assert!(
+        index_after < index_before,
+        "release freed no INDEX memory: {index_before} -> {index_after} over \
+         {released_buckets} buckets / {released_pages} pages"
+    );
+    assert!(
+        engine.cache().stats().memory_bytes <= cache_before,
+        "the number that moved was the cache's, which is what this test exists to rule out"
+    );
+    // The old floor cannot see it, which is why the gate needed a different number: it counts
+    // NODES, and a release keeps every node.
+    let floor = engine
+        .get_stats(1)
+        .stats
+        .expect("stats for a loaded shard")
+        .storage
+        .bucket_index_resident_bytes_floor;
+    assert_eq!(
+        floor,
+        (released_buckets as u64) * std::mem::size_of::<crate::engine::state::BucketNode>() as u64,
+        "the node floor moved, so it was not measuring only nodes"
+    );
+
+    // And the memory comes back on reload, which is what makes it a release rather than a delete.
+    for routing_bucket in engine.released_bucket_index_buckets(1) {
+        assert!(
+            engine.reload_released_bucket_index_pages(1, routing_bucket),
+            "bucket {routing_bucket} was registered as released but would not reload"
+        );
+    }
+    assert_eq!(
+        engine.bucket_index_resident_bytes(1),
+        index_before,
+        "a reload must restore exactly the index memory the release freed"
+    );
+    assert!(
+        engine.released_bucket_index_buckets(1).is_empty(),
+        "the released registry outlived the reload"
+    );
+}
+
+/// A reload rebuilds the EXACT page list that was released -- identity, address and all.
+///
+/// The release checks this before it drops anything, so this test is the check's control: it
+/// compares the two lists from outside, over a real shard, rather than trusting the comparison the
+/// release makes about itself.
+#[test]
+fn a_released_bucket_reloads_the_exact_page_list_it_released() {
+    const KEYS: usize = 120;
+    let (_dir, engine) = dumped_shard_with_keys(KEYS, 48);
+
+    fn page_listing(engine: &TemporalEngine) -> Vec<(u32, String, String, Option<String>, u64, u64, u64)> {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let mut rows = shards
+            .get(&1)
+            .expect("loaded shard")
+            .bucket_index
+            .bucket_map
+            .iter()
+            .flat_map(|(routing_bucket, bucket)| {
+                bucket.page_index.values().map(move |page| {
+                    (
+                        *routing_bucket,
+                        page.model_id.to_string(),
+                        page.object_key.to_string(),
+                        page.component.as_ref().map(|name| name.to_string()),
+                        page.address.block_slab_id,
+                        page.address.offset,
+                        page.address.length,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.sort();
+        rows
+    }
+
+    let before = page_listing(&engine);
+    assert!(!before.is_empty(), "the fixture filed no pages");
+
+    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_pages(1);
+    assert!(released_buckets > 0, "nothing was released");
+    assert!(
+        page_listing(&engine).is_empty(),
+        "the release left page entries behind"
+    );
+
+    for routing_bucket in engine.released_bucket_index_buckets(1) {
+        assert!(engine.reload_released_bucket_index_pages(1, routing_bucket));
+    }
+    assert_eq!(
+        page_listing(&engine),
+        before,
+        "the reloaded page list is not the one that was released"
+    );
+}
+
+/// A write into a released bucket loads it back first, so a node is never half-resident.
+///
+/// Filing one page into a bucket whose other pages are released would leave a node claiming
+/// residency while holding a fraction of what it owns -- neither released nor whole, and
+/// unreloadable, because the registry would no longer name it.
+#[test]
+fn a_write_into_a_released_bucket_loads_it_back_first() {
+    const KEYS: usize = 60;
+    const VALUE_LEN: usize = 64;
+    let (_dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
+
+    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_pages(1);
+    assert!(released_buckets > 0, "nothing was released");
+    let target = engine.routing_bucket_for_key(1, "released-000007");
+    assert!(
+        engine.released_bucket_index_buckets(1).contains(&target),
+        "the key's bucket was not among the released ones, so the write below proves nothing"
+    );
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "released-000007".to_string(),
+            value: vec![b'z'; VALUE_LEN],
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+
+    assert!(
+        !engine.released_bucket_index_buckets(1).contains(&target),
+        "the bucket stayed registered as released after a write filed a page into it"
+    );
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let bucket = shards
+        .get(&1)
+        .expect("loaded shard")
+        .bucket_index
+        .bucket_map
+        .get(&target)
+        .expect("the written bucket");
+    assert!(
+        bucket.in_memory && !bucket.page_index.is_empty(),
+        "the bucket the write touched is neither resident nor released"
+    );
+    drop(shards);
+
+    // The overwritten key reads its new value, and a key that shared the reload reads its old one.
+    assert_eq!(released_read(&engine, 7), Some(vec![b'z'; VALUE_LEN]));
+    for index in 0..KEYS {
+        if index == 7 {
+            continue;
+        }
+        assert_eq!(
+            released_read(&engine, index),
+            Some(released_value(index, VALUE_LEN)),
+            "key {index} stopped reading back after a neighbour's write"
+        );
+    }
+}
+
+/// Eviction releases the index it used to leave resident.
+///
+/// This is the rewrite of the characterization that described the ceiling: with
+/// `eviction_delete_drop` false a victim was handled by `invalidate_slot` and nothing else, so
+/// `cache_entries_removed` could move and the bucket index never could. The stage now dumps its
+/// dirty victims, clears them, and releases their page lists -- so the assertion is the opposite
+/// one, and it is about the INDEX rather than the cache.
+#[test]
+fn eviction_releases_the_index_it_used_to_leave_resident() {
+    const KEYS: usize = 300;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..KEYS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("evictrelease-{index:06}"),
+                value: vec![b'v'; 128],
+            },
+        });
+    }
+    let index_before = engine.bucket_index_resident_bytes(1);
+    assert!(index_before > 0, "the fixture left no index to release");
+
+    // threshold 0 so the gate admits; dump_before_evict so the victims are dumped and cleared,
+    // which is what makes them releasable; delete_drop FALSE, which is the shipped mode and the
+    // one that could never shrink the index.
+    let report = engine.apply_storage_eviction(1, 0, KEYS, true, false);
+    assert_eq!(report.mode, "evict_cache");
+    assert!(report.pressure_gate_open, "{report:?}");
+    assert!(
+        !report.selected_victims.is_empty(),
+        "the round selected no victims, so there was nothing to release: {report:?}"
+    );
+    assert!(
+        report.bucket_index_buckets_released > 0 && report.bucket_index_pages_released > 0,
+        "eviction released no index: {} buckets / {} pages, {} refused",
+        report.bucket_index_buckets_released,
+        report.bucket_index_pages_released,
+        report.bucket_index_release_refused,
+    );
+    assert!(
+        report.bucket_index_bytes_after < report.bucket_index_bytes_before,
+        "the round reported a release that freed nothing: {} -> {}",
+        report.bucket_index_bytes_before,
+        report.bucket_index_bytes_after,
+    );
+    assert!(
+        engine.bucket_index_resident_bytes(1) < index_before,
+        "the shard still holds as much index as before the round"
+    );
+    assert_eq!(
+        report.dropped_object_count, 0,
+        "evict_cache must not delete anything to free index memory -- that is delete_drop"
+    );
+
+    // The data is all still there, which is the difference between this and `delete_drop`.
+    for index in 0..KEYS {
+        let value = match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("evictrelease-{index:06}"),
+                },
+            })
+            .response
+        {
+            CommandResponse::Bytes { value } => value,
+            other => panic!("a string read answered {other:?}"),
+        };
+        assert_eq!(
+            value,
+            Some(vec![b'v'; 128]),
+            "key {index} did not survive an eviction round that released its bucket"
+        );
+    }
+}
+
+/// RESTORE uses the same path: a shard whose buckets are released reloads whole.
+///
+/// Eviction and restore were blocked on one mechanism, and this is the half that says so. The
+/// index is written and read back while buckets are released; the load path re-derives
+/// `bucket_map` from the model maps, which is what a per-bucket reload does one bucket at a time.
+#[test]
+fn a_shard_released_and_reloaded_comes_back_whole() {
+    const KEYS: usize = 200;
+    const VALUE_LEN: usize = 72;
+    let (dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
+
+    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_pages(1);
+    assert!(released_buckets > 0, "nothing was released");
+
+    // Write the index out while the buckets are released, then bring the shard back from it.
+    engine.flush_shard_index(1);
+    drop(engine);
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    for index in 0..KEYS {
+        assert_eq!(
+            released_read(&engine, index),
+            Some(released_value(index, VALUE_LEN)),
+            "key {index} did not survive a reload taken while its bucket was released"
+        );
+    }
+    assert!(
+        engine.released_bucket_index_buckets(1).is_empty(),
+        "a freshly loaded shard must hold nothing released"
+    );
+    assert!(
+        engine.bucket_index_resident_bytes(1) > 0,
+        "the reloaded shard rebuilt no index at all"
+    );
+}
+
