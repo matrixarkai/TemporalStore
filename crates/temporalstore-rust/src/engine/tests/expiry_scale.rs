@@ -1472,11 +1472,31 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
 ///     frontier comes from something no load path consults. It is safe today only because a cycle
 ///     DUMPS (stage `prepare`) before it RECLAIMS (stage `reclaim_wal`), so a manifest at the
 ///     current position already exists by the time that branch is reached;
-///   * the load path could stop consulting manifests, or consult a different one --
-///     `latest_bucket_dump_manifest_at` sorts by `index_log_sequence`, not by `wal_sequence`.
+///   * the load path could stop consulting manifests, or consult a different one.
 ///
 /// So this asserts the RELATION, at every state a production cycle passes through, rather than
 /// either number.
+///
+/// AND THE SECOND OF THOSE WAS REAL. The load path used to read
+/// `latest_bucket_dump_manifest_at`, which orders by `index_log_sequence` -- a MEMBER of the set
+/// the floor minimises over, but not an UPPER BOUND on it. The two sequences are minted from two
+/// different places and nothing couples them: `index_log_sequence` is the live index-log tail,
+/// while `wal_sequence` is the anchor inside the index bytes the dump embeds, which under
+/// `MATRIXARK_BULK_INGEST` comes from the FROZEN BASE FILE. One env flag on one shard in one
+/// process inverts them, and the last section below builds exactly that state: a manifest that is
+/// newest in index-log order carrying the LOWEST WAL anchor on disk. Before
+/// `durable_recovery_bucket_dump_manifest_at` (a MAXIMUM over `wal_sequence`, which bounds every
+/// subset by construction) that state measured
+///
+/// ```text
+///     reclaim floor 9 (retain_from 10), a real load off the same files replaying from 1
+/// ```
+///
+/// -- sequences (1, 9], the expiry tombstones among them, both reclaimable and required, and the
+/// probe load came back with NO SHARD AT ALL. That is the live unrecoverable-loss path this now
+/// holds shut, and it is asserted here rather than in a test of its own so the divergent state
+/// runs against the same relation, the same real-load probe and the same denominators as every
+/// other state.
 ///
 /// IT READS THE REPLAY POINT OFF A REAL LOAD, NOT OFF A COPY OF THE RULE. The first version of
 /// this test recomputed `max(base anchor, latest manifest wal_sequence)` itself. That version
@@ -1492,9 +1512,11 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
 /// and fails if that count is zero, because then the base alone would have covered every reclaim
 /// and the manifest that actually carries it would never have been exercised.
 ///
-/// VERIFIED BY MUTATION: making `load_shard_with`'s single-barrier arm ignore the dump manifest
-/// (`Some(manifest) if false && ...`) fails this at the `expired` state with
-/// `reclaim floor 10 is above what the default load path replays from (1)`.
+/// VERIFIED BY MUTATION, twice. Making `load_shard_with`'s single-barrier arm ignore the dump
+/// manifest (`Some(manifest) if false && ...`) fails this at the `expired` state with
+/// `reclaim floor 10 is above what the default load path replays from (1)`. Putting that arm back
+/// on `latest_bucket_dump_manifest_at` -- the index-log order it used before -- fails it at the
+/// `manifest orderings diverged` state with `reclaim floor 10 is above ... (1)`.
 #[test]
 fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     const PRE_KEYS: usize = 8;
@@ -1603,14 +1625,36 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     write_keys(&engine, 1, seed);
     engine.flush_shard_index(1);
 
+    /// (the WAL anchor of the manifest that is newest in INDEX-LOG order, the highest WAL anchor
+    /// over every manifest on disk). Equal on a shard whose two manifest orderings agree; the
+    /// first below the second is the inversion the last section builds.
+    fn manifest_orderings(indexes: &std::path::Path) -> (u64, u64) {
+        let manifests = crate::engine::bucket_dump_io::list_bucket_dump_manifests_at(indexes, 1)
+            .expect("the manifest listing reads back");
+        (
+            manifests
+                .last()
+                .map(|manifest| manifest.wal_sequence)
+                .unwrap_or(0),
+            manifests
+                .iter()
+                .map(|manifest| manifest.wal_sequence)
+                .max()
+                .unwrap_or(0),
+        )
+    }
+
     let mut observations = 0usize;
     let mut safe_states = 0usize;
     let mut diverged_states = 0usize;
+    let mut inverted_ordering_states = 0usize;
 
     let mut observe = |engine: &TemporalEngine, label: &str| {
         observations += 1;
         let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
         let base_anchor = base_index_anchor(engine);
+        let (latest_by_index_log, highest_anchor) = manifest_orderings(&indexes);
+        inverted_ordering_states += usize::from(latest_by_index_log < highest_anchor);
         let load_from = default_load_replay_point(&pages, &indexes, &probes, label);
         if !plan.safe_to_reclaim {
             // A plan that refuses reclaims nothing and so cannot outrun anything. Printed anyway,
@@ -1628,7 +1672,8 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
         diverged_states += usize::from(base_anchor < frontier);
         println!(
             "  [{label}] base index anchor {base_anchor}, a real load replays from {load_from}, \
-             reclaim frontier {frontier} (retain_from {})",
+             reclaim frontier {frontier} (retain_from {}); manifests: newest in index-log order \
+             anchors at {latest_by_index_log}, highest anchor on disk {highest_anchor}",
             plan.retain_from_wal_sequence
         );
         assert!(
@@ -1638,7 +1683,10 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
              and required: reclaim may drop them, and a base-only load has to replay them to \
              rebuild the state they carry. The base index file anchors at {base_anchor}; the \
              floor has to stay at or below the replay point, because a durable checkpoint the \
-             load does not read cannot authorise dropping the log that stands in for it.",
+             load does not read cannot authorise dropping the log that stands in for it. The \
+             manifest that is newest in INDEX-LOG order anchors at {latest_by_index_log} and the \
+             highest anchor on disk is {highest_anchor}: if those two differ, the load recovered \
+             from a manifest that does not bound the minimum the floor is taken over.",
             plan.retain_from_wal_sequence,
         );
     };
@@ -1709,6 +1757,68 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     );
 
     observe(&engine, "expired");
+
+    // THE TWO MANIFEST ORDERINGS, PULLED APART. Here, and not after the cycles below, because the
+    // state it needs is the one the expiry round just produced: the base index FILE anchored at
+    // {base_after_expiry} while the served index is at {delta_anchor}. The next cycle's reclaim
+    // materialises the base and closes that distance -- measured, the base reads 9 from
+    // `reclaimed after expiry` onward -- and a dump minted then reads the same anchor either way.
+    //
+    // Everything above rests on the load path recovering from a manifest that BOUNDS the minimum
+    // the reclaim floor is taken over. Ordering by `index_log_sequence` gives a member of that
+    // set, not a bound on it, and the two orderings are not coupled: `index_log_sequence` is the
+    // live index-log tail, while `wal_sequence` is the anchor inside the index bytes the dump
+    // embeds -- and `load_served_index_bytes` reads the FROZEN BASE FILE under bulk ingest rather
+    // than the live index. After the expiry round above the base file sits far behind the served
+    // anchor (asserted as the `delta_anchor > base_after_expiry` denominator), so ONE dump minted
+    // with the flag set lands newest in index-log order carrying the lowest anchor on disk.
+    //
+    // This is a production mint -- `create_bucket_dump_manifest`, the only place a manifest's two
+    // sequences are ever assigned -- under a flag the engine reads live on every call. Nothing is
+    // fabricated and no file is edited: the state below is one a running node reaches by being
+    // restarted with `MATRIXARK_BULK_INGEST` set, which is what that flag is for.
+    let (_, anchor_before_bulk_dump) = manifest_orderings(&indexes);
+    std::env::set_var("MATRIXARK_BULK_INGEST", "1");
+    let bulk_manifest = engine.create_bucket_dump_manifest(1, Vec::new());
+    std::env::remove_var("MATRIXARK_BULK_INGEST");
+    let bulk_manifest = bulk_manifest.expect("the bulk-ingest dump persists");
+    let (latest_by_index_log, highest_anchor) = manifest_orderings(&indexes);
+
+    // DENOMINATOR FOR THE SECTION, before it asserts anything. Two separate things have to be
+    // true, and each on its own would let the observation below run against an ordinary state:
+    // the bulk dump has to have become the NEWEST manifest in index-log order, and it has to
+    // carry an anchor STRICTLY BELOW one already on disk. A future `create_bucket_dump_manifest`
+    // that couples the two sequences, or a fixture whose base file stopped lagging the served
+    // index, breaks one of them and says so here rather than passing in silence.
+    assert_eq!(
+        latest_by_index_log, bulk_manifest.wal_sequence,
+        "the bulk-ingest dump (index_log_sequence {}, anchor {}) is not the newest manifest in \
+         index-log order -- the newest one anchors at {latest_by_index_log} -- so the load path \
+         would not be reading it and this section tests nothing",
+        bulk_manifest.index_log_sequence, bulk_manifest.wal_sequence,
+    );
+    assert!(
+        bulk_manifest.wal_sequence < anchor_before_bulk_dump
+            && highest_anchor == anchor_before_bulk_dump,
+        "the bulk-ingest dump anchors at {} against a highest anchor on disk of \
+         {anchor_before_bulk_dump} before it and {highest_anchor} after. The two orderings did \
+         not come apart, so recovering from the newest manifest and recovering from the \
+         highest-anchored one are the same thing here and the relation below cannot tell them \
+         apart",
+        bulk_manifest.wal_sequence,
+    );
+    println!(
+        "  bulk-ingest dump: index_log_sequence {} (newest on disk) carrying WAL anchor {} \
+         against a highest anchor of {highest_anchor}",
+        bulk_manifest.index_log_sequence, bulk_manifest.wal_sequence
+    );
+
+    // The same relation, the same real-load probe, against the inverted state. Ordering by
+    // `index_log_sequence` here measured floor 9 (retain_from 10) against a load replaying from 1.
+    observe(&engine, "manifest orderings diverged");
+
+    // ...and then the rest of the cycle the expiry round was in the middle of, so the states the
+    // original run covered are still covered, now with the divergent manifest on disk.
     cycle(&engine);
     observe(&engine, "reclaimed after expiry");
     cycle(&engine);
@@ -1731,9 +1841,20 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
          floor was ever applied to anything and the relation above never ran against a live \
          reclaim"
     );
+    // THE SECOND VACUITY GUARD, for the second mechanism. The relation can be kept by a load that
+    // reads the newest manifest OR by one that reads the highest-anchored manifest, and the two
+    // are only told apart in a state where those are different manifests. Zero such states means
+    // the run never distinguished them.
+    assert!(
+        inverted_ordering_states > 0,
+        "in {observations} observed states the manifest newest in INDEX-LOG order was never the \
+         one carrying the lowest WAL anchor, so every state could have been kept safe by reading \
+         either ordering and this run says nothing about which one the load path has to use"
+    );
     println!(
         "  {observations} states observed, {safe_states} with a reclaiming plan, \
-         {diverged_states} with the base index file anchored BELOW the reclaim frontier"
+         {diverged_states} with the base index file anchored BELOW the reclaim frontier, \
+         {inverted_ordering_states} with the two manifest orderings inverted"
     );
 
     // AND THE RECORDS SURVIVED IT. The relation holding is the mechanism; this is the outcome,
