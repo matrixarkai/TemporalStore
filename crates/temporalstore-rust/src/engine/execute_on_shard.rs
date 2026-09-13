@@ -1881,11 +1881,6 @@ pub(crate) fn execute_on_shard(
                 .or_default()
                 .entry(bucket_ms)
                 .or_default() += amount;
-            if let Some(ttl_ms) = ttl_ms {
-                shard
-                    .expires_at_ms
-                    .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
-            }
             persist_control_state_page(
                 cache,
                 page_store,
@@ -1896,6 +1891,35 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
+            if let Some(ttl_ms) = ttl_ms {
+                let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                // Through `set_expiry`, never straight into `expires_at_ms`. The sweep reads the
+                // deadline-ordered mirror and nothing else, and `ensure_expiry_order` rebuilds
+                // that mirror only when it is ENTIRELY empty -- so a deadline written past the
+                // helper is invisible to every sweep for the life of the shard the moment any
+                // other key holds one, and the key is retained forever.
+                crate::engine::set_expiry(shard, key.clone(), expires_at);
+                // And recorded, already resolved. This arm writes a control-state page, the page
+                // write stages an outcome, and a record carrying outcomes is INSTALLED rather
+                // than re-executed on replay -- so a deadline that is not in the record is not in
+                // the shard after recovery. Measured before this existed: the page came back and
+                // the deadline came back as None.
+                //
+                // AFTER the page, not before. Replay installs a deadline only onto a key that
+                // already exists, and outcomes install in the order they were staged; staged
+                // first, this deadline meets a shard that has not seen the key yet and is
+                // dropped in silence. Both correct siblings here stage their component first.
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
+            }
             if control_rollup_enabled {
                 control_rollup::record_increment(shard, &key, bucket_ms, amount);
             }
@@ -2154,11 +2178,6 @@ pub(crate) fn execute_on_shard(
                     .unwrap_or_default();
                 aggregate_control_state_values(&values, &aggregator)
             };
-            if let Some(ttl_ms) = ttl_ms {
-                shard
-                    .expires_at_ms
-                    .insert(key.clone(), now.saturating_add(ttl_ms));
-            }
             persist_control_state_page(
                 cache,
                 page_store,
@@ -2169,6 +2188,26 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
+            if let Some(ttl_ms) = ttl_ms {
+                // `key` is the family-prefixed key by this point, which is the key both the
+                // record and the sweep have to name. Same two requirements as every other
+                // deadline in this file: through `set_expiry` so the deadline-ordered mirror the
+                // sweep reads learns about it, and staged -- after the page -- so it survives a
+                // replay that installs this record's page outcome instead of re-running the
+                // command.
+                let expires_at = now.saturating_add(ttl_ms);
+                crate::engine::set_expiry(shard, key.clone(), expires_at);
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
+            }
             if control_rollup_enabled && !is_duplicate {
                 control_rollup::record_increment(shard, &key, bucket_ms, amount);
             }
