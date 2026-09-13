@@ -414,16 +414,19 @@ class _LocalAdapterRetrievalMixin:
                 return False
             return True
 
-        def profile_summary_path_matches(record: Json, query_scope: Json) -> bool:
-            if record.get("record_type") != "context_summary":
-                return False
-            node_path = [str(part or "") for part in record.get("node_path", []) if str(part or "")]
-            if "profile:long_term_memory" not in node_path:
-                return False
-            path_scope = scope_from_node_path(node_path)
-            if query_scope.get("account_id") and not path_scope.get("account_id"):
-                path_scope = {**path_scope, "account_id": query_scope.get("account_id")}
-            return scope_matches(path_scope, query_scope)
+        # One implementation, under the name the other module publishes. This was the same
+        # body byte for byte under a second name -- `profile_summary_path_matches` here,
+        # `profile_summary_scope_matches` there -- and the published spelling is the one that
+        # survives, because for anything importing this tree that spelling IS the API.
+        #
+        # Deferred and dual-spelled for the same two reasons as `scope_from_node_path` above:
+        # matrixark_local_adapter_retrieve imports THIS module, so a module-scope import back
+        # would close the cycle; and a tools.-prefixed import and a bare one are different module
+        # objects, so which one resolves depends on how the process was started.
+        try:  # package path
+            from tools.matrixark_local_adapter_retrieve import profile_summary_scope_matches
+        except ImportError:  # top-level path (direct tools/ execution)
+            from matrixark_local_adapter_retrieve import profile_summary_scope_matches
 
         secondary_matched_index_count = 0
         secondary_embedding_matched_count = 0
@@ -440,7 +443,7 @@ class _LocalAdapterRetrievalMixin:
                     continue
                 if (
                     not recovered_scope_matches(index_record, scope)
-                    and not profile_summary_path_matches(index_record, scope)
+                    and not profile_summary_scope_matches(index_record, scope)
                     and not profile_bridge_scope_matches(index_record, scope)
                 ):
                     continue
@@ -648,7 +651,7 @@ class _LocalAdapterRetrievalMixin:
             ):
                 if (
                     not recovered_scope_matches(record, scope)
-                    and not profile_summary_path_matches(record, scope)
+                    and not profile_summary_scope_matches(record, scope)
                     and not profile_bridge_scope_matches(record, scope)
                 ):
                     dropped_scope += 1

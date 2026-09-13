@@ -36,13 +36,10 @@ MIN_BODY_STATEMENTS = 4
 
 #: {frozenset(module stems): reason}. One entry per duplicated body.
 RECORDED_PAIRS = {
-    frozenset({"matrixark_local_adapter_retrieval", "matrixark_local_adapter_retrieve"}):
-        "Two copies of the node-path scope recovery (tenant/user/session) and of the "
-        "profile-summary match, one of each nested inside a method. Both modules are live. A "
-        "third copy of the same LOOP is embedded in matrixark_mcp_core.candidate_access_scope, "
-        "which body-level matching cannot group because the surrounding function differs. Scope "
-        "recovery decides which tenant a record belongs to, so drift between these is worth more "
-        "than the consolidation costs.",
+    # The retrieval/retrieve pair that used to be recorded here is GONE: both of its duplicated
+    # helpers -- the node-path scope recovery and the profile-summary match -- now have one
+    # implementation each, and this file asserts in both directions, so the entry had to go with
+    # them rather than sit here describing a tree that had moved.
     frozenset({"matrixark_mcp_async_ingest", "matrixark_mcp_session_runtime"}):
         "add_count, 9 statements. BOTH modules are recorded unreachable, so this is dead-vs-dead: "
         "consolidating it would move nothing and would promote one dead copy over another.",
