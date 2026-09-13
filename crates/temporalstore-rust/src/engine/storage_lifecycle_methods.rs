@@ -901,6 +901,30 @@ impl TemporalEngine {
                 // NO CLAIM RECORDED, and the only safe reading of "unknown" is the old one:
                 // block, and retain everything. Treating unknown as "nothing to retain" is the
                 // direction that loses committed records.
+                //
+                // A CLEAN bucket is the exception, and getting it wrong is what stopped the
+                // reclaim entirely. `dirty_object_count == 0` means the bucket holds no undumped
+                // write at all, so there is nothing for the log to retain on its behalf and no
+                // claim for it to name -- `first_dirty_wal_sequence` is cleared to 0 in the same
+                // breath as `dirty = false`, on a DURABLE dump manifest (see
+                // `apply_storage_lifecycle`), and a bucket loaded from disk is durable by
+                // construction. Reading that 0 as "cannot name its claim" put every clean bucket
+                // into `missing_bucket_generations`, which blocks the whole plan.
+                //
+                // This is the shape #1516 removed from the manifest branch above -- a bucket that
+                // needs NOTHING deciding what the log may drop -- surviving in this branch, where
+                // it does not merely pin the floor but refuses outright. On an idle shard every
+                // bucket ends up here, so the plan reported
+                // `slot_generation_without_durable_dump` for all of them and the log could never
+                // be reclaimed again: measured on 8,000 records over twelve rounds, 0 of 10,666
+                // records freed and `persistent_bytes` flat at 1,344,852 for ever.
+                //
+                // Counted as covered and contributing no floor, exactly as the manifest branch
+                // treats a clean bucket it does have a manifest for.
+                if summary.dirty_object_count == 0 {
+                    covered_bucket_count = covered_bucket_count.saturating_add(1);
+                    continue;
+                }
                 let (wal_claim, index_log_claim) = bucket_claims
                     .get(&summary.routing_bucket)
                     .copied()

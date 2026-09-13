@@ -6838,3 +6838,227 @@ fn an_idle_shard_stops_accumulating_slabs() {
          retain floor has stopped advancing again"
     );
 }
+
+/// A shard that has gone quiet must still be able to reclaim its log.
+///
+/// After the first maintenance round every slot is CLEAN -- the dump captured all of them -- and
+/// a clean slot holds no undumped write, so nothing in the shard needs the log retained. The
+/// plan must say so.
+///
+/// It used to say the opposite, and the OVERWRITE in this fixture is what makes it do so. An
+/// overwrite gives the slot a new generation, so the manifest the dump just wrote no longer
+/// matches its current generation fingerprint and no manifest covers it. That drops the slot into
+/// the no-manifest branch, where its `first_dirty_wal_sequence` of 0 -- set to 0 precisely
+/// BECAUSE the dump captured everything -- was read as "cannot name its claim", filed under
+/// `missing_bucket_generations`, and blocked the whole plan with
+/// `slot_generation_without_durable_dump`.
+///
+/// That is the shape #1516 removed from the manifest branch -- a slot that needs nothing deciding
+/// what the log may drop -- surviving one branch over, where it refuses outright rather than
+/// merely pinning the floor.
+///
+/// DENOMINATOR, and it has to be this one. `covered_bucket_count` counts BOTH branches, so it
+/// cannot witness which branch ran: a write-only fixture of the same size reaches
+/// `safe_to_reclaim` through the MANIFEST branch and passes every assertion below whatever the
+/// no-manifest branch does. Measured -- 2,000 records with no overwrite: covered=2000,
+/// uncovered=0, safe=true with this fix reverted. `retained_manifest_ids` is the honest witness:
+/// the manifest branch records the manifest it matched, the no-manifest branch records nothing,
+/// so an EMPTY set plus a non-zero covered count proves every slot took the branch under test.
+#[test]
+fn a_quiet_shard_with_every_slot_clean_can_reclaim_its_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..2_000usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("quiet-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    // The overwrite is load-bearing, not decoration. Without it no slot reaches the branch this
+    // test exists for.
+    for index in 0..666usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("quiet-{index:06}"),
+                value: vec![b'w'; 64],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    // One round to dump everything, then the writer stops for good.
+    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    let engine = runtime.engine();
+
+    let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+
+    // DENOMINATOR, asserted before the property.
+    assert!(
+        plan.current_wal_sequence > 0,
+        "the fixture must leave records in the log, got none: {plan:?}"
+    );
+    let classified = plan
+        .covered_bucket_count
+        .saturating_add(plan.uncovered_bucket_count);
+    assert!(
+        classified > 0,
+        "the fixture must leave slots for the plan to classify, got none: {plan:?}"
+    );
+    assert!(
+        plan.retained_manifest_ids.is_empty(),
+        "every slot must reach the NO-MANIFEST branch for this test to mean anything, but {} \
+         manifest(s) were matched -- the fixture has stopped exercising the branch under test \
+         and would pass with the rule reverted: {:?}",
+        plan.retained_manifest_ids.len(),
+        plan.retained_manifest_ids,
+    );
+
+    assert!(
+        !plan
+            .blocker_reasons
+            .iter()
+            .any(|reason| reason == "slot_generation_without_durable_dump"),
+        "every slot is clean and holds no undumped write, so none of them may be reported as \
+         lacking a durable dump: blockers={:?} uncovered={} covered={}",
+        plan.blocker_reasons,
+        plan.uncovered_bucket_count,
+        plan.covered_bucket_count,
+    );
+    assert_eq!(
+        plan.uncovered_bucket_count, 0,
+        "a clean slot needs nothing retained on its behalf, so it is not uncovered: {plan:?}"
+    );
+    assert!(
+        plan.safe_to_reclaim,
+        "a quiet shard whose every slot is dumped must be reclaimable: {plan:?}"
+    );
+}
+
+/// `reclaim_wal` must not disappear from the stage list while the log is still reclaimable, and
+/// the log must actually shrink.
+///
+/// The stage list is how an operator reads whether maintenance is alive, so the two cases it must
+/// never confuse are "the log is at its floor" and "the stage stopped running". They look
+/// identical from outside: flat `persistent_bytes` either way.
+///
+/// The trigger used to be dump pressure alone -- dirty slots, or undumped records -- which a
+/// shard with no writer never has. So the stage ran in round 0 and never again, with the whole
+/// log still on disk: measured on 8,000 records over twelve rounds, 0 of 10,666 records freed and
+/// `persistent_bytes` flat at 1,344,852 for ever. With both halves fixed the same fixture falls
+/// to 33,413 on the first idle round.
+///
+/// VACUITY. A round whose plan is not reclaimable says nothing about the gate, so the count of
+/// reclaimable rounds is asserted before the gate is. Reverting the plan rule alone takes that
+/// count to zero and kills this test there; reverting the gate alone kills it below.
+#[test]
+fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
+    const IDLE_ROUNDS: usize = 6;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..2_000usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    // Same reason as the test above: without an overwrite the slots keep a matching manifest and
+    // the quiet shard reclaims through the other branch entirely.
+    for index in 0..666usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:06}"),
+                value: vec![b'w'; 64],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    // Round 0 dumps. After it the writer is gone and every later round is an idle one.
+    let first = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        first
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_wal"),
+        "the first round must run the stage at all: {:?}",
+        first.executed_stages
+    );
+    let bytes_after_first = runtime.engine().wal_store().stats(1).persistent_bytes;
+
+    let mut reclaimable_rounds = 0usize;
+    let mut rounds_missing_the_stage = Vec::new();
+    for round in 0..IDLE_ROUNDS {
+        let engine = runtime.engine();
+        let reclaimable = engine
+            .storage_wal_reclaim_plan(1, Vec::new(), Vec::new())
+            .safe_to_reclaim;
+        drop(engine);
+        let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        if !reclaimable {
+            continue;
+        }
+        reclaimable_rounds += 1;
+        if !report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_wal")
+        {
+            rounds_missing_the_stage.push((round, report.skipped_stages.clone()));
+        }
+    }
+    let bytes_at_end = runtime.engine().wal_store().stats(1).persistent_bytes;
+
+    // DENOMINATOR, asserted before the property. Without it, a plan that never reports the log
+    // reclaimable would make every round above vacuous and this test could not fail.
+    assert!(
+        reclaimable_rounds > 0,
+        "no idle round reported a reclaimable log, so this test proves nothing about the gate -- \
+         the plan, not the gate, is what broke"
+    );
+    assert!(
+        rounds_missing_the_stage.is_empty(),
+        "`reclaim_wal` left the stage list on {} of {reclaimable_rounds} rounds whose log was \
+         still reclaimable, which an operator reads as maintenance having died: {:?}",
+        rounds_missing_the_stage.len(),
+        rounds_missing_the_stage,
+    );
+    // The stage running is the operator-visible half; the log shrinking is the point of it.
+    assert!(
+        bytes_at_end < bytes_after_first,
+        "the idle rounds ran the stage but freed nothing: {bytes_after_first} bytes after the \
+         first round, {bytes_at_end} after {IDLE_ROUNDS} idle ones"
+    );
+}
