@@ -520,7 +520,8 @@ SETTINGS: List[Setting] = [
             "MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT",
             "Children scored per parent", "int", "100000", "restart",
             "How many children of one node a traversal will score. Scoring a child costs a page "
-            "read, so this is the ceiling on what one branch can cost."),
+            "read, so this is the ceiling on what one branch can cost."
+            " Applies to the PYTHON retrieval path. The native path returns its pack before these are read, and its request does not carry them, so on a deployment using a temporalstore backend this does not bind."),
     Setting("retrieval.shared_context_min_score", "retrieval",
             "MATRIXARK_SHARED_CONTEXT_MIN_SCORE",
             "Shared content score floor", "float", "0.20", "restart",

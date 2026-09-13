@@ -206,13 +206,18 @@ KNOBS: dict[str, Knob] = _registry(
              "with more sessions than that had the surplus discarded by node-summary score, and "
              "the session most likely to lose is the newest one. The current session no longer "
              "depends on this -- it is admitted unconditionally -- so this now governs only how "
-             "much of the cross-session history is explored."),
+             "much of the cross-session history is explored."
+             " Applies to the PYTHON retrieval path. The native path returns its pack before these "
+             "are read, and its request does not carry them, so on a deployment using a "
+             "temporalstore backend this does not bind."),
         Knob("max_candidates_per_node", "int", "MATRIXARK_MAX_CANDIDATES_PER_NODE", 10240,
              "Candidate refs (events + entities) admitted from a single node. Never applied to "
              "child nodes -- a session holding 40 events returns them all; this is the ceiling on "
-             "how deep one node can go."),
+             "how deep one node can go."
+             " Applies to the PYTHON retrieval path. The native path returns its pack before these are read, and its request does not carry them, so on a deployment using a temporalstore backend this does not bind."),
         Knob("max_global_candidates", "int", "MATRIXARK_MAX_GLOBAL_CANDIDATES", 20480,
-             "Total candidates gathered across the whole traversal before scoring."),
+             "Total candidates gathered across the whole traversal before scoring."
+             " Applies to the PYTHON retrieval path. The native path returns its pack before these are read, and its request does not carry them, so on a deployment using a temporalstore backend this does not bind."),
         Knob("max_selected_refs", "int", "MATRIXARK_MAX_SELECTED_REFS", 10000,
              "Refs allowed into the pack after scoring. The token budget is the limit that "
              "actually binds in practice; this is the backstop."),
