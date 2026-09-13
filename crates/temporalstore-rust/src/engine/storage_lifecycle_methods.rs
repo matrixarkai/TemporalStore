@@ -688,24 +688,40 @@ impl TemporalEngine {
             .expect("shards lock poisoned")
             .get(&request.shard_id)
         {
-            report.storage_index_snapshot = storage_index_snapshot_with_samples(
+            // ONE walk for all four sampling snapshots.
+            //
+            // Each of these built its own `collect_live_page_entries` -- a fresh Vec of every live
+            // page in the shard -- and then sorted all of it to take EIGHT samples. Four walks and
+            // four full sorts, for about thirty-two sample rows. `who_walks_the_shard` measured
+            // them at 1.0x the shard apiece, 4.0x of `apply_storage_lifecycle`'s 10.0x.
+            //
+            // Safe here in the way #1586 was and the dirty-state walk in #1607 was NOT: the read
+            // lock above covers all four, `&ShardState` is unchanged throughout, and these produce
+            // report SAMPLES rather than a decision. A shared snapshot cannot change what the
+            // system does; it only makes the four samples describe one moment instead of four.
+            let sampling_entries = collect_live_page_entries(shard);
+            report.storage_index_snapshot = storage_index_snapshot_with_samples_from_entries(
                 request.shard_id,
-                shard,
+                &sampling_entries,
                 report.storage_index_snapshot,
             );
-            report.storage_watermark_snapshot = storage_watermark_snapshot_with_samples(
+            report.storage_watermark_snapshot =
+                storage_watermark_snapshot_with_samples_from_entries(
+                    request.shard_id,
+                    shard,
+                    &sampling_entries,
+                    report.storage_watermark_snapshot,
+                );
+            report.storage_gc_snapshot = storage_gc_snapshot_with_samples_from_entries(
                 request.shard_id,
                 shard,
-                report.storage_watermark_snapshot,
-            );
-            report.storage_gc_snapshot = storage_gc_snapshot_with_samples(
-                request.shard_id,
-                shard,
+                &sampling_entries,
                 report.storage_gc_snapshot,
             );
-            report.storage_topology_snapshot = storage_topology_snapshot_with_samples(
+            report.storage_topology_snapshot = storage_topology_snapshot_with_samples_from_entries(
                 request.shard_id,
                 shard,
+                &sampling_entries,
                 report.storage_topology_snapshot,
             );
         }

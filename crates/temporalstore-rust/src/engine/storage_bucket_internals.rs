@@ -271,9 +271,35 @@ pub(super) fn storage_block_address_sample(
 pub(super) fn storage_index_snapshot_with_samples(
     shard_id: ShardId,
     shard: &ShardState,
+    snapshot: StorageIndexSnapshot,
+) -> StorageIndexSnapshot {
+    storage_index_snapshot_with_samples_from_entries(
+        shard_id,
+        &collect_live_page_entries(shard),
+        snapshot,
+    )
+}
+
+/// The same samples, from live-page entries the caller ALREADY has.
+///
+/// All four `*_snapshot_with_samples` builders run back to back inside ONE read lock in
+/// `apply_storage_lifecycle`, and each was calling `collect_live_page_entries` for its own copy of
+/// every live page -- then sorting all of it to take EIGHT samples. `who_walks_the_shard` measured
+/// the four at 1.0x the shard apiece.
+///
+/// They differ only in sort order, so one walk serves all four and each sorts a vector of
+/// REFERENCES rather than owning entries -- the shared walk is not traded for four clones.
+///
+/// Safe for the same reason as #1586: one lock, an unchanged `&ShardState`, nothing mutating
+/// between them. And these feed report SAMPLES rather than a decision, so unlike the freshness
+/// walk in `clear_dumped_bucket_dirty_state` (#1607) a shared snapshot cannot change what the
+/// system DOES -- it only makes the four samples describe one moment instead of four.
+pub(super) fn storage_index_snapshot_with_samples_from_entries(
+    shard_id: ShardId,
+    entries: &[LiveBlockEntry],
     mut snapshot: StorageIndexSnapshot,
 ) -> StorageIndexSnapshot {
-    let mut entries = collect_live_page_entries(shard);
+    let mut entries: Vec<&LiveBlockEntry> = entries.iter().collect();
     entries.sort_by(|left, right| {
         (
             left.kind.as_ref(),
@@ -374,6 +400,28 @@ pub(super) fn storage_gc_ref(entry: &LiveBlockEntry) -> String {
 pub(super) fn storage_watermark_snapshot_with_samples(
     shard_id: ShardId,
     shard: &ShardState,
+    snapshot: StorageWatermarkSnapshot,
+) -> StorageWatermarkSnapshot {
+    storage_watermark_snapshot_with_samples_from_entries(
+        shard_id,
+        shard,
+        &collect_live_page_entries(shard),
+        snapshot,
+    )
+}
+
+/// The same samples, from live-page entries the caller ALREADY has. See
+/// `storage_index_snapshot_with_samples_from_entries` for why sharing one walk across the four
+/// sampling builders is safe.
+///
+/// This one is shaped differently from the other three and the difference is worth keeping in
+/// view: it does NOT sort. It folds every entry into a per-bucket watermark map, so it reads the
+/// entries once in whatever order they arrive. Anything that rewrites these four as a group has to
+/// notice that -- treating them as one template is how a bulk edit of this set goes wrong.
+pub(super) fn storage_watermark_snapshot_with_samples_from_entries(
+    shard_id: ShardId,
+    shard: &ShardState,
+    entries: &[LiveBlockEntry],
     mut snapshot: StorageWatermarkSnapshot,
 ) -> StorageWatermarkSnapshot {
     const MAX_STORAGE_WATERMARK_SAMPLES: usize = 8;
@@ -383,7 +431,7 @@ pub(super) fn storage_watermark_snapshot_with_samples(
     for (bucket_id, runtime_bucket) in &shard.bucket_index.bucket_map {
         bucket_watermarks.insert(*bucket_id, runtime_bucket.dirty_generation);
     }
-    for entry in collect_live_page_entries(shard) {
+    for entry in entries {
         let bucket_id = entry
             .address
             .routing_bucket()
@@ -426,11 +474,29 @@ pub(super) fn storage_watermark_snapshot_with_samples(
 }
 
 pub(super) fn storage_gc_snapshot_with_samples(
+    shard_id: ShardId,
+    shard: &ShardState,
+    snapshot: StorageGcSnapshot,
+) -> StorageGcSnapshot {
+    storage_gc_snapshot_with_samples_from_entries(
+        shard_id,
+        shard,
+        &collect_live_page_entries(shard),
+        snapshot,
+    )
+}
+
+/// The same samples, from live-page entries the caller ALREADY has. See
+/// `storage_index_snapshot_with_samples_from_entries` for why sharing one walk across the four
+/// sampling builders is safe: one lock, an unchanged `&ShardState`, and these feed report SAMPLES
+/// rather than a decision.
+pub(super) fn storage_gc_snapshot_with_samples_from_entries(
     _shard_id: ShardId,
     shard: &ShardState,
+    entries: &[LiveBlockEntry],
     mut snapshot: StorageGcSnapshot,
 ) -> StorageGcSnapshot {
-    let mut entries = collect_live_page_entries(shard);
+    let mut entries: Vec<&LiveBlockEntry> = entries.iter().collect();
     entries.sort_by(|left, right| {
         (
             left.deleted,
@@ -523,9 +589,27 @@ pub(super) fn storage_gc_snapshot_with_samples(
 pub(super) fn storage_topology_snapshot_with_samples(
     shard_id: ShardId,
     shard: &ShardState,
+    snapshot: StorageTopologySnapshot,
+) -> StorageTopologySnapshot {
+    storage_topology_snapshot_with_samples_from_entries(
+        shard_id,
+        shard,
+        &collect_live_page_entries(shard),
+        snapshot,
+    )
+}
+
+/// The same samples, from live-page entries the caller ALREADY has. See
+/// `storage_index_snapshot_with_samples_from_entries` for why sharing one walk across the four
+/// sampling builders is safe: one lock, an unchanged `&ShardState`, and these feed report SAMPLES
+/// rather than a decision.
+pub(super) fn storage_topology_snapshot_with_samples_from_entries(
+    shard_id: ShardId,
+    shard: &ShardState,
+    entries: &[LiveBlockEntry],
     mut snapshot: StorageTopologySnapshot,
 ) -> StorageTopologySnapshot {
-    let mut entries = collect_live_page_entries(shard);
+    let mut entries: Vec<&LiveBlockEntry> = entries.iter().collect();
     entries.sort_by(|left, right| {
         (
             left.address
