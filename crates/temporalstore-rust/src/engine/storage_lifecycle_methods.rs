@@ -186,6 +186,17 @@ impl TemporalEngine {
         // An OLDER manifest kept because it is the only dump covering some bucket can still hold
         // a slab back; that is a retention decision this does not override, and it does not
         // re-arm this either.
+        //
+        // RE-CHECKED after `block_slab_ids` was widened to every slab the manifest's whole-shard
+        // index can install, rather than only the dumped buckets'. The argument turns on one
+        // premise -- that a fresh dump names LIVE slabs only -- and widening makes that premise
+        // exact rather than weakening it: the widened set is derived from the live page refs of
+        // the index the dump exports, which IS the shard's live slab set at that moment, so every
+        // id in it is live by construction. What changes is how often this fires, not whether it
+        // ends: a slab holding nothing but unnamed-bucket pages is now named, so vacating it now
+        // arms this where before it armed nothing and the slab was destroyed under a manifest
+        // that needed it. Each firing still replaces the newest manifest with one naming live
+        // slabs alone, so it still cannot fire twice for the same vacated slab.
         let latest_manifest_names_a_vacated_slab = latest_bucket_dump_manifest
             .as_ref()
             .map(|manifest| {
@@ -1803,6 +1814,9 @@ impl TemporalEngine {
                     // there is no analog; this aligns the Rust-only delete_drop path with the
                     // engine's own tombstone discipline.)
                     if !replaying_wal() {
+                        // ONE mirror lookup for the whole run -- same reasoning as the expiry
+                        // sweep, and this loop is inside the shard-table write guard too.
+                        let mirror = self.maintenance_mirror_sink();
                         for key in &deleted_keys {
                             let command = Command::CommonDelete { key: key.clone().to_string() };
                             let appended =
@@ -1811,7 +1825,9 @@ impl TemporalEngine {
                             // Same reasoning as the expiry sweep: a drop that deletes is a
                             // deletion, and it has to reach every log a successor may replay.
                             if appended.is_ok() {
-                                self.mirror_maintenance_write(shard_id, &command);
+                                if let Some(sink) = mirror.as_ref() {
+                                    sink.record_write(shard_id, &command);
+                                }
                             }
                         }
                         shard.applied_wal_sequence =
