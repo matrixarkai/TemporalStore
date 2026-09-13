@@ -131,14 +131,46 @@ def _is_default_hidden_debug_lineage_key(key: Any) -> bool:
     return answer
 
 
+#: `by_dimension` is the exception among the `by_*` maps: its children are DIMENSION NAMES --
+#: `by_dimension["by_source_role"]` -- so they are exactly the kind of key this predicate is meant
+#: to test, and the descent there has to continue. Every other `by_*` map is keyed by a data VALUE:
+#: a reason, a scope, a ref type, a layer name. Checked against the pack builder's full set:
+#: by_codex_event, by_drop_reason, by_entity_type, by_extraction_phase, by_hook_type,
+#: by_memory_layer, by_memory_scope, by_memory_selection_policy, by_profile_memory_kind,
+#: by_profile_promotion_blocker, by_profile_promotion_policy, by_profile_shadowed_reason,
+#: by_ref_type, by_session_continuity, by_source_role.
+_KEYED_BY_NAME_NOT_VALUE = frozenset(("by_dimension",))
+
+
+def _keys_are_values(key: Any) -> bool:
+    """Whether this map's child keys are DATA, so the hidden-key predicate must not judge them."""
+    name = str(key or "")
+    return name.startswith("by_") and name not in _KEYED_BY_NAME_NOT_VALUE
+
+
 def strip_default_debug_lineage_fields(value: Any) -> Any:
-    """Remove debug/lineage fields from the default prompt-facing ContextPack."""
+    """Remove debug/lineage fields from the default prompt-facing ContextPack.
+
+    THE CHILDREN OF A `by_*` DIMENSION ARE VALUES, NOT FIELD NAMES, and the predicate is a
+    substring rule. `dropped_memory_layer_budget["by_profile_shadowed_reason"]` is keyed by the
+    REASON a profile ref was shadowed, and one of those reasons is `source_entity_lineage` -- which
+    contains "lineage", so recursing into it deleted the bucket, left the dimension empty, and the
+    empty-sub-dict prune in `serving_memory_layer_budget` then dropped the dimension itself. The
+    whole "why was this shadowed" breakdown disappeared from a served pack because a reason was
+    named after the thing it describes.
+
+    A `by_*` dimension's own name is still tested, so `by_source_role` and the rest are removed
+    exactly as before -- only the descent into their contents stops. Anything not named `by_*` is
+    unchanged, because there the keys really are schema fields.
+    """
     if isinstance(value, dict):
-        return {
-            key: strip_default_debug_lineage_fields(item)
-            for key, item in value.items()
-            if not _is_default_hidden_debug_lineage_key(key)
-        }
+        kept = {}
+        for key, item in value.items():
+            if _is_default_hidden_debug_lineage_key(key):
+                continue
+            kept[key] = item if _keys_are_values(key) \
+                else strip_default_debug_lineage_fields(item)
+        return kept
     if isinstance(value, list):
         return [strip_default_debug_lineage_fields(item) for item in value]
     return value

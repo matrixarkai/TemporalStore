@@ -23,7 +23,7 @@ stranded thirty-three modules that real string edges reach, and is refused by
 `test_a_dynamic_import_string_still_reaches`.
 
 Applying it revealed two modules held live by exactly that sentence, each a second copy of a name
-the live tree serves from somewhere else. `TheTwoPackersAreRealTest` checks that from the source
+the live tree serves from somewhere else. `ThePackersAreRealTest` checks that from the source
 rather than restating it.
 """
 from __future__ import annotations
@@ -90,14 +90,23 @@ class ADocstringIsNotAnEdgeTest(unittest.TestCase):
             'from tools.matrixark_mcp_core import thing\n'))
 
 
-class TheTwoPackersAreRealTest(unittest.TestCase):
-    """Both were revealed by the rule. Checked here from the source, not asserted from the list."""
+class ThePackersAreRealTest(unittest.TestCase):
+    """Revealed by the rule, and checked here from the SOURCE rather than asserted from the list.
+
+    There were two. `matrixark_mcp_dashboard` held a second `latest_async_pipeline_rows` beside the
+    live one in `matrixark_mcp_async_readiness`, and the two had diverged: the copy reported a
+    finished task as still scheduled when the records arrived out of order. It was consolidated,
+    so the pair is gone and it is struck from here rather than left to fail -- a list that keeps a
+    pair the tree no longer has describes a tree that no longer exists.
+
+    That the removal shows up HERE as a failure is the point of checking the source instead of
+    trusting the list. This class asserting "both still exist" is what made the consolidation
+    visible; it is not an argument for keeping the copy.
+    """
 
     PACKERS = {
         "matrixark_mcp_budget_pack": ("select_token_budgeted_refs",
                                       "matrixark_mcp_core_ref_selection"),
-        "matrixark_mcp_dashboard": ("latest_async_pipeline_rows",
-                                    "matrixark_mcp_async_readiness"),
     }
 
     @staticmethod
@@ -110,6 +119,11 @@ class TheTwoPackersAreRealTest(unittest.TestCase):
 
     def test_each_is_recorded_as_unreachable(self) -> None:
         recorded = {name for group in _guard().UNREACHABLE.values() for name in group}
+        self.assertTrue(
+            self.PACKERS,
+            "no packer is recorded, so every assertion in this class passes over an empty set. "
+            "One was struck when its copy was consolidated; emptying the list entirely means the "
+            "rule that revealed them has stopped finding any.")
         for module in self.PACKERS:
             self.assertIn(module, recorded)
 
