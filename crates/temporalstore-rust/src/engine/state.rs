@@ -103,7 +103,14 @@ pub(super) struct ShardState {
     /// The same pair as `SeenSet`'s `by_member`/`by_time`, for the same reason.
     ///
     /// Derived, never persisted: it is rebuilt from `expires_at_ms` on first use after a load,
-    /// so no snapshot or wire format changes and an older snapshot needs no migration.
+    /// so no snapshot or wire format changes and an older snapshot needs no migration. The repair
+    /// (`ensure_expiry_order`) fires ONLY on an entirely empty map -- a mirror left populated and
+    /// wrong is never repaired, and shows up only as keys that silently never expire.
+    ///
+    /// The `engine::tests::expiry_scale` module holds the guards: that a round finds what is due
+    /// at a hundred-thousand-key shard, that this view is rebuilt on load, manifest install and
+    /// WAL replay, and -- at length -- why a bounded round-robin expiry cursor should not replace
+    /// an ordered index here.
     #[serde(skip)]
     pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
     pub(super) strings: HashMap<String, BlockAddress>,

@@ -2577,6 +2577,8 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             continue;
         };
         apply_key_state_field(&mut shard.features, key, blob.get("features"));
+        // DIRECT WRITE TO `expires_at_ms` -- the deadline-ordered mirror is invalidated at the
+        // end of this function. See the note there.
         apply_key_state_field(&mut shard.expires_at_ms, key, blob.get("expires_at_ms"));
         apply_key_state_field(
             &mut shard.control_state_changes,
@@ -2605,6 +2607,27 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_compressions"),
         );
         apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
+    }
+    if !key_states.is_empty() {
+        // THE ONE PLACE `expires_at_ms` IS WRITTEN WITHOUT `set_expiry` / `clear_expiry`.
+        //
+        // Those two keep the deadline-ordered mirror `expiry_by_deadline` in step entry by entry.
+        // This cannot: it restores a whole captured map for each key, and an ABSENT
+        // `expires_at_ms` field means "this key had no deadline", which `apply_key_state_field`
+        // turns into a removal -- so both directions are reachable, and neither is visible from
+        // the blob without re-deriving it.
+        //
+        // So the mirror is dropped instead and `ensure_expiry_order` rebuilds it from the
+        // corrected map on first use. Dropping is not merely the cheap option, it is the only one
+        // that works: `ensure_expiry_order` repairs ONLY an entirely empty mirror, so a mirror
+        // left populated and wrong is never repaired and the keys it misses silently never expire.
+        //
+        // Today this is a no-op -- the delta fold only ever runs on a freshly decoded state, whose
+        // mirror is already empty because the field is `#[serde(skip)]`. It is written down
+        // because that is a property of the CALLER, not of this function, and the first caller
+        // that folds a delta onto a shard already in service would land exactly on the
+        // never-repaired case.
+        shard.expiry_by_deadline.clear();
     }
 }
 
