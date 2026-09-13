@@ -14,12 +14,52 @@ The three statements the shorter copy lacks are one block. For a record of type
 `context_summary` that carries no scope, the longer copy looks the record's owner up in
 `embedding_scope_by_ref` -- a map from (ref type, ref hash) to the scope recovered from that
 record's embedding -- and returns it. The shorter copy has no such branch, and
-`embedding_scope_by_ref` is a name that does not appear ANYWHERE in its module. The mechanism is
-absent, not just the branch.
+`embedding_scope_by_ref` is a name that does not appear ANYWHERE in its module.
+
+WHICH DIRECTION IS MISSING, stated precisely, because "the mechanism is absent" was too coarse.
+Both modules build a ref-keyed scope map and both build it with the same five ref types and the
+same hash fields. They differ in DIRECTION:
+
+    ref_scope_by_key          owner record -> its scope.  Built by BOTH modules, and consulted
+                              for a `context_embedding`, to give an embedding its owner's scope.
+    embedding_scope_by_ref    embedding -> its scope.  Built ONLY by the longer module, and
+                              consulted for an OWNER, to give an owner its embedding's scope.
+
+So the shorter module is not missing scope recovery. It is missing the embedding-to-owner
+direction of it. It also builds its maps from a different population: the longer module walks
+`self.read_all()`, the whole store; the shorter walks the records its own upstream call already
+returned.
+
+DOES THE SHORTER COPY'S CALLER EVER NEED IT? Asked because an absence that the caller never
+reaches is correct rather than behind, and the first version of this record implied a missing
+feature without checking. The chain, read rather than executed, and labelled as such:
+
+  * `retrieve` gets its records from `self.retrieval_records(...)` -- the function the LONGER copy
+    lives in (`records = retrieval_record_result["records"]`).
+  * `retrieval_records` gates owner records through `recovered_scope_matches`, which is where the
+    longer copy's extra block does its work; one of those gates is spelled `owner_record`.
+  * That gate produces a BOOL. `recovered_scope_for_query` is never written back onto the record,
+    so a record admitted because its embedding's scope was recoverable arrives downstream still
+    carrying no scope of its own.
+  * `retrieve` then re-gates those same records through its OWN `recovered_scope_matches` at nine
+    sites, most of them `if not recovered_scope_matches(record, scope): continue`.
+
+MEASURED, and this is the part that decides the direction of the consequence: an unrecovered scope
+does not fall through as permissive. `scope_matches({}, query)` is False for every non-empty query
+tried -- the retrieval default `prefer`, `only`, and a tenant-only query -- and True only for an
+empty query. So at those nine gates an unrecovered record is DROPPED, not kept.
+
+WHAT IS THEREFORE CLAIMED, and what is not. Claimed, and asserted below: the two copies resolve
+differently for the same record, and an unresolved scope is a drop rather than a pass. NOT claimed:
+that a live corpus contains such a record. The shorter copy keeps two further fallbacks -- a
+`node_hash` shared with an already-scoped record in the filtered set, and a `node_path` carrying
+`tenant:`/`user:`/`session:` -- so the loss needs a record that reaches none of them. Establishing
+that requires a live retrieve against a real store, which this file does not do.
 
 MEASURED BY EXECUTION. A nested function cannot be imported, so each copy is lifted out of its own
 module's source by AST and compiled against the same synthetic enclosing scope, using the real
-`candidate_access_scope` and the real `scope_from_node_path`. The bodies are the tree's, unchanged.
+`candidate_access_scope` and the real `scope_from_node_path` -- the latter now read from the one
+module that publishes it. The bodies are the tree's, unchanged.
 
     record with no scope of its own      retrieval copy     retrieve copy
     ---------------------------------    ---------------    -------------
@@ -40,8 +80,10 @@ WHY NOTHING CAUGHT IT, which is the part worth keeping.
 
 `test_a_nested_helper_has_one_copy_too` exists for exactly this shape and ALREADY records this
 module pair. It groups functions by the exact unparsed text of their bodies, so it finds copies
-that are still IDENTICAL -- for this pair it reports `scope_from_node_path`,
-`profile_summary_path_matches` and `profile_summary_scope_matches`, all byte for byte the same.
+that are still IDENTICAL -- for this pair it reports `profile_summary_path_matches` and
+`profile_summary_scope_matches`, byte for byte the same under two different names. It used to
+report `scope_from_node_path` as well, until that one was consolidated to a single
+implementation.
 `recovered_record_scope` sits in the same two enclosing functions, three lines from one of them,
 and does not group at all, because the copies have stopped agreeing.
 
@@ -82,8 +124,15 @@ COPIES = (
 )
 LONGER, SHORTER = COPIES[0][0], COPIES[1][0]
 
-#: The map the longer copy consults and the shorter module does not have.
+#: Deduplicated: defined once, in SHORTER, and imported by LONGER.
+NODE_PATH_HELPER = "scope_from_node_path"
+
+#: The embedding-to-owner direction: built and consulted only by the longer module.
 OWNER_MAP = "embedding_scope_by_ref"
+
+#: The owner-to-embedding direction: built by BOTH modules, consulted for a context_embedding.
+#: Named here so the record says which half is shared and which half is missing.
+OTHER_DIRECTION_MAP = "ref_scope_by_key"
 
 SCOPE = {"tenant_hash": 111, "user_hash": 222, "session_hash": 333, "agent_hash": 444}
 
@@ -172,13 +221,46 @@ def _mentions(stem, name):
                for node in ast.walk(ast.parse(_source(stem))))
 
 
+def _import(stem):
+    """Import a tree module under whichever spelling this run is already using.
+
+    Under `unittest discover` a module is reachable as both `tools.X` and bare `X`, and those are
+    DIFFERENT module objects. Asking for one spelling by name is not a neutral act: it either
+    finds what the run already loaded, or it loads a second copy.
+    """
+    try:
+        return importlib.import_module("tools." + stem)
+    except ImportError:  # Direct script execution from tools/.
+        return importlib.import_module(stem)
+
+
+def _retrieve_module():
+    """The retrieve module, as THIS run has it.
+
+    It cannot be imported standalone -- it resolves a cycle through its parent's import order --
+    so the parent is imported first and then whichever spelling landed is used.
+
+    This used to read `sys.modules["matrixark_local_adapter_retrieve"]` by that exact name, and
+    that is what broke the suite. When something earlier in a discovery run has already imported
+    `tools.matrixark_mcp_local_adapter`, only the `tools.`-prefixed children are in `sys.modules`;
+    the bare import of the parent then resolves ITS children through the package path too, so the
+    bare child name is never created and the lookup raised KeyError. The module passed alone and
+    failed in the suite, which is the signature of exactly this mistake.
+    """
+    _import("matrixark_mcp_local_adapter")
+    for name in ("tools.matrixark_local_adapter_retrieve", "matrixark_local_adapter_retrieve"):
+        module = sys.modules.get(name)
+        if module is not None and hasattr(module, "scope_from_node_path"):
+            return module
+    raise AssertionError(
+        "neither spelling of matrixark_local_adapter_retrieve is loaded after importing its "
+        "parent, so this file cannot read the helper it compares against")
+
+
 def _closure():
     """The enclosing scope both copies read, built from the tree's own functions."""
-    access_scope = importlib.import_module("matrixark_mcp_access_scope")
-    # The retrieval modules resolve a cycle through their parent's import order; importing one
-    # standalone fails the way it does on pristine main.
-    importlib.import_module("matrixark_mcp_local_adapter")
-    retrieve_module = sys.modules["matrixark_local_adapter_retrieve"]
+    access_scope = _import("matrixark_mcp_access_scope")
+    retrieve_module = _retrieve_module()
     return {
         "candidate_access_scope": access_scope.candidate_access_scope,
         "scope_from_node_path": retrieve_module.scope_from_node_path,
@@ -284,6 +366,128 @@ class TheScopeRecoveryHelperHasOneCopy(unittest.TestCase):
             "%s now names %s. The mechanism the shorter path lacked is being built; check whether "
             "the helper still diverges" % (SHORTER, OWNER_MAP))
 
+    def test_only_one_module_builds_the_embedding_to_owner_direction(self) -> None:
+        """The absence is a DIRECTION, not the whole mechanism.
+
+        Both modules build the owner-to-scope map and consult it for an embedding. Only the longer
+        one builds the embedding-to-scope map and consults it for an owner. If the shorter module
+        ever binds the second, the record above is stale.
+        """
+        for stem in (LONGER, SHORTER):
+            with self.subTest(module=stem, direction="owner to scope"):
+                self.assertTrue(
+                    _binds(stem, OTHER_DIRECTION_MAP),
+                    "%s no longer builds %s, so the two modules no longer share the direction "
+                    "this record says they share" % (stem, OTHER_DIRECTION_MAP))
+        self.assertTrue(
+            _binds(LONGER, OWNER_MAP),
+            "%s no longer builds %s" % (LONGER, OWNER_MAP))
+        self.assertFalse(
+            _mentions(SHORTER, OWNER_MAP),
+            "%s now names %s -- the missing direction is being built; check whether the helper "
+            "still diverges" % (SHORTER, OWNER_MAP))
+
+    def test_an_unrecovered_scope_is_dropped_not_kept(self) -> None:
+        """The direction of the consequence, which the first version of this record left open.
+
+        Every caller of the shorter copy spells its gate `if not recovered_scope_matches(...)`, so
+        what an empty scope MEANS at that gate decides whether the divergence loses records or
+        merely relabels them. It is a drop.
+        """
+        access_scope = _import("matrixark_mcp_access_scope")
+        recovered = dict(SCOPE)
+        for label, query in (
+                ("prefer, the retrieval default",
+                 dict(SCOPE, _session_scope="prefer",
+                      _explicit_scope_keys=["tenant_id", "user_id"])),
+                ("only", dict(SCOPE, _session_scope="only",
+                              _explicit_scope_keys=["tenant_id", "user_id", "session_id"])),
+                ("tenant only", {"tenant_hash": SCOPE["tenant_hash"]})):
+            with self.subTest(query=label):
+                self.assertTrue(
+                    access_scope.scope_matches(dict(recovered), query),
+                    "a RECOVERED scope no longer matches the %s query, so this fixture cannot "
+                    "show what failing to recover costs" % label)
+                self.assertFalse(
+                    access_scope.scope_matches({}, query),
+                    "an unrecovered scope now MATCHES the %s query. The divergence would then "
+                    "keep records rather than drop them, which is the opposite consequence and "
+                    "this record has to be rewritten" % label)
+
+    def test_the_fixture_survives_the_other_import_spelling(self) -> None:
+        """The regression that a same-process test cannot catch.
+
+        This file passed on its own and failed under `unittest discover` for five branches,
+        including one whose only change was a generated markdown document. The cause was here:
+        `_closure` reached into `sys.modules` for the bare name of a module that, once something
+        earlier in the run has imported `tools.matrixark_mcp_local_adapter`, exists only under its
+        `tools.`-prefixed spelling. KeyError, in the two tests that build the closure.
+
+        A test in this process cannot see that, because this process has whatever spelling it
+        already has. So the scenario is run in a SUBPROCESS that imports the other spelling first.
+        """
+        import subprocess
+        import textwrap
+
+        repo = os.path.dirname(TOOLS)
+        script = textwrap.dedent(
+            """
+            import sys
+            sys.path.insert(0, %r)
+            sys.path.insert(0, %r)
+            import tools.matrixark_mcp_local_adapter          # the discovery-order import
+            import tools.test_the_scope_recovery_helper_has_one_copy as guard
+            closure = guard._closure()
+            assert callable(closure["scope_from_node_path"]), "no scope_from_node_path"
+            assert callable(closure["candidate_access_scope"]), "no candidate_access_scope"
+            longer = guard._compiled(guard.COPIES[0][0], guard.COPIES[0][1], closure)
+            record = {"record_type": "context_summary", "summary_hash": 9005}
+            assert longer(dict(record)) == guard.SCOPE, "owner scope not recovered"
+            print("OK")
+            """
+        ) % (repo, TOOLS)
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                                cwd=repo)
+        self.assertEqual(
+            0, result.returncode,
+            "building the fixture fails when tools.matrixark_mcp_local_adapter is imported first, "
+            "which is what a discovery run does. This file will pass alone and fail in the suite.\n"
+            "%s" % (result.stderr.strip()[-800:] or result.stdout.strip()[-800:]))
+        self.assertIn("OK", result.stdout, "the subprocess did not reach its assertions")
+
+    def test_the_node_path_helper_has_exactly_one_definition(self) -> None:
+        """It was defined twice, byte for byte, and now it is defined once.
+
+        `matrixark_local_adapter_retrieve` publishes it at module scope; the retrieval module
+        imports it rather than carrying a second copy. Asserted here because the guard next door
+        matches on IDENTICAL bodies, so a copy that came back slightly changed -- the likely
+        shape, since a copy that came back identical would have been edited for a reason -- would
+        not register there at all.
+
+        Both spellings of the import are required. One spelling is what broke this file across
+        five branches; see the import-order test above.
+        """
+        definitions = [stem for stem in (LONGER, SHORTER)
+                       if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                              and node.name == NODE_PATH_HELPER
+                              for node in ast.walk(ast.parse(_source(stem))))]
+        self.assertEqual(
+            [SHORTER], definitions,
+            "%s should be defined in %s alone and is defined in %s. If a second copy came back, "
+            "the two will drift again -- that is what this pair did before"
+            % (NODE_PATH_HELPER, SHORTER, ", ".join(definitions) or "nothing"))
+
+        retrieval = _source(LONGER)
+        for spelling in ("from tools.matrixark_local_adapter_retrieve import %s"
+                         % NODE_PATH_HELPER,
+                         "from matrixark_local_adapter_retrieve import %s" % NODE_PATH_HELPER):
+            with self.subTest(spelling=spelling.split(" import ")[0]):
+                self.assertIn(
+                    spelling, retrieval,
+                    "%s no longer reaches the published helper through this spelling. Both are "
+                    "needed: which one resolves depends on how the process was started"
+                    % LONGER)
+
     def test_the_older_nested_guard_structurally_cannot_see_this(self) -> None:
         """The reason this needed its own file, asserted instead of described.
 
@@ -309,9 +513,13 @@ class TheScopeRecoveryHelperHasOneCopy(unittest.TestCase):
             HELPER, names,
             "the older guard now sees %s. If it grew drift matching, this record belongs there "
             "and this file should go" % HELPER)
+        # The witness only has to be SOME still-identical helper in this module pair. It used to
+        # be `scope_from_node_path`, which has since been consolidated to one implementation --
+        # and this assertion failing is how that consolidation announced itself, which is the
+        # behaviour wanted: a fix that removes the site a scan watches should not pass quietly.
         self.assertIn(
-            "scope_from_node_path", names,
-            "the older guard no longer reports the IDENTICAL helper in the same two functions, so "
+            "profile_summary_path_matches", names,
+            "the older guard no longer reports an IDENTICAL helper in the same two functions, so "
             "it is not the sameness-keyed scan this file is contrasting itself with")
 
 

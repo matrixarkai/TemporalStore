@@ -18967,6 +18967,205 @@ fn restore_keeps_the_wal_suffix_when_the_manifest_lands_on_an_already_loaded_sha
     );
 }
 
+/// THE RESTORE ROUND TRIP, WITH THE TWO MANIFEST ORDERINGS PULLED APART.
+///
+/// The two tests above restore through a single manifest, so "the newest dump" and "the dump with
+/// the highest WAL anchor" are the same file and nothing distinguishes them. A manifest carries
+/// both an `index_log_sequence` and a `wal_sequence`, minted from two different places, and under
+/// `MATRIXARK_BULK_INGEST` the second comes from the FROZEN BASE FILE rather than the live index
+/// -- so a dump taken with that flag set lands NEWEST in index-log order carrying the LOWEST
+/// anchor on disk. `load_shard_with` has to recover from the highest-anchored one
+/// (`durable_recovery_bucket_dump_manifest_at`); recovering from the newest one restarts the
+/// replay below the point the dumped prefix was reclaimed at, and the prefix is gone.
+///
+/// COUNTED IN TWO HALVES, like the round trips above and for the same reason. Restoring the
+/// stale manifest and stopping would return the SEED and nothing else; restoring the right
+/// manifest but replaying nothing would return the pre-dump records and no post-dump ones. A
+/// combined total reads the same for a working restore and for either failure.
+///
+/// VERIFIED BY MUTATION: with `load_shard_with`'s single-barrier arm back on
+/// `latest_bucket_dump_manifest_at`, the restore replays from 1 instead of 7 and returns 0 of 6
+/// pre-dump records.
+#[test]
+fn a_restore_reads_the_highest_anchored_manifest_not_the_newest_one() {
+    const BEFORE_DUMP: usize = 6;
+    const AFTER_DUMP: usize = 4;
+    const SHARD: ShardId = 9;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source_index_dir = dir.path().join("indexes");
+    let pages = dir.path().join("pages");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        &pages,
+        &source_index_dir,
+    );
+    engine.load_shard(SHARD);
+
+    // A materialized base index FILE, and then writes that leave it behind. Under the
+    // single-barrier default the per-command persist goes to the delta, so from here the base
+    // file is frozen at the seed while the served index runs ahead -- which is the distance the
+    // bulk-ingest mint below turns into a manifest.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: SHARD,
+        command: Command::StringSet {
+            key: "seed".to_string(),
+            value: b"seed-value".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "seed write failed: {response:?}");
+    engine.flush_shard_index(SHARD);
+
+    for i in 0..BEFORE_DUMP {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet {
+                key: format!("pre-{i}"),
+                value: format!("pre-value-{i}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "pre-write {i} failed: {response:?}");
+    }
+    let anchored = engine
+        .create_bucket_dump_manifest(SHARD, Vec::new())
+        .expect("the live dump persists");
+    for i in 0..AFTER_DUMP {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet {
+                key: format!("post-{i}"),
+                value: format!("post-value-{i}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "post-write {i} failed: {response:?}");
+    }
+    engine.wal_store().flush(SHARD).expect("flush wal");
+
+    // The divergent mint. One env flag, the same shard, the same process, the same production
+    // entry point -- `create_bucket_dump_manifest` is the only place a manifest's two sequences
+    // are ever assigned.
+    std::env::set_var("MATRIXARK_BULK_INGEST", "1");
+    let stale = engine.create_bucket_dump_manifest(SHARD, Vec::new());
+    std::env::remove_var("MATRIXARK_BULK_INGEST");
+    let stale = stale.expect("the bulk-ingest dump persists");
+
+    // DENOMINATORS, all three, before anything is restored. Each one on its own would make the
+    // counts below come back full for a reason that has nothing to do with which manifest the
+    // load path reads.
+    assert!(
+        stale.wal_sequence < anchored.wal_sequence,
+        "the bulk-ingest dump anchors at {} and the live one at {} -- the orderings did not come \
+         apart, so both manifests would restore the same state",
+        stale.wal_sequence,
+        anchored.wal_sequence
+    );
+    let newest = latest_bucket_dump_manifest_at(&source_index_dir, SHARD)
+        .expect("a manifest listing with two entries in it");
+    assert_eq!(
+        newest.manifest_id, stale.manifest_id,
+        "the NEWEST manifest in index-log order is {} (anchor {}), not the bulk-ingest one \
+         (index_log_sequence {}, anchor {}). Index-log order would already pick the right file \
+         and this test could not fail",
+        newest.manifest_id, newest.wal_sequence, stale.index_log_sequence, stale.wal_sequence
+    );
+    let (all_records, _truncated) = engine
+        .wal_store()
+        .scan_decoded(SHARD, 0, u64::MAX, u64::MAX)
+        .expect("scan source wal");
+    let total_records = all_records.len();
+    let suffix_records = all_records
+        .iter()
+        .filter(|(_, record)| record.sequence > anchored.wal_sequence)
+        .count();
+    assert!(
+        suffix_records > 0,
+        "fixture has NO post-dump WAL suffix -- the post half below would be satisfied by the \
+         manifest alone (log holds {total_records} records, anchor {})",
+        anchored.wal_sequence
+    );
+
+    // Reclaim everything the live dump already covers, the way a live shard does once a dump is
+    // durable. This is what makes the wrong manifest UNRECOVERABLE rather than merely slower: a
+    // replay restarted below this point has no records to read.
+    let anchor = crate::wal::DurableIndexAnchor::proven_durable_through(SHARD, anchored.wal_sequence);
+    engine
+        .wal_store()
+        .gc_before_sequence(SHARD, anchored.wal_sequence.saturating_add(1), &anchor)
+        .expect("reclaim the dumped prefix");
+    engine.wal_store().flush(SHARD).expect("flush after reclaim");
+    println!(
+        "  manifests: live ils={} anchor={}, bulk ils={} anchor={} (newest in index-log order); \
+         log cut to the {suffix_records}-record suffix of {total_records}",
+        anchored.index_log_sequence,
+        anchored.wal_sequence,
+        stale.index_log_sequence,
+        stale.wal_sequence
+    );
+
+    // The restore target: the durable tree as a crash restart would find it -- the manifests, the
+    // retained log, the frozen base index file -- and the dump's pages.
+    let restore_index_dir = dir.path().join("restore-indexes");
+    copy_dir_recursive(&source_index_dir, &restore_index_dir);
+    let restored = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("restore-cache"),
+        &pages,
+        &restore_index_dir,
+    );
+    restored.load_shard(SHARD);
+    println!(
+        "  restore replayed from {}",
+        crate::engine::lifecycle::LAST_REPLAY_WATERMARK.load(std::sync::atomic::Ordering::SeqCst)
+    );
+
+    let mut found_pre = 0usize;
+    for i in 0..BEFORE_DUMP {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet {
+                key: format!("pre-{i}"),
+            },
+        });
+        if response.response
+            == (CommandResponse::Bytes {
+                value: Some(format!("pre-value-{i}").into_bytes()),
+            })
+        {
+            found_pre += 1;
+        }
+    }
+    let mut found_post = 0usize;
+    for i in 0..AFTER_DUMP {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet {
+                key: format!("post-{i}"),
+            },
+        });
+        if response.response
+            == (CommandResponse::Bytes {
+                value: Some(format!("post-value-{i}").into_bytes()),
+            })
+        {
+            found_post += 1;
+        }
+    }
+    assert_eq!(
+        found_pre, BEFORE_DUMP,
+        "the restore recovered {found_pre} of {BEFORE_DUMP} PRE-dump records. They live only in \
+         the highest-anchored manifest's embedded index -- the log below anchor {} was reclaimed \
+         -- so this is a load that recovered from the newest manifest instead",
+        anchored.wal_sequence
+    );
+    assert_eq!(
+        found_post, AFTER_DUMP,
+        "the restore recovered {found_post} of {AFTER_DUMP} POST-dump records. They live only in \
+         the retained WAL suffix, so this is a load that installed a checkpoint and replayed \
+         nothing on top of it"
+    );
+}
+
 
 // ---------------------------------------------------------------------------
 // What a bucket dump costs: the two-point measurement.

@@ -53,13 +53,6 @@ impl TemporalEngine {
             })
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
-        let mut block_slab_ids = bucket_summaries
-            .iter()
-            .flat_map(|summary| summary.block_slab_ids.iter().copied())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        block_slab_ids.sort_unstable();
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let index_bytes = self
             .export_index_bytes(shard_id)
@@ -85,9 +78,40 @@ impl TemporalEngine {
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
         let parent_manifest_id = latest_bucket_dump_manifest_at(&self.index_dir, shard_id)
             .map(|manifest| manifest.manifest_id);
-        let object_lifecycle = storage_object_lifecycle_report_for_buckets(
+        // EVERY SLAB THE EMBEDDED INDEX WILL INSTALL, not only the dumped buckets'.
+        //
+        // `index_bytes` above is the WHOLE-SHARD index, and #1642 proved it has to stay whole:
+        // install writes the decoded index as THE durable index for the shard, retention keeps the
+        // newest manifest and nothing else, and a manifest carrying only its own buckets installs
+        // a shard missing every bucket it did not name. `block_slab_ids` is the whole of what the
+        // collector holds back -- `run_gc_inner` extends its live set with it,
+        // `storage_page_gc_dependency_plan` blocks on it, and the page-GC retain floor steps over
+        // it -- so deriving it from the DUMPED buckets alone left the slabs behind the unnamed
+        // buckets' pages pinned by nothing. Compaction relocates those pages, the slab goes stale,
+        // the sweep destroys it, and this manifest still points at it; neither
+        // `validate_bucket_dump_manifest` nor the install preflight notices, because both filter
+        // what they probe down to `bucket_ids`. Measured on that shape: install returns Ok, the
+        // named bucket restores 5/5 and the unnamed buckets restore 0/8.
+        //
+        // The two scopes have to agree, and #1642 closed the other direction. So they agree by
+        // WIDENING the slab set to everything the index can install.
+        //
+        // Derived from the EMBEDDED index rather than from the bucket summaries, because the
+        // embedded index is what install decodes and what `validate_bucket_dump_manifest` checks
+        // this against -- under bulk ingest the exported index and the volatile summaries are not
+        // the same state. ONE live-page walk, handed on to the object-lifecycle report that was
+        // already taking one of its own, so the walk count per dump is unchanged.
+        let dump_live_page_entries = collect_live_page_entries(&dump_index_state);
+        let block_slab_ids = dump_live_page_entries
+            .iter()
+            .map(|entry| entry.address.block_slab_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let object_lifecycle = object_lifecycle_report_from_entries(
             shard_id,
             &dump_index_state,
+            dump_live_page_entries,
             &selected_buckets,
             |key| self.routing_bucket_for_key(shard_id, key),
         );
@@ -614,7 +638,15 @@ impl TemporalEngine {
                 "slot dump manifest page segment ids must be sorted and unique",
             ));
         }
-        let live_page_entries = collect_live_page_entries(&restored)
+        let all_live_page_entries = collect_live_page_entries(&restored);
+        // The slabs the WHOLE embedded index needs, which is what `block_slab_ids` now carries and
+        // what the collector holds back. Taken off the same walk the per-bucket entries below come
+        // from, so this costs no extra pass over the index.
+        let index_block_slab_ids = all_live_page_entries
+            .iter()
+            .map(|entry| entry.address.block_slab_id)
+            .collect::<BTreeSet<_>>();
+        let live_page_entries = all_live_page_entries
             .into_iter()
             .filter(|entry| {
                 let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
@@ -711,20 +743,24 @@ impl TemporalEngine {
                 ));
             }
         }
-        let referenced_block_slab_ids = live_page_entries
-            .iter()
-            .map(|entry| entry.address.block_slab_id)
-            .collect::<BTreeSet<_>>();
+        // AGAINST THE WHOLE INDEX, not the dumped buckets' share of it. The manifest must name
+        // every slab the index it installs can reach, or the collector -- which holds back exactly
+        // what this field lists -- destroys a slab that index still points at, and the pages of a
+        // bucket the dump did not name are gone. Scoping this comparison to `bucket_ids` is what
+        // let the narrow field through; the page-by-page readability probe below deliberately
+        // stays scoped, because a slab that is gone or corrupt is already caught by the two checks
+        // over this set and reading every live page of the shard is the whole-store pass the
+        // preflight was bounded to avoid.
         let manifest_block_slab_ids = manifest
             .block_slab_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        if referenced_block_slab_ids != manifest_block_slab_ids {
+        if index_block_slab_ids != manifest_block_slab_ids {
             return Err(Status::error(
                 "slot_dump_page_segment_mismatch",
                 format!(
-                    "slot dump page segment ids {manifest_block_slab_ids:?} do not match live refs {referenced_block_slab_ids:?}"
+                    "slot dump page segment ids {manifest_block_slab_ids:?} do not match the live refs of the index it installs {index_block_slab_ids:?}"
                 ),
             ));
         }

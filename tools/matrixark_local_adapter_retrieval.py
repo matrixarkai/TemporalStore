@@ -266,19 +266,19 @@ class _LocalAdapterRetrievalMixin:
             if source_scope:
                 node_scope_by_hash[source_node_hash] = source_scope
 
-        def scope_from_node_path(node_path: Any) -> Json:
-            if not isinstance(node_path, list):
-                return {}
-            recovered_scope: Json = {}
-            for part in node_path:
-                value = str(part or "")
-                if value.startswith("tenant:"):
-                    recovered_scope["tenant_id"] = value.split(":", 1)[1]
-                elif value.startswith("user:"):
-                    recovered_scope["user_id"] = value.split(":", 1)[1]
-                elif value.startswith("session:"):
-                    recovered_scope["session_id"] = value.split(":", 1)[1]
-            return {key: value for key, value in recovered_scope.items() if value}
+        # One implementation, in the module that already publishes it at module scope. This was a
+        # byte-identical second copy: same four statements, differing only in that the other one
+        # carries the docstring.
+        #
+        # Imported HERE rather than at module scope because matrixark_local_adapter_retrieve
+        # imports THIS module, so a module-scope import back would close the cycle. It is the same
+        # deferred dual-spelling idiom that module already uses to reach `onebox_embedding_first`
+        # here. Both spellings are tried because a tools.-prefixed import and a bare one are
+        # different module objects, and which one exists depends on how the process was started.
+        try:  # package path
+            from tools.matrixark_local_adapter_retrieve import scope_from_node_path
+        except ImportError:  # top-level path (direct tools/ execution)
+            from matrixark_local_adapter_retrieve import scope_from_node_path
 
         def recovered_record_scope(record: Json) -> Json:
             record_scope = candidate_access_scope(record)

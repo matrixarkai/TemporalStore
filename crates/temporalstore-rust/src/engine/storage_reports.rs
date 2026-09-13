@@ -447,31 +447,67 @@ impl TemporalEngine {
             selected_buckets: selected_buckets.iter().copied().collect(),
             ..StorageCacheWarmupReport::default()
         };
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return report;
-        };
-        for entry in collect_live_page_entries(shard) {
-            let routing_bucket = entry
-                .address
-                .routing_bucket()
-                .unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
-            if !selected_buckets.is_empty() && !selected_buckets.contains(&routing_bucket) {
-                report.skipped_page_refs = report.skipped_page_refs.saturating_add(1);
-                continue;
+        // THE ADDRESSES ARE CHOSEN UNDER THE GUARD; THE READS HAPPEN AFTER IT DROPS.
+        //
+        // This stage used to hold the shard-table READ guard across the whole loop below -- one
+        // block-store read and one cache insert PER LIVE PAGE, with no per-round budget of any
+        // kind. A read guard admits other readers, so this looks cheap and is not: it excludes
+        // every WRITER on the shard for as long as the I/O takes, which on a warm of the whole
+        // shard is every page in the store. The rest of the maintenance round is among the
+        // writers it blocks.
+        //
+        // Nothing in the loop needs the shard. `collect_live_page_entries` already MATERIALIZES
+        // the whole set into a Vec, and after that the body touches only `entry.address` and
+        // `entry.object_key`, both owned by the Vec; `routing_bucket_for_key` reads `infos`, a
+        // different lock. So the guard was being held for the producer's sake and paid for by
+        // the consumer.
+        //
+        // WHAT A STALE ADDRESS MAKES THIS DO. Between the walk and the read a writer can delete
+        // the page this entry names. The consequence is bounded in both directions: a read that
+        // no longer resolves returns Err and is counted as `failed_page_refs`, which the loop
+        // already handles, and a page that IS read populates the cache under
+        // `CacheKey::page_with_slot` -- keyed by slab id, offset and length, i.e. by the physical
+        // location whose bytes do not change while the slab is live. The entry is a cached copy
+        // of bytes that are still on disk, not a claim that the page is live, and nothing reads
+        // the cache to decide what is live. This is a REPORT and a cache fill; it decides no
+        // reclaim, so a stale answer costs at most one wasted cache slot.
+        let mut plan: Vec<(CacheKey, BlockAddress)> = Vec::new();
+        let held_across_io = {
+            let shards = self.shards_read_marked();
+            let Some(shard) = shards.get(&shard_id) else {
+                return report;
+            };
+            for entry in collect_live_page_entries(shard) {
+                let routing_bucket = entry
+                    .address
+                    .routing_bucket()
+                    .unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
+                if !selected_buckets.is_empty() && !selected_buckets.contains(&routing_bucket) {
+                    report.skipped_page_refs = report.skipped_page_refs.saturating_add(1);
+                    continue;
+                }
+                report.considered_page_refs = report.considered_page_refs.saturating_add(1);
+                let key = CacheKey::page_with_slot(
+                    shard_id,
+                    entry.address.block_slab_id,
+                    entry.address.offset,
+                    entry.address.length,
+                    entry.address.routing_bucket(),
+                );
+                plan.push((key, entry.address));
             }
-            report.considered_page_refs = report.considered_page_refs.saturating_add(1);
-            let key = CacheKey::page_with_slot(
-                shard_id,
-                entry.address.block_slab_id,
-                entry.address.offset,
-                entry.address.length,
-                entry.address.routing_bucket(),
-            );
+            // The control arm of `the_cache_warmup_reads_pages_after_the_shard_guard_drops` keeps
+            // the guard held across the reads, so the guard has a positive control to compare
+            // against rather than an assertion that nothing can fail.
+            self.warm_cache_under_shard_guard
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then_some(shards)
+        };
+        for (key, address) in plan {
             if self.cache.peek_tier(&key).is_some() {
                 report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);
                 report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
-            } else if let Ok(bytes) = self.page_store.read(&entry.address) {
+            } else if let Ok(bytes) = self.read_page_counted(&address) {
                 report.page_store_reads = report.page_store_reads.saturating_add(1);
                 report.block_store_reads = report.block_store_reads.saturating_add(1);
                 let byte_len = bytes.len() as u64;
@@ -488,6 +524,7 @@ impl TemporalEngine {
                 report.failed_page_refs = report.failed_page_refs.saturating_add(1);
             }
         }
+        drop(held_across_io);
         report
     }
 
