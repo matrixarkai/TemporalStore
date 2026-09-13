@@ -19501,3 +19501,239 @@ fn dumpcost_key_reads_back(engine: &TemporalEngine, shard_id: ShardId, key: &str
             value: Some(format!("value-{key}").into_bytes()),
         })
 }
+
+/// The bounded readability probe must FIND an unreadable page that sits outside its first window.
+///
+/// The probe reads at most `RECOVERY_READABLE_PROBE_PER_ROUND` live pages per round, and the
+/// budget is the point: the check's cost should not grow with the store. What the budget did NOT
+/// do is move. A bounded call read `addresses[0 .. limit]` and started at the front again the
+/// next round, so on a shard holding more live pages than the budget every round read the SAME
+/// prefix and a page past it was never read at all -- while the report came back saying the pages
+/// it had read were fine. The doc on `storage_recovery_report_without_boundary_sampled` promised
+/// corruption was "still found, over rounds rather than all in one"; without a moving window that
+/// promise was not something the code could keep.
+///
+/// This is the behavioural statement of that, not an assertion about the cursor: plant one
+/// corrupt page that the FIRST window provably does not read, then run rounds and require the
+/// probe to reach it. Before the window moved this failed at any round count.
+///
+/// THE TWO HALVES ARE ASSERTED SEPARATELY, because "the probe found the corruption" is also
+/// satisfied by a probe that abandoned its budget and read the whole shard -- which would close
+/// the hole by reintroducing the cost the budget exists to bound. So the per-round read count is
+/// pinned as well, and the two together say the window moved rather than grew.
+#[test]
+fn the_bounded_readability_probe_reaches_a_page_outside_its_first_window() {
+    const RECORDS: usize = 8_000;
+    let budget = crate::engine::storage_manager_cycle::RECOVERY_READABLE_PROBE_PER_ROUND;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("probe-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    // Plant the corruption BEFORE any bounded round, so "the first window misses it" is
+    // something this test ASSERTS rather than something it assumes. The last byte of the
+    // highest-numbered slab is the furthest point in the store from where the first window
+    // starts; whether that actually lands outside the window is checked below, not hoped for.
+    //
+    // DENOMINATOR: the corruption must be real and visible to a probe that reads everything.
+    // An unbounded call is the control for every bounded one -- if this finds nothing, the byte
+    // flip produced no unreadable page and the rounds below would be chasing a ghost.
+    let target = engine
+        .block_store()
+        .slab_ids()
+        .unwrap()
+        .into_iter()
+        .max()
+        .expect("the fixture wrote no slabs");
+    let mut slab = engine.block_store().read_slab(target).unwrap();
+    assert!(
+        !slab.is_empty(),
+        "slab {target} is empty, so flipping a byte in it corrupts nothing",
+    );
+    *slab.last_mut().unwrap() ^= 0xff;
+    engine.block_store().install_slab(target, &slab).unwrap();
+
+    let exhaustive = engine.storage_recovery_report_without_boundary_sampled(1, 0);
+    assert!(
+        !exhaustive.unreadable_page_refs.is_empty(),
+        "flipping a byte in slab {target} produced no unreadable page, so the rounds below could \
+never find one and would pass for the wrong reason",
+    );
+
+    // DENOMINATOR, and the whole premise. If the shard fits inside one window then one round
+    // already reads everything, there is no "outside the first window", and every assertion
+    // below would hold for the broken code too.
+    let first = engine.storage_recovery_report_without_boundary_sampled(1, budget);
+    assert!(
+        first.total_page_refs > budget,
+        "the fixture holds {} live pages and the budget is {budget}; one window covers the whole \
+shard, so this test cannot distinguish a moving window from a fixed one",
+        first.total_page_refs,
+    );
+    assert_eq!(
+        first.readable_probe_cursor, 0,
+        "the first round should start at the beginning",
+    );
+    assert_eq!(
+        first.probed_page_refs, budget,
+        "the first round read {} pages against a budget of {budget}",
+        first.probed_page_refs,
+    );
+    // The SECOND denominator, and the one that stops this test passing vacuously: the planted
+    // page has to lie outside the first window, or "a later round reaches it" is satisfied by
+    // the first round and says nothing about the window moving.
+    assert!(
+        first.unreadable_page_refs.is_empty(),
+        "the first window already read the corrupt page in slab {target}, so a later round \
+finding it would prove nothing about coverage. Plant it somewhere the first {budget} live pages \
+do not reach.",
+    );
+
+    // Now sweep. The window advances by `budget` a round, so the whole shard is covered in
+    // `ceil(total / budget)` rounds; a couple spare absorb the wrap.
+    let rounds_to_cover = first.total_page_refs.div_ceil(budget);
+    let cap = rounds_to_cover + 2;
+    let mut found_at: Option<usize> = None;
+    let mut probed_each_round = Vec::new();
+    for round in 1..=cap {
+        let report = engine.storage_recovery_report_without_boundary_sampled(1, budget);
+        probed_each_round.push(report.probed_page_refs);
+        if !report.unreadable_page_refs.is_empty() && found_at.is_none() {
+            found_at = Some(round);
+        }
+    }
+
+    // HALF ONE: the budget still binds. A probe that "fixed" coverage by reading everything
+    // would satisfy the half below while undoing the reason the bound exists.
+    for (index, probed) in probed_each_round.iter().enumerate() {
+        assert_eq!(
+            *probed,
+            budget,
+            "round {} read {probed} pages against a budget of {budget}. Coverage must come from \
+MOVING the window, not from widening it -- the per-round cost is what the bound protects.",
+            index + 1,
+        );
+    }
+
+    // HALF TWO: the sweep reaches the planted page.
+    let found_at = found_at.unwrap_or_else(|| panic!(
+        "after {cap} bounded rounds over a shard of {} live pages ({rounds_to_cover} rounds' \
+worth of windows at {budget} a round), the probe never read the corrupt page in slab {target} \
+-- an exhaustive call finds it immediately. That is the probe re-reading its first window every \
+round instead of advancing through the shard.",
+        first.total_page_refs,
+    ));
+    assert!(
+        found_at <= rounds_to_cover + 1,
+        "the probe took {found_at} rounds to reach a page that {rounds_to_cover} rounds of \
+windows should cover",
+    );
+}
+
+/// The probe's window advances by its budget at BOTH corpus sizes, and costs the same at each.
+///
+/// The point of a bounded sampler is that the per-round cost is independent of the store while
+/// the COVERAGE still completes. Those pull in opposite directions, and a change that is fine at
+/// one size can be wrong at another: a window anchored to the front is indistinguishable from a
+/// moving one on a shard small enough to fit in a single window, which is exactly how the
+/// original could look correct.
+///
+/// So both halves are measured at two sizes an order of magnitude apart. The read count must NOT
+/// grow with the corpus, and the window position must advance by the budget regardless of it.
+#[test]
+fn the_readability_probe_window_advances_by_its_budget_at_both_corpus_sizes() {
+    let budget = crate::engine::storage_manager_cycle::RECOVERY_READABLE_PROBE_PER_ROUND;
+
+    fn three_rounds(records: usize, budget: usize) -> (usize, Vec<usize>, Vec<usize>) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("window-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let mut cursors = Vec::new();
+        let mut probed = Vec::new();
+        let mut total = 0usize;
+        for _ in 0..3 {
+            let report = engine.storage_recovery_report_without_boundary_sampled(1, budget);
+            total = report.total_page_refs;
+            cursors.push(report.readable_probe_cursor);
+            probed.push(report.probed_page_refs);
+        }
+        (total, cursors, probed)
+    }
+
+    let (small_total, small_cursors, small_probed) = three_rounds(8_000, budget);
+    let (large_total, large_cursors, large_probed) = three_rounds(80_000, budget);
+
+    // DENOMINATOR for both arms: three windows must fit without wrapping, or "advanced by the
+    // budget" is not what the cursors would show even when the code is right.
+    assert!(
+        small_total > 3 * budget,
+        "small arm holds {small_total} live pages, which is under three windows of {budget}",
+    );
+    assert!(
+        large_total > 3 * budget,
+        "large arm holds {large_total} live pages, which is under three windows of {budget}",
+    );
+    // And the arms must actually differ in size, or this measured one corpus twice.
+    assert!(
+        large_total > small_total * 4,
+        "the two arms hold {small_total} and {large_total} live pages; they are too close to say \
+anything about scale",
+    );
+
+    // HALF ONE: the window advances by exactly the budget, at both sizes.
+    let expected_cursors = vec![0, budget, 2 * budget];
+    assert_eq!(
+        small_cursors, expected_cursors,
+        "at {small_total} live pages the window sat at {small_cursors:?}; it must advance by the \
+budget each round, not restart at the front",
+    );
+    assert_eq!(
+        large_cursors, expected_cursors,
+        "at {large_total} live pages the window sat at {large_cursors:?}; it must advance by the \
+budget each round, not restart at the front",
+    );
+
+    // HALF TWO: the per-round read count is the budget at both sizes -- separately, because a
+    // window that advanced but also grew with the corpus would pass the half above.
+    assert_eq!(
+        small_probed,
+        vec![budget; 3],
+        "small arm read {small_probed:?} pages a round against a budget of {budget}",
+    );
+    assert_eq!(
+        large_probed,
+        vec![budget; 3],
+        "large arm ({large_total} live pages) read {large_probed:?} pages a round against a \
+budget of {budget}. A bounded probe's cost must not grow with the store.",
+    );
+}
