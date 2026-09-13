@@ -17,7 +17,7 @@ except ImportError:
     from matrixark_mcp_local_adapter import expand_interned_records
 
 try:  # names owned by the parent module
-    from tools.test_matrixark_codex_hook_pipeline import (
+    from test_codex_pipeline_fixtures import (
     CountingLocalAdapter,
     MatrixArkLocalAdapter,
     MatrixArkMcpServer,
@@ -39,7 +39,7 @@ try:  # names owned by the parent module
     time,
 )
 except ImportError:
-    from test_matrixark_codex_hook_pipeline import (
+    from test_codex_pipeline_fixtures import (
     CountingLocalAdapter,
     MatrixArkLocalAdapter,
     MatrixArkMcpServer,

@@ -88,16 +88,24 @@ DEFERRED_SNIPPET = """def setUp(self):
     return Fixture
 """
 
+#: THE FOUR THAT REMAIN CANNOT FIRE, and that is worth knowing before anybody spends a refactor on
+#: them. `test_matrixark_mcp_backend_policy` raises `unittest.SkipTest` at import, because
+#: `run_matrixark_rust_scale_report` is absent from this repository and deliberately not recreated
+#: -- the symbols it owes name deployment infrastructure, and writing a stand-in would be guessing
+#: at scrubbed content. So the four `test_backend_policy_part*` modules never get far enough to hit
+#: the cycle, and their tests cannot run here at all. Breaking it would move 425 lines of fixtures
+#: for no change in behaviour.
+#:
+#: The five codex-pipeline pairs DID fire -- each part failed with a partially initialised import
+#: when reached first -- and are gone: the three adapters they shared live in
+#: `test_codex_pipeline_fixtures`, which imports no test module, so the graph is acyclic. They stay
+#: in KNOWN above, because importing the fixtures module is still a cross-test import; what they
+#: are no longer is MUTUAL, which is the half that reorders discover.
 KNOWN_MUTUAL = {
     ("test_backend_policy_part1", "test_matrixark_mcp_backend_policy"),
     ("test_backend_policy_part2", "test_matrixark_mcp_backend_policy"),
     ("test_backend_policy_part3", "test_matrixark_mcp_backend_policy"),
     ("test_backend_policy_part4", "test_matrixark_mcp_backend_policy"),
-    ("test_codex_pipeline_part1", "test_matrixark_codex_hook_pipeline"),
-    ("test_codex_pipeline_part2", "test_matrixark_codex_hook_pipeline"),
-    ("test_codex_pipeline_part3", "test_matrixark_codex_hook_pipeline"),
-    ("test_codex_pipeline_part4", "test_matrixark_codex_hook_pipeline"),
-    ("test_codex_pipeline_part5", "test_matrixark_codex_hook_pipeline"),
 }
 
 def _cross_importers() -> dict:
