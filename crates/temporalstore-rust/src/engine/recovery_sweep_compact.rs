@@ -522,7 +522,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         &self,
         request: ShardExpirySweepRequest,
     ) -> Result<ShardExpirySweepReport, Status> {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let mut shards = self.shards_write_marked();
         let Some(shard) = shards.get_mut(&request.shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
@@ -559,6 +559,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let mut skipped_records = 0usize;
         let mut loaded_for_expire = 0usize;
         let mut expired_keys: Vec<String> = Vec::new();
+        let mut pending_index_flush: Option<ShardState> = None;
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
                 if delete_record(shard, key) {
@@ -611,13 +612,43 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
             }
-            let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
-                .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
-            self.persist_index_bytes(request.shard_id, &index_bytes)
-                .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
-            let _ = self
-                .index_log_store
-                .append_index_bytes(request.shard_id, &index_bytes);
+            // Encoding the served index and writing it out are the expensive part of this
+            // sweep -- the shard's whole index through serde and then zstd, then two file
+            // writes -- and all of it used to happen while this write lock was held, so every
+            // read and write on the shard queued behind a cost that scales with the STORE while
+            // the round's own work is bounded by `expiry_scan_budget`. The lock is needed for
+            // the deletes and for anchoring `applied_wal_sequence`; it is not needed for the
+            // encode. A stamped CLONE carries the exact state out and the encode and both writes
+            // happen after the guard is dropped -- the same shape `apply_storage_eviction` uses
+            // for the same reason.
+            //
+            // WHY THIS ONE IS SAFE TO MOVE AND THE COMPACTOR'S IS NOT. Between the guard
+            // dropping and the write landing there is a window in which this snapshot is stale:
+            // a concurrent writer can persist a newer index that this one then overwrites, and a
+            // concurrent storage cycle can see pages these deletes freed, call their slabs
+            // stale and reclaim them while the durable index still names them. Both are
+            // recoverable HERE and only here, because an expiry IS a logged delete: every key
+            // above emitted a `CommonDelete` to the WAL before this point, so an index that
+            // lands stale (or never lands at all) leaves an anchor BEHIND the tombstones, and
+            // replay re-derives exactly the deletions this snapshot describes. Overwriting a
+            // newer index rewinds the anchor, which holds more log than needed and never less.
+            // Compaction's relocations are in no log -- see the note at its own flush.
+            shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
+            pending_index_flush = Some(shard.clone());
+        }
+        // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
+        // flush inside the region, so the guard has a positive control to compare against.
+        if self
+            .expiry_index_flush_under_lock
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            if let Some(snapshot) = pending_index_flush.take() {
+                self.flush_expiry_index(request.shard_id, &snapshot)?;
+            }
+        }
+        drop(shards);
+        if let Some(snapshot) = pending_index_flush {
+            self.flush_expiry_index(request.shard_id, &snapshot)?;
         }
         Ok(ShardExpirySweepReport {
             shard_id: request.shard_id,
@@ -632,6 +663,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
             round_limit: hot_limit.saturating_add(cold_limit),
             load_on_expire_only_when_needed: true,
         })
+    }
+
+    /// Encode and write the expiry sweep's served-index checkpoint.
+    ///
+    /// One body, called from both arms of the flush, so the arm that ships and the arm the guard
+    /// measures against cannot drift into doing different work.
+    fn flush_expiry_index(&self, shard_id: ShardId, snapshot: &ShardState) -> Result<(), Status> {
+        let index_bytes = super::serialize_index(snapshot);
+        self.persist_index_bytes(shard_id, &index_bytes)
+            .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
+        let _ = self
+            .index_log_store
+            .append_index_bytes(shard_id, &index_bytes);
+        Ok(())
     }
 
     pub fn sweep_all_expired_records(&self) -> Vec<ShardExpirySweepReport> {
@@ -696,7 +741,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .get(&shard_id)
             .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
-        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let mut shards = self.shards_write_marked();
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
@@ -1022,6 +1067,29 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 ),
             )
         })?;
+        // THIS FLUSH STAYS UNDER THE WRITE GUARD. DO NOT GIVE IT THE EVICTION/EXPIRY
+        // TREATMENT.
+        //
+        // It is the same shape as the two flushes that were moved out -- encode the whole index,
+        // write two files -- and `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`
+        // measures it still running inside the region, so it looks like the next one to move.
+        // It is not, and the difference is not about this function: it is that the work it is
+        // publishing exists NOWHERE ELSE.
+        //
+        // An expiry sweep and a delete_drop eviction both write a WAL tombstone per key before
+        // they flush, so a flush that lands late, lands stale, or never lands is re-derived by
+        // replay. Compaction deliberately does not advance `applied_wal_sequence` and emits no
+        // record: relocating a page changes only the volatile index and this file. From the
+        // moment the guard drops, `storage_lifecycle_plan` can take its own read lock, derive
+        // stale slabs as `page_store.slab_ids()` minus the volatile live set -- which now
+        // excludes the slabs this round just vacated -- and reclaim them. Crash in that window
+        // and the durable index is the PRE-compaction one, still naming slabs that have been
+        // destroyed, with no log to replay them back. That is the silent durable loss the
+        // partial-failure handler above exists to avoid, reached by a different route.
+        //
+        // Holding the guard across the encode is what makes that window not exist: no other
+        // thread can observe the vacated volatile index until the durable one names the new
+        // slab. The cost is real and measured; it buys the invariant.
         let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         self.persist_index_bytes(shard_id, &index_bytes)
