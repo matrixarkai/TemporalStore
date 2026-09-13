@@ -1878,7 +1878,12 @@ def _model_config_snapshot() -> Json:
         "api_base": _env("MATRIXARK_EMBEDDING_API_BASE") or _env("MATRIXARK_EMBED_BASE_URL"),
         "model": _env("MATRIXARK_EMBEDDING_MODEL"),
         "model_path": _env("MATRIXARK_EMBEDDING_MODEL_PATH"),
-        "text_max_tokens": _env("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "128"),
+        # Not a literal: 128 was the window chunking stopped using, and this snapshot would
+        # have kept reporting it. The Setting carries the build value via
+        # _EXPLICIT_BUILD_DEFAULT, which is the one place that number is decided.
+        "text_max_tokens": _env(
+            "MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS",
+            str(_gwconfig.SETTINGS_BY_KEY["embedding.text_max_tokens"].default)),
         "require_model_embeddings": require_model_embeddings,
         **_key_state(embedding_key_env),
     }
