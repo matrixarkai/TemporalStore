@@ -508,6 +508,23 @@ impl TemporalEngine {
             .collect();
         // Current derived generation BEFORE mutation: detects writes that landed after
         // the dump snapshot (those buckets must stay dirty for the next dump).
+        //
+        // DO NOT HOIST THIS INTO A SHARED SNAPSHOT. `who_walks_the_shard` shows
+        // `bucket_storage_summaries` entered THREE times in one `apply_storage_lifecycle` -- here,
+        // in `storage_lifecycle_plan`, and in `create_bucket_dump_manifest` -- and three identical
+        // whole-shard walks in one operation look exactly like something to share. Two of them
+        // can be. This one cannot, and the reason is the line above rather than anything about
+        // locking.
+        //
+        // This walk exists to be FRESH. It is compared against the generation the manifest
+        // CAPTURED, and a bucket whose generation has moved since is skipped so it stays dirty for
+        // the next dump. Feed it a snapshot taken when the plan ran and both sides become equal by
+        // construction: a bucket written to between the dump and this clear compares equal, is
+        // cleared, stops being dirty, is never dumped, and reclaim is then free to advance past the
+        // records it still needed. That is silent data loss, discovered on a later restart.
+        //
+        // The test that would catch it is not obvious either: any fixture that does not write
+        // CONCURRENTLY with a dump will pass a hoisted version happily.
         let current: std::collections::HashMap<u32, u64> =
             bucket_storage_summaries(shard, start_routing_bucket, end_routing_bucket)
                 .into_iter()

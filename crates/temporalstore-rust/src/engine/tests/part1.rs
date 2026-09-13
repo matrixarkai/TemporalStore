@@ -8297,6 +8297,88 @@ fn what_a_write_costs_in_barriers() {
     }
 }
 
+/// A bucket written to AFTER the dump captured it must stay dirty.
+///
+/// `clear_dumped_bucket_dirty_state` compares each bucket's CURRENT derived generation against the
+/// one the manifest captured, and skips clearing any bucket whose generation moved. That fresh
+/// read is the whole safety property: a bucket dirtied between the dump and the clear still holds
+/// undumped writes, so it must remain dirty for the next dump.
+///
+/// It is also the kind of walk that looks redundant. `who_walks_the_shard` shows
+/// `bucket_storage_summaries` entered three times in one `apply_storage_lifecycle`, and sharing one
+/// snapshot across them would make `captured` and `current` equal BY CONSTRUCTION -- the comparison
+/// would always pass, the bucket would be cleared, and its writes would never be dumped. Reclaim
+/// could then advance past records still needed: silent loss, found on a later restart.
+///
+/// This pins it. The write lands between the manifest and the clear, which is exactly the window
+/// a shared snapshot would erase.
+#[test]
+fn a_bucket_written_after_the_dump_stays_dirty() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..64 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dumped-{index:04}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let manifest = engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("manifest should be created");
+    // Denominator: a manifest naming no buckets would make the clear a no-op and the assertion
+    // below vacuous.
+    assert!(
+        !manifest.bucket_ids.is_empty(),
+        "the dump captured no buckets, so this measures nothing",
+    );
+
+    // THE WINDOW. This write lands after the dump captured its bucket and before the clear runs.
+    let late = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "dumped-0000".to_string(),
+            value: vec![b'w'; 96],
+        },
+    });
+    assert!(late.status.ok, "late write: {:?}", late.status);
+
+    let late_bucket = engine
+        .bucket_storage_summaries(1)
+        .into_iter()
+        .find(|summary| summary.dirty_object_count > 0)
+        .map(|summary| summary.routing_bucket);
+    assert!(
+        late_bucket.is_some(),
+        "the late write left no dirty bucket, so the clear below has nothing to get wrong",
+    );
+
+    engine.clear_dumped_bucket_dirty_state(1, &manifest);
+
+    let still_dirty = engine
+        .bucket_storage_summaries(1)
+        .into_iter()
+        .any(|summary| summary.dirty_object_count > 0);
+    assert!(
+        still_dirty,
+        "every bucket was cleared, including one written to AFTER the dump captured it. That \
+bucket's writes are now in no manifest and it will never be dumped, so reclaim may advance past \
+records that are still needed. The freshness of the `current` read in \
+`clear_dumped_bucket_dirty_state` is what prevents this -- it must not be fed a snapshot taken \
+before the dump.",
+    );
+}
+
 /// WHO walks the shard, by source location. Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib who_walks_the_shard -- --ignored --nocapture
