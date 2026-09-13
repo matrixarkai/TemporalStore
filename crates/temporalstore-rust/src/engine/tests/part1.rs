@@ -8297,6 +8297,89 @@ fn what_a_write_costs_in_barriers() {
     }
 }
 
+/// WHO walks the shard, by source location. Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib who_walks_the_shard -- --ignored --nocapture
+///
+/// `what_each_plan_call_walks` measures `apply_storage_lifecycle` at 10.0x the shard while every
+/// one of its callees sums to 6.0x. Four walks are inside the body, and no probe row can reach
+/// them -- each row can only call a function from outside, which is exactly what the missing four
+/// are not.
+///
+/// `collect_live_page_entries` is `#[track_caller]`, so it records the source location that asked.
+/// This prints that tally for one call, which names the four directly instead of inferring them.
+///
+/// Read it as "file:line -> entries materialized". A line appearing with N times the shard's live
+/// page count was entered N times.
+#[test]
+#[ignore]
+fn who_walks_the_shard() {
+    const RECORDS: usize = 4_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("whowalks-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    assert!(live_pages > 0, "fixture stored no live pages");
+
+    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_page_scan_sites();
+    let _ = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    });
+    let total = crate::engine::live_page_scan_entries();
+    let sites = crate::engine::live_page_scan_sites_snapshot();
+
+    assert!(total > 0, "apply_storage_lifecycle walked nothing; this attributes nothing");
+    assert!(
+        !sites.is_empty(),
+        "the per-site tally is empty while the total is {total}; the tracking is not wired",
+    );
+
+    eprintln!(
+        "  [who] apply_storage_lifecycle -> {total} entries = {:>4.1}x the shard ({live_pages} live pages)",
+        total as f64 / live_pages as f64,
+    );
+    let mut rows: Vec<(&String, &u64)> = sites.iter().collect();
+    rows.sort_by(|left, right| right.1.cmp(left.1));
+    for (site, entries) in rows {
+        eprintln!(
+            "  [who]   {:>5.1}x  {entries:>8}  {site}",
+            *entries as f64 / live_pages as f64,
+        );
+    }
+
+    // The tally must ACCOUNT for the total, or it is attributing something else.
+    let summed: u64 = sites.values().copied().sum();
+    assert_eq!(
+        summed, total,
+        "per-site entries {summed} do not sum to the total {total}",
+    );
+}
+
 /// What does each individual plan call WALK? Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_each_plan_call_walks -- --ignored --nocapture
