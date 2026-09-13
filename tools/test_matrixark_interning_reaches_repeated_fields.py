@@ -37,19 +37,25 @@ def _log_lines(path):
 
 
 class InterningCoversTheRepeatedFields(unittest.TestCase):
-    # This used to pin MATRIXARK_INTERN_BACKEND_METADATA to its default and restore it after every
-    # case. Another file in the suite set that flag and re-imported matrixark_mcp_temporal_append
-    # without putting it back, and left on it made the warm view and a cold read disagree on a hash
-    # inside the index records -- so this assertion was order-dependent for a reason that had
-    # nothing to do with what it tests. The flag and the unwired feature behind it are gone, so the
-    # defence goes with them.
+    # Read at import by matrixark_mcp_temporal_append, and another file in this suite sets it and
+    # re-imports that module without putting it back. Left on, the warm view and a cold read
+    # disagree on a hash inside the index records -- which reproduces on main with these field
+    # additions reverted, so it is not this change, but it makes the assertion below non-
+    # deterministic depending on test order. Pin it to the default and restore afterwards.
+    _BACKEND_INTERN = "MATRIXARK_INTERN_BACKEND_METADATA"
 
     def setUp(self):
+        self._saved_backend = os.environ.get(self._BACKEND_INTERN)
+        os.environ.pop(self._BACKEND_INTERN, None)
         self._reimport_append_module()
         with adapter_module._LOCAL_READ_CACHE_LOCK:
             adapter_module._LOCAL_READ_CACHE.clear()
 
     def tearDown(self):
+        if self._saved_backend is None:
+            os.environ.pop(self._BACKEND_INTERN, None)
+        else:
+            os.environ[self._BACKEND_INTERN] = self._saved_backend
         self._reimport_append_module()
         with adapter_module._LOCAL_READ_CACHE_LOCK:
             adapter_module._LOCAL_READ_CACHE.clear()
