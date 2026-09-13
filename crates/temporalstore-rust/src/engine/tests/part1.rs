@@ -8288,6 +8288,131 @@ two tallies have come apart",
     }
 }
 
+/// A shard whose live pages are all OUT of cache, so a warm-up has something to read.
+#[cfg(test)]
+fn cold_shard_for_warmup_measurement(dir: &std::path::Path, records: usize) -> TemporalEngine {
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.join("cache"),
+        dir.join("pages"),
+        dir.join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..records {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("warm-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Without this every page is already resident and the warm-up reads NOTHING -- the arms
+    // below would both report zero reads and agree for the wrong reason.
+    let _ = engine.cache.invalidate_shard(1);
+    engine
+}
+
+#[cfg(test)]
+fn measured_cache_warmup(
+    engine: &TemporalEngine,
+) -> (crate::engine::MaintenancePageReadCounts, usize) {
+    crate::engine::reset_maintenance_page_read_counts();
+    let report = engine.storage_cache_warmup_report(1, Vec::<u32>::new());
+    (
+        crate::engine::maintenance_page_read_counts(),
+        report.warmed_page_refs,
+    )
+}
+
+/// The cache warm-up reads its pages AFTER the shard-table read guard drops.
+///
+/// A read guard is the easy one to leave in place, because it admits other readers and so does
+/// not look like exclusion. It is: it excludes every WRITER on the shard for as long as it is
+/// held, and this stage held it across one block-store read and one cache insert per live page,
+/// with no per-round budget anywhere in it. The work under the guard scaled with the STORE while
+/// the round that calls it is bounded, which is the same shape #1620 found on the write side.
+///
+/// TWO arms, ONE process, the same fixture:
+///   * UNDER THE GUARD -- where the reads used to be. The positive control: the counter has to
+///     produce a non-zero number inside the region, or the zero below is a broken counter rather
+///     than a shortened hold.
+///   * SHIPPED -- the addresses are chosen under the guard, the reads happen after it drops.
+/// Both arms must warm the same pages, which is what stops this from being satisfied by a
+/// warm-up that did nothing.
+#[test]
+fn the_cache_warmup_reads_pages_after_the_shard_guard_drops() {
+    const RECORDS: usize = 200;
+
+    let control_dir = tempfile::tempdir().unwrap();
+    let control_engine = cold_shard_for_warmup_measurement(control_dir.path(), RECORDS);
+    control_engine.warm_cache_under_shard_guard_for_test();
+    let (control, control_warmed) = measured_cache_warmup(&control_engine);
+
+    let shipped_dir = tempfile::tempdir().unwrap();
+    let shipped_engine = cold_shard_for_warmup_measurement(shipped_dir.path(), RECORDS);
+    let (shipped, shipped_warmed) = measured_cache_warmup(&shipped_engine);
+
+    eprintln!(
+        "[cache warmup] under the guard: {} of {} page read(s) under the guard, \
+{control_warmed} page refs warmed",
+        control.page_reads_under_guard, control.page_reads_total,
+    );
+    eprintln!(
+        "[cache warmup] shipped:         {} of {} page read(s) under the guard, \
+{shipped_warmed} page refs warmed",
+        shipped.page_reads_under_guard, shipped.page_reads_total,
+    );
+
+    // DENOMINATORS FIRST. A warm-up that warmed nothing, or that found every page already
+    // cached, satisfies "no read under the guard" by never reaching a read.
+    assert!(
+        control_warmed > 0 && shipped_warmed > 0,
+        "an arm warmed no page refs ({control_warmed} / {shipped_warmed}), so the loop below the \
+guard never ran and nothing here is measuring the warm-up",
+    );
+    assert_eq!(
+        control_warmed, shipped_warmed,
+        "the arms must warm the same pages for their read counts to be comparable",
+    );
+    assert!(
+        control.page_reads_total > 0 && shipped.page_reads_total > 0,
+        "an arm read no pages off the block store at all ({} / {}), so the fixture was already \
+cached and neither arm is a subject for the claim below",
+        control.page_reads_total,
+        shipped.page_reads_total,
+    );
+    assert_eq!(
+        control.page_reads_total, shipped.page_reads_total,
+        "the arms read a different number of pages ({} vs {}), so the counts are not comparable",
+        control.page_reads_total, shipped.page_reads_total,
+    );
+
+    // POSITIVE CONTROL: the counter can see a read inside the region, because here is one.
+    assert_eq!(
+        control.page_reads_under_guard, control.page_reads_total,
+        "the control arm reads every page inside the guarded region and the counter saw {} of \
+{}. The measurement is broken, not the code under it: the assertion below would pass against an \
+engine that had stopped counting entirely",
+        control.page_reads_under_guard, control.page_reads_total,
+    );
+
+    // THE ASSERTION THE REGION CHANGE MADE.
+    assert_eq!(
+        shipped.page_reads_under_guard, 0,
+        "the cache warm-up read {} of {} pages off the block store while still holding the \
+shard-table read guard. A read guard excludes every writer, so a warm of the whole shard stops \
+all writes on it for the length of the I/O -- and the warm-up has no per-round budget, so that \
+length grows with the store. Collect the addresses under the guard, drop it, then read: \
+`collect_live_page_entries` already materializes the whole set, and nothing in the loop touches \
+the shard. If a new step genuinely needs the shard itself, say why here rather than widening the \
+region",
+        shipped.page_reads_under_guard,
+        shipped.page_reads_total,
+    );
+}
+
 /// THE OTHER HALF OF THE ANSWER: compaction's flush is still inside its guarded region, and that
 /// is deliberate.
 ///

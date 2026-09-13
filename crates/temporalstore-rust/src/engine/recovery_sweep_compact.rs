@@ -346,7 +346,7 @@ impl TemporalEngine {
         let slab_descriptors = self.page_store.slab_descriptors();
         let slab_summary = self.page_store.slab_summary();
         let block_slab_reports = self.page_store.slab_reports().unwrap_or_default();
-        let shards = self.shards.read().expect("engine lock poisoned");
+        let shards = self.shards_read_marked();
         let addresses = shards
             .get(&shard_id)
             .map(collect_live_page_addresses)
@@ -406,7 +406,12 @@ impl TemporalEngine {
                 continue;
             }
             probed_page_refs += 1;
-            match self.page_store.read(address) {
+            // Counted against the shard-table guard. This probe DOES read under the read guard,
+            // and unlike the warm-up it is bounded -- `readable_probe_limit` stops the reads
+            // while the per-slab tallies above keep going. Routed through the counter so the
+            // measurement covers both of the engine's maintenance page readers and a claim about
+            // one of them is made against a total that includes the other.
+            match self.read_page_counted(address) {
                 Ok(bytes) => {
                     readable_page_refs += 1;
                     slab_report.readable_live_page_refs =

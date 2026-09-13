@@ -51,7 +51,10 @@ pub use storage_bucket_internals::{
     live_page_scan_sites_snapshot, reset_bucket_page_index_visits,
     reset_live_page_scan_entries, reset_live_page_scan_sites,
 };
-pub use shard_write_guard::{index_encode_counts, reset_index_encode_counts, IndexEncodeCounts};
+pub use shard_write_guard::{
+    index_encode_counts, maintenance_page_read_counts, reset_index_encode_counts,
+    reset_maintenance_page_read_counts, IndexEncodeCounts, MaintenancePageReadCounts,
+};
 mod compaction;
 // The maintenance round in `data_node` asks this before compacting; see the function's doc.
 pub use compaction::compaction_relocatable_page_refs;
@@ -156,6 +159,13 @@ pub struct TemporalEngine {
     /// costs. A guard that can only observe zero cannot distinguish a shortened hold from a
     /// counter that stopped counting; this is how an engine takes the other side.
     expiry_index_flush_under_lock: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the cache warm-up reads its pages while still holding the shard-table read guard.
+    ///
+    /// False everywhere but the control arm of the guard that measures it. Same reason as the
+    /// flag above: an assertion that no page was read under a guard is satisfied just as well by
+    /// a stage that read nothing, so the guard runs an arm that still reads them all under the
+    /// lock and checks that the counter can reach the other answer.
+    warm_cache_under_shard_guard: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the expiry sweep's served-index checkpoint is the WHOLE index rather than a
     /// delta of the keys the round removed.
     ///
@@ -277,6 +287,29 @@ impl TemporalEngine {
     /// so a guard can state what they do while holding it.
     fn shards_write_marked(&self) -> MarkedShardWriteGuard<'_> {
         MarkedShardWriteGuard::new(self.shards.write().expect("engine lock poisoned"))
+    }
+
+    /// Take the shard table's read lock, marking the region for the lock-hold measurement.
+    ///
+    /// Identical to `self.shards.read()` in every observable way except that the page-read
+    /// counter can tell whether it is running inside the region.
+    fn shards_read_marked(&self) -> MarkedShardReadGuard<'_> {
+        MarkedShardReadGuard::new(self.shards.read().expect("engine lock poisoned"))
+    }
+
+    /// Read one live page off the block store, counted against the shard-table guard.
+    ///
+    /// The maintenance stages that read pages -- the cache warm-up and the recovery report's
+    /// readable probe -- go through here so a guard can state whether the reads happened while
+    /// the shard table was held. The count is taken here and the REGION is marked at the
+    /// acquisition, so moving a read out of a guarded region moves it out of the under-guard
+    /// tally without anything at this call site changing.
+    pub(crate) fn read_page_counted(
+        &self,
+        address: &BlockAddress,
+    ) -> Result<Vec<u8>, BlockStoreError> {
+        shard_write_guard::note_page_read();
+        self.page_store.read(address)
     }
 
     /// Mirror the deletions this engine emits on its own -- eviction drops, expiry sweeps --
@@ -2209,6 +2242,64 @@ pub mod shard_write_guard {
         ENCODES_TOTAL.with(|count| count.set(0));
         ENCODE_BYTES_TOTAL.with(|total| total.set(0));
     }
+
+    thread_local! {
+        /// How many marked shard-table READ guards this thread currently holds.
+        ///
+        /// Kept apart from the write depth because the two answer different questions. A write
+        /// guard excludes everyone; a read guard admits other readers and excludes only writers.
+        /// A maintenance stage that reads pages while holding this one is not blocking other
+        /// reads -- it is blocking every WRITE on the shard, including the rest of its own round.
+        static READ_DEPTH: Cell<u32> = const { Cell::new(0) };
+        static PAGE_READS_UNDER_GUARD: Cell<u64> = const { Cell::new(0) };
+        static PAGE_READS_TOTAL: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn entered_read() {
+        READ_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    }
+
+    pub(super) fn left_read() {
+        READ_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+
+    /// Whether this thread is inside a marked shard-table region of EITHER kind.
+    fn held_any() -> bool {
+        held() || READ_DEPTH.with(|depth| depth.get() > 0)
+    }
+
+    /// Page-store reads the maintenance paths performed, and how many of them were performed
+    /// while this thread held a shard-table guard.
+    ///
+    /// Same reasoning as the encode counters above, applied to the other thing a maintenance
+    /// stage does that scales with the STORE rather than with the round's budget: reading live
+    /// pages off the block store. The `_total` is the denominator -- "no reads happened under a
+    /// guard" is satisfied just as well by a stage that read nothing, or did not run.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct MaintenancePageReadCounts {
+        pub page_reads_under_guard: u64,
+        pub page_reads_total: u64,
+    }
+
+    pub(super) fn note_page_read() {
+        PAGE_READS_TOTAL.with(|count| count.set(count.get().saturating_add(1)));
+        if held_any() {
+            PAGE_READS_UNDER_GUARD.with(|count| count.set(count.get().saturating_add(1)));
+        }
+    }
+
+    pub fn maintenance_page_read_counts() -> MaintenancePageReadCounts {
+        MaintenancePageReadCounts {
+            page_reads_under_guard: PAGE_READS_UNDER_GUARD.with(|count| count.get()),
+            page_reads_total: PAGE_READS_TOTAL.with(|count| count.get()),
+        }
+    }
+
+    /// Clear this thread's page-read tallies. For a test measuring one stage.
+    pub fn reset_maintenance_page_read_counts() {
+        PAGE_READS_UNDER_GUARD.with(|count| count.set(0));
+        PAGE_READS_TOTAL.with(|count| count.set(0));
+    }
 }
 
 /// The shard table's write guard, with the region it covers marked for measurement.
@@ -2246,6 +2337,38 @@ impl std::ops::DerefMut for MarkedShardWriteGuard<'_> {
 impl Drop for MarkedShardWriteGuard<'_> {
     fn drop(&mut self) {
         shard_write_guard::left();
+    }
+}
+
+/// The shard table's READ guard, with the region it covers marked the same way.
+///
+/// A read guard looks harmless and is not: it admits other readers but excludes every writer, so
+/// a maintenance stage holding one across per-page I/O stops all writes on the shard for as long
+/// as the I/O takes. Marked at the acquisition for the same reason the write guard is -- work
+/// moving out of the region stops being counted because of WHERE IT IS, not because a wrapper
+/// was remembered.
+struct MarkedShardReadGuard<'a> {
+    guard: std::sync::RwLockReadGuard<'a, HashMap<ShardId, ShardState>>,
+}
+
+impl<'a> MarkedShardReadGuard<'a> {
+    fn new(guard: std::sync::RwLockReadGuard<'a, HashMap<ShardId, ShardState>>) -> Self {
+        shard_write_guard::entered_read();
+        Self { guard }
+    }
+}
+
+impl std::ops::Deref for MarkedShardReadGuard<'_> {
+    type Target = HashMap<ShardId, ShardState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl Drop for MarkedShardReadGuard<'_> {
+    fn drop(&mut self) {
+        shard_write_guard::left_read();
     }
 }
 
