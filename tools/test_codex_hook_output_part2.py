@@ -8,26 +8,33 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
-try:  # names owned by the parent module
-    from tools.test_matrixark_codex_hook_output import (
-    Namespace,
-    Path,
-    hook,
-    json,
-    subprocess,
-    sys,
-    tempfile,
-)
-except ImportError:
-    from test_matrixark_codex_hook_output import (
-    Namespace,
-    Path,
-    hook,
-    json,
-    subprocess,
-    sys,
-    tempfile,
-)
+# The parent imports the mixin class from this file, so anything imported FROM the parent here is a
+# cycle: whichever module the loader reaches first fails with a partially initialised import, and
+# which one that is depends on the order the files are walked in. matrixarkai#1597 removed the same
+# cycle from the module-boundary pair after it surfaced as a NEW ratchet failure on a branch that
+# had not touched either file.
+#
+# Nothing shared was being borrowed here either -- every name below is either stdlib or a
+# production module, reachable directly.
+import json
+import json
+import subprocess
+import subprocess
+import sys
+import sys
+import tempfile
+import tempfile
+from argparse import Namespace
+from argparse import Namespace
+from pathlib import Path
+from pathlib import Path
+
+try:  # package path
+    import tools.matrixark_codex_hook as hook
+    import tools.matrixark_codex_hook as hook
+except ImportError:  # Direct script execution from tools/.
+    import matrixark_codex_hook as hook
+    import matrixark_codex_hook as hook
 
 
 class _CodexHookOutputPart2:
