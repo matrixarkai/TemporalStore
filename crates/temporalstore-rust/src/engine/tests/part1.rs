@@ -8411,14 +8411,90 @@ fn what_each_plan_call_walks() {
     let _ = engine.storage_cache_warmup_report(1, Vec::new());
     report("storage_cache_warmup_report", crate::engine::live_page_scan_entries());
 
+    // The rest of `apply_storage_lifecycle`'s callees. After #1586 it is 10.0x and the pieces
+    // measured above account for roughly six of that, so about four are still unnamed. Every
+    // previous hoist in this chain was found by closing exactly this kind of gap between a
+    // parent's total and the sum of its children.
+    crate::engine::reset_live_page_scan_entries();
+    let _ = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(1, Vec::new());
+    report("manifest_prune_plan (again, post-fix)", crate::engine::live_page_scan_entries());
+
     // MUTATING from here.
     crate::engine::reset_live_page_scan_entries();
-    let _ = engine.create_bucket_dump_manifest(1, Vec::new());
-    report("create_bucket_dump_manifest (mutates)", crate::engine::live_page_scan_entries());
+    let _ = engine.roll_forward_bucket_dump_installs(1);
+    report("roll_forward_bucket_dump_installs (mutates)", crate::engine::live_page_scan_entries());
 
-    crate::engine::reset_live_page_scan_entries();
-    let _ = engine.apply_storage_lifecycle(lifecycle_request());
-    report("apply_storage_lifecycle (mutates)", crate::engine::live_page_scan_entries());
+    // EVERY MUTATING CALL GETS ITS OWN SHARD.
+    //
+    // These were measured in sequence against the one engine above, and that silently changed the
+    // answer: `create_bucket_dump_manifest` and `clear_dumped_bucket_dirty_state` clear the dirty
+    // buckets, so the `apply_storage_lifecycle` row that followed them skipped the dump it would
+    // otherwise do and read 7.0x instead of 10.0x. The number moved because of the probe, not
+    // because of the code.
+    //
+    // A fresh fixture per mutating call is the only way these rows mean what they say. It costs a
+    // rebuild each, which is why the read-only rows above still share one engine -- they cannot
+    // disturb each other.
+    let mutating_walk = |label: &str, run: &dyn Fn(&TemporalEngine)| {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("percall-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let pages: u64 = engine
+            .bucket_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.page_ref_count as u64)
+            .sum();
+        crate::engine::reset_live_page_scan_entries();
+        run(&engine);
+        let walked = crate::engine::live_page_scan_entries();
+        eprintln!(
+            "  [per-call] {label:<40} {walked:>8} entries = {:>5.1}x the shard",
+            walked as f64 / pages.max(1) as f64,
+        );
+    };
+
+    mutating_walk("create_bucket_dump_manifest", &|engine| {
+        let _ = engine.create_bucket_dump_manifest(1, Vec::new());
+    });
+    mutating_walk("purge_delayed_destroy_slabs", &|engine| {
+        let _ = engine.page_store.purge_delayed_destroy_slabs_with_report();
+    });
+    mutating_walk("clear_dumped_bucket_dirty_state", &|engine| {
+        if let Ok(manifest) = engine.create_bucket_dump_manifest(1, Vec::new()) {
+            // The manifest creation itself walks, so reset again and time only the clear.
+            crate::engine::reset_live_page_scan_entries();
+            engine.clear_dumped_bucket_dirty_state(1, &manifest);
+        } else {
+            eprintln!("  [per-call] (no manifest created; the row below measures nothing)");
+        }
+    });
+    mutating_walk("apply_bucket_dump_manifest_prune", &|engine| {
+        let _ = engine.apply_bucket_dump_manifest_prune_with_follower_cursors(1, Vec::new());
+    });
+    mutating_walk("apply_storage_lifecycle", &|engine| {
+        let _ = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            purge_delayed_destroy: true,
+            prune_bucket_dump_manifests: true,
+            roll_forward_bucket_dump_installs: true,
+            ..crate::engine::reports::StorageLifecycleRequest::default()
+        });
+    });
 
     eprintln!("  [per-call] shard holds {live_pages} live pages");
 }
