@@ -10,28 +10,28 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
-try:  # names owned by the parent module
-    from tools.test_matrixark_codex_hook_output import (
-    MatrixArkLocalAdapter,
-    Namespace,
-    Path,
-    hook,
-    matrixark_http,
-    os,
-    sys,
-    tempfile,
-)
-except ImportError:
-    from test_matrixark_codex_hook_output import (
-    MatrixArkLocalAdapter,
-    Namespace,
-    Path,
-    hook,
-    matrixark_http,
-    os,
-    sys,
-    tempfile,
-)
+# The parent imports the mixin class from this file, so anything imported FROM the parent here is a
+# cycle: whichever module the loader reaches first fails with a partially initialised import, and
+# which one that is depends on the order the files are walked in. matrixarkai#1597 removed the same
+# cycle from the module-boundary pair after it surfaced as a NEW ratchet failure on a branch that
+# had not touched either file.
+#
+# Nothing shared was being borrowed here either -- every name below is either stdlib or a
+# production module, reachable directly.
+import os
+import sys
+import tempfile
+from argparse import Namespace
+from pathlib import Path
+
+# Imported the SAME WAY THE PARENT DOES -- plain, with no `tools.` prefix. A `tools.`
+# import is a DIFFERENT module object from the bare one: `matrixark_codex_hook` and
+# `tools.matrixark_codex_hook` both load, both work, and each carries its own module
+# state, so a test patching one through the parent reached a module these mixins were
+# not using. Four codex-hook tests failed exactly that way.
+from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
+import matrixark_codex_hook as hook
+import matrixark_http
 
 
 class _CodexHookOutputPart3:
