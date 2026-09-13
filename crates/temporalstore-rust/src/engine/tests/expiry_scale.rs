@@ -1152,3 +1152,284 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
          the deletions, or a fold applies one without the other"
     );
 }
+
+/// THE FOLD ITSELF, not the record it reads: a delta-fold recovery applies the expiry
+/// tombstones, and it is the only thing in that load which can.
+///
+/// `the_expiry_delta_names_what_the_round_removed_and_anchors_no_further` above reads the record
+/// back out of the index log and checks what is IN it. Nothing then folded it. That hole was not
+/// visible from `tests/delta_index_log_gc.rs` either, whose name says otherwise: mutate
+/// `fold_index_log_deltas` to apply NOTHING and both of its tests stay green -- and replacing the
+/// body with `panic!` leaves them green too, which is the stronger statement. The fold is not
+/// merely redundant on that path, it is never CALLED there: under the single-barrier DEFAULT
+/// `load_shard_with` takes `load_index_base_only`, which passes `fold_deltas = false`, and
+/// reconstructs from the durable base plus a WAL replay instead. The fold is reached only from
+/// `load_index_checked`, i.e. only under the `TS_WAL_LEGACY_RECOVERY` escape hatch.
+///
+/// So this drives `load_index_checked` -- the exact entry point that path uses -- and arranges a
+/// state where the delta is the ONLY source of the answer:
+///
+///   * the durable base is materialized BEFORE the round and asserted BYTE-IDENTICAL after it,
+///     so the checkpoint on disk still names every key the round removed;
+///   * `load_index_checked` replays no WAL at all, so the tombstones cannot arrive from there;
+///   * the CONTROL is the same load with the fold switched off -- `load_index_base_only` over the
+///     same two files, in the same process -- and it is asserted to come back with those keys
+///     STILL ALIVE, deadline and pages. That is the denominator. A fixture that stopped putting
+///     the keys in the base would make the treatment below vacuous, and this fails there instead.
+///
+/// THE SHAPE COVERED IS #1633's, which is the shape every expiry round now writes: one record,
+/// NO page items, one bare key-state blob per removed key. The removal is carried entirely by
+/// "this key is in none of the thirteen per-key maps" plus the covered-key page wipe that an
+/// EMPTY item list against a covered key spells. A fold that applied only page items, or only key
+/// states, would leave half of it behind -- so both halves are asserted, on the same keys.
+#[test]
+fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
+    const LIVE_KEYS: usize = 64;
+    const DUE_KEYS: usize = 5;
+
+    /// Pages the index holds for one object key, across every bucket. The page half of the
+    /// removal, which the key-state blobs say nothing about.
+    fn pages_for(state: &ShardState, key: &str) -> usize {
+        state
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| bucket.page_index.values())
+            .filter(|page| page.object_key.as_ref() == key)
+            .count()
+    }
+
+    let due_key = |index: usize| format!("zzz-due-{index:04}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
+    engine.load_shard(1);
+
+    let mut seed = Vec::with_capacity(LIVE_KEYS + DUE_KEYS);
+    for index in 0..LIVE_KEYS {
+        seed.push((format!("live-{index:08}"), 3_600_000u64));
+    }
+    for index in 0..DUE_KEYS {
+        seed.push((due_key(index), 1u64));
+    }
+    write_keys(&engine, 1, seed);
+
+    // THE STALE BASE. Materialized BEFORE the round, so the durable checkpoint names the due keys
+    // as live. Everything below rests on this file not moving again.
+    engine.flush_shard_index(1);
+    let base_path = engine.index_path(1);
+    let base_before = std::fs::read(&base_path).expect("the base index should have been written");
+    let base_state = decode_index_bytes(&base_before).expect("the base index should decode");
+    let base_anchor = base_state.applied_wal_sequence.unwrap_or(0);
+    assert!(
+        base_anchor > 0,
+        "the base index carries no WAL anchor. The fold SKIPS every delta at or below the base \
+         anchor only when that anchor is non-zero; at zero it folds the whole log and the \
+         'suffix beyond the base' this test is about is not what is being exercised"
+    );
+    for index in 0..DUE_KEYS {
+        let key = due_key(index);
+        assert!(
+            base_state.expires_at_ms.contains_key(&key),
+            "the base index taken before the round does not name {key}. The base is supposed to \
+             be the STALE source that still believes this key is alive -- with it already absent, \
+             a fold that applies nothing would look exactly like one that works"
+        );
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (held, due) = deadline_census(&engine, 1);
+    assert_eq!(held, LIVE_KEYS + DUE_KEYS, "the fixture did not land: {held} deadlines");
+    assert_eq!(due, DUE_KEYS, "{due} keys are due, expected {DUE_KEYS}");
+
+    let records_before = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("the index log should read back")
+        .len();
+    let report = sweep_once(&engine, 1);
+    assert_eq!(
+        report.expired_records_removed, DUE_KEYS,
+        "the round removed {} of {DUE_KEYS} due keys, so there is no removal for the fold below \
+         to apply",
+        report.expired_records_removed
+    );
+
+    // THE BASE DID NOT MOVE. A round that rewrote the whole index would leave the tombstones in
+    // the base itself, and the fold would have nothing left to contribute.
+    let base_after = std::fs::read(&base_path).expect("the base index should still exist");
+    assert_eq!(
+        base_before.len(),
+        base_after.len(),
+        "the round rewrote the base index ({} -> {} bytes). The delta is no longer the only \
+         source of the removal and this test can no longer tell a working fold from a no-op one",
+        base_before.len(),
+        base_after.len()
+    );
+    assert!(
+        base_before == base_after,
+        "the base index changed under the round without changing size. Same conclusion: the \
+         durable checkpoint is no longer the stale one this test needs"
+    );
+
+    // THE DELTA EXISTS AND CARRIES THE #1633 SHAPE. Without this the assertions after it would be
+    // satisfied by an empty log just as well as by a correct one.
+    let records = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("the index log should read back");
+    assert_eq!(
+        records.len(),
+        records_before + 1,
+        "the round appended {} delta records, expected exactly one",
+        records.len().saturating_sub(records_before)
+    );
+    let record = records.last().expect("the round appended a record");
+    let record_anchor = record.applied_wal_sequence.unwrap_or(0);
+    assert!(
+        record_anchor > base_anchor,
+        "the expiry delta anchors at WAL sequence {record_anchor}, at or below the base's \
+         {base_anchor}. The fold skips every record at or below the base anchor, so this record \
+         would never be applied and the load below would be measuring the base alone"
+    );
+    assert!(
+        record.items.is_empty(),
+        "the expiry delta carries {} page items. #1633's record describes the removal with an \
+         EMPTY item list against covered keys; a record carrying items is a different shape and \
+         this test no longer covers the one the expiry round writes",
+        record.items.len()
+    );
+    let named: std::collections::BTreeSet<String> = record
+        .key_states
+        .iter()
+        .filter_map(|blob| blob.get("key").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect();
+    for index in 0..DUE_KEYS {
+        let key = due_key(index);
+        assert!(
+            named.contains(&key),
+            "the expiry delta does not name {key}. With no page items in the record, the blobs \
+             are the ONLY thing that makes a key covered, so an unnamed key is one the fold \
+             cannot touch however correct the fold is. Named: {named:?}"
+        );
+    }
+
+    // A second engine over the SAME pages and indexes, so both arms below read one set of files.
+    let reader = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-control"),
+        &pages,
+        &indexes,
+    );
+
+    // CONTROL: the same load with the fold switched off. No WAL replay on this path either, so
+    // this is the base and nothing else -- and the base still believes the due keys are alive.
+    let control = reader
+        .load_index_base_only(1, false)
+        .expect("the base index should load");
+    let mut control_pages = 0usize;
+    for index in 0..DUE_KEYS {
+        let key = due_key(index);
+        assert!(
+            control.expires_at_ms.contains_key(&key),
+            "CONTROL: a load that does not fold the delta came back WITHOUT {key}'s deadline. \
+             Something other than the fold is already removing it, so the treatment below proves \
+             nothing -- it would pass with the fold deleted"
+        );
+        control_pages += pages_for(&control, &key);
+    }
+    assert!(
+        control_pages > 0,
+        "CONTROL: the unfolded base holds no pages at all for the {DUE_KEYS} removed keys, so the \
+         page half of the fold has nothing to wipe and asserting it wiped them is vacuous"
+    );
+    assert_eq!(
+        control.expires_at_ms.len(),
+        LIVE_KEYS + DUE_KEYS,
+        "CONTROL: the unfolded base holds {} deadlines, expected all {} the fixture wrote",
+        control.expires_at_ms.len(),
+        LIVE_KEYS + DUE_KEYS
+    );
+    assert_eq!(
+        control.applied_wal_sequence,
+        Some(base_anchor),
+        "CONTROL: the unfolded base anchors at {:?}, not the {base_anchor} it was written with",
+        control.applied_wal_sequence
+    );
+
+    // TREATMENT: the same two files, folded. Everything that differs from the control is the
+    // fold's work and nothing else's.
+    let folded = reader
+        .load_index_checked(1, false)
+        .expect("the delta log is intact, so the checked load must not refuse it")
+        .expect("the base index should load");
+
+    println!(
+        "  stale base at anchor {base_anchor} ({} bytes, unchanged by the round), one delta at \
+         anchor {record_anchor} with {} items and {} key blobs: unfolded holds {} deadlines and \
+         {control_pages} pages for the removed keys, folded holds {}",
+        base_before.len(),
+        record.items.len(),
+        record.key_states.len(),
+        control.expires_at_ms.len(),
+        folded.expires_at_ms.len(),
+    );
+
+    for index in 0..DUE_KEYS {
+        let key = due_key(index);
+        assert!(
+            !folded.expires_at_ms.contains_key(&key),
+            "the fold left {key} holding the deadline the round cleared. The delta's blob for it \
+             is bare -- no `expires_at_ms` field -- which `apply_key_state_field` is supposed to \
+             read as a removal, and the stale base is the only other source in this load. An \
+             expired key comes back with a deadline in the past, which is a key a later round \
+             finds due all over again"
+        );
+        assert_eq!(
+            pages_for(&folded, &key),
+            0,
+            "the fold left {} page(s) of {key} attached. The record carries NO items, and an \
+             empty item list against a covered key is how the removal is spelled: every page of \
+             every covered key is wiped and only the carried items are restored. Pages left \
+             behind are pages the deletes already retained -- dangling entries pointing into \
+             reclaimable slabs",
+            pages_for(&folded, &key)
+        );
+    }
+    assert_eq!(
+        folded.expires_at_ms.len(),
+        LIVE_KEYS,
+        "the folded index holds {} deadlines, expected exactly the {LIVE_KEYS} live ones. The \
+         unfolded control holds {} -- a folded count equal to the control's is a fold that \
+         applied nothing",
+        folded.expires_at_ms.len(),
+        control.expires_at_ms.len()
+    );
+    for index in [0usize, LIVE_KEYS / 2, LIVE_KEYS - 1] {
+        let key = format!("live-{index:08}");
+        assert!(
+            folded.expires_at_ms.contains_key(&key),
+            "the fold removed {key}, which the round did not touch. The covered-key wipe reaches \
+             every key the blobs name, so a delta naming more than it removed deletes live data \
+             on recovery"
+        );
+        assert!(
+            pages_for(&folded, &key) > 0,
+            "the fold left {key} with no pages while keeping its deadline -- a key that reads as \
+             present and answers nothing"
+        );
+    }
+    assert_eq!(
+        folded.applied_wal_sequence,
+        Some(record_anchor),
+        "the fold reconstructed anchor {:?}, not the delta's {record_anchor}. The anchor advances \
+         only when a record was actually applied, so this is the same failure counted a second \
+         way -- and an anchor left at the base's would make a legacy-recovery load replay the \
+         round's own tombstones again",
+        folded.applied_wal_sequence
+    );
+}

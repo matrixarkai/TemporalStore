@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -1007,27 +1007,6 @@ pub fn page_ref_key_from_parts(
         ":{block_slab_id}:{offset}:{length}:{page_id}:{generation}"
     );
     key
-}
-
-/// Fold an ordered stream of delta items onto a base map keyed by `(routing_bucket,
-/// page_ref_key)`. Later items win; a `deleted` tombstone removes the key. This is the
-/// pure replay step: `base` is the page-index projection of the base snapshot and the
-/// returned map is the reconstructed, current page index -- O(base + deltas), and the
-/// per-write producer side is O(delta).
-pub fn fold_index_items(
-    base: BTreeMap<(u32, String), IndexItem>,
-    deltas: &[IndexItem],
-) -> BTreeMap<(u32, String), IndexItem> {
-    let mut folded = base;
-    for item in deltas {
-        let key = (item.routing_bucket, item.page_ref_key.clone());
-        if item.deleted {
-            folded.remove(&key);
-        } else {
-            folded.insert(key, item.clone());
-        }
-    }
-    folded
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2960,22 +2939,6 @@ mod tests {
         // delta records rather than whole-index records.
         let reopened = LocalIndexLogStore::new(dir.path());
         assert_eq!(reopened.stats(7).last_sequence, 2);
-    }
-
-    #[test]
-    fn fold_index_items_applies_delete_markers_and_last_writer_wins() {
-        let mut base = BTreeMap::new();
-        base.insert((1u32, "a".to_string()), page_item(1, "a", false));
-        base.insert((1u32, "b".to_string()), page_item(1, "b", false));
-        // Delta: delete a, overwrite b, add c.
-        let mut updated_b = page_item(1, "b", false);
-        updated_b.size = 99;
-        let deltas = vec![page_item(1, "a", true), updated_b, page_item(2, "c", false)];
-        let folded = fold_index_items(base, &deltas);
-        assert!(!folded.contains_key(&(1, "a".to_string())));
-        assert_eq!(folded.get(&(1, "b".to_string())).unwrap().size, 99);
-        assert!(folded.contains_key(&(2, "c".to_string())));
-        assert_eq!(folded.len(), 2);
     }
 
     /// The band catalog is the LAST record that carries one, and nothing after it clears it.
