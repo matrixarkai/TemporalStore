@@ -182,7 +182,29 @@ impl DataNodeRuntime {
             || pressure.reclaimable_physical_bytes
                 >= options.reclaimable_physical_bytes_pressure.max(1);
 
-        if options.enable_wal_reclaim && dump_pressure {
+        // A shard with no writer has no dump pressure, and for that reason alone this stage
+        // used to vanish from `executed_stages` after the first round and never come back --
+        // while the log still held every one of its records. The stage list is how an operator
+        // reads whether maintenance is alive, so a stage that stops because its trigger is the
+        // WRONG QUESTION is indistinguishable from maintenance that has died.
+        //
+        // Dump pressure asks "is there undumped work?". Reclaim asks "does the log hold records
+        // nothing needs?" -- and on an idle shard the answer to the first is always no and to the
+        // second is usually yes, which is exactly when reclaim matters most and exactly when it
+        // was not run. Nothing else in a shipped server reclaims on a timer, so an idle shard's
+        // log was permanent.
+        //
+        // The plan is the only thing that can answer the second question, so ask it -- but only
+        // when the cheap trigger has already declined, so a busy shard pays nothing. An idle
+        // shard is by definition not doing anything else with this round.
+        let wal_reclaim_pressure = dump_pressure
+            || (options.enable_wal_reclaim
+                && self
+                    .inner
+                    .engine
+                    .storage_wal_reclaim_plan(shard_id, Vec::new(), Vec::new())
+                    .safe_to_reclaim);
+        if options.enable_wal_reclaim && wal_reclaim_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 shard_id,
                 selected_dump_buckets: Vec::new(),
@@ -280,8 +302,8 @@ impl DataNodeRuntime {
         pressure_decisions.push(storage_manager_pressure_decision(
             "reclaim_wal",
             options.enable_wal_reclaim,
-            dump_pressure,
-            options.enable_wal_reclaim && dump_pressure,
+            wal_reclaim_pressure,
+            options.enable_wal_reclaim && wal_reclaim_pressure,
             vec![
                 storage_manager_pressure_signal(
                     "dirty_slot_count",
@@ -303,10 +325,14 @@ impl DataNodeRuntime {
                     pressure.undumped_wal_records >= options.min_undumped_wal_records.max(1),
                     "undumped_wal_pressure",
                 ),
+                (
+                    wal_reclaim_pressure && !dump_pressure,
+                    "reclaimable_wal_pressure",
+                ),
             ]),
             storage_manager_skip_reason(
                 options.enable_wal_reclaim,
-                dump_pressure,
+                wal_reclaim_pressure,
                 "reclaim_wal",
             ),
         ));

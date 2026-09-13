@@ -103,7 +103,14 @@ pub(super) struct ShardState {
     /// The same pair as `SeenSet`'s `by_member`/`by_time`, for the same reason.
     ///
     /// Derived, never persisted: it is rebuilt from `expires_at_ms` on first use after a load,
-    /// so no snapshot or wire format changes and an older snapshot needs no migration.
+    /// so no snapshot or wire format changes and an older snapshot needs no migration. The repair
+    /// (`ensure_expiry_order`) fires ONLY on an entirely empty map -- a mirror left populated and
+    /// wrong is never repaired, and shows up only as keys that silently never expire.
+    ///
+    /// The `engine::tests::expiry_scale` module holds the guards: that a round finds what is due
+    /// at a hundred-thousand-key shard, that this view is rebuilt on load, manifest install and
+    /// WAL replay, and -- at length -- why a bounded round-robin expiry cursor should not replace
+    /// an ordered index here.
     #[serde(skip)]
     pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
     pub(super) strings: HashMap<String, BlockAddress>,
@@ -335,6 +342,22 @@ pub(super) struct CoreIndex {
     /// so a missing value costs time rather than correctness.
     #[serde(skip)]
     pub(super) object_component_page_refs: Option<usize>,
+    /// Buckets whose page list has been released: present in `bucket_map`, `in_memory: false`,
+    /// `page_index` empty, reloadable from the model maps on demand.
+    ///
+    /// A registry rather than a scan, because three hot paths need the answer "is anything
+    /// released" in O(1): the per-execute promote reconcile (which would otherwise see a released
+    /// bucket as an index that has fallen out of sync and rebuild the whole shard), the
+    /// bucket-index page walk (which must supplement released buckets from the model maps rather
+    /// than report them as empty), and the write path (which must reload a bucket before filing a
+    /// page into it, so a node never ends up half-resident).
+    ///
+    /// Not serialized: release is a memory state, not a durable one. An index written while a
+    /// bucket is released decodes with that bucket simply holding no pages, and every load path
+    /// re-derives `bucket_map` from the model maps anyway -- which is why the release rules above
+    /// refuse the three model maps that are themselves rebuilt from the index.
+    #[serde(skip)]
+    pub(super) released_buckets: BTreeSet<u32>,
 }
 
 pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
@@ -1364,31 +1387,39 @@ pub(super) struct BucketNode {
     pub(super) dirty: bool,
     #[serde(default)]
     pub(super) deleted: bool,
-    /// The three flags of a per-bucket residency lifecycle that does not exist yet.
+    /// The three flags of a per-bucket residency lifecycle. They are SET now, by
+    /// `release_bucket_pages` and `reload_released_bucket` in `storage_bucket_internals`.
     ///
-    /// They describe a bucket whose metadata is known while its data is not resident, which is
-    /// what a load-on-demand store needs: evict a bucket's data, keep enough to find it again,
-    /// load it back when someone asks. The design being followed has exactly that --
-    /// `SlotStore::LoadSlot` reads a slot's page indexes with `index_->GetSlotPages(slot_id)` and
-    /// loads only those pages, and `Index::EvictSlot` drops the node.
+    /// A RELEASED bucket is `meta_loaded: true, loading: false, in_memory: false` with an empty
+    /// `page_index` and its `object_index` intact: the node stays in `bucket_map`, so the bucket
+    /// is still routable, still countable, and still findable -- it simply no longer holds the
+    /// per-page entries, which are what the index actually costs (~760 B a record).
     ///
-    /// WHAT BLOCKS IT HERE is not the missing function. It is where the page list lives.
-    /// `GetSlotPages` answers from the INDEX, which holds per-slot page metadata whether or not
-    /// the slot is resident. Our equivalent, `bucket_index.bucket_map`, is DERIVED:
-    /// `rebuild_bucket_page_ownership` clears it and rebuilds it by walking
-    /// `collect_model_live_page_entries`, which iterates `strings`, `hashes`, `zsets` and the rest
-    /// -- the resident address maps themselves.
+    /// WHERE THE PAGE LIST COMES BACK FROM. `bucket_map` is derived:
+    /// `rebuild_bucket_page_ownership` builds it by walking `collect_model_live_page_entries`,
+    /// which iterates `strings`, `zsets`, `lists` and the rest -- the resident address maps. That
+    /// used to read as the reason a bucket could not be released, and it is in fact the reason it
+    /// CAN be: the model maps, not the bucket index, are what a read resolves through (see
+    /// `Command::StringGet`, which goes straight to `shard.strings`), so releasing the derived
+    /// per-page view frees memory without touching anything a read needs. Reload re-derives
+    /// exactly that bucket's pages from the same maps.
     ///
-    /// So a bucket's page list is a view of its resident data. Evicting the data destroys the only
-    /// record of which pages were the bucket's, and nothing could load it back. That is why these
-    /// flags are never set, and why eviction in the shipped mode drops CACHED PAGES
-    /// (`invalidate_slot`) and never a bucket node -- see the eviction ceiling recorded on
-    /// `how_long_eviction_takes_to_converge`.
+    /// WHAT THAT COSTS IN PRECONDITIONS, all checked by `release_bucket_pages`, none assumed:
     ///
-    /// Closing it means giving the index a per-bucket page list that survives the bucket leaving
-    /// memory, which is a durable-format change and not a wiring one. Until then, the recorded
-    /// finding that the bucket index is never evicted (~760 B a key) has no mechanism that could
-    /// evict it.
+    ///   * the bucket must be clean and undeleted, page by page -- the model maps carry no
+    ///     per-page `dirty`/`deleted` bit, so a release that had to restore one could not;
+    ///   * every page's address must carry an explicit routing bucket equal to this one, so
+    ///     "which model entries are this bucket's" needs no hash fallback to answer;
+    ///   * the page set must be EQUAL to what the model maps derive for the bucket right now,
+    ///     which is what makes the release reversible rather than hopeful; and
+    ///   * no page may belong to `hashes`, `context_events` or `context_indexes`. Those three
+    ///     maps are `skip_serializing` on `ShardState` and are rebuilt FROM the bucket index on
+    ///     load, so a released bucket of one of those kinds would have nothing left to rebuild
+    ///     from once the index was written and read back.
+    ///
+    /// `loading` is held across the re-derivation, which is the state a concurrent caller would
+    /// have to queue behind if reload ever became asynchronous; today the shard write lock covers
+    /// it, so it is true only within one critical section.
     pub(super) meta_loaded: bool,
     pub(super) loading: bool,
     pub(super) in_memory: bool,

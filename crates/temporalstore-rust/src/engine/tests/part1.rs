@@ -8071,6 +8071,246 @@ existing slice rather than calling `collect_live_page_entries` again.",
     );
 }
 
+/// The fixture both maintenance-flush measurements use: a shard whose records are all due.
+///
+/// `RECORDS` is small on purpose. What is being counted is how many index encodes land inside the
+/// guarded region, and that is one per round whatever the shard holds; a bigger fixture would only
+/// make the BYTES bigger, and the byte figure is here to say the encode is not free, not to be
+/// compared against a threshold.
+#[cfg(test)]
+fn expired_shard_for_flush_measurement(
+    dir: &std::path::Path,
+    records: usize,
+) -> TemporalEngine {
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.join("cache"),
+        dir.join("pages"),
+        dir.join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..records {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("expire-{index:06}"),
+                value: vec![b'v'; 64],
+                ttl_ms: 1,
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // The deadlines are in the past before the sweep asks, so the round has real work.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    engine
+}
+
+/// Run one expiry sweep on `engine` and report what the served-index encode did.
+#[cfg(test)]
+fn measured_expiry_sweep(
+    engine: &TemporalEngine,
+    records: usize,
+) -> (crate::engine::IndexEncodeCounts, usize) {
+    crate::engine::reset_index_encode_counts();
+    let report = engine
+        .sweep_expired_records_with_request(ShardExpirySweepRequest {
+            shard_id: 1,
+            load_cold_buckets: true,
+            max_hot_buckets_per_round: records,
+            max_cold_buckets_per_round: records,
+            ..ShardExpirySweepRequest::default()
+        })
+        .expect("expiry sweep must succeed");
+    (
+        crate::engine::index_encode_counts(),
+        report.expired_records_removed,
+    )
+}
+
+/// THE GUARD: the expiry sweep's served-index flush happens AFTER the shard write guard drops.
+///
+/// The sweep's own work is bounded -- `expiry_scan_budget` caps what a round looks at, so a round
+/// costs the same on a shard of four thousand keys as on one of four hundred thousand. The flush
+/// that followed it was not: encoding the served index runs the WHOLE shard through serde and then
+/// zstd, and it ran while the shard-table write lock was still held, so every read and every write
+/// on that shard queued behind a cost that scales with the store. That is the one part of the
+/// round that grows, and it is the part that does not need the lock.
+///
+/// Counted, not timed. This box is shared, and a build running next door moves wall-clock by an
+/// order of magnitude without moving both arms of a comparison equally. A COUNT of encodes inside
+/// the guarded region is the same number under any load.
+///
+/// Both arms run in ONE process against the same fixture:
+///   * the control arm keeps the flush inside the region (`flush_expiry_index_under_lock_for_test`),
+///     which is where it used to be -- so the counter has to produce a non-zero number, and an
+///     assertion of zero in the other arm cannot be passing because the counter stopped counting;
+///   * the shipped arm flushes after the guard drops.
+/// Both must expire the same records and both must still encode an index, which is what stops this
+/// from being satisfied by a sweep that did nothing.
+#[test]
+fn the_expiry_sweep_flush_waits_for_the_write_guard_to_drop() {
+    const RECORDS: usize = 200;
+
+    let control_dir = tempfile::tempdir().unwrap();
+    let control_engine = expired_shard_for_flush_measurement(control_dir.path(), RECORDS);
+    control_engine.flush_expiry_index_under_lock_for_test();
+    let (control, control_removed) = measured_expiry_sweep(&control_engine, RECORDS);
+
+    let shipped_dir = tempfile::tempdir().unwrap();
+    let shipped_engine = expired_shard_for_flush_measurement(shipped_dir.path(), RECORDS);
+    let (shipped, shipped_removed) = measured_expiry_sweep(&shipped_engine, RECORDS);
+
+    eprintln!(
+        "[expiry flush] under the lock: {} encode(s) / {} bytes under the guard, {} / {} total, \
+{control_removed} records expired",
+        control.encodes_under_guard,
+        control.encode_bytes_under_guard,
+        control.encodes_total,
+        control.encode_bytes_total,
+    );
+    eprintln!(
+        "[expiry flush] after the drop: {} encode(s) / {} bytes under the guard, {} / {} total, \
+{shipped_removed} records expired",
+        shipped.encodes_under_guard,
+        shipped.encode_bytes_under_guard,
+        shipped.encodes_total,
+        shipped.encode_bytes_total,
+    );
+
+    // DENOMINATORS FIRST. A sweep that expired nothing, or expired something and never reached a
+    // flush, satisfies "no encode under the guard" by not running the path at all.
+    assert!(
+        control_removed > 0 && shipped_removed > 0,
+        "neither arm expired a record ({control_removed} / {shipped_removed}), so the flush never \
+ran and nothing below is measuring the sweep",
+    );
+    assert_eq!(
+        control_removed, shipped_removed,
+        "the two arms must do the same work for their encode counts to be comparable",
+    );
+    assert!(
+        shipped.encodes_total > 0 && shipped.encode_bytes_total > 0,
+        "the shipped arm encoded no served index at all ({} encodes, {} bytes), so it is not the \
+flush that moved -- it is the flush that vanished",
+        shipped.encodes_total,
+        shipped.encode_bytes_total,
+    );
+
+    // POSITIVE CONTROL: the counter can see a flush inside the region, because here is one.
+    assert!(
+        control.encodes_under_guard > 0 && control.encode_bytes_under_guard > 0,
+        "the control arm flushes inside the guarded region and the counter saw nothing ({} \
+encodes, {} bytes). The measurement is broken, not the code under it: every assertion below \
+would pass against an engine that had stopped counting entirely",
+        control.encodes_under_guard,
+        control.encode_bytes_under_guard,
+    );
+
+    // THE ASSERTION.
+    assert_eq!(
+        shipped.encodes_under_guard, 0,
+        "the expiry sweep encoded the served index {} time(s) ({} bytes) while still holding the \
+shard-table write guard. The encode scales with the STORE while the round's own work is bounded, \
+so every reader and writer on this shard queues behind it. Take a stamped clone under the guard \
+and flush after it drops -- `apply_storage_eviction` is the worked example. If a new step needs \
+the shard itself rather than the snapshot, say why here rather than widening the region",
+        shipped.encodes_under_guard,
+        shipped.encode_bytes_under_guard,
+    );
+    assert_eq!(
+        shipped.encode_bytes_under_guard, 0,
+        "no encode was counted inside the guarded region but {} bytes were, which means the two \
+tallies have come apart",
+        shipped.encode_bytes_under_guard,
+    );
+
+    // And the sweep still did its job in the arm that ships: the keys are gone.
+    for index in 0..RECORDS {
+        let get = shipped_engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("expire-{index:06}"),
+            },
+        });
+        assert!(
+            matches!(get.response, CommandResponse::Bytes { value: None }),
+            "expire-{index:06} survived a sweep that reported it removed: {:?}",
+            get.response,
+        );
+    }
+}
+
+/// THE OTHER HALF OF THE ANSWER: compaction's flush is still inside its guarded region, and that
+/// is deliberate.
+///
+/// This asserts the CURRENT state rather than an improvement, which is unusual and is the point.
+/// Compaction's flush is the same shape as the expiry sweep's -- encode the whole index, write two
+/// files -- so the next person to read the two side by side will see an obvious omission. It is
+/// not one. A relocation is recorded in no log: compaction does not advance
+/// `applied_wal_sequence` and emits no WAL record, so the durable index is the ONLY place the new
+/// page addresses exist. Drop the guard before writing it and `storage_lifecycle_plan` can, in
+/// that window, derive stale slabs from the volatile index -- which already excludes the slabs the
+/// round just vacated -- and reclaim them while the durable index still names them. A crash there
+/// loses data with no replay to recover it, which is exactly the failure the partial-failure
+/// handler in that function exists to prevent.
+///
+/// If this test ever fails because the encode moved out, the change is not an optimisation: read
+/// the note at the flush before deciding what to do about the red.
+#[test]
+fn the_compaction_flush_stays_inside_its_write_guard() {
+    const RECORDS: usize = 200;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("compact-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    crate::engine::reset_index_encode_counts();
+    let report = engine
+        .compact_shard_pages_with_budgets(1, u64::MAX, usize::MAX)
+        .expect("compaction round must succeed");
+    let counts = crate::engine::index_encode_counts();
+
+    eprintln!(
+        "[compaction flush] {} encode(s) / {} bytes under the guard, {} / {} total, {} page refs \
+rewritten",
+        counts.encodes_under_guard,
+        counts.encode_bytes_under_guard,
+        counts.encodes_total,
+        counts.encode_bytes_total,
+        report.rewritten_page_refs,
+    );
+
+    // Denominator: a round that published no index says nothing about where the publish happened.
+    assert!(
+        counts.encodes_total > 0,
+        "the compaction round encoded no served index, so this measures nothing",
+    );
+    assert!(
+        counts.encodes_under_guard > 0 && counts.encode_bytes_under_guard > 0,
+        "compaction's served-index flush is no longer inside its write guard ({} encodes, {} \
+bytes). Read the note at that flush before treating this as a win: the relocations it publishes \
+are in NO log, so a concurrent storage cycle reclaiming the vacated slabs in the window this \
+opens is unrecoverable durable loss",
+        counts.encodes_under_guard,
+        counts.encode_bytes_under_guard,
+    );
+}
+
 /// What does COMPACTION's preamble walk, piece by piece? Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_the_compaction_preamble_walks -- --ignored --nocapture
@@ -8377,6 +8617,98 @@ records that are still needed. The freshness of the `current` read in \
 `clear_dumped_bucket_dirty_state` is what prevents this -- it must not be fed a snapshot taken \
 before the dump.",
     );
+}
+
+/// A RATCHET on how many times one call may walk the shard's live pages.
+///
+/// The rule this enforces: within one call, a given consumer group scans the live-page set ONCE.
+/// Where a group already shares a walk, adding a consumer must reuse the slice rather than add a
+/// scan; where a walk is irreducible, this test records WHY so the number is not filed down by
+/// someone who has not read the reason.
+///
+/// `apply_storage_lifecycle` is the worst case in the engine and sits at SEVEN:
+///
+///   3  bucket_storage_summaries          IRREDUCIBLE. The plan's, the manifest's, and the
+///                                        dirty-state clear's. #1607 proves the third must stay
+///                                        FRESH -- it compares current generations against what
+///                                        the manifest captured, so a shared snapshot makes both
+///                                        sides equal by construction, clears a bucket holding
+///                                        undumped writes, and reclaim may then advance past
+///                                        records still needed. Sharing the other two is SAFE but
+///                                        a bad trade: the manifest would record generations older
+///                                        than the index it embeds, so the bucket is re-dumped
+///                                        next round -- a whole-shard dump to save one walk.
+///   1  storage_object_lifecycle_snapshot ALREADY SHARED by three consumers (#1586).
+///   1  the four sampling snapshots       ALREADY SHARED by four consumers (#1609).
+///   1  the dump's lifecycle report       IRREDUCIBLE. It walks the DECODED MANIFEST INDEX
+///                                        (`&dump_index_state`), not the live shard -- different
+///                                        data, so it cannot share a live-shard walk.
+///   1  collect_live_page_addresses       via storage_reclaim_slab_reports. The remaining
+///                                        candidate.
+///
+/// If this fails HIGH, a new walk was added: give it the existing slice. If it fails LOW, a walk
+/// was removed -- lower the constant and say which one, in the commit.
+#[test]
+fn one_call_walks_the_live_pages_a_known_number_of_times() {
+    const RECORDS: usize = 1_000;
+    const EXPECTED_MULTIPLE: u64 = 7;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("ratchet-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    // Denominator: with no live pages every walk materializes nothing and any multiple holds.
+    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+
+    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_page_scan_sites();
+    let _ = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    });
+    let walked = crate::engine::live_page_scan_entries();
+    let sites = crate::engine::live_page_scan_sites_snapshot();
+
+    let multiple = walked / live_pages.max(1);
+    if multiple != EXPECTED_MULTIPLE {
+        let mut rows: Vec<(&String, &u64)> = sites.iter().collect();
+        rows.sort_by(|left, right| right.1.cmp(left.1));
+        let breakdown = rows
+            .iter()
+            .map(|(site, entries)| {
+                format!("\n    {:>5.1}x  {site}", **entries as f64 / live_pages as f64)
+            })
+            .collect::<String>();
+        panic!(
+            "one `apply_storage_lifecycle` walked the live pages {multiple}x, expected \
+{EXPECTED_MULTIPLE}x ({walked} entries for {live_pages} live pages). Per site:{breakdown}\n  Higher means a new walk was added -- pass it the slice the call already has. Lower means one was \
+removed -- lower EXPECTED_MULTIPLE and name it in the commit. Three of the seven are irreducible \
+and the doc above says why; do not file the constant down without reading it."
+        );
+    }
 }
 
 /// WHO walks the shard, by source location. Prints.

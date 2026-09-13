@@ -901,6 +901,30 @@ impl TemporalEngine {
                 // NO CLAIM RECORDED, and the only safe reading of "unknown" is the old one:
                 // block, and retain everything. Treating unknown as "nothing to retain" is the
                 // direction that loses committed records.
+                //
+                // A CLEAN bucket is the exception, and getting it wrong is what stopped the
+                // reclaim entirely. `dirty_object_count == 0` means the bucket holds no undumped
+                // write at all, so there is nothing for the log to retain on its behalf and no
+                // claim for it to name -- `first_dirty_wal_sequence` is cleared to 0 in the same
+                // breath as `dirty = false`, on a DURABLE dump manifest (see
+                // `apply_storage_lifecycle`), and a bucket loaded from disk is durable by
+                // construction. Reading that 0 as "cannot name its claim" put every clean bucket
+                // into `missing_bucket_generations`, which blocks the whole plan.
+                //
+                // This is the shape #1516 removed from the manifest branch above -- a bucket that
+                // needs NOTHING deciding what the log may drop -- surviving in this branch, where
+                // it does not merely pin the floor but refuses outright. On an idle shard every
+                // bucket ends up here, so the plan reported
+                // `slot_generation_without_durable_dump` for all of them and the log could never
+                // be reclaimed again: measured on 8,000 records over twelve rounds, 0 of 10,666
+                // records freed and `persistent_bytes` flat at 1,344,852 for ever.
+                //
+                // Counted as covered and contributing no floor, exactly as the manifest branch
+                // treats a clean bucket it does have a manifest for.
+                if summary.dirty_object_count == 0 {
+                    covered_bucket_count = covered_bucket_count.saturating_add(1);
+                    continue;
+                }
                 let (wal_claim, index_log_claim) = bucket_claims
                     .get(&summary.routing_bucket)
                     .copied()
@@ -1521,12 +1545,19 @@ impl TemporalEngine {
         delete_drop: bool,
     ) -> StorageEvictionReport {
         let before_cache = self.storage_cache_inspection_report(shard_id);
+        // THE SIGNAL. Every memory number this gate used to read was the CACHE's, and the bucket
+        // index is in none of them: at 8,000 records the gate saw ~600 KB of cache while the index
+        // held 8,000 entries it could not see, was never evicted, and cost ~760 B a record. A gate
+        // that cannot see a cost cannot relieve it, so the resident index is part of the pressure
+        // now -- and it is part of it only because the release path above can actually reduce it.
+        let bucket_index_bytes_before = self.bucket_index_resident_bytes(shard_id);
         let pressure_before = before_cache
             .stats
             .memory_bytes
             .saturating_add(before_cache.stats.disk_bytes)
             .saturating_add(before_cache.stats.async_writeback_queue_bytes)
-            .saturating_add(before_cache.stats.async_writeback_queue_depth);
+            .saturating_add(before_cache.stats.async_writeback_queue_depth)
+            .saturating_add(bucket_index_bytes_before);
         if pressure_before < memory_pressure_threshold {
             return StorageEvictionReport {
                 shard_id,
@@ -1616,7 +1647,14 @@ impl TemporalEngine {
                 .collect::<Vec<_>>();
             if !dirty_buckets.is_empty() {
                 if let Ok(manifest) = self.create_bucket_dump_manifest(shard_id, dirty_buckets) {
-                    dump_manifest_ids.push(manifest.manifest_id);
+                    dump_manifest_ids.push(manifest.manifest_id.clone());
+                    // Dumped means dumped. `apply_storage_lifecycle` has always paired the
+                    // manifest with this clear; the eviction path created the manifest and left
+                    // every bucket marked dirty, so "dump before evict" dumped and then evicted
+                    // nothing it had dumped. It also makes the release below possible at all --
+                    // a dirty bucket is refused, because the model maps carry no per-page dirty
+                    // bit for a reload to restore.
+                    self.clear_dumped_bucket_dirty_state(shard_id, &manifest);
                 }
             }
         }
@@ -1628,6 +1666,25 @@ impl TemporalEngine {
                     cache_entries_removed.saturating_add(report.memory_entries_removed);
                 cache_disk_bytes_removed =
                     cache_disk_bytes_removed.saturating_add(report.disk_bytes_removed);
+            }
+        }
+        // THE ACTUATOR. `invalidate_slot` above drops cached pages and leaves every `BucketNode`
+        // whole, so the only mode that ever shrank the index was `delete_drop` -- which does it by
+        // DESTROYING data. Releasing a victim's page list shrinks the index without losing
+        // anything: the node stays routable and the next read loads its pages back from the model
+        // maps. Not attempted under `delete_drop`, where the victim's data is about to go.
+        let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
+        if !delete_drop && !victims.is_empty() {
+            let candidates = victims
+                .iter()
+                .map(|victim| victim.routing_bucket)
+                .collect::<Vec<_>>();
+            let mut shards = self.shards.write().expect("shards lock poisoned");
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                release = crate::engine::storage_bucket_internals::release_bucket_pages(
+                    shard,
+                    &candidates,
+                );
             }
         }
         let mut dropped_object_count = 0usize;
@@ -1705,12 +1762,14 @@ impl TemporalEngine {
             }
         }
         let after_cache = self.storage_cache_inspection_report(shard_id);
+        let bucket_index_bytes_after = self.bucket_index_resident_bytes(shard_id);
         let pressure_after = after_cache
             .stats
             .memory_bytes
             .saturating_add(after_cache.stats.disk_bytes)
             .saturating_add(after_cache.stats.async_writeback_queue_bytes)
-            .saturating_add(after_cache.stats.async_writeback_queue_depth);
+            .saturating_add(after_cache.stats.async_writeback_queue_depth)
+            .saturating_add(bucket_index_bytes_after);
         StorageEvictionReport {
             shard_id,
             mode: if delete_drop {
@@ -1730,6 +1789,11 @@ impl TemporalEngine {
             cache_entries_removed,
             cache_disk_bytes_removed,
             dropped_object_count,
+            bucket_index_buckets_released: release.released_buckets.len(),
+            bucket_index_pages_released: release.released_pages,
+            bucket_index_release_refused: release.refused_buckets,
+            bucket_index_bytes_before,
+            bucket_index_bytes_after,
             cooldown: pressure_after >= pressure_before,
             skipped_reason: String::new(),
         }

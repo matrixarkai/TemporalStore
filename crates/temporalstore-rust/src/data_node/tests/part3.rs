@@ -4129,6 +4129,216 @@ time(s) and the WAL reclaim plan {wal_builds} time(s); each walks the shard"
     }
 }
 
+/// FOOTPRINT CADENCE: does every subsystem reach a steady state, or keep growing? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib the_footprint_cadence_over_many_rounds -- --ignored --nocapture
+///
+/// This is the shared measurement spine for the per-subsystem scale work. One fixture, many
+/// maintenance rounds, and after EACH round every subsystem's footprint is recorded on one line,
+/// so the question "is the cadence good" is answered by reading a column rather than by running
+/// ten separate experiments that cannot be compared to each other.
+///
+/// WHAT A GOOD COLUMN LOOKS LIKE: it rises while the shard fills and then FLATTENS. A column that
+/// climbs every round on a fixture that stops writing is the #1565 shape -- an idle shard grew a
+/// slab every thirty seconds for ever, eleven after ten rounds, because a `min` over a set with an
+/// immovable member froze the reclaim floor. That defect was invisible in any single round and
+/// obvious in a column.
+///
+/// The write phase stops before the rounds begin ON PURPOSE. Growth under continuing writes is
+/// expected and says nothing; growth with no writer is the signal.
+///
+/// Columns, and which subsystem each belongs to:
+///
+///   wal_bytes / wal_seq   WAL              -- persistent bytes and the sequence, so reclaim shows
+///   idx_bytes             index log        -- file length; the collector should flatten it
+///   slabs / slab_bytes    page/block store -- slab count is the #1565 signal
+///   cache_mem             eviction         -- the only memory the evict gate can see
+///   bkt_idx               (memory)         -- bucket index entries: never evicted, expect FLAT
+///   manifests             dump             -- retained manifests; the prune policy should bound
+///   dirty                 store manager    -- dirty buckets; should fall to 0 with no writer
+#[test]
+#[ignore]
+fn the_footprint_cadence_over_many_rounds() {
+    const RECORDS: usize = 8_000;
+    const ROUNDS: usize = 12;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Overwrite a third, so there is genuine garbage for the collectors to reclaim. Without this
+    // every collector correctly does nothing and a flat column proves only that nothing happened.
+    for index in 0..RECORDS / 3 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+
+    eprintln!(
+        "  [cadence] {RECORDS} records written, then NO further writes -- any column that keeps \
+climbing below is growth with no writer"
+    );
+    eprintln!(
+        "  [cadence] {:>5} {:>11} {:>9} {:>6} {:>11} {:>10} {:>8} {:>9} {:>6}  stages",
+        "round", "wal_bytes", "idx_bytes", "slabs", "slab_bytes", "cache_mem", "bkt_idx",
+        "manifests", "dirty",
+    );
+
+    let mut first = None;
+    let mut last = None;
+    for round in 0..ROUNDS {
+        let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+
+        let wal = engine.write_ahead_log_store().stats(1);
+        let idx_bytes = engine.index_log_store().log_len_bytes(1);
+        let slab_ids = engine.page_store().slab_ids().unwrap_or_default();
+        let slab_bytes: u64 = engine
+            .page_store()
+            .slab_block_counts()
+            .unwrap_or_default()
+            .iter()
+            .map(|(_id, physical_bytes, _count)| *physical_bytes)
+            .sum();
+        let cache_mem = engine.cache().stats().memory_bytes;
+        let summaries = engine.bucket_storage_summaries(1);
+        let bkt_idx = summaries.len() as u64;
+        let dirty = summaries
+            .iter()
+            .filter(|summary| summary.dirty_object_count > 0)
+            .count();
+        let manifests = engine.list_bucket_dump_manifests(1).len();
+
+        let row = (
+            wal.persistent_bytes,
+            idx_bytes,
+            slab_ids.len() as u64,
+            slab_bytes,
+            cache_mem,
+            bkt_idx,
+            manifests as u64,
+        );
+        if round == 0 {
+            first = Some(row);
+        }
+        last = Some(row);
+
+        eprintln!(
+            "  [cadence] {round:>5} {:>11} {idx_bytes:>9} {:>6} {slab_bytes:>11} {cache_mem:>10} \
+{bkt_idx:>8} {manifests:>9} {dirty:>6}  {:?}",
+            wal.persistent_bytes,
+            slab_ids.len(),
+            report.executed_stages,
+        );
+    }
+
+    let (first, last) = (first.expect("a round ran"), last.expect("a round ran"));
+    // Denominator: a fixture where nothing was stored would print zeros in every column and every
+    // "did not grow" assertion below would hold vacuously.
+    assert!(
+        last.5 > 0,
+        "the shard holds no buckets, so every column below is trivially flat",
+    );
+
+    eprintln!(
+        "  [cadence] first -> last:  wal {} -> {}   idx {} -> {}   slabs {} -> {}   cache {} -> {}",
+        first.0, last.0, first.1, last.1, first.2, last.2, first.4, last.4,
+    );
+    eprintln!(
+        "  [cadence] READ THE COLUMNS, not this line: a subsystem whose column climbs to the last \
+round with no writer is the one to open a thread on."
+    );
+
+    // WHICH STAGE GROWS THE INDEX LOG? The column above climbs every round on a shard nobody is
+    // writing to. `compact_pages` also runs every round on that shard, and compaction relocates
+    // pages and persists the resulting index -- so the obvious suspect is that the index log is
+    // growing because compaction keeps rewriting it, not because anything changed.
+    //
+    // Obvious is not measured. A second fixture, identical except compaction is OFF, settles it:
+    // if the growth persists with compaction disabled the suspect is wrong.
+    let quiet = TemporalEngine::default();
+    quiet.load_shard(1);
+    for index in 0..RECORDS {
+        quiet.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+    }
+    for index in 0..RECORDS / 3 {
+        quiet.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+    }
+    let quiet_runtime = DataNodeRuntime::new_without_workers_with_options(
+        quiet,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let quiet_engine = quiet_runtime.engine();
+    let no_compaction = StorageManagerOptions {
+        enable_page_compaction: false,
+        ..StorageManagerOptions::default()
+    };
+    let mut quiet_first = 0u64;
+    let mut quiet_last = 0u64;
+    for round in 0..ROUNDS {
+        let _ = quiet_runtime.run_storage_manager_once(1, no_compaction.clone());
+        let idx = quiet_engine.index_log_store().log_len_bytes(1);
+        if round == 0 {
+            quiet_first = idx;
+        }
+        quiet_last = idx;
+    }
+
+    let with_compaction_growth = last.1.saturating_sub(first.1);
+    let without_compaction_growth = quiet_last.saturating_sub(quiet_first);
+    eprintln!(
+        "  [cadence] index-log growth over {} rounds with NO writer: compaction ON {} bytes, \
+compaction OFF {} bytes",
+        ROUNDS - 1,
+        with_compaction_growth,
+        without_compaction_growth,
+    );
+
+    // Denominator: if the compaction-on arm did not grow either, this comparison is measuring
+    // nothing and the attribution below would be read off two zeros.
+    assert!(
+        with_compaction_growth > 0,
+        "the index log did not grow even with compaction on, so this arm attributes nothing",
+    );
+}
+
 #[test]
 fn the_dump_cap_bounds_a_stage_but_not_a_round() {
     // Two facts, and the second is the surprising one.
@@ -5223,16 +5433,21 @@ fn what_a_page_gc_round_walks() {
 ///   - selection: `evict_sampler` lives on `ShardState`, so the sampler's cursor and pool persist
 ///     across calls. That is the same persistent-iterator shape their `PolicyLru` uses.
 ///
-/// The ceiling is the MODE. With `eviction_delete_drop` false -- the shipped default, mode
-/// `evict_cache` -- a victim is handled by `cache.invalidate_slot(shard_id, routing_bucket)` and
-/// nothing else. Eviction can free exactly what is CACHED. Once the cached pages of the eligible
-/// buckets are gone, another batch frees nothing, `cooldown` is set, and the loop correctly stops.
+/// The ceiling WAS the MODE, and it has moved. With `eviction_delete_drop` false -- the shipped
+/// default, mode `evict_cache` -- a victim used to be handled by
+/// `cache.invalidate_slot(shard_id, routing_bucket)` and nothing else, so eviction could free
+/// exactly what was CACHED. Once the cached pages of the eligible buckets were gone another batch
+/// freed nothing, `cooldown` was set, and the loop correctly stopped -- below the cached set, with
+/// every bucket node still whole. Raising the budget, changing the sampler or looping harder could
+/// not move it, because the missing piece was neither pacing nor selection but a per-bucket
+/// load-back path: nothing could drop a bucket node and expect to read it again.
 ///
-/// So eviction cannot converge below the cached set by construction, and the bucket node itself is
-/// never dropped. That is the same architectural blocker as restore: there is no per-bucket
-/// load-back path, so nothing may evict a bucket node and expect to read it again. Raising the
-/// budget, changing the sampler, or looping harder cannot move this number -- the fix is a load
-/// path, or a deliberate decision to run this stage in `delete_drop`.
+/// That path exists now -- `release_bucket_pages` / `reload_released_bucket` -- and `evict_cache`
+/// uses it: a victim is dumped, cleared, and has its page list RELEASED, while the node stays
+/// routable and the next write through it loads the list back from the model maps. The gate counts
+/// the resident bucket index as part of its pressure now, so a round can reduce the thing that
+/// actually grows with the corpus. What this measurement is for has changed with it: the question
+/// is no longer why it cannot converge but how many rounds it takes to.
 #[test]
 #[ignore]
 fn how_long_eviction_takes_to_converge() {
@@ -7230,5 +7445,229 @@ fn settle_one_corpus(records: usize) {
 {last_compacting_round}, then FLAT for {} rounds -- index log {tail_last_index_log} bytes, slab \
 bytes {tail_last_slab_bytes}",
         rounds_run.saturating_sub(last_compacting_round + 1),
+    );
+}
+
+/// A shard that has gone quiet must still be able to reclaim its log.
+///
+/// After the first maintenance round every slot is CLEAN -- the dump captured all of them -- and
+/// a clean slot holds no undumped write, so nothing in the shard needs the log retained. The
+/// plan must say so.
+///
+/// It used to say the opposite, and the OVERWRITE in this fixture is what makes it do so. An
+/// overwrite gives the slot a new generation, so the manifest the dump just wrote no longer
+/// matches its current generation fingerprint and no manifest covers it. That drops the slot into
+/// the no-manifest branch, where its `first_dirty_wal_sequence` of 0 -- set to 0 precisely
+/// BECAUSE the dump captured everything -- was read as "cannot name its claim", filed under
+/// `missing_bucket_generations`, and blocked the whole plan with
+/// `slot_generation_without_durable_dump`.
+///
+/// That is the shape #1516 removed from the manifest branch -- a slot that needs nothing deciding
+/// what the log may drop -- surviving one branch over, where it refuses outright rather than
+/// merely pinning the floor.
+///
+/// DENOMINATOR, and it has to be this one. `covered_bucket_count` counts BOTH branches, so it
+/// cannot witness which branch ran: a write-only fixture of the same size reaches
+/// `safe_to_reclaim` through the MANIFEST branch and passes every assertion below whatever the
+/// no-manifest branch does. Measured -- 2,000 records with no overwrite: covered=2000,
+/// uncovered=0, safe=true with this fix reverted. `retained_manifest_ids` is the honest witness:
+/// the manifest branch records the manifest it matched, the no-manifest branch records nothing,
+/// so an EMPTY set plus a non-zero covered count proves every slot took the branch under test.
+#[test]
+fn a_quiet_shard_with_every_slot_clean_can_reclaim_its_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..2_000usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("quiet-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    // The overwrite is load-bearing, not decoration. Without it no slot reaches the branch this
+    // test exists for.
+    for index in 0..666usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("quiet-{index:06}"),
+                value: vec![b'w'; 64],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    // One round to dump everything, then the writer stops for good.
+    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    let engine = runtime.engine();
+
+    let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+
+    // DENOMINATOR, asserted before the property.
+    assert!(
+        plan.current_wal_sequence > 0,
+        "the fixture must leave records in the log, got none: {plan:?}"
+    );
+    let classified = plan
+        .covered_bucket_count
+        .saturating_add(plan.uncovered_bucket_count);
+    assert!(
+        classified > 0,
+        "the fixture must leave slots for the plan to classify, got none: {plan:?}"
+    );
+    assert!(
+        plan.retained_manifest_ids.is_empty(),
+        "every slot must reach the NO-MANIFEST branch for this test to mean anything, but {} \
+         manifest(s) were matched -- the fixture has stopped exercising the branch under test \
+         and would pass with the rule reverted: {:?}",
+        plan.retained_manifest_ids.len(),
+        plan.retained_manifest_ids,
+    );
+
+    assert!(
+        !plan
+            .blocker_reasons
+            .iter()
+            .any(|reason| reason == "slot_generation_without_durable_dump"),
+        "every slot is clean and holds no undumped write, so none of them may be reported as \
+         lacking a durable dump: blockers={:?} uncovered={} covered={}",
+        plan.blocker_reasons,
+        plan.uncovered_bucket_count,
+        plan.covered_bucket_count,
+    );
+    assert_eq!(
+        plan.uncovered_bucket_count, 0,
+        "a clean slot needs nothing retained on its behalf, so it is not uncovered: {plan:?}"
+    );
+    assert!(
+        plan.safe_to_reclaim,
+        "a quiet shard whose every slot is dumped must be reclaimable: {plan:?}"
+    );
+}
+
+/// `reclaim_wal` must not disappear from the stage list while the log is still reclaimable, and
+/// the log must actually shrink.
+///
+/// The stage list is how an operator reads whether maintenance is alive, so the two cases it must
+/// never confuse are "the log is at its floor" and "the stage stopped running". They look
+/// identical from outside: flat `persistent_bytes` either way.
+///
+/// The trigger used to be dump pressure alone -- dirty slots, or undumped records -- which a
+/// shard with no writer never has. So the stage ran in round 0 and never again, with the whole
+/// log still on disk: measured on 8,000 records over twelve rounds, 0 of 10,666 records freed and
+/// `persistent_bytes` flat at 1,344,852 for ever. With both halves fixed the same fixture falls
+/// to 33,413 on the first idle round.
+///
+/// VACUITY. A round whose plan is not reclaimable says nothing about the gate, so the count of
+/// reclaimable rounds is asserted before the gate is. Reverting the plan rule alone takes that
+/// count to zero and kills this test there; reverting the gate alone kills it below.
+#[test]
+fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
+    const IDLE_ROUNDS: usize = 6;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..2_000usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    // Same reason as the test above: without an overwrite the slots keep a matching manifest and
+    // the quiet shard reclaims through the other branch entirely.
+    for index in 0..666usize {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:06}"),
+                value: vec![b'w'; 64],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    // Round 0 dumps. After it the writer is gone and every later round is an idle one.
+    let first = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        first
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_wal"),
+        "the first round must run the stage at all: {:?}",
+        first.executed_stages
+    );
+    let bytes_after_first = runtime.engine().wal_store().stats(1).persistent_bytes;
+
+    let mut reclaimable_rounds = 0usize;
+    let mut rounds_missing_the_stage = Vec::new();
+    for round in 0..IDLE_ROUNDS {
+        let engine = runtime.engine();
+        let reclaimable = engine
+            .storage_wal_reclaim_plan(1, Vec::new(), Vec::new())
+            .safe_to_reclaim;
+        drop(engine);
+        let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        if !reclaimable {
+            continue;
+        }
+        reclaimable_rounds += 1;
+        if !report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_wal")
+        {
+            rounds_missing_the_stage.push((round, report.skipped_stages.clone()));
+        }
+    }
+    let bytes_at_end = runtime.engine().wal_store().stats(1).persistent_bytes;
+
+    // DENOMINATOR, asserted before the property. Without it, a plan that never reports the log
+    // reclaimable would make every round above vacuous and this test could not fail.
+    assert!(
+        reclaimable_rounds > 0,
+        "no idle round reported a reclaimable log, so this test proves nothing about the gate -- \
+         the plan, not the gate, is what broke"
+    );
+    assert!(
+        rounds_missing_the_stage.is_empty(),
+        "`reclaim_wal` left the stage list on {} of {reclaimable_rounds} rounds whose log was \
+         still reclaimable, which an operator reads as maintenance having died: {:?}",
+        rounds_missing_the_stage.len(),
+        rounds_missing_the_stage,
+    );
+    // The stage running is the operator-visible half; the log shrinking is the point of it.
+    assert!(
+        bytes_at_end < bytes_after_first,
+        "the idle rounds ran the stage but freed nothing: {bytes_after_first} bytes after the \
+         first round, {bytes_at_end} after {IDLE_ROUNDS} idle ones"
     );
 }

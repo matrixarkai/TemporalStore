@@ -75,6 +75,7 @@ impl TemporalEngine {
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             compaction_rounds: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            expiry_index_flush_under_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             // Sampled by default. The exhaustive alternative calls `bucket_storage_summaries`,
             // which reads EVERY live page in the shard to rank every bucket, and then keeps at
             // most `eviction_batch_limit` of them -- so the cost of choosing grew with the store
@@ -146,6 +147,17 @@ impl TemporalEngine {
     pub(crate) fn commit_under_lock_for_test(&self) {
         self.concurrent_commit
             .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Flush the expiry sweep's served-index checkpoint while the shard-table write guard is
+    /// still held, the way it was done before the flush was moved out. Scoped to this engine.
+    ///
+    /// Kept because the measurement that justifies the shorter hold needs something to measure
+    /// against: a test that cannot produce the in-lock flush cannot show that it is gone.
+    #[cfg(test)]
+    pub(crate) fn flush_expiry_index_under_lock_for_test(&self) {
+        self.expiry_index_flush_under_lock
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Apply a committed raft batch one entry at a time, each with its own barrier, for a test

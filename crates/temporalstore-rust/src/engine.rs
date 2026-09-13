@@ -51,6 +51,7 @@ pub use storage_bucket_internals::{
     live_page_scan_sites_snapshot, reset_bucket_page_index_visits,
     reset_live_page_scan_entries, reset_live_page_scan_sites,
 };
+pub use shard_write_guard::{index_encode_counts, reset_index_encode_counts, IndexEncodeCounts};
 mod compaction;
 // The maintenance round in `data_node` asks this before compacting; see the function's doc.
 pub use compaction::compaction_relocatable_page_refs;
@@ -148,6 +149,13 @@ pub struct TemporalEngine {
     /// round then rolls, which is correct if wasteful once.
     compaction_rounds: Arc<RwLock<HashMap<ShardId, (u64, u64)>>>,
     concurrent_commit: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the expiry sweep encodes and writes its served-index checkpoint while still
+    /// holding the shard-table write guard.
+    ///
+    /// False everywhere but the control arm of the guard that measures what the in-lock flush
+    /// costs. A guard that can only observe zero cannot distinguish a shortened hold from a
+    /// counter that stopped counting; this is how an engine takes the other side.
+    expiry_index_flush_under_lock: Arc<std::sync::atomic::AtomicBool>,
     /// Whether loading a shard warms the in-memory cache tier from the page store as part of
     /// the load, rather than leaving it to be warmed in the background.
     ///
@@ -251,6 +259,15 @@ impl TemporalEngine {
         // source, with nothing in between that could change the answer -- so the flags refresh,
         // and the duplicate scan does not.
         storage_bucket_internals::refresh_bucket_runtime_flags_after_reconstruct(shard);
+    }
+
+    /// Take the shard table's write lock, marking the region for the lock-hold measurement.
+    ///
+    /// Identical to `self.shards.write()` in every observable way except that the served-index
+    /// encode can tell whether it is running inside the region. Maintenance paths take this one
+    /// so a guard can state what they do while holding it.
+    fn shards_write_marked(&self) -> MarkedShardWriteGuard<'_> {
+        MarkedShardWriteGuard::new(self.shards.write().expect("engine lock poisoned"))
     }
 
     /// Mirror the deletions this engine emits on its own -- eviction drops, expiry sweeps --
@@ -1931,6 +1948,91 @@ impl TemporalEngine {
         page_routing_bucket(key, start, end)
     }
 
+    /// What the resident bucket index costs on this shard: one node per bucket, plus one entry
+    /// per page the bucket holds.
+    ///
+    /// The published `bucket_index_resident_bytes_floor` counts NODES only. That is a floor and
+    /// says so, but it also cannot move when a bucket is released -- the node is exactly what a
+    /// release keeps. The per-page entries are what grows with the corpus and what a release
+    /// frees, so this is the number to gate on and to assert against.
+    pub fn bucket_index_resident_bytes(&self, shard_id: ShardId) -> u64 {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .get(&shard_id)
+            .map(crate::engine::storage_bucket_internals::bucket_index_resident_bytes)
+            .unwrap_or_default()
+    }
+
+    /// Release the named buckets' resident page lists, keeping each node routable and reloadable.
+    ///
+    /// Returns `(buckets released, pages released, candidates refused)`. Every precondition is
+    /// checked against live state inside; naming a bucket that cannot be released is refused, not
+    /// forced.
+    pub fn release_bucket_index_pages(
+        &self,
+        shard_id: ShardId,
+        buckets: Vec<u32>,
+    ) -> (usize, usize, usize) {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return (0, 0, 0);
+        };
+        let outcome = crate::engine::storage_bucket_internals::release_bucket_pages(shard, &buckets);
+        (
+            outcome.released_buckets.len(),
+            outcome.released_pages,
+            outcome.refused_buckets,
+        )
+    }
+
+    /// Offer every bucket on the shard for release. The whole-shard form of the call above.
+    pub fn release_all_releasable_bucket_index_pages(
+        &self,
+        shard_id: ShardId,
+    ) -> (usize, usize, usize) {
+        let candidates = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            shards
+                .get(&shard_id)
+                .map(|shard| shard.bucket_index.bucket_map.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        self.release_bucket_index_pages(shard_id, candidates)
+    }
+
+    /// Load a released bucket's page list back. False when the bucket was not released.
+    pub fn reload_released_bucket_index_pages(
+        &self,
+        shard_id: ShardId,
+        routing_bucket: u32,
+    ) -> bool {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return false;
+        };
+        crate::engine::storage_bucket_internals::reload_released_bucket(
+            shard,
+            shard_id,
+            routing_bucket,
+        )
+    }
+
+    /// The buckets currently released on this shard, in routing order.
+    pub fn released_bucket_index_buckets(&self, shard_id: ShardId) -> Vec<u32> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .get(&shard_id)
+            .map(|shard| {
+                shard
+                    .bucket_index
+                    .released_buckets
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
 }
 
 /// Inclusive `[start, end]` timestamp bounds for `BTreeMap::range` that yield an EMPTY range
@@ -2021,6 +2123,123 @@ pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Valu
     value
 }
 
+/// What the served-index encode did while this thread held the shard-table WRITE guard.
+///
+/// The thing worth shortening is the HOLD, and on a shared box the hold cannot be timed: a build
+/// running next door moves wall-clock by an order of magnitude, and both arms of a comparison do
+/// not move by the same amount. What can be counted is the WORK done while the guard is held, and
+/// on the maintenance paths the dominant item is the whole-index encode -- the shard's entire
+/// served index through serde and then zstd, once per round, ahead of two file writes.
+///
+/// Everything here is THREAD-LOCAL, both the depth and the tallies. A process-global flag would
+/// attribute another thread's guard to this one, and a process-global tally would attribute
+/// another test's encode to this one; every test in this crate shares a process, and the tests
+/// that drive concurrent writers share it with threads that are encoding for their own reasons.
+/// Thread-local means a measurement means what it says however the suite is scheduled.
+pub mod shard_write_guard {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// How many marked shard-table write guards this thread currently holds.
+        static DEPTH: Cell<u32> = const { Cell::new(0) };
+        static ENCODES_UNDER_GUARD: Cell<u64> = const { Cell::new(0) };
+        static ENCODE_BYTES_UNDER_GUARD: Cell<u64> = const { Cell::new(0) };
+        static ENCODES_TOTAL: Cell<u64> = const { Cell::new(0) };
+        static ENCODE_BYTES_TOTAL: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Served-index encodes on THIS thread since the last reset.
+    ///
+    /// The `_total` pair is the denominator. An assertion that nothing encoded under the guard is
+    /// satisfied just as well by a path that did not encode at all -- or did not run -- so the
+    /// totals have to be reported beside it and checked.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct IndexEncodeCounts {
+        pub encodes_under_guard: u64,
+        pub encode_bytes_under_guard: u64,
+        pub encodes_total: u64,
+        pub encode_bytes_total: u64,
+    }
+
+    pub(super) fn entered() {
+        DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    }
+
+    pub(super) fn left() {
+        DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+
+    /// Whether this thread is inside a marked shard-table write-guard region.
+    pub(super) fn held() -> bool {
+        DEPTH.with(|depth| depth.get() > 0)
+    }
+
+    pub(super) fn note_index_encode(bytes: usize) {
+        ENCODES_TOTAL.with(|count| count.set(count.get().saturating_add(1)));
+        ENCODE_BYTES_TOTAL.with(|total| total.set(total.get().saturating_add(bytes as u64)));
+        if held() {
+            ENCODES_UNDER_GUARD.with(|count| count.set(count.get().saturating_add(1)));
+            ENCODE_BYTES_UNDER_GUARD
+                .with(|total| total.set(total.get().saturating_add(bytes as u64)));
+        }
+    }
+
+    pub fn index_encode_counts() -> IndexEncodeCounts {
+        IndexEncodeCounts {
+            encodes_under_guard: ENCODES_UNDER_GUARD.with(|count| count.get()),
+            encode_bytes_under_guard: ENCODE_BYTES_UNDER_GUARD.with(|total| total.get()),
+            encodes_total: ENCODES_TOTAL.with(|count| count.get()),
+            encode_bytes_total: ENCODE_BYTES_TOTAL.with(|total| total.get()),
+        }
+    }
+
+    /// Clear this thread's tallies. For a test measuring one operation.
+    pub fn reset_index_encode_counts() {
+        ENCODES_UNDER_GUARD.with(|count| count.set(0));
+        ENCODE_BYTES_UNDER_GUARD.with(|total| total.set(0));
+        ENCODES_TOTAL.with(|count| count.set(0));
+        ENCODE_BYTES_TOTAL.with(|total| total.set(0));
+    }
+}
+
+/// The shard table's write guard, with the region it covers marked for measurement.
+///
+/// Marking at the ACQUISITION rather than around each expensive call is what makes the counter
+/// hard to blind: a call that moves into the region starts being counted because it is in the
+/// region, not because someone remembered to wrap it, and a call that moves out stops for the
+/// same reason. The mark is released by the same `Drop` that releases the lock, so an early
+/// `drop(guard)` shortens the measured region exactly as much as it shortens the real one.
+struct MarkedShardWriteGuard<'a> {
+    guard: std::sync::RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>,
+}
+
+impl<'a> MarkedShardWriteGuard<'a> {
+    fn new(guard: std::sync::RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>) -> Self {
+        shard_write_guard::entered();
+        Self { guard }
+    }
+}
+
+impl std::ops::Deref for MarkedShardWriteGuard<'_> {
+    type Target = HashMap<ShardId, ShardState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for MarkedShardWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for MarkedShardWriteGuard<'_> {
+    fn drop(&mut self) {
+        shard_write_guard::left();
+    }
+}
+
 /// Serialize a shard whose stamp is already current, straight to bytes.
 ///
 /// The stamping path builds an entire intermediate `serde_json::Value` tree of the whole index
@@ -2030,17 +2249,26 @@ pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Valu
 /// bytes are identical either way.
 pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
     shard.index_format_version = SHARD_INDEX_FORMAT_VERSION;
-    encode_index_bytes(shard)
+    let bytes = encode_index_bytes(shard);
+    shard_write_guard::note_index_encode(bytes.len());
+    bytes
 }
 
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
-    if shard.index_format_version == SHARD_INDEX_FORMAT_VERSION {
-        return encode_index_bytes(shard);
-    }
-    wrap_index_json(
-        serde_json::to_vec(&stamp_index_format_version(shard))
-            .expect("shard index should serialize"),
-    )
+    let bytes = if shard.index_format_version == SHARD_INDEX_FORMAT_VERSION {
+        encode_index_bytes(shard)
+    } else {
+        wrap_index_json(
+            serde_json::to_vec(&stamp_index_format_version(shard))
+                .expect("shard index should serialize"),
+        )
+    };
+    // Counted at the two production entry points rather than inside `encode_index_bytes`, so the
+    // tally is one per served-index encode whichever branch produced it -- and so the handful of
+    // tests that call the encoder directly to check a container shape do not register as engine
+    // work that some path did.
+    shard_write_guard::note_index_encode(bytes.len());
+    bytes
 }
 
 /// Container magic for a non-JSON served index. A JSON index starts with `{`, so a reader can
@@ -2579,6 +2807,8 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             continue;
         };
         apply_key_state_field(&mut shard.features, key, blob.get("features"));
+        // DIRECT WRITE TO `expires_at_ms` -- the deadline-ordered mirror is invalidated at the
+        // end of this function. See the note there.
         apply_key_state_field(&mut shard.expires_at_ms, key, blob.get("expires_at_ms"));
         apply_key_state_field(
             &mut shard.control_state_changes,
@@ -2607,6 +2837,27 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_compressions"),
         );
         apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
+    }
+    if !key_states.is_empty() {
+        // THE ONE PLACE `expires_at_ms` IS WRITTEN WITHOUT `set_expiry` / `clear_expiry`.
+        //
+        // Those two keep the deadline-ordered mirror `expiry_by_deadline` in step entry by entry.
+        // This cannot: it restores a whole captured map for each key, and an ABSENT
+        // `expires_at_ms` field means "this key had no deadline", which `apply_key_state_field`
+        // turns into a removal -- so both directions are reachable, and neither is visible from
+        // the blob without re-deriving it.
+        //
+        // So the mirror is dropped instead and `ensure_expiry_order` rebuilds it from the
+        // corrected map on first use. Dropping is not merely the cheap option, it is the only one
+        // that works: `ensure_expiry_order` repairs ONLY an entirely empty mirror, so a mirror
+        // left populated and wrong is never repaired and the keys it misses silently never expire.
+        //
+        // Today this is a no-op -- the delta fold only ever runs on a freshly decoded state, whose
+        // mirror is already empty because the field is `#[serde(skip)]`. It is written down
+        // because that is a property of the CALLER, not of this function, and the first caller
+        // that folds a delta onto a shard already in service would land exactly on the
+        // never-repaired case.
+        shard.expiry_by_deadline.clear();
     }
 }
 

@@ -157,6 +157,16 @@ fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
     }
 }
 
+/// Where a read resolves an object's page from.
+///
+/// THIS IS THE READ PATH, not a reporting path: `read_bucket_index_value` is what
+/// `Command::StringGet` calls once the response cache misses. It answers from the bucket index,
+/// which is why releasing a bucket's page entries is a question about reads at all -- the fast
+/// path in `execute_read_only_fast_path` goes straight to `shard.strings` and never noticed, so a
+/// released bucket served every warm read and returned None for every cold one.
+///
+/// Every "cannot answer" now falls through to the released-bucket lookup rather than returning
+/// None, which is what makes a released bucket serve reads identically to a resident one.
 pub(super) fn bucket_index_page_address(
     shard: &ShardState,
     model_id: &str,
@@ -182,11 +192,15 @@ pub(super) fn bucket_index_page_address(
                 return Some(page.address.clone());
             }
         }
-        return None;
+        return super::storage_bucket_internals::released_bucket_page_address(
+            shard, model_id, object_key, component,
+        );
     }
 
     if !shard.bucket_index.object_page_lookup.is_empty() {
-        return None;
+        return super::storage_bucket_internals::released_bucket_page_address(
+            shard, model_id, object_key, component,
+        );
     }
 
     shard
@@ -202,6 +216,11 @@ pub(super) fn bucket_index_page_address(
         })
         .map(|page| page.address.clone())
         .next()
+        .or_else(|| {
+            super::storage_bucket_internals::released_bucket_page_address(
+                shard, model_id, object_key, component,
+            )
+        })
 }
 
 pub(super) fn bucket_index_component_page_addresses(
@@ -226,11 +245,11 @@ pub(super) fn bucket_index_component_page_addresses(
             refs.sort_by(|left, right| left.0.cmp(&right.0));
             return refs;
         }
-        return Vec::new();
+        return released_component_page_addresses(shard, model_id, object_key);
     }
 
     if !shard.bucket_index.object_page_lookup.is_empty() {
-        return Vec::new();
+        return released_component_page_addresses(shard, model_id, object_key);
     }
 
     let mut refs = shard
@@ -243,6 +262,21 @@ pub(super) fn bucket_index_component_page_addresses(
         .collect::<Vec<_>>();
     refs.sort_by(|left, right| left.0.cmp(&right.0));
     refs
+}
+
+/// The whole-object form of the released-bucket lookup.
+///
+/// A released kind is component-less by construction (see `released_model_kind_is_addressable`),
+/// so "every component of this object" is at most one page and the point lookup answers it. A
+/// kind with real components could not be served this way, which is why none is releasable.
+fn released_component_page_addresses(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+) -> Vec<(Option<Arc<str>>, BlockAddress)> {
+    super::storage_bucket_internals::released_bucket_page_address(shard, model_id, object_key, None)
+        .map(|address| vec![(None, address)])
+        .unwrap_or_default()
 }
 
 pub(super) fn read_bucket_index_value(
