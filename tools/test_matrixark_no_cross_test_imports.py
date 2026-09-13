@@ -64,8 +64,6 @@ KNOWN = {
     "test_matrixark_python_module_boundaries.py",
     "test_matrixark_readiness_sources.py",
     "test_matrixark_user_policy.py",
-    "test_python_module_boundaries_part2.py",
-    "test_python_module_boundaries_part3.py",
 }
 
 #: Pairs where each module imports the OTHER at import time. A one-directional cross-import
@@ -104,8 +102,6 @@ KNOWN_MUTUAL = {
     ("test_codex_pipeline_part3", "test_matrixark_codex_hook_pipeline"),
     ("test_codex_pipeline_part4", "test_matrixark_codex_hook_pipeline"),
     ("test_codex_pipeline_part5", "test_matrixark_codex_hook_pipeline"),
-    ("test_matrixark_python_module_boundaries", "test_python_module_boundaries_part2"),
-    ("test_matrixark_python_module_boundaries", "test_python_module_boundaries_part3"),
 }
 
 def _cross_importers() -> dict:

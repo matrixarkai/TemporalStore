@@ -4,31 +4,28 @@
 from __future__ import annotations
 
 import os
-from unittest import mock
 
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
-try:  # names owned by the parent module
-    from tools.test_matrixark_python_module_boundaries import (
-    REPO_ROOT,
-    TOOLS_DIR,
-    importlib,
-    mock,
-    re,
-    sys,
-)
-except ImportError:
-    from test_matrixark_python_module_boundaries import (
-    REPO_ROOT,
-    TOOLS_DIR,
-    importlib,
-    mock,
-    re,
-    sys,
-)
+# The parent imports the mixin class from this file, so anything this file imports FROM the parent
+# is a cycle: whichever module `unittest discover` reaches first fails with a partially initialised
+# import, and which one that is depends on the order the files are walked in. It is an order-
+# dependent error rather than a permanent one, which is worse -- it appeared as a NEW ratchet
+# failure on a branch that had not touched either file.
+#
+# Nothing shared was actually being borrowed. REPO_ROOT and TOOLS_DIR are two lines, and the rest
+# were STDLIB modules reached through another test file. Imported directly, the cycle is gone.
+import importlib
+import re
+import sys
+from unittest import mock
+from pathlib import Path as _Path
+
+REPO_ROOT = _Path(__file__).resolve().parents[1]
+TOOLS_DIR = REPO_ROOT / "tools"
 
 
 class _ModuleBoundaryPart2:
