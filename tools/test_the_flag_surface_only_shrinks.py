@@ -736,6 +736,137 @@ CONTAINER_ONLY_CONTROLS = frozenset((
 ))
 
 
+def _default_argument_index():
+    """For each reader helper, WHICH argument is the default -- taken from the signature.
+
+    Not "the one after the name". `num(env_name, key, cast)` in matrixark_v1_gateway has a CONFIG
+    KEY in that slot, and reading it as a default reported eight rate-limit settings as disagreeing
+    with the portal when they agree exactly. The parameter is named, so ask the parameter.
+    """
+    if "default_index" in _CACHE:
+        return _CACHE["default_index"]
+    helpers, registries, _both = _env_key_helpers()
+    out = {}
+    for rel in _production_modules():
+        tree = _tree(rel)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in helpers:
+                for position, argument in enumerate(node.args.args):
+                    if argument.arg.lower().startswith(("default", "fallback")):
+                        out[node.name] = position
+                        break
+            if isinstance(node, ast.ClassDef) and node.name in registries:
+                for member in node.body:
+                    if not (isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and member.name == "__init__"):
+                        continue
+                    for position, argument in enumerate(member.args.args[1:]):
+                        if argument.arg.lower().startswith("default"):
+                            out[node.name] = position
+                            break
+    _CACHE["default_index"] = out
+    return out
+
+
+def _literal(node):
+    """The value of a literal expression, or None. Negative numbers are literals too."""
+    if isinstance(node, ast.Constant):
+        return node.value if not isinstance(node.value, str) or node.value.strip() else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) \
+            and isinstance(node.operand, ast.Constant):
+        return -node.operand.value
+    return None
+
+
+def portal_declared_defaults():
+    """The default the portal SHOWS an operator, per variable. Blank ones are absent, not zero."""
+    if "portal_defaults" in _CACHE:
+        return _CACHE["portal_defaults"]
+    out = {}
+    tree = _tree("tools/matrixark_gateway_config.py")
+    if tree is not None:
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Setting"
+                    and len(node.args) >= 6):
+                continue
+            env, default = node.args[2], node.args[5]
+            if isinstance(env, ast.Constant) and isinstance(default, ast.Constant) \
+                    and isinstance(env.value, str) and env.value \
+                    and str(default.value).strip() != "":
+                out[env.value] = str(default.value)
+    _CACHE["portal_defaults"] = out
+    return out
+
+
+def code_fallbacks():
+    """What the PRODUCT falls back to when the variable is unset: variable -> {(value, module)}.
+
+    Two shapes, because the tree writes defaults two ways: named to a helper,
+    `live_int("MATRIXARK_TOP_K_PER_LAYER", 8)`, and written after an `or`,
+    `int(os.environ.get("X", "").strip() or "8")`. Tooling is excluded -- a benchmark's own default
+    is its business and it is not what the portal is describing.
+    """
+    if "code_fallbacks" in _CACHE:
+        return _CACHE["code_fallbacks"]
+    _helpers, _registries, both = _env_key_helpers()
+    default_index = _default_argument_index()
+    out = {}
+    for rel in _production_modules():
+        base = os.path.basename(rel)
+        if _is_tooling(base):
+            continue
+        tree = _tree(rel)
+        if tree is None:
+            continue
+        aliases = _environ_aliases(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                callee = getattr(node.func, "id", "") or getattr(node.func, "attr", "")
+                key_index = both.get(callee)
+                position = default_index.get(callee)
+                if key_index is not None and position is not None \
+                        and len(node.args) > max(key_index, position):
+                    name = node.args[key_index]
+                    if isinstance(name, ast.Constant) and isinstance(name.value, str) \
+                            and _FLAG.match(name.value):
+                        value = _literal(node.args[position])
+                        if value is not None:
+                            out.setdefault(name.value, set()).add((str(value), base))
+                continue
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                name = None
+                for sub in ast.walk(node.value):
+                    key = _env_key_expression(sub, aliases)
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str) \
+                            and _FLAG.match(key.value):
+                        name = key.value
+                        break
+                if name is None:
+                    continue
+                for sub in ast.walk(node.value):
+                    if isinstance(sub, ast.BoolOp) and isinstance(sub.op, ast.Or):
+                        tail = _literal(sub.values[-1])
+                        if tail is not None:
+                            out.setdefault(name, set()).add((str(tail), base))
+    _CACHE["code_fallbacks"] = out
+    return out
+
+
+def _values_agree(declared, used):
+    """Whether two defaults mean the same thing, across the type the portal renders them in."""
+    declared, used = str(declared).strip().lower(), str(used).strip().lower()
+    if declared == used:
+        return True
+    try:
+        return float(declared) == float(used)
+    except ValueError:
+        pass
+    truthy, falsy = {"1", "true", "yes", "on"}, {"0", "false", "no", "off"}
+    return (declared in truthy and used in truthy) or (declared in falsy and used in falsy)
+
+
 def deployment_configurable(reads):
     """The configurable surface: what the portal offers or the config loader maps.
 
@@ -879,15 +1010,25 @@ def deployment_settable(reads):
     return {name for name in reads if name in names}
 
 
+#: Where a flag counts as SELECTED: chosen by a test, a shipped config, a launcher, a workflow or a
+#: document, plus the two modules that exist to offer and map settings. Written once because the
+#: control below has to ask about the same set -- it used to list the globs and leave the two
+#: modules out, so a flag selected because the PORTAL names it looked, to that control, like a flag
+#: selected only because this file names it.
+_SELECTION_SOURCES = ("tools/test_*.py", "config/*", "scripts/*", "*.sh", "tools/*.sh",
+                      "docker/*", ".github/*", "docs/*")
+_SELECTION_MODULES = ("tools/matrixark_gateway_config.py", "tools/matrixark_load_config.py")
+
+
+def _selecting_files():
+    """Every tracked file whose mention of a flag makes it `selected`, except this one."""
+    return [rel for rel in _tracked(*_SELECTION_SOURCES) if rel != _SELF] + list(_SELECTION_MODULES)
+
+
 def _selected():
     names = set()
-    for rel in _tracked("tools/test_*.py", "config/*", "scripts/*", "*.sh", "tools/*.sh",
-                        "docker/*", ".github/*", "docs/*"):
-        if rel == _SELF:
-            continue
+    for rel in _selecting_files():
         names |= set(_NAME.findall(_text(rel)))
-    names |= set(_NAME.findall(_text("tools/matrixark_gateway_config.py")))
-    names |= set(_NAME.findall(_text("tools/matrixark_load_config.py")))
     return names
 
 
@@ -1068,18 +1209,34 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             own, "this file names no flag at all, so either the prose lost its examples or the "
                  "scan stopped reading -- and the exclusion below is then hiding nothing")
         selected = _selected()
-        leaked = sorted(own & selected & set(self.reads))
-        for name in leaked:
-            with self.subTest(flag=name):
-                elsewhere = any(
-                    name in _text(rel)
-                    for rel in _tracked("tools/test_*.py", "config/*", "scripts/*", "*.sh",
-                                        "tools/*.sh", "docker/*", ".github/*", "docs/*")
-                    if rel != _SELF)
-                self.assertTrue(
-                    elsewhere,
-                    "%s is classified as selected and the only thing naming it is this file. "
-                    "The exclusion is not working." % name)
+        named_elsewhere = set()
+        for rel in _selecting_files():
+            named_elsewhere |= set(_NAME.findall(_text(rel)))
+
+        # ASKED THE OTHER WAY ROUND, because the first way could not fail without lying. It took
+        # every flag this file names that IS selected and demanded something else name it -- but
+        # `_selected` reads matrixark_gateway_config and matrixark_load_config too, and the check
+        # did not, so a flag the PORTAL selects tripped it the moment this file mentioned it, with
+        # a message saying the only thing naming it is this file while three modules named it.
+        # Widening the check to the same set removes the false accusation and leaves the assertion
+        # unable to fail at all: every selected flag is, by definition, named by a selecting file.
+        #
+        # The property wanted is the one the comment at the top of this file states -- that writing
+        # a flag's name in this file's prose does not make it `selected`. So: a flag only THIS file
+        # names must not be selected. 74 of the 99 this file names qualify, which is what makes it
+        # worth asserting rather than assuming.
+        only_here = sorted(set(own) - named_elsewhere)
+        self.assertGreater(
+            len(only_here), 20,
+            "only %d of the flags this file names are named nowhere else that selects. Near zero "
+            "means the mention scan or the selecting set has stopped matching, and the assertion "
+            "below then holds over almost nothing." % len(only_here))
+        leaked = sorted(set(only_here) & selected)
+        self.assertEqual(
+            [], leaked,
+            "these flags are named only in this file's own prose and are classified selected "
+            "anyway, so the register of what is documented where now describes this file rather "
+            "than the tree: %s" % ", ".join(leaked))
 
     def test_every_examined_flag_says_what_was_found(self) -> None:
         """A recorded flag with no finding beside it is a skip list wearing a register's name."""
@@ -1457,6 +1614,80 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             "derivation has started matching functions that do not read the environment, which "
             "inflates every count on this page."
             % (len(only_through_a_helper), len(self.reads)))
+
+    def test_the_portal_shows_the_default_the_code_actually_uses(self) -> None:
+        """A default an operator reads on the page must be the one they get by setting nothing.
+
+        The Rust half of this question is guarded -- test_engine_settings_offer_the_engine_default
+        compares the portal to `storage_config.rs`, after mx#959 found budgets advertised 10x to
+        156x larger than any deployment gets. The PYTHON half was not, and it is the same failure:
+        the display and the code that consumes it each correct in isolation, with nothing comparing
+        them.
+
+        It is only askable now because the defaults are only VISIBLE now. Most are written as an
+        argument -- `live_int("MATRIXARK_TOP_K_PER_LAYER", 8)` -- so a scan keyed on
+        `os.environ.get("NAME", "8")` saw neither the flag nor its default.
+
+        Clean when written: 47 comparable, zero disagreeing, and 13 of the 47 comparable ONLY
+        because the default is read out of a helper argument. The rest of the portal's 105 declared
+        defaults are engine variables whose fallback lives in Rust, which is the other guard's
+        subject, or have no literal fallback in Python at all.
+
+        Both scans are read from a MECHANISM. `num(env_name, key, cast)` has a config KEY where
+        most helpers have a default, so the argument is found from the parameter's NAME rather than
+        assumed to follow the variable -- assuming it reported eight rate-limit settings as
+        disagreeing when they agree exactly.
+        """
+        declared = portal_declared_defaults()
+        used = code_fallbacks()
+        comparable = sorted(set(declared) & set(used))
+        self.assertGreater(
+            len(comparable), 30,
+            "only %d portal settings could be compared against a code fallback. It was 47; near "
+            "zero means one of the two scans stopped matching, and an agreement nobody can check "
+            "is not an agreement." % len(comparable))
+        # NAMED, because the count cannot protect this. Thirteen of the 47 are comparable ONLY
+        # because the default is read out of a helper ARGUMENT, and a scan that loses that path
+        # reports a smaller comparable set with no disagreements -- which looks like success.
+        self.assertIn(
+            "MATRIXARK_HOOK_FAIL_OPEN", comparable,
+            "read as `_env_bool(\"MATRIXARK_HOOK_FAIL_OPEN\", True)` and nowhere written out. It "
+            "decides whether a failing hook blocks the turn, so the portal showing a default it "
+            "does not have is the difference between a hook that fails open and one that does not.")
+        # The registry half is asserted by MECHANISM rather than by naming one of its variables.
+        # Naming one here would make this file the only TEST that names it, which classifies it
+        # `selected` on the strength of this file alone -- the self-feeding
+        # `test_the_scan_does_not_feed_on_this_file` exists to catch, and it caught me doing it.
+        _helpers, registries, both = _env_key_helpers()
+        positions = _default_argument_index()
+        from_a_registry = set()
+        for rel in _production_modules():
+            tree = _tree(rel)
+            if tree is None:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                callee = getattr(node.func, "id", "") or getattr(node.func, "attr", "")
+                if callee not in registries:
+                    continue
+                key, position = both.get(callee), positions.get(callee)
+                if key is None or position is None or len(node.args) <= max(key, position):
+                    continue
+                argument = node.args[key]
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str)                         and _FLAG.match(argument.value)                         and _literal(node.args[position]) is not None:
+                    from_a_registry.add(argument.value)
+        self.assertTrue(
+            from_a_registry & set(comparable),
+            "no comparable default comes from a registry constructor. A Knob declares its variable "
+            "and its default as constructor arguments and the value is resolved later with "
+            "os.environ.get(knob.env), so losing that path drops the whole tenant-policy family "
+            "out of this comparison while leaving it looking clean.")
+        disagreeing = ["%s: the portal shows %s, %s falls back to %s" % (name, declared[name],
+                                                                        module, value)
+                       for name in comparable for value, module in sorted(used[name])
+                       if not _values_agree(declared[name], value)]
+        self.assertEqual([], disagreeing, "; ".join(disagreeing))
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
