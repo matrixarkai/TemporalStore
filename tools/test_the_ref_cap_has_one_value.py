@@ -8,6 +8,7 @@ the existing numeric-defaults guard could not see it because that guard only sca
 
 This is the narrow guard for that one setting, checked where it is actually written.
 """
+import ast
 import os
 import re
 import sys
@@ -34,16 +35,84 @@ def config_value():
     return None
 
 
+SURFACES = ("matrixark_mcp_core.py", "matrixark_mcp_runtime_config.py")
+
+CONSTANT = "DEFAULT_MAX_SELECTED_REFS"
+VARIABLE = "MATRIXARK_MAX_SELECTED_REFS"
+CAST = int
+
+_DECLARES = re.compile(
+    r'DEFAULT_MAX_SELECTED_REFS = int\(os\.environ\.get\("MATRIXARK_MAX_SELECTED_REFS",.*?"(\d+)"'
+)
+
+# ---------------------------------------------------------------------------------------------
+# A surface satisfies this file two ways: it reads the environment variable itself, or it imports
+# the constant from a module that does. The second is the STRONGER of the two -- one definition
+# reached by import cannot drift from itself, where two kept in step can -- so following the import
+# is not a relaxation of the question. What is still refused is a surface that binds the name to a
+# literal, and a surface whose imports disagree about where the value comes from.
+#
+# The same twenty lines are in test_the_shard_size_has_one_value.py and
+# test_the_score_threshold_has_one_value.py. That is deliberate rather than lazy: these three run
+# as scripts, a guard importing another guard is what test_matrixark_no_cross_test_imports exists
+# to stop, and a tools/ module only the tests import is exactly what
+# test_a_module_only_tests_reach_is_not_live records as unreachable. Three copies of a rule is a
+# real cost; a fourth entry in that list and a new cross-test edge were the larger ones.
+
+
+def _body(name):
+    return open(os.path.join(HERE, name), encoding="utf-8").read()
+
+
+def _hardcodes(body):
+    """The name bound to a bare number -- the failure this whole file exists to catch."""
+    for node in ast.walk(ast.parse(body)):
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if CONSTANT in names and isinstance(node.value, ast.Constant):
+            if isinstance(node.value.value, (int, float)) and not isinstance(node.value.value, bool):
+                return node.value.value
+    return None
+
+
+def _imports_from(body):
+    """Every module this file imports the constant from, as file names.
+
+    Plural on purpose: the re-export in matrixark_mcp_core.py is a try/except pair of imports
+    maintained separately, and two branches naming two different modules is the same divergence
+    this guard is about, one level up.
+    """
+    out = []
+    for node in ast.walk(ast.parse(body)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                if alias.name == CONSTANT and alias.asname is None:
+                    out.append(node.module.rsplit(".", 1)[-1] + ".py")
+    return out
+
+
+def _resolve(name, seen=()):
+    """The value a surface uses, and the file that declares it."""
+    if name in seen:
+        return None, None
+    body = _body(name)
+    if _hardcodes(body) is not None:
+        return None, None
+    match = _DECLARES.search(body)
+    if match:
+        return CAST(match.group(1)), name
+    sources = set(_imports_from(body))
+    if len(sources) != 1:
+        return None, None
+    source = sources.pop()
+    if not os.path.exists(os.path.join(HERE, source)):
+        return None, None
+    return _resolve(source, seen + (name,))
+
+
 def python_defaults():
-    found = {}
-    for name in ("matrixark_mcp_core.py", "matrixark_mcp_runtime_config.py"):
-        body = open(os.path.join(HERE, name), encoding="utf-8").read()
-        match = re.search(
-            r'DEFAULT_MAX_SELECTED_REFS = int\(os\.environ\.get\("MATRIXARK_MAX_SELECTED_REFS",.*?"(\d+)"',
-            body,
-        )
-        found[name] = int(match.group(1)) if match else None
-    return found
+    return {name: _resolve(name)[0] for name in SURFACES}
 
 
 def rust_default():
@@ -69,6 +138,29 @@ def every_surface_declares_the_same_cap():
         len(distinct) == 1,
         "max_selected_refs disagrees across surfaces: %s" % (values,),
     )
+
+
+
+def every_surface_honours_the_environment_variable():
+    """A surface need not contain the variable name; what it must not do is arrive at a value the
+    variable cannot reach. So the question is asked of whichever file DECLARES the value for that
+    surface -- itself when it reads the environment, and the module it imports from when it does
+    not.
+    """
+    for name in SURFACES:
+        _value, declaring = _resolve(name)
+        check(
+            declaring is not None,
+            "%s neither reads %s nor imports the constant from a module that does"
+            % (name, VARIABLE),
+        )
+        if declaring is None:
+            continue
+        check(
+            VARIABLE in _body(declaring),
+            "%s takes its value from %s, which hardcodes it instead of reading %s"
+            % (name, declaring, VARIABLE),
+        )
 
 
 def the_request_builder_does_not_re_default_it():
@@ -125,6 +217,7 @@ def a_caller_can_still_ask_for_everything():
 
 for test in (
     every_surface_declares_the_same_cap,
+    every_surface_honours_the_environment_variable,
     the_request_builder_does_not_re_default_it,
     a_caller_can_still_ask_for_everything,
 ):
