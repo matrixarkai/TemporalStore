@@ -19,30 +19,19 @@ except ImportError:
 # Nothing shared was being borrowed here either -- every name below is either stdlib or a
 # production module, reachable directly.
 import os
-import os
-import sys
 import sys
 import tempfile
-import tempfile
 from argparse import Namespace
-from argparse import Namespace
-from pathlib import Path
 from pathlib import Path
 
-try:  # package path
-    from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
-    from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
-    import tools.matrixark_codex_hook as hook
-    import tools.matrixark_codex_hook as hook
-    import tools.matrixark_http
-    import tools.matrixark_http
-except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
-    from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
-    import matrixark_codex_hook as hook
-    import matrixark_codex_hook as hook
-    import matrixark_http
-    import matrixark_http
+# Imported the SAME WAY THE PARENT DOES -- plain, with no `tools.` prefix. A `tools.`
+# import is a DIFFERENT module object from the bare one: `matrixark_codex_hook` and
+# `tools.matrixark_codex_hook` both load, both work, and each carries its own module
+# state, so a test patching one through the parent reached a module these mixins were
+# not using. Four codex-hook tests failed exactly that way.
+from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
+import matrixark_codex_hook as hook
+import matrixark_http
 
 
 class _CodexHookOutputPart3:

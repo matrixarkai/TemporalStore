@@ -17,24 +17,18 @@ except ImportError:
 # Nothing shared was being borrowed here either -- every name below is either stdlib or a
 # production module, reachable directly.
 import json
-import json
-import subprocess
 import subprocess
 import sys
-import sys
-import tempfile
 import tempfile
 from argparse import Namespace
-from argparse import Namespace
-from pathlib import Path
 from pathlib import Path
 
-try:  # package path
-    import tools.matrixark_codex_hook as hook
-    import tools.matrixark_codex_hook as hook
-except ImportError:  # Direct script execution from tools/.
-    import matrixark_codex_hook as hook
-    import matrixark_codex_hook as hook
+# Imported the SAME WAY THE PARENT DOES -- plain, with no `tools.` prefix. A `tools.`
+# import is a DIFFERENT module object from the bare one: `matrixark_codex_hook` and
+# `tools.matrixark_codex_hook` both load, both work, and each carries its own module
+# state, so a test patching one through the parent reached a module these mixins were
+# not using. Four codex-hook tests failed exactly that way.
+import matrixark_codex_hook as hook
 
 
 class _CodexHookOutputPart2:
