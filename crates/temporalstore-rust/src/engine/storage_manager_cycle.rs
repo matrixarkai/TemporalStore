@@ -279,6 +279,47 @@ impl TemporalEngine {
                 .to_string(),
             ..StorageManagerStageReport::default()
         });
+        // PREPARE ROLLS THE NEXT DATA SLAB, which is the only thing this stage has to do that
+        // nothing else in the round does.
+        //
+        // Rolling is not cheap: it fsyncs the outgoing slab, scans the slab directory to pick
+        // the next id, creates and fsyncs the new file, fsyncs the parent directory and
+        // persists the band manifest. Left to `append`, all of that lands on one unlucky client
+        // write as a latency outlier unrelated to the size of the write that triggered it.
+        //
+        // TWO ROUND DRIVERS, AND ONLY ONE OF THEM DID THIS. `run_storage_manager_once` has
+        // pre-allocated here since the stage was written; this one -- the driver the data-node
+        // worker and the embedded proxy both run -- reported `applied: true` for a stage whose
+        // body was a report and nothing else. A deployment driven by this cycle therefore paid
+        // the inline roll on the write path on every slab boundary, which is the exact cost the
+        // stage exists to move off it.
+        //
+        // A FAILURE IS RECORDED AND DOES NOT STOP THE ROUND, matching the other driver: the
+        // inline roll in `append` is still there, so the only consequence of a failure here is
+        // that the next append pays for the roll exactly as it does today. That is a weaker
+        // reaction than the design being followed, whose `Prepare` returns before any other
+        // stage runs -- but there the failure is a stream error that also invalidates the
+        // stages after it, and here it is not: nothing else in this round reads the active
+        // slab's identity.
+        //
+        // A no-op while the active slab is under target, so the ordinary round pays one lock
+        // and one comparison.
+        let mut prepared_block_slab_id = None;
+        if request.enable_prepare && !request.dry_run {
+            let slab_target_bytes = if request.prepare_slab_target_bytes == 0 {
+                crate::storage_config::effective_block_slab_target_bytes()
+            } else {
+                request.prepare_slab_target_bytes
+            };
+            match self
+                .block_store()
+                .prepare_next_slab_with_target(slab_target_bytes)
+            {
+                Ok(Some(roll)) => prepared_block_slab_id = Some(roll.new_block_slab_id),
+                Ok(None) => {}
+                Err(error) => errors.push(format!("prepare: {error}")),
+            }
+        }
         stages.push(StorageManagerStageReport {
             duration_ms: {
                 let elapsed = stage_clock.elapsed().as_millis() as u64;
@@ -295,6 +336,7 @@ impl TemporalEngine {
                 "prepare disabled".to_string()
             },
             selected_block_slab_ids: plan.live_block_slab_ids.clone(),
+            prepared_block_slab_id,
             pressure_signal:
                 "dirty_slots+wal_bytes+index_log_bytes+stale_density+cache_pressure+expire_debt+delayed_destroy+retention_blockers+model_compaction_debt"
                     .to_string(),

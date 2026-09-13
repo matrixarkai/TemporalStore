@@ -3280,6 +3280,21 @@ pub struct StorageManagerCycleRequest {
     #[serde(default)]
     #[serde(rename = "page_gc_min_band_garbage_basis_points")]
     pub page_gc_min_slab_garbage_basis_points: u64,
+    /// Bytes the active data slab must hold before the prepare stage rolls a fresh one.
+    ///
+    /// Zero means "whatever the process is configured for", which is what a caller with no
+    /// opinion sends and what the field decodes to when a request body omits it. It is NOT
+    /// "no bound" the way the per-round budgets beside it are: a target of zero would roll on
+    /// every round, and an empty slab is not worth a roll.
+    ///
+    /// It is a per-round number and not only a process-wide one for the same reason
+    /// `prepare_next_slab_with_target` takes an argument: the configured target is reachable
+    /// only through process-wide state, so anything wanting a smaller one had to mutate the
+    /// process and hope to put it back.
+    #[serde(default)]
+    #[serde(alias = "prepare_page_segment_target_bytes")]
+    #[serde(rename = "prepare_page_slab_target_bytes")]
+    pub prepare_slab_target_bytes: u64,
 }
 
 /// Per-round bounds for the background storage cycle.
@@ -3366,6 +3381,7 @@ impl Default for StorageManagerCycleRequest {
             index_gc_commit_dirty_buckets_before_truncation: true,
             page_gc_min_slab_garbage_basis_points:
                 DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS,
+            prepare_slab_target_bytes: 0,
         }
     }
 }
@@ -3492,6 +3508,16 @@ pub struct StorageManagerStageReport {
     pub metrics_bucket_count: usize,
     #[serde(default)]
     pub metrics_page_ref_count: u64,
+    /// The slab the prepare stage rolled to, or `None` when it did not roll.
+    ///
+    /// `applied` on this stage says the stage RAN; this says whether it did anything, and the
+    /// two are different answers. The stage is a no-op on the overwhelming majority of rounds,
+    /// so reporting only the first makes a prepare that never rolls look exactly like one that
+    /// rolls every round.
+    #[serde(default)]
+    #[serde(alias = "prepared_page_segment_id")]
+    #[serde(rename = "prepared_page_slab_id")]
+    pub prepared_block_slab_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
