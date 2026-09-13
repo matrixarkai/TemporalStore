@@ -1064,6 +1064,20 @@ pub struct IndexLogGcReport {
     /// look identical: both report zero records removed and the same bytes before and after.
     #[serde(default)]
     pub rewrite_skipped: bool,
+    /// Bytes the round COPIED: what it wrote into the replacement for the piece being written.
+    ///
+    /// This is what a round costs. The collector used to rewrite every record it retained, so
+    /// this number was the size of everything it KEPT, and a round that removed less copied
+    /// more. Earlier pieces are now unlinked instead, and nothing in them is read or copied, so
+    /// this is bounded by the piece being written however deep the log is.
+    #[serde(default)]
+    pub bytes_copied: u64,
+    /// Whole pieces of the log this round unlinked.
+    #[serde(default)]
+    pub dropped_segments: usize,
+    /// What those pieces held on disk.
+    #[serde(default)]
+    pub dropped_segment_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1172,10 +1186,11 @@ impl LocalIndexLogStore {
     /// dumped watermark is the undumped-length signal.
     pub fn log_len_bytes(&self, shard_id: ShardId) -> u64 {
         let inner = self.inner.lock().expect("index log lock poisoned");
-        index_log_path(&inner.root, shard_id)
-            .metadata()
-            .map(|metadata| metadata.len())
-            .unwrap_or(0)
+        // Every piece, not just the one being written. After a roll the active piece is the
+        // NEWEST and smallest part of the log, so reporting its length as the log's length makes
+        // a log SHRINK as it grows -- and the dump cadence that reads this would stop firing
+        // exactly when there is most to dump.
+        index_log_total_bytes(&inner.root, shard_id)
     }
 
     /// Undumped index-log length for a shard: the on-disk byte growth since the last catalog
@@ -1195,10 +1210,7 @@ impl LocalIndexLogStore {
 
     pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
         let inner = self.inner.lock().expect("index log lock poisoned");
-        let current = index_log_path(&inner.root, shard_id)
-            .metadata()
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+        let current = index_log_total_bytes(&inner.root, shard_id);
         let dumped = inner
             .last_dumped_len_by_shard
             .get(&shard_id)
@@ -1213,10 +1225,7 @@ impl LocalIndexLogStore {
     /// non-durable state (restart-during-dump re-dumps rather than skipping).
     pub fn mark_catalog_dumped(&self, shard_id: ShardId) {
         let mut inner = self.inner.lock().expect("index log lock poisoned");
-        let current = index_log_path(&inner.root, shard_id)
-            .metadata()
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+        let current = index_log_total_bytes(&inner.root, shard_id);
         inner.last_dumped_len_by_shard.insert(shard_id, current);
         // Stamped in the same call as the length, so the two halves of the cadence -- how much
         // has accumulated, and how long ago -- can never disagree about which dump they describe.
@@ -1291,6 +1300,17 @@ impl LocalIndexLogStore {
                 sequence
             }
         };
+        // Seal the piece being written if this record would take it past the rolling threshold,
+        // so reclaim has whole pieces to unlink instead of a file to rewrite. The check is a
+        // stat; the piece is walked once per ROLL, never once per append -- re-reading the file
+        // to answer "is this piece full" on every write is the cost the write-ahead log had to
+        // take back out.
+        //
+        // AFTER the sequence probe above, not before it. That probe is what trims a tail a crash
+        // left half-written, and only the piece being written is ever trimmed -- so rolling first
+        // would seal the torn bytes into a piece nothing trims again, and the piece's recorded
+        // end would be taken from the last record before them.
+        roll_index_log_segment_if_due(&inner.root, shard_id)?;
         let next_sequence = last_sequence.saturating_add(1);
         let record = IndexLogRecord {
             shard_id,
@@ -1348,6 +1368,17 @@ impl LocalIndexLogStore {
                 sequence
             }
         };
+        // Seal the piece being written if this record would take it past the rolling threshold,
+        // so reclaim has whole pieces to unlink instead of a file to rewrite. The check is a
+        // stat; the piece is walked once per ROLL, never once per append -- re-reading the file
+        // to answer "is this piece full" on every write is the cost the write-ahead log had to
+        // take back out.
+        //
+        // AFTER the sequence probe above, not before it. That probe is what trims a tail a crash
+        // left half-written, and only the piece being written is ever trimmed -- so rolling first
+        // would seal the torn bytes into a piece nothing trims again, and the piece's recorded
+        // end would be taken from the last record before them.
+        roll_index_log_segment_if_due(&inner.root, shard_id)?;
         let next_sequence = last_sequence.saturating_add(1);
         // Record WHICH index this checkpoint anchors, not a second copy of it.
         //
@@ -1433,6 +1464,17 @@ impl LocalIndexLogStore {
                 sequence
             }
         };
+        // Seal the piece being written if this record would take it past the rolling threshold,
+        // so reclaim has whole pieces to unlink instead of a file to rewrite. The check is a
+        // stat; the piece is walked once per ROLL, never once per append -- re-reading the file
+        // to answer "is this piece full" on every write is the cost the write-ahead log had to
+        // take back out.
+        //
+        // AFTER the sequence probe above, not before it. That probe is what trims a tail a crash
+        // left half-written, and only the piece being written is ever trimmed -- so rolling first
+        // would seal the torn bytes into a piece nothing trims again, and the piece's recorded
+        // end would be taken from the last record before them.
+        roll_index_log_segment_if_due(&inner.root, shard_id)?;
         let next_sequence = last_sequence.saturating_add(1);
         // Do not write what the item already says. Each item carries `object_id` and
         // `routing_bucket`, and the address it points at repeats both -- 18 bytes of a 142-byte
@@ -1539,90 +1581,98 @@ impl LocalIndexLogStore {
         mut take: impl FnMut(IndexDeltaRecord),
     ) -> Result<(), IndexLogError> {
         let inner = self.inner.lock().expect("index log lock poisoned");
-        let path = index_log_path(&inner.root, shard_id);
-        if !path.exists() {
-            return Ok(());
-        }
-        let file = File::open(&path)?;
-        let reader = BufReader::new(file);
+        // Every piece of the log, oldest first. A log that has never rolled is one file, and this
+        // is then the single path this fold has always read.
+        //
+        // `last_sequence` is carried ACROSS the pieces, not reset per piece: the continuity check
+        // below is what refuses a holed delta stream, and per-piece it would stop seeing a hole
+        // that falls on a boundary -- which is the only new place a hole can appear.
         let mut last_sequence = 0_u64;
-        // Read by FRAME, not by line. A record's payload may be binary, and a binary payload
-        // may contain 0x0A -- a reader splitting on newlines would cut such a record in half
-        // and, being `lines()`, would also demand it be valid UTF-8. `read_frame` takes the
-        // length the frame declares instead, and reads text-framed and legacy unframed
-        // records unchanged, so one loop reads every shape the log has ever held. Streaming
-        // rather than reading the file whole keeps memory bounded by the largest record.
-        let mut reader = reader;
-        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
-            if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+        for path in index_log_segment_paths(&inner.root, shard_id) {
+            if !path.exists() {
                 continue;
             }
-            let payload = payload.as_slice();
-            // PROPAGATE decode/parse failures instead of silently skipping the line. Silently
-            // dropping an unparseable interior delta record and continuing the fold advances
-            // the reconstructed anchor past it, so an eviction/removal recorded ONLY in that
-            // delta (not the WAL) is recovered from neither source = silent loss / dangling
-            // ref. `decode_line` also verifies the per-record integrity envelope, so a
-            // value-preserving bit-flip surfaces here as `Corruption`. Consistent with the
-            // scan / last_sequence_at path, which already treats interior corruption as fatal.
-            // A whole-index record shares this file and is not a delta. It used to be read as
-            // one and answer with defaults; now the container says what it is, so it is skipped
-            // rather than mis-read.
-            // Skip only a payload that SAYS it is the other shape. Anything else -- an
-            // unrecognised shape, a truncated container -- goes to the decoder and is reported,
-            // because a sweep that quietly skips what it cannot read is how committed corruption
-            // becomes silent data loss.
-            if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
-                continue;
-            }
-            let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
-            // Put back what the writer left out because the item already stated it. A record
-            // written before that stripping carries both already, and this leaves those alone.
-            // The hoisted key FIRST. Everything below derives from the item's own fields and
-            // `object_key` is one of them, so restoring it after would derive against an empty
-            // key and put back the wrong handle.
-            if let Some(shared) = record.shared_object_key.clone() {
-                for item in record.items.iter_mut() {
-                    item.object_key = shared.clone();
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            // Read by FRAME, not by line. A record's payload may be binary, and a binary payload
+            // may contain 0x0A -- a reader splitting on newlines would cut such a record in half
+            // and, being `lines()`, would also demand it be valid UTF-8. `read_frame` takes the
+            // length the frame declares instead, and reads text-framed and legacy unframed
+            // records unchanged, so one loop reads every shape the log has ever held. Streaming
+            // rather than reading the file whole keeps memory bounded by the largest record.
+            while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
+                if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    continue;
                 }
-            }
-            for item in record.items.iter_mut() {
-                // The item's id first: the address is restored FROM it.
-                item.restore_object_id_repeat(record.shard_id);
-                item.restore_address_repeats();
-                item.restore_page_ref_key_repeat();
-                item.restore_size_repeat();
-            }
-            // Enforce delta sequence-continuity: sequences are assigned strictly monotonically
-            // across ALL appended records (whole-index and delta share one counter), and GC
-            // only truncates a leading prefix, so in file order each record's sequence must be
-            // strictly greater than the previous. A drop below or duplicate means a lost /
-            // reordered / corrupted record -- refuse rather than fold a holed delta stream.
-            if record.sequence <= last_sequence {
-                return Err(IndexLogError::Corruption(format!(
-                    "index-log delta sequence continuity violation: record sequence {} is not greater than previous {}",
-                    record.sequence, last_sequence
-                )));
-            }
-            last_sequence = record.sequence;
-            // A whole-index IndexLogRecord also deserializes into IndexDeltaRecord (its `index`
-            // field is ignored, leaving the delta fields empty). Only keep records that carry a
-            // delta payload OR a WAL anchor (an anchor-only record still advances the
-            // reconstructed watermark on load).
-            if record.items.is_empty()
-                && record.meta.is_none()
-                && record.key_states.is_empty()
-                && record.applied_wal_sequence.is_none()
-            {
-                continue;
-            }
-            if record.sequence > retain_after_sequence {
-                take(record);
+                let payload = payload.as_slice();
+                // PROPAGATE decode/parse failures instead of silently skipping the line. Silently
+                // dropping an unparseable interior delta record and continuing the fold advances
+                // the reconstructed anchor past it, so an eviction/removal recorded ONLY in that
+                // delta (not the WAL) is recovered from neither source = silent loss / dangling
+                // ref. `decode_line` also verifies the per-record integrity envelope, so a
+                // value-preserving bit-flip surfaces here as `Corruption`.
+                // Skip only a payload that SAYS it is the other shape. Anything else -- an
+                // unrecognised shape, a truncated container -- goes to the decoder and is
+                // reported, because a sweep that quietly skips what it cannot read is how
+                // committed corruption becomes silent data loss.
+                if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+                    continue;
+                }
+                let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
+                // Put back what the writer left out because the item already stated it. A record
+                // written before that stripping carries both already, and this leaves those
+                // alone. The hoisted key FIRST: everything below derives from the item's own
+                // fields and `object_key` is one of them.
+                if let Some(shared) = record.shared_object_key.clone() {
+                    for item in record.items.iter_mut() {
+                        item.object_key = shared.clone();
+                    }
+                }
+                for item in record.items.iter_mut() {
+                    // The item's id first: the address is restored FROM it.
+                    item.restore_object_id_repeat(record.shard_id);
+                    item.restore_address_repeats();
+                    item.restore_page_ref_key_repeat();
+                    item.restore_size_repeat();
+                }
+                // Enforce delta sequence-continuity: sequences are assigned strictly
+                // monotonically across ALL appended records (whole-index and delta share one
+                // counter), reclaim only ever removes a leading prefix, and pieces are read in
+                // log order -- so each record's sequence must be strictly greater than the
+                // previous one, boundaries included. A drop below or a duplicate means a lost /
+                // reordered / corrupted record, or pieces read out of order; refuse rather than
+                // fold a holed delta stream.
+                if record.sequence <= last_sequence {
+                    return Err(IndexLogError::Corruption(format!(
+                        "index-log delta sequence continuity violation: record sequence {} is not greater than previous {}",
+                        record.sequence, last_sequence
+                    )));
+                }
+                last_sequence = record.sequence;
+                // A whole-index IndexLogRecord also deserializes into IndexDeltaRecord (its
+                // `index` field is ignored, leaving the delta fields empty). Only keep records
+                // that carry a delta payload OR a WAL anchor (an anchor-only record still
+                // advances the reconstructed watermark on load).
+                if record.items.is_empty()
+                    && record.meta.is_none()
+                    && record.key_states.is_empty()
+                    && record.applied_wal_sequence.is_none()
+                {
+                    continue;
+                }
+                if record.sequence > retain_after_sequence {
+                    take(record);
+                }
             }
         }
         Ok(())
     }
 
+    /// Raw bytes of the log at `offset`.
+    ///
+    /// `offset` is a position in the LOG, not in whichever piece holds it: the pieces are read
+    /// back to back, so a window that starts in one continues into the next rather than stopping
+    /// at a boundary the caller cannot see.
     pub fn read_range(
         &self,
         shard_id: ShardId,
@@ -1630,14 +1680,31 @@ impl LocalIndexLogStore {
         size: u64,
     ) -> Result<Vec<u8>, IndexLogError> {
         let mut inner = self.inner.lock().expect("index log lock poisoned");
-        let path = index_log_path(&inner.root, shard_id);
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![0; size as usize];
-        let read = file.read(&mut bytes)?;
-        bytes.truncate(read);
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut at = 0_u64;
+        for path in index_log_segment_paths(&inner.root, shard_id) {
+            if bytes.len() as u64 >= size {
+                break;
+            }
+            let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            if length == 0 {
+                continue;
+            }
+            // A piece that ends before the window starts holds nothing the caller asked for, and
+            // skipping it costs a stat rather than a read.
+            if at.saturating_add(length) <= offset {
+                at = at.saturating_add(length);
+                continue;
+            }
+            let start_in_piece = offset.saturating_sub(at);
+            let want = size.saturating_sub(bytes.len() as u64);
+            let mut file = File::open(&path)?;
+            file.seek(SeekFrom::Start(start_in_piece))?;
+            file.take(want).read_to_end(&mut bytes)?;
+            at = at.saturating_add(length);
+        }
         inner.stats.reads += 1;
-        inner.stats.bytes_read += read as u64;
+        inner.stats.bytes_read += bytes.len() as u64;
         Ok(bytes)
     }
 
@@ -1697,40 +1764,56 @@ impl LocalIndexLogStore {
         mut take: impl FnMut(u64, Vec<u8>) -> T,
     ) -> Result<(Vec<T>, bool), IndexLogError> {
         let mut inner = self.inner.lock().expect("index log lock poisoned");
-        let path = index_log_path(&inner.root, shard_id);
-        if !path.exists() {
+        let segments = index_log_segment_paths(&inner.root, shard_id)
+            .into_iter()
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>();
+        if segments.is_empty() {
             inner.stats.scans += 1;
             return Ok((Vec::new(), false));
         }
         let _ = last_sequence_at(&inner.root, shard_id)?;
-        let mut file = File::open(&path)?;
-        file.seek(SeekFrom::Start(start_offset))?;
-        let mut reader = BufReader::new(file);
-        let mut offset = start_offset;
+        // A record's position is where it sits in the LOG, counted across the pieces in order --
+        // not an offset into whichever file holds it, which would mean nothing to a caller once
+        // there is more than one.
+        let mut offset = 0_u64;
         let mut total = 0;
         let mut truncated = false;
         let mut records = Vec::new();
 
-        // Walk by RECORD, not by newline. What this returns is each record's raw framed
-        // bytes -- the caller ships them onward untouched -- so the walk has to agree with
-        // the writer about where a record ends. A newline scan decides that from a delimiter
-        // a binary payload may itself contain, and would hand the caller half a record that
-        // still looks like a whole one. The write-ahead log walks its own records with this
-        // same reader, for this same reason.
-        while let Some(raw) = crate::log_framing::read_raw_record(&mut reader)? {
-            let read = raw.len() as u64;
-            let next_offset = offset.saturating_add(read);
-            if next_offset > end_offset {
-                break;
+        'segments: for path in segments {
+            let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            if offset.saturating_add(length) <= start_offset {
+                offset = offset.saturating_add(length);
+                continue;
             }
-            if total + read > max_bytes {
-                // Out of budget with the window not yet walked: there is more to read.
-                truncated = true;
-                break;
+            let mut file = File::open(&path)?;
+            let skip = start_offset.saturating_sub(offset);
+            file.seek(SeekFrom::Start(skip))?;
+            offset = offset.saturating_add(skip);
+            let mut reader = BufReader::new(file);
+
+            // Walk by RECORD, not by newline. What this returns is each record's raw framed
+            // bytes -- the caller ships them onward untouched -- so the walk has to agree with
+            // the writer about where a record ends. A newline scan decides that from a delimiter
+            // a binary payload may itself contain, and would hand the caller half a record that
+            // still looks like a whole one. The write-ahead log walks its own records with this
+            // same reader, for this same reason.
+            while let Some(raw) = crate::log_framing::read_raw_record(&mut reader)? {
+                let read = raw.len() as u64;
+                let next_offset = offset.saturating_add(read);
+                if next_offset > end_offset {
+                    break 'segments;
+                }
+                if total + read > max_bytes {
+                    // Out of budget with the window not yet walked: there is more to read.
+                    truncated = true;
+                    break 'segments;
+                }
+                records.push(take(offset, raw));
+                offset = next_offset;
+                total += read;
             }
-            records.push(take(offset, raw));
-            offset = next_offset;
-            total += read;
         }
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
@@ -1749,17 +1832,25 @@ impl LocalIndexLogStore {
         &self,
         shard_id: ShardId,
         retain_from_sequence: u64,
-        // Bounding this per round makes it WORSE. The round rewrites what it retains, so
-        // removing fewer records means copying more of them: 40,000 records took 357 ms in one
-        // unlimited round against 492 ms for a round limited to 200 -- dearer, and with the rest
-        // still to do. Zero, which every caller passes, is the cheap option. See
-        // `bounding_the_index_collector_per_round_costs_more_not_less`.
+        // The bound applies to the REWRITE of the piece being written, which is the only part of
+        // a round that copies anything. Whole earlier pieces are unlinked, and that is not work a
+        // round needs protecting from: a stat and an unlink each, whatever they hold.
+        //
+        // It used to bound the whole round, and bounding the whole round cost MORE: the round
+        // rewrote what it retained, so removing fewer records meant copying more of them --
+        // 40,000 records were 357 ms in one unlimited round against 492 ms limited to 200. That
+        // inversion is what the pieces remove; see
+        // `reclaim_costs_what_it_removes_not_what_it_keeps`.
         max_entries_per_round: usize,
     ) -> Result<IndexLogGcReport, IndexLogError> {
         let inner = self.inner.lock().expect("index log lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let path = index_log_path(&inner.root, shard_id);
-        if !path.exists() {
+        let root = inner.root.clone();
+        let path = index_log_path(&root, shard_id);
+        if !index_log_segment_paths(&root, shard_id)
+            .iter()
+            .any(|piece| piece.exists())
+        {
             return Ok(IndexLogGcReport {
                 shard_id,
                 retain_from_sequence,
@@ -1768,73 +1859,89 @@ impl LocalIndexLogStore {
             });
         }
 
-        let bytes_before = path.metadata()?.len();
-        let _ = last_sequence_at(&inner.root, shard_id)?;
-        let file = File::open(&path)?;
-        let reader = BufReader::new(file);
+        let bytes_before = index_log_total_bytes(&root, shard_id);
+        // Whole earlier pieces first. A piece whose sequences all sit below the floor is unlinked
+        // without being opened, so what it HELD costs nothing -- which is the point: this round
+        // used to pay for every record it kept.
+        let (dropped_segments, dropped_segment_bytes, dropped_records) =
+            drop_covered_index_segments(&root, shard_id, retain_from_sequence)?;
+
+        let _ = last_sequence_at(&root, shard_id)?;
         let mut records_before = 0usize;
         let mut removed_this_round = 0usize;
         let mut removable_records_before_budget = 0usize;
         let mut retained = Vec::new();
         let mut reclaimable_bytes = 0u64;
-        // By frame, not by line: see the fold path above.
-        let mut reader = reader;
-        while let Some((frame_bytes, payload)) = crate::log_framing::read_frame(&mut reader)? {
-            if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
-                continue;
-            }
-            records_before += 1;
-            // Preserve the exact on-disk payload for retained records so a delta record is not
-            // silently re-encoded as a whole-index record (which would drop its items/meta).
-            // Decode verifies the integrity envelope; the retained raw payload is re-framed on
-            // write-out below.
-            let record: IndexRecordHead = decode_index_payload(&payload)?;
-            if record.sequence < retain_from_sequence {
-                removable_records_before_budget = removable_records_before_budget.saturating_add(1);
-            }
-            if record.sequence >= retain_from_sequence
-                || (max_entries_per_round > 0 && removed_this_round >= max_entries_per_round)
-            {
-                // Retain the EXACT decoded payload, not a re-serialized IndexLogRecord: a delta
-                // record also parses as IndexLogRecord (its delta fields are dropped), so
-                // re-encoding the parsed struct would silently destroy retained delta items on
-                // a GC round. Re-frame the untouched payload on write-out below.
-                retained.push(payload);
-            } else {
-                removed_this_round = removed_this_round.saturating_add(1);
-                reclaimable_bytes = reclaimable_bytes.saturating_add(frame_bytes as u64);
+        if path.exists() {
+            let file = File::open(&path)?;
+            // By frame, not by line: see the fold path above.
+            let mut reader = BufReader::new(file);
+            while let Some((frame_bytes, payload)) = crate::log_framing::read_frame(&mut reader)? {
+                if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    continue;
+                }
+                records_before += 1;
+                // Preserve the exact on-disk payload for retained records so a delta record is
+                // not silently re-encoded as a whole-index record (which would drop its
+                // items/meta). Decode verifies the integrity envelope; the retained raw payload
+                // is re-framed on write-out below.
+                let record: IndexRecordHead = decode_index_payload(&payload)?;
+                if record.sequence < retain_from_sequence {
+                    removable_records_before_budget =
+                        removable_records_before_budget.saturating_add(1);
+                }
+                if record.sequence >= retain_from_sequence
+                    || (max_entries_per_round > 0 && removed_this_round >= max_entries_per_round)
+                {
+                    retained.push(payload);
+                } else {
+                    removed_this_round = removed_this_round.saturating_add(1);
+                    reclaimable_bytes = reclaimable_bytes.saturating_add(frame_bytes as u64);
+                }
             }
         }
 
-        let temp_path = path.with_extension("jsonl.tmp");
-        {
-            let mut temp = File::create(&temp_path)?;
-            for payload in &retained {
-                temp.write_all(&crate::log_framing::encode_record(payload))?;
+        // Nothing in the piece being written is reclaimable, which is the ordinary case once the
+        // log rolls: the removable prefix lives in the pieces that were just unlinked. Rewriting
+        // the piece would write it back byte for byte and take a barrier to do it.
+        let mut bytes_copied = 0u64;
+        let rewrite_skipped = removed_this_round == 0;
+        if !rewrite_skipped {
+            let temp_path = path.with_extension("gc.tmp");
+            {
+                let mut temp = File::create(&temp_path)?;
+                for payload in &retained {
+                    let framed = crate::log_framing::encode_record(payload);
+                    bytes_copied = bytes_copied.saturating_add(framed.len() as u64);
+                    temp.write_all(&framed)?;
+                }
+                temp.flush()?;
+                crate::durability_metrics::record_barrier("engine_index_log_gc");
+                temp.sync_all()?;
             }
-            temp.flush()?;
-            crate::durability_metrics::record_barrier("engine_index_log_gc");
-            temp.sync_all()?;
+            fs::rename(&temp_path, &path)?;
+            sync_parent_dir(&path)?;
         }
-        fs::rename(&temp_path, &path)?;
-        sync_parent_dir(&path)?;
-        let bytes_after = path.metadata()?.len();
+        let bytes_after = index_log_total_bytes(&root, shard_id);
+        let removed_from_active = records_before.saturating_sub(retained.len());
         Ok(IndexLogGcReport {
             shard_id,
             retain_from_sequence,
             max_entries_per_round,
-            records_before,
+            records_before: dropped_records.saturating_add(records_before),
             records_after: retained.len(),
-            records_removed: records_before.saturating_sub(retained.len()),
-            removable_records_before_budget,
+            records_removed: dropped_records.saturating_add(removed_from_active),
+            removable_records_before_budget: dropped_records
+                .saturating_add(removable_records_before_budget),
             budget_exhausted: max_entries_per_round > 0
                 && removable_records_before_budget > max_entries_per_round,
             bytes_before,
             bytes_after,
-            reclaimable_bytes,
-            // This sweep is only reached once a caller has decided it is worth taking; the
-            // threshold that can decline one lives on the post-dump sweep.
-            rewrite_skipped: false,
+            reclaimable_bytes: dropped_segment_bytes.saturating_add(reclaimable_bytes),
+            rewrite_skipped,
+            bytes_copied,
+            dropped_segments,
+            dropped_segment_bytes,
         })
     }
 
@@ -1867,21 +1974,14 @@ impl LocalIndexLogStore {
         meta_sequence: u64,
         min_reclaimable_bytes: u64,
     ) -> Result<IndexLogGcReport, IndexLogError> {
-        // A SECOND reader of the same on-disk record, so it has to know every spelling the
-        // record has ever used. It previously named the long forms only; when those were
-        // shortened this probe stopped seeing `sequence` at all and read
-        // `applied_wal_sequence` as None, which silently changed what the sweep removed.
-        #[derive(serde::Deserialize)]
-        struct AnchorProbe {
-            #[serde(rename = "q", alias = "sequence")]
-            sequence: u64,
-            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
-            applied_wal_sequence: Option<u64>,
-        }
         let inner = self.inner.lock().expect("index log lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let path = index_log_path(&inner.root, shard_id);
-        if !path.exists() {
+        let root = inner.root.clone();
+        let path = index_log_path(&root, shard_id);
+        if !index_log_segment_paths(&root, shard_id)
+            .iter()
+            .any(|piece| piece.exists())
+        {
             return Ok(IndexLogGcReport {
                 shard_id,
                 retain_from_sequence: meta_sequence,
@@ -1889,31 +1989,39 @@ impl LocalIndexLogStore {
             });
         }
 
-        let bytes_before = path.metadata()?.len();
-        let _ = last_sequence_at(&inner.root, shard_id)?;
-        let file = File::open(&path)?;
-        let reader = BufReader::new(file);
+        let bytes_before = index_log_total_bytes(&root, shard_id);
+        // Whole earlier pieces first, and unconditionally: the threshold below exists to decline
+        // a REWRITE that copies almost everything to reclaim almost nothing, and an unlink copies
+        // nothing at all. A piece only goes when its name says every record in it is both below
+        // the position bound and reflected by the base the dump wrote.
+        let (dropped_segments, dropped_segment_bytes, dropped_records) =
+            drop_reflected_index_segments(&root, shard_id, wal_anchor, meta_sequence)?;
+
+        let _ = last_sequence_at(&root, shard_id)?;
         let mut records_before = 0usize;
         let mut retained = Vec::new();
-        // By frame, not by line: see the fold path above.
-        let mut reader = reader;
         // `read_frame` hands back how many bytes the record OCCUPIED, which this loop used to
         // discard. It is the exact on-disk size of what a rewrite would drop, so the threshold
         // below is measured in the same bytes the file is measured in rather than in payloads.
         let mut reclaimable_bytes = 0u64;
-        while let Some((frame_bytes, payload)) = crate::log_framing::read_frame(&mut reader)? {
-            if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
-                continue;
-            }
-            records_before += 1;
-            // Decode verifies the integrity envelope; the retained raw payload is re-framed on
-            // write-out below, so a retained delta record keeps its exact on-disk bytes.
-            let probe: IndexRecordHead = decode_index_payload(&payload)?;
-            let reflected = probe.applied_wal_sequence.unwrap_or(0) <= wal_anchor;
-            if probe.sequence >= meta_sequence || !reflected {
-                retained.push(payload);
-            } else {
-                reclaimable_bytes = reclaimable_bytes.saturating_add(frame_bytes as u64);
+        if path.exists() {
+            let file = File::open(&path)?;
+            // By frame, not by line: see the fold path above.
+            let mut reader = BufReader::new(file);
+            while let Some((frame_bytes, payload)) = crate::log_framing::read_frame(&mut reader)? {
+                if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    continue;
+                }
+                records_before += 1;
+                // Decode verifies the integrity envelope; the retained raw payload is re-framed
+                // on write-out below, so a retained delta record keeps its exact on-disk bytes.
+                let probe: IndexRecordHead = decode_index_payload(&payload)?;
+                let reflected = probe.applied_wal_sequence.unwrap_or(0) <= wal_anchor;
+                if probe.sequence >= meta_sequence || !reflected {
+                    retained.push(payload);
+                } else {
+                    reclaimable_bytes = reclaimable_bytes.saturating_add(frame_bytes as u64);
+                }
             }
         }
 
@@ -1923,26 +2031,33 @@ impl LocalIndexLogStore {
         // read, a full write and an fsync, and the post-dump sweep runs on every dump.
         let removable = records_before.saturating_sub(retained.len());
         if removable == 0 || reclaimable_bytes < min_reclaimable_bytes {
+            let bytes_after = index_log_total_bytes(&root, shard_id);
             return Ok(IndexLogGcReport {
                 shard_id,
                 retain_from_sequence: meta_sequence,
-                records_before,
+                records_before: dropped_records.saturating_add(records_before),
                 records_after: records_before,
-                records_removed: 0,
-                removable_records_before_budget: removable,
+                records_removed: dropped_records,
+                removable_records_before_budget: dropped_records.saturating_add(removable),
                 bytes_before,
-                bytes_after: bytes_before,
-                reclaimable_bytes,
+                bytes_after,
+                reclaimable_bytes: dropped_segment_bytes.saturating_add(reclaimable_bytes),
                 rewrite_skipped: true,
+                bytes_copied: 0,
+                dropped_segments,
+                dropped_segment_bytes,
                 ..IndexLogGcReport::default()
             });
         }
 
-        let temp_path = path.with_extension("jsonl.tmp");
+        let temp_path = path.with_extension("gc.tmp");
+        let mut bytes_copied = 0u64;
         {
             let mut temp = File::create(&temp_path)?;
             for payload in &retained {
-                temp.write_all(&crate::log_framing::encode_record(payload))?;
+                let framed = crate::log_framing::encode_record(payload);
+                bytes_copied = bytes_copied.saturating_add(framed.len() as u64);
+                temp.write_all(&framed)?;
             }
             temp.flush()?;
             crate::durability_metrics::record_barrier("engine_index_log_gc");
@@ -1950,20 +2065,23 @@ impl LocalIndexLogStore {
         }
         fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
-        let bytes_after = path.metadata()?.len();
+        let bytes_after = index_log_total_bytes(&root, shard_id);
         Ok(IndexLogGcReport {
             shard_id,
             retain_from_sequence: meta_sequence,
             max_entries_per_round: 0,
-            records_before,
+            records_before: dropped_records.saturating_add(records_before),
             records_after: retained.len(),
-            records_removed: records_before.saturating_sub(retained.len()),
-            removable_records_before_budget: records_before.saturating_sub(retained.len()),
+            records_removed: dropped_records.saturating_add(removable),
+            removable_records_before_budget: dropped_records.saturating_add(removable),
             budget_exhausted: false,
             bytes_before,
             bytes_after,
-            reclaimable_bytes,
+            reclaimable_bytes: dropped_segment_bytes.saturating_add(reclaimable_bytes),
             rewrite_skipped: false,
+            bytes_copied,
+            dropped_segments,
+            dropped_segment_bytes,
         })
     }
 
@@ -2017,13 +2135,25 @@ fn index_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
 }
 
 fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError> {
+    // A sealed piece SAYS what its last sequence is, in its name. It was sealed after a complete
+    // append, so the number is authoritative -- and reading the piece back to learn it would make
+    // every sequence probe cost the log's whole history again, which is the cost the pieces exist
+    // to remove.
+    let mut last = 0_u64;
+    for piece in index_log_segment_paths(root, shard_id) {
+        if let Some(span) = sealed_index_log_span(&piece, shard_id) {
+            last = last.max(span.end.saturating_sub(1));
+        }
+    }
     let path = index_log_path(root, shard_id);
     if !path.exists() {
-        return Ok(0);
+        return Ok(last);
     }
+    // Only the piece being written can have a torn tail: a sealed piece was made durable and
+    // renamed after a whole record landed, and nothing appends to it afterwards. So this trims
+    // the active piece, exactly as it trimmed the single file before there were pieces.
     let file = OpenOptions::new().read(true).write(true).open(&path)?;
     let mut reader = BufReader::new(file.try_clone()?);
-    let mut last = 0;
     let mut good_offset = 0_u64;
     loop {
         // By FRAME, not by newline. This function truncates: it trims the file back to the
@@ -2064,6 +2194,287 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
         sync_parent_dir(&path)?;
     }
     Ok(last)
+}
+
+/// TS_INDEX_LOG_SEGMENT_BYTES: roll the index log into a new piece once the one being written
+/// passes this many bytes.
+///
+/// Zero never rolls, which is one file -- the shape every store written before this has, and the
+/// shape this code still reads.
+///
+/// Rolling is what makes reclaim cost what it REMOVES. One file per shard has to be reclaimed by
+/// reading it and rewriting every record it keeps, so a round that removes little copies almost
+/// everything: 40,000 records took 357 ms in one unlimited round against 492 ms limited to 200 --
+/// bounding the round made it DEARER, because the bound is on what it removes and the cost is on
+/// what it retains. In pieces the removal is an unlink: a stat and a `remove_file`, whatever the
+/// piece holds, and nothing is read or copied.
+///
+/// **Default 64 KiB**, chosen against the gate that lets this log grow rather than by feel. Index
+/// GC fires at `DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD`, 768 KiB, and only when at least 40%
+/// of the records are removable -- so the log a round actually meets is about 768 KiB with a
+/// removable prefix of about 300 KiB. A round can only unlink pieces that lie WHOLLY inside that
+/// prefix, so the piece size is the granularity of reclaim:
+///
+/// | piece | pieces in 768 KiB | unlinked from a 40% prefix |
+/// |---|---|---|
+/// | 256 KiB (the write-ahead log's) | 3 | 1 -- a third of the log |
+/// | 64 KiB | 12 | 4 -- 87% of what is removable |
+/// | 8 KiB | 96 | 38 -- 99%, and 96 names per shard |
+///
+/// 64 KiB is where the granularity stops being the limit and the file count has not yet started
+/// to be one. The write-ahead log's 256 KiB is larger because it is pinned to its preallocation
+/// chunk, which this log does not have.
+fn index_log_segment_bytes() -> u64 {
+    if let Some(threshold) = INDEX_SEGMENT_BYTES_OVERRIDE.with(|value| value.get()) {
+        return threshold;
+    }
+    std::env::var("TS_INDEX_LOG_SEGMENT_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(DEFAULT_INDEX_LOG_SEGMENT_BYTES)
+}
+
+/// Rolling threshold when nothing sets one. See [`index_log_segment_bytes`].
+pub const DEFAULT_INDEX_LOG_SEGMENT_BYTES: u64 = 64 * 1024;
+
+thread_local! {
+    /// Per-thread override of the rolling threshold.
+    ///
+    /// Per thread, not per process: appending happens on the calling thread, and a test that set
+    /// a process-wide threshold would make every other test running beside it roll too.
+    static INDEX_SEGMENT_BYTES_OVERRIDE: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Set the rolling threshold for THIS THREAD. The environment variable is the supported way to
+/// set it; this exists so a test can roll without disturbing anything running beside it.
+pub fn set_index_log_segment_bytes_for_test(threshold: Option<u64>) {
+    INDEX_SEGMENT_BYTES_OVERRIDE.with(|value| value.set(threshold));
+}
+
+/// What a sealed piece of the index log holds -- read from its NAME, not from the file.
+///
+/// Reclaim decides entirely from these three numbers, so deciding costs a `read_dir` entry rather
+/// than a pass over the piece. They are written when the piece is sealed, which happens after a
+/// complete append, so each one is final.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IndexSegmentSpan {
+    /// The first sequence in the piece.
+    start: u64,
+    /// One PAST the last sequence in the piece: the piece holds `start..end`. Sequences are
+    /// assigned `last + 1` with no gaps, so `end - start` is also how many records it holds --
+    /// which is what lets a round report what it removed without reading what it removed.
+    end: u64,
+    /// The highest WAL anchor any record in the piece carries, 0 when none does. The post-dump
+    /// sweep keeps a record the dumped base does not reflect, and this is what says at a glance
+    /// whether a whole piece is reflected.
+    max_applied_wal: u64,
+}
+
+fn sealed_index_log_path(root: &Path, shard_id: ShardId, span: IndexSegmentSpan) -> PathBuf {
+    // Zero-padded so the names sort into log order, which is the order the pieces are read in.
+    root.join(format!(
+        "shard-{shard_id}.indexlog.{:020}-{:020}-{:020}.{INDEX_LOG_SUFFIX}",
+        span.start, span.end, span.max_applied_wal
+    ))
+}
+
+/// Whether this file is a sealed piece of the given shard's index log, and what it holds.
+///
+/// The piece being written has no numbers in its name, so it is not one of these.
+fn sealed_index_log_span(path: &Path, shard_id: ShardId) -> Option<IndexSegmentSpan> {
+    let name = path.file_name()?.to_str()?;
+    let middle = name.strip_prefix(&format!("shard-{shard_id}.indexlog."))?;
+    // Either suffix is a piece of the log. A store part-way through the rename holds both, and
+    // reading only one of them would silently skip whichever half it did not recognise.
+    let middle = middle
+        .strip_suffix(&format!(".{INDEX_LOG_SUFFIX}"))
+        .or_else(|| middle.strip_suffix(&format!(".{LEGACY_INDEX_LOG_SUFFIX}")))?;
+    let mut parts = middle.split('-');
+    let start = parts.next()?.parse().ok()?;
+    let end = parts.next()?.parse().ok()?;
+    let max_applied_wal = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(IndexSegmentSpan {
+        start,
+        end,
+        max_applied_wal,
+    })
+}
+
+/// Every file that makes up a shard's index log, oldest first, with the one being written last.
+///
+/// A log that has never rolled is one file, and this returns just that -- the same path the rest
+/// of the code has always used, which is what makes a store written before pieces still load.
+fn index_log_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
+    let mut sealed = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter_map(|path| sealed_index_log_span(&path, shard_id).map(|span| (span.start, path)))
+        .collect::<Vec<_>>();
+    sealed.sort_by_key(|(start, _)| *start);
+    let mut paths = sealed.into_iter().map(|(_, path)| path).collect::<Vec<_>>();
+    paths.push(index_log_path(root, shard_id));
+    paths
+}
+
+/// Bytes of every piece of this shard's index log, sealed pieces included.
+fn index_log_total_bytes(root: &Path, shard_id: ShardId) -> u64 {
+    index_log_segment_paths(root, shard_id)
+        .into_iter()
+        .filter_map(|path| path.metadata().ok())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+/// What the piece being written holds, by walking it.
+///
+/// Called once per ROLL -- the piece is at most the rolling threshold, and this runs once in the
+/// thousands of appends that fill it. Deliberately NOT called per append: the write-ahead log
+/// opened its file and read its header on every write to answer a question of the same shape,
+/// which was 8,240 bytes and an open per record before it was taken back out.
+///
+/// `None` when the piece holds no record at all, which is nothing to seal.
+fn index_log_segment_span_of(path: &Path) -> Result<Option<IndexSegmentSpan>, IndexLogError> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut first = None;
+    let mut last = 0_u64;
+    let mut max_applied_wal = 0_u64;
+    while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
+        if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+            continue;
+        }
+        let head: IndexRecordHead = decode_index_payload(&payload)?;
+        first.get_or_insert(head.sequence);
+        last = last.max(head.sequence);
+        max_applied_wal = max_applied_wal.max(head.applied_wal_sequence.unwrap_or(0));
+    }
+    Ok(first.map(|start| IndexSegmentSpan {
+        start,
+        end: last.saturating_add(1),
+        max_applied_wal,
+    }))
+}
+
+/// Seal the piece being written and start a fresh one, if it has grown past the threshold.
+///
+/// Called with the append lock held, before the append opens the file -- so no handle is left
+/// pointing at a piece across the rename, and the record about to be written lands in the new
+/// piece rather than growing the one just sealed.
+fn roll_index_log_segment_if_due(root: &Path, shard_id: ShardId) -> Result<bool, IndexLogError> {
+    let threshold = index_log_segment_bytes();
+    if threshold == 0 {
+        return Ok(false);
+    }
+    let path = index_log_path(root, shard_id);
+    // A stat, not a read. This runs on EVERY append and is the whole per-append cost of rolling.
+    let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    if length < threshold {
+        return Ok(false);
+    }
+    let Some(span) = index_log_segment_span_of(&path)? else {
+        return Ok(false);
+    };
+
+    // Make the piece durable BEFORE sealing it. Index-log appends defer their fsync under the
+    // single-barrier default, so the piece can hold bytes no barrier has covered -- and the next
+    // barrier opens the piece being written, which after this rename is a different file. Sealing
+    // first would leave those bytes with no barrier that ever covers them, on a write that has
+    // already been acked.
+    {
+        let file = OpenOptions::new().write(true).open(&path)?;
+        crate::durability_metrics::record_barrier("engine_index_log_seal");
+        file.sync_all()?;
+    }
+
+    // Seal by rename: atomic, so the piece is either being written or sealed, never neither. The
+    // next append finds no file under the active name and creates an empty one.
+    let sealed = sealed_index_log_path(root, shard_id, span);
+    fs::rename(&path, &sealed)?;
+    sync_parent_dir(&sealed)?;
+    Ok(true)
+}
+
+/// Drop whole pieces that hold nothing at or above the retain floor.
+///
+/// A piece's name says the sequence one past its last record, so a piece is below the floor when
+/// that number is at or below it -- decided without opening the file. Stops at the first piece
+/// that still holds something: the pieces are in order, so everything after it does too.
+///
+/// Returns how many pieces went, what they held on disk, and how many records they held.
+fn drop_covered_index_segments(
+    root: &Path,
+    shard_id: ShardId,
+    retain_from_sequence: u64,
+) -> Result<(usize, u64, usize), IndexLogError> {
+    let active = index_log_path(root, shard_id);
+    let mut dropped = 0usize;
+    let mut freed = 0u64;
+    let mut records = 0usize;
+    for path in index_log_segment_paths(root, shard_id) {
+        if path == active {
+            continue;
+        }
+        let Some(span) = sealed_index_log_span(&path, shard_id) else {
+            continue;
+        };
+        if span.end > retain_from_sequence {
+            break;
+        }
+        freed = freed.saturating_add(path.metadata().map(|meta| meta.len()).unwrap_or(0));
+        // Sequences are assigned with no gaps, so the span IS the record count. Counting them by
+        // reading the piece would put the cost of a round back on the bytes it removes.
+        records = records.saturating_add(span.end.saturating_sub(span.start) as usize);
+        fs::remove_file(&path)?;
+        dropped += 1;
+    }
+    // Once after the loop, not once per file. The write-ahead log's reclaim does the same.
+    if dropped > 0 {
+        sync_parent_dir(&active)?;
+    }
+    Ok((dropped, freed, records))
+}
+
+/// Drop whole pieces a completed catalog dump has made redundant.
+///
+/// Two conditions, and a piece's name carries both: every sequence in it is below the sweep's
+/// position bound, and the highest WAL anchor it holds is one the dumped base already reflects.
+/// Anything unclear leaves the piece alone -- unlinking a piece that still holds the only record
+/// of an eviction cannot be undone.
+fn drop_reflected_index_segments(
+    root: &Path,
+    shard_id: ShardId,
+    wal_anchor: u64,
+    meta_sequence: u64,
+) -> Result<(usize, u64, usize), IndexLogError> {
+    let active = index_log_path(root, shard_id);
+    let mut dropped = 0usize;
+    let mut freed = 0u64;
+    let mut records = 0usize;
+    for path in index_log_segment_paths(root, shard_id) {
+        if path == active {
+            continue;
+        }
+        let Some(span) = sealed_index_log_span(&path, shard_id) else {
+            continue;
+        };
+        if span.end > meta_sequence || span.max_applied_wal > wal_anchor {
+            break;
+        }
+        freed = freed.saturating_add(path.metadata().map(|meta| meta.len()).unwrap_or(0));
+        records = records.saturating_add(span.end.saturating_sub(span.start) as usize);
+        fs::remove_file(&path)?;
+        dropped += 1;
+    }
+    if dropped > 0 {
+        sync_parent_dir(&active)?;
+    }
+    Ok((dropped, freed, records))
 }
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
@@ -3152,24 +3563,53 @@ mod tests {
         assert!(!should_dump_index_catalog(u64::MAX, 0));
     }
 
-    /// Bounding this collector per round costs MORE, not less.
+    /// Set the rolling threshold for this test and put it back afterwards.
     ///
-    /// Every other sweep here is bounded per round, this one takes a limit, and the production
-    /// path never passes one -- which looks exactly like an oversight worth fixing. It is not.
+    /// The override is per THREAD, and with `--test-threads=1` every test in this binary runs on
+    /// the same one -- so a test that set it and walked away would decide how every test after it
+    /// rolls. Restored on drop, so a panicking assertion restores it too.
+    struct RollingThreshold;
+
+    impl Drop for RollingThreshold {
+        fn drop(&mut self) {
+            set_index_log_segment_bytes_for_test(None);
+        }
+    }
+
+    fn roll_at(bytes: u64) -> RollingThreshold {
+        set_index_log_segment_bytes_for_test(Some(bytes));
+        RollingThreshold
+    }
+
+    /// Reclaim costs what it REMOVES, not what it KEEPS.
     ///
-    /// The collector rewrites what it KEEPS: retained records are copied into a fresh file. So a
-    /// round that removes fewer records retains more and copies more. Timed on one round, removing
-    /// everything but the last record: 2,000 records took 22.7 ms unlimited against 29.0 ms
-    /// limited to 200; 40,000 took 356.7 ms against 492.0 ms. The bounded round is dearer and
-    /// leaves the rest of the work for later rounds that are dearer still.
+    /// This log used to be one file per shard, and the collector reclaimed it by reading the file
+    /// and rewriting every record it retained. The cost was therefore on the survivors, which
+    /// inverts the thing reclaim is for: a round that removed LESS copied MORE. Measured on the
+    /// shape this replaces -- 2,000 records took 22.7 ms in one unlimited round against 29.0 ms
+    /// limited to 200, and 40,000 took 356.7 ms against 492.0 ms -- and the bounded round left the
+    /// rest of the work for later rounds that were dearer still. Every caller passed 0 because
+    /// unbounded was the cheap option.
     ///
-    /// The assertion is on bytes rewritten rather than time, because that is the thing that makes
-    /// it true and it does not depend on the machine.
+    /// The log now rolls into pieces and a round unlinks whole pieces, so what it removes is never
+    /// read and never copied. What a round copies is the piece being WRITTEN, whatever the log
+    /// retains -- which is the assertion below, and the one that fails if the collector goes back
+    /// to rewriting its survivors.
+    ///
+    /// Asserted on bytes rather than on time: bytes are what makes it true, and they do not depend
+    /// on the machine or on what else is running on it.
     #[test]
-    fn bounding_the_index_collector_per_round_costs_more_not_less() {
-        let records = 4_000usize;
-        let mut rewritten = Vec::new();
-        for limit in [0usize, 200] {
+    fn reclaim_costs_what_it_removes_not_what_it_keeps() {
+        let piece = 8 * 1024u64;
+        let _rolling = roll_at(piece);
+        let records = 8_000usize;
+
+        // Three rounds on three copies of the same log, at three retain floors: one that removes
+        // everything it can, one that removes most of it, and one that removes a sliver off the
+        // front and keeps the rest. The sliver is the case the old shape was worst at -- it kept
+        // the most, and the old cost was on what was kept.
+        let mut rounds = Vec::new();
+        for retain_from in [records as u64, (records * 9 / 10) as u64, (records / 10) as u64] {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalIndexLogStore::new(dir.path());
             for value in 0..records {
@@ -3177,23 +3617,336 @@ mod tests {
                     .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
                     .unwrap();
             }
-            let report = store
-                .gc_before_sequence_limited(5, records as u64, limit)
-                .unwrap();
-            // What the round costs is what it copies, which is what it retained.
-            rewritten.push((limit, report.records_removed, report.bytes_after));
+            let written = store.log_len_bytes(5);
+            let pieces = index_log_segment_paths(dir.path(), 5).len();
+            // Sequences run 1..=records, and a record goes when its sequence is below the floor.
+            let report = store.gc_before_sequence_limited(5, retain_from, 0).unwrap();
+
+            // A round that unlinks whole pieces is cheap in exactly the way a round that unlinks
+            // too many is. Say what it must not lose, beside what it must not cost: every record
+            // AT OR ABOVE the floor is still there afterwards.
+            let survivors = store
+                .scan(5, 0, u64::MAX, u64::MAX)
+                .unwrap()
+                .into_iter()
+                .filter_map(|(_, raw)| {
+                    let payload = crate::log_framing::decode_line(&raw).ok()?;
+                    decode_index_payload::<IndexRecordHead>(payload).ok()
+                })
+                .map(|head| head.sequence)
+                .collect::<std::collections::HashSet<_>>();
+            let lost = (retain_from..=records as u64)
+                .filter(|sequence| !survivors.contains(sequence))
+                .count();
+            assert_eq!(
+                lost, 0,
+                "reclaiming to {retain_from} lost {lost} record(s) it had to keep"
+            );
+
+            // What a round REPORTS removed is now taken from the unlinked pieces' names rather
+            // than from reading them, so it is arithmetic on numbers written at seal time -- and
+            // arithmetic that is one out reads as a cheaper round rather than as an error. Pin it
+            // against the sequences that are actually gone.
+            let gone = (1..=records as u64)
+                .filter(|sequence| !survivors.contains(sequence))
+                .count();
+            assert_eq!(
+                report.records_removed, gone,
+                "reclaiming to {retain_from}: the round reported {} removed, {gone} are gone",
+                report.records_removed
+            );
+
+            rounds.push((written, pieces, report));
         }
 
-        let (_, unlimited_removed, unlimited_bytes) = rewritten[0];
-        let (_, limited_removed, limited_bytes) = rewritten[1];
-        assert_eq!(unlimited_removed, records - 1, "unlimited should clear the log");
-        assert_eq!(limited_removed, 200, "the limit should be respected");
+        let (all_written, all_pieces, remove_all) = &rounds[0];
+        let (_, most_pieces, remove_most) = &rounds[1];
+        let (_, sliver_pieces, remove_sliver) = &rounds[2];
+
+        // THE DENOMINATOR, first. Every bound below is "no more than one piece", which says
+        // nothing at all about a log that IS one piece -- so print what the log actually was.
         assert!(
-            limited_bytes > unlimited_bytes * 10,
-            "a bounded round should be shown rewriting far more than an unbounded one \
-             ({limited_bytes} bytes against {unlimited_bytes}); if that is no longer true the \
-             collector has stopped copying what it keeps, and a per-round bound may now be worth \
-             having"
+            *all_written > piece * 6,
+            "the log must be many pieces deep or the bounds below are vacuous: wrote \
+             {all_written} B in {all_pieces} piece(s), piece size {piece} B"
+        );
+        assert!(
+            *all_pieces >= 6 && *most_pieces >= 6 && *sliver_pieces >= 6,
+            "every log must have rolled: {all_pieces}, {most_pieces}, {sliver_pieces} piece(s)"
+        );
+        assert!(
+            remove_all.dropped_segments >= 1
+                && remove_most.dropped_segments >= 1
+                && remove_sliver.dropped_segments >= 1,
+            "every round must have had whole pieces to unlink ({}, {}, {})",
+            remove_all.dropped_segments,
+            remove_most.dropped_segments,
+            remove_sliver.dropped_segments
+        );
+
+        // What a round COPIES is bounded by the piece being written, however much it retains.
+        // Under the shape this replaces the last round below copied nine tenths of the log.
+        for (label, report) in [
+            ("removing all", remove_all),
+            ("removing most", remove_most),
+            ("removing a sliver", remove_sliver),
+        ] {
+            assert!(
+                report.bytes_copied <= piece,
+                "{label}: the round retained {} B and copied {} B of them; the collector is \
+                 rewriting what it keeps again (piece size {piece} B, {all_written} B written)",
+                report.bytes_after,
+                report.bytes_copied
+            );
+        }
+
+        // RECLAIMING LESS MUST NOT COST MORE. This is the inversion itself: the sliver round
+        // removes a ninth of what the other removes, and used to copy nine times as much.
+        assert!(
+            remove_sliver.bytes_copied <= remove_most.bytes_copied.saturating_add(piece),
+            "the round that removes LESS copied MORE ({} B against {} B) -- the inversion is back",
+            remove_sliver.bytes_copied,
+            remove_most.bytes_copied
+        );
+
+        // The rewrite is still there and still does its job: a floor that lands INSIDE the piece
+        // being written rewrites that piece, and only that piece.
+        assert!(
+            remove_all.bytes_copied > 0,
+            "a floor inside the active piece must still rewrite it"
+        );
+        assert!(
+            remove_all.bytes_after * 8 < remove_all.bytes_before,
+            "removing everything it can must shrink the log: {} B -> {} B",
+            remove_all.bytes_before,
+            remove_all.bytes_after
+        );
+        assert!(
+            remove_all.records_removed * 10 > records * 9,
+            "the round must report what the unlinked pieces held: {} of {records}",
+            remove_all.records_removed
+        );
+        assert_eq!(
+            remove_all.records_after, 1,
+            "the piece being written keeps exactly the record above the floor"
+        );
+    }
+
+    /// What a reclaim round COSTS, measured both ways in one binary.
+    ///
+    /// `#[ignore]`d: it is a measurement, not a guard, and it writes a quarter of a million
+    /// records. Run it with
+    /// `cargo test -p temporalstore-rust --lib measure_reclaim_cost_shape -- --ignored --nocapture`.
+    ///
+    /// Both arms run here rather than across two builds, because the rolling threshold is the
+    /// only difference between them: zero is one file per shard, which is byte for byte the shape
+    /// this replaces. The PIECES column is the proof the treatment actually ran -- one piece in
+    /// the first arm, many in the second -- so an arm that silently failed to roll cannot be read
+    /// as a win.
+    #[test]
+    #[ignore]
+    fn measure_reclaim_cost_shape() {
+        // Enough to clear the 768 KiB byte threshold that gates index GC, so the round being
+        // measured is the size of round that actually happens.
+        let records = 40_000usize;
+        println!(
+            "\n  {:<16} {:>9} {:>7} {:>13} {:>11} {:>11} {:>9}",
+            "shape", "retained", "pieces", "log before", "copied", "unlinked", "ms"
+        );
+        for (label, threshold) in [
+            ("one file", 0u64),
+            ("64 KiB pieces", DEFAULT_INDEX_LOG_SEGMENT_BYTES),
+        ] {
+            for retained_percent in [10usize, 40, 60, 90, 99] {
+                let _rolling = roll_at(threshold);
+                let dir = tempfile::tempdir().unwrap();
+                let store = LocalIndexLogStore::new(dir.path());
+                for value in 0..records {
+                    store
+                        .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                        .unwrap();
+                }
+                let pieces = index_log_segment_paths(dir.path(), 5).len();
+                let retain_from = (records * (100 - retained_percent) / 100) as u64;
+                let at = std::time::Instant::now();
+                let report = store.gc_before_sequence_limited(5, retain_from, 0).unwrap();
+                let ms = at.elapsed().as_secs_f64() * 1000.0;
+                println!(
+                    "  {label:<16} {:>8}% {pieces:>7} {:>13} {:>11} {:>11} {ms:>9.1}",
+                    retained_percent,
+                    report.bytes_before,
+                    report.bytes_copied,
+                    report.dropped_segment_bytes,
+                );
+            }
+        }
+    }
+
+    /// A log written before there were pieces still loads, still folds, and still reclaims.
+    ///
+    /// One file per shard is what every existing store holds, and dropping that shape would find
+    /// no index log where one exists -- which reads as an EMPTY log rather than an error, and an
+    /// empty index log is a silently emptier shard.
+    #[test]
+    fn a_log_written_as_one_file_still_reads_and_reclaims() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = 2_000usize;
+        {
+            // Never rolling is the shape of a store written before this.
+            let _never = roll_at(0);
+            let store = LocalIndexLogStore::new(dir.path());
+            for value in 0..records {
+                store
+                    .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                    .unwrap();
+            }
+            assert_eq!(
+                index_log_segment_paths(dir.path(), 5).len(),
+                1,
+                "the fixture must be ONE file, or this proves nothing about the old shape"
+            );
+            assert!(index_log_path(dir.path(), 5).exists());
+        }
+
+        let _rolling = roll_at(16 * 1024);
+        let store = LocalIndexLogStore::new(dir.path());
+        assert_eq!(store.stats(5).last_sequence, records as u64);
+        assert_eq!(store.record_count(5).unwrap(), records);
+
+        // It still reclaims: there is no piece to unlink, so the rewrite does the whole job,
+        // exactly as it did before.
+        let report = store.gc_before_sequence_limited(5, records as u64, 0).unwrap();
+        assert_eq!(report.dropped_segments, 0, "a one-file log has no piece to drop");
+        assert_eq!(report.records_removed, records - 1);
+        assert!(report.bytes_copied > 0, "the single file was rewritten");
+        assert_eq!(store.record_count(5).unwrap(), 1);
+    }
+
+    /// The fold crosses a piece boundary, with both record shapes on either side of it.
+    ///
+    /// The log holds two shapes -- whole-index records and deltas -- sharing one sequence counter.
+    /// A boundary that split or reordered them would surface as a hole in the delta stream, which
+    /// the fold's continuity check refuses, or as a record read as the wrong shape.
+    #[test]
+    fn the_fold_crosses_piece_boundaries_with_both_record_shapes() {
+        let _rolling = roll_at(8 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let mut expected = Vec::new();
+        for index in 0..400usize {
+            if index % 25 == 24 {
+                // A whole-index record shares this log and is not a delta.
+                store
+                    .append_json(6, format!("{{\"value\":{index}}}").as_bytes())
+                    .unwrap();
+            } else {
+                let sequence = store
+                    .append_delta(
+                        6,
+                        vec![page_item(1, &format!("tenant/1/object/{index:06}"), false)],
+                        Vec::new(),
+                        Some(index as u64 + 1),
+                        None,
+                        false,
+                        false,
+                    )
+                    .unwrap();
+                expected.push(sequence);
+            }
+        }
+
+        let pieces = index_log_segment_paths(dir.path(), 6).len();
+        assert!(
+            pieces >= 3,
+            "the log must have rolled or this crosses no boundary (got {pieces} piece(s))"
+        );
+        let folded = store.read_delta_records(6, 0).unwrap();
+        assert_eq!(
+            folded.iter().map(|record| record.sequence).collect::<Vec<_>>(),
+            expected,
+            "every delta record, in log order, across the piece boundaries"
+        );
+        assert_eq!(
+            folded[0].items[0].object_key, "tenant/1/object/000000",
+            "an item survives the boundary with its fields put back"
+        );
+        assert_eq!(store.record_count(6).unwrap(), 400, "both shapes are still counted");
+        assert_eq!(store.stats(6).last_sequence, 400);
+        // The raw stream reads back across the boundary too: the debug read is addressed by
+        // position in the LOG, not in whichever piece holds it.
+        let head = store.read_range(6, 0, u64::MAX).unwrap();
+        assert_eq!(
+            head.len() as u64,
+            store.log_len_bytes(6),
+            "reading the whole log must not stop at the first boundary"
+        );
+    }
+
+    /// The post-dump sweep unlinks whole pieces the dumped base already reflects, and keeps every
+    /// record it does not.
+    ///
+    /// This sweep decides on CONTENT, not position alone: a delta appended between the dump's
+    /// serialization and its anchor carries a WAL anchor the base does not reflect, and removing
+    /// it would lose an eviction that lives only in the delta stream. A piece's name carries the
+    /// highest anchor in it, so a piece goes only when all of it is reflected.
+    #[test]
+    fn the_post_dump_sweep_unlinks_pieces_the_base_reflects() {
+        let piece = 16 * 1024u64;
+        let _rolling = roll_at(piece);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let total = 1_200usize;
+        for index in 0..total {
+            store
+                .append_delta(
+                    7,
+                    vec![page_item(1, &format!("tenant/1/object/{index:06}"), false)],
+                    Vec::new(),
+                    // Anchor == sequence, so "reflected" and "below the bound" move together and
+                    // the piece boundary is the only thing deciding what survives.
+                    Some(index as u64 + 1),
+                    None,
+                    false,
+                    false,
+                )
+                .unwrap();
+        }
+        let pieces_before = index_log_segment_paths(dir.path(), 7).len();
+        assert!(
+            pieces_before >= 4,
+            "the log must be several pieces deep (got {pieces_before})"
+        );
+
+        // A dump that materialised the base through WAL anchor 600, anchored at index sequence 900.
+        let report = store.gc_reflected_before_anchor(7, 600, 900, 0).unwrap();
+        assert!(
+            report.dropped_segments >= 1,
+            "whole pieces the base reflects must be unlinked, not rewritten"
+        );
+        assert!(
+            report.bytes_copied <= piece,
+            "the sweep copied {} B; it must copy no more than the piece being written ({piece} B)",
+            report.bytes_copied
+        );
+        assert!(
+            report.bytes_after < report.bytes_before,
+            "the log must actually shrink: {} B -> {} B",
+            report.bytes_before,
+            report.bytes_after
+        );
+
+        let survivors = store
+            .read_delta_records(7, 0)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.sequence)
+            .collect::<std::collections::HashSet<_>>();
+        let lost = (601..=total as u64)
+            .filter(|sequence| !survivors.contains(sequence))
+            .count();
+        assert_eq!(
+            lost, 0,
+            "every record the dumped base does not reflect must survive the sweep"
         );
     }
 
