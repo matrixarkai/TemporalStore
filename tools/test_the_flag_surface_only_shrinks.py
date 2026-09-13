@@ -247,15 +247,26 @@ EXAMINED = {
 def _readers_all_unreachable(reads):
     """Flags every reader of which sits in a module production cannot reach.
 
-    A flag is only a control if something can turn it. These nineteen gate code no request arrives
-    at, so turning them changes nothing that runs -- which makes them the one group on this page
+    A flag is only a control if something can turn it. A flag in this group gates code no request
+    arrives at, so turning it changes nothing that runs -- which makes it the one group on this page
     that could be retired without removing a capability from anybody.
 
-    Not a removal list. Seventeen of the nineteen are in `matrixark_mcp_rust_proxy_config`, and
-    `test_a_module_only_tests_reach_is_not_live` records that module as unwired rather than
-    abandoned: the waiter fix for mx#1073 landed in it, so it is maintained code whose flags are
-    its tuning surface. Retiring them is a decision about whether that path is coming back, and
-    the point of naming the group is that the decision is now one decision rather than nineteen.
+    THE GROUP IS EMPTY NOW, and both halves of why are worth keeping. Nineteen were here, seventeen
+    of them in `matrixark_mcp_rust_proxy_config`; matrixarkai#1572 folded them to the values they
+    already produced. That left three, and all three were WRONG: TS_REDIS_HOST, TS_REDIS_PORT and
+    TS_TENANT, read by `sdk/python/temporalstore/control_state.py` -- the shipped client SDK, which
+    has its own test suite and which nothing under `tools/` imports because a CUSTOMER imports it.
+
+    The reachability corpus is `tools/*.py`. Asking "is this module in `reached`" of a module the
+    scan never considered answers no for both kinds of absence, so a shipped library read as dead
+    and its configuration sat in the group whose whole point is that it can be retired safely.
+    An unseeded module is UNKNOWN, not dead. The rule below now requires every reader to be IN the
+    corpus before concluding anything, which is the same failure `test_the_live_roots_come_back_
+    reachable` exists to prevent, arriving from outside the corpus instead of inside it.
+
+    An empty group says "every flag this page counts reaches live code", which is worth saying --
+    but only while the scan still works, so the floor is asserted on the SCAN rather than on the
+    group. A floor on the group would fail on exactly the success that emptied it.
 
     Computed from the reachability guard next door rather than restated, so a module that becomes
     reachable takes its flags out of this group on the same day.
@@ -265,15 +276,30 @@ def _readers_all_unreachable(reads):
     except Exception:  # pragma: no cover - the guard is absent
         return set()
     try:
-        _library, reached = reachability.reachable_from_production()
+        library, reached = reachability.reachable_from_production()
     except Exception:  # pragma: no cover - a broken scan must not reclassify the page
         return set()
-    if not reached:
+    if not reached or not library:
         return set()
     out = set()
     for name, modules in reads.items():
         stems = {m[:-3] if m.endswith(".py") else m for m in modules}
-        if stems and not (stems & reached):
+        if not stems:
+            continue
+        # ONLY WHERE THE SCAN ACTUALLY LOOKED. The reachability corpus is `tools/*.py`; this file's
+        # production set also includes the shipped client SDK, which nothing under tools/ imports
+        # because a customer imports it. Asking "is it in `reached`" of a module the scan never
+        # considered answers no for both kinds of absence, and the three SDK variables -- the redis
+        # host, the port and the tenant of `sdk/python/temporalstore/control_state.py`, which has
+        # its own test suite -- sat in the one group on this page whose whole point is that it
+        # "could be retired without removing a capability from anybody".
+        #
+        # Retiring a shipped library's configuration is the opposite of that. An unseeded module is
+        # UNKNOWN, not dead -- the same failure the reachability guard's own seed control exists to
+        # prevent, arriving from outside its corpus instead of inside it.
+        if not (stems <= library):
+            continue
+        if not (stems & reached):
             out.add(name)
     return out
 
@@ -1811,6 +1837,68 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         self.assertGreater(
             excluded, 0,
             "no knob in INTERNAL_KNOBS carries a variable, so the exclusion above ran over nothing")
+    def test_the_reachability_corpus_is_really_there(self) -> None:
+        """The floor for `readers all unreachable`, put on the SCAN because the group is EMPTY.
+
+        A floor on the group would be the mistake this page has made three times: a count measured
+        from a population that improvement removes. matrixarkai#1572 folded seventeen of the
+        nineteen, and the last three were a false reading of the shipped SDK, so zero is the right
+        answer and must stay checkable.
+
+        What can still go wrong is the scan: if `reachable_from_production` returns nothing, every
+        flag's readers are trivially "not reached", and the corpus test below is what stops that
+        reading as a page where nothing is unreachable.
+        """
+        try:
+            import test_a_module_only_tests_reach_is_not_live as reachability
+        except ImportError:  # pragma: no cover - the guard is not optional in practice
+            self.skipTest("the reachability guard is absent")
+        library, reached = reachability.reachable_from_production()
+        self.assertGreater(
+            len(library), 100,
+            "the reachability corpus holds %d modules. It is tools/*.py and there are hundreds, so "
+            "a corpus this small means the scan stopped reading the tree." % len(library))
+        self.assertGreater(
+            len(reached), len(library) // 2,
+            "only %d of %d modules are reachable. Fewer than half means the SEEDING broke, and a "
+            "broken seed makes live code look dead -- do not act on any unreachable list until "
+            "this passes." % (len(reached), len(library)))
+        outside = {rel for rel in _production_modules() if not rel.startswith("tools/")}
+        self.assertTrue(
+            outside,
+            "every production module is under tools/, so the corpus and the production set agree "
+            "and the rule guarding against the difference is asserting nothing. The shipped SDK "
+            "was that difference.")
+        # `__init__` is excluded because the comparison is by STEM and both trees have one -- a
+        # bare name is not an identity, which is the error this file has already had to correct in
+        # its helper derivation and its boolean-reader scan.
+        stems = {os.path.basename(rel)[:-3] for rel in outside} - {"__init__"}
+        self.assertFalse(
+            stems & library,
+            "a module outside tools/ is in the reachability corpus, so the two sets no longer "
+            "disagree the way the rule assumes: %s" % sorted(stems & library))
+        # AND THE RULE ITSELF, not only the corpus. Dropping the membership requirement puts every
+        # flag read outside tools/ straight back into `readers all unreachable`, and nothing else
+        # would fail: the group has no floor, deliberately, because it is empty. Asked by mechanism
+        # rather than by naming one of the SDK's variables -- naming one here would make this file
+        # the only TEST that names it, since the SDK's own tests are not in the selecting set.
+        outside_readers = {name for name, modules in self.reads.items()
+                           if not ({m[:-3] if m.endswith(".py") else m for m in modules} <= library)}
+        self.assertTrue(
+            outside_readers,
+            "no flag is read from outside the reachability corpus, so the membership rule in "
+            "_readers_all_unreachable is guarding against nothing and this check cannot fail.")
+        self.assertFalse(
+            outside_readers & _readers_all_unreachable(self.reads),
+            "these are read only from outside the corpus the reachability scan covers, and are "
+            "being reported as having no reachable reader: %s"
+            % sorted(outside_readers & _readers_all_unreachable(self.reads)))
+        self.assertIn(
+            "control_state", stems,
+            "the SDK module whose three variables were read as unreachable is not in the "
+            "production set any more. It is the case the corpus rule was written for: a shipped "
+            "library a customer imports, which nothing under tools/ reaches.")
+
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
 
