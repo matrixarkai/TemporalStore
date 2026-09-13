@@ -1195,28 +1195,24 @@ impl TemporalEngine {
     ) -> StorageIndexGcReport {
         // THE CHEAP QUESTIONS FIRST.
         //
-        // Everything below this point reads the WHOLE index log and decodes every record, and
-        // this report is built on EVERY maintenance round -- every 30 s on the periodic loop --
-        // whether or not the collector can possibly run. With the shipped defaults
-        // (`enable_index_gc: true`, a 768 KiB byte threshold) a shard whose index log is under
-        // that threshold paid a full scan and a full decode, every round, purely to establish
-        // that it was never eligible. `what_the_index_gc_gate_costs` measures that round.
+        // Everything below this point measures the index log, and this report is built on EVERY
+        // maintenance round -- every 30 s on the periodic loop -- whether or not the collector can
+        // possibly run. With the shipped defaults (`enable_index_gc: true`, a 768 KiB byte
+        // threshold) a shard whose index log is under that threshold paid for those measurements
+        // every round purely to establish that it was never eligible.
+        // `what_the_index_gc_gate_costs` measures that round.
+        //
+        // The measurement below is no longer a whole-log scan (see `gate_summary`), but this test
+        // is still worth keeping in front of it: it is one `read_dir` and a `stat` per piece, and
+        // it skips even that piece walk on a log too small to collect.
         //
         // WHY THE CHEAP BYTE TEST IS SOUND, which is the part worth checking rather than
-        // assuming. `log_len_bytes` is the FILE length. `bytes_before` below sums what `scan`
-        // hands back, which is each record's FRAMED LINE (`decode_line` is applied to it further
-        // down, so it is the on-disk line, not the payload inside it). The file holds those lines
-        // plus the `\n` terminating each one, and nothing the scan drops is subtracted from the
-        // file, so
-        //
-        //     log_len_bytes >= bytes_before,   always.
-        //
-        // If the file length is already under the threshold then `bytes_before` is under it too,
-        // so the old code would have set `threshold_triggered = false` and skipped. Skipping here
-        // can therefore only ever AGREE with what the scan would have concluded; it cannot skip a
-        // round the scan would have run. The inequality is the whole argument, and it holds in one
-        // direction only -- do NOT invert this to fire EARLY on the cheap number, because a file
-        // length above the threshold does not imply `bytes_before` is.
+        // assuming. `log_len_bytes` sums the on-disk length of every piece, and `bytes_before`
+        // below is now that same sum taken by `gate_summary` -- they are the SAME quantity, so
+        // this test and the one further down cannot disagree about a log. It used to be an
+        // inequality (the file length against the sum of the record frames a scan handed back,
+        // where the file can only ever be the larger), and it was sound then for that reason;
+        // it is sound now by equality. Do NOT reintroduce a second way of measuring this log.
         //
         // ONLY TWO CONDITIONS SKIP, deliberately. `dry_run` does NOT: a dry run exists to report
         // what a real round WOULD do, so it still pays for the numbers it was asked for. Nor does
@@ -1250,36 +1246,32 @@ impl TemporalEngine {
             };
         }
 
-        let records = self
+        // THE RATIO, WITHOUT READING THE LOG.
+        //
+        // This used to be `scan(0, u64::MAX, u64::MAX)` -- the whole log into a vector -- followed
+        // by a decode of every record to count the ones below the floor. #1634 made reclaim itself
+        // cost what it REMOVES by unlinking whole pieces and deciding from their names, and left
+        // this behind: the round still decoded every record to decide whether to call it, so the
+        // cost moved from the collector to the gate and the round stayed O(log size).
+        //
+        // `gate_summary` asks the same question of the same pieces. A sealed piece's name carries
+        // `start` and `end`, sequences have no holes, so it holds `end - start` records and
+        // `min(end, floor) - start` of them are removable -- the identical arithmetic
+        // `drop_covered_index_segments` reports its removals with, which is why the gate and the
+        // collector cannot now disagree about a piece. Only the piece being WRITTEN is opened, and
+        // it is at most the rolling threshold.
+        //
+        // `bytes_before` is now the log's on-disk length rather than the sum of the record frames
+        // the scan handed back. Those are the same number for an intact log -- the file IS the
+        // concatenation of the frames -- and the on-disk length is already what
+        // `IndexLogGcReport::bytes_before` reports, so the two halves of a round's report now
+        // measure the log the same way instead of two ways that happen to agree.
+        let gate = self
             .index_log_store
-            .scan(request.shard_id, 0, u64::MAX, u64::MAX)
-            .unwrap_or_default();
-        let records_before = records.len();
-        let bytes_before = records
-            .iter()
-            .map(|(_, bytes)| bytes.len() as u64)
-            .sum::<u64>();
-        let removable_records_before_budget = records
-            .iter()
-            .filter_map(|(_, bytes)| {
-                // Decode the integrity framing (accepts legacy unframed records too) before
-                // reading the sequence; a corrupt line is simply not counted here (this is a
-                // GC-pressure metric, not the recovery path).
-                let payload = crate::log_framing::decode_line(bytes).ok()?;
-                // Through the index log's own decoder, not serde_json directly. A record's
-                // payload is not necessarily JSON, and reading it as though it were fails
-                // quietly here -- `.ok()` drops it, the record is not counted, and GC reports
-                // "no reclaimable index-log entries" while the log grows. A second decoder is
-                // exactly what the served index's first attempt at a binary format died of.
-                // The HEAD of the record, not a whole-index record. Two shapes share this log
-                // and this counter wants only a sequence; decoding as one shape drops the other,
-                // and `.ok()` drops it SILENTLY -- which is the failure the note above describes,
-                // reached by shape rather than by format.
-                crate::index_log::decode_index_payload::<crate::index_log::IndexRecordHead>(payload)
-                    .ok()
-            })
-            .filter(|record| record.sequence < wal_plan.retain_from_index_log_sequence)
-            .count();
+            .gate_summary(request.shard_id, wal_plan.retain_from_index_log_sequence);
+        let records_before = gate.records;
+        let bytes_before = gate.bytes;
+        let removable_records_before_budget = gate.removable_records;
         let usage_ratio_basis_points = if records_before == 0 {
             0
         } else {
