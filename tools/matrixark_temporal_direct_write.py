@@ -262,7 +262,13 @@ class _TemporalDirectWriteMixin:
                 self._records_cache.extend(records)
                 self._put_direct_record_cache(len(self._records_cache), self._records_cache)
             except Exception:
-                pass
+                # The durable write already happened; only the process-local view of it failed. But
+                # `read_all` returns this list verbatim when the hot cache is on, so keeping a copy
+                # that is known to be missing these records serves reads that silently omit a write
+                # the store holds. Dropping it costs one reload and is what every other invalidation
+                # on this object does. The sibling copy in matrixark_mcp_temporal_append does the
+                # same; test_a_failed_cache_update_drops_the_cache asserts it of both.
+                self._records_cache = None
         try:
             self._prune_retrieval_candidate_cache(getattr(self, "_entry_count_cache", None) or int(new_entry_count or 0))
         except Exception:
