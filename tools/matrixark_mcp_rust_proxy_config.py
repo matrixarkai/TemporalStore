@@ -30,12 +30,31 @@ def _env_bool(name: str, default: str = "1") -> bool:
     return env_bool(name, default.strip().lower() not in FALSE_VALUES)
 
 
+def _raw(name: str, default: str) -> str:
+    """The value, with a BLANK treated as unset.
+
+    `MATRIXARK_RUST_PROXY_WRITE_LANES=` -- an export with nothing after the `=`, which is what a
+    shell leaves behind when a variable is built from another that is empty -- reached `int("")`
+    and raised ValueError out of lane configuration. Every other reader in this tree spells the
+    read `os.environ.get(name, "").strip() or default`, so blank means unset for all of them; these
+    two were the only readers where it meant crash.
+
+    A value that is malformed rather than absent still raises, and deliberately: `int("abc")` is an
+    operator error nothing can guess past, and the alternative is a proxy that quietly runs on four
+    lanes because somebody typed `four`. Blank is different because it carries no intent.
+    """
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip()
+
+
 def _env_int(name: str, default: str, *, minimum: int = 1) -> int:
-    return max(minimum, int(os.environ.get(name, default)))
+    return max(minimum, int(_raw(name, default)))
 
 
 def _env_seconds_from_ms(name: str, default_ms: str, *, minimum: float = 0.0) -> float:
-    return max(minimum, float(os.environ.get(name, default_ms)) / 1000.0)
+    return max(minimum, float(_raw(name, default_ms)) / 1000.0)
 
 
 try:  # pragma: no cover - import shape differs when run as a package
