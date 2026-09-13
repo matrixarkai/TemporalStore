@@ -9,8 +9,25 @@ import os
 from typing import Any
 
 
+try:  # pragma: no cover - import shape differs when run as a package
+    from matrixark_mcp_env import FALSE_VALUES, env_bool
+except ImportError:  # pragma: no cover
+    from tools.matrixark_mcp_env import FALSE_VALUES, env_bool
+
+
 def _env_bool(name: str, default: str = "1") -> bool:
-    return os.environ.get(name, default).strip().lower() not in {"0", "false", "no"}
+    """A boolean flag, in the one vocabulary.
+
+    This used to be `... not in {"0", "false", "no"}` -- a DENY list where every other reader in
+    the tree uses an allow list, and one that is missing `off`. So `MATRIXARK_RUST_PROXY_SHARED_
+    PROCESS=off` left the flag ON, and so did `=disabled`. test_env_flag_vocabulary settled this
+    vocabulary after boolean flags were found parsed six different ways, and it did not catch this
+    one: its scan reads `os.environ.get("NAME")` written out, and this reads `os.environ.get(name)`
+    where the name is a PARAMETER. The same blind spot hid seventy flags from the surface count.
+
+    Delegating rather than restating: a vocabulary stated twice is the thing that was being fixed.
+    """
+    return env_bool(name, default.strip().lower() not in FALSE_VALUES)
 
 
 def _env_int(name: str, default: str, *, minimum: int = 1) -> int:
