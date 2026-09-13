@@ -8878,3 +8878,740 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
         manifest.block_slab_ids
     );
 }
+
+// =================================================================================================
+// LONG RUN: does any subsystem's footprint grow WITHOUT BOUND on a shard nobody writes to?
+// =================================================================================================
+
+/// Mirrors `engine::compaction::COMPACTION_ROUND_PAGE_REFS`, which is `pub(super)` and so cannot
+/// be named from here.
+///
+/// It is used for ONE thing: computing how many rounds the relocation still owes before a tail
+/// can be read as a trend. A 32-round run of 40 rounds of work looks exactly like a stall, and
+/// the denominator assertion below turns that mistake into a failure with the arithmetic in the
+/// message instead of a wrong verdict in a report.
+const LONG_RUN_COMPACTION_ROUND_PAGE_REFS: usize = 2_048;
+
+/// `StorageManagerRuntimeOptions::default().interval_ms`, the cadence a server actually runs the
+/// storage manager at. Every per-day figure printed below is a per-round figure times this, and
+/// the cadence is printed beside the figure so the extrapolation can be checked rather than
+/// believed.
+const LONG_RUN_SCHEDULER_INTERVAL_MS: u64 = 1_000;
+const LONG_RUN_ROUNDS_PER_DAY: u64 = 24 * 60 * 60 * 1_000 / LONG_RUN_SCHEDULER_INTERVAL_MS;
+
+/// What a single footprint column did across the tail of a run.
+#[derive(Debug, Clone, PartialEq)]
+enum FootprintVerdict {
+    /// Never moved again after `flat_from`. The ceiling is the value it settled on.
+    ///
+    /// A column that climbs for the first N rounds and then stops is BOUNDED, not growing, and
+    /// `flat_from` is the N.
+    Bounded { flat_from: usize, ceiling: u64 },
+    /// Fell at least once in the tail: the bytes are reclaimed, not accumulated. `period_rounds`
+    /// is tail length over the number of falls, so it is the mean rounds between reclaims.
+    Sawtooth {
+        teeth: usize,
+        period_rounds: f64,
+        floor: u64,
+        ceiling: u64,
+    },
+    /// Never fell in the tail and ended higher than it began. This is the #1565 / #1627 shape.
+    Growing { per_round: f64, per_day: f64 },
+}
+
+impl FootprintVerdict {
+    fn is_growing(&self) -> bool {
+        matches!(self, FootprintVerdict::Growing { .. })
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            FootprintVerdict::Bounded { flat_from, ceiling } => {
+                format!("BOUNDED   flat from tail round {flat_from}, ceiling {ceiling}")
+            }
+            FootprintVerdict::Sawtooth {
+                teeth,
+                period_rounds,
+                floor,
+                ceiling,
+            } => format!(
+                "SAWTOOTH  {teeth} falls, period {period_rounds:.1} rounds, floor {floor}, \
+                 ceiling {ceiling}"
+            ),
+            FootprintVerdict::Growing { per_round, per_day } => format!(
+                "GROWING   {per_round:.1} per round -> {per_day:.0} per day at \
+                 {LONG_RUN_SCHEDULER_INTERVAL_MS} ms/round"
+            ),
+        }
+    }
+}
+
+/// Classify one column from the rounds AFTER the drain.
+///
+/// `tail` is already the post-drain slice, so nothing here can mistake a bounded relocation still
+/// in progress for a trend -- that is the caller's denominator to establish, and it does.
+fn classify_footprint_column(tail: &[u64]) -> FootprintVerdict {
+    let ceiling = tail.iter().copied().max().unwrap_or(0);
+    let floor = tail.iter().copied().min().unwrap_or(0);
+    let mut last_change: Option<usize> = None;
+    let mut falls = 0usize;
+    for index in 1..tail.len() {
+        if tail[index] != tail[index - 1] {
+            last_change = Some(index);
+        }
+        if tail[index] < tail[index - 1] {
+            falls += 1;
+        }
+    }
+    let Some(last_change) = last_change else {
+        return FootprintVerdict::Bounded {
+            flat_from: 0,
+            ceiling,
+        };
+    };
+    if falls > 0 {
+        return FootprintVerdict::Sawtooth {
+            teeth: falls,
+            period_rounds: tail.len() as f64 / falls as f64,
+            floor,
+            ceiling,
+        };
+    }
+    // Rose and then stopped. "Stopped" has to be worth something, so it must hold still for a
+    // quarter of the tail (at least four rounds) before this calls it flat rather than slow.
+    let settled_margin = (tail.len() / 4).max(4);
+    if tail.len().saturating_sub(1).saturating_sub(last_change) >= settled_margin {
+        return FootprintVerdict::Bounded {
+            flat_from: last_change,
+            ceiling,
+        };
+    }
+    let span = tail.len().saturating_sub(1).max(1) as f64;
+    let per_round = (tail[tail.len() - 1] as f64 - tail[0] as f64) / span;
+    FootprintVerdict::Growing {
+        per_round,
+        per_day: per_round * LONG_RUN_ROUNDS_PER_DAY as f64,
+    }
+}
+
+struct LongFootprintRun {
+    records: usize,
+    rounds_run: usize,
+    /// First round of the tail: the point past which the relocation cannot still owe work.
+    tail_start: usize,
+    columns: Vec<(&'static str, Vec<u64>)>,
+    rounds_that_compacted: usize,
+    last_compacting_round: Option<usize>,
+    budget_drain_rounds: usize,
+    buckets_at_end: u64,
+    slabs_that_went_stale: usize,
+    cumulative_removed: u64,
+    cumulative_purged_by_schedule: u64,
+    quarantined_at_end: usize,
+    /// (slabs backdated, purged by the scheduled round, purged by a direct default-age call)
+    injected_age_purge: Option<(usize, usize, usize)>,
+}
+
+impl LongFootprintRun {
+    fn column(&self, name: &str) -> &[u64] {
+        &self
+            .columns
+            .iter()
+            .find(|(column, _)| *column == name)
+            .unwrap_or_else(|| panic!("no column named {name}"))
+            .1
+    }
+
+    fn tail(&self, name: &str) -> &[u64] {
+        &self.column(name)[self.tail_start..]
+    }
+
+    fn verdict(&self, name: &str) -> FootprintVerdict {
+        classify_footprint_column(self.tail(name))
+    }
+}
+
+/// Write a corpus, stop writing, then run maintenance for a long time and record every
+/// subsystem's footprint on every round.
+///
+/// `tail_rounds` is how many rounds run AFTER the relocation budget can possibly still owe work.
+/// The drain itself is not part of the tail: peak footprint during a drain is the live set twice
+/// over, once on each slab, and reading that as a trend is the error #1627 documented.
+fn drive_long_footprint_run(records: usize, tail_rounds: usize, inject_age: bool) -> LongFootprintRun {
+    // How many rounds does the relocation OWE? One round relocates at most
+    // COMPACTION_ROUND_PAGE_REFS page refs, and the corpus is about one page ref per record, so
+    // the drain needs at least records / budget rounds. Doubled and padded, because a round that
+    // also has to dump, reclaim and prune does not spend its whole ref budget on relocation.
+    let budget_drain_rounds = records.div_ceil(LONG_RUN_COMPACTION_ROUND_PAGE_REFS);
+    let drain_cap = budget_drain_rounds * 2 + 8;
+    let max_rounds = drain_cap + tail_rounds;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..records {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("longrun-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Overwrite a third, so the collectors have genuine garbage. Without it every collector
+    // correctly does nothing and a flat column proves only that nothing happened.
+    for index in 0..records / 3 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("longrun-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+
+    // FROM HERE ON NOTHING WRITES. `objects` is carried as a column so that is checkable rather
+    // than asserted in prose: a run whose object count moves had a writer, and every "did not
+    // grow" verdict below would be about a different experiment.
+    eprintln!(
+        "  [longrun] {records} records written, then NO further writes. relocation budget \
+{LONG_RUN_COMPACTION_ROUND_PAGE_REFS} refs/round -> the drain owes at least \
+{budget_drain_rounds} rounds; drain allowance {drain_cap}; tail {tail_rounds}; \
+cap {max_rounds}"
+    );
+    eprintln!(
+        "  [longrun] {:>5} {:>11} {:>8} {:>9} {:>6} {:>11} {:>10} {:>8} {:>9} {:>6} {:>8} {:>8} \
+{:>8} {:>7}",
+        "round",
+        "wal_bytes",
+        "wal_seq",
+        "idx_bytes",
+        "slabs",
+        "slab_bytes",
+        "cache_mem",
+        "bkt_idx",
+        "manifests",
+        "dirty",
+        "objects",
+        "removed",
+        "quarant",
+        "purged",
+    );
+
+    let mut wal_bytes = Vec::new();
+    let mut wal_seq = Vec::new();
+    let mut idx_bytes = Vec::new();
+    let mut slabs = Vec::new();
+    let mut slab_bytes_series = Vec::new();
+    let mut cache_mem_series = Vec::new();
+    let mut bkt_idx_series = Vec::new();
+    let mut manifests_series = Vec::new();
+    let mut dirty_series = Vec::new();
+    let mut objects_series = Vec::new();
+    let mut removed_series = Vec::new();
+    let mut quarantine_series = Vec::new();
+    let mut purged_series = Vec::new();
+
+    let mut rounds_that_compacted = 0usize;
+    let mut last_compacting_round: Option<usize> = None;
+    let mut went_stale = std::collections::BTreeSet::<u64>::new();
+    let mut cumulative_removed = 0u64;
+    let mut cumulative_purged = 0u64;
+
+    for round in 0..max_rounds {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages")
+        {
+            rounds_that_compacted += 1;
+            last_compacting_round = Some(round);
+        }
+        went_stale.extend(report.lifecycle_plan.stale_block_slab_ids.iter().copied());
+
+        let wal = engine.write_ahead_log_store().stats(1);
+        let index_log_bytes = engine.index_log_store().log_len_bytes(1);
+        let slab_ids = engine.block_store().slab_ids().unwrap_or_default();
+        let slab_bytes: u64 = engine
+            .page_store()
+            .slab_block_counts()
+            .unwrap_or_default()
+            .iter()
+            .map(|(_id, physical_bytes, _count)| *physical_bytes)
+            .sum();
+        let cache_mem = engine.cache().stats().memory_bytes;
+        let summaries = engine.bucket_storage_summaries(1);
+        let bkt_idx = summaries.len() as u64;
+        let objects: u64 = summaries.iter().map(|summary| summary.object_count).sum();
+        let dirty = summaries
+            .iter()
+            .filter(|summary| summary.dirty_object_count > 0)
+            .count() as u64;
+        let manifests = engine.list_bucket_dump_manifests(1).len() as u64;
+        let quarantined = engine
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+            .len() as u64;
+        cumulative_removed += report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.block_slabs_removed as u64)
+            .unwrap_or(0);
+        cumulative_purged += report
+            .lifecycle_report
+            .as_ref()
+            .map(|lifecycle| lifecycle.delayed_destroy_purged_slabs.len() as u64)
+            .unwrap_or(0);
+
+        eprintln!(
+            "  [longrun] {round:>5} {:>11} {:>8} {index_log_bytes:>9} {:>6} {slab_bytes:>11} \
+{cache_mem:>10} {bkt_idx:>8} {manifests:>9} {dirty:>6} {objects:>8} {cumulative_removed:>8} \
+{quarantined:>8} {cumulative_purged:>7}",
+            wal.persistent_bytes,
+            wal.last_sequence,
+            slab_ids.len(),
+        );
+
+        wal_bytes.push(wal.persistent_bytes);
+        wal_seq.push(wal.last_sequence);
+        idx_bytes.push(index_log_bytes);
+        slabs.push(slab_ids.len() as u64);
+        slab_bytes_series.push(slab_bytes);
+        cache_mem_series.push(cache_mem);
+        bkt_idx_series.push(bkt_idx);
+        manifests_series.push(manifests);
+        dirty_series.push(dirty);
+        objects_series.push(objects);
+        removed_series.push(cumulative_removed);
+        quarantine_series.push(quarantined);
+        purged_series.push(cumulative_purged);
+    }
+
+    // THE HOUR. Quarantine enforces a one-hour minimum age, so every measurement shorter than an
+    // hour reports "purged 0" BY CONSTRUCTION and says nothing about the mechanism. Backdating the
+    // arrival stamp does NOT shorten the gate -- the purge below still demands the shipped hour --
+    // it makes the slab genuinely old by its own clock. That proves the MECHANISM. Proving the
+    // SCHEDULE is a different claim and needs a different run; see
+    // `a_quarantined_slab_is_purged_after_a_real_hour_of_wall_clock`.
+    let injected_age_purge = inject_age.then(|| {
+        let backdated = engine
+            .block_store()
+            .backdate_delayed_destroy_stamps_for_test(2 * 60 * 60 * 1_000)
+            .expect("backdating the quarantine stamps");
+        let by_round = runtime
+            .run_storage_manager_once(1, options.clone())
+            .lifecycle_report
+            .as_ref()
+            .map(|lifecycle| lifecycle.delayed_destroy_purged_slabs.len())
+            .unwrap_or(0);
+        let directly = engine
+            .block_store()
+            .purge_delayed_destroy_slabs_with_report()
+            .map(|report| report.purged_block_slab_ids.len())
+            .unwrap_or(0);
+        (backdated, by_round, directly)
+    });
+
+    let quarantined_at_end = engine
+        .block_store()
+        .delayed_destroy_slab_ids()
+        .unwrap_or_default()
+        .len();
+    let buckets_at_end = engine.bucket_storage_summaries(1).len() as u64;
+
+    LongFootprintRun {
+        records,
+        rounds_run: max_rounds,
+        tail_start: drain_cap,
+        columns: vec![
+            ("wal_bytes", wal_bytes),
+            ("wal_seq", wal_seq),
+            ("idx_bytes", idx_bytes),
+            ("slabs", slabs),
+            ("slab_bytes", slab_bytes_series),
+            ("cache_mem", cache_mem_series),
+            ("bkt_idx", bkt_idx_series),
+            ("manifests", manifests_series),
+            ("dirty", dirty_series),
+            ("objects", objects_series),
+            ("removed", removed_series),
+            ("quarantine", quarantine_series),
+            ("purged", purged_series),
+        ],
+        rounds_that_compacted,
+        last_compacting_round,
+        budget_drain_rounds,
+        buckets_at_end,
+        slabs_that_went_stale: went_stale.len(),
+        cumulative_removed,
+        cumulative_purged_by_schedule: cumulative_purged,
+        quarantined_at_end,
+        injected_age_purge,
+    }
+}
+
+/// Every denominator this run's verdicts depend on, asserted BEFORE any verdict is read.
+///
+/// A zero from "did not run" and a zero from "ran and did nothing" are different results, and the
+/// only way to keep them apart is to assert the run happened first.
+fn assert_long_run_denominators(run: &LongFootprintRun) {
+    let records = run.records;
+    assert!(
+        run.rounds_run > run.tail_start,
+        "at {records} records the run was {} rounds and the drain allowance alone is {}: there is \
+         no tail to read",
+        run.rounds_run,
+        run.tail_start,
+    );
+    assert!(
+        run.buckets_at_end > 0,
+        "the shard holds no buckets at {records} records, so every column is trivially flat and \
+         every verdict below is vacuous",
+    );
+    assert!(
+        run.rounds_that_compacted > 0,
+        "compaction never ran at {records} records over {} rounds, so this measures an idle \
+         collector rather than a settled compactor",
+        run.rounds_run,
+    );
+    assert!(
+        run.slabs_that_went_stale > 0,
+        "no slab went stale at {records} records over {} rounds, so the collector had nothing to \
+         reclaim and the reclaim columns are vacuous",
+        run.rounds_run,
+    );
+    // THE ARITHMETIC THAT KEEPS A DRAIN FROM READING AS A STALL. The relocation owes
+    // ceil(records / COMPACTION_ROUND_PAGE_REFS) rounds at minimum; the tail starts past twice
+    // that plus sixteen. If compaction is still firing there, the tail is drain and not trend.
+    let last_compacting_round = run
+        .last_compacting_round
+        .expect("a compacting round, since one was counted");
+    assert!(
+        last_compacting_round < run.tail_start,
+        "compaction was still firing at round {last_compacting_round} at {records} records, and \
+         the tail starts at {}. The relocation owes at least {} rounds from the \
+         {LONG_RUN_COMPACTION_ROUND_PAGE_REFS}-ref budget; raise the allowance rather than \
+         reading this tail, because a run shorter than the work is indistinguishable from a stall",
+        run.tail_start,
+        run.budget_drain_rounds,
+    );
+    // THE WRITER ACTUALLY STOPPED. Not prose: the object count is a column, and a run where it
+    // moved had a writer.
+    let objects = run.column("objects");
+    let first = objects[0];
+    let last = objects[objects.len() - 1];
+    assert!(first > 0, "the shard holds no objects at {records} records");
+    assert_eq!(
+        first, last,
+        "the live object count moved from {first} to {last} at {records} records: something WROTE \
+         during the rounds, and growth under a writer says nothing",
+    );
+}
+
+/// Print every column's verdict with the arithmetic behind it.
+fn report_long_run_verdicts(run: &LongFootprintRun) {
+    eprintln!(
+        "  [longrun] ---- {} records, tail = rounds {}..{} ({} rounds), \
+{LONG_RUN_ROUNDS_PER_DAY} rounds/day at {LONG_RUN_SCHEDULER_INTERVAL_MS} ms ----",
+        run.records,
+        run.tail_start,
+        run.rounds_run,
+        run.rounds_run - run.tail_start,
+    );
+    for (name, _) in &run.columns {
+        let tail = run.tail(name);
+        let verdict = classify_footprint_column(tail);
+        eprintln!(
+            "  [longrun] {name:>11}  tail {:>12} -> {:>12}  delta {:>12}   {}",
+            tail[0],
+            tail[tail.len() - 1],
+            tail[tail.len() - 1] as i128 - tail[0] as i128,
+            verdict.describe(),
+        );
+    }
+    eprintln!(
+        "  [longrun] cumulative removed {} / quarantined now {} / purged by the schedule {}",
+        run.cumulative_removed, run.quarantined_at_end, run.cumulative_purged_by_schedule,
+    );
+    if let Some((backdated, by_round, directly)) = run.injected_age_purge {
+        eprintln!(
+            "  [longrun] INJECTED AGE: {backdated} quarantined slabs backdated two hours, then the \
+             shipped one-hour purge removed {by_round} in a scheduled round and {directly} on a \
+             direct call",
+        );
+    }
+}
+
+/// THE LONG RUN. Release only, driven by hand.
+///
+///   cargo test --release -p temporalstore-rust --lib the_footprint_stays_bounded_over_a_long_run \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// WHAT THIS ADDS OVER `the_footprint_cadence_over_many_rounds`. That one runs twelve rounds, and
+/// twelve rounds is shorter than the relocation drain at 80,000 records (which owes forty from its
+/// 2,048-ref budget). So the twelve-round table cannot distinguish "growing" from "still moving
+/// the live set", and it cannot reach any time-based threshold at all. This runs past the drain by
+/// arithmetic and then keeps going long enough that a per-round slope is a trend rather than
+/// noise, at BOTH corpus sizes, because #1623's healthy 8k slab column did not generalise to 80k.
+///
+/// WHAT IT DOES NOT DO: wait an hour. Quarantine's one-hour minimum age is crossed here by
+/// backdating the arrival stamp, which proves the MECHANISM under the shipped gate. The SCHEDULE
+/// -- that an unattended node eventually reaches the far side of that hour on its own -- is proved
+/// by `a_quarantined_slab_is_purged_after_a_real_hour_of_wall_clock`, and they are different
+/// claims. Both are here so neither is mistaken for the other.
+#[test]
+#[ignore]
+fn the_footprint_stays_bounded_over_a_long_run() {
+    for records in [8_000usize, 80_000usize] {
+        let run = drive_long_footprint_run(records, 150, true);
+        assert_long_run_denominators(&run);
+        report_long_run_verdicts(&run);
+
+        // The columns that must not grow on a shard with no writer. `slab_bytes` and `slabs` are
+        // allowed to sawtooth -- that IS reclaim working -- but not to climb monotonically.
+        for column in [
+            "wal_bytes",
+            "idx_bytes",
+            "slabs",
+            "slab_bytes",
+            "cache_mem",
+            "bkt_idx",
+            "manifests",
+        ] {
+            let verdict = run.verdict(column);
+            assert!(
+                !verdict.is_growing(),
+                "{column} at {records} records: {} over tail {:?}",
+                verdict.describe(),
+                run.tail(column),
+            );
+        }
+
+        // The quarantine gate, under injected age. The denominator is the backdated count: a
+        // purge of zero because nothing was backdated is not the same result as a purge of zero
+        // because the gate is stuck.
+        let (backdated, by_round, directly) = run
+            .injected_age_purge
+            .expect("the injected-age arm ran, since it was requested");
+        assert!(
+            backdated > 0,
+            "nothing was in quarantine to backdate at {records} records, so the purge result \
+             below is vacuous (cumulative removed {})",
+            run.cumulative_removed,
+        );
+        assert!(
+            by_round + directly > 0,
+            "{backdated} slabs were two hours old and the shipped one-hour purge removed none of \
+             them, by the scheduled round or directly",
+        );
+    }
+}
+
+/// THE SCHEDULE, not the mechanism: left alone for longer than the quarantine minimum age, does a
+/// node purge on its own? Takes over an hour of wall clock. Release only, driven by hand.
+///
+///   cargo test --release -p temporalstore-rust --lib \
+///       a_quarantined_slab_is_purged_after_a_real_hour_of_wall_clock \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// Nothing else in this repo has ever run past `DELAYED_DESTROY_MIN_AGE_MS`, so "purged 0" has
+/// been the only observation available and it has been uninformative by construction. This waits.
+/// The corpus is deliberately small -- the question is a clock, not a scale -- and the rounds are
+/// paced so the run is mostly idle rather than mostly CPU.
+#[test]
+#[ignore]
+fn a_quarantined_slab_is_purged_after_a_real_hour_of_wall_clock() {
+    const RECORDS: usize = 8_000;
+    const PACE: std::time::Duration = std::time::Duration::from_secs(20);
+    // Ten minutes past the gate, so a slow round near the boundary does not decide the result.
+    let wait_for = std::time::Duration::from_millis(60 * 60 * 1_000 + 10 * 60 * 1_000);
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("hour-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+    }
+    for index in 0..RECORDS / 3 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("hour-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+
+    let started = std::time::Instant::now();
+    let mut ever_quarantined = std::collections::BTreeSet::<u64>::new();
+    let mut purged = std::collections::BTreeSet::<u64>::new();
+    let mut rounds = 0usize;
+    eprintln!(
+        "  [hour] {RECORDS} records, then NO further writes. Running rounds every {:?} until {:?} \
+has passed; the quarantine minimum age is one hour.",
+        PACE, wait_for,
+    );
+    while started.elapsed() < wait_for {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        rounds += 1;
+        ever_quarantined.extend(
+            engine
+                .block_store()
+                .delayed_destroy_slab_ids()
+                .unwrap_or_default(),
+        );
+        if let Some(lifecycle) = report.lifecycle_report.as_ref() {
+            purged.extend(lifecycle.delayed_destroy_purged_slabs.iter().copied());
+        }
+        if rounds % 15 == 0 {
+            eprintln!(
+                "  [hour] {:>6.1} min, round {rounds}: quarantine {:?}, ever quarantined {:?}, \
+purged {:?}",
+                started.elapsed().as_secs_f64() / 60.0,
+                engine.block_store().delayed_destroy_slab_ids().unwrap_or_default(),
+                ever_quarantined,
+                purged,
+            );
+        }
+        std::thread::sleep(PACE);
+    }
+
+    // DENOMINATORS. The elapsed time, the rounds, and something to purge -- in that order,
+    // because a "nothing was purged" from a run that never reached the hour, a run that ran no
+    // rounds, and a run with an empty quarantine are three different findings.
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() as u64 > 60 * 60 * 1_000,
+        "the run lasted {elapsed:?}, less than the one-hour quarantine minimum age, so a purge of \
+         zero would be uninformative by construction",
+    );
+    assert!(rounds > 0, "no maintenance round ran in {elapsed:?}");
+    assert!(
+        !ever_quarantined.is_empty(),
+        "no slab ever entered quarantine over {rounds} rounds and {elapsed:?}, so nothing could \
+         be purged and the assertion below would hold vacuously",
+    );
+    eprintln!(
+        "  [hour] {rounds} rounds over {:.1} min: ever quarantined {ever_quarantined:?}, purged \
+{purged:?}, still in quarantine {:?}",
+        elapsed.as_secs_f64() / 60.0,
+        engine.block_store().delayed_destroy_slab_ids().unwrap_or_default(),
+    );
+    assert!(
+        !purged.is_empty(),
+        "{} slabs sat in quarantine for more than the one-hour minimum age over {rounds} \
+         scheduled rounds and NONE was purged: {ever_quarantined:?}",
+        ever_quarantined.len(),
+    );
+}
+
+/// The in-suite form of the long run: same driver, same verdicts, a corpus small enough to run on
+/// every commit.
+///
+/// WHAT THIS CATCHES that the long run cannot: a regression, today, without an operator
+/// remembering to spend an hour. WHAT IT CANNOT CATCH: a slope too shallow to show inside a short
+/// tail, which is exactly what the ignored long form is for. Both, or neither is worth having.
+///
+/// The quarantine gate is checked in BOTH directions off the one run, because each direction on
+/// its own is passable by a broken store. "A backdated slab is purged" alone still passes if the
+/// age check is deleted outright -- a purge that takes everything takes the backdated ones too --
+/// and "a fresh slab is not purged" alone still passes if the purge never runs at all.
+#[test]
+fn the_footprint_columns_stay_bounded_on_an_idle_shard() {
+    let run = drive_long_footprint_run(4_096, 12, true);
+    assert_long_run_denominators(&run);
+    report_long_run_verdicts(&run);
+
+    for column in [
+        "wal_bytes",
+        "idx_bytes",
+        "slabs",
+        "slab_bytes",
+        "cache_mem",
+        "bkt_idx",
+        "manifests",
+    ] {
+        let verdict = run.verdict(column);
+        assert!(
+            !verdict.is_growing(),
+            "{column} on an idle shard: {} over tail {:?}",
+            verdict.describe(),
+            run.tail(column),
+        );
+    }
+
+    // The dirty set must reach zero and stay there: that is what "the writer stopped" means to the
+    // store manager, and a non-zero dirty column would mean every reclaim above was being taken
+    // against a moving target.
+    let dirty_tail = run.tail("dirty");
+    assert!(
+        dirty_tail.iter().all(|dirty| *dirty == 0),
+        "buckets stayed dirty with no writer: {dirty_tail:?}",
+    );
+
+    // DIRECTION ONE: a slab quarantined moments ago is NOT purged by the scheduled rounds. The
+    // denominator is the quarantine column at the last round before any age was injected -- with
+    // an empty quarantine the zero below is a statement about a shard that reclaimed nothing.
+    let quarantine = run.column("quarantine");
+    let quarantined_before_injection = quarantine[quarantine.len() - 1];
+    assert!(
+        quarantined_before_injection > 0,
+        "nothing was in quarantine after {} rounds, so both directions of the age gate are \
+         vacuous here (cumulative removed {})",
+        run.rounds_run,
+        run.cumulative_removed,
+    );
+    assert_eq!(
+        run.cumulative_purged_by_schedule, 0,
+        "slabs quarantined moments ago were purged over {} scheduled rounds: the one-hour minimum \
+         age is not being enforced, and a reader holding a stale address dangles at a deleted slab",
+        run.rounds_run,
+    );
+
+    // DIRECTION TWO: the same slab, aged past the shipped hour, IS purged.
+    let (backdated, by_round, directly) = run
+        .injected_age_purge
+        .expect("the injected-age arm ran, since it was requested");
+    assert!(
+        backdated > 0,
+        "nothing was backdated, so the purge result is vacuous (cumulative removed {})",
+        run.cumulative_removed,
+    );
+    assert!(
+        by_round + directly > 0,
+        "{backdated} slabs were two hours old and the shipped one-hour purge removed none",
+    );
+    assert_eq!(
+        run.quarantined_at_end, 0,
+        "quarantine still holds slabs after the aged purge: {backdated} backdated, {by_round} \
+         purged by the round, {directly} purged directly",
+    );
+}
