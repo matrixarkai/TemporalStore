@@ -447,6 +447,12 @@ pub(super) fn list_bucket_dump_manifests_at(
     Ok(manifests)
 }
 
+/// The NEWEST manifest, where newest means furthest along the INDEX LOG.
+///
+/// This answers "which dump describes the shard's most recent shape" -- which manifest the next
+/// one descends from, which slabs are still named, how far behind the dump cadence has fallen.
+/// It is NOT the right answer to "which durable checkpoint should a load recover from": see
+/// `durable_recovery_bucket_dump_manifest_at` below, and do not substitute one for the other.
 pub(super) fn latest_bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
@@ -455,6 +461,63 @@ pub(super) fn latest_bucket_dump_manifest_at(
         .ok()?
         .into_iter()
         .last()
+}
+
+/// The manifest a LOAD must recover from: the one carrying the highest WAL anchor.
+///
+/// WHY THIS IS NOT `latest_bucket_dump_manifest_at`. A manifest carries two sequences and they
+/// are minted from two different places (`create_bucket_dump_manifest`):
+///
+///   * `index_log_sequence` is the live index-log tail, which only ever grows;
+///   * `wal_sequence` is the anchor INSIDE the index bytes the manifest embeds -- deliberately
+///     not the live WAL tail, because under `MATRIXARK_BULK_INGEST` the mint site reads the
+///     FROZEN BASE FILE (`load_served_index_bytes`) while the live index runs ahead.
+///
+/// Nothing couples them, and one env flag is enough to invert them. Measured on one shard in one
+/// process, dumping either side of setting `MATRIXARK_BULK_INGEST=1`:
+///
+/// ```text
+///     ils=1 wal=1      (seed, flushed)
+///     ils=6 wal=9      (after the expiry cycle -- the live index, anchored at 9)
+///     ils=6 wal=1      (the same shard under bulk ingest -- the base FILE, anchored at 1)
+/// ```
+///
+/// The last one is "latest" by index-log order and it carries the LOWEST WAL anchor of the three.
+///
+/// WHAT THAT BREAKS. `storage_wal_reclaim_plan` takes its retain floor as a MINIMUM over these
+/// same manifests' `wal_sequence`, and the safety argument is that a minimum over a set cannot
+/// exceed a member of it -- so the floor cannot climb above the point a load starts replaying
+/// from. That argument needs the load's pick to be a member of the set that BOUNDS the minimum
+/// from above. Latest-by-index-log is a member, but not an upper bound, and in the state above
+/// the floor stood at 9 while a real load replayed from 1: WAL sequences (1, 9] -- the expiry
+/// tombstones among them -- were both reclaimable and required. The probe load came back with no
+/// shard at all.
+///
+/// A MAXIMUM over the set is an upper bound over every subset of it by construction, whatever
+/// order the listing is in, so taking it here makes the relation a theorem rather than a
+/// coincidence. It also never recovers LESS: the embedded index is a whole-shard checkpoint at
+/// exactly its own `wal_sequence` (#1642), so the highest anchor is the most-advanced durable
+/// checkpoint on disk, and replaying the WAL suffix above it reconstructs the rest.
+///
+/// `wal_reclaim_never_frees_what_the_default_load_path_replays` (engine/tests/expiry_scale.rs)
+/// drives the divergent state above and fails if this goes back to reading the index-log order.
+pub(super) fn durable_recovery_bucket_dump_manifest_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Option<BucketDumpManifest> {
+    list_bucket_dump_manifests_at(index_dir, shard_id)
+        .ok()?
+        .into_iter()
+        // Tie-broken by the index-log order this used to sort by, so a shard whose two orderings
+        // agree -- every shard that never ran under bulk ingest -- picks exactly the manifest it
+        // picked before.
+        .max_by_key(|manifest| {
+            (
+                manifest.wal_sequence,
+                manifest.index_log_sequence,
+                manifest.created_unix_ms,
+            )
+        })
 }
 
 pub(super) fn bucket_dump_manifest_checksum(manifest: &BucketDumpManifest) -> Result<String, Status> {

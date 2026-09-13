@@ -1472,11 +1472,31 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
 ///     frontier comes from something no load path consults. It is safe today only because a cycle
 ///     DUMPS (stage `prepare`) before it RECLAIMS (stage `reclaim_wal`), so a manifest at the
 ///     current position already exists by the time that branch is reached;
-///   * the load path could stop consulting manifests, or consult a different one --
-///     `latest_bucket_dump_manifest_at` sorts by `index_log_sequence`, not by `wal_sequence`.
+///   * the load path could stop consulting manifests, or consult a different one.
 ///
 /// So this asserts the RELATION, at every state a production cycle passes through, rather than
 /// either number.
+///
+/// AND THE SECOND OF THOSE WAS REAL. The load path used to read
+/// `latest_bucket_dump_manifest_at`, which orders by `index_log_sequence` -- a MEMBER of the set
+/// the floor minimises over, but not an UPPER BOUND on it. The two sequences are minted from two
+/// different places and nothing couples them: `index_log_sequence` is the live index-log tail,
+/// while `wal_sequence` is the anchor inside the index bytes the dump embeds, which under
+/// `MATRIXARK_BULK_INGEST` comes from the FROZEN BASE FILE. One env flag on one shard in one
+/// process inverts them, and the last section below builds exactly that state: a manifest that is
+/// newest in index-log order carrying the LOWEST WAL anchor on disk. Before
+/// `durable_recovery_bucket_dump_manifest_at` (a MAXIMUM over `wal_sequence`, which bounds every
+/// subset by construction) that state measured
+///
+/// ```text
+///     reclaim floor 9 (retain_from 10), a real load off the same files replaying from 1
+/// ```
+///
+/// -- sequences (1, 9], the expiry tombstones among them, both reclaimable and required, and the
+/// probe load came back with NO SHARD AT ALL. That is the live unrecoverable-loss path this now
+/// holds shut, and it is asserted here rather than in a test of its own so the divergent state
+/// runs against the same relation, the same real-load probe and the same denominators as every
+/// other state.
 ///
 /// IT READS THE REPLAY POINT OFF A REAL LOAD, NOT OFF A COPY OF THE RULE. The first version of
 /// this test recomputed `max(base anchor, latest manifest wal_sequence)` itself. That version
@@ -1492,9 +1512,11 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
 /// and fails if that count is zero, because then the base alone would have covered every reclaim
 /// and the manifest that actually carries it would never have been exercised.
 ///
-/// VERIFIED BY MUTATION: making `load_shard_with`'s single-barrier arm ignore the dump manifest
-/// (`Some(manifest) if false && ...`) fails this at the `expired` state with
-/// `reclaim floor 10 is above what the default load path replays from (1)`.
+/// VERIFIED BY MUTATION, twice. Making `load_shard_with`'s single-barrier arm ignore the dump
+/// manifest (`Some(manifest) if false && ...`) fails this at the `expired` state with
+/// `reclaim floor 10 is above what the default load path replays from (1)`. Putting that arm back
+/// on `latest_bucket_dump_manifest_at` -- the index-log order it used before -- fails it at the
+/// `manifest orderings diverged` state with `reclaim floor 10 is above ... (1)`.
 #[test]
 fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     const PRE_KEYS: usize = 8;
@@ -1603,14 +1625,36 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     write_keys(&engine, 1, seed);
     engine.flush_shard_index(1);
 
+    /// (the WAL anchor of the manifest that is newest in INDEX-LOG order, the highest WAL anchor
+    /// over every manifest on disk). Equal on a shard whose two manifest orderings agree; the
+    /// first below the second is the inversion the last section builds.
+    fn manifest_orderings(indexes: &std::path::Path) -> (u64, u64) {
+        let manifests = crate::engine::bucket_dump_io::list_bucket_dump_manifests_at(indexes, 1)
+            .expect("the manifest listing reads back");
+        (
+            manifests
+                .last()
+                .map(|manifest| manifest.wal_sequence)
+                .unwrap_or(0),
+            manifests
+                .iter()
+                .map(|manifest| manifest.wal_sequence)
+                .max()
+                .unwrap_or(0),
+        )
+    }
+
     let mut observations = 0usize;
     let mut safe_states = 0usize;
     let mut diverged_states = 0usize;
+    let mut inverted_ordering_states = 0usize;
 
     let mut observe = |engine: &TemporalEngine, label: &str| {
         observations += 1;
         let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
         let base_anchor = base_index_anchor(engine);
+        let (latest_by_index_log, highest_anchor) = manifest_orderings(&indexes);
+        inverted_ordering_states += usize::from(latest_by_index_log < highest_anchor);
         let load_from = default_load_replay_point(&pages, &indexes, &probes, label);
         if !plan.safe_to_reclaim {
             // A plan that refuses reclaims nothing and so cannot outrun anything. Printed anyway,
@@ -1628,7 +1672,8 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
         diverged_states += usize::from(base_anchor < frontier);
         println!(
             "  [{label}] base index anchor {base_anchor}, a real load replays from {load_from}, \
-             reclaim frontier {frontier} (retain_from {})",
+             reclaim frontier {frontier} (retain_from {}); manifests: newest in index-log order \
+             anchors at {latest_by_index_log}, highest anchor on disk {highest_anchor}",
             plan.retain_from_wal_sequence
         );
         assert!(
@@ -1638,7 +1683,10 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
              and required: reclaim may drop them, and a base-only load has to replay them to \
              rebuild the state they carry. The base index file anchors at {base_anchor}; the \
              floor has to stay at or below the replay point, because a durable checkpoint the \
-             load does not read cannot authorise dropping the log that stands in for it.",
+             load does not read cannot authorise dropping the log that stands in for it. The \
+             manifest that is newest in INDEX-LOG order anchors at {latest_by_index_log} and the \
+             highest anchor on disk is {highest_anchor}: if those two differ, the load recovered \
+             from a manifest that does not bound the minimum the floor is taken over.",
             plan.retain_from_wal_sequence,
         );
     };
@@ -1709,6 +1757,68 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     );
 
     observe(&engine, "expired");
+
+    // THE TWO MANIFEST ORDERINGS, PULLED APART. Here, and not after the cycles below, because the
+    // state it needs is the one the expiry round just produced: the base index FILE anchored at
+    // {base_after_expiry} while the served index is at {delta_anchor}. The next cycle's reclaim
+    // materialises the base and closes that distance -- measured, the base reads 9 from
+    // `reclaimed after expiry` onward -- and a dump minted then reads the same anchor either way.
+    //
+    // Everything above rests on the load path recovering from a manifest that BOUNDS the minimum
+    // the reclaim floor is taken over. Ordering by `index_log_sequence` gives a member of that
+    // set, not a bound on it, and the two orderings are not coupled: `index_log_sequence` is the
+    // live index-log tail, while `wal_sequence` is the anchor inside the index bytes the dump
+    // embeds -- and `load_served_index_bytes` reads the FROZEN BASE FILE under bulk ingest rather
+    // than the live index. After the expiry round above the base file sits far behind the served
+    // anchor (asserted as the `delta_anchor > base_after_expiry` denominator), so ONE dump minted
+    // with the flag set lands newest in index-log order carrying the lowest anchor on disk.
+    //
+    // This is a production mint -- `create_bucket_dump_manifest`, the only place a manifest's two
+    // sequences are ever assigned -- under a flag the engine reads live on every call. Nothing is
+    // fabricated and no file is edited: the state below is one a running node reaches by being
+    // restarted with `MATRIXARK_BULK_INGEST` set, which is what that flag is for.
+    let (_, anchor_before_bulk_dump) = manifest_orderings(&indexes);
+    std::env::set_var("MATRIXARK_BULK_INGEST", "1");
+    let bulk_manifest = engine.create_bucket_dump_manifest(1, Vec::new());
+    std::env::remove_var("MATRIXARK_BULK_INGEST");
+    let bulk_manifest = bulk_manifest.expect("the bulk-ingest dump persists");
+    let (latest_by_index_log, highest_anchor) = manifest_orderings(&indexes);
+
+    // DENOMINATOR FOR THE SECTION, before it asserts anything. Two separate things have to be
+    // true, and each on its own would let the observation below run against an ordinary state:
+    // the bulk dump has to have become the NEWEST manifest in index-log order, and it has to
+    // carry an anchor STRICTLY BELOW one already on disk. A future `create_bucket_dump_manifest`
+    // that couples the two sequences, or a fixture whose base file stopped lagging the served
+    // index, breaks one of them and says so here rather than passing in silence.
+    assert_eq!(
+        latest_by_index_log, bulk_manifest.wal_sequence,
+        "the bulk-ingest dump (index_log_sequence {}, anchor {}) is not the newest manifest in \
+         index-log order -- the newest one anchors at {latest_by_index_log} -- so the load path \
+         would not be reading it and this section tests nothing",
+        bulk_manifest.index_log_sequence, bulk_manifest.wal_sequence,
+    );
+    assert!(
+        bulk_manifest.wal_sequence < anchor_before_bulk_dump
+            && highest_anchor == anchor_before_bulk_dump,
+        "the bulk-ingest dump anchors at {} against a highest anchor on disk of \
+         {anchor_before_bulk_dump} before it and {highest_anchor} after. The two orderings did \
+         not come apart, so recovering from the newest manifest and recovering from the \
+         highest-anchored one are the same thing here and the relation below cannot tell them \
+         apart",
+        bulk_manifest.wal_sequence,
+    );
+    println!(
+        "  bulk-ingest dump: index_log_sequence {} (newest on disk) carrying WAL anchor {} \
+         against a highest anchor of {highest_anchor}",
+        bulk_manifest.index_log_sequence, bulk_manifest.wal_sequence
+    );
+
+    // The same relation, the same real-load probe, against the inverted state. Ordering by
+    // `index_log_sequence` here measured floor 9 (retain_from 10) against a load replaying from 1.
+    observe(&engine, "manifest orderings diverged");
+
+    // ...and then the rest of the cycle the expiry round was in the middle of, so the states the
+    // original run covered are still covered, now with the divergent manifest on disk.
     cycle(&engine);
     observe(&engine, "reclaimed after expiry");
     cycle(&engine);
@@ -1731,9 +1841,20 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
          floor was ever applied to anything and the relation above never ran against a live \
          reclaim"
     );
+    // THE SECOND VACUITY GUARD, for the second mechanism. The relation can be kept by a load that
+    // reads the newest manifest OR by one that reads the highest-anchored manifest, and the two
+    // are only told apart in a state where those are different manifests. Zero such states means
+    // the run never distinguished them.
+    assert!(
+        inverted_ordering_states > 0,
+        "in {observations} observed states the manifest newest in INDEX-LOG order was never the \
+         one carrying the lowest WAL anchor, so every state could have been kept safe by reading \
+         either ordering and this run says nothing about which one the load path has to use"
+    );
     println!(
         "  {observations} states observed, {safe_states} with a reclaiming plan, \
-         {diverged_states} with the base index file anchored BELOW the reclaim frontier"
+         {diverged_states} with the base index file anchored BELOW the reclaim frontier, \
+         {inverted_ordering_states} with the two manifest orderings inverted"
     );
 
     // AND THE RECORDS SURVIVED IT. The relation holding is the mechanism; this is the outcome,
@@ -1779,5 +1900,392 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
          replayed from {replayed_from}, and the tombstones that removed them sat below that \
          point: reclaim dropped them while the durable checkpoint the load starts from did not \
          yet describe the deletion, so the keys resurrect with a deadline already in the past"
+    );
+}
+
+/// A deadline set through the two `WithOptions` control-state writes must be VISIBLE TO THE SWEEP.
+///
+/// WHAT WENT WRONG. `expires_at_ms` is the key-ordered map of deadlines; `expiry_by_deadline` is
+/// the deadline-ordered mirror the sweep reads, and `due_window` reads ONLY the mirror. The two
+/// are kept in step by `set_expiry` / `clear_expiry`. Two arms --
+/// `ControlStateIncrementWithOptions` and `ControlStateSetAndGetWithOptions` -- wrote
+/// `shard.expires_at_ms.insert(...)` directly instead. Their own siblings a few lines away
+/// (`ControlStateChangeAdd`, `ControlStateSet`) call `set_expiry`, so the two spellings of the
+/// same request disagreed about whether the key would ever be collected.
+///
+/// WHY THE REPAIR DOES NOT COVER IT. `ensure_expiry_order` rebuilds the mirror, but only when the
+/// mirror is ENTIRELY EMPTY -- that is its contract, because a partially-populated mirror is
+/// indistinguishable from a correct one. So the moment any OTHER key on the shard holds a
+/// deadline, the mirror is non-empty, the repair is a no-op, and the bypassed key is invisible to
+/// every sweep for the life of the shard. It expires only if a command happens to touch it and
+/// trip lazy expiry. A caller who asked for a one-second TTL got a key retained forever.
+///
+/// THE DENOMINATOR THIS TEST ASSERTS FIRST, because without it the test is vacuous: the mirror
+/// must be NON-EMPTY before the bypassed write happens. On an empty mirror `ensure_expiry_order`
+/// repairs the damage and the defect cannot be reproduced at all.
+///
+/// HALVES ARE ASSERTED SEPARATELY. The two arms are checked one at a time, each with its own
+/// "the deadline was recorded at all" assertion before its "and the sweep can see it" assertion.
+/// A combined count would read full from one arm while the other read zero.
+#[test]
+fn a_deadline_set_with_options_is_visible_to_the_sweep() {
+    fn deadline_is_recorded(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id).expect("shard is loaded");
+        shard.expires_at_ms.contains_key(key)
+    }
+    fn deadline_is_in_the_mirror(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id).expect("shard is loaded");
+        shard
+            .expiry_by_deadline
+            .keys()
+            .any(|(_, mirrored)| mirrored == key)
+    }
+    fn record_is_gone(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id).expect("shard is loaded");
+        !shard.control_state.contains_key(key) && !shard.expires_at_ms.contains_key(key)
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    // DENOMINATOR. Other keys hold deadlines, so the mirror is NON-EMPTY and
+    // `ensure_expiry_order` will not silently repair what the arms below do. Long deadlines, so
+    // these keys are never themselves due and cannot be mistaken for the removal being claimed.
+    write_keys(
+        &engine,
+        1,
+        (0..64)
+            .map(|index| (format!("bystander:{index:04}"), 3_600_000))
+            .collect(),
+    );
+    let (bystanders_held, bystanders_due) = deadline_census(&engine, 1);
+    assert_eq!(
+        bystanders_held, 64,
+        "the bystander deadlines must actually exist, else the mirror is empty and the repair \
+         hides the defect this test is about",
+    );
+    assert_eq!(bystanders_due, 0, "no bystander may be due");
+    assert_eq!(
+        deadline_index_len(&engine, 1),
+        64,
+        "the deadline-ordered mirror must be NON-EMPTY before the bypassed writes happen",
+    );
+    assert_eq!(disagreements(&engine, 1), 0, "the two indexes start in step");
+
+    // ARM 1: ControlStateIncrementWithOptions. Its own half, asserted alone.
+    let increment = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ControlStateIncrementWithOptions {
+            key: "with_options:increment".to_string(),
+            timestamp_ms: 1_000,
+            amount: 1,
+            precision_ms: None,
+            ttl_ms: Some(1),
+        },
+    });
+    assert!(increment.status.ok, "seed write failed: {:?}", increment.status);
+    assert!(
+        deadline_is_recorded(&engine, 1, "with_options:increment"),
+        "DENOMINATOR: the TTL must have been recorded at all before asking whether the sweep \
+         can see it",
+    );
+    assert!(
+        deadline_is_in_the_mirror(&engine, 1, "with_options:increment"),
+        "ControlStateIncrementWithOptions recorded a deadline the sweep's deadline-ordered view \
+         never learned about, so the key can never be collected",
+    );
+
+    // ARM 2: ControlStateSetAndGetWithOptions. Its own half, asserted alone. The key it writes
+    // is family-prefixed, so the deadline lands on `control_state:h:<key>`.
+    let set_and_get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ControlStateSetAndGetWithOptions {
+            family: ControlStateFamily::Counter,
+            key: "with_options:setandget".to_string(),
+            timestamp_ms: 1_000,
+            amount: 1,
+            start_ms: 0,
+            end_ms: 2_000,
+            aggregator: "sum".to_string(),
+            precision_ms: None,
+            ttl_ms: Some(1),
+            uuid: None,
+        },
+    });
+    assert!(
+        set_and_get.status.ok,
+        "seed write failed: {:?}",
+        set_and_get.status
+    );
+    let family_key = "control_state:h:with_options:setandget";
+    assert!(
+        deadline_is_recorded(&engine, 1, family_key),
+        "DENOMINATOR: the TTL must have been recorded at all before asking whether the sweep \
+         can see it",
+    );
+    assert!(
+        deadline_is_in_the_mirror(&engine, 1, family_key),
+        "ControlStateSetAndGetWithOptions recorded a deadline the sweep's deadline-ordered view \
+         never learned about, so the key can never be collected",
+    );
+
+    // The detector that exists for exactly this class of mistake must read zero.
+    assert_eq!(
+        disagreements(&engine, 1),
+        0,
+        "the two expiry indexes must agree after both WithOptions writes",
+    );
+
+    // AND THE SWEEP MUST ACTUALLY COLLECT THEM. A 1 ms TTL is long past by now; the bystanders
+    // are an hour out, so anything the round removes is one of the two keys under test.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (held_before, due_before) = deadline_census(&engine, 1);
+    assert_eq!(
+        held_before, 66,
+        "64 bystanders plus the two keys under test must all hold deadlines",
+    );
+    assert_eq!(
+        due_before, 2,
+        "exactly the two keys under test are due -- this is the round's denominator",
+    );
+    let report = sweep_once(&engine, 1);
+    assert_eq!(
+        report.expired_records_removed, 2,
+        "one round must collect BOTH due keys behind 64 live ones \
+         (scanned {}, skipped {})",
+        report.scanned_records, report.skipped_records,
+    );
+    // Each removal asserted separately, so one arm reading full cannot hide the other at zero.
+    assert!(
+        record_is_gone(&engine, 1, "with_options:increment"),
+        "the ControlStateIncrementWithOptions key survived its own deadline",
+    );
+    assert!(
+        record_is_gone(&engine, 1, family_key),
+        "the ControlStateSetAndGetWithOptions key survived its own deadline",
+    );
+    let (held_after, due_after) = deadline_census(&engine, 1);
+    assert_eq!(held_after, 64, "only the bystanders remain");
+    assert_eq!(due_after, 0, "nothing is left due");
+    assert_eq!(disagreements(&engine, 1), 0, "the indexes are still in step");
+}
+
+/// The same two writes, at the sizes #1624 measured, so a semantics change cannot quietly make a
+/// round cost the keyspace again.
+///
+/// The claim is about COUNTS, not wall clock: at 2,000 / 20,000 / 100,000 live keys holding
+/// deadlines, a round that collects the two due keys must LOOK AT a number of records that does
+/// not grow with the keyspace. The due keys sort AFTER every bystander, which is the arrangement
+/// a key-ordered scan is worst at.
+#[test]
+fn a_with_options_deadline_costs_the_due_set_not_the_keyspace() {
+    fn round_at(live_keys: usize) -> (usize, usize, usize) {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        write_keys(
+            &engine,
+            1,
+            (0..live_keys)
+                .map(|index| (format!("aaa:live:{index:08}"), 3_600_000))
+                .collect(),
+        );
+        assert_eq!(
+            deadline_census(&engine, 1).0,
+            live_keys,
+            "DENOMINATOR: every live key must hold a deadline",
+        );
+        // Sorts after every `aaa:` bystander, so a key-ordered scan reaches it last.
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateIncrementWithOptions {
+                key: "zzz:with_options:due".to_string(),
+                timestamp_ms: 1_000,
+                amount: 1,
+                precision_ms: None,
+                ttl_ms: Some(1),
+            },
+        });
+        assert!(response.status.ok, "seed write failed: {:?}", response.status);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let (held, due) = deadline_census(&engine, 1);
+        assert_eq!(held, live_keys + 1, "denominator: deadlines held");
+        assert_eq!(due, 1, "denominator: exactly one key is due");
+        let report = sweep_once(&engine, 1);
+        (
+            report.expired_records_removed,
+            report.scanned_records,
+            report.skipped_records,
+        )
+    }
+
+    let (removed_small, scanned_small, skipped_small) = round_at(2_000);
+    let (removed_mid, scanned_mid, skipped_mid) = round_at(20_000);
+    let (removed_large, scanned_large, skipped_large) = round_at(100_000);
+    println!(
+        "  live keys 2,000: removed {removed_small}, looked at {scanned_small}, skipped {skipped_small}"
+    );
+    println!(
+        "  live keys 20,000: removed {removed_mid}, looked at {scanned_mid}, skipped {skipped_mid}"
+    );
+    println!(
+        "  live keys 100,000: removed {removed_large}, looked at {scanned_large}, skipped {skipped_large}"
+    );
+
+    // Removal asserted separately at each size: a combined count would let one size read full
+    // while another read zero.
+    assert_eq!(removed_small, 1, "2,000 live keys: the due key must be collected in one round");
+    assert_eq!(removed_mid, 1, "20,000 live keys: the due key must be collected in one round");
+    assert_eq!(removed_large, 1, "100,000 live keys: the due key must be collected in one round");
+
+    // And the COST of finding it does not grow with the keyspace: a 50x keyspace must not make
+    // the round look at more records.
+    assert!(
+        scanned_large <= scanned_small.max(8),
+        "a round at 100,000 live keys looked at {scanned_large} records versus {scanned_small} \
+         at 2,000 -- the round is paying for the keyspace again \
+         (skipped {skipped_small}/{skipped_mid}/{skipped_large})",
+    );
+    assert!(
+        scanned_mid <= scanned_small.max(8),
+        "a round at 20,000 live keys looked at {scanned_mid} records versus {scanned_small} at \
+         2,000",
+    );
+}
+
+/// THE OTHER HALF: a deadline set through the two `WithOptions` control-state writes must also
+/// SURVIVE RECOVERY. Asserted in its own test, separately, because the in-memory half and this
+/// one fail independently and a single combined check would read full from one and zero from the
+/// other.
+///
+/// WHY IT IS A SEPARATE FAILURE. A WAL record that carries OUTCOMES is INSTALLED, not re-executed
+/// -- replay applies the recorded outcomes and `continue`s past the command. Both arms write a
+/// control-state page, and the page write stages an outcome, so their records are never empty and
+/// their commands are never re-run on recovery. Neither arm staged a meta outcome carrying its
+/// deadline. So the page came back and the deadline did not: after any recovery the key was
+/// restored with NO deadline at all, permanently, for a caller who asked for one.
+///
+/// DENOMINATORS, asserted before the claim: the deadline existed before the unload, the base
+/// index was really removed so the load can only be a log replay, and the control-state VALUE
+/// really came back -- which proves replay ran and installed something, so a missing deadline
+/// cannot be explained by "nothing was replayed".
+#[test]
+fn a_with_options_deadline_survives_recovery() {
+    fn deadline_for(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> Option<u64> {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id).expect("shard is loaded");
+        shard.expires_at_ms.get(key).copied()
+    }
+    /// Did replay INSTALL this record's outcome? That is the premise of the whole test -- a
+    /// record with outcomes is installed rather than re-executed -- so the page the write
+    /// produced is the honest denominator. Deliberately NOT `shard.control_state`: that map is
+    /// rebuilt from the bucket index by a mechanism with its own separate, pre-existing defect,
+    /// and reading it here would make this test fail for a reason that has nothing to do with
+    /// deadlines.
+    fn outcome_was_installed(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id).expect("shard is loaded");
+        shard.control_state_pages.contains_key(key)
+    }
+
+    // Long enough that nothing under test expires during the round trip.
+    const TTL_MS: u64 = 3_600_000;
+    const INCREMENT_KEY: &str = "with_options:increment";
+    const FAMILY_KEY: &str = "control_state:h:with_options:setandget";
+
+    let dir = tempfile::tempdir().unwrap();
+    let index_dir = dir.path().join("indexes");
+    let make_engine = || {
+        TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            index_dir.clone(),
+        )
+    };
+
+    let before = {
+        let engine = make_engine();
+        engine.load_shard(1);
+        let increment = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateIncrementWithOptions {
+                key: INCREMENT_KEY.to_string(),
+                timestamp_ms: 1_000,
+                amount: 1,
+                precision_ms: None,
+                ttl_ms: Some(TTL_MS),
+            },
+        });
+        assert!(increment.status.ok, "seed write failed: {:?}", increment.status);
+        let set_and_get = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateSetAndGetWithOptions {
+                family: ControlStateFamily::Counter,
+                key: "with_options:setandget".to_string(),
+                timestamp_ms: 1_000,
+                amount: 1,
+                start_ms: 0,
+                end_ms: 2_000,
+                aggregator: "sum".to_string(),
+                precision_ms: None,
+                ttl_ms: Some(TTL_MS),
+                uuid: None,
+            },
+        });
+        assert!(
+            set_and_get.status.ok,
+            "seed write failed: {:?}",
+            set_and_get.status
+        );
+
+        // DENOMINATOR: both deadlines exist before the round trip. Separately.
+        let increment_deadline = deadline_for(&engine, 1, INCREMENT_KEY)
+            .expect("ControlStateIncrementWithOptions must record a deadline before recovery");
+        let family_deadline = deadline_for(&engine, 1, FAMILY_KEY)
+            .expect("ControlStateSetAndGetWithOptions must record a deadline before recovery");
+        engine.unload_shard(1);
+        (increment_deadline, family_deadline)
+    };
+
+    // DENOMINATOR: no base index, so the reload below can only be a WAL replay.
+    let removed = std::fs::remove_file(index_dir.join("shard-1.index.json")).is_ok();
+    assert!(removed, "the base index should exist to be removed");
+
+    let engine = make_engine();
+    engine.load_shard(1);
+
+    // DENOMINATOR: replay really ran and really installed these two records. Without this, a
+    // missing deadline could be explained by "the shard came back empty".
+    assert!(
+        outcome_was_installed(&engine, 1, INCREMENT_KEY),
+        "replay installed no outcome for the ControlStateIncrementWithOptions record, so this \
+         test cannot say anything about what the record carried",
+    );
+    assert!(
+        outcome_was_installed(&engine, 1, FAMILY_KEY),
+        "replay installed no outcome for the ControlStateSetAndGetWithOptions record, so this \
+         test cannot say anything about what the record carried",
+    );
+
+    // THE CLAIM, one arm at a time.
+    assert_eq!(
+        deadline_for(&engine, 1, INCREMENT_KEY),
+        Some(before.0),
+        "the ControlStateIncrementWithOptions deadline did not survive recovery: the record's \
+         page outcome was installed and its command never re-run, so the deadline had to be in \
+         the record and was not",
+    );
+    assert_eq!(
+        deadline_for(&engine, 1, FAMILY_KEY),
+        Some(before.1),
+        "the ControlStateSetAndGetWithOptions deadline did not survive recovery",
+    );
+    assert_eq!(
+        disagreements(&engine, 1),
+        0,
+        "the two expiry indexes disagree after recovery",
     );
 }

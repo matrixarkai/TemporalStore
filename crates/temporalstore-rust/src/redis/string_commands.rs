@@ -135,12 +135,32 @@ pub(crate) fn expire_time_response(
     }
 }
 
-pub(crate) fn parse_getex_ttl_ms(args: &[Vec<u8>]) -> Result<Option<u64>, String> {
+/// What the option words on a `GETEX` ask for.
+///
+/// THREE outcomes, not two. `Option<u64>` could only spell two of them, and it spelled the
+/// wrong pair: `PERSIST` and "no option words at all" both came back as `None`, and the caller
+/// read `None` as "leave the deadline alone". So `GETEX key PERSIST` returned the value,
+/// reported success, and left the key counting down -- the caller asked for the key to be kept
+/// forever and got a key that disappears, with no error anywhere to say so.
+///
+/// Keeping the three apart in the TYPE is what stops that from coming back: a new option word
+/// has to say which of the three it is, and a caller cannot silently collapse two of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GetExDeadline {
+    /// No option words: `GETEX key` reads like `GET key` and touches no deadline.
+    Unchanged,
+    /// `PERSIST`: remove the deadline, making the key permanent.
+    Persist,
+    /// `EX` / `PX` / `EXAT` / `PXAT`: arm this deadline, as milliseconds from now.
+    Arm(u64),
+}
+
+pub(crate) fn parse_getex_ttl_ms(args: &[Vec<u8>]) -> Result<GetExDeadline, String> {
     if args.is_empty() {
-        return Ok(None);
+        return Ok(GetExDeadline::Unchanged);
     }
     if args.len() == 1 && upper(&args[0]) == "PERSIST" {
-        return Ok(None);
+        return Ok(GetExDeadline::Persist);
     }
     if args.len() != 2 {
         return Err("ERR syntax error".to_string());
@@ -148,19 +168,23 @@ pub(crate) fn parse_getex_ttl_ms(args: &[Vec<u8>]) -> Result<Option<u64>, String
     match upper(&args[0]).as_str() {
         "EX" => match parse_u64(&args[1], "seconds")? {
             0 => Err("ERR invalid expire time in getex".to_string()),
-            seconds => Ok(Some(seconds.saturating_mul(1000))),
+            seconds => Ok(GetExDeadline::Arm(seconds.saturating_mul(1000))),
         },
         "PX" => match parse_u64(&args[1], "milliseconds")? {
             0 => Err("ERR invalid expire time in getex".to_string()),
-            milliseconds => Ok(Some(milliseconds)),
+            milliseconds => Ok(GetExDeadline::Arm(milliseconds)),
         },
         "EXAT" => {
             let deadline = parse_u64(&args[1], "timestamp")?.saturating_mul(1000);
-            Ok(Some(deadline.saturating_sub(unix_time_ms()).max(1)))
+            Ok(GetExDeadline::Arm(
+                deadline.saturating_sub(unix_time_ms()).max(1),
+            ))
         }
         "PXAT" => {
             let deadline = parse_u64(&args[1], "timestamp")?;
-            Ok(Some(deadline.saturating_sub(unix_time_ms()).max(1)))
+            Ok(GetExDeadline::Arm(
+                deadline.saturating_sub(unix_time_ms()).max(1),
+            ))
         }
         _ => Err("ERR syntax error".to_string()),
     }

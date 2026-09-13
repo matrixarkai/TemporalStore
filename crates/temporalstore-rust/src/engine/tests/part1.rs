@@ -2866,6 +2866,109 @@ fn an_expiry_deletion_reaches_the_maintenance_mirror() {
     );
 }
 
+/// The mirror sink is looked up ONCE per round, not once per expired key.
+///
+/// The lookup takes a lock and clones an `Arc`, and the loop that used to do it per key runs
+/// inside the shard-table WRITE guard -- the one lock that excludes every reader and writer on
+/// the shard. N uncontended acquisitions in that position are invisible to wall-clock on a
+/// loaded box, and exactly as invisible once they are gone, so this counts them instead.
+///
+/// The POSITIVE CONTROL is the per-call form itself: the same counter is driven `RECORDS` times
+/// through `mirror_maintenance_write` and has to reach `RECORDS`, so a zero from the sweep below
+/// cannot be a counter that stopped counting.
+#[test]
+fn the_maintenance_mirror_is_looked_up_once_per_round_not_once_per_key() {
+    const RECORDS: usize = 200;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let sink = std::sync::Arc::new(RecordingWalSink::default());
+    engine.set_maintenance_wal_mirror(sink.clone());
+
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("mirror-{index:06}"),
+                value: b"gone".to_vec(),
+                ttl_ms: 1,
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    crate::engine::reset_maintenance_mirror_sink_lookups();
+    let report = engine
+        .sweep_expired_records_with_request(ShardExpirySweepRequest {
+            shard_id: 1,
+            load_cold_buckets: true,
+            max_hot_buckets_per_round: RECORDS,
+            max_cold_buckets_per_round: RECORDS,
+            ..ShardExpirySweepRequest::default()
+        })
+        .expect("sweep");
+    let sweep_lookups = crate::engine::maintenance_mirror_sink_lookups();
+    let mirrored = sink
+        .seen
+        .lock()
+        .expect("recording sink lock poisoned")
+        .len();
+
+    eprintln!(
+        "[mirror lookup] {sweep_lookups} lookup(s) for {} expired record(s), {mirrored} \
+command(s) mirrored",
+        report.expired_records_removed,
+    );
+
+    // DENOMINATORS FIRST. A sweep that expired nothing takes no lookups at all and would satisfy
+    // "one lookup" by never reaching the loop.
+    assert_eq!(
+        report.expired_records_removed, RECORDS,
+        "the sweep removed {} of {RECORDS} records, so the mirror loop did not run over the set \
+this is measuring",
+        report.expired_records_removed,
+    );
+    assert_eq!(
+        mirrored, RECORDS,
+        "the mirror received {mirrored} of {RECORDS} tombstones, so the hoisted lookup is not \
+delivering what the per-key one did",
+    );
+
+    // POSITIVE CONTROL: the counter can reach RECORDS, because here it does.
+    crate::engine::reset_maintenance_mirror_sink_lookups();
+    for index in 0..RECORDS {
+        engine.mirror_maintenance_write(
+            1,
+            &Command::CommonDelete {
+                key: format!("control-{index:06}"),
+            },
+        );
+    }
+    let control_lookups = crate::engine::maintenance_mirror_sink_lookups();
+    assert_eq!(
+        control_lookups, RECORDS as u64,
+        "the per-call form was driven {RECORDS} times and the counter saw {control_lookups}. The \
+measurement is broken, not the code under it: the assertion below would pass against a counter \
+that had stopped counting entirely",
+    );
+
+    // THE ASSERTION THE HOIST MADE.
+    assert_eq!(
+        sweep_lookups, 1,
+        "the expiry sweep took the maintenance-mirror lock {sweep_lookups} time(s) to delete \
+{RECORDS} keys, while holding the shard-table write guard. Look the sink up ONCE before the loop \
+and reuse it: besides the lock, a sink swapped mid-loop would split one round's tombstones \
+across two mirrors and leave neither with the whole deletion",
+    );
+}
+
 /// With no mirror attached the sweep behaves exactly as it did before one existed.
 #[test]
 fn an_expiry_sweep_without_a_mirror_is_unchanged() {
@@ -8286,6 +8389,131 @@ two tallies have come apart",
             get.response,
         );
     }
+}
+
+/// A shard whose live pages are all OUT of cache, so a warm-up has something to read.
+#[cfg(test)]
+fn cold_shard_for_warmup_measurement(dir: &std::path::Path, records: usize) -> TemporalEngine {
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.join("cache"),
+        dir.join("pages"),
+        dir.join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..records {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("warm-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Without this every page is already resident and the warm-up reads NOTHING -- the arms
+    // below would both report zero reads and agree for the wrong reason.
+    let _ = engine.cache.invalidate_shard(1);
+    engine
+}
+
+#[cfg(test)]
+fn measured_cache_warmup(
+    engine: &TemporalEngine,
+) -> (crate::engine::MaintenancePageReadCounts, usize) {
+    crate::engine::reset_maintenance_page_read_counts();
+    let report = engine.storage_cache_warmup_report(1, Vec::<u32>::new());
+    (
+        crate::engine::maintenance_page_read_counts(),
+        report.warmed_page_refs,
+    )
+}
+
+/// The cache warm-up reads its pages AFTER the shard-table read guard drops.
+///
+/// A read guard is the easy one to leave in place, because it admits other readers and so does
+/// not look like exclusion. It is: it excludes every WRITER on the shard for as long as it is
+/// held, and this stage held it across one block-store read and one cache insert per live page,
+/// with no per-round budget anywhere in it. The work under the guard scaled with the STORE while
+/// the round that calls it is bounded, which is the same shape #1620 found on the write side.
+///
+/// TWO arms, ONE process, the same fixture:
+///   * UNDER THE GUARD -- where the reads used to be. The positive control: the counter has to
+///     produce a non-zero number inside the region, or the zero below is a broken counter rather
+///     than a shortened hold.
+///   * SHIPPED -- the addresses are chosen under the guard, the reads happen after it drops.
+/// Both arms must warm the same pages, which is what stops this from being satisfied by a
+/// warm-up that did nothing.
+#[test]
+fn the_cache_warmup_reads_pages_after_the_shard_guard_drops() {
+    const RECORDS: usize = 200;
+
+    let control_dir = tempfile::tempdir().unwrap();
+    let control_engine = cold_shard_for_warmup_measurement(control_dir.path(), RECORDS);
+    control_engine.warm_cache_under_shard_guard_for_test();
+    let (control, control_warmed) = measured_cache_warmup(&control_engine);
+
+    let shipped_dir = tempfile::tempdir().unwrap();
+    let shipped_engine = cold_shard_for_warmup_measurement(shipped_dir.path(), RECORDS);
+    let (shipped, shipped_warmed) = measured_cache_warmup(&shipped_engine);
+
+    eprintln!(
+        "[cache warmup] under the guard: {} of {} page read(s) under the guard, \
+{control_warmed} page refs warmed",
+        control.page_reads_under_guard, control.page_reads_total,
+    );
+    eprintln!(
+        "[cache warmup] shipped:         {} of {} page read(s) under the guard, \
+{shipped_warmed} page refs warmed",
+        shipped.page_reads_under_guard, shipped.page_reads_total,
+    );
+
+    // DENOMINATORS FIRST. A warm-up that warmed nothing, or that found every page already
+    // cached, satisfies "no read under the guard" by never reaching a read.
+    assert!(
+        control_warmed > 0 && shipped_warmed > 0,
+        "an arm warmed no page refs ({control_warmed} / {shipped_warmed}), so the loop below the \
+guard never ran and nothing here is measuring the warm-up",
+    );
+    assert_eq!(
+        control_warmed, shipped_warmed,
+        "the arms must warm the same pages for their read counts to be comparable",
+    );
+    assert!(
+        control.page_reads_total > 0 && shipped.page_reads_total > 0,
+        "an arm read no pages off the block store at all ({} / {}), so the fixture was already \
+cached and neither arm is a subject for the claim below",
+        control.page_reads_total,
+        shipped.page_reads_total,
+    );
+    assert_eq!(
+        control.page_reads_total, shipped.page_reads_total,
+        "the arms read a different number of pages ({} vs {}), so the counts are not comparable",
+        control.page_reads_total, shipped.page_reads_total,
+    );
+
+    // POSITIVE CONTROL: the counter can see a read inside the region, because here is one.
+    assert_eq!(
+        control.page_reads_under_guard, control.page_reads_total,
+        "the control arm reads every page inside the guarded region and the counter saw {} of \
+{}. The measurement is broken, not the code under it: the assertion below would pass against an \
+engine that had stopped counting entirely",
+        control.page_reads_under_guard, control.page_reads_total,
+    );
+
+    // THE ASSERTION THE REGION CHANGE MADE.
+    assert_eq!(
+        shipped.page_reads_under_guard, 0,
+        "the cache warm-up read {} of {} pages off the block store while still holding the \
+shard-table read guard. A read guard excludes every writer, so a warm of the whole shard stops \
+all writes on it for the length of the I/O -- and the warm-up has no per-round budget, so that \
+length grows with the store. Collect the addresses under the guard, drop it, then read: \
+`collect_live_page_entries` already materializes the whole set, and nothing in the loop touches \
+the shard. If a new step genuinely needs the shard itself, say why here rather than widening the \
+region",
+        shipped.page_reads_under_guard,
+        shipped.page_reads_total,
+    );
 }
 
 /// THE OTHER HALF OF THE ANSWER: compaction's flush is still inside its guarded region, and that

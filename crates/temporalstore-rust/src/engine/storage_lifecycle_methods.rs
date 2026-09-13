@@ -1814,6 +1814,9 @@ impl TemporalEngine {
                     // there is no analog; this aligns the Rust-only delete_drop path with the
                     // engine's own tombstone discipline.)
                     if !replaying_wal() {
+                        // ONE mirror lookup for the whole run -- same reasoning as the expiry
+                        // sweep, and this loop is inside the shard-table write guard too.
+                        let mirror = self.maintenance_mirror_sink();
                         for key in &deleted_keys {
                             let command = Command::CommonDelete { key: key.clone().to_string() };
                             let appended =
@@ -1822,7 +1825,9 @@ impl TemporalEngine {
                             // Same reasoning as the expiry sweep: a drop that deletes is a
                             // deletion, and it has to reach every log a successor may replay.
                             if appended.is_ok() {
-                                self.mirror_maintenance_write(shard_id, &command);
+                                if let Some(sink) = mirror.as_ref() {
+                                    sink.record_write(shard_id, &command);
+                                }
                             }
                         }
                         shard.applied_wal_sequence =
