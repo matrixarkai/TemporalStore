@@ -1266,7 +1266,7 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         self.assertLess(
             MAXIMUM_GATING_CONFIGURABLE, 100,
             "the ceiling itself has been raised to %d. Under a hundred is the target; moving the "
-            "ceiling through it is not the same as meeting it." % MAXIMUM_CONFIGURABLE)
+            "ceiling through it is not the same as meeting it." % MAXIMUM_GATING_CONFIGURABLE)
         self.assertGreaterEqual(
             len(configurable), MAXIMUM_CONFIGURABLE - 25,
             "the surface is %d and the ceiling is %d. Lower it: a ratchet that does not bank a "
