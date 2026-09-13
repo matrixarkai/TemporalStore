@@ -18966,3 +18966,538 @@ fn restore_keeps_the_wal_suffix_when_the_manifest_lands_on_an_already_loaded_sha
          {found_post}/{expect_post} post-dump records"
     );
 }
+
+/// THE RESTORE ROUND TRIP, WITH THE TWO MANIFEST ORDERINGS PULLED APART.
+///
+/// The two tests above restore through a single manifest, so "the newest dump" and "the dump with
+/// the highest WAL anchor" are the same file and nothing distinguishes them. A manifest carries
+/// both an `index_log_sequence` and a `wal_sequence`, minted from two different places, and under
+/// `MATRIXARK_BULK_INGEST` the second comes from the FROZEN BASE FILE rather than the live index
+/// -- so a dump taken with that flag set lands NEWEST in index-log order carrying the LOWEST
+/// anchor on disk. `load_shard_with` has to recover from the highest-anchored one
+/// (`durable_recovery_bucket_dump_manifest_at`); recovering from the newest one restarts the
+/// replay below the point the dumped prefix was reclaimed at, and the prefix is gone.
+///
+/// COUNTED IN TWO HALVES, like the round trips above and for the same reason. Restoring the
+/// stale manifest and stopping would return the SEED and nothing else; restoring the right
+/// manifest but replaying nothing would return the pre-dump records and no post-dump ones. A
+/// combined total reads the same for a working restore and for either failure.
+///
+/// VERIFIED BY MUTATION: with `load_shard_with`'s single-barrier arm back on
+/// `latest_bucket_dump_manifest_at`, the restore replays from 1 instead of 7 and returns 0 of 6
+/// pre-dump records.
+#[test]
+fn a_restore_reads_the_highest_anchored_manifest_not_the_newest_one() {
+    const BEFORE_DUMP: usize = 6;
+    const AFTER_DUMP: usize = 4;
+    const SHARD: ShardId = 9;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source_index_dir = dir.path().join("indexes");
+    let pages = dir.path().join("pages");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        &pages,
+        &source_index_dir,
+    );
+    engine.load_shard(SHARD);
+
+    // A materialized base index FILE, and then writes that leave it behind. Under the
+    // single-barrier default the per-command persist goes to the delta, so from here the base
+    // file is frozen at the seed while the served index runs ahead -- which is the distance the
+    // bulk-ingest mint below turns into a manifest.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: SHARD,
+        command: Command::StringSet {
+            key: "seed".to_string(),
+            value: b"seed-value".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "seed write failed: {response:?}");
+    engine.flush_shard_index(SHARD);
+
+    for i in 0..BEFORE_DUMP {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet {
+                key: format!("pre-{i}"),
+                value: format!("pre-value-{i}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "pre-write {i} failed: {response:?}");
+    }
+    let anchored = engine
+        .create_bucket_dump_manifest(SHARD, Vec::new())
+        .expect("the live dump persists");
+    for i in 0..AFTER_DUMP {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet {
+                key: format!("post-{i}"),
+                value: format!("post-value-{i}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "post-write {i} failed: {response:?}");
+    }
+    engine.wal_store().flush(SHARD).expect("flush wal");
+
+    // The divergent mint. One env flag, the same shard, the same process, the same production
+    // entry point -- `create_bucket_dump_manifest` is the only place a manifest's two sequences
+    // are ever assigned.
+    std::env::set_var("MATRIXARK_BULK_INGEST", "1");
+    let stale = engine.create_bucket_dump_manifest(SHARD, Vec::new());
+    std::env::remove_var("MATRIXARK_BULK_INGEST");
+    let stale = stale.expect("the bulk-ingest dump persists");
+
+    // DENOMINATORS, all three, before anything is restored. Each one on its own would make the
+    // counts below come back full for a reason that has nothing to do with which manifest the
+    // load path reads.
+    assert!(
+        stale.wal_sequence < anchored.wal_sequence,
+        "the bulk-ingest dump anchors at {} and the live one at {} -- the orderings did not come \
+         apart, so both manifests would restore the same state",
+        stale.wal_sequence,
+        anchored.wal_sequence
+    );
+    let newest = latest_bucket_dump_manifest_at(&source_index_dir, SHARD)
+        .expect("a manifest listing with two entries in it");
+    assert_eq!(
+        newest.manifest_id, stale.manifest_id,
+        "the NEWEST manifest in index-log order is {} (anchor {}), not the bulk-ingest one \
+         (index_log_sequence {}, anchor {}). Index-log order would already pick the right file \
+         and this test could not fail",
+        newest.manifest_id, newest.wal_sequence, stale.index_log_sequence, stale.wal_sequence
+    );
+    let (all_records, _truncated) = engine
+        .wal_store()
+        .scan_decoded(SHARD, 0, u64::MAX, u64::MAX)
+        .expect("scan source wal");
+    let total_records = all_records.len();
+    let suffix_records = all_records
+        .iter()
+        .filter(|(_, record)| record.sequence > anchored.wal_sequence)
+        .count();
+    assert!(
+        suffix_records > 0,
+        "fixture has NO post-dump WAL suffix -- the post half below would be satisfied by the \
+         manifest alone (log holds {total_records} records, anchor {})",
+        anchored.wal_sequence
+    );
+
+    // Reclaim everything the live dump already covers, the way a live shard does once a dump is
+    // durable. This is what makes the wrong manifest UNRECOVERABLE rather than merely slower: a
+    // replay restarted below this point has no records to read.
+    let anchor = crate::wal::DurableIndexAnchor::proven_durable_through(SHARD, anchored.wal_sequence);
+    engine
+        .wal_store()
+        .gc_before_sequence(SHARD, anchored.wal_sequence.saturating_add(1), &anchor)
+        .expect("reclaim the dumped prefix");
+    engine.wal_store().flush(SHARD).expect("flush after reclaim");
+    println!(
+        "  manifests: live ils={} anchor={}, bulk ils={} anchor={} (newest in index-log order); \
+         log cut to the {suffix_records}-record suffix of {total_records}",
+        anchored.index_log_sequence,
+        anchored.wal_sequence,
+        stale.index_log_sequence,
+        stale.wal_sequence
+    );
+
+    // The restore target: the durable tree as a crash restart would find it -- the manifests, the
+    // retained log, the frozen base index file -- and the dump's pages.
+    let restore_index_dir = dir.path().join("restore-indexes");
+    copy_dir_recursive(&source_index_dir, &restore_index_dir);
+    let restored = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("restore-cache"),
+        &pages,
+        &restore_index_dir,
+    );
+    restored.load_shard(SHARD);
+    println!(
+        "  restore replayed from {}",
+        crate::engine::lifecycle::LAST_REPLAY_WATERMARK.load(std::sync::atomic::Ordering::SeqCst)
+    );
+
+    let mut found_pre = 0usize;
+    for i in 0..BEFORE_DUMP {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet {
+                key: format!("pre-{i}"),
+            },
+        });
+        if response.response
+            == (CommandResponse::Bytes {
+                value: Some(format!("pre-value-{i}").into_bytes()),
+            })
+        {
+            found_pre += 1;
+        }
+    }
+    let mut found_post = 0usize;
+    for i in 0..AFTER_DUMP {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet {
+                key: format!("post-{i}"),
+            },
+        });
+        if response.response
+            == (CommandResponse::Bytes {
+                value: Some(format!("post-value-{i}").into_bytes()),
+            })
+        {
+            found_post += 1;
+        }
+    }
+    assert_eq!(
+        found_pre, BEFORE_DUMP,
+        "the restore recovered {found_pre} of {BEFORE_DUMP} PRE-dump records. They live only in \
+         the highest-anchored manifest's embedded index -- the log below anchor {} was reclaimed \
+         -- so this is a load that recovered from the newest manifest instead",
+        anchored.wal_sequence
+    );
+    assert_eq!(
+        found_post, AFTER_DUMP,
+        "the restore recovered {found_post} of {AFTER_DUMP} POST-dump records. They live only in \
+         the retained WAL suffix, so this is a load that installed a checkpoint and replayed \
+         nothing on top of it"
+    );
+}
+
+
+// ---------------------------------------------------------------------------
+// What a bucket dump costs: the two-point measurement.
+// ---------------------------------------------------------------------------
+
+/// Buckets the dumpcost fixtures spread over. Small ON PURPOSE.
+///
+/// The engine default spreads keys over the whole u32 routing space, so finding a hundred keys
+/// that land in ONE chosen bucket by rejection sampling needs millions of candidate hashes -- the
+/// first version of this probe spent an hour there and never reached its second arm. A shard
+/// loaded over eight buckets finds them in hundreds, and the question being asked -- does the dump
+/// cost the bucket or the shard? -- is untouched by how many buckets the shard is cut into.
+const DUMPCOST_BUCKETS: u32 = 8;
+
+fn load_dumpcost_shard(engine: &TemporalEngine, shard_id: ShardId) {
+    engine.load_shard_with(LoadShardRequest {
+        shard_id,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: DUMPCOST_BUCKETS - 1,
+        readonly: false,
+        table_name: String::new(),
+    });
+}
+
+/// Seed string keys through the batch path, so building the fixture is not itself the measurement.
+fn seed_dumpcost_keys(engine: &TemporalEngine, shard_id: ShardId, keys: Vec<String>) {
+    for chunk in keys.chunks(1_000) {
+        let commands = chunk
+            .iter()
+            .map(|key| Command::StringSet {
+                key: key.clone(),
+                value: vec![118u8; 64],
+            })
+            .collect::<Vec<_>>();
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id,
+            commands,
+        });
+        assert!(response.status.ok, "seed write failed: {:?}", response.status);
+    }
+}
+
+/// Build a shard holding exactly IN_TARGET keys in one chosen routing bucket plus filler keys
+/// filtered AWAY from it, then dump that ONE bucket.
+///
+/// Returns (shard_buckets, shard_pages, dumped_buckets, dumped_pages, manifest_index_bytes,
+/// dump_encode_bytes).
+fn one_bucket_dump_at_shard_size(filler: usize) -> (usize, u64, usize, u64, usize, u64) {
+    const IN_TARGET: usize = 100;
+    const SHARD: ShardId = 1;
+
+    let engine = TemporalEngine::default();
+    load_dumpcost_shard(&engine, SHARD);
+    let target_bucket = engine.routing_bucket_for_key(SHARD, "dumped-0");
+
+    let mut keys = Vec::with_capacity(IN_TARGET + filler);
+    let mut candidate = 0usize;
+    let mut in_target = 0usize;
+    while in_target < IN_TARGET {
+        let key = format!("dumped-{candidate}");
+        if engine.routing_bucket_for_key(SHARD, &key) == target_bucket {
+            keys.push(key);
+            in_target += 1;
+        }
+        candidate += 1;
+    }
+    let mut filler_candidate = 0usize;
+    let mut written_filler = 0usize;
+    while written_filler < filler {
+        let key = format!("filler-{filler_candidate:08}");
+        if engine.routing_bucket_for_key(SHARD, &key) != target_bucket {
+            keys.push(key);
+            written_filler += 1;
+        }
+        filler_candidate += 1;
+    }
+    seed_dumpcost_keys(&engine, SHARD, keys);
+
+    let summaries = engine.bucket_storage_summaries(SHARD);
+    let shard_buckets = summaries.len();
+    let shard_pages = summaries
+        .iter()
+        .map(|summary| summary.page_ref_count)
+        .sum::<u64>();
+
+    crate::engine::reset_index_encode_counts();
+    let manifest = engine
+        .create_bucket_dump_manifest(SHARD, vec![target_bucket])
+        .expect("dump of one bucket should succeed");
+    let dump_encode_bytes = crate::engine::index_encode_counts().encode_bytes_total;
+
+    (
+        shard_buckets,
+        shard_pages,
+        manifest.bucket_ids.len(),
+        manifest.live_page_refs,
+        manifest.index_bytes.len(),
+        dump_encode_bytes,
+    )
+}
+
+/// Two-point measurement: does a dump of ONE bucket cost that bucket, or the whole shard? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_one_bucket_dumps_cost_at_two_shard_sizes
+///       -- --ignored --nocapture --test-threads=1
+///
+/// The older probe what_a_bucket_dump_costs varies the bucket COUNT inside one shard and reports
+/// milliseconds. Neither half separates the question: growing the selection grows the dumped work
+/// too, and a timing on this box is not evidence. This varies the SHARD SIZE tenfold while holding
+/// the DUMPED BUCKET byte-for-byte identical, and reports counts only.
+///
+/// dumped_buckets and dumped_pages are the treatment-ran columns. If they are not equal across the
+/// arms the arms dumped different work and the comparison means nothing.
+#[test]
+#[ignore]
+fn what_one_bucket_dumps_cost_at_two_shard_sizes() {
+    println!(
+        "  filler  shard_buckets  shard_pages  dumped_buckets  dumped_pages  manifest_index_bytes  dump_encode_bytes"
+    );
+    for filler in [1_000usize, 10_000] {
+        let (shard_buckets, shard_pages, dumped_buckets, dumped_pages, index_bytes, encode_bytes) =
+            one_bucket_dump_at_shard_size(filler);
+        println!(
+            "  {filler:>6}  {shard_buckets:>13}  {shard_pages:>11}  {dumped_buckets:>14}  {dumped_pages:>12}  {index_bytes:>20}  {encode_bytes:>17}"
+        );
+    }
+}
+
+/// A dump of ONE bucket writes a WHOLE-SHARD index, and it MUST.
+///
+/// The two-point measurement above says the manifest a one-bucket dump writes tracks the SHARD,
+/// not the bucket: identical dumped work (1 bucket, 100 pages) cost 38,720 bytes at 1,100 shard
+/// pages and 438,937 at 10,100 -- 11.34x growth for the same dump. The obvious repair is to make
+/// the manifest carry only the buckets it names, and let the previous manifest keep covering the
+/// rest.
+///
+/// THAT REPAIR WOULD SILENTLY DESTROY DATA, and this is the guard that says so with a number.
+/// Manifest retention keeps the NEWEST manifest and nothing else -- see the comment on
+/// bucket_dump_manifest_prune_plan_at, which is explicit that newest-only is safe only because
+/// each manifest embeds a complete, self-contained index and installing one never walks the
+/// parent chain to reconstruct anything. install_bucket_dump_manifest writes the manifest
+/// decoded index as THE durable index for the shard. So a manifest carrying only its own buckets
+/// would, the moment its ancestors were pruned, install a shard missing every bucket it did not
+/// name -- and neither validate_bucket_dump_manifest nor the install preflight would object,
+/// because both FILTER what they check down to the manifest own bucket_ids.
+///
+/// So this restores from the partial manifest ALONE, with no ancestor available to the restore
+/// target, and counts the two halves SEPARATELY:
+///
+///   * the bucket the manifest NAMES, and
+///   * the buckets it does NOT name.
+///
+/// The second count is the one a scoped manifest breaks, and counting only the first would make a
+/// broken restore look like a working one -- the failure #1637 found, where the pre-dump half read
+/// 6/6 while the post-dump half read 0/4. The post-dump half is counted here too, so this also
+/// keeps the #1637 replay honest for a PARTIAL manifest, which its own fixtures never exercise:
+/// they all dump every bucket.
+///
+/// VERIFIED BY MUTATION. Scoping the exported index to the selected buckets in
+/// create_bucket_dump_manifest -- the repair described above -- leaves the named bucket at 5/5
+/// and takes the unnamed buckets to 0/8.
+#[test]
+fn the_newest_dump_manifest_alone_restores_the_buckets_it_does_not_name() {
+    const SHARD: ShardId = 7;
+    const IN_NAMED: usize = 5;
+    const OUTSIDE_FIRST: usize = 5;
+    const OUTSIDE_SECOND: usize = 3;
+    const AFTER_DUMP: usize = 4;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source_index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        &source_index_dir,
+    );
+    load_dumpcost_shard(&engine, SHARD);
+    let named_bucket = engine.routing_bucket_for_key(SHARD, "named-0");
+
+    // Keys that land in the bucket the partial dump will name, and keys that land anywhere else.
+    let mut named_keys = Vec::new();
+    let mut outside_keys = Vec::new();
+    let mut candidate = 0usize;
+    while named_keys.len() < IN_NAMED || outside_keys.len() < OUTSIDE_FIRST + OUTSIDE_SECOND {
+        let key = format!("named-{candidate}");
+        if engine.routing_bucket_for_key(SHARD, &key) == named_bucket {
+            if named_keys.len() < IN_NAMED {
+                named_keys.push(key);
+            }
+        } else if outside_keys.len() < OUTSIDE_FIRST + OUTSIDE_SECOND {
+            outside_keys.push(key);
+        }
+        candidate += 1;
+    }
+
+    for key in named_keys.iter() {
+        write_dumpcost_key(&engine, SHARD, key);
+    }
+    for key in outside_keys.iter().take(OUTSIDE_FIRST) {
+        write_dumpcost_key(&engine, SHARD, key);
+    }
+
+    // An ANCESTOR manifest covering every bucket. It is what a scoped manifest would lean on, and
+    // it is exactly what retention prunes. The restore target below never receives it.
+    let ancestor = engine
+        .create_bucket_dump_manifest(SHARD, Vec::new())
+        .expect("ancestor dump should persist");
+    // Move the log on, so the partial dump below is a DIFFERENT manifest rather than one that
+    // collides with the ancestor on its (shard, index_sequence, created_ms) id.
+    for key in outside_keys.iter().skip(OUTSIDE_FIRST) {
+        write_dumpcost_key(&engine, SHARD, key);
+    }
+
+    let manifest = engine
+        .create_bucket_dump_manifest(SHARD, vec![named_bucket])
+        .expect("partial dump should persist");
+    for index in 0..AFTER_DUMP {
+        write_dumpcost_key(&engine, SHARD, &format!("post-{index}"));
+    }
+    engine.wal_store().flush(SHARD).expect("flush wal");
+
+    // DENOMINATORS, before anything is asserted about a restore.
+    assert_ne!(
+        manifest.manifest_id, ancestor.manifest_id,
+        "the partial dump reused the ancestor manifest id, so there is no newest-alone to test"
+    );
+    assert_eq!(
+        manifest.bucket_ids,
+        vec![named_bucket],
+        "the dump was supposed to name ONE bucket; it named {:?}. A dump naming every bucket would \
+         satisfy every assertion below without testing anything",
+        manifest.bucket_ids
+    );
+    let shard_buckets = engine
+        .bucket_storage_summaries(SHARD)
+        .into_iter()
+        .map(|summary| summary.routing_bucket)
+        .collect::<BTreeSet<_>>();
+    let unnamed_buckets = shard_buckets
+        .iter()
+        .filter(|bucket| **bucket != named_bucket)
+        .count();
+    assert!(
+        unnamed_buckets > 0,
+        "the fixture put every key in the dumped bucket, so there are no unnamed buckets to lose \
+         (shard holds buckets {shard_buckets:?}, dump named {named_bucket})"
+    );
+    let (all_records, _truncated) = engine
+        .wal_store()
+        .scan_decoded(SHARD, 0, u64::MAX, u64::MAX)
+        .expect("scan source wal");
+    let suffix_records = all_records
+        .iter()
+        .filter(|(_, record)| record.sequence > manifest.wal_sequence)
+        .count();
+    assert!(
+        suffix_records > 0,
+        "no post-dump WAL suffix, so the post-dump count below would be vacuous (log holds {} \
+         records, manifest anchor {})",
+        all_records.len(),
+        manifest.wal_sequence
+    );
+
+    // The restore target: the dump pages, the log, and a fresh index dir. The ancestor manifest
+    // stays behind, the way retention leaves it behind.
+    let restore_index_dir = dir.path().join("restore-indexes");
+    std::fs::create_dir_all(&restore_index_dir).unwrap();
+    copy_dir_recursive(&source_index_dir.join("wals"), &restore_index_dir.join("wals"));
+    let restored = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("restore-cache"),
+        dir.path().join("pages"),
+        &restore_index_dir,
+    );
+    assert!(
+        restored.list_bucket_dump_manifests(SHARD).is_empty(),
+        "the restore target was handed a manifest it was supposed to recover without"
+    );
+    load_dumpcost_shard(&restored, SHARD);
+    restored
+        .install_bucket_dump_manifest(&manifest)
+        .expect("the partial manifest should install on its own");
+
+    let found_named = named_keys
+        .iter()
+        .filter(|key| dumpcost_key_reads_back(&restored, SHARD, key))
+        .count();
+    let found_outside = outside_keys
+        .iter()
+        .filter(|key| dumpcost_key_reads_back(&restored, SHARD, key))
+        .count();
+    let found_post = (0..AFTER_DUMP)
+        .filter(|index| {
+            dumpcost_key_reads_back(&restored, SHARD, &format!("post-{index}"))
+        })
+        .count();
+
+    assert_eq!(
+        (found_named, found_outside, found_post),
+        (IN_NAMED, outside_keys.len(), AFTER_DUMP),
+        "restoring from the newest manifest ALONE recovered {found_named}/{IN_NAMED} keys in the \
+         bucket it names, {found_outside}/{} in the {unnamed_buckets} bucket(s) it does NOT name, \
+         and {found_post}/{AFTER_DUMP} written after the dump. The middle number is the one a \
+         manifest scoped to its own buckets loses once its ancestors are pruned",
+        outside_keys.len()
+    );
+}
+
+fn write_dumpcost_key(engine: &TemporalEngine, shard_id: ShardId, key: &str) {
+    let response = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringSet {
+            key: key.to_string(),
+            value: format!("value-{key}").into_bytes(),
+        },
+    });
+    assert!(response.status.ok, "write {key} failed: {response:?}");
+}
+
+fn dumpcost_key_reads_back(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
+    let response = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringGet {
+            key: key.to_string(),
+        },
+    });
+    response.response
+        == (CommandResponse::Bytes {
+            value: Some(format!("value-{key}").into_bytes()),
+        })
+}

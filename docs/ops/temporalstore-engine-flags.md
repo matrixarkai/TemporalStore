@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 298 of them, read by 98 functions.
+There are 299 of them, read by 99 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,12 +60,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 298 |
+| total | 299 |
 | booleans whose default this could read off the source | 53 |
-| numbers whose default this could read off the source | 70 |
+| numbers whose default this could read off the source | 71 |
 | **defaulting on, and set by nothing** | 7 |
 | offered on the portal | 27 |
-| **that nothing in this repository sets** | 167 |
+| **that nothing in this repository sets** | 168 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 40 |
@@ -217,7 +217,7 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
 | `TS_VECTOR_SCALED` | on | launch, test, portal | 1 | — |
 
-## capacity (79)
+## capacity (80)
 
 Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 
@@ -257,6 +257,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_INDEX_DUMP_MIN_INTERVAL_MS` | 1500 | nothing | 1 | — |
 | `TS_INDEX_DUMP_OPLOG_GAP_BYTES` | — | config | 1 | — |
 | `TS_INDEX_LOG_COMPRESSION_MIN_BYTES` | 256 | nothing | 1 | — |
+| `TS_INDEX_LOG_SEGMENT_BYTES` | 65536 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_FLUSH_INTERVAL_MS` | 100 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_PROBE_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_MAX_RETAINED_FINISHED_JOBS` | 64 | portal | 1 | — |

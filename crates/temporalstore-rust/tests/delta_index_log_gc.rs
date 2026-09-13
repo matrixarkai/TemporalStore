@@ -1,15 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Delta served-index crash reconstruction across the index-log + base-snapshot boundary.
+//! Crash reconstruction across the index-log + base-snapshot boundary, ON THE DEFAULT PATH.
 //!
-//! The index-log is now always-on and is the delta stream the load-time fold replays onto
-//! the base snapshot. A crash BEFORE any compaction reconstructs from the full delta log; a
-//! crash AFTER a dump (which anchors a durable base via the manifest, installed on load)
-//! plus further writes reconstructs fold(base + retained deltas). The index-log itself is
-//! bounded by the consumer-aware storage-manager index GC, which is exercised by the lib
-//! test `storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_release`
-//! (records removed + budget + restart reconstruction).
+//! The index-log is always-on: every write appends a delta record, and this file asserts that a
+//! store reopened after a crash comes back with what it acked -- before any dump (no base at all)
+//! and after one (base plus the writes that followed it). The index-log itself is bounded by the
+//! consumer-aware storage-manager index GC, exercised by the lib test
+//! `storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_release` (records
+//! removed + budget + restart reconstruction).
+//!
+//! WHAT THESE TWO TESTS DO NOT COVER, SO NOBODY READS THE FILENAME AND ASSUMES THEY DO. They do
+//! not exercise the load-time delta FOLD. Under the single-barrier default -- which is what runs
+//! here, and in production -- `load_shard_with` calls `load_index_base_only`, which passes
+//! `fold_deltas = false`; `fold_index_log_deltas` is not on that path at all. Reconstruction
+//! below is the durable base plus a WAL replay of the tail beyond its anchor, and the delta
+//! records are written, retained, GC'd and never read. Measured, not inferred: replacing the body
+//! of `fold_index_log_deltas` with `panic!` leaves both tests green.
+//!
+//! The fold is reached only through `load_index_checked`, i.e. only under the
+//! `TS_WAL_LEGACY_RECOVERY` escape hatch, and what it does is asserted by the lib test
+//! `a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies` (engine::tests::
+//! expiry_scale), which folds an expiry delta onto a deliberately stale base and fails when the
+//! fold applies nothing. Add a fold claim HERE only with a fixture that makes the delta the only
+//! source of its answer -- against a fresh base and a live WAL, replay produces the same answer
+//! with the fold deleted.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -122,8 +137,9 @@ fn dir_listing(dir: &Path) -> Vec<String> {
 
 #[test]
 fn crash_before_any_dump_reconstructs_from_full_delta_log() {
-    // No dump ever happens: the base is absent, the whole write history lives in the
-    // index-log. Reload must fold the full delta log onto an empty base.
+    // No dump ever happens: the base is absent, so the whole write history has to come back
+    // from the log. On the default path that is the WAL replay, with the index-log deltas
+    // written beside it and not read -- see the note at the top of this file.
     let root = root("nodump");
     let _ = fs::remove_dir_all(&root);
     let engine = build(&root);
@@ -165,8 +181,9 @@ fn crash_before_any_dump_reconstructs_from_full_delta_log() {
 
 #[test]
 fn crash_after_dump_plus_writes_reconstructs_from_base_plus_retained_deltas() {
-    // Dump anchors a durable base (manifest, installed on reload); further writes land only
-    // in the retained index-log deltas. Reload must fold base + those deltas.
+    // Dump anchors a durable base (manifest, installed on reload); the writes after it are
+    // beyond that anchor. Reload must recover base + everything past it -- on the default path,
+    // by replaying the WAL tail from the anchor.
     let root = root("postdump");
     let _ = fs::remove_dir_all(&root);
     let engine = build(&root);
@@ -189,7 +206,7 @@ fn crash_after_dump_plus_writes_reconstructs_from_base_plus_retained_deltas() {
         assert_eq!(
             get(&reopened, &format!("k{i:03}")).as_deref(),
             Some("post-dump"),
-            "post-dump overwrite of k{i:03} must survive via fold(base + retained deltas)"
+            "post-dump overwrite of k{i:03} must survive the reload past the dump anchor"
         );
     }
     for i in 20..40 {

@@ -186,6 +186,17 @@ impl TemporalEngine {
         // An OLDER manifest kept because it is the only dump covering some bucket can still hold
         // a slab back; that is a retention decision this does not override, and it does not
         // re-arm this either.
+        //
+        // RE-CHECKED after `block_slab_ids` was widened to every slab the manifest's whole-shard
+        // index can install, rather than only the dumped buckets'. The argument turns on one
+        // premise -- that a fresh dump names LIVE slabs only -- and widening makes that premise
+        // exact rather than weakening it: the widened set is derived from the live page refs of
+        // the index the dump exports, which IS the shard's live slab set at that moment, so every
+        // id in it is live by construction. What changes is how often this fires, not whether it
+        // ends: a slab holding nothing but unnamed-bucket pages is now named, so vacating it now
+        // arms this where before it armed nothing and the slab was destroyed under a manifest
+        // that needed it. Each firing still replaces the newest manifest with one naming live
+        // slabs alone, so it still cannot fire twice for the same vacated slab.
         let latest_manifest_names_a_vacated_slab = latest_bucket_dump_manifest
             .as_ref()
             .map(|manifest| {
@@ -1025,6 +1036,24 @@ impl TemporalEngine {
             // nothing needs the log retained -- so the floor is the CURRENT position, not zero.
             // Zero here reads as "retain everything" and is what took the plan unsafe in the
             // first experiment.
+            //
+            // THE INVARIANT THIS LINE HAS TO KEEP, and the one place in the plan that could
+            // break it. Everywhere else the frontier is a MINIMUM over bucket dump manifests,
+            // and `load_shard_with` raises its own replay point to the LATEST of those same
+            // manifests -- a minimum over a set cannot exceed a member of it, so the floor can
+            // never climb above the point a load starts replaying from. Here the frontier comes
+            // from the current log position instead, which no load path consults. It is safe
+            // because a cycle DUMPS (`prepare`) before it RECLAIMS (`reclaim_wal`), so a
+            // manifest at this position already exists by the time this is read.
+            //
+            // What makes that load-bearing rather than incidental: the default load path folds
+            // no index-log deltas (#1644), so the expiry round's delta (#1633) can advance the
+            // served anchor well past the base index FILE's -- measured 9 against 1 -- and
+            // reclaim now drops whole segment files (#1622). A floor above the replay point
+            // would free records that a load still has to replay, with nothing else holding
+            // them. `wal_reclaim_never_frees_what_the_default_load_path_replays`
+            // (engine/tests/expiry_scale.rs) asserts the relation against a real load's
+            // recorded watermark at every state a production cycle passes through.
             durable_wal_frontier = current_wal_sequence;
         }
         if durable_index_log_frontier == u64::MAX {
@@ -1785,6 +1814,9 @@ impl TemporalEngine {
                     // there is no analog; this aligns the Rust-only delete_drop path with the
                     // engine's own tombstone discipline.)
                     if !replaying_wal() {
+                        // ONE mirror lookup for the whole run -- same reasoning as the expiry
+                        // sweep, and this loop is inside the shard-table write guard too.
+                        let mirror = self.maintenance_mirror_sink();
                         for key in &deleted_keys {
                             let command = Command::CommonDelete { key: key.clone().to_string() };
                             let appended =
@@ -1793,7 +1825,9 @@ impl TemporalEngine {
                             // Same reasoning as the expiry sweep: a drop that deletes is a
                             // deletion, and it has to reach every log a successor may replay.
                             if appended.is_ok() {
-                                self.mirror_maintenance_write(shard_id, &command);
+                                if let Some(sink) = mirror.as_ref() {
+                                    sink.record_write(shard_id, &command);
+                                }
                             }
                         }
                         shard.applied_wal_sequence =

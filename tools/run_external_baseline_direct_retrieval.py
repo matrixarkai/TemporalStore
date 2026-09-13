@@ -418,6 +418,7 @@ def normalized_model_name(value: Any) -> str:
 def finish(report: dict[str, Any], path: str, started: float, code: int) -> int:
     report["duration_seconds"] = round(time.time() - started, 3)
     report["ready"] = code == 0 and not report.get("blockers")
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(path)
     return code

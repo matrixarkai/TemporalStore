@@ -76,6 +76,7 @@ impl TemporalEngine {
             compaction_rounds: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             expiry_index_flush_under_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            warm_cache_under_shard_guard: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             expiry_index_flush_whole: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             // Sampled by default. The exhaustive alternative calls `bucket_storage_summaries`,
             // which reads EVERY live page in the shard to rank every bucket, and then keeps at
@@ -158,6 +159,17 @@ impl TemporalEngine {
     #[cfg(test)]
     pub(crate) fn flush_expiry_index_under_lock_for_test(&self) {
         self.expiry_index_flush_under_lock
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Read the warm-up's pages while the shard-table read guard is still held, the way it was
+    /// done before the reads were moved out. Scoped to this engine.
+    ///
+    /// Kept for the same reason: a guard asserting zero reads under the lock is vacuous unless
+    /// an arm in the same process, on the same fixture, can still produce a non-zero one.
+    #[cfg(test)]
+    pub(crate) fn warm_cache_under_shard_guard_for_test(&self) {
+        self.warm_cache_under_shard_guard
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -343,7 +355,28 @@ impl TemporalEngine {
                 .as_ref()
                 .and_then(|state| state.applied_wal_sequence)
                 .unwrap_or(0);
-            match latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id) {
+            // THIS ARM IS ALSO WHAT MAKES WAL RECLAIM SAFE, which is not obvious from here.
+            // `storage_wal_reclaim_plan` takes its floor from the SAME bucket dump manifests
+            // (a minimum over them), so the floor can only stay at or below the point this
+            // raises the replay to. After an expiry round the base index FILE can sit far behind
+            // -- measured, anchor 1 against a delta at 9, with the log already cut to sequence 9
+            // -- and it is the manifest read here, not the base file, that covers the difference.
+            // Narrowing this arm narrows what a load can reconstruct without narrowing what
+            // reclaim is willing to drop.
+            // `wal_reclaim_never_frees_what_the_default_load_path_replays`
+            // (engine/tests/expiry_scale.rs) fails if the two ever come apart.
+            //
+            // AND IT HAS TO BE THE MAXIMUM OVER THEM, NOT THE LATEST OF THEM. This read
+            // `latest_bucket_dump_manifest_at`, which orders by `index_log_sequence`. That is a
+            // MEMBER of the set the floor minimises over but not an UPPER BOUND on it, and the
+            // two orderings genuinely come apart: a dump minted while `MATRIXARK_BULK_INGEST` is
+            // set takes its `wal_sequence` from the frozen base FILE, so it lands newest in
+            // index-log order carrying the LOWEST WAL anchor on disk. Measured on one shard in
+            // one process: the floor stood at 9 (retain_from 10) while a load off these same
+            // files replayed from 1, leaving sequences (1, 9] -- the expiry tombstones among them
+            // -- both reclaimable and required. A MAXIMUM bounds every subset by construction.
+            // See `durable_recovery_bucket_dump_manifest_at`.
+            match durable_recovery_bucket_dump_manifest_at(&self.index_dir, request.shard_id) {
                 Some(manifest) if manifest.wal_sequence > base_watermark => {
                     // A durable dump is newer than the base file (base not materialized at that
                     // dump). Use the manifest's embedded durable index as the recovery base. Read
@@ -541,6 +574,15 @@ impl TemporalEngine {
     /// lags the manifest the intervening WAL records may already be reclaimed, so a
     /// silent fall-back to the stale snapshot would drop them. The caller refuses the
     /// load instead.
+    ///
+    /// DELIBERATELY STILL `latest_bucket_dump_manifest_at`, unlike the single-barrier arm above.
+    /// This is the `TS_WAL_LEGACY_RECOVERY` path, and it FOLDS the index-log deltas, so
+    /// `served_anchor` below is the delta-advanced anchor -- at or above every manifest's
+    /// `wal_sequence`, because a manifest's anchor is read out of an index export and the served
+    /// index is what those exports are taken from. A manifest carrying a LOW anchor therefore
+    /// loses the `<= served_anchor` test and is skipped, and the replay point falls back to the
+    /// served anchor, which is the highest number available. The divergence that breaks the
+    /// base-only arm cannot lower this one.
     pub(super) fn install_latest_manifest_if_newer_on_load(
         &self,
         shard_id: ShardId,
