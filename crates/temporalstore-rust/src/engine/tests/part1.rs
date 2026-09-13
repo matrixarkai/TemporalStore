@@ -8619,6 +8619,98 @@ before the dump.",
     );
 }
 
+/// A RATCHET on how many times one call may walk the shard's live pages.
+///
+/// The rule this enforces: within one call, a given consumer group scans the live-page set ONCE.
+/// Where a group already shares a walk, adding a consumer must reuse the slice rather than add a
+/// scan; where a walk is irreducible, this test records WHY so the number is not filed down by
+/// someone who has not read the reason.
+///
+/// `apply_storage_lifecycle` is the worst case in the engine and sits at SEVEN:
+///
+///   3  bucket_storage_summaries          IRREDUCIBLE. The plan's, the manifest's, and the
+///                                        dirty-state clear's. #1607 proves the third must stay
+///                                        FRESH -- it compares current generations against what
+///                                        the manifest captured, so a shared snapshot makes both
+///                                        sides equal by construction, clears a bucket holding
+///                                        undumped writes, and reclaim may then advance past
+///                                        records still needed. Sharing the other two is SAFE but
+///                                        a bad trade: the manifest would record generations older
+///                                        than the index it embeds, so the bucket is re-dumped
+///                                        next round -- a whole-shard dump to save one walk.
+///   1  storage_object_lifecycle_snapshot ALREADY SHARED by three consumers (#1586).
+///   1  the four sampling snapshots       ALREADY SHARED by four consumers (#1609).
+///   1  the dump's lifecycle report       IRREDUCIBLE. It walks the DECODED MANIFEST INDEX
+///                                        (`&dump_index_state`), not the live shard -- different
+///                                        data, so it cannot share a live-shard walk.
+///   1  collect_live_page_addresses       via storage_reclaim_slab_reports. The remaining
+///                                        candidate.
+///
+/// If this fails HIGH, a new walk was added: give it the existing slice. If it fails LOW, a walk
+/// was removed -- lower the constant and say which one, in the commit.
+#[test]
+fn one_call_walks_the_live_pages_a_known_number_of_times() {
+    const RECORDS: usize = 1_000;
+    const EXPECTED_MULTIPLE: u64 = 7;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("ratchet-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let live_pages: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    // Denominator: with no live pages every walk materializes nothing and any multiple holds.
+    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+
+    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_page_scan_sites();
+    let _ = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    });
+    let walked = crate::engine::live_page_scan_entries();
+    let sites = crate::engine::live_page_scan_sites_snapshot();
+
+    let multiple = walked / live_pages.max(1);
+    if multiple != EXPECTED_MULTIPLE {
+        let mut rows: Vec<(&String, &u64)> = sites.iter().collect();
+        rows.sort_by(|left, right| right.1.cmp(left.1));
+        let breakdown = rows
+            .iter()
+            .map(|(site, entries)| {
+                format!("\n    {:>5.1}x  {site}", **entries as f64 / live_pages as f64)
+            })
+            .collect::<String>();
+        panic!(
+            "one `apply_storage_lifecycle` walked the live pages {multiple}x, expected \
+{EXPECTED_MULTIPLE}x ({walked} entries for {live_pages} live pages). Per site:{breakdown}\n  Higher means a new walk was added -- pass it the slice the call already has. Lower means one was \
+removed -- lower EXPECTED_MULTIPLE and name it in the commit. Three of the seven are irreducible \
+and the doc above says why; do not file the constant down without reading it."
+        );
+    }
+}
+
 /// WHO walks the shard, by source location. Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib who_walks_the_shard -- --ignored --nocapture

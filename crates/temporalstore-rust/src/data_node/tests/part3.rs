@@ -4129,6 +4129,216 @@ time(s) and the WAL reclaim plan {wal_builds} time(s); each walks the shard"
     }
 }
 
+/// FOOTPRINT CADENCE: does every subsystem reach a steady state, or keep growing? Prints.
+///
+///   cargo test --release -p temporalstore-rust --lib the_footprint_cadence_over_many_rounds -- --ignored --nocapture
+///
+/// This is the shared measurement spine for the per-subsystem scale work. One fixture, many
+/// maintenance rounds, and after EACH round every subsystem's footprint is recorded on one line,
+/// so the question "is the cadence good" is answered by reading a column rather than by running
+/// ten separate experiments that cannot be compared to each other.
+///
+/// WHAT A GOOD COLUMN LOOKS LIKE: it rises while the shard fills and then FLATTENS. A column that
+/// climbs every round on a fixture that stops writing is the #1565 shape -- an idle shard grew a
+/// slab every thirty seconds for ever, eleven after ten rounds, because a `min` over a set with an
+/// immovable member froze the reclaim floor. That defect was invisible in any single round and
+/// obvious in a column.
+///
+/// The write phase stops before the rounds begin ON PURPOSE. Growth under continuing writes is
+/// expected and says nothing; growth with no writer is the signal.
+///
+/// Columns, and which subsystem each belongs to:
+///
+///   wal_bytes / wal_seq   WAL              -- persistent bytes and the sequence, so reclaim shows
+///   idx_bytes             index log        -- file length; the collector should flatten it
+///   slabs / slab_bytes    page/block store -- slab count is the #1565 signal
+///   cache_mem             eviction         -- the only memory the evict gate can see
+///   bkt_idx               (memory)         -- bucket index entries: never evicted, expect FLAT
+///   manifests             dump             -- retained manifests; the prune policy should bound
+///   dirty                 store manager    -- dirty buckets; should fall to 0 with no writer
+#[test]
+#[ignore]
+fn the_footprint_cadence_over_many_rounds() {
+    const RECORDS: usize = 8_000;
+    const ROUNDS: usize = 12;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Overwrite a third, so there is genuine garbage for the collectors to reclaim. Without this
+    // every collector correctly does nothing and a flat column proves only that nothing happened.
+    for index in 0..RECORDS / 3 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+
+    eprintln!(
+        "  [cadence] {RECORDS} records written, then NO further writes -- any column that keeps \
+climbing below is growth with no writer"
+    );
+    eprintln!(
+        "  [cadence] {:>5} {:>11} {:>9} {:>6} {:>11} {:>10} {:>8} {:>9} {:>6}  stages",
+        "round", "wal_bytes", "idx_bytes", "slabs", "slab_bytes", "cache_mem", "bkt_idx",
+        "manifests", "dirty",
+    );
+
+    let mut first = None;
+    let mut last = None;
+    for round in 0..ROUNDS {
+        let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+
+        let wal = engine.write_ahead_log_store().stats(1);
+        let idx_bytes = engine.index_log_store().log_len_bytes(1);
+        let slab_ids = engine.page_store().slab_ids().unwrap_or_default();
+        let slab_bytes: u64 = engine
+            .page_store()
+            .slab_block_counts()
+            .unwrap_or_default()
+            .iter()
+            .map(|(_id, physical_bytes, _count)| *physical_bytes)
+            .sum();
+        let cache_mem = engine.cache().stats().memory_bytes;
+        let summaries = engine.bucket_storage_summaries(1);
+        let bkt_idx = summaries.len() as u64;
+        let dirty = summaries
+            .iter()
+            .filter(|summary| summary.dirty_object_count > 0)
+            .count();
+        let manifests = engine.list_bucket_dump_manifests(1).len();
+
+        let row = (
+            wal.persistent_bytes,
+            idx_bytes,
+            slab_ids.len() as u64,
+            slab_bytes,
+            cache_mem,
+            bkt_idx,
+            manifests as u64,
+        );
+        if round == 0 {
+            first = Some(row);
+        }
+        last = Some(row);
+
+        eprintln!(
+            "  [cadence] {round:>5} {:>11} {idx_bytes:>9} {:>6} {slab_bytes:>11} {cache_mem:>10} \
+{bkt_idx:>8} {manifests:>9} {dirty:>6}  {:?}",
+            wal.persistent_bytes,
+            slab_ids.len(),
+            report.executed_stages,
+        );
+    }
+
+    let (first, last) = (first.expect("a round ran"), last.expect("a round ran"));
+    // Denominator: a fixture where nothing was stored would print zeros in every column and every
+    // "did not grow" assertion below would hold vacuously.
+    assert!(
+        last.5 > 0,
+        "the shard holds no buckets, so every column below is trivially flat",
+    );
+
+    eprintln!(
+        "  [cadence] first -> last:  wal {} -> {}   idx {} -> {}   slabs {} -> {}   cache {} -> {}",
+        first.0, last.0, first.1, last.1, first.2, last.2, first.4, last.4,
+    );
+    eprintln!(
+        "  [cadence] READ THE COLUMNS, not this line: a subsystem whose column climbs to the last \
+round with no writer is the one to open a thread on."
+    );
+
+    // WHICH STAGE GROWS THE INDEX LOG? The column above climbs every round on a shard nobody is
+    // writing to. `compact_pages` also runs every round on that shard, and compaction relocates
+    // pages and persists the resulting index -- so the obvious suspect is that the index log is
+    // growing because compaction keeps rewriting it, not because anything changed.
+    //
+    // Obvious is not measured. A second fixture, identical except compaction is OFF, settles it:
+    // if the growth persists with compaction disabled the suspect is wrong.
+    let quiet = TemporalEngine::default();
+    quiet.load_shard(1);
+    for index in 0..RECORDS {
+        quiet.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+    }
+    for index in 0..RECORDS / 3 {
+        quiet.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("cadence-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+    }
+    let quiet_runtime = DataNodeRuntime::new_without_workers_with_options(
+        quiet,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let quiet_engine = quiet_runtime.engine();
+    let no_compaction = StorageManagerOptions {
+        enable_page_compaction: false,
+        ..StorageManagerOptions::default()
+    };
+    let mut quiet_first = 0u64;
+    let mut quiet_last = 0u64;
+    for round in 0..ROUNDS {
+        let _ = quiet_runtime.run_storage_manager_once(1, no_compaction.clone());
+        let idx = quiet_engine.index_log_store().log_len_bytes(1);
+        if round == 0 {
+            quiet_first = idx;
+        }
+        quiet_last = idx;
+    }
+
+    let with_compaction_growth = last.1.saturating_sub(first.1);
+    let without_compaction_growth = quiet_last.saturating_sub(quiet_first);
+    eprintln!(
+        "  [cadence] index-log growth over {} rounds with NO writer: compaction ON {} bytes, \
+compaction OFF {} bytes",
+        ROUNDS - 1,
+        with_compaction_growth,
+        without_compaction_growth,
+    );
+
+    // Denominator: if the compaction-on arm did not grow either, this comparison is measuring
+    // nothing and the attribution below would be read off two zeros.
+    assert!(
+        with_compaction_growth > 0,
+        "the index log did not grow even with compaction on, so this arm attributes nothing",
+    );
+}
+
 #[test]
 fn the_dump_cap_bounds_a_stage_but_not_a_round() {
     // Two facts, and the second is the surprising one.
