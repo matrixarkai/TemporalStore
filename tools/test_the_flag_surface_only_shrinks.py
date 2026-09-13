@@ -308,7 +308,7 @@ def _is_tooling(module):
 #: which moves when a benchmark gains a knob. This one bounds what an OPERATOR is offered, and it
 #: is the number that answers "how many knobs does this thing have". They move independently and a
 #: single ceiling would hide one behind the other.
-MAXIMUM_CONFIGURABLE = 128
+MAXIMUM_CONFIGURABLE = 146
 
 #: Flags a deployment can set that decide whether a code path RUNS -- the number "how many features
 #: can this thing be asked to turn off" is asking for, and the one the under-a-hundred target is
@@ -321,7 +321,7 @@ MAXIMUM_CONFIGURABLE = 128
 #: ratchet that only bounds from above reads a fall as progress -- verified by mutation: stopping
 #: `_flag_read_in` from following helpers took it to 43 and every test still passed. So the scan is
 #: asserted as well as the count, in `test_the_helper_derivation_finds_the_readers_it_is_for`.
-MAXIMUM_GATING_CONFIGURABLE = 54
+MAXIMUM_GATING_CONFIGURABLE = 55
 
 #: Scan results that cost a tree walk, computed once per process.
 _CACHE: dict = {}
@@ -684,7 +684,54 @@ def _portal_offers():
             # for the first caller who unions this set with anything.
             if isinstance(node.args[2].value, str) and node.args[2].value:
                 offers.add(node.args[2].value)
+    offers |= _knob_derived_offers(offers)
     return offers
+
+
+def _internal_knobs():
+    """The knob names matrixark_gateway_config refuses to put on the page."""
+    tree = _tree("tools/matrixark_gateway_config.py")
+    if tree is None:
+        return set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and getattr(node.targets[0], "id", "") == "INTERNAL_KNOBS":
+            return {item.value for item in ast.walk(node.value)
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str)}
+    return set()
+
+
+def _knob_derived_offers(already):
+    """Settings the page builds from the tenant registry rather than writing out.
+
+    THE PAGE IS NOT ONLY ITS `Setting(...)` CALLS. `_knob_settings` walks
+    matrixark_tenant_policy.KNOBS and extends SETTINGS with one field per knob that has a variable,
+    is not already offered, and is not in INTERNAL_KNOBS. Twenty-three fields arrive that way, and
+    a scan reading only the literal calls saw none of them: the portal offered 117 to this file and
+    140 to the operator looking at it, and `configurable` was 128 where it is 146.
+
+    Read from the mechanism rather than by importing matrixark_gateway_config, which resolves the
+    whole registry at import and would make this file's answer depend on import order -- the thing
+    `test_runtime_config_core_default_agreement` parses statically to avoid.
+    """
+    tree = _tree("tools/matrixark_tenant_policy.py")
+    if tree is None:  # pragma: no cover - the policy module is not optional in practice
+        return set()
+    internal = _internal_knobs()
+    out = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Knob"
+                and len(node.args) >= 3):
+            continue
+        name, env = node.args[0], node.args[2]
+        if not (isinstance(name, ast.Constant) and isinstance(env, ast.Constant)):
+            continue
+        if not isinstance(env.value, str) or not env.value:
+            continue
+        if name.value in internal or env.value in already:
+            continue
+        out.add(env.value)
+    return out
 
 
 def _loader_maps():
@@ -872,6 +919,11 @@ def deployment_settable(reads):
     """
     names = set(_NAME.findall(_text("tools/matrixark_gateway_config.py")))
     names |= set(_NAME.findall(_text("tools/matrixark_load_config.py")))
+    # The page also builds a field per tenant knob, and those variables are written in
+    # matrixark_tenant_policy rather than in either file above. Grepping the two files alone said a
+    # deployment could not set eighteen controls it can set from the page -- and the subset check
+    # below caught it, because `configurable` had already learned the same mechanism.
+    names |= _knob_derived_offers(set())
     for rel in _tracked(*_SETTING_GLOBS):
         if rel == _SELF:
             continue
@@ -1355,7 +1407,19 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         for rel in _tracked(*_SETTING_GLOBS):
             if rel != _SELF:
                 where |= set(_NAME.findall(_text(rel)))
-        for name in sorted(settable):
+        # A field the page BUILDS from the tenant registry is named in matrixark_tenant_policy, not
+        # in either file above. Checked as a separate case rather than by widening `where`, so the
+        # control still says WHERE each flag is written instead of restating the implementation:
+        # a knob-derived flag has to be a Knob AND be written in the policy module.
+        derived = _knob_derived_offers(set())
+        policy_text = _text("tools/matrixark_tenant_policy.py")
+        for name in sorted(settable & derived):
+            with self.subTest(knob=name):
+                self.assertIn(
+                    name, policy_text,
+                    "%s is counted settable because the page derives a field from its knob, and "
+                    "the knob is not written in matrixark_tenant_policy" % name)
+        for name in sorted(settable - derived):
             with self.subTest(flag=name):
                 self.assertIn(name, where, "%s is counted settable and no shipping file names it"
                               % name)
@@ -1457,6 +1521,65 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             "derivation has started matching functions that do not read the environment, which "
             "inflates every count on this page."
             % (len(only_through_a_helper), len(self.reads)))
+
+    def test_the_page_is_not_only_its_written_out_fields(self) -> None:
+        """`_knob_settings` builds a field per tenant knob, and this file could not see any of them.
+
+        The portal offered 117 fields to this scan and 140 to the operator looking at it, so
+        `configurable` read 128 where it is 146 and `settable` missed eighteen controls a
+        deployment can set from the page. A scan that reads only the literal `Setting(...)` calls
+        is reading the shape the fields are written in rather than the rule that puts them there.
+
+        Asserted by MECHANISM, not by naming one of the variables: naming a tenant knob here would
+        make this file the only TEST that names it, which classifies it `selected` on the strength
+        of this file alone -- what test_this_file_does_not_credit_its_own_examples catches, and it
+        caught exactly that mistake once already.
+        """
+        derived = _knob_derived_offers(set())
+        self.assertGreater(
+            len(derived), 10,
+            "the page derives %d fields from the tenant registry. It derived 23 when this was "
+            "written, and near zero means the Knob scan or INTERNAL_KNOBS has stopped matching -- "
+            "which makes every count on this page smaller and reads as a reduction."
+            % len(derived))
+        offers = _portal_offers()
+        self.assertTrue(
+            derived <= offers,
+            "the derived fields are not all in the offered set, so the two halves of the portal "
+            "scan disagree: %s" % sorted(derived - offers))
+        policy = _text("tools/matrixark_tenant_policy.py")
+        for name in sorted(derived):
+            with self.subTest(knob=name):
+                self.assertIn(name, policy,
+                              "%s is counted as a portal field derived from a knob and is not "
+                              "written in the policy module" % name)
+        internal = _internal_knobs()
+        self.assertTrue(
+            internal,
+            "INTERNAL_KNOBS is empty, so every tenant knob is being counted as an offered field. "
+            "That list is the page's own rule about which knobs an operator never sees.")
+        # Compared through the knob NAME, because that is what INTERNAL_KNOBS holds and `derived`
+        # holds VARIABLES. Written the obvious way -- `name in internal` over the variables -- this
+        # is an assertion that cannot fail, which is the shape it had until the exclusion was
+        # checked against a knob that is actually in the list.
+        excluded = 0
+        for node in ast.walk(_tree("tools/matrixark_tenant_policy.py")):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Knob"
+                    and len(node.args) >= 3):
+                continue
+            knob, env = node.args[0], node.args[2]
+            if not (isinstance(knob, ast.Constant) and isinstance(env, ast.Constant)):
+                continue
+            if knob.value in internal and isinstance(env.value, str) and env.value:
+                excluded += 1
+                with self.subTest(knob=knob.value):
+                    self.assertNotIn(
+                        env.value, derived,
+                        "%s is named in INTERNAL_KNOBS and its variable is being offered anyway"
+                        % knob.value)
+        self.assertGreater(
+            excluded, 0,
+            "no knob in INTERNAL_KNOBS carries a variable, so the exclusion above ran over nothing")
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
