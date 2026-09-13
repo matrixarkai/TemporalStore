@@ -9,7 +9,7 @@ except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
 try:  # names owned by the parent module
-    from tools.test_matrixark_codex_hook_pipeline import (
+    from test_codex_pipeline_fixtures import (
     MatrixArkLocalAdapter,
     Path,
     async_pipeline_retrieval_readiness,
@@ -41,7 +41,7 @@ try:  # names owned by the parent module
     tempfile,
 )
 except ImportError:
-    from test_matrixark_codex_hook_pipeline import (
+    from test_codex_pipeline_fixtures import (
     MatrixArkLocalAdapter,
     Path,
     async_pipeline_retrieval_readiness,

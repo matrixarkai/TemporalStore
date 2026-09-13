@@ -55,74 +55,17 @@ from matrixark_mcp_local_adapter import (
 )
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 from matrixark_mcp_summary_runtime import build_node_summary_refresh_records
+from test_codex_pipeline_fixtures import (
+    CountingLocalAdapter,
+    FastHookLocalAdapter,
+    NativeCaptureLocalAdapter,
+)
 
 
-class CountingLocalAdapter(MatrixArkLocalAdapter):
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        self.flushed_batch_sizes: list[int] = []
-        self.retrieval_call_count = 0
-
-    def append_many(self, records: list[dict]) -> None:
-        active_batch = self._current_write_batch()
-        super().append_many(records)
-        if active_batch is None and records:
-            self.flushed_batch_sizes.append(len(records))
-
-    def retrieval_records(self, **kwargs):
-        self.retrieval_call_count += 1
-        return super().retrieval_records(**kwargs)
 
 
-class FastHookLocalAdapter(MatrixArkLocalAdapter):
-    def enqueue_raw_ingestion_records(self, records: list[dict]) -> None:
-        self.append_many(records)
-
-    def _enqueue_direct_write(self, records: list[dict]) -> None:
-        self.append_many(records)
 
 
-class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        self.native_requests: list[dict] = []
-
-    def supports_native_context_pack(self) -> bool:
-        return True
-
-    def native_context_pack(self, request: dict) -> dict | None:
-        self.native_requests.append(dict(request))
-        return {
-            "context_pack_id": "local-native-pack",
-            "selected_refs": [],
-            "used_context_tokens": 0,
-            "used_remote_context_tokens": 0,
-            "remote_context_budget_tokens": request.get("max_context_tokens", 0),
-            "recall_policy": {
-                "source_role_budget": {
-                    "enabled": bool(request.get("source_role_budget_tokens")),
-                    "budget_tokens": request.get("source_role_budget_tokens", {}),
-                },
-                "memory_layer_budget_policy": {
-                    "enabled": bool(request.get("memory_layer_budget_tokens")),
-                    "budget_tokens": request.get("memory_layer_budget_tokens", {}),
-                    "mode": request.get("memory_layer_budget_mode"),
-                    "question_type": request.get("memory_layer_budget_question_type"),
-                    "question_budget_reason": request.get("memory_layer_budget_question_reason"),
-                    "derived": request.get("memory_layer_budget_mode") in {
-                        "auto",
-                        "balanced",
-                        "codex_auto",
-                        "pre_retrieval_summary_refresh_balanced",
-                    },
-                },
-                "memory_selection_policy_budget_policy": {
-                    "enabled": bool(request.get("memory_selection_policy_budget_tokens")),
-                    "budget_tokens": request.get("memory_selection_policy_budget_tokens", {}),
-                    "mode": request.get("memory_selection_policy_budget_mode"),
-                }
-            },
-        }
 
 
 try:  # mixin
