@@ -570,14 +570,19 @@ fn a_large_due_batch_does_not_stall_a_round() {
 /// serializing the whole shard index and persisting it once (`serialize_index_stamped` ->
 /// `persist_index_bytes` -> `append_index_bytes` in `sweep_expired_records_with_request`), and
 /// that is whole-shard work whether ten keys expired or ten thousand. Measured here, debug build:
-/// a round expiring 10 keys costs about 0.1 s at a 2,000-key shard and several seconds at 100,000,
-/// while looking at exactly 10 records either way.
+/// a round expiring 10 keys costs about 0.11 s at a 2,000-key shard, 0.92 s at 20,000 and several
+/// seconds at 100,000, while looking at exactly 10 records at every one of those sizes.
 ///
 /// FOUND, NOT FIXED. That residual term is a real cost -- at the storage manager's cadence a large
 /// shard with a trickle of expiries re-serializes its entire index every round that catches one --
 /// and it is a DIFFERENT defect from the one the ordered index fixed, with a different fix (batch
 /// or defer the persist, or make it a delta). It is recorded here rather than asserted, because an
 /// assertion on it would fail today and this test's job is to hold the line that was won.
+///
+/// The sharpest edge is already off it: the flush no longer runs under the shard write guard, so
+/// the round does not queue every other reader and writer behind itself
+/// (`the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`, part1). That moved WHO WAITS, not
+/// how much work a round does, which is why the ratio below is still what it is.
 ///
 /// The distinction matters for the round-robin-cursor proposal too: a bounded cursor would not
 /// have touched this term either. It bounds the walk; it does not make the round's fixed cost
