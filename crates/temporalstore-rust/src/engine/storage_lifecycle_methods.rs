@@ -105,10 +105,12 @@ impl TemporalEngine {
             .iter()
             .map(|summary| summary.routing_bucket)
             .collect::<Vec<_>>();
-        let latest_dump_wal_sequence =
-            latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id)
-                .map(|manifest| manifest.wal_sequence)
-                .unwrap_or_default();
+        let latest_bucket_dump_manifest =
+            latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id);
+        let latest_dump_wal_sequence = latest_bucket_dump_manifest
+            .as_ref()
+            .map(|manifest| manifest.wal_sequence)
+            .unwrap_or_default();
         let wal_stats = self.wal_store.stats(request.shard_id);
         let current_wal_sequence = wal_stats.last_sequence;
         let undumped_wal_records =
@@ -157,6 +159,58 @@ impl TemporalEngine {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
+        // REFRESH A DUMP THAT STILL NAMES A SLAB COMPACTION HAS EMPTIED.
+        //
+        // `run_gc_inner` and `storage_page_gc_dependency_plan` both hold back every slab a bucket
+        // dump manifest names, and they are right to: installing that dump READS those pages, so
+        // destroying the slab makes the dump uninstallable and a lagging replica unservable.
+        // #1565 stopped such a slab freezing the retain FLOOR; it deliberately did not make the
+        // slab deletable, and said so.
+        //
+        // What that leaves is a dead slab standing for ever on an IDLE shard. Compaction copies
+        // the live pages onto a fresh slab, and the newest manifest goes on naming the slab it
+        // emptied -- because a manifest is only ever replaced by a DUMP, a dump is selected from
+        // DIRTY buckets, and an idle shard has none. Measured on a settled shard that nobody is
+        // writing to, in EVERY settled round, at 8,000 records and again at 80,000:
+        // slabs 2, stale 1, reclaim_candidates 1, relocatable 0.
+        //
+        // So ask for the dump rather than keeping the slab. It re-exports the index compaction
+        // has already persisted, the replacement manifest names only slabs that are live, the
+        // superseded one stops adding coverage and is pruned, and the vacated slab is collected
+        // on the next round. Nothing is destroyed while a manifest still needs it: the order is
+        // dump, prune, then collect, each in its own round.
+        //
+        // TERMINATING BY CONSTRUCTION, which is what keeps this off a busy shard and off a loop.
+        // The condition reads the NEWEST manifest only, and the dump it selects BECOMES the
+        // newest and names live slabs alone -- so it cannot ask twice for the same vacated slab.
+        // An OLDER manifest kept because it is the only dump covering some bucket can still hold
+        // a slab back; that is a retention decision this does not override, and it does not
+        // re-arm this either.
+        let latest_manifest_names_a_vacated_slab = latest_bucket_dump_manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest
+                    .block_slab_ids
+                    .iter()
+                    .any(|block_slab_id| stale_block_slab_set.contains(block_slab_id))
+            })
+            .unwrap_or(false);
+        let dump_refreshes_a_vacated_slab = !explicit_buckets
+            && selected_dump_buckets.is_empty()
+            && latest_manifest_names_a_vacated_slab;
+        if dump_refreshes_a_vacated_slab {
+            // Every bucket the shard holds now, and NOT truncated to
+            // `max_dump_buckets_per_round`. A replacement that covers less than what it
+            // supersedes supersedes nothing: the older manifest stays retained for the coverage
+            // it alone holds, the slab stays pinned, and the round above will not ask again. The
+            // cap costs nothing to skip here -- `create_bucket_dump_manifest` exports the whole
+            // index whatever the selection is, so a narrower one would be the same work for a
+            // result that releases nothing.
+            selected_dump_buckets = bucket_summaries
+                .iter()
+                .map(|summary| summary.routing_bucket)
+                .collect::<Vec<_>>();
+        }
         let mut reclaim_candidates = storage_reclaim_candidates_from_slab_reports(
             &reclaim_slab_reports,
             &stale_block_slab_set,
@@ -184,7 +238,12 @@ impl TemporalEngine {
                 .then_with(|| left.block_slab_id.cmp(&right.block_slab_id))
         });
         let mut reasons = Vec::new();
-        if !selected_dump_buckets.is_empty() {
+        if dump_refreshes_a_vacated_slab {
+            // A distinct reason, not "dirty_slot_dump": no bucket is dirty, and an operator
+            // reading the plan needs to see that this dump is the collector's precondition
+            // rather than a write being checkpointed.
+            reasons.push("slot_dump_refresh_after_relocation".to_string());
+        } else if !selected_dump_buckets.is_empty() {
             reasons.push("dirty_slot_dump".to_string());
         } else if dump_delayed && !dirty_buckets.is_empty() {
             reasons.push("dirty_slot_dump_delayed".to_string());

@@ -7060,6 +7060,218 @@ fn an_idle_shard_stops_accumulating_slabs() {
          retain floor has stopped advancing again"
     );
 }
+/// The slab compaction vacated is COLLECTED, so an idle shard's candidate count returns to zero.
+///
+/// THE DEFECT THIS HOLDS SHUT, as measured. #1627 stopped compaction re-triggering itself and
+/// reported this half open: once the drain settles, the emptied slab is never destroyed. In every
+/// settled round, at 8,000 records and again at 80,000:
+///
+///     slabs 2, stale 1, reclaim_candidates 1, relocatable 0
+///
+/// Nothing grows, which is why it was correctly separated -- but the shard keeps a dead slab's
+/// bytes for ever and the candidate count never returns to zero, so any gate keying on it reads a
+/// permanently-open condition.
+///
+/// WHY IT SURVIVED, and it is not the retain floor. The collector RAN in every one of those
+/// rounds and refused: `run_gc_inner` holds back every slab a bucket dump manifest names, and the
+/// newest manifest still named the slab compaction had emptied. #1565 stopped exactly such a slab
+/// freezing the retain FLOOR and said in as many words that it does not make the slab deletable.
+/// A manifest is only ever replaced by a DUMP, a dump is selected from DIRTY buckets, and an idle
+/// shard has none -- so the pin was permanent. `storage_lifecycle_plan` now asks for that dump,
+/// which is the one place both copies of the maintenance round read.
+///
+/// WHAT THIS ASSERTS, IN ORDER. Both denominators first, because either one makes every later
+/// assertion pass for a reason that has nothing to do with the defect: compaction must have run,
+/// and a slab must actually have gone stale inside the window. Then the property -- no vacated
+/// slab is left standing -- which is what a reverted fix breaks. Then by which mechanism, and
+/// WHERE the bytes went: quarantine, not an unlink, which is the delayed-destroy contract the
+/// reclaim stage is written to.
+///
+/// THE PURGE NEEDS ITS AGE INJECTED. Quarantine enforces a ONE HOUR minimum, so a fixture that
+/// waits can only ever watch slabs ENTER delayed destroy; a "purged 0" column from a short run
+/// says nothing BY CONSTRUCTION. The last section calls the age-parameterised purge with 0 rather
+/// than sleeping, which is the same thing an hour later.
+///
+/// WRITES NOTHING after the fixture, so every round below acts on a store that is not changing.
+#[test]
+fn an_idle_shard_collects_the_slab_compaction_vacated() {
+    const RECORDS: usize = 1_200;
+    const ROUNDS: usize = 10;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("vacated-{index:07}"),
+                value: vec![b'v'; 128],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Overwrite a third, so the slab compaction drains is genuinely holed and the round it spends
+    // on it is real work rather than a proof that an empty store compacts cheaply.
+    for index in 0..RECORDS / 3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("vacated-{index:07}"),
+                value: vec![b'w'; 192],
+            },
+        });
+        assert!(response.status.ok, "overwrite {index}: {:?}", response.status);
+    }
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+
+    let mut compacting_rounds = 0_usize;
+    let mut went_stale = std::collections::BTreeSet::<u64>::new();
+    let mut refresh_rounds = Vec::new();
+    let mut stale_by_round = Vec::new();
+    let mut candidates_by_round = Vec::new();
+    let mut slabs_by_round = Vec::new();
+    let mut slab_bytes_by_round = Vec::new();
+    for round in 0..ROUNDS {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages")
+        {
+            compacting_rounds += 1;
+        }
+        if report
+            .lifecycle_plan
+            .reasons
+            .iter()
+            .any(|reason| reason == "slot_dump_refresh_after_relocation")
+        {
+            refresh_rounds.push(round);
+        }
+        went_stale.extend(report.lifecycle_plan.stale_block_slab_ids.iter().copied());
+        stale_by_round.push(report.pressure.stale_block_slab_count);
+        candidates_by_round.push(report.pressure.reclaim_candidate_count);
+        slabs_by_round.push(engine.block_store().slab_ids().unwrap_or_default().len());
+        slab_bytes_by_round.push(
+            engine
+                .block_store()
+                .slab_block_counts()
+                .unwrap_or_default()
+                .iter()
+                .map(|(_id, physical_bytes, _count)| *physical_bytes)
+                .sum::<u64>(),
+        );
+    }
+
+    // DENOMINATORS, all three, before anything below is read as clean.
+    assert!(
+        compacting_rounds > 0,
+        "compaction never ran over {ROUNDS} rounds, so no slab was ever vacated and the clean \
+         counts below are about an idle compactor, not a working collector. slabs per round: \
+         {slabs_by_round:?}"
+    );
+    assert!(
+        !went_stale.is_empty(),
+        "no slab went stale over {ROUNDS} rounds ({compacting_rounds} of them compacting), so \
+         there was nothing for the collector to destroy and a zero here is vacuous. stale per \
+         round: {stale_by_round:?}; slabs per round: {slabs_by_round:?}"
+    );
+    // THE PROPERTY. The slab compaction emptied is gone from the store.
+    let slab_ids_after = engine.block_store().slab_ids().unwrap_or_default();
+    let still_standing = went_stale
+        .iter()
+        .copied()
+        .filter(|block_slab_id| slab_ids_after.contains(block_slab_id))
+        .collect::<Vec<_>>();
+    assert!(
+        still_standing.is_empty(),
+        "slabs {still_standing:?} were vacated by compaction and are STILL in the store after \
+         {ROUNDS} rounds with nobody writing. stale per round: {stale_by_round:?}; reclaim \
+         candidates per round: {candidates_by_round:?}; slabs per round: {slabs_by_round:?}; slab \
+         bytes per round: {slab_bytes_by_round:?}"
+    );
+
+    // AND BY WHICH MECHANISM. The property above is the whole requirement; this says the plan
+    // is what met it, so a future change that collects the slab some other way reads as a change
+    // rather than as this still working.
+    assert!(
+        !refresh_rounds.is_empty(),
+        "the vacated slab was collected, but the plan never asked for the dump that releases a \
+         manifest-pinned one -- something else reclaimed it. stale per round: {stale_by_round:?}; \
+         reclaim candidates per round: {candidates_by_round:?}"
+    );
+
+    // WHERE THE BYTES WENT: quarantine, not an unlink. The reclaim stage asks for delayed
+    // destroy so a reader holding a stale address has an hour to stop holding it, and a collector
+    // that started deleting outright would pass the assertion above while breaking that.
+    let quarantined = engine
+        .block_store()
+        .delayed_destroy_slab_ids()
+        .unwrap_or_default();
+    let unaccounted = went_stale
+        .iter()
+        .copied()
+        .filter(|block_slab_id| !quarantined.contains(block_slab_id))
+        .collect::<Vec<_>>();
+    assert!(
+        unaccounted.is_empty(),
+        "slabs {unaccounted:?} left the store without passing through delayed destroy \
+         (quarantine holds {quarantined:?}) -- they were unlinked instead of quarantined"
+    );
+
+    // THE PURGE, WITH ITS AGE INJECTED. Waiting cannot reach this: quarantine enforces an hour.
+    let quarantined_bytes = engine
+        .block_store()
+        .delayed_destroy_slab_reports()
+        .unwrap_or_default()
+        .iter()
+        .map(|report| report.physical_bytes)
+        .sum::<u64>();
+    assert!(
+        quarantined_bytes > 0,
+        "quarantine holds {quarantined:?} but zero bytes, so the purge below would release \
+         nothing and prove nothing"
+    );
+    let purge = engine
+        .block_store()
+        .purge_delayed_destroy_slabs_older_than(0)
+        .expect("purging quarantine should succeed");
+    assert_eq!(
+        purge.purged_physical_bytes, quarantined_bytes,
+        "an aged purge released {} of the {quarantined_bytes} bytes quarantine was holding: \
+         {purge:?}",
+        purge.purged_physical_bytes,
+    );
+
+    let plan_after =
+        engine.storage_lifecycle_plan(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            ..Default::default()
+        });
+    assert!(
+        plan_after.stale_block_slab_ids.is_empty(),
+        "a settled idle shard still reports stale slabs {:?} after the vacated slab was purged",
+        plan_after.stale_block_slab_ids,
+    );
+    assert!(
+        plan_after.reclaim_candidates.is_empty(),
+        "a settled idle shard still reports {} reclaim candidates after the vacated slab was \
+         purged, so the count a future gate keys on never returns to zero: {:?}",
+        plan_after.reclaim_candidates.len(),
+        plan_after.reclaim_candidates,
+    );
+}
+
 /// An idle shard stops growing its index log, because compaction stops running on it.
 ///
 /// THE DEFECT THIS HOLDS SHUT, as measured. A cadence fixture that writes 8,000 records,
@@ -7346,15 +7558,17 @@ fn settle_one_corpus(records: usize) {
 
     eprintln!("  [settle] {records} records written, then NO further writes");
     eprintln!(
-        "  [settle] {:>5} {:>7} {:>9} {:>9} {:>6} {:>12} {:>6} {:>11} {:>11} {:>10}",
+        "  [settle] {:>5} {:>7} {:>9} {:>9} {:>6} {:>12} {:>6} {:>11} {:>11} {:>10} {:>9} {:>10} \
+{:>9} {:>13}",
         "round", "compact", "rewritten", "src->dst", "slabs", "slab_bytes", "stale", "candidates",
-        "relocatable", "idx_bytes",
+        "relocatable", "idx_bytes", "collected", "quarantine", "manifests", "manifest_slabs",
     );
 
     let mut rounds_that_compacted = 0usize;
     let mut last_compacting_round: Option<usize> = None;
     let mut index_log_by_round: Vec<u64> = Vec::new();
     let mut slab_bytes_by_round: Vec<u64> = Vec::new();
+    let mut went_stale = std::collections::BTreeSet::<u64>::new();
     let mut rounds_run = 0usize;
     for round in 0..max_rounds {
         rounds_run = round + 1;
@@ -7392,13 +7606,35 @@ fn settle_one_corpus(records: usize) {
         let index_log_bytes = engine.index_log_store().log_len_bytes(1);
         index_log_by_round.push(index_log_bytes);
         slab_bytes_by_round.push(slab_bytes);
+        // What the COLLECTOR did with the slab compaction vacated, beside what compaction did.
+        // `collected` is the reclaim stage's own count, `quarantine` is how many slabs are
+        // sitting in delayed destroy, and the two manifest columns are what used to hold the
+        // slab back: a bucket dump manifest names it, so `run_gc_inner` counts it as live.
+        let collected = report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.block_slabs_removed)
+            .unwrap_or(0);
+        let quarantined = engine
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default();
+        let manifests = engine.list_bucket_dump_manifests(1);
+        let manifest_slabs = manifests
+            .iter()
+            .flat_map(|manifest| manifest.block_slab_ids.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>();
+        went_stale.extend(report.lifecycle_plan.stale_block_slab_ids.iter().copied());
         eprintln!(
             "  [settle] {round:>5} {compacted:>7} {rewritten:>9} {:>9} {:>6} {slab_bytes:>12} \
-{:>6} {:>11} {relocatable:>11} {index_log_bytes:>10}",
+{:>6} {:>11} {relocatable:>11} {index_log_bytes:>10} {collected:>9} {:>10} {:>9} {:>13}",
             format!("{source}->{destination}"),
             slab_ids.len(),
             report.pressure.stale_block_slab_count,
             report.pressure.reclaim_candidate_count,
+            quarantined.len(),
+            manifests.len(),
+            format!("{manifest_slabs:?}"),
         );
         if round + 1 >= TAIL
             && last_compacting_round
@@ -7440,11 +7676,58 @@ fn settle_one_corpus(records: usize) {
         "slab bytes of a SETTLED idle shard at {records} records grew from {tail_first_slab_bytes} \
          to {tail_last_slab_bytes} over the last {TAIL} rounds: {slab_bytes_by_round:?}"
     );
+
+    // THE COLLECTOR'S HALF, which #1627 measured open and left open: the slab compaction emptied
+    // used to stand for ever, because two retained bucket dump manifests still named it and
+    // `run_gc_inner` counts a manifest-named slab as live. Measured before the fix, in EVERY
+    // settled round at both sizes: slabs 2, stale 1, candidates 1, collected 0, quarantine 0.
+    //
+    // Denominator first: a slab has to have gone stale inside the run, or "none left standing"
+    // is a statement about a shard that never vacated one.
+    assert!(
+        !went_stale.is_empty(),
+        "no slab went stale at {records} records over {rounds_run} rounds, so the collector had \
+         nothing to destroy and the assertion below would hold vacuously"
+    );
+    let slab_ids_after = engine.block_store().slab_ids().unwrap_or_default();
+    let still_standing = went_stale
+        .iter()
+        .copied()
+        .filter(|block_slab_id| slab_ids_after.contains(block_slab_id))
+        .collect::<Vec<_>>();
+    assert!(
+        still_standing.is_empty(),
+        "slabs {still_standing:?} were vacated by compaction at {records} records and are STILL \
+         in the store after {rounds_run} settled rounds with nobody writing. slab bytes per \
+         round: {slab_bytes_by_round:?}"
+    );
+    // Quarantine holds them for an hour, so purge with the age INJECTED rather than waiting --
+    // a short run can otherwise only ever watch slabs ENTER delayed destroy.
+    let purge = engine
+        .block_store()
+        .purge_delayed_destroy_slabs_older_than(0)
+        .expect("purging quarantine should succeed");
+    let plan_after =
+        engine.storage_lifecycle_plan(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            ..Default::default()
+        });
     eprintln!(
         "  [settle] {records} records: compacted in {rounds_that_compacted} rounds, last at \
 {last_compacting_round}, then FLAT for {} rounds -- index log {tail_last_index_log} bytes, slab \
-bytes {tail_last_slab_bytes}",
+bytes {tail_last_slab_bytes}, vacated {went_stale:?}, purged {:?} releasing {} bytes, reclaim \
+candidates now {}",
         rounds_run.saturating_sub(last_compacting_round + 1),
+        purge.purged_block_slab_ids,
+        purge.purged_physical_bytes,
+        plan_after.reclaim_candidates.len(),
+    );
+    assert!(
+        plan_after.reclaim_candidates.is_empty(),
+        "a settled idle shard at {records} records still reports {} reclaim candidates once the \
+         vacated slab is purged, so the count never returns to zero: {:?}",
+        plan_after.reclaim_candidates.len(),
+        plan_after.reclaim_candidates,
     );
 }
 
