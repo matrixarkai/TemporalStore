@@ -74,26 +74,33 @@ def initialize_rust_proxy_config(target: Any, *, request_timeout_ms: int) -> Non
     target._shared_process_mode = _env_bool("MATRIXARK_RUST_PROXY_SHARED_PROCESS")
     target._dedicated_pack_lanes_enabled = _env_bool("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES")
 
-    target._batch_hset_coalesce_enabled = _env_bool("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE")
-    target._batch_hset_coalesce_max_batches = _env_int("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MAX_BATCHES", "32")
-    target._batch_hset_coalesce_min_records = _env_int("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MIN_RECORDS", "16")
-    target._batch_hset_coalesce_wait_s = _env_seconds_from_ms("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS", "0")
+    # The nineteen settings below were read from the environment and nothing could set them: every
+    # reader of each sits in a module unreachable from any production entry point, so the value an
+    # operator exported never arrived anywhere. They are folded to the value they already produced,
+    # so the behaviour of this module is unchanged and only the knob is gone.
+    #
+    # Each folded value was computed by RUNNING the expression it replaces with the variable unset,
+    # not by reading the default out of the call. Two would have been wrong read that way:
+    # `_env_bool` defaults to "1", so every coalescer and cache here is ON and folding them to
+    # False would have turned the lot off; and `_env_seconds_from_ms(..., "1.0")` is 0.001 seconds,
+    # not 1.0.
+    target._batch_hset_coalesce_enabled = True
+    target._batch_hset_coalesce_max_batches = 32
+    target._batch_hset_coalesce_min_records = 16
+    target._batch_hset_coalesce_wait_s = 0.0
 
-    target._batch_hget_coalesce_enabled = _env_bool("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE")
-    target._batch_hget_coalesce_max_batches = _env_int("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES", "32")
-    target._batch_hget_coalesce_min_records = _env_int("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS", "16")
-    target._batch_hget_coalesce_wait_s = _env_seconds_from_ms("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS", "1.0")
+    target._batch_hget_coalesce_enabled = True
+    target._batch_hget_coalesce_max_batches = 32
+    target._batch_hget_coalesce_min_records = 16
+    target._batch_hget_coalesce_wait_s = 0.001
 
-    target._append_coalesce_enabled = _env_bool("MATRIXARK_RUST_PROXY_APPEND_COALESCE")
-    target._append_coalesce_max_batches = _env_int("MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES", "32")
-    target._append_coalesce_min_records = _env_int("MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS", "16")
-    target._append_coalesce_wait_s = _env_seconds_from_ms("MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS", "0.0")
+    target._append_coalesce_enabled = True
+    target._append_coalesce_max_batches = 32
+    target._append_coalesce_min_records = 16
+    target._append_coalesce_wait_s = 0.0
 
-    target._string_cache_enabled = _env_bool("MATRIXARK_RUST_PROXY_STRING_CACHE")
-    target._scan_hash_cache_enabled = _env_bool("MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE")
-    target._scan_hash_cache_max_entries = _env_int("MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES", "1024")
-    target._context_pack_response_cache_enabled = _env_bool("MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE")
-    target._context_pack_response_cache_max_entries = _env_int(
-        "MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE_MAX_ENTRIES",
-        "256",
-    )
+    target._string_cache_enabled = True
+    target._scan_hash_cache_enabled = True
+    target._scan_hash_cache_max_entries = 1024
+    target._context_pack_response_cache_enabled = True
+    target._context_pack_response_cache_max_entries = 256

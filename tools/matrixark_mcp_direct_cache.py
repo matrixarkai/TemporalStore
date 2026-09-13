@@ -344,7 +344,9 @@ def ensure_direct_context_pack_response_cache(target: Any) -> None:
         return
     target._direct_context_pack_response_cache_enabled = True
     target._direct_context_pack_response_cache_max_entries = max(
-        1, int(os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES", "").strip() or "256")
+        # Folded: every reader of this module is unreachable from production, so the variable
+        # this used to read could not be set by anything. 256 is the value it already produced.
+        1, 256
     )
     target._direct_context_pack_response_cache_lock = threading.Lock()
     target._direct_context_pack_response_cache: OrderedDict[str, Json] = OrderedDict()
