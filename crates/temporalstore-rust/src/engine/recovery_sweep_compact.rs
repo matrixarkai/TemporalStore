@@ -346,7 +346,7 @@ impl TemporalEngine {
         let slab_descriptors = self.page_store.slab_descriptors();
         let slab_summary = self.page_store.slab_summary();
         let block_slab_reports = self.page_store.slab_reports().unwrap_or_default();
-        let shards = self.shards.read().expect("engine lock poisoned");
+        let shards = self.shards_read_marked();
         let addresses = shards
             .get(&shard_id)
             .map(collect_live_page_addresses)
@@ -406,7 +406,12 @@ impl TemporalEngine {
                 continue;
             }
             probed_page_refs += 1;
-            match self.page_store.read(address) {
+            // Counted against the shard-table guard. This probe DOES read under the read guard,
+            // and unlike the warm-up it is bounded -- `readable_probe_limit` stops the reads
+            // while the per-slab tallies above keep going. Routed through the counter so the
+            // measurement covers both of the engine's maintenance page readers and a claim about
+            // one of them is made against a total that includes the other.
+            match self.read_page_counted(address) {
                 Ok(bytes) => {
                     readable_page_refs += 1;
                     slab_report.readable_live_page_refs =
@@ -626,6 +631,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // the tombstones so a restart does not resurrect the key by replaying the
             // earlier SET/EXPIRE records.
             if !replaying_wal() {
+                // ONE mirror lookup for the whole run, taken before the loop.
+                //
+                // The per-key form takes the mirror lock and bumps an Arc refcount for every
+                // tombstone, and this loop runs inside the shard-table WRITE guard -- the one
+                // lock that excludes every reader and writer on the shard -- so a round removing
+                // N keys took N of them in the worst place to take a lock. One lookup also gives
+                // the whole run ONE destination, where a sink swapped mid-loop would split a
+                // single round's tombstones across two mirrors and leave neither complete.
+                let mirror = self.maintenance_mirror_sink();
                 for key in &expired_keys {
                     let command = Command::CommonDelete { key: key.clone() };
                     let appended = self
@@ -634,7 +648,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     // An expiry is a real deletion, so it has to reach every log that a
                     // successor might replay -- not only this node's.
                     if appended.is_ok() {
-                        self.mirror_maintenance_write(request.shard_id, &command);
+                        if let Some(sink) = mirror.as_ref() {
+                            sink.record_write(request.shard_id, &command);
+                        }
                     }
                 }
                 shard.applied_wal_sequence =
