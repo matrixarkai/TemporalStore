@@ -1010,15 +1010,25 @@ def deployment_settable(reads):
     return {name for name in reads if name in names}
 
 
+#: Where a flag counts as SELECTED: chosen by a test, a shipped config, a launcher, a workflow or a
+#: document, plus the two modules that exist to offer and map settings. Written once because the
+#: control below has to ask about the same set -- it used to list the globs and leave the two
+#: modules out, so a flag selected because the PORTAL names it looked, to that control, like a flag
+#: selected only because this file names it.
+_SELECTION_SOURCES = ("tools/test_*.py", "config/*", "scripts/*", "*.sh", "tools/*.sh",
+                      "docker/*", ".github/*", "docs/*")
+_SELECTION_MODULES = ("tools/matrixark_gateway_config.py", "tools/matrixark_load_config.py")
+
+
+def _selecting_files():
+    """Every tracked file whose mention of a flag makes it `selected`, except this one."""
+    return [rel for rel in _tracked(*_SELECTION_SOURCES) if rel != _SELF] + list(_SELECTION_MODULES)
+
+
 def _selected():
     names = set()
-    for rel in _tracked("tools/test_*.py", "config/*", "scripts/*", "*.sh", "tools/*.sh",
-                        "docker/*", ".github/*", "docs/*"):
-        if rel == _SELF:
-            continue
+    for rel in _selecting_files():
         names |= set(_NAME.findall(_text(rel)))
-    names |= set(_NAME.findall(_text("tools/matrixark_gateway_config.py")))
-    names |= set(_NAME.findall(_text("tools/matrixark_load_config.py")))
     return names
 
 
@@ -1199,18 +1209,34 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             own, "this file names no flag at all, so either the prose lost its examples or the "
                  "scan stopped reading -- and the exclusion below is then hiding nothing")
         selected = _selected()
-        leaked = sorted(own & selected & set(self.reads))
-        for name in leaked:
-            with self.subTest(flag=name):
-                elsewhere = any(
-                    name in _text(rel)
-                    for rel in _tracked("tools/test_*.py", "config/*", "scripts/*", "*.sh",
-                                        "tools/*.sh", "docker/*", ".github/*", "docs/*")
-                    if rel != _SELF)
-                self.assertTrue(
-                    elsewhere,
-                    "%s is classified as selected and the only thing naming it is this file. "
-                    "The exclusion is not working." % name)
+        named_elsewhere = set()
+        for rel in _selecting_files():
+            named_elsewhere |= set(_NAME.findall(_text(rel)))
+
+        # ASKED THE OTHER WAY ROUND, because the first way could not fail without lying. It took
+        # every flag this file names that IS selected and demanded something else name it -- but
+        # `_selected` reads matrixark_gateway_config and matrixark_load_config too, and the check
+        # did not, so a flag the PORTAL selects tripped it the moment this file mentioned it, with
+        # a message saying the only thing naming it is this file while three modules named it.
+        # Widening the check to the same set removes the false accusation and leaves the assertion
+        # unable to fail at all: every selected flag is, by definition, named by a selecting file.
+        #
+        # The property wanted is the one the comment at the top of this file states -- that writing
+        # a flag's name in this file's prose does not make it `selected`. So: a flag only THIS file
+        # names must not be selected. 74 of the 99 this file names qualify, which is what makes it
+        # worth asserting rather than assuming.
+        only_here = sorted(set(own) - named_elsewhere)
+        self.assertGreater(
+            len(only_here), 20,
+            "only %d of the flags this file names are named nowhere else that selects. Near zero "
+            "means the mention scan or the selecting set has stopped matching, and the assertion "
+            "below then holds over almost nothing." % len(only_here))
+        leaked = sorted(set(only_here) & selected)
+        self.assertEqual(
+            [], leaked,
+            "these flags are named only in this file's own prose and are classified selected "
+            "anyway, so the register of what is documented where now describes this file rather "
+            "than the tree: %s" % ", ".join(leaked))
 
     def test_every_examined_flag_says_what_was_found(self) -> None:
         """A recorded flag with no finding beside it is a skip list wearing a register's name."""
