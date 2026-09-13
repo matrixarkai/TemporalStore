@@ -8496,3 +8496,385 @@ fn the_periodic_loop_relieves_index_memory_and_still_serves_every_key() {
         released.len()
     );
 }
+
+
+
+// ---------------------------------------------------------------------------
+// A dump manifest must hold back every slab the index it installs will need.
+// ---------------------------------------------------------------------------
+
+/// Buckets the slabpin fixture spreads over. Small on purpose, for the same reason #1642's
+/// fixture is: picking keys that land in one chosen bucket of the whole u32 routing space costs
+/// millions of candidate hashes, and the question here is untouched by how finely the shard is
+/// cut.
+const SLABPIN_BUCKETS: u32 = 8;
+
+fn slabpin_load(engine: &TemporalEngine, shard_id: ShardId) {
+    engine.load_shard_with(LoadShardRequest {
+        shard_id,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: SLABPIN_BUCKETS - 1,
+        readonly: false,
+        table_name: String::new(),
+    });
+}
+
+/// Big enough that the page lives in a block slab rather than inside its log record. A value small
+/// enough to ride in the log is served from the log whatever the slabs hold, which would make
+/// every count below say nothing about slabs.
+fn slabpin_value(key: &str) -> Vec<u8> {
+    let mut value = format!("value-{key}-").into_bytes();
+    value.resize(4096, b'v');
+    value
+}
+
+fn slabpin_write(engine: &TemporalEngine, shard_id: ShardId, key: &str) {
+    let response = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringSet {
+            key: key.to_string(),
+            value: slabpin_value(key),
+        },
+    });
+    assert!(response.status.ok, "write {key} failed: {response:?}");
+}
+
+fn slabpin_reads_back(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
+    let response = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringGet {
+            key: key.to_string(),
+        },
+    });
+    response.response
+        == (CommandResponse::Bytes {
+            value: Some(slabpin_value(key)),
+        })
+}
+
+/// Install `manifest` into a target holding the shared page slabs and nothing else, and count the
+/// two halves separately. NOTHING IS READ BEFORE THE INSTALL: a read answers out of the per-key
+/// response cache, so a probe taken while the shard is still empty caches a MISS for that key and
+/// every read after the install returns it -- which reads exactly like a loss, on both halves at
+/// once. That cost two wrong readings of this fixture.
+fn slabpin_restore_counts(
+    label: &str,
+    dir: &std::path::Path,
+    pages_dir: &std::path::Path,
+    manifest: &BucketDumpManifest,
+    shard_id: ShardId,
+    named_keys: &[String],
+    outside_keys: &[String],
+) -> (bool, usize, usize) {
+    let restored = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.join(format!("{label}-cache")),
+        pages_dir,
+        dir.join(format!("{label}-indexes")),
+    );
+    assert!(
+        restored.list_bucket_dump_manifests(shard_id).is_empty(),
+        "the {label} restore target was handed a manifest it was supposed to recover without"
+    );
+    slabpin_load(&restored, shard_id);
+    let installed = restored.install_bucket_dump_manifest(manifest).is_ok();
+    let named = named_keys
+        .iter()
+        .filter(|key| slabpin_reads_back(&restored, shard_id, key))
+        .count();
+    let outside = outside_keys
+        .iter()
+        .filter(|key| slabpin_reads_back(&restored, shard_id, key))
+        .count();
+    (installed, named, outside)
+}
+
+/// The collector holds back the slabs a manifest NAMES; the manifest installs a WHOLE-SHARD index.
+///
+/// THE TWO SCOPES THAT DISAGREE. A bucket dump manifest carries `index_bytes` -- the whole-shard
+/// index. #1642 measured that and proved it has to stay whole: install writes the decoded index as
+/// THE durable index for the shard, retention keeps the newest manifest and nothing else, and a
+/// manifest carrying only its own buckets would install a shard missing every bucket it did not
+/// name (measured there: 5/5 named, 0/8 unnamed). It also carries `block_slab_ids`, and that was
+/// only the slabs behind the DUMPED buckets' live page refs.
+///
+/// `block_slab_ids` is the whole of what the collector holds back -- `run_gc_inner` extends its
+/// live slab set with it, `storage_page_gc_dependency_plan` blocks on it, and the page-GC retain
+/// floor steps over it. So a slab holding nothing but UNNAMED-bucket pages was pinned by nothing.
+/// Compaction relocates those pages onto a fresh slab, the old one goes stale, the sweep destroys
+/// it, and the manifest's embedded index still points at it. Neither `validate_bucket_dump_manifest`
+/// nor the install preflight objects, because both filter what they probe down to `bucket_ids`.
+///
+/// MEASURED, BEFORE THE FIX: install still returns Ok, the bucket the manifest NAMES restores
+/// 5/5, and the buckets it does not name restore 0/8.
+///
+/// WHAT THIS BUILDS, and every step of it is load-bearing. The unnamed buckets' keys are written
+/// FIRST, then the slab is rolled, then the named bucket's keys: that is what puts the two halves
+/// on DIFFERENT slabs. Without the roll every slab holds both halves, every slab is named, and the
+/// hazard is unreachable -- so the separation is a denominator, asserted before anything is read.
+///
+/// WHAT IT ASSERTS, IN ORDER. The denominators first, because each one makes every later count
+/// pass for a reason that has nothing to do with the defect: the dump named ONE bucket, the shard
+/// holds others, the two halves are on disjoint slabs, compaction actually vacated the unnamed
+/// half's slabs, and -- the control -- the SAME manifest restores both halves before anything is
+/// collected. Then the property, counting the NAMED and the UNNAMED buckets SEPARATELY: #1642 and
+/// #1637 both found defects where the named half read full and hid a zero in the other half. Then
+/// by which mechanism, which is that the sweep kept the unnamed half's slabs because the manifest
+/// now names them.
+#[test]
+fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
+    const SHARD: ShardId = 4;
+    const IN_NAMED: usize = 5;
+    const OUTSIDE: usize = 8;
+    const COMPACTION_ROUNDS: usize = 8;
+
+    let dir = tempfile::tempdir().unwrap();
+    let pages_dir = dir.path().join("pages");
+    let source_index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        &pages_dir,
+        &source_index_dir,
+    );
+    slabpin_load(&engine, SHARD);
+    let named_bucket = engine.routing_bucket_for_key(SHARD, "named-0");
+
+    let mut named_keys = Vec::new();
+    let mut outside_keys = Vec::new();
+    let mut candidate = 0usize;
+    while named_keys.len() < IN_NAMED || outside_keys.len() < OUTSIDE {
+        let key = format!("named-{candidate}");
+        if engine.routing_bucket_for_key(SHARD, &key) == named_bucket {
+            if named_keys.len() < IN_NAMED {
+                named_keys.push(key);
+            }
+        } else if outside_keys.len() < OUTSIDE {
+            outside_keys.push(key);
+        }
+        candidate += 1;
+    }
+
+    // The unnamed buckets' pages go on the slab the store is filling now.
+    for key in outside_keys.iter() {
+        slabpin_write(&engine, SHARD, key);
+    }
+    let outside_slabs = engine
+        .live_block_slab_ids(SHARD)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    // Roll, so the named bucket's pages land somewhere else. This is what makes a slab holding
+    // ONLY unnamed-bucket pages exist at all.
+    engine.block_store().roll_slab().expect("roll a fresh slab");
+    for key in named_keys.iter() {
+        slabpin_write(&engine, SHARD, key);
+    }
+    let named_slabs = engine
+        .live_block_slab_ids(SHARD)
+        .into_iter()
+        .filter(|slab| !outside_slabs.contains(slab))
+        .collect::<BTreeSet<_>>();
+
+    let manifest = engine
+        .create_bucket_dump_manifest(SHARD, vec![named_bucket])
+        .expect("a dump of one bucket should persist");
+
+    // DENOMINATORS. Each one makes everything below vacuous if it does not hold.
+    assert_eq!(
+        manifest.bucket_ids,
+        vec![named_bucket],
+        "the dump was supposed to name ONE bucket and named {:?}; a dump naming every bucket \
+         satisfies everything below without testing anything",
+        manifest.bucket_ids
+    );
+    let shard_buckets = engine
+        .bucket_storage_summaries(SHARD)
+        .into_iter()
+        .map(|summary| summary.routing_bucket)
+        .collect::<BTreeSet<_>>();
+    let unnamed_bucket_count = shard_buckets
+        .iter()
+        .filter(|bucket| **bucket != named_bucket)
+        .count();
+    assert!(
+        unnamed_bucket_count > 0,
+        "every key landed in the dumped bucket, so there are no unnamed buckets to lose (shard \
+         holds buckets {shard_buckets:?}, the dump named {named_bucket})"
+    );
+    assert!(
+        !outside_slabs.is_empty() && !named_slabs.is_empty(),
+        "the roll did not separate the two halves: the unnamed buckets sit on {outside_slabs:?} \
+         and the named bucket on {named_slabs:?}. Sharing a slab makes the manifest name it and \
+         the hazard cannot arise"
+    );
+
+    // THE CONTROL, taken before anything is compacted or swept: the same manifest, installed into
+    // a target holding the shared pages and nothing else, restores BOTH halves. Without it a zero
+    // after the sweep says only that this fixture cannot restore, not that the sweep lost data.
+    let control = slabpin_restore_counts(
+        "control",
+        dir.path(),
+        &pages_dir,
+        &manifest,
+        SHARD,
+        &named_keys,
+        &outside_keys,
+    );
+    assert_eq!(
+        control,
+        (true, IN_NAMED, OUTSIDE),
+        "the manifest could not restore its own shard before anything was collected \
+         (installed, named, unnamed) = {control:?}, so the counts after the sweep would be \
+         measuring a broken fixture"
+    );
+
+    // COMPACTION, WITH THE ROUNDS COMPUTED FROM THE BUDGET.
+    //
+    // A round relocates at most COMPACTION_ROUND_PAGE_REFS (2,048) page refs and
+    // COMPACTION_ROUND_BYTES (256 MiB), then stops and leaves the rest to the next one. So the
+    // rounds this fixture needs is ceil(live_page_refs / 2,048), and at IN_NAMED + OUTSIDE = 13
+    // refs that is ONE. This runs COMPACTION_ROUNDS of them -- more than the work needs -- and
+    // checks `pages_left_by_budget` per round, which is what actually says a round FINISHED.
+    // Waiting for a round to relocate nothing never arrives: each round rolls a fresh slab and
+    // moves every live page onto it, so a settled shard still reports a full round's work. That
+    // is what the periodic path's relocation hint is for, and calling compaction directly does
+    // not consult it.
+    let live_page_refs = engine
+        .bucket_storage_summaries(SHARD)
+        .iter()
+        .map(|summary| summary.page_ref_count)
+        .sum::<u64>();
+    let rounds_needed = live_page_refs.div_ceil(2_048).max(1) as usize;
+    assert!(
+        COMPACTION_ROUNDS > rounds_needed,
+        "the fixture holds {live_page_refs} live page refs, which needs {rounds_needed} \
+         compaction round(s); running only {COMPACTION_ROUNDS} would leave pages behind, and a \
+         short run looks exactly like a settled one"
+    );
+    let mut relocated_total = 0usize;
+    for round in 0..COMPACTION_ROUNDS {
+        let report = engine
+            .compact_shard_pages(SHARD)
+            .expect("compaction should succeed");
+        relocated_total += report.rewritten_page_refs;
+        assert_eq!(
+            report.pages_left_by_budget, 0,
+            "compaction round {round} stopped on its budget, so the shard is half-moved and the \
+             sweep below acts on it"
+        );
+    }
+    assert!(
+        relocated_total > 0,
+        "compaction relocated nothing over {COMPACTION_ROUNDS} rounds, so no slab was vacated and \
+         every count below is about an idle compactor"
+    );
+    let live_after_compaction = engine
+        .live_block_slab_ids(SHARD)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let still_live = outside_slabs
+        .intersection(&live_after_compaction)
+        .count();
+    assert_eq!(
+        still_live, 0,
+        "compaction left {still_live} of the unnamed buckets' slabs {outside_slabs:?} live (live \
+         now {live_after_compaction:?}), so nothing went stale and only a pin can be tested when \
+         there is something to pin"
+    );
+
+    // THE SWEEP. The same aggressive operator sweep the /gc guard earlier in this file pins:
+    // `run_gc_inner` keeps the live set plus every slab a durable manifest names, and nothing
+    // else -- this is the complement of that guard, on the half it does not cover. The log
+    // frontiers stay unset because the restore target below holds no log of its own -- the dump
+    // is already the only thing that can rebuild the pre-dump state there, so reclaiming this
+    // shard's log would change nothing and only add a variable.
+    let runtime = DataNodeRuntime::new(
+        engine.clone(),
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    let submitted = runtime.submit_gc(
+        GcRequest {
+            shard_id: SHARD,
+            retain_wal_from_sequence: None,
+            retain_index_log_from_sequence: None,
+            retain_block_slabs_from_id: Some(u64::MAX),
+            page_gc_delayed_destroy: false,
+            page_gc_invalidate_removed_slabs_only: false,
+        },
+        RequestController { timeout_ms: 5000 },
+    );
+    let finished = wait_for_job(&runtime, submitted.job_id);
+    let Some(DataNodeTaskOutput::Gc(output)) = finished.output else {
+        panic!("expected gc output");
+    };
+    assert!(output.status.ok, "{:?}", output.status);
+
+    // A CONTROL ON THE SOURCE. It reads every key back -- its own index points at the slabs
+    // compaction wrote -- so nothing about the STORE is broken and the restore counts below are
+    // about the MANIFEST.
+    let source_named = named_keys
+        .iter()
+        .filter(|key| slabpin_reads_back(&engine, SHARD, key))
+        .count();
+    let source_outside = outside_keys
+        .iter()
+        .filter(|key| slabpin_reads_back(&engine, SHARD, key))
+        .count();
+    assert_eq!(
+        (source_named, source_outside),
+        (IN_NAMED, OUTSIDE),
+        "the source engine lost keys of its own, so the restore below would measure a broken \
+         fixture rather than a broken manifest"
+    );
+
+    // THE PROPERTY. The same manifest, the same restore, after the collector has run.
+    let after = slabpin_restore_counts(
+        "after",
+        dir.path(),
+        &pages_dir,
+        &manifest,
+        SHARD,
+        &named_keys,
+        &outside_keys,
+    );
+    let remaining = engine
+        .block_store()
+        .slab_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        after,
+        (true, IN_NAMED, OUTSIDE),
+        "restoring from the manifest after the sweep gave (installed, named, unnamed) = {after:?} \
+         where the same manifest gave {control:?} before it. The shard's live slabs are now \
+         {remaining:?}; the manifest names {:?} and the unnamed buckets' pages are on \
+         {outside_slabs:?}. The middle number is the bucket the dump NAMES and the last is the \
+         {unnamed_bucket_count} bucket(s) it does not -- install still succeeded, because both \
+         validation and the install preflight filter what they probe down to bucket_ids",
+        manifest.block_slab_ids
+    );
+
+    // AND BY WHICH MECHANISM. The slabs behind the unnamed buckets are still in the store,
+    // because the manifest names them. A future change that keeps them some other way reads as a
+    // change rather than as this still working.
+    let destroyed = outside_slabs
+        .iter()
+        .copied()
+        .filter(|slab| !remaining.contains(slab))
+        .collect::<Vec<_>>();
+    assert!(
+        destroyed.is_empty(),
+        "the sweep destroyed {destroyed:?}, slabs holding nothing but unnamed-bucket pages that \
+         the manifest's whole-shard index still points at (manifest names {:?}, store holds \
+         {remaining:?})",
+        manifest.block_slab_ids
+    );
+}

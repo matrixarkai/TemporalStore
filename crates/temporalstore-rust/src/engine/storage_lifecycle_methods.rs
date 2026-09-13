@@ -186,6 +186,17 @@ impl TemporalEngine {
         // An OLDER manifest kept because it is the only dump covering some bucket can still hold
         // a slab back; that is a retention decision this does not override, and it does not
         // re-arm this either.
+        //
+        // RE-CHECKED after `block_slab_ids` was widened to every slab the manifest's whole-shard
+        // index can install, rather than only the dumped buckets'. The argument turns on one
+        // premise -- that a fresh dump names LIVE slabs only -- and widening makes that premise
+        // exact rather than weakening it: the widened set is derived from the live page refs of
+        // the index the dump exports, which IS the shard's live slab set at that moment, so every
+        // id in it is live by construction. What changes is how often this fires, not whether it
+        // ends: a slab holding nothing but unnamed-bucket pages is now named, so vacating it now
+        // arms this where before it armed nothing and the slab was destroyed under a manifest
+        // that needed it. Each firing still replaces the newest manifest with one naming live
+        // slabs alone, so it still cannot fire twice for the same vacated slab.
         let latest_manifest_names_a_vacated_slab = latest_bucket_dump_manifest
             .as_ref()
             .map(|manifest| {
