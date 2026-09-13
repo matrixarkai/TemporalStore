@@ -85,6 +85,7 @@ mod upsert_deltas;
 mod part3;
 mod part4;
 mod expiry_scale;
+mod reclaim_dump;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,

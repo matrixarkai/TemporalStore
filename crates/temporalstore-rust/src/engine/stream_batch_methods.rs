@@ -533,11 +533,43 @@ impl TemporalEngine {
                 // single-command path) so shard load replays only records after it. Under
                 // flat append read the O(1) cached last sequence instead of `stats()` (which
                 // rescans the whole WAL file); without it the exact `stats()` value is kept.
+                // Where this batch STARTS in the log, taken before the anchor moves.
+                //
+                // The claim stamped below has to be the bucket's OLDEST undumped write, and for a
+                // batch that is the FIRST record it appended, not the last. The anchor still
+                // holding the previous write's position is one below that first record, so
+                // `+ 1` names it -- and when some other path wrote without anchoring, the value
+                // is only lower, which retains more rather than less. A claim ABOVE a bucket's
+                // oldest undumped write is the direction that frees records it still needs.
+                let batch_first_wal_sequence = shard
+                    .applied_wal_sequence
+                    .unwrap_or_default()
+                    .saturating_add(1);
                 shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
                     self.wal_store.cached_last_sequence(request.shard_id)
                 } else {
                     self.wal_store.stats(request.shard_id).last_sequence
                 });
+                // The WAL half of what each bucket this batch dirtied holds over the log, stamped
+                // the way the single-command path stamps it (engine.rs, after its own append).
+                //
+                // Without it a batch-dirtied bucket reported NO CLAIM RECORDED, which the reclaim
+                // plan reads as unknown rather than as "needs nothing" -- so every such bucket
+                // landed in `missing_bucket_generations` and refused the whole plan until a dump
+                // happened to cover it. A dump is capped per round, so on a shard written through
+                // this path the two logs simply grew.
+                //
+                // Only when unset, for the same reason as the sibling: the field is the OLDEST
+                // undumped write, so a later batch into an already-dirty bucket must not move it.
+                for key in &delta_command_keys {
+                    let routing_bucket =
+                        page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+                        if bucket.first_dirty_wal_sequence == 0 {
+                            bucket.first_dirty_wal_sequence = batch_first_wal_sequence;
+                        }
+                    }
+                }
                 // Append the pages this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
@@ -572,16 +604,40 @@ impl TemporalEngine {
                 } else {
                     Vec::new()
                 };
-                let _ = self.index_log_store.append_delta(
-                    request.shard_id,
-                    items,
-                    key_states,
-                    shard.applied_wal_sequence,
-                    None,
-                    upsert_record,
-                    // Non-blocking on the raft apply path (raft log is the durability source).
-                    !raft_applying(),
-                );
+                let appended_index_log_sequence = self
+                    .index_log_store
+                    .append_delta(
+                        request.shard_id,
+                        items,
+                        key_states,
+                        shard.applied_wal_sequence,
+                        None,
+                        upsert_record,
+                        // Non-blocking on the raft apply path (raft log is the durability
+                        // source).
+                        !raft_applying(),
+                    )
+                    .unwrap_or(0);
+                // The index-log half, and it is a SEPARATE half: the plan keeps two frontiers
+                // counted in two different sequences and requires both, so a bucket that can
+                // place itself in the WAL and not in the index log has still said nothing.
+                //
+                // `append_delta` returns 0 when it wrote nothing, which is exactly "no claim" --
+                // the same guard the single-command path uses.
+                if appended_index_log_sequence > 0 {
+                    for key in &delta_command_keys {
+                        let routing_bucket =
+                            page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                        if let Some(bucket) =
+                            shard.bucket_index.bucket_map.get_mut(&routing_bucket)
+                        {
+                            if bucket.first_dirty_index_log_sequence == 0 {
+                                bucket.first_dirty_index_log_sequence =
+                                    appended_index_log_sequence;
+                            }
+                        }
+                    }
+                }
             }
         }
         BatchExecuteResponse {
