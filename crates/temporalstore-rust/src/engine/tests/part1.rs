@@ -8127,50 +8127,73 @@ fn measured_expiry_sweep(
     )
 }
 
-/// THE GUARD: the expiry sweep's served-index flush happens AFTER the shard write guard drops.
+/// THE GUARD: the expiry sweep never encodes the served index inside the shard write guard --
+/// and, since the checkpoint became a delta, never encodes it at all.
 ///
 /// The sweep's own work is bounded -- `expiry_scan_budget` caps what a round looks at, so a round
 /// costs the same on a shard of four thousand keys as on one of four hundred thousand. The flush
 /// that followed it was not: encoding the served index runs the WHOLE shard through serde and then
 /// zstd, and it ran while the shard-table write lock was still held, so every read and every write
-/// on that shard queued behind a cost that scales with the store. That is the one part of the
-/// round that grows, and it is the part that does not need the lock.
+/// on that shard queued behind a cost that scales with the store.
+///
+/// TWO SEPARATE CLAIMS LIVE HERE, and the second one swallowed the first. Moving that encode out
+/// of the guarded region changed WHO WAITED for it. Making the checkpoint a delta of the keys the
+/// round removed (`ExpiryIndexCheckpoint::Delta`) removed the encode itself, so today the shipped
+/// round encodes ZERO bytes of served index. A guard asserting only "nothing encoded under the
+/// guard" would now pass for the newer reason and stop testing the older one -- so the arm that
+/// still writes a whole index, after the drop, is kept and asserted on its own.
 ///
 /// Counted, not timed. This box is shared, and a build running next door moves wall-clock by an
 /// order of magnitude without moving both arms of a comparison equally. A COUNT of encodes inside
 /// the guarded region is the same number under any load.
 ///
-/// Both arms run in ONE process against the same fixture:
-///   * the control arm keeps the flush inside the region (`flush_expiry_index_under_lock_for_test`),
-///     which is where it used to be -- so the counter has to produce a non-zero number, and an
-///     assertion of zero in the other arm cannot be passing because the counter stopped counting;
-///   * the shipped arm flushes after the guard drops.
-/// Both must expire the same records and both must still encode an index, which is what stops this
-/// from being satisfied by a sweep that did nothing.
+/// THREE arms, ONE process, the same fixture:
+///   * WHOLE + UNDER THE LOCK -- where the flush used to be. The positive control: the counter
+///     has to produce a non-zero number inside the region, or every zero below is a broken
+///     counter rather than a shortened hold.
+///   * WHOLE + AFTER THE DROP -- the claim the region change made, still standing on its own
+///     subject: an encode this size happens, and none of it lands inside the guard.
+///   * SHIPPED -- delta checkpoint: no served-index encode happens anywhere in the round.
+/// All three must expire the same records, which is what stops this from being satisfied by a
+/// sweep that did nothing.
 #[test]
 fn the_expiry_sweep_flush_waits_for_the_write_guard_to_drop() {
     const RECORDS: usize = 200;
 
     let control_dir = tempfile::tempdir().unwrap();
     let control_engine = expired_shard_for_flush_measurement(control_dir.path(), RECORDS);
+    control_engine.flush_whole_expiry_index_for_test();
     control_engine.flush_expiry_index_under_lock_for_test();
     let (control, control_removed) = measured_expiry_sweep(&control_engine, RECORDS);
+
+    let whole_dir = tempfile::tempdir().unwrap();
+    let whole_engine = expired_shard_for_flush_measurement(whole_dir.path(), RECORDS);
+    whole_engine.flush_whole_expiry_index_for_test();
+    let (whole, whole_removed) = measured_expiry_sweep(&whole_engine, RECORDS);
 
     let shipped_dir = tempfile::tempdir().unwrap();
     let shipped_engine = expired_shard_for_flush_measurement(shipped_dir.path(), RECORDS);
     let (shipped, shipped_removed) = measured_expiry_sweep(&shipped_engine, RECORDS);
 
     eprintln!(
-        "[expiry flush] under the lock: {} encode(s) / {} bytes under the guard, {} / {} total, \
-{control_removed} records expired",
+        "[expiry flush] whole index, under the lock: {} encode(s) / {} bytes under the guard, \
+{} / {} total, {control_removed} records expired",
         control.encodes_under_guard,
         control.encode_bytes_under_guard,
         control.encodes_total,
         control.encode_bytes_total,
     );
     eprintln!(
-        "[expiry flush] after the drop: {} encode(s) / {} bytes under the guard, {} / {} total, \
-{shipped_removed} records expired",
+        "[expiry flush] whole index, after the drop: {} encode(s) / {} bytes under the guard, \
+{} / {} total, {whole_removed} records expired",
+        whole.encodes_under_guard,
+        whole.encode_bytes_under_guard,
+        whole.encodes_total,
+        whole.encode_bytes_total,
+    );
+    eprintln!(
+        "[expiry flush] shipped (delta checkpoint): {} encode(s) / {} bytes under the guard, \
+{} / {} total, {shipped_removed} records expired",
         shipped.encodes_under_guard,
         shipped.encode_bytes_under_guard,
         shipped.encodes_total,
@@ -8180,20 +8203,25 @@ fn the_expiry_sweep_flush_waits_for_the_write_guard_to_drop() {
     // DENOMINATORS FIRST. A sweep that expired nothing, or expired something and never reached a
     // flush, satisfies "no encode under the guard" by not running the path at all.
     assert!(
-        control_removed > 0 && shipped_removed > 0,
-        "neither arm expired a record ({control_removed} / {shipped_removed}), so the flush never \
-ran and nothing below is measuring the sweep",
+        control_removed > 0 && whole_removed > 0 && shipped_removed > 0,
+        "an arm expired no records ({control_removed} / {whole_removed} / {shipped_removed}), so \
+its flush never ran and nothing below is measuring the sweep",
     );
     assert_eq!(
         control_removed, shipped_removed,
-        "the two arms must do the same work for their encode counts to be comparable",
+        "the arms must do the same work for their encode counts to be comparable",
+    );
+    assert_eq!(
+        whole_removed, shipped_removed,
+        "the arms must do the same work for their encode counts to be comparable",
     );
     assert!(
-        shipped.encodes_total > 0 && shipped.encode_bytes_total > 0,
-        "the shipped arm encoded no served index at all ({} encodes, {} bytes), so it is not the \
-flush that moved -- it is the flush that vanished",
-        shipped.encodes_total,
-        shipped.encode_bytes_total,
+        whole.encodes_total > 0 && whole.encode_bytes_total > 0,
+        "the whole-index arm encoded no served index at all ({} encodes, {} bytes), so it is not \
+the flush that moved out of the region -- it is the flush that vanished, and this arm has stopped \
+being a subject for the claim below",
+        whole.encodes_total,
+        whole.encode_bytes_total,
     );
 
     // POSITIVE CONTROL: the counter can see a flush inside the region, because here is one.
@@ -8206,22 +8234,42 @@ would pass against an engine that had stopped counting entirely",
         control.encode_bytes_under_guard,
     );
 
-    // THE ASSERTION.
+    // THE ASSERTION THE REGION CHANGE MADE, on the arm that still has something to move.
     assert_eq!(
-        shipped.encodes_under_guard, 0,
+        whole.encodes_under_guard, 0,
         "the expiry sweep encoded the served index {} time(s) ({} bytes) while still holding the \
 shard-table write guard. The encode scales with the STORE while the round's own work is bounded, \
 so every reader and writer on this shard queues behind it. Take a stamped clone under the guard \
 and flush after it drops -- `apply_storage_eviction` is the worked example. If a new step needs \
 the shard itself rather than the snapshot, say why here rather than widening the region",
-        shipped.encodes_under_guard,
-        shipped.encode_bytes_under_guard,
+        whole.encodes_under_guard,
+        whole.encode_bytes_under_guard,
     );
     assert_eq!(
-        shipped.encode_bytes_under_guard, 0,
+        whole.encode_bytes_under_guard, 0,
         "no encode was counted inside the guarded region but {} bytes were, which means the two \
 tallies have come apart",
-        shipped.encode_bytes_under_guard,
+        whole.encode_bytes_under_guard,
+    );
+
+    // THE ASSERTION THE DELTA CHECKPOINT MADE: the shipped round does not encode a served index
+    // anywhere. `an_expiry_round_persists_what_changed` is what says the thing it writes instead
+    // is proportional to the round rather than to the shard.
+    assert_eq!(
+        shipped.encodes_total, 0,
+        "the shipped expiry round encoded the served index {} time(s) ({} bytes). A round that \
+removed a handful of keys re-encoded the whole shard, which is why its cost tracked live keys \
+rather than due ones. It is supposed to append an index-log DELTA naming what it removed \
+(`ExpiryIndexCheckpoint::Delta`); the whole-index arm above is measurement scaffolding, not a \
+production path",
+        shipped.encodes_total,
+        shipped.encode_bytes_total,
+    );
+    assert_eq!(
+        shipped.encodes_under_guard, 0,
+        "no encode was counted in total but {} landed inside the guarded region, which means the \
+two tallies have come apart",
+        shipped.encodes_under_guard,
     );
 
     // And the sweep still did its job in the arm that ships: the keys are gone.

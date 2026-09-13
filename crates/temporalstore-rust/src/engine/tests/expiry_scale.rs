@@ -566,27 +566,24 @@ fn a_large_due_batch_does_not_stall_a_round() {
 /// going to expire. That claim is exact and this test pins it -- `scanned_records` is the due set
 /// at every keyspace, not a fraction of the keyspace.
 ///
-/// It is not a claim that a round is free of the keyspace. A round that expires ANYTHING ends by
-/// serializing the whole shard index and persisting it once (`serialize_index_stamped` ->
-/// `persist_index_bytes` -> `append_index_bytes` in `sweep_expired_records_with_request`), and
-/// that is whole-shard work whether ten keys expired or ten thousand. Measured here, debug build:
-/// a round expiring 10 keys costs about 0.11 s at a 2,000-key shard, 0.92 s at 20,000 and several
-/// seconds at 100,000, while looking at exactly 10 records at every one of those sizes.
+/// It was for a long time not a claim that a round is free of the keyspace. A round that expired
+/// ANYTHING ended by serializing the whole shard index and persisting it once, which is
+/// whole-shard work whether ten keys expired or ten thousand: measured here, debug build, a round
+/// expiring 10 keys cost about 0.11 s at a 2,000-key shard and 0.92 s at 20,000 -- 8.5x for the
+/// same ten records looked at.
 ///
-/// FOUND, NOT FIXED. That residual term is a real cost -- at the storage manager's cadence a large
-/// shard with a trickle of expiries re-serializes its entire index every round that catches one --
-/// and it is a DIFFERENT defect from the one the ordered index fixed, with a different fix (batch
-/// or defer the persist, or make it a delta). It is recorded here rather than asserted, because an
-/// assertion on it would fail today and this test's job is to hold the line that was won.
+/// FIXED. The checkpoint is now an index-log DELTA naming the keys the round removed, so what a
+/// round writes is proportional to the round. `an_expiry_round_persists_what_changed` measures
+/// that in BYTES against an arm that still writes the whole index, and the timings printed below
+/// are the loose confirmation rather than the claim.
 ///
-/// The sharpest edge is already off it: the flush no longer runs under the shard write guard, so
-/// the round does not queue every other reader and writer behind itself
-/// (`the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`, part1). That moved WHO WAITS, not
-/// how much work a round does, which is why the ratio below is still what it is.
+/// The region change came first and was a different thing: the flush no longer runs under the
+/// shard write guard (`the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`, part1). That
+/// moved WHO WAITS. This moved how much work a round does.
 ///
 /// The distinction matters for the round-robin-cursor proposal too: a bounded cursor would not
-/// have touched this term either. It bounds the walk; it does not make the round's fixed cost
-/// smaller, and it would have kept the scan cost the index removed.
+/// have touched either term. It bounds the walk; it does not make the round's fixed cost smaller,
+/// and it would have kept the scan cost the index removed.
 #[test]
 fn a_round_looks_at_the_due_set_not_the_keyspace() {
     const DUE_KEYS: usize = 10;
@@ -644,13 +641,514 @@ fn a_round_looks_at_the_due_set_not_the_keyspace() {
          with the due set."
     );
 
-    // THE RESIDUAL, printed: the once-per-round whole-shard index persist. Not asserted -- see
-    // the note above.
+    // The round's wall clock, printed not asserted: this box is shared and a timing on it is
+    // not evidence. The deterministic form of this claim is
+    // `an_expiry_round_persists_what_changed`, which counts BYTES.
     println!(
         "  round cost with {DUE_KEYS} due: {:.1} ms at 2k live -> {:.1} ms at 20k live \
-         ({:.2}x) -- scan removed, whole-shard index persist per round remains",
+         ({:.2}x) -- scan removed, checkpoint is now a delta of what the round removed",
         round_small_us as f64 / 1_000.0,
         round_large_us as f64 / 1_000.0,
         round_large_us as f64 / round_small_us.max(1) as f64
+    );
+}
+
+/// THE GUARD: what an expiry round PERSISTS tracks what it changed, not what the shard holds.
+///
+/// `a_round_looks_at_the_due_set_not_the_keyspace` above fixed the SCAN -- a round looks at ten
+/// records whether the shard holds two thousand live keys or a hundred thousand. A whole-shard
+/// term outlived it: a round that expired anything re-encoded and rewrote the ENTIRE served index
+/// once, so the round's cost still tracked LIVE KEYS. Measured before this changed, debug build,
+/// ten due keys: 109 ms at 2,000 live, 922 ms at 20,000 -- 8.5x for the same ten records.
+///
+/// The round now appends an index-log DELTA instead: one record carrying a tombstone blob per key
+/// the round removed, which `fold_index_log_deltas` folds onto the base on load. That is the same
+/// record shape the ordinary delete path has always written, and expiry IS a logged delete.
+///
+/// COUNTED IN BYTES, NOT TIMED. Timings on this box are void above about 24 load, and a ratio
+/// between two arms is exactly the thing a noisy box corrupts. Checkpoint bytes are deterministic:
+/// the served-index encode bytes (`index_encode_counts`, zero for a delta round) plus what the
+/// round appended to the index log.
+///
+/// THE POSITIVE CONTROL IS AN ARM, NOT A COMMENT. `flush_whole_expiry_index_for_test` keeps the
+/// whole-index checkpoint reachable, so both numbers come from the same process on the same
+/// fixture. Without it, "the bytes are flat" would be satisfied just as well by a round that
+/// stopped writing anything -- and the whole-index arm's ratio is asserted to GROW, which is what
+/// proves the measurement can see the shard at all.
+#[test]
+fn an_expiry_round_persists_what_changed() {
+    const DUE_KEYS: usize = 10;
+    const SMALL: usize = 2_000;
+    const LARGE: usize = 20_000;
+
+    /// Bytes one round wrote for its served-index checkpoint, and the records it removed.
+    fn checkpoint_bytes(live_keys: usize, whole_index: bool) -> (u64, usize) {
+        let engine = TemporalEngine::default();
+        if whole_index {
+            engine.flush_whole_expiry_index_for_test();
+        }
+        engine.load_shard(1);
+        let mut seed = Vec::with_capacity(live_keys + DUE_KEYS);
+        for index in 0..live_keys {
+            seed.push((format!("live-{index:08}"), 3_600_000u64));
+        }
+        for index in 0..DUE_KEYS {
+            seed.push((format!("zzz-due-{index:04}"), 1u64));
+        }
+        write_keys(&engine, 1, seed);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // Denominator, both halves: the keyspace is really there and exactly DUE_KEYS are due.
+        let (held, due) = deadline_census(&engine, 1);
+        assert_eq!(held, live_keys + DUE_KEYS, "the fixture did not land: {held} deadlines");
+        assert_eq!(due, DUE_KEYS, "{due} keys are due, expected {DUE_KEYS}");
+
+        crate::engine::reset_index_encode_counts();
+        let log_before = engine.index_log_store.stats(1).bytes_written;
+        let report = sweep_once(&engine, 1);
+        let encoded = crate::engine::index_encode_counts().encode_bytes_total;
+        let logged = engine
+            .index_log_store
+            .stats(1)
+            .bytes_written
+            .saturating_sub(log_before);
+        let written = encoded.saturating_add(logged);
+
+        // THE WORK-DONE COLUMN. A round that expired nothing writes nothing, and would sail
+        // through every flatness assertion below.
+        assert_eq!(
+            report.expired_records_removed, DUE_KEYS,
+            "the round removed {} of {DUE_KEYS} due keys, so the bytes below are not the cost of \
+             checkpointing them",
+            report.expired_records_removed
+        );
+        let (held_after, due_after) = deadline_census(&engine, 1);
+        assert_eq!(due_after, 0, "{due_after} due deadlines survived the round");
+        assert_eq!(
+            held_after, live_keys,
+            "the round left {held_after} deadlines, expected exactly the {live_keys} live ones"
+        );
+
+        println!(
+            "  {} checkpoint, live_keys={live_keys:>6}: {written:>9} bytes written ({encoded} \
+encoded + {logged} logged), {} removed",
+            if whole_index { "WHOLE" } else { "DELTA" },
+            report.expired_records_removed,
+        );
+        (written, report.expired_records_removed)
+    }
+
+    let (whole_small, _) = checkpoint_bytes(SMALL, true);
+    let (whole_large, _) = checkpoint_bytes(LARGE, true);
+    let (delta_small, _) = checkpoint_bytes(SMALL, false);
+    let (delta_large, _) = checkpoint_bytes(LARGE, false);
+
+    let whole_growth = whole_large as f64 / whole_small.max(1) as f64;
+    let delta_growth = delta_large as f64 / delta_small.max(1) as f64;
+    println!(
+        "  {DUE_KEYS} due keys, checkpoint bytes 2k live -> 20k live: WHOLE {whole_small} -> \
+{whole_large} ({whole_growth:.2}x), DELTA {delta_small} -> {delta_large} ({delta_growth:.2}x)"
+    );
+
+    // POSITIVE CONTROL, asserted: the measurement can see the shard. Ten times the live keys,
+    // and the whole-index checkpoint grows with them. If this stops firing, the flatness below
+    // is not evidence of anything.
+    assert!(
+        whole_growth > 4.0,
+        "the WHOLE-index checkpoint grew only {whole_growth:.2}x ({whole_small} -> {whole_large} \
+         bytes) for a ten-fold larger keyspace. That arm exists to be the thing the delta is \
+         measured against; if it no longer tracks the shard, this measurement proves nothing and \
+         the flatness assertion below is vacuous"
+    );
+    assert!(
+        delta_small > 0 && delta_large > 0,
+        "the delta checkpoint wrote nothing at all ({delta_small} / {delta_large} bytes). A round \
+         that removed {DUE_KEYS} keys has to write the record that describes the removal, or the \
+         removal survives only in the WAL and the served index is reconstructed without it"
+    );
+
+    // THE ASSERTION. Same ten records removed at both sizes, so the checkpoint should cost the
+    // same at both sizes.
+    assert!(
+        delta_growth < 1.5,
+        "the expiry checkpoint grew {delta_growth:.2}x ({delta_small} -> {delta_large} bytes) \
+         between a 2,000-key and a 20,000-key shard while removing the same {DUE_KEYS} records \
+         both times, against {whole_growth:.2}x for the whole-index arm. The round is persisting \
+         something that scales with the SHARD again -- check that the checkpoint is still \
+         `ExpiryIndexCheckpoint::Delta` and that nothing in building it walks more than the keys \
+         the round removed"
+    );
+}
+
+/// An expired key stays expired across every path that rebuilds a shard.
+///
+/// This is the correctness half of `an_expiry_round_persists_what_changed`. The round no longer
+/// rewrites the served index, so the base index on disk still NAMES the keys the round removed --
+/// what carries the removal forward is the index-log delta plus the WAL tombstones the round
+/// appended before it. Both have to hold, on every path that reconstructs a shard.
+///
+/// WHY BOTH SOURCES ARE ALLOWED TO AGREE. The safety argument is directional: the durable index
+/// anchor must never move AHEAD of the tombstones. The delta carries the anchor and the deletions
+/// in ONE record, so a reader that folds the anchor has folded the deletions, and a delta that
+/// never lands leaves the anchor behind the tombstones and WAL replay re-derives them. A test that
+/// forbade the WAL from also being right would be testing something the design does not claim.
+///
+/// COUNTED. The assertion is the deadline census -- `held` and `due` -- not a `StringGet`. Lazy
+/// expiry removes an expired key on read, so a `StringGet` returning None would pass even if the
+/// sweep's removal had been lost entirely; a deadline that came BACK is visible only in the census.
+#[test]
+fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
+    const LIVE_KEYS: usize = 1_000;
+    const DUE_KEYS: usize = 5;
+    /// Long enough that the due keys survive a persist/reload with their deadlines intact, short
+    /// enough that the test does not crawl. Same bargain as
+    /// `the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay`.
+    const DUE_TTL_MS: u64 = 700;
+
+    fn seed() -> Vec<(String, u64)> {
+        let mut seed = Vec::with_capacity(LIVE_KEYS + DUE_KEYS);
+        for index in 0..LIVE_KEYS {
+            seed.push((format!("live-{index:08}"), 3_600_000u64));
+        }
+        for index in 0..DUE_KEYS {
+            seed.push((format!("zzz-due-{index:04}"), DUE_TTL_MS));
+        }
+        seed
+    }
+
+    /// Wait out the short TTLs, sweep once, and assert the round ran and wrote no whole index.
+    fn sweep_after(engine: &TemporalEngine) {
+        loop {
+            let (_, due) = deadline_census(engine, 1);
+            if due >= DUE_KEYS {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let (held, due) = deadline_census(engine, 1);
+        assert_eq!(held, LIVE_KEYS + DUE_KEYS, "the fixture did not land: {held} deadlines");
+        assert_eq!(due, DUE_KEYS, "{due} keys are due, expected {DUE_KEYS}");
+
+        crate::engine::reset_index_encode_counts();
+        let report = sweep_once(engine, 1);
+        assert_eq!(
+            report.expired_records_removed, DUE_KEYS,
+            "the round removed {} of {DUE_KEYS}, so nothing below is recovering from a removal",
+            report.expired_records_removed
+        );
+        // The denominator that makes every arm below a recovery rather than a re-read: the round
+        // wrote no whole served index at all.
+        assert_eq!(
+            crate::engine::index_encode_counts().encodes_total,
+            0,
+            "the round re-encoded the whole served index, so the recovery below could be reading \
+             the removal straight out of a fresh snapshot"
+        );
+    }
+
+    /// Load, seed and sweep in one engine, for the arms that do not need the base to be stale.
+    fn seed_and_sweep(engine: &TemporalEngine) {
+        engine.load_shard(1);
+        write_keys(engine, 1, seed());
+        sweep_after(engine);
+    }
+
+    /// Assert a rebuilt shard: the due keys stayed gone, the live keys came back, the two expiry
+    /// indexes agree.
+    fn assert_recovered(engine: &TemporalEngine, path: &str) {
+        let (held, due) = deadline_census(engine, 1);
+        assert_eq!(
+            due, 0,
+            "{path}: {due} deadlines came back DUE after a round that removed them. The removal \
+             reached neither the index-log delta nor WAL replay, so the keys were resurrected"
+        );
+        assert_eq!(
+            held, LIVE_KEYS,
+            "{path}: {held} deadlines came back, expected exactly the {LIVE_KEYS} live ones. \
+             Either the removal was lost (too many) or the rebuild dropped live keys (too few)"
+        );
+        // Rebuild the deadline mirror the way production does: the sweep's first act is
+        // `ensure_expiry_order`. A freshly loaded shard has an EMPTY mirror (`#[serde(skip)]`),
+        // so reading agreement before this would be measuring the load rather than the rebuild.
+        //
+        // And this round is an assertion of its own, the sharpest one here: it must remove
+        // NOTHING. A removal the recovery lost comes back as a live key with a deadline in the
+        // past, which is exactly what a round finds.
+        let after = sweep_once(engine, 1);
+        assert_eq!(
+            after.expired_records_removed, 0,
+            "{path}: a round run after the rebuild removed {} more keys. Those are keys the \
+             PREVIOUS round already expired, resurrected by the recovery with their past \
+             deadlines intact",
+            after.expired_records_removed
+        );
+        assert_eq!(
+            disagreements(engine, 1),
+            0,
+            "{path}: the key-ordered and deadline-ordered expiry indexes disagree after the \
+             rebuild -- a key it is wrong about would silently never expire"
+        );
+        // And a live key is actually readable, not merely a deadline with nothing behind it.
+        let get = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "live-00000000".to_string(),
+            },
+        });
+        assert!(
+            matches!(get.response, CommandResponse::Bytes { value: Some(_) }),
+            "{path}: a live key did not survive the rebuild: {:?}",
+            get.response
+        );
+    }
+
+    // ---- 1. LOAD from a persisted index, and the index is STALE -------------------------
+    //
+    // The sharpest arrangement this change has to survive, and the one an unload-after-the-round
+    // would hide: the base index is materialized BEFORE the round, so it still names every key
+    // the round then removes, and nothing rewrites it afterwards. What the reload has to work
+    // from is that stale base plus the WAL tail the round appended -- which is precisely the
+    // state the removed whole-index write used to prevent.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("indexes");
+        let make_engine = || {
+            TemporalEngine::with_local_dirs(
+                1024,
+                dir.path().join("cache"),
+                dir.path().join("pages"),
+                index_dir.clone(),
+            )
+        };
+        let engine = make_engine();
+        engine.load_shard(1);
+        write_keys(&engine, 1, seed());
+        // Materialize the base WITH the due keys in it.
+        engine.unload_shard(1);
+        let base_before = std::fs::metadata(index_dir.join("shard-1.index.json"))
+            .expect("the base index should exist before the round")
+            .len();
+
+        let engine = make_engine();
+        engine.load_shard(1);
+        sweep_after(&engine);
+        // THE DENOMINATOR for "the base is stale": the round left the file exactly as it found
+        // it. If this ever changes, the reload below is reading the removal out of a fresh
+        // snapshot and proves nothing about surviving on the WAL tail.
+        let base_after = std::fs::metadata(index_dir.join("shard-1.index.json"))
+            .expect("the base index should still exist after the round")
+            .len();
+        assert_eq!(
+            base_before, base_after,
+            "the expiry round rewrote the base index ({base_before} -> {base_after} bytes), so \
+             this arm is no longer recovering through a stale base"
+        );
+
+        // No unload: a crash-shaped reload onto the stale base.
+        let engine = make_engine();
+        engine.load_shard(1);
+        assert_recovered(&engine, "LOAD (stale base + WAL tail)");
+    }
+
+    // ---- 2. MANIFEST INSTALL ------------------------------------------------------------
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        seed_and_sweep(&engine);
+        let manifest = engine
+            .create_bucket_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        engine
+            .install_bucket_dump_manifest(&manifest)
+            .expect("manifest should install");
+        assert_recovered(&engine, "MANIFEST INSTALL");
+    }
+
+    // ---- 3. RECOVERY WAL REPLAY ---------------------------------------------------------
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("indexes");
+        let make_engine = || {
+            TemporalEngine::with_local_dirs(
+                1024,
+                dir.path().join("cache"),
+                dir.path().join("pages"),
+                index_dir.clone(),
+            )
+        };
+        let engine = make_engine();
+        seed_and_sweep(&engine);
+        engine.unload_shard(1);
+        // No base index to start from, so the load rebuilds by replaying the WAL from zero --
+        // including the CommonDelete tombstones the sweep appended for the expired keys.
+        let removed = std::fs::remove_file(index_dir.join("shard-1.index.json")).is_ok();
+        assert!(removed, "the base index should exist to be removed");
+
+        let engine = make_engine();
+        engine.load_shard(1);
+        assert_recovered(&engine, "WAL REPLAY");
+    }
+}
+
+/// THE GUARD ON THE RECORD ITSELF: the expiry delta names the keys the round removed, says
+/// nothing about any other key, and anchors no further than the round's own tombstones.
+///
+/// `an_expiry_round_persists_what_changed` counts the delta's BYTES; it would be satisfied by a
+/// record of the right size carrying the wrong thing. This reads the record back out of the index
+/// log and checks what is in it.
+///
+/// THE THREE PROPERTIES, and each is a way the change could be wrong while still being cheap:
+///
+///   1. EVERY REMOVED KEY IS NAMED. `delta_record_covered_keys` reads the covered set from the
+///      key-state blobs, and a removed key contributes no page items -- the deletes retained its
+///      pages out of the bucket before this record was built. So a key with no blob is a key the
+///      fold never wipes: it keeps its pages and its deadline, and it comes back alive.
+///   2. EACH BLOB IS BARE. A blob carrying only `key` means "this key is in none of the thirteen
+///      per-key maps", which is what `apply_key_state_field` turns into a removal from each of
+///      them -- `expires_at_ms` included. A blob captured BEFORE the delete would carry the
+///      deadline as a live value and the fold would restore it.
+///   3. THE ANCHOR IS NOT AHEAD OF THE TOMBSTONES. This is the correctness bar the whole change
+///      rests on, inherited from #1620: an anchor past records that are not durably described
+///      suppresses their replay. Here the anchor is exactly the WAL sequence after the round's
+///      own `CommonDelete`s -- at them, never past them -- so the record that moves the anchor is
+///      the same record that describes the deletions.
+#[test]
+fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
+    const LIVE_KEYS: usize = 200;
+    const DUE_KEYS: usize = 5;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let mut seed = Vec::with_capacity(LIVE_KEYS + DUE_KEYS);
+    for index in 0..LIVE_KEYS {
+        seed.push((format!("live-{index:08}"), 3_600_000u64));
+    }
+    for index in 0..DUE_KEYS {
+        seed.push((format!("zzz-due-{index:04}"), 1u64));
+    }
+    write_keys(&engine, 1, seed);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // Denominator: exactly DUE_KEYS are due behind LIVE_KEYS that are not.
+    let (held, due) = deadline_census(&engine, 1);
+    assert_eq!(held, LIVE_KEYS + DUE_KEYS, "the fixture did not land: {held} deadlines");
+    assert_eq!(due, DUE_KEYS, "{due} keys are due, expected {DUE_KEYS}");
+
+    let records_before = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("the index log should read back")
+        .len();
+    let wal_before = engine.wal_store.stats(1).last_sequence;
+
+    let report = sweep_once(&engine, 1);
+    assert_eq!(
+        report.expired_records_removed, DUE_KEYS,
+        "the round removed {} of {DUE_KEYS}, so the record below is not the record of a removal",
+        report.expired_records_removed
+    );
+
+    // The tombstones are real: one WAL record per expired key, appended before the checkpoint.
+    let wal_after = engine.wal_store.stats(1).last_sequence;
+    assert_eq!(
+        wal_after.saturating_sub(wal_before),
+        DUE_KEYS as u64,
+        "the round appended {} WAL records for {DUE_KEYS} expired keys, expected one \
+         CommonDelete each -- without them the anchor assertion below is comparing against \
+         nothing",
+        wal_after.saturating_sub(wal_before)
+    );
+
+    let records = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("the index log should read back");
+    assert_eq!(
+        records.len(),
+        records_before + 1,
+        "the round appended {} delta records, expected exactly one for the whole round",
+        records.len().saturating_sub(records_before)
+    );
+    let record = records.last().expect("the round appended a record");
+
+    // The record describes the removal with blobs alone. Every page the round's keys had was
+    // retained out of its bucket by the delete, so there is nothing left to name -- and the
+    // builder relies on that rather than walking the buckets to rediscover it, which is what
+    // made a large due batch superlinear. If a delete ever starts leaving a page behind, this
+    // fires here instead of the fold silently wiping that page on the next recovery.
+    assert!(
+        record.items.is_empty(),
+        "the expiry delta carries {} page items. The round's deletes are supposed to leave no \
+         page for a covered key, which is why the record is built without collecting any -- a \
+         surviving page is now described by nothing and gets wiped on the fold",
+        record.items.len()
+    );
+
+    let named: std::collections::BTreeSet<String> = record
+        .key_states
+        .iter()
+        .filter_map(|blob| blob.get("key").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        !named.is_empty(),
+        "the expiry delta named no keys at all. `delta_record_covered_keys` reads the covered set \
+         from these blobs and a removed key contributes no page items, so a record with no blobs \
+         wipes nothing: every key this round removed comes back on a delta-fold recovery"
+    );
+
+    // 1. Every removed key is named.
+    for index in 0..DUE_KEYS {
+        let key = format!("zzz-due-{index:04}");
+        assert!(
+            named.contains(&key),
+            "the expiry delta does not name {key}, which the round removed. The fold covers only \
+             the keys these blobs name, so this key keeps its pages and its past deadline and \
+             comes back alive. Named: {named:?}"
+        );
+    }
+    // ...and nothing else. A delta that named live keys would wipe their pages on the fold.
+    let live_named = named.iter().filter(|key| key.contains("live-")).count();
+    assert_eq!(
+        live_named, 0,
+        "the expiry delta names {live_named} keys the round did not remove. The fold WIPES every \
+         page of every covered key and restores only the items the record carries, so naming a \
+         live key deletes it on recovery. Named: {named:?}"
+    );
+
+    // 2. Each blob is bare -- a tombstone in every per-key map rather than a captured value.
+    for blob in &record.key_states {
+        let fields = blob
+            .as_object()
+            .map(|object| object.len())
+            .expect("each key state is a JSON object");
+        assert_eq!(
+            fields, 1,
+            "a key-state blob in the expiry delta carries {} fields beside its key: {blob}. A \
+             blob is captured AFTER the delete precisely so it carries none -- an absent field is \
+             what the fold reads as a removal, and a present `expires_at_ms` would RESTORE the \
+             deadline of a key this round expired",
+            fields.saturating_sub(1)
+        );
+    }
+
+    // 3. The anchor is at the tombstones, never past them.
+    let anchor = record.applied_wal_sequence.unwrap_or(0);
+    assert!(
+        anchor <= wal_after,
+        "the expiry delta anchors at WAL sequence {anchor} while the log ends at {wal_after}. An \
+         anchor AHEAD of the records it describes suppresses their replay, which is the one \
+         direction this change is not allowed to move in"
+    );
+    assert_eq!(
+        anchor, wal_after,
+        "the expiry delta anchors at WAL sequence {anchor}, not the {wal_after} the round's own \
+         tombstones reached. The record that moves the anchor has to be the record that describes \
+         the deletions, or a fold applies one without the other"
     );
 }

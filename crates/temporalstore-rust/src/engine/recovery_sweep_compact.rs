@@ -4,6 +4,34 @@
 //! Index install/recovery + expiry sweep + page compaction methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+/// What an expiry round hands to its flush: a description of what the round REMOVED, or the
+/// whole served index.
+///
+/// Two shapes rather than one because the whole-index write is the measurement arm's subject --
+/// see `expiry_index_flush_whole`. Production only ever builds the delta.
+enum ExpiryIndexCheckpoint {
+    /// O(what changed): one index-log delta record naming the keys this round removed.
+    Delta(Box<ExpiryIndexDelta>),
+    /// O(shard): the entire served index, re-encoded and rewritten.
+    Whole(Box<ShardState>),
+}
+
+/// The delta record an expiry round writes, built under the shard write guard and appended after
+/// it drops.
+struct ExpiryIndexDelta {
+    /// The page items the record carries. Always empty: the round's deletes leave no page for a
+    /// covered key, and an empty list against a covered key is how the fold spells a removal.
+    /// Kept as a field because it is what the record's wire shape has, and because a future
+    /// checkpoint that DOES have pages to name would fill it rather than grow a second path.
+    items: Vec<crate::index_log::IndexItem>,
+    /// One blob per covered key, carrying no map fields: the fold reads an absent field as a
+    /// removal, so these are tombstones across every per-key map, `expires_at_ms` included.
+    key_states: Vec<serde_json::Value>,
+    /// The WAL sequence this checkpoint reflects -- anchored AFTER the round's tombstones, so
+    /// folding the anchor and folding the deletions are the same act.
+    applied_wal_sequence: Option<u64>,
+}
+
 impl TemporalEngine {
     pub fn install_index_bytes(
         &self,
@@ -559,7 +587,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let mut skipped_records = 0usize;
         let mut loaded_for_expire = 0usize;
         let mut expired_keys: Vec<String> = Vec::new();
-        let mut pending_index_flush: Option<ShardState> = None;
+        let mut pending_index_flush: Option<ExpiryIndexCheckpoint> = None;
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
                 if delete_record(shard, key) {
@@ -612,29 +640,99 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
             }
-            // Encoding the served index and writing it out are the expensive part of this
-            // sweep -- the shard's whole index through serde and then zstd, then two file
-            // writes -- and all of it used to happen while this write lock was held, so every
-            // read and write on the shard queued behind a cost that scales with the STORE while
-            // the round's own work is bounded by `expiry_scan_budget`. The lock is needed for
-            // the deletes and for anchoring `applied_wal_sequence`; it is not needed for the
-            // encode. A stamped CLONE carries the exact state out and the encode and both writes
-            // happen after the guard is dropped -- the same shape `apply_storage_eviction` uses
-            // for the same reason.
+            // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
+            // needed for the deletes and for anchoring `applied_wal_sequence`; it is not needed
+            // for the write, and the write used to be the expensive part of the round -- the
+            // shard's whole index through serde and then zstd, then two file writes, all of it
+            // scaling with the STORE while the round's own work is bounded by
+            // `expiry_scan_budget`. Moving it out came first; making it proportional to the
+            // round came second, and both are still claims worth holding, so both have arms in
+            // `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`.
             //
             // WHY THIS ONE IS SAFE TO MOVE AND THE COMPACTOR'S IS NOT. Between the guard
-            // dropping and the write landing there is a window in which this snapshot is stale:
-            // a concurrent writer can persist a newer index that this one then overwrites, and a
+            // dropping and the write landing there is a window in which this checkpoint is
+            // stale: a concurrent writer can publish a newer one that this then follows, and a
             // concurrent storage cycle can see pages these deletes freed, call their slabs
             // stale and reclaim them while the durable index still names them. Both are
             // recoverable HERE and only here, because an expiry IS a logged delete: every key
-            // above emitted a `CommonDelete` to the WAL before this point, so an index that
+            // above emitted a `CommonDelete` to the WAL before this point, so a checkpoint that
             // lands stale (or never lands at all) leaves an anchor BEHIND the tombstones, and
-            // replay re-derives exactly the deletions this snapshot describes. Overwriting a
-            // newer index rewinds the anchor, which holds more log than needed and never less.
+            // replay re-derives exactly the deletions it describes. Landing behind a newer
+            // checkpoint rewinds the anchor, which holds more log than needed and never less.
             // Compaction's relocations are in no log -- see the note at its own flush.
             shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
-            pending_index_flush = Some(shard.clone());
+            // WHAT THE ROUND WRITES IS WHAT THE ROUND CHANGED.
+            //
+            // This used to clone the whole shard and hand it to an encode of the ENTIRE served
+            // index. The round's own work is bounded -- `due_window` looks at the due set, ten
+            // records whether the shard holds two thousand live keys or a hundred thousand --
+            // but the checkpoint that followed it was not: measured, ten due keys cost 109 ms at
+            // 2,000 live and 922 ms at 20,000, the same ten records looked at both times. The
+            // cost tracked LIVE KEYS. Moving that encode off the write guard (#1620) changed who
+            // waited for it, not how much of it there was.
+            //
+            // The index log already carries the record shape this wants: a DELTA naming the keys
+            // a write touched, which `fold_index_log_deltas` folds onto the base on load. The
+            // ordinary delete path has written exactly this shape for every `CommonDelete` it
+            // applies; expiry IS a logged delete, so it writes the same one. Each expired key
+            // contributes one key-state blob carrying NO map fields, which the fold reads as "this
+            // key is in none of these maps" -- a tombstone in all thirteen, `expires_at_ms`
+            // included -- and `delta_record_covered_keys` reads the covered set from those blobs,
+            // so the page wipe reaches the keys even though they contribute no page items.
+            //
+            // SAFETY, AND IT IS THE SAME ARGUMENT #1620 MADE. The anchor must never move AHEAD of
+            // the tombstones. The delta carries `applied_wal_sequence` -- the sequence anchored
+            // just above, after every `CommonDelete` this round appended -- so the anchor and the
+            // description of the deletions move TOGETHER in one record: a reader that folds the
+            // anchor has folded the deletions. A delta that lands late or never leaves the anchor
+            // BEHIND the tombstones, and WAL replay re-derives exactly these deletions. Neither
+            // direction can leave a key resurrected.
+            pending_index_flush = Some(
+                if self
+                    .expiry_index_flush_whole
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    ExpiryIndexCheckpoint::Whole(Box::new(shard.clone()))
+                } else {
+                    // `delete_record` removed each expired key AND every record key associated
+                    // with it (the control-state families), so the delta has to cover the same
+                    // set or the fold would restore what the round deleted.
+                    let delta_keys: Vec<String> = expired_keys
+                        .iter()
+                        .flat_map(|key| super::associated_record_keys(key))
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    ExpiryIndexCheckpoint::Delta(Box::new(ExpiryIndexDelta {
+                        // NO PAGE ITEMS, and that is the whole content of the record's page half.
+                        //
+                        // `mark_bucket_index_object_deleted` has already run for each of these
+                        // keys, and it retains every page carrying the key OUT of every bucket
+                        // that holds one -- the buckets come from `object_page_refs` across every
+                        // model kind, or from the whole bucket map when the lookup is not
+                        // established. So by the time this record is built there is no page left
+                        // to describe, and an empty item list against a covered key is exactly
+                        // how the fold spells a removal: `fold_delta_page_items` wipes every page
+                        // of every covered key and then restores the items carried, which is
+                        // none.
+                        //
+                        // This was `collect_command_index_items_for`, collecting rather than
+                        // asserting -- and it cost: that helper walks the ENTIRE page index of
+                        // every bucket the keys hash into, so a round clearing 8,000 due keys
+                        // walked a large part of the shard to build a list that is empty by
+                        // construction. Measured, it took the per-key cost of a round from
+                        // linear in the due set to 3.11x between 1,000 and 8,000 due keys.
+                        //
+                        // The invariant is not assumed silently: `the_expiry_delta_names_what_
+                        // the_round_removed_and_anchors_no_further` asserts the record carries no
+                        // items, so a delete that starts leaving pages behind fails there rather
+                        // than quietly wiping them on the next fold.
+                        items: Vec::new(),
+                        key_states: super::capture_key_states(shard, &delta_keys),
+                        applied_wal_sequence: shard.applied_wal_sequence,
+                    }))
+                },
+            );
         }
         // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
         // flush inside the region, so the guard has a positive control to compare against.
@@ -642,13 +740,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .expiry_index_flush_under_lock
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            if let Some(snapshot) = pending_index_flush.take() {
-                self.flush_expiry_index(request.shard_id, &snapshot)?;
+            if let Some(checkpoint) = pending_index_flush.take() {
+                self.flush_expiry_index(request.shard_id, checkpoint)?;
             }
         }
         drop(shards);
-        if let Some(snapshot) = pending_index_flush {
-            self.flush_expiry_index(request.shard_id, &snapshot)?;
+        if let Some(checkpoint) = pending_index_flush {
+            self.flush_expiry_index(request.shard_id, checkpoint)?;
         }
         Ok(ShardExpirySweepReport {
             shard_id: request.shard_id,
@@ -665,18 +763,49 @@ fn expiry_scan_budget(limit: usize) -> usize {
         })
     }
 
-    /// Encode and write the expiry sweep's served-index checkpoint.
+    /// Write the expiry sweep's served-index checkpoint.
     ///
     /// One body, called from both arms of the flush, so the arm that ships and the arm the guard
     /// measures against cannot drift into doing different work.
-    fn flush_expiry_index(&self, shard_id: ShardId, snapshot: &ShardState) -> Result<(), Status> {
-        let index_bytes = super::serialize_index(snapshot);
-        self.persist_index_bytes(shard_id, &index_bytes)
-            .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
-        let _ = self
-            .index_log_store
-            .append_index_bytes(shard_id, &index_bytes);
-        Ok(())
+    fn flush_expiry_index(
+        &self,
+        shard_id: ShardId,
+        checkpoint: ExpiryIndexCheckpoint,
+    ) -> Result<(), Status> {
+        match checkpoint {
+            ExpiryIndexCheckpoint::Delta(delta) => {
+                let delta = *delta;
+                // `durable` fsyncs the record before returning, decided by the same rule the
+                // ordinary write path's delta uses. Deferring it is sound here for the reason
+                // stated at the call site: the WAL tombstones are already appended, so a lost
+                // delta tail leaves the anchor behind them and replay re-derives the deletions.
+                let durable = !super::raft_applying() && !super::wal_single_barrier();
+                let _ = self.index_log_store.append_delta(
+                    shard_id,
+                    delta.items,
+                    delta.key_states,
+                    delta.applied_wal_sequence,
+                    None,
+                    // NOT an upsert. An upsert record replaces each item's own predecessor and
+                    // leaves everything else for the key in place, which for a round whose items
+                    // are empty would remove nothing at all. The snapshot shape wipes every page
+                    // of every covered key and restores only the items carried, which is what
+                    // makes an empty item list a deletion.
+                    false,
+                    durable,
+                );
+                Ok(())
+            }
+            ExpiryIndexCheckpoint::Whole(snapshot) => {
+                let index_bytes = super::serialize_index(&snapshot);
+                self.persist_index_bytes(shard_id, &index_bytes)
+                    .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
+                let _ = self
+                    .index_log_store
+                    .append_index_bytes(shard_id, &index_bytes);
+                Ok(())
+            }
+        }
     }
 
     pub fn sweep_all_expired_records(&self) -> Vec<ShardExpirySweepReport> {

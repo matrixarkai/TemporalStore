@@ -76,6 +76,7 @@ impl TemporalEngine {
             compaction_rounds: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             expiry_index_flush_under_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            expiry_index_flush_whole: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             // Sampled by default. The exhaustive alternative calls `bucket_storage_summaries`,
             // which reads EVERY live page in the shard to rank every bucket, and then keeps at
             // most `eviction_batch_limit` of them -- so the cost of choosing grew with the store
@@ -157,6 +158,19 @@ impl TemporalEngine {
     #[cfg(test)]
     pub(crate) fn flush_expiry_index_under_lock_for_test(&self) {
         self.expiry_index_flush_under_lock
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Make the expiry sweep checkpoint the WHOLE served index, the way it did before the
+    /// checkpoint became a delta of what the round removed. Scoped to this engine.
+    ///
+    /// Kept for the same reason the in-lock flush is kept: a claim about a cost that is gone
+    /// needs an arm that still pays it. `an_expiry_round_persists_what_changed` runs both in one
+    /// process against the same fixture, so the flat bytes it asserts are measured against a
+    /// number that still grows with the shard rather than against nothing.
+    #[cfg(test)]
+    pub(crate) fn flush_whole_expiry_index_for_test(&self) {
+        self.expiry_index_flush_whole
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 

@@ -154,6 +154,15 @@ pub struct TemporalEngine {
     /// costs. A guard that can only observe zero cannot distinguish a shortened hold from a
     /// counter that stopped counting; this is how an engine takes the other side.
     expiry_index_flush_under_lock: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the expiry sweep's served-index checkpoint is the WHOLE index rather than a
+    /// delta of the keys the round removed.
+    ///
+    /// False everywhere but the arm that measures what the whole-index checkpoint cost. The
+    /// whole-index write is kept reachable for exactly one reason: the claim "a round now
+    /// persists what changed" is only falsifiable against an engine that still persists
+    /// everything, measured in the same process on the same fixture. Without it a guard
+    /// asserting flat bytes would pass just as well against a round that stopped writing.
+    expiry_index_flush_whole: Arc<std::sync::atomic::AtomicBool>,
     /// Whether loading a shard warms the in-memory cache tier from the page store as part of
     /// the load, rather than leaving it to be warmed in the background.
     ///
