@@ -3241,7 +3241,10 @@ def embedding_model_name() -> str:
     by editing one line, which is why it stays until that decision is made -- and why the three
     names above, which report what THIS call did and touch nothing stored, could go.
     """
-    from matrixark_mcp_embeddings import embedding_provider_name
+    try:  # both spellings: this module loads as `tools.X` and as bare `X`
+        from tools.matrixark_mcp_embeddings import embedding_provider_name
+    except ImportError:
+        from matrixark_mcp_embeddings import embedding_provider_name
 
     provider = embedding_provider_name()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:

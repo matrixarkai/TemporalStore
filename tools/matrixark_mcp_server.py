@@ -280,7 +280,10 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # read-heavy workload grows the store without bound. MATRIXARK_AUDIT_MODE=async restores
         # the off-request-path auditing; full/sync restore per-call durability.
         self._audit_mode_default = os.environ.get("MATRIXARK_AUDIT_MODE", "off").strip().lower() or "off"
-        from matrixark_mcp_audit_queue import AuditWriteQueue  # sibling; keeps this module small
+        try:  # sibling; keeps this module small. Both spellings -- see the module header.
+            from tools.matrixark_mcp_audit_queue import AuditWriteQueue
+        except ImportError:
+            from matrixark_mcp_audit_queue import AuditWriteQueue
         self._audit_queue = AuditWriteQueue(int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "").strip() or "2"))
         self._operation_limiters = {
             group: threading.BoundedSemaphore(max(1, int(capacity)))
@@ -456,7 +459,10 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         See `matrixark_mcp_shutdown`: each stage used to receive the caller's whole budget, so the
         first wait could spend it all and the flushes were reached only after the caller gave up.
         """
-        from matrixark_mcp_shutdown import close_server_within_budget  # sibling; keeps this small
+        try:  # sibling; keeps this small. Both spellings -- see the module header.
+            from tools.matrixark_mcp_shutdown import close_server_within_budget
+        except ImportError:
+            from matrixark_mcp_shutdown import close_server_within_budget
 
         close_server_within_budget(self, timeout_s)
 
