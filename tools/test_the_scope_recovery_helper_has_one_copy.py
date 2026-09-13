@@ -58,7 +58,8 @@ that requires a live retrieve against a real store, which this file does not do.
 
 MEASURED BY EXECUTION. A nested function cannot be imported, so each copy is lifted out of its own
 module's source by AST and compiled against the same synthetic enclosing scope, using the real
-`candidate_access_scope` and the real `scope_from_node_path`. The bodies are the tree's, unchanged.
+`candidate_access_scope` and the real `scope_from_node_path` -- the latter now read from the one
+module that publishes it. The bodies are the tree's, unchanged.
 
     record with no scope of its own      retrieval copy     retrieve copy
     ---------------------------------    ---------------    -------------
@@ -79,8 +80,10 @@ WHY NOTHING CAUGHT IT, which is the part worth keeping.
 
 `test_a_nested_helper_has_one_copy_too` exists for exactly this shape and ALREADY records this
 module pair. It groups functions by the exact unparsed text of their bodies, so it finds copies
-that are still IDENTICAL -- for this pair it reports `scope_from_node_path`,
-`profile_summary_path_matches` and `profile_summary_scope_matches`, all byte for byte the same.
+that are still IDENTICAL -- for this pair it reports `profile_summary_path_matches` and
+`profile_summary_scope_matches`, byte for byte the same under two different names. It used to
+report `scope_from_node_path` as well, until that one was consolidated to a single
+implementation.
 `recovered_record_scope` sits in the same two enclosing functions, three lines from one of them,
 and does not group at all, because the copies have stopped agreeing.
 
@@ -120,6 +123,9 @@ COPIES = (
     ("matrixark_local_adapter_retrieve", "retrieve", 8),
 )
 LONGER, SHORTER = COPIES[0][0], COPIES[1][0]
+
+#: Deduplicated: defined once, in SHORTER, and imported by LONGER.
+NODE_PATH_HELPER = "scope_from_node_path"
 
 #: The embedding-to-owner direction: built and consulted only by the longer module.
 OWNER_MAP = "embedding_scope_by_ref"
@@ -449,6 +455,39 @@ class TheScopeRecoveryHelperHasOneCopy(unittest.TestCase):
             "%s" % (result.stderr.strip()[-800:] or result.stdout.strip()[-800:]))
         self.assertIn("OK", result.stdout, "the subprocess did not reach its assertions")
 
+    def test_the_node_path_helper_has_exactly_one_definition(self) -> None:
+        """It was defined twice, byte for byte, and now it is defined once.
+
+        `matrixark_local_adapter_retrieve` publishes it at module scope; the retrieval module
+        imports it rather than carrying a second copy. Asserted here because the guard next door
+        matches on IDENTICAL bodies, so a copy that came back slightly changed -- the likely
+        shape, since a copy that came back identical would have been edited for a reason -- would
+        not register there at all.
+
+        Both spellings of the import are required. One spelling is what broke this file across
+        five branches; see the import-order test above.
+        """
+        definitions = [stem for stem in (LONGER, SHORTER)
+                       if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                              and node.name == NODE_PATH_HELPER
+                              for node in ast.walk(ast.parse(_source(stem))))]
+        self.assertEqual(
+            [SHORTER], definitions,
+            "%s should be defined in %s alone and is defined in %s. If a second copy came back, "
+            "the two will drift again -- that is what this pair did before"
+            % (NODE_PATH_HELPER, SHORTER, ", ".join(definitions) or "nothing"))
+
+        retrieval = _source(LONGER)
+        for spelling in ("from tools.matrixark_local_adapter_retrieve import %s"
+                         % NODE_PATH_HELPER,
+                         "from matrixark_local_adapter_retrieve import %s" % NODE_PATH_HELPER):
+            with self.subTest(spelling=spelling.split(" import ")[0]):
+                self.assertIn(
+                    spelling, retrieval,
+                    "%s no longer reaches the published helper through this spelling. Both are "
+                    "needed: which one resolves depends on how the process was started"
+                    % LONGER)
+
     def test_the_older_nested_guard_structurally_cannot_see_this(self) -> None:
         """The reason this needed its own file, asserted instead of described.
 
@@ -474,9 +513,13 @@ class TheScopeRecoveryHelperHasOneCopy(unittest.TestCase):
             HELPER, names,
             "the older guard now sees %s. If it grew drift matching, this record belongs there "
             "and this file should go" % HELPER)
+        # The witness only has to be SOME still-identical helper in this module pair. It used to
+        # be `scope_from_node_path`, which has since been consolidated to one implementation --
+        # and this assertion failing is how that consolidation announced itself, which is the
+        # behaviour wanted: a fix that removes the site a scan watches should not pass quietly.
         self.assertIn(
-            "scope_from_node_path", names,
-            "the older guard no longer reports the IDENTICAL helper in the same two functions, so "
+            "profile_summary_path_matches", names,
+            "the older guard no longer reports an IDENTICAL helper in the same two functions, so "
             "it is not the sameness-keyed scan this file is contrasting itself with")
 
 
