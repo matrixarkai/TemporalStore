@@ -242,11 +242,11 @@ pub struct ShardCanonicalStorageStats {
     /// A FLOOR on what the bucket index costs in memory: one `BucketNode` per RESIDENT bucket,
     /// and nothing else.
     ///
-    /// Published because every other memory number this engine emits reads the CACHE only -- the
+    /// Published because every other memory number this engine emitted read the CACHE only -- the
     /// maintenance cycle's pressure gate and the `ShardLoad.memory_bytes` the metaserver balances
-    /// on are both `cache.memory_bytes`. The bucket index is in neither, and it grows one entry
-    /// per stored object and is never evicted, so "zero" is the one answer that is certainly
-    /// wrong.
+    /// on were both `cache.memory_bytes`. The bucket index was in neither, and it grows one entry
+    /// per stored object, so "zero" was the one answer that is certainly wrong. Both of those now
+    /// carry `bucket_index_resident_bytes` below as well; this floor stays node-only.
     ///
     /// A FLOOR, not the total: it counts the node structs and not the heap they point at (the
     /// shared object key, the map nodes). Measured over 96-byte values the true resident cost was
@@ -261,6 +261,28 @@ pub struct ShardCanonicalStorageStats {
     /// O(1): a count the stats path already holds, times a compile-time size.
     #[serde(default)]
     pub bucket_index_resident_bytes_floor: u64,
+    /// What the resident bucket index costs RIGHT NOW: the nodes the floor above counts, PLUS one
+    /// entry per page each bucket holds.
+    ///
+    /// Two numbers, deliberately, because they answer two different questions and one number
+    /// cannot do both:
+    ///
+    ///  - `bucket_index_resident_bytes_floor` is STABLE under a release. It counts nodes, and a
+    ///    release keeps every node, so it is the right thing to watch when you want "how big did
+    ///    this index get" to be unaffected by whether maintenance has been through.
+    ///  - this one MOVES under a release, because the per-page entries are exactly what a release
+    ///    frees. That is what makes it usable as a pressure reading: acting on the pressure
+    ///    reduces it, so the gate closes and the loop converges. A gate keyed on the floor would
+    ///    see a release free nothing and ask again for ever.
+    ///
+    /// This is the same quantity `TemporalEngine::bucket_index_resident_bytes` returns and the
+    /// same one `apply_storage_eviction` gates on; it is published here so the heartbeat and the
+    /// metrics path can read it without taking the shard lock a second time.
+    ///
+    /// O(resident buckets): `page_index.len()` is O(1) per bucket, so this is one walk of the
+    /// bucket map and no walk of the pages.
+    #[serde(default)]
+    pub bucket_index_resident_bytes: u64,
     /// How many buckets are actually resident -- `bucket_map.len()`.
     ///
     /// Distinct from `bucket_entries` above, which is the routing RANGE. The metric
@@ -322,6 +344,28 @@ pub struct ShardStats {
     #[serde(rename = "block_store_bands")]
     pub block_store_slabs: BlockStoreSlabSummary,
     pub write_ahead_log: WriteAheadLogStats,
+}
+
+impl ShardStats {
+    /// What this shard costs in memory, as reported to the metaserver in `ShardLoad.memory_bytes`.
+    ///
+    /// Cache bytes PLUS resident bucket-index bytes. It was cache bytes alone, and the metaserver
+    /// balances placement on the sum of this across a datanode's shards -- so a shard whose index
+    /// is large and whose cache is small read as holding almost no memory. That is not an exotic
+    /// shape: it is every cold shard with a big corpus, and it is exactly the shard that most
+    /// wants to be moved or asked to evict. The balancer instead read it as unloaded.
+    ///
+    /// The index term is `bucket_index_resident_bytes`, the MOVING figure, and not
+    /// `bucket_index_resident_bytes_floor`, the node-only one. A release frees the per-page
+    /// entries and keeps the nodes, so the moving figure falls when maintenance relieves the
+    /// shard and the next heartbeat reports the relief; the floor would be a load report that can
+    /// only ever rise.
+    ///
+    /// A method rather than an expression at the heartbeat, so the guard on this arithmetic
+    /// covers the code the server runs instead of a copy of it.
+    pub fn load_memory_bytes(&self) -> u64 {
+        (self.cache.memory_bytes as u64).saturating_add(self.storage.bucket_index_resident_bytes)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -40,6 +40,22 @@ impl DataNodeRuntime {
                 warm_cache: false,
             });
         let cache = self.inner.engine.cache().stats();
+        // THE NUMBER THAT WAS MISSING. Every memory term below was a cache term, so a shard whose
+        // bucket index is large and whose cache is small -- the exact shape eviction exists for --
+        // read as carrying no memory and was never asked to give any back.
+        //
+        // The moving figure (nodes + per-page entries), not the node-only floor, because the
+        // per-page entries are what a release frees: the pressure this reports falls when the
+        // evict stage acts on it, which is what makes it a gate and not a klaxon.
+        let bucket_index_resident_bytes = self.inner.engine.bucket_index_resident_bytes(shard_id);
+        // Mirrors `apply_storage_eviction`'s own gate term for term, so the reported signal and
+        // the real decision cannot drift apart.
+        let eviction_memory_pressure_bytes = cache
+            .memory_bytes
+            .saturating_add(cache.disk_bytes)
+            .saturating_add(cache.async_writeback_queue_bytes)
+            .saturating_add(cache.async_writeback_queue_depth)
+            .saturating_add(bucket_index_resident_bytes);
         let log_pressure = self.inner.engine.storage_log_compatibility_report(shard_id);
         let queue = self
             .inner
@@ -60,11 +76,9 @@ impl DataNodeRuntime {
                 block_slab_stale_density_basis_points: 0,
                 cache_memory_bytes: cache.memory_bytes,
                 cache_disk_bytes: cache.disk_bytes,
-                memory_cache_pressure_score: cache
-                    .memory_bytes
-                    .saturating_add(cache.disk_bytes)
-                    .saturating_add(cache.async_writeback_queue_bytes)
-                    .saturating_add(cache.async_writeback_queue_depth),
+                bucket_index_resident_bytes,
+                eviction_memory_pressure_bytes,
+                memory_cache_pressure_score: eviction_memory_pressure_bytes,
                 expired_bucket_object_scan_debt: plan.bucket_summaries.len(),
                 delayed_destroy_slab_count: plan.delayed_destroy_block_slab_ids.len(),
                 delayed_destroy_bytes: plan.reclaimable_physical_bytes,
@@ -81,7 +95,8 @@ impl DataNodeRuntime {
                     + log_pressure.index_log_bytes
                     + plan.reclaimable_physical_bytes
                     + cache.memory_bytes
-                    + cache.disk_bytes,
+                    + cache.disk_bytes
+                    + bucket_index_resident_bytes,
                 background_queue_depth: queue.background_queued_total,
                 foreground_queue_depth: queue
                     .queued_total
@@ -471,11 +486,27 @@ impl DataNodeRuntime {
             options.enable_evict,
             true,
             options.enable_evict,
-            vec![storage_manager_pressure_signal(
-                "cache_memory_bytes",
-                options.eviction_memory_pressure_threshold,
-                1,
-            )],
+            // The observed value, against the threshold it is actually compared with.
+            //
+            // This used to pass `eviction_memory_pressure_threshold` as the OBSERVED number and 1
+            // as the threshold, so the signal said `observed = threshold, over_threshold = true`
+            // on every round regardless of the shard -- a reading that cannot distinguish a shard
+            // under pressure from an empty one, under a name ("cache_memory_bytes") that was not
+            // what it held either.
+            vec![
+                storage_manager_pressure_signal(
+                    "eviction_memory_pressure_bytes",
+                    pressure.eviction_memory_pressure_bytes,
+                    options.eviction_memory_pressure_threshold,
+                ),
+                // Broken out because it is the term the evict stage can give back, and the one
+                // every other memory signal here omits.
+                storage_manager_pressure_signal(
+                    "bucket_index_resident_bytes",
+                    pressure.bucket_index_resident_bytes,
+                    options.eviction_memory_pressure_threshold,
+                ),
+            ],
             vec!["operator_enabled_eviction".to_string()],
             (!options.enable_evict).then(|| "evict_disabled".to_string()),
         ));

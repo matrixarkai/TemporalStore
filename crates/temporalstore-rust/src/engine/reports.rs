@@ -3508,6 +3508,16 @@ pub struct StorageManagerPressureSignals {
     pub block_slab_stale_density_basis_points: u64,
     pub memory_cache_bytes: u64,
     pub disk_cache_bytes: u64,
+    /// Resident bucket-index bytes: nodes PLUS per-page entries -- the figure a release actually
+    /// moves, not the node-only `bucket_index_resident_bytes_floor`, which cannot.
+    ///
+    /// Every memory term beside it is a CACHE term, and the bucket index is in none of them. It is
+    /// counted into `total_pressure_score` and reported on the `evict` stage, and it is NOT folded
+    /// into `memory_cache_pressure_score`: that one is re-measured after the cache is warmed, by
+    /// subtracting itself out of the total and adding the warmed cache back, and an index term
+    /// hidden inside it would be subtracted away by that arithmetic and never returned.
+    #[serde(default)]
+    pub bucket_index_resident_bytes: u64,
     pub memory_cache_pressure_score: u64,
     #[serde(rename = "expired_slot_object_scan_debt")]
     pub expired_bucket_object_scan_debt: usize,

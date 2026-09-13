@@ -166,6 +166,13 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
             "memory_cache_pressure_score",
             pressure.memory_cache_pressure_score,
         ),
+        // The only memory signal in this list that is not the cache. Published separately rather
+        // than folded into one of the others so an operator can tell an index-heavy shard from a
+        // cache-heavy one -- they need different relief and only this one can be evicted.
+        (
+            "bucket_index_resident_bytes",
+            pressure.bucket_index_resident_bytes,
+        ),
         (
             "expired_slot_object_scan_debt",
             pressure.expired_bucket_object_scan_debt as u64,

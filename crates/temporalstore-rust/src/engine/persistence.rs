@@ -809,6 +809,11 @@ impl TemporalEngine {
                 // The resident count is the map's length.
                 bucket_index_resident_bytes_floor: (state.bucket_index.bucket_map.len() as u64)
                     .saturating_mul(std::mem::size_of::<super::state::BucketNode>() as u64),
+                // The MOVING companion to the floor above: nodes plus per-page entries, the same
+                // quantity the eviction gate reads. Computed here, under the shard lock the stats
+                // path already holds, so the heartbeat does not take it a second time per shard.
+                bucket_index_resident_bytes:
+                    crate::engine::storage_bucket_internals::bucket_index_resident_bytes(state),
                 bucket_index_resident_entries: state.bucket_index.bucket_map.len() as u64,
                 storage_slab_count: page_store_slabs
                     .active_slabs

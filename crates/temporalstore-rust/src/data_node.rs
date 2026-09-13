@@ -1147,8 +1147,32 @@ pub struct StorageManagerPressureSnapshot {
     #[serde(alias = "page_segment_stale_density_basis_points")]
     #[serde(rename = "page_slab_stale_density_basis_points")]
     pub block_slab_stale_density_basis_points: u64,
+    /// The CACHE's resident bytes, and only the cache's.
+    ///
+    /// Deliberately not widened to include the bucket index, even though `total_pressure_score`
+    /// below now does. This field gates `reclaim_memory`, which relieves memory by invalidating
+    /// cached pages and leaves the index untouched -- so folding index bytes in here would make
+    /// that stage fire on a pressure it cannot reduce, every round, for ever. The index term
+    /// belongs to the stage that can release it, which is `evict`.
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
+    /// Resident bucket-index bytes: nodes PLUS per-page entries, the moving number, the same one
+    /// `apply_storage_eviction` gates on and the same one `ShardLoad.memory_bytes` reports.
+    ///
+    /// Not the node-only `bucket_index_resident_bytes_floor`. The floor cannot move when a bucket
+    /// is released, so a gate reading it would see eviction free nothing and re-fire for ever;
+    /// this one falls when a bucket is released, which is what lets the loop converge.
+    #[serde(default)]
+    pub bucket_index_resident_bytes: u64,
+    /// Exactly the quantity `apply_storage_eviction` compares against
+    /// `eviction_memory_pressure_threshold`: cache memory + cache disk + the async writeback
+    /// queue's bytes and depth + `bucket_index_resident_bytes`.
+    ///
+    /// Published so an operator reading a skipped evict stage can see the number that skipped it.
+    /// Before this the evict decision reported its own THRESHOLD as the observed value, so the
+    /// signal read `over_threshold` on every round whatever the shard was doing.
+    #[serde(default)]
+    pub eviction_memory_pressure_bytes: u64,
     #[serde(default)]
     pub memory_cache_pressure_score: u64,
     #[serde(default)]

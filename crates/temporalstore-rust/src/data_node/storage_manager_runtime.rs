@@ -111,6 +111,16 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
             .block_slab_stale_density_basis_points,
         cache_memory_bytes: cycle.pressure_snapshot.memory_cache_bytes,
         cache_disk_bytes: cycle.pressure_snapshot.disk_cache_bytes,
+        bucket_index_resident_bytes: cycle.pressure_snapshot.bucket_index_resident_bytes,
+        // The cycle publishes `memory_cache_pressure_score` as cache memory + pinned + the
+        // writeback queue; the evict gate adds disk cache and the resident index on top. Assembled
+        // here rather than carried, so the two pipelines report the same quantity under the same
+        // name instead of one of them reporting a cache-only number under an eviction name.
+        eviction_memory_pressure_bytes: cycle
+            .pressure_snapshot
+            .memory_cache_pressure_score
+            .saturating_add(cycle.pressure_snapshot.disk_cache_bytes)
+            .saturating_add(cycle.pressure_snapshot.bucket_index_resident_bytes),
         memory_cache_pressure_score: cycle.pressure_snapshot.memory_cache_pressure_score,
         expired_bucket_object_scan_debt: cycle.pressure_snapshot.expired_bucket_object_scan_debt,
         delayed_destroy_slab_count: cycle.pressure_snapshot.delayed_destroy_slab_count,

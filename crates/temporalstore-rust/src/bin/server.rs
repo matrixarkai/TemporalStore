@@ -2612,7 +2612,9 @@ fn send_heartbeat(
                 + stats.feature_records
                 + stats.sequence_records
                 + stats.control_state_records) as u64,
-            memory_bytes: stats.cache.memory_bytes as u64,
+            // Cache AND resident bucket index -- see `ShardStats::load_memory_bytes`, which is
+            // where the sum lives so a guard can cover this site rather than re-derive it.
+            memory_bytes: stats.load_memory_bytes(),
         })
         .collect();
     let shard_stat_loads = stats

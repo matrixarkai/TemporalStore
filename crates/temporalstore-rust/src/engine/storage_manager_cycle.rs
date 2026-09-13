@@ -214,6 +214,12 @@ impl TemporalEngine {
             .saturating_add(cache_pressure.stats.pinned_bytes)
             .saturating_add(cache_pressure.stats.async_writeback_queue_bytes)
             .saturating_add(cache_pressure.stats.async_writeback_queue_depth);
+        // The bucket index, which no memory term above can see. Kept out of
+        // `memory_cache_pressure_score` on purpose -- see the field doc on
+        // `StorageManagerPressureSignals::bucket_index_resident_bytes`: that score is re-derived
+        // after the warm, by subtracting itself out of the total, and anything folded into it
+        // would be subtracted away with it.
+        let bucket_index_resident_bytes = self.bucket_index_resident_bytes(request.shard_id);
         let total_pressure_score = plan
             .dirty_buckets
             .len()
@@ -226,6 +232,7 @@ impl TemporalEngine {
             + reclaim_stale_bytes
             + cache_pressure.stats.disk_bytes
             + memory_cache_pressure_score
+            + bucket_index_resident_bytes
             + delayed_destroy_bytes
             + manifest_retention_blockers as u64
             + compaction_debt_score;
@@ -239,6 +246,7 @@ impl TemporalEngine {
             block_slab_stale_density_basis_points,
             memory_cache_bytes: cache_pressure.stats.memory_bytes,
             disk_cache_bytes: cache_pressure.stats.disk_bytes,
+            bucket_index_resident_bytes,
             memory_cache_pressure_score,
             expired_bucket_object_scan_debt,
             delayed_destroy_slab_count,
@@ -674,11 +682,17 @@ impl TemporalEngine {
             } else {
                 "evicted weighted slot/object victims under memory/cache pressure".to_string()
             },
-            pressure_signal: "weighted_slot_object_eviction+memory_pressure_gate+batch_limit"
-                .to_string(),
+            pressure_signal:
+                "weighted_slot_object_eviction+memory_pressure_gate+bucket_index_resident+batch_limit"
+                    .to_string(),
+            // The index term belongs HERE and only here among the stages: evict is the one stage
+            // that can release it. `reclaim_memory` invalidates cached pages and leaves the index
+            // exactly where it was, so reporting index bytes as its pressure would name a debt it
+            // has no way to pay.
             pressure_score: pressure_signals
                 .memory_cache_pressure_score
                 .saturating_add(pressure_signals.disk_cache_bytes)
+                .saturating_add(pressure_signals.bucket_index_resident_bytes)
                 .saturating_add(
                     eviction_report
                         .as_ref()
@@ -690,6 +704,7 @@ impl TemporalEngine {
             pressure_threshold: request.eviction_memory_pressure_threshold,
             pressure_triggered: pressure_signals.memory_cache_pressure_score > 0
                 || pressure_signals.disk_cache_bytes > 0
+                || pressure_signals.bucket_index_resident_bytes > 0
                 || eviction_report
                     .as_ref()
                     .map(|report| {

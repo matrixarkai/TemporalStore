@@ -7954,3 +7954,545 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
          first round, {bytes_at_end} after {IDLE_ROUNDS} idle ones"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Eviction relieves the memory it can SEE. The bucket index was in none of the numbers that
+// decide whether a shard needs relieving, so the shard that most needed it read as the emptiest.
+// ---------------------------------------------------------------------------------------------
+
+/// A shard whose value is INDEX, not cache, is reported as carrying that memory.
+///
+/// `ShardLoad.memory_bytes` -- the figure the metaserver sums per datanode and sorts placement on
+/// -- was `cache.memory_bytes` alone. Drop the cache on a shard holding 400 records and that
+/// figure reads ZERO while the index it cannot see is still fully resident. The balancer ranked
+/// such a shard as the emptiest node in the fleet and kept sending it work, and the maintenance
+/// round never saw a reason to ask it to evict.
+///
+/// The cache is dropped FIRST and asserted at zero before any claim is made, so the number that
+/// moves below cannot be a cache number -- that is the whole point of the measurement.
+#[test]
+fn a_shard_whose_memory_is_index_not_cache_is_no_longer_reported_as_unloaded() {
+    const KEYS: usize = 400;
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("indexload-{index:06}"),
+                value: vec![b'v'; 96],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Drop the cache FIRST. Whatever is non-zero afterwards is the index.
+    let _ = engine.cache().invalidate_shard(1);
+
+    let stats = engine.get_stats(1).stats.expect("stats for a loaded shard");
+
+    // DENOMINATORS, before any claim. Both halves of this test pass trivially on an empty shard:
+    // nothing cached and nothing indexed reads exactly like the fix working.
+    assert_eq!(
+        stats.string_records, KEYS,
+        "the fixture wrote {} of {KEYS} records, so the measurement below has no subject",
+        stats.string_records
+    );
+    assert!(
+        stats.storage.bucket_index_resident_entries > 0,
+        "no resident buckets: {} -- there is no index here to be blind to",
+        stats.storage.bucket_index_resident_entries
+    );
+    assert!(
+        stats.storage.bucket_index_resident_bytes > 0,
+        "no resident index bytes over {} buckets and {KEYS} records",
+        stats.storage.bucket_index_resident_entries
+    );
+
+    // THE DEFECT, still visible: the cache-only figure reads zero on a shard holding 400 records.
+    assert_eq!(
+        stats.cache.memory_bytes, 0,
+        "the cache did not drop, so the load figure below could be cache bytes rather than index \
+         bytes and this test would prove nothing"
+    );
+
+    // THE FIX: the reported load is non-zero, and on this fixture it is exactly the index.
+    assert!(
+        stats.load_memory_bytes() > 0,
+        "the shard still reports as holding no memory: cache={} index={}",
+        stats.cache.memory_bytes,
+        stats.storage.bucket_index_resident_bytes
+    );
+    assert_eq!(
+        stats.load_memory_bytes(),
+        stats.storage.bucket_index_resident_bytes,
+        "with the cache at zero the reported load must be the index and nothing else"
+    );
+    // And it is the same quantity the eviction gate reads, not a second opinion about it.
+    assert_eq!(
+        stats.storage.bucket_index_resident_bytes,
+        engine.bucket_index_resident_bytes(1),
+        "the published number and the gate's number disagree, which is how two numbers with one \
+         name drift apart"
+    );
+
+    // THE FLOOR AND THE PRESSURE READING ARE NOT THE SAME QUANTITY, and must not be.
+    //
+    // The floor counts NODES, which a release keeps; the pressure reading counts nodes AND the
+    // per-page entries, which a release frees. Gate on the floor and eviction appears to free
+    // nothing, so the gate re-fires for ever; publish only the pressure reading and an operator
+    // loses the figure that does not move under maintenance. If these two are ever equal on a
+    // shard with pages, one of them has stopped being what it claims.
+    assert!(
+        stats.storage.bucket_index_resident_bytes
+            > stats.storage.bucket_index_resident_bytes_floor,
+        "the node-only floor ({}) and the moving pressure reading ({}) came out equal over {} \
+         resident buckets, so they are no longer two different measurements",
+        stats.storage.bucket_index_resident_bytes_floor,
+        stats.storage.bucket_index_resident_bytes,
+        stats.storage.bucket_index_resident_entries
+    );
+
+    // The maintenance round's own snapshot tells the same story.
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+    let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &options);
+    assert_eq!(
+        pressure.cache_memory_bytes, 0,
+        "the snapshot cache term is not zero, so the assertions below are not about the index"
+    );
+    assert_eq!(
+        pressure.bucket_index_resident_bytes, stats.storage.bucket_index_resident_bytes,
+        "the snapshot and the stats path report different index memory for one shard"
+    );
+    assert!(
+        pressure.eviction_memory_pressure_bytes >= pressure.bucket_index_resident_bytes,
+        "the eviction pressure figure ({}) does not even contain the index term ({})",
+        pressure.eviction_memory_pressure_bytes,
+        pressure.bucket_index_resident_bytes
+    );
+    assert!(
+        pressure.total_pressure_score >= pressure.bucket_index_resident_bytes,
+        "total pressure ({}) omits the index ({}), which is the term this change exists to add",
+        pressure.total_pressure_score,
+        pressure.bucket_index_resident_bytes
+    );
+
+    // `cache_memory_bytes` stays CACHE-ONLY on purpose. It gates `reclaim_memory`, which relieves
+    // memory by invalidating cached pages and cannot touch the index; folding index bytes into it
+    // would make that stage fire on a debt it has no way to pay, every round, for ever.
+    assert_ne!(
+        pressure.cache_memory_bytes, pressure.eviction_memory_pressure_bytes,
+        "the cache gate and the eviction gate have become one number; reclaim_memory will now \
+         fire on index pressure it cannot relieve"
+    );
+}
+
+/// The `evict` decision reports the number it gates on, not a copy of its own threshold.
+///
+/// The signal was built as `signal("cache_memory_bytes", eviction_memory_pressure_threshold, 1)`
+/// -- the THRESHOLD passed as the observed value, against a threshold of 1. So it read
+/// `over_threshold` on every round for every shard, said nothing about the shard, and said it
+/// under a name that was not what it held either. A readout that cannot distinguish a shard under
+/// pressure from an empty one is the readiness-report-that-cannot-fail shape.
+#[test]
+fn the_evict_decision_reports_the_pressure_it_gates_on_not_its_own_threshold() {
+    const KEYS: usize = 256;
+    const THRESHOLD: u64 = 7_919; // A prime, so a signal echoing it is unmistakable.
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("decision-{index:06}"),
+                value: vec![b'v'; 96],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions {
+        enable_evict: true,
+        eviction_memory_pressure_threshold: THRESHOLD,
+        ..StorageManagerOptions::default()
+    };
+    let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &options);
+    // DENOMINATOR: the observed value has to be capable of differing from the threshold, or the
+    // assertion below cannot fail whatever the code does.
+    assert!(
+        pressure.eviction_memory_pressure_bytes != THRESHOLD,
+        "the fixture pressure happens to equal the threshold ({THRESHOLD}), so this test cannot \
+         tell a reported observation from a reported threshold"
+    );
+
+    let report = runtime.run_storage_manager_once(1, options);
+    let decision = report
+        .pressure_decisions
+        .iter()
+        .find(|decision| decision.stage == "evict")
+        .unwrap_or_else(|| {
+            panic!(
+                "no evict decision in {:?}",
+                report
+                    .pressure_decisions
+                    .iter()
+                    .map(|decision| decision.stage.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let signal = decision
+        .signals
+        .iter()
+        .find(|signal| signal.name == "eviction_memory_pressure_bytes")
+        .unwrap_or_else(|| {
+            panic!(
+                "no eviction_memory_pressure_bytes signal in {:?}",
+                decision
+                    .signals
+                    .iter()
+                    .map(|signal| signal.name.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        signal.threshold, THRESHOLD,
+        "the evict signal is compared against something other than the eviction threshold"
+    );
+    assert_ne!(
+        signal.observed, THRESHOLD,
+        "the evict signal is still reporting its own threshold as the observation"
+    );
+    assert!(
+        signal.observed > 0,
+        "the evict signal observed nothing on a shard holding {KEYS} records"
+    );
+    let index_signal = decision
+        .signals
+        .iter()
+        .find(|signal| signal.name == "bucket_index_resident_bytes")
+        .expect("the index term must be reported on the one stage that can release it");
+    assert!(
+        index_signal.observed > 0,
+        "the index term reads zero on a shard holding {KEYS} records"
+    );
+    assert!(
+        signal.observed >= index_signal.observed,
+        "the eviction pressure ({}) does not contain the index term ({})",
+        signal.observed,
+        index_signal.observed
+    );
+}
+
+/// THE DECISION ON THE DEFAULT: `enable_evict` stays OFF, and this is why, measured.
+///
+/// The objection is not to eviction. It is to eviction under the defaults that sit beside the
+/// flag: `eviction_memory_pressure_threshold` is 0 -- documented as "0 evicts whenever it runs" --
+/// and `eviction_dump_before_evict` is false. Flip only `enable_evict` and every maintenance round
+/// on every shard evicts unconditionally, with no dump first, on a shard under no memory pressure
+/// whatsoever. That is not an eviction policy; it is a policy-shaped hole.
+///
+/// So this test does not assert a preference. It runs the thing and shows what default-on would
+/// mean: the gate opens at pressure the operator never asked to relieve. What would have to be
+/// true to flip it: a non-zero DEFAULT threshold chosen against a measured working set, and
+/// `eviction_dump_before_evict` defaulted true so an evicted dirty bucket does not keep pinning
+/// the log. Both are separate decisions with their own evidence, and neither is made here.
+#[test]
+fn enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_pressure() {
+    let defaults = StorageManagerOptions::default();
+
+    // The default is a DECISION, pinned here so a later edit to the `Default` impl has to come
+    // past this test and its reasoning rather than sliding through as a tidy-up.
+    assert!(
+        !defaults.enable_evict,
+        "enable_evict now defaults on; the two defaults below must have changed with it"
+    );
+    assert_eq!(
+        defaults.eviction_memory_pressure_threshold, 0,
+        "the eviction threshold is no longer 0, which removes the main objection to defaulting \
+         enable_evict on -- revisit that decision rather than deleting this assertion"
+    );
+    assert!(
+        !defaults.eviction_dump_before_evict,
+        "dump-before-evict now defaults on, which removes the second objection -- revisit the \
+         enable_evict default rather than deleting this assertion"
+    );
+
+    // THE MEASUREMENT. A shard under no memory pressure anyone would act on.
+    const KEYS: usize = 64;
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("zeropressure-{index:06}"),
+                value: vec![b'v'; 32],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+
+    // CONTROL: the shipped default does not reach the stage at all.
+    let shipped = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        shipped
+            .skipped_stages
+            .iter()
+            .any(|stage| stage == "evict_disabled"),
+        "the shipped default already evicts: skipped={:?} executed={:?}",
+        shipped.skipped_stages,
+        shipped.executed_stages
+    );
+
+    // TREATMENT: flip ONLY `enable_evict`, exactly as a "default it on" change would.
+    let would_be_default = StorageManagerOptions {
+        enable_evict: true,
+        ..StorageManagerOptions::default()
+    };
+    let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &would_be_default);
+    let report = runtime.run_storage_manager_once(1, would_be_default);
+    let eviction = report
+        .eviction
+        .as_ref()
+        .expect("the evict stage must report when it is enabled");
+
+    // PROOF THE TREATMENT RAN, before reading anything out of it.
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "evict"),
+        "the evict stage did not run, so nothing below measures eviction: executed={:?}",
+        report.executed_stages
+    );
+    assert_eq!(
+        eviction.memory_pressure_threshold, 0,
+        "this round did not use the default threshold, so it is not the round a default-on change \
+         would produce"
+    );
+
+    // AND THE FINDING. With a threshold of 0 the gate cannot close: the comparison is
+    // `pressure_before < 0`, which is false for every shard that has ever existed.
+    assert!(
+        eviction.pressure_gate_open,
+        "the gate declined at threshold 0, which would make this objection moot -- recheck it"
+    );
+    assert_eq!(
+        eviction.skipped_reason, "",
+        "the stage skipped for {:?} rather than evicting, so it did not act at zero pressure",
+        eviction.skipped_reason
+    );
+    assert!(
+        !eviction.selected_victims.is_empty(),
+        "the round took no victims, so default-on would be harmless here and this objection needs \
+         a different fixture: pressure={} threshold={}",
+        eviction.pressure_before,
+        eviction.memory_pressure_threshold
+    );
+    // And it took them without dumping first, because that default is off too: a dirty bucket
+    // evicted this way keeps pinning the log it was never written out of.
+    assert!(
+        !eviction.dump_before_evict,
+        "this round dumped first, so it is not the round the shipped defaults would produce"
+    );
+    assert!(
+        eviction.dump_manifest_ids.is_empty(),
+        "a dump manifest appeared without dump-before-evict: {:?}",
+        eviction.dump_manifest_ids
+    );
+    eprintln!(
+        "  [evict-default] flipping only enable_evict: threshold={} pressure_before={} \
+victims={} dump_manifests={} -- the gate opens on a shard nobody asked to relieve \
+(snapshot eviction_memory_pressure_bytes={})",
+        eviction.memory_pressure_threshold,
+        eviction.pressure_before,
+        eviction.selected_victims.len(),
+        eviction.dump_manifest_ids.len(),
+        pressure.eviction_memory_pressure_bytes,
+    );
+}
+
+/// What turning it on WOULD buy, and the bar it would have to clear: the periodic loop relieves
+/// INDEX memory and still serves every key.
+///
+/// This is the half of the default decision that is not an objection. The mechanism works: given
+/// a threshold below the shard's real pressure and dump-before-evict on, one round of the loop
+/// releases buckets, the resident index falls, the node-only floor does NOT, and all 400 keys
+/// still read back byte-for-byte through the released buckets.
+///
+/// The reads are COLD -- the cache is invalidated after the round -- because the first version of
+/// the release served every warm read and returned `None` for every cold one. And each value is a
+/// function of its key, so a read that resolved through the WRONG page fails here rather than
+/// passing on a lucky length.
+#[test]
+fn the_periodic_loop_relieves_index_memory_and_still_serves_every_key() {
+    const KEYS: usize = 400;
+    const VALUE_LEN: usize = 96;
+
+    fn keyed_value(index: usize) -> Vec<u8> {
+        let mut value = format!("{index:06}:").into_bytes();
+        value.resize(VALUE_LEN, b'v');
+        value[VALUE_LEN - 1] = (index % 251) as u8;
+        value
+    }
+
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("loopevict-{index:06}"),
+                value: keyed_value(index),
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let engine = runtime.engine();
+
+    // Drop the cache FIRST, so the index bytes below are not cache bytes wearing a new label.
+    let _ = engine.cache().invalidate_shard(1);
+    let index_before = engine.bucket_index_resident_bytes(1);
+    let floor_before = engine
+        .get_stats(1)
+        .stats
+        .expect("stats for a loaded shard")
+        .storage
+        .bucket_index_resident_bytes_floor;
+    // DENOMINATORS.
+    assert!(
+        index_before > 0,
+        "the fixture left no resident index to relieve"
+    );
+    assert!(floor_before > 0, "the fixture left no resident nodes");
+    assert!(
+        engine.released_bucket_index_buckets(1).is_empty(),
+        "the fixture started with buckets already released, so a release below proves nothing"
+    );
+
+    // A threshold BELOW the shard's real pressure, and dump-before-evict on -- the two settings
+    // the shipped defaults do not have. This is the configuration the decision above says would
+    // have to become the default before `enable_evict` could.
+    let options = StorageManagerOptions {
+        enable_evict: true,
+        eviction_dump_before_evict: true,
+        eviction_memory_pressure_threshold: 1,
+        ..StorageManagerOptions::default()
+    };
+    let report = runtime.run_storage_manager_once(1, options);
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "evict"),
+        "the evict stage did not run: executed={:?} skipped={:?}",
+        report.executed_stages,
+        report.skipped_stages
+    );
+
+    let released = engine.released_bucket_index_buckets(1);
+    assert!(
+        !released.is_empty(),
+        "one round of the loop released no buckets, so no index memory could have been relieved"
+    );
+    let index_after = engine.bucket_index_resident_bytes(1);
+    assert!(
+        index_after < index_before,
+        "the round freed no INDEX memory: {index_before} -> {index_after} over {} released buckets",
+        released.len()
+    );
+
+    // THE FLOOR DID NOT MOVE, which is exactly why the pressure reading has to be a different
+    // number. Gate on the floor and this round would read as having freed nothing.
+    let floor_after = engine
+        .get_stats(1)
+        .stats
+        .expect("stats for a loaded shard")
+        .storage
+        .bucket_index_resident_bytes_floor;
+    assert_eq!(
+        floor_after, floor_before,
+        "the node-only floor moved on a release, so it is no longer the stable measurement"
+    );
+
+    // COLD reads. The warm path served correctly even when the cold one did not.
+    let _ = engine.cache().invalidate_shard(1);
+    let mut read = 0usize;
+    let mut matched = 0usize;
+    for index in 0..KEYS {
+        read += 1;
+        let value = match runtime
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("loopevict-{index:06}"),
+                },
+            })
+            .response
+        {
+            CommandResponse::Bytes { value } => value,
+            other => panic!("a string read answered {other:?}"),
+        };
+        assert_eq!(
+            value,
+            Some(keyed_value(index)),
+            "key {index} did not read back through a released bucket"
+        );
+        matched += 1;
+    }
+    assert_eq!(read, KEYS, "the read-back loop did not run {KEYS} times");
+    assert_eq!(matched, KEYS, "only {matched} of {read} keys matched");
+    eprintln!(
+        "  [evict-loop] released {} buckets; index {index_before} -> {index_after} bytes \
+(floor unchanged at {floor_before}); {matched}/{read} keys read back cold",
+        released.len()
+    );
+}
