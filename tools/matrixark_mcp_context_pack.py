@@ -132,13 +132,28 @@ def _is_default_hidden_debug_lineage_key(key: Any) -> bool:
 
 
 def strip_default_debug_lineage_fields(value: Any) -> Any:
-    """Remove debug/lineage fields from the default prompt-facing ContextPack."""
+    """Remove debug/lineage fields from the default prompt-facing ContextPack.
+
+    THE CHILDREN OF A `by_*` DIMENSION ARE VALUES, NOT FIELD NAMES, and the predicate is a
+    substring rule. `dropped_memory_layer_budget["by_profile_shadowed_reason"]` is keyed by the
+    REASON a profile ref was shadowed, and one of those reasons is `source_entity_lineage` -- which
+    contains "lineage", so recursing into it deleted the bucket, left the dimension empty, and the
+    empty-sub-dict prune in `serving_memory_layer_budget` then dropped the dimension itself. The
+    whole "why was this shadowed" breakdown disappeared from a served pack because a reason was
+    named after the thing it describes.
+
+    A `by_*` dimension's own name is still tested, so `by_source_role` and the rest are removed
+    exactly as before -- only the descent into their contents stops. Anything not named `by_*` is
+    unchanged, because there the keys really are schema fields.
+    """
     if isinstance(value, dict):
-        return {
-            key: strip_default_debug_lineage_fields(item)
-            for key, item in value.items()
-            if not _is_default_hidden_debug_lineage_key(key)
-        }
+        kept = {}
+        for key, item in value.items():
+            if _is_default_hidden_debug_lineage_key(key):
+                continue
+            kept[key] = item if str(key).startswith("by_") \
+                else strip_default_debug_lineage_fields(item)
+        return kept
     if isinstance(value, list):
         return [strip_default_debug_lineage_fields(item) for item in value]
     return value
