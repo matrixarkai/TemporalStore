@@ -1433,3 +1433,351 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
         folded.applied_wal_sequence
     );
 }
+
+/// THE INVARIANT: WAL reclaim never frees a record the DEFAULT load path still has to replay.
+///
+/// WHY THIS NEEDED ASKING. Three merged changes put a shape on disk that looks unrecoverable:
+///
+///   * #1644 established that the default load path folds NO index-log deltas. Under the
+///     single-barrier default `load_shard_with` takes `load_index_base_only`, so recovery is a
+///     durable checkpoint plus a WAL replay of everything past that checkpoint's anchor.
+///   * #1633 made the expiry round stop writing a whole index. It appends a DELTA carrying
+///     `applied_wal_sequence` and the removed keys' tombstones, and leaves the base file alone.
+///   * #1622 made WAL reclaim actually drop whole segment FILES.
+///
+/// Put together: the delta advances the served anchor to N while the base index file on disk
+/// still carries M, M < N. If the reclaim floor came from N, the records in (M, N] could be
+/// dropped, and a load that starts at M could not reconstruct them.
+///
+/// MEASURED, and the two anchors DO diverge -- this is not a hypothetical state. Driving the
+/// production cycle on this fixture: immediately after the expiry cycle the base index file still
+/// read `applied_wal_sequence = 1` while the highest delta record read 9, the reclaim frontier
+/// was 9, and the log had been cut to a single record at sequence 9. Everything in (1, 9] -- the
+/// expiry tombstones included -- was gone from the log with the base file still anchored at 1.
+///
+/// IT IS STILL NOT A LOSS, AND THE REASON IS THE THING THIS TEST PINS. The base index file is not
+/// the only durable checkpoint the load path reads. `load_shard_with` raises its replay point to
+/// the latest bucket dump manifest's `wal_sequence` when that manifest is newer than the base,
+/// and reclaim's ceiling -- `durable_bucket_generation_frontier_wal_sequence` -- is a MINIMUM over
+/// those same bucket dump manifests. A minimum over a set cannot exceed a member of it, so the
+/// floor cannot climb above the point the load starts replaying from. In the measured state above
+/// both sides were 9: the dump that minted the frontier is the same dump the load recovers from.
+///
+/// That is a load-bearing agreement between two independently-maintained expressions, and nothing
+/// asserted it. Either side can move on its own:
+///
+///   * the plan has a branch (`durable_wal_frontier == u64::MAX` -> `current_wal_sequence`) that
+///     mints the frontier from the CURRENT log position rather than from any manifest. It exists
+///     so an all-clean shard is not read as "retain everything", and it is the one place the
+///     frontier comes from something no load path consults. It is safe today only because a cycle
+///     DUMPS (stage `prepare`) before it RECLAIMS (stage `reclaim_wal`), so a manifest at the
+///     current position already exists by the time that branch is reached;
+///   * the load path could stop consulting manifests, or consult a different one --
+///     `latest_bucket_dump_manifest_at` sorts by `index_log_sequence`, not by `wal_sequence`.
+///
+/// So this asserts the RELATION, at every state a production cycle passes through, rather than
+/// either number.
+///
+/// IT READS THE REPLAY POINT OFF A REAL LOAD, NOT OFF A COPY OF THE RULE. The first version of
+/// this test recomputed `max(base anchor, latest manifest wal_sequence)` itself. That version
+/// PASSED with `load_shard_with`'s manifest arm disabled -- the mutation moved the subject and
+/// the test went on reading its own reimplementation of it, which is the whole failure mode the
+/// relation is here to catch. Every observation below instead copies the durable files, loads
+/// them with a fresh engine, and reads `LAST_REPLAY_WATERMARK`: the number `load_shard_with`
+/// actually chose, on the path it actually took.
+///
+/// THE DENOMINATOR. An invariant `a <= b` is worth nothing if `a` and `b` were never allowed to
+/// differ in the fixture. This counts the states in which the base index file's anchor sits
+/// strictly BELOW the reclaim frontier -- the two-anchor condition the whole worry rests on --
+/// and fails if that count is zero, because then the base alone would have covered every reclaim
+/// and the manifest that actually carries it would never have been exercised.
+///
+/// VERIFIED BY MUTATION: making `load_shard_with`'s single-barrier arm ignore the dump manifest
+/// (`Some(manifest) if false && ...`) fails this at the `expired` state with
+/// `reclaim floor 10 is above what the default load path replays from (1)`.
+#[test]
+fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
+    const PRE_KEYS: usize = 8;
+    const DUE_KEYS: usize = 4;
+    /// Poison value for `LAST_REPLAY_WATERMARK`. A load that recorded nothing must not be read as
+    /// a load that chose zero -- zero is "replay the whole retained log", the most permissive
+    /// answer there is, and reading a stale or absent value as that would make every assertion
+    /// below pass for the wrong reason.
+    const NO_LOAD_RECORDED: u64 = u64::MAX;
+
+    let pre_key = |index: usize| format!("pre-{index:04}");
+    let due_key = |index: usize| format!("zzz-due-{index:04}");
+
+    // THE DEFAULT RECOVERY PATH IS THE ONE THIS TEST IS ABOUT (#1644's open point). Everything
+    // here reasons about a durable checkpoint plus WAL replay; under `TS_WAL_LEGACY_RECOVERY`
+    // recovery folds the deltas instead, and the anchors do not diverge in the same way. No env is
+    // set here -- the point is what an unconfigured process does -- so a change that flips the
+    // default trips this rather than silently re-pointing recovery at the fold path, whose only
+    // coverage is one lib test.
+    assert!(
+        crate::engine::wal_single_barrier(),
+        "the default recovery path is no longer single-barrier base-only. This test's claim -- \
+         that reclaim cannot outrun a replay that folds no deltas -- is about that path"
+    );
+
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        if !from.exists() {
+            return;
+        }
+        std::fs::create_dir_all(to).expect("create the copy target");
+        for entry in std::fs::read_dir(from).expect("read the durable tree") {
+            let entry = entry.expect("read a durable entry");
+            let target = to.join(entry.file_name());
+            if entry.path().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("copy a durable file");
+            }
+        }
+    }
+
+    /// What `load_shard_with` ACTUALLY replays from, given the durable files as they stand.
+    ///
+    /// A copy, so the probe cannot disturb the shard the cycle is still driving, and a fresh
+    /// engine, so this is a cold load and not a cache read.
+    fn default_load_replay_point(
+        pages: &std::path::Path,
+        indexes: &std::path::Path,
+        scratch: &std::path::Path,
+        label: &str,
+    ) -> u64 {
+        let root = scratch.join(label.replace(' ', "-"));
+        copy_tree(pages, &root.join("pages"));
+        copy_tree(indexes, &root.join("indexes"));
+        crate::engine::lifecycle::LAST_REPLAY_WATERMARK
+            .store(NO_LOAD_RECORDED, std::sync::atomic::Ordering::SeqCst);
+        let reader = TemporalEngine::with_local_dirs(
+            1 << 20,
+            root.join("cache"),
+            root.join("pages"),
+            root.join("indexes"),
+        );
+        reader.load_shard(1);
+        let watermark = crate::engine::lifecycle::LAST_REPLAY_WATERMARK
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_ne!(
+            watermark, NO_LOAD_RECORDED,
+            "[{label}] the probe load recorded no replay watermark, so the number this test \
+             compares the reclaim floor against would be whatever a previous load left behind"
+        );
+        watermark
+    }
+
+    fn base_index_anchor(engine: &TemporalEngine) -> u64 {
+        std::fs::read(engine.index_path(1))
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
+            .and_then(|bytes| decode_index_bytes(&bytes).ok())
+            .and_then(|state| state.applied_wal_sequence)
+            .unwrap_or(0)
+    }
+
+    fn cycle(engine: &TemporalEngine) -> StorageManagerCycleReport {
+        engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            load_cold_buckets_for_expire: true,
+            ..StorageManagerCycleRequest::default()
+        })
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let probes = dir.path().join("probes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
+    engine.load_shard(1);
+
+    let mut seed = Vec::new();
+    for index in 0..PRE_KEYS {
+        seed.push((pre_key(index), 3_600_000u64));
+    }
+    for index in 0..DUE_KEYS {
+        seed.push((due_key(index), 3_600_000u64));
+    }
+    write_keys(&engine, 1, seed);
+    engine.flush_shard_index(1);
+
+    let mut observations = 0usize;
+    let mut safe_states = 0usize;
+    let mut diverged_states = 0usize;
+
+    let mut observe = |engine: &TemporalEngine, label: &str| {
+        observations += 1;
+        let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+        let base_anchor = base_index_anchor(engine);
+        let load_from = default_load_replay_point(&pages, &indexes, &probes, label);
+        if !plan.safe_to_reclaim {
+            // A plan that refuses reclaims nothing and so cannot outrun anything. Printed anyway,
+            // so a fixture that stopped reaching a reclaiming plan shows up as such below instead
+            // of passing as a run in which the floor never misbehaved.
+            println!(
+                "  [{label}] plan declines ({:?}); base index anchor {base_anchor}, a real load \
+                 replays from {load_from}",
+                plan.blocker_reasons
+            );
+            return;
+        }
+        safe_states += 1;
+        let frontier = plan.durable_bucket_generation_frontier_wal_sequence;
+        diverged_states += usize::from(base_anchor < frontier);
+        println!(
+            "  [{label}] base index anchor {base_anchor}, a real load replays from {load_from}, \
+             reclaim frontier {frontier} (retain_from {})",
+            plan.retain_from_wal_sequence
+        );
+        assert!(
+            frontier <= load_from,
+            "[{label}] reclaim floor {} is above what the default load path replays from \
+             ({load_from}). Records at sequences ({load_from}, {frontier}] are both reclaimable \
+             and required: reclaim may drop them, and a base-only load has to replay them to \
+             rebuild the state they carry. The base index file anchors at {base_anchor}; the \
+             floor has to stay at or below the replay point, because a durable checkpoint the \
+             load does not read cannot authorise dropping the log that stands in for it.",
+            plan.retain_from_wal_sequence,
+        );
+    };
+
+    observe(&engine, "seeded");
+    // Dump rounds. Nothing is due yet, so `expire` is inert and these only produce manifests.
+    cycle(&engine);
+    observe(&engine, "dumped");
+    cycle(&engine);
+    observe(&engine, "dumped again");
+
+    // Bring the deadlines forward, then let ONE cycle expire them. `reclaim_wal` runs BEFORE
+    // `expire` within a cycle, so this cycle writes the tombstones and the NEXT one is the first
+    // that may reclaim them -- which is the window the whole worry is about.
+    for index in 0..DUE_KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: due_key(index),
+                ttl_ms: 1,
+            },
+        });
+        assert!(response.status.ok, "could not bring {} forward", due_key(index));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(30));
+
+    let wal_before_expiry = engine.wal_store().stats(1).last_sequence;
+    let expire_cycle = cycle(&engine);
+    let expired = expire_cycle
+        .stages
+        .iter()
+        .map(|stage| stage.expired_records_removed)
+        .sum::<usize>();
+    let wal_after_expiry = engine.wal_store().stats(1).last_sequence;
+    let delta_anchor = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("the index log reads back")
+        .iter()
+        .filter_map(|record| record.applied_wal_sequence)
+        .max()
+        .unwrap_or(0);
+    let base_after_expiry = base_index_anchor(&engine);
+
+    // DENOMINATOR for everything below: the expiry round has to have happened, and it has to have
+    // put the two anchors apart. Without both, the rest of this test asserts nothing.
+    assert_eq!(
+        expired, DUE_KEYS,
+        "the expiry cycle removed {expired} of {DUE_KEYS} keys, so there are no tombstones in \
+         the log for a reclaim to be able to drop"
+    );
+    assert!(
+        wal_after_expiry > wal_before_expiry,
+        "the expiry cycle appended no WAL record (log still at {wal_before_expiry}). The \
+         tombstones are what a reclaim would be dropping, and with none written the reclaim \
+         below has nothing to get wrong"
+    );
+    assert!(
+        delta_anchor > base_after_expiry,
+        "the delta anchor {delta_anchor} is not ahead of the base index file's \
+         {base_after_expiry}. The two-anchor state this test exists for did not arise, so a \
+         reclaim floor taken from the delta would be indistinguishable from one taken from the \
+         base"
+    );
+    println!(
+        "  expiry cycle: {expired} keys removed, WAL {wal_before_expiry} -> {wal_after_expiry}, \
+         delta anchor {delta_anchor} against base index file anchor {base_after_expiry}"
+    );
+
+    observe(&engine, "expired");
+    cycle(&engine);
+    observe(&engine, "reclaimed after expiry");
+    cycle(&engine);
+    observe(&engine, "settled");
+
+    // VACUITY GUARD, on the scan rather than on any one state. If the base index file's anchor
+    // had tracked the frontier the whole way, the base alone would have covered every reclaim and
+    // the manifest that actually carries it -- the mechanism this test is named for -- would never
+    // have been the thing keeping the relation true.
+    assert!(
+        diverged_states > 0,
+        "in {observations} observed states ({safe_states} of them with a plan that would \
+         reclaim), the base index file's anchor was NEVER below the reclaim frontier. The \
+         durable base covered every reclaim on its own, so this run never exercised the state \
+         the test exists for and could not have failed"
+    );
+    assert!(
+        safe_states > 0,
+        "in {observations} observed states the plan never once reached `safe_to_reclaim`, so no \
+         floor was ever applied to anything and the relation above never ran against a live \
+         reclaim"
+    );
+    println!(
+        "  {observations} states observed, {safe_states} with a reclaiming plan, \
+         {diverged_states} with the base index file anchored BELOW the reclaim frontier"
+    );
+
+    // AND THE RECORDS SURVIVED IT. The relation holding is the mechanism; this is the outcome,
+    // read off a fresh process over the same durable files by the default load path.
+    //
+    // Counted SEPARATELY. The two halves fail for different reasons -- a live key missing is a
+    // reclaim that outran the replay point, an expired key present is a tombstone reclaimed
+    // before any durable checkpoint the load reads described the deletion -- and a combined
+    // total would let one hide the other.
+    crate::engine::lifecycle::LAST_REPLAY_WATERMARK
+        .store(NO_LOAD_RECORDED, std::sync::atomic::Ordering::SeqCst);
+    let reader = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-reader"),
+        &pages,
+        &indexes,
+    );
+    reader.load_shard(1);
+    let replayed_from = crate::engine::lifecycle::LAST_REPLAY_WATERMARK
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert_ne!(
+        replayed_from, NO_LOAD_RECORDED,
+        "the final load recorded no replay watermark"
+    );
+    let shards = reader.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("the shard loaded");
+    let live_back = (0..PRE_KEYS)
+        .filter(|index| shard.strings.contains_key(&pre_key(*index)))
+        .count();
+    let expired_back = (0..DUE_KEYS)
+        .filter(|index| shard.strings.contains_key(&due_key(*index)))
+        .count();
+    println!("  fresh default load replayed from {replayed_from}");
+    assert_eq!(
+        live_back, PRE_KEYS,
+        "a fresh default load came back with {live_back} of {PRE_KEYS} never-expired keys. It \
+         replayed from {replayed_from}; the missing ones are in neither the durable checkpoint it \
+         started from nor the retained log -- a reclaim freed what this load needed"
+    );
+    assert_eq!(
+        expired_back, 0,
+        "a fresh default load came back with {expired_back} of {DUE_KEYS} EXPIRED keys alive. It \
+         replayed from {replayed_from}, and the tombstones that removed them sat below that \
+         point: reclaim dropped them while the durable checkpoint the load starts from did not \
+         yet describe the deletion, so the keys resurrect with a deadline already in the past"
+    );
+}

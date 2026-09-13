@@ -343,6 +343,16 @@ impl TemporalEngine {
                 .as_ref()
                 .and_then(|state| state.applied_wal_sequence)
                 .unwrap_or(0);
+            // THIS ARM IS ALSO WHAT MAKES WAL RECLAIM SAFE, which is not obvious from here.
+            // `storage_wal_reclaim_plan` takes its floor from the SAME bucket dump manifests
+            // (a minimum over them), so the floor can only stay at or below the point this
+            // raises the replay to. After an expiry round the base index FILE can sit far behind
+            // -- measured, anchor 1 against a delta at 9, with the log already cut to sequence 9
+            // -- and it is the manifest read here, not the base file, that covers the difference.
+            // Narrowing this arm narrows what a load can reconstruct without narrowing what
+            // reclaim is willing to drop.
+            // `wal_reclaim_never_frees_what_the_default_load_path_replays`
+            // (engine/tests/expiry_scale.rs) fails if the two ever come apart.
             match latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id) {
                 Some(manifest) if manifest.wal_sequence > base_watermark => {
                     // A durable dump is newer than the base file (base not materialized at that

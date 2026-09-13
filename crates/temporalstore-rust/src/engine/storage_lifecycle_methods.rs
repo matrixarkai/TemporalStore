@@ -1025,6 +1025,24 @@ impl TemporalEngine {
             // nothing needs the log retained -- so the floor is the CURRENT position, not zero.
             // Zero here reads as "retain everything" and is what took the plan unsafe in the
             // first experiment.
+            //
+            // THE INVARIANT THIS LINE HAS TO KEEP, and the one place in the plan that could
+            // break it. Everywhere else the frontier is a MINIMUM over bucket dump manifests,
+            // and `load_shard_with` raises its own replay point to the LATEST of those same
+            // manifests -- a minimum over a set cannot exceed a member of it, so the floor can
+            // never climb above the point a load starts replaying from. Here the frontier comes
+            // from the current log position instead, which no load path consults. It is safe
+            // because a cycle DUMPS (`prepare`) before it RECLAIMS (`reclaim_wal`), so a
+            // manifest at this position already exists by the time this is read.
+            //
+            // What makes that load-bearing rather than incidental: the default load path folds
+            // no index-log deltas (#1644), so the expiry round's delta (#1633) can advance the
+            // served anchor well past the base index FILE's -- measured 9 against 1 -- and
+            // reclaim now drops whole segment files (#1622). A floor above the replay point
+            // would free records that a load still has to replay, with nothing else holding
+            // them. `wal_reclaim_never_frees_what_the_default_load_path_replays`
+            // (engine/tests/expiry_scale.rs) asserts the relation against a real load's
+            // recorded watermark at every state a production cycle passes through.
             durable_wal_frontier = current_wal_sequence;
         }
         if durable_index_log_frontier == u64::MAX {
