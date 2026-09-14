@@ -10315,13 +10315,13 @@ fn the_two_expiry_indexes_agree() {
 /// WAL fsync and defers the block fsync, so at ack time the block store holds the page in buffers
 /// and nowhere else. Carrying it makes the record self-sufficient.
 ///
-/// The design being followed does not carry: `WritePage` puts the page in the oplog, the page
-/// index addresses it THERE (`stage_page.page_info.address = log_id` in `Commit`), reads serve
-/// from the oplog via `ReadPage`, and the dump is what moves it into the page store. One copy,
-/// moved later, rather than two copies at once.
+/// With the carry off -- `stop_putting_pages_in_the_log_for_test()`, the other arm below -- the
+/// WAL record holds the command alone, the page index addresses the page in the block store, and
+/// a read is served from there once the dump has moved it out of buffers. One copy made durable
+/// later, rather than two copies at ack time.
 ///
-/// So the comparison is not "they batch and we do not" -- it is where the page lives between the
-/// write and the dump. This prints what the carry costs on both sides of the log.
+/// So the question is not batching -- it is where the page lives between the write and the dump.
+/// This prints what the carry costs on both sides of the log.
 #[test]
 #[ignore]
 fn what_carrying_the_page_in_the_record_costs() {
