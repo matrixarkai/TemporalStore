@@ -19,10 +19,16 @@ and they are not interchangeable. Measured here over every option block
 rebuild `replica_read` in **all** of them -- it does not emit the name at all -- while the
 storage_options copy rebuilds all ten exactly.
 
-The live writers are split between the two. `matrixark_mcp_serving_records` reaches the
-storage_options copy; `matrixark_mcp_session_runtime`, `matrixark_mcp_local_adapter` and the
-pinned import in `matrixark_mcp_core_compact.attach_storage_route` reach core's. So `storage_route`
-does not have one shape on stored records -- it has the shape of whichever module wrote it.
+The live writers of the `storage_route` field are split between the two. Counting only modules
+`reachable_from_production()` reports as live, three reach core's copy --
+`matrixark_local_adapter_session_commit:707,783`, `matrixark_mcp_core:2915`, and the pinned import
+in `matrixark_mcp_core_compact.attach_storage_route:205` -- and one reaches the other,
+`matrixark_mcp_serving_records:224`. So `storage_route` does not have one shape on stored records:
+it has the shape of whichever module wrote it.
+
+(`matrixark_mcp_session_runtime:1262,1298` writes the field with core's copy too and is NOT counted
+above -- the module is unreachable from any production entry point. Its call sites look exactly like
+live ones in a grep, which is the whole reason `reachable_from_production()` exists.)
 
 WHY THIS IS A GUARD AND NOT A FIX
 ---------------------------------
