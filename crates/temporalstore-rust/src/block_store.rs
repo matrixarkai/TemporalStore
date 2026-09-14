@@ -4282,6 +4282,100 @@ mod tests {
         );
     }
 
+    /// The re-checked, list-narrowed purge at 8,000 and 80,000 slabs. Prints.
+    ///
+    ///   cargo test -p temporalstore-rust --lib the_purge_at_scale \
+    ///       -- --ignored --nocapture --test-threads=1
+    ///
+    /// Ignored because it creates eighty thousand files and takes minutes; the correctness guards
+    /// run in CI, and this answers the questions correctness cannot: does the re-check still
+    /// separate live from dead when the sets are large, and what does ONE unbounded purge round
+    /// cost while it holds the store lock?
+    ///
+    /// Every count is asserted as a separate half. Today five defects in this area each presented
+    /// as one half full and the other zero, and a combined total hid all of them.
+    #[test]
+    #[ignore]
+    fn the_purge_at_scale() {
+        for slabs in [8_000u64, 80_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalBlockStore::new(dir.path());
+
+            // The quarantine state is built DIRECTLY rather than by installing and collecting
+            // N slabs. Installing is the harness, not the subject: it summarises every slab and
+            // periodically rewrites the manifest, and collecting then costs two directory fsyncs
+            // per slab. Measured on this box, that setup ran at roughly thirty installs a second
+            // at 80,000 and would have dominated the number this test exists to produce. What is
+            // being measured is the purge -- the round that the re-check and the slab list
+            // changed, and the one that holds the store lock while it unlinks.
+            let started = std::time::Instant::now();
+            let trash = delayed_destroy_dir(dir.path());
+            fs::create_dir_all(&trash).unwrap();
+            for id in 0..slabs {
+                fs::write(
+                    trash.join(format!("page_segment_{id:020}.seg.deleted.{id}")),
+                    b"slab",
+                )
+                .unwrap();
+            }
+            let setup_ms = started.elapsed().as_secs_f64() * 1e3;
+
+            // DENOMINATOR: the quarantine really is the size claimed, so the counts below are
+            // about a purge that had that much to decide.
+            assert_eq!(
+                store.delayed_destroy_slab_ids().unwrap().len() as u64,
+                slabs,
+                "every slab must really be in quarantine before the purge runs"
+            );
+
+            // A tenth are live again; a further tenth are blocked upstream. Disjoint, so each
+            // outcome has its own denominator and one cannot cover for another.
+            let live = (0..slabs).filter(|id| id % 10 == 0).collect::<Vec<_>>();
+            let blocked = (0..slabs).filter(|id| id % 10 == 1).collect::<Vec<_>>();
+            let selected = (0..slabs).filter(|id| id % 10 != 1).collect::<BTreeSet<_>>();
+            assert!(!live.is_empty() && !blocked.is_empty());
+
+            let started = std::time::Instant::now();
+            let report = store
+                .purge_delayed_destroy_slabs_selected(0, live.clone(), Some(selected))
+                .unwrap();
+            let purge_ms = started.elapsed().as_secs_f64() * 1e3;
+
+            let expected_purged = slabs - live.len() as u64 - blocked.len() as u64;
+            // THREE HALVES, SEPARATELY.
+            assert_eq!(
+                report.restored_block_slab_ids.len(),
+                live.len(),
+                "every live slab was restored"
+            );
+            assert_eq!(
+                report.purged_block_slab_ids.len() as u64,
+                expected_purged,
+                "every slab that was neither live nor blocked was destroyed"
+            );
+            assert_eq!(
+                store.delayed_destroy_slab_ids().unwrap().len(),
+                blocked.len(),
+                "and exactly the blocked slabs are still in quarantine"
+            );
+            // The restored slabs are back in the store, readable by path.
+            let present = store.slab_ids().unwrap().into_iter().collect::<BTreeSet<_>>();
+            assert!(
+                live.iter().all(|id| present.contains(id)),
+                "every restored slab is readable by path again"
+            );
+
+            println!(
+                "  {slabs:>6} quarantined: setup {setup_ms:>9.1} ms   purge {purge_ms:>9.1} ms \
+                 ({:>6} destroyed, {:>5} restored, {:>5} held)   purge per slab {:.4} ms",
+                report.purged_block_slab_ids.len(),
+                report.restored_block_slab_ids.len(),
+                blocked.len(),
+                purge_ms / slabs as f64,
+            );
+        }
+    }
+
     #[test]
     fn delayed_destroy_gc_quarantines_stale_slabs_before_purge() {
         let dir = tempfile::tempdir().unwrap();
@@ -4433,6 +4527,67 @@ mod tests {
             .unwrap();
         assert!(floor_impossible.selected_block_slab_ids.is_empty());
         assert_eq!(floor_impossible.skipped_by_policy_count, 2);
+    }
+
+    /// The per-round budget is INERT on the production path, and that is now written down.
+    ///
+    /// `BlockStoreGcPolicy` can bound a round two ways -- a slab count and a physical-byte total
+    /// -- and `policy_gc_plans_and_applies_byte_bounded_destroy` proves both work. Neither binds
+    /// in production: `with_slab_garbage_floor` is the only constructor the scheduled cycle uses
+    /// and it sets both to 0, which means "no limit". The operator path does not even reach the
+    /// policy layer, and the purge takes no budget at all.
+    ///
+    /// A capability that is implemented, tested, and switched off everywhere it would matter is
+    /// the hardest kind to notice: the tests are green, the struct looks complete, and nothing
+    /// says the shipped path opted out. This test is what says it. It is deliberately an
+    /// assertion of the CURRENT state rather than a fix -- changing a shipped default is a policy
+    /// call, and the recommendation attached to this work is that the PURGE should be capped
+    /// (unbounded unlinking under the store lock, linear in quarantine depth) while the
+    /// COLLECTOR's budget should stay off until the victim ordering it would truncate is the
+    /// intended one. Capping a wrong order makes the wrong slabs survive.
+    ///
+    /// So: when someone switches a budget on, this test fails, and the failure is the review
+    /// prompt. It cannot go back to being inert quietly.
+    #[test]
+    fn the_production_gc_policy_ships_with_both_round_budgets_off() {
+        let shipped = BlockStoreGcPolicy::with_slab_garbage_floor(
+            crate::engine::reports::DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS,
+            None,
+        );
+        assert_eq!(
+            shipped.max_destroy_slabs, 0,
+            "the slab-count budget is off on the only constructor the scheduled cycle uses; \
+             turning it on is a policy change that must be made deliberately"
+        );
+        assert_eq!(
+            shipped.max_destroy_physical_bytes, 0,
+            "and so is the byte budget"
+        );
+
+        // The halves are separate: a budget being CONSTRUCTIBLE is not a budget being APPLIED,
+        // and asserting only the first would leave the shipped path unexamined. This is the
+        // second half -- the plumbing works, so 0 really does mean "chose not to", not "cannot".
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"a").unwrap();
+        store.install_slab(1, b"b").unwrap();
+        store.install_slab(2, b"current").unwrap();
+        let bounded = store
+            .gc_policy_plan(2, Vec::<u64>::new(), &BlockStoreGcPolicy::max_slabs(1))
+            .unwrap();
+        assert_eq!(
+            bounded.selected_block_slab_ids.len(),
+            1,
+            "a budget of one really does bound a round: {bounded:?}"
+        );
+        assert_eq!(bounded.skipped_by_budget_count, 1);
+        let unbounded = store.gc_policy_plan(2, Vec::<u64>::new(), &shipped).unwrap();
+        assert_eq!(
+            unbounded.selected_block_slab_ids.len(),
+            2,
+            "and the shipped policy bounds nothing: {unbounded:?}"
+        );
+        assert_eq!(unbounded.skipped_by_budget_count, 0);
     }
 
     #[test]
