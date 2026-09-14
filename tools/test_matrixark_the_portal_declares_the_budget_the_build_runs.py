@@ -126,6 +126,26 @@ def read_shapes() -> tuple:
             if len(reads) > 1:
                 follows.setdefault(primary, set()).update(reads[1:])
             tail = node.values[-1]
+            # A fallback can be a CALL rather than a literal: the embedding window ends
+            # `or str(encoder_window_tokens())`. The branch below sees no Constant, records no
+            # literal for that variable, and the setting drops out of `compared` silently -- which
+            # is how a 4x error (128 declared, 512 run) sat unnoticed, since an uncompared setting
+            # produces no failure and no count.
+            #
+            # Resolved by CALLING it. This is not circular: the portal's default comes from the
+            # module CONSTANT via _EXPLICIT_BUILD_DEFAULT, while this evaluates the read site's own
+            # fallback EXPRESSION, so changing either one alone still fails. Only a no-argument
+            # call to a function defined in the module being read is resolved; anything else is
+            # left alone rather than guessed at.
+            called = tail
+            if (isinstance(called, ast.Call) and isinstance(called.func, ast.Name)
+                    and called.func.id in ("str", "int", "float") and len(called.args) == 1):
+                called = called.args[0]
+            if (isinstance(called, ast.Call) and isinstance(called.func, ast.Name)
+                    and not called.args and not called.keywords):
+                resolved = _call_module_level(name[:-3], called.func.id)
+                if resolved is not None:
+                    literals.setdefault(reads[0], set()).add(resolved)
             if (isinstance(tail, ast.Constant) and isinstance(tail.value, (str, int, float))
                     and not isinstance(tail.value, bool)):
                 literals.setdefault(primary, set()).add(str(tail.value))
@@ -169,6 +189,25 @@ def same_value(setting, left: str, right: str) -> bool:
         return float(left) == float(right)
     except (TypeError, ValueError):
         return left == right
+
+
+def _call_module_level(module: str, function: str):
+    """The value a no-argument module-level function returns, or None if it cannot be asked.
+
+    A fallback written as a call is invisible to a parser. Pattern-matching one is what this file
+    was doing, and it reported a clean comparison over a population it never examined.
+    """
+    try:
+        try:
+            source = __import__("tools." + module, fromlist=[module])
+        except ImportError:
+            source = __import__(module)
+        target = getattr(source, function, None)
+        if target is None or not callable(target):
+            return None
+        return str(target())
+    except Exception:  # pragma: no cover - a module this build cannot import or call
+        return None
 
 
 def classify() -> tuple:

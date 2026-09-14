@@ -38,8 +38,6 @@ Json = dict[str, Any]
 
 
 MAX_RESOURCE_FACT_CHUNKS = 8
-MAX_RESOURCE_FACTS_PER_RESOURCE = 8
-MAX_RESOURCE_FACTS_PER_CHUNK = 2
 ENABLE_GENERIC_RESOURCE_FACTS = env_bool("MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS", False)
 
 
@@ -76,23 +74,28 @@ SERVING_RESOURCE_METADATA_FIELDS = {
     "row_count",
     "supersedes_chunk_hash",
 }
-DEBUG_RESOURCE_METADATA_FIELDS = {
-    "embedding_text",
-    "parse_warnings",
-    "parser_name",
-    "parser_version",
-    "parse_warning_count",
-    "columns",
-    "links",
-    "tables",
-    "front_matter",
-}
 
 
+# These four were DEFINED here as well as in matrixark_mcp_core, with identical values -- two
+# copies of one decision, free to drift apart without anything noticing. The implementation lives
+# in matrixark_mcp_core and this module re-exports it, which is the idiom this file already used
+# for `sanitize_resource_metadata`. Re-exported rather than removed: `from matrixark_mcp_resources
+# import MAX_RESOURCE_FACTS_PER_CHUNK` still resolves, which matters because this repository is
+# forked widely and a module-level name with no `__all__` is public surface.
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
-    from .matrixark_mcp_core import sanitize_resource_metadata
+    from .matrixark_mcp_core import (
+        DEBUG_RESOURCE_METADATA_FIELDS,
+        MAX_RESOURCE_FACTS_PER_CHUNK,
+        MAX_RESOURCE_FACTS_PER_RESOURCE,
+        sanitize_resource_metadata,
+    )
 except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import sanitize_resource_metadata
+    from matrixark_mcp_core import (  # type: ignore
+        DEBUG_RESOURCE_METADATA_FIELDS,
+        MAX_RESOURCE_FACTS_PER_CHUNK,
+        MAX_RESOURCE_FACTS_PER_RESOURCE,
+        sanitize_resource_metadata,
+    )
 
 
 def debug_resource_metadata(metadata: Json) -> Json:
@@ -187,17 +190,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_resource_io import parse_s3_uri
 
 
-def _cloud_resource_bucket(args: Json, envelope: Json) -> str:
-    bucket = str(
-        args.get("s3_bucket")
-        or envelope.get("metadata", {}).get("s3_bucket")
-        or os.environ.get("MATRIXARK_RESOURCE_S3_BUCKET")
-        or os.environ.get("MATRIXARK_S3_BUCKET")
-        or ""
-    ).strip()
-    if not bucket:
-        raise MatrixArkError("cloud raw resource storage requires s3_bucket or MATRIXARK_RESOURCE_S3_BUCKET")
-    return bucket
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import _cloud_resource_bucket
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import _cloud_resource_bucket  # noqa: F401
 
 
 def _cloud_resource_prefix(args: Json, envelope: Json) -> str:

@@ -26,6 +26,11 @@ try:
     from tools import matrixark_hook_pack_cache as _pack_cache
 except ImportError:  # running from inside tools/, as the hooks do
     import matrixark_hook_pack_cache as _pack_cache
+
+try:
+    from tools.matrixark_mcp_env import env_bool as _env_bool
+except ImportError:  # running from inside tools/, as the hooks do
+    from matrixark_mcp_env import env_bool as _env_bool  # type: ignore
 import os
 import subprocess
 import sys
@@ -35,6 +40,7 @@ from typing import Any
 
 try:
     from tools.matrixark_codex_hook import (
+        DEFAULT_IDLE_COMMIT_TIMEOUT_MS,
         build_server,
         call_tool,
         close_server_best_effort,
@@ -65,6 +71,7 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_codex_hook import (  # type: ignore
+        DEFAULT_IDLE_COMMIT_TIMEOUT_MS,
         build_server,
         call_tool,
         close_server_best_effort,
@@ -96,7 +103,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 Json = dict[str, Any]
-DEFAULT_IDLE_COMMIT_TIMEOUT_MS = 120_000
 
 
 BEFORE_LLM_EVENTS = {
@@ -289,8 +295,19 @@ def should_commit(event: str) -> bool:
     return norm(event) in COMMIT_EVENTS
 
 
+#: `docs/CLOUD_API_REFERENCE.md` and `docs/DEPLOY_CLOUD_API.md` both offer this as a deployment
+#: control -- "extraction runs batched, on commit/timeout" -- in a block beside MATRIXARK_BULK_INGEST,
+#: with nothing saying it applies to one hook only. `matrixark_codex_hook` honoured it and this hook
+#: did not, so `=0` turned batched extraction off for Codex and left it on for Claude.
+#:
+#: Default True, the same default the Codex hook uses, so a deployment that has not set it is
+#: unaffected. Read through the shared `env_bool` rather than a comparison written here: this tree
+#: has already shipped a flag that read "on" as FALSE by growing its own boolean vocabulary.
+HOOK_AUTO_BATCH_EXTRACT = _env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True)
+
+
 def should_auto_batch_extract_on_ingest(event: str) -> bool:
-    return not should_commit(event)
+    return HOOK_AUTO_BATCH_EXTRACT and not should_commit(event)
 
 
 def agent_retrieve_args(
