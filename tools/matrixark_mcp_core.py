@@ -11,9 +11,17 @@ adapter that can be replaced with TemporalStore RPC calls later.
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_env import TRUE_VALUES, env_bool
+    from tools.matrixark_mcp_env import (  # noqa: F401  TRUE_VALUES re-exported
+        TRUE_VALUES,
+        env_bool,
+        flag_bool,
+    )
 except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_env import TRUE_VALUES, env_bool
+    from matrixark_mcp_env import (  # noqa: F401  TRUE_VALUES re-exported
+        TRUE_VALUES,
+        env_bool,
+        flag_bool,
+    )
 
 import base64 as _base64
 import struct as _struct
@@ -487,9 +495,7 @@ def matrixark_production_profile_enabled() -> bool:
 
 
 def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
-    if MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER:
-        return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in TRUE_VALUES
-    return backend_label != "local"
+    return flag_bool(MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER, backend_label != "local")
 
 # DEFAULT_BUSINESS_TYPE_WEIGHTS lives in matrixark_mcp_runtime_config, which this module already imports and which imports nothing from
 # here. They were declared in both and agreed -- which is what a pair does until one of them is

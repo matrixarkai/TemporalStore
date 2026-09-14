@@ -131,9 +131,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 try:  # package path
-    from tools.matrixark_mcp_env import TRUE_VALUES
+    from tools.matrixark_mcp_env import TRUE_VALUES, flag_bool  # noqa: F401
 except ImportError:  # top-level path (direct tools/ execution)
-    from matrixark_mcp_env import TRUE_VALUES
+    from matrixark_mcp_env import TRUE_VALUES, flag_bool  # noqa: F401
 
 __all__ = [
     "MatrixArkBackpressureError",
@@ -713,31 +713,30 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
 
 
 def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
-    configured = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
-    if configured:
-        return configured in TRUE_VALUES
-    return backend_label == "local"
+    return flag_bool(
+        os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", ""), backend_label == "local")
 
 
 def backend_ready_required(backend: str) -> bool:
-    if MATRIXARK_REQUIRE_BACKEND_READY:
-        return MATRIXARK_REQUIRE_BACKEND_READY in TRUE_VALUES
-    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
+    return flag_bool(
+        MATRIXARK_REQUIRE_BACKEND_READY,
+        production_profile_enabled()
+        and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"},
+    )
 
 
 def native_context_pack_required(backend: str) -> bool:
-    if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
-        return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in TRUE_VALUES
-    return backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
+    return flag_bool(
+        MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
+        backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"},
+    )
 
 
 def native_candidate_prefilter_required_for_backend(backend: str) -> bool:
     if backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
         return False
-    configured = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", "").strip().lower()
-    if configured:
-        return configured in TRUE_VALUES
-    return True
+    return flag_bool(
+        os.environ.get("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", ""), True)
 
 
 def default_mcp_backend() -> str:

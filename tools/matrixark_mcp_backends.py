@@ -39,9 +39,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 try:  # package path
-    from tools.matrixark_mcp_env import TRUE_VALUES
+    from tools.matrixark_mcp_env import TRUE_VALUES, flag_bool  # noqa: F401
 except ImportError:  # top-level path (direct tools/ execution)
-    from matrixark_mcp_env import TRUE_VALUES
+    from matrixark_mcp_env import TRUE_VALUES, flag_bool  # noqa: F401
 
 __all__ = [
     "add_backend_arguments",
@@ -59,9 +59,10 @@ def production_profile_enabled() -> bool:
 
 
 def backend_ready_required(backend: str) -> bool:
-    if MATRIXARK_REQUIRE_BACKEND_READY:
-        return MATRIXARK_REQUIRE_BACKEND_READY in TRUE_VALUES
-    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust"}
+    return flag_bool(
+        MATRIXARK_REQUIRE_BACKEND_READY,
+        production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust"},
+    )
 
 
 def default_mcp_backend() -> str:
