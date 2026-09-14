@@ -63,7 +63,7 @@ pub mod wal_record;
 
 pub use block_store::{
     BlockAddress, BlockStoreSlabDescriptor, BlockStoreSlabState, BlockStoreSlabSummary,
-    BlockStoreOptions, BlockStoreSlabReport, BlockStoreStats, LocalBlockStore, SharedSlabSource,
+    BlockStoreOptions, BlockStoreSlabReport, BlockStoreStats, BlockStore, SharedSlabSource,
 };
 pub use client::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, bucket_id_for_key, stable_key_hash,

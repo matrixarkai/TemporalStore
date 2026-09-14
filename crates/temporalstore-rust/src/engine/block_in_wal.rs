@@ -146,7 +146,7 @@ fn registry() -> &'static Mutex<HashMap<(usize, ShardId, u64), Registration>> {
 /// A later write of the same object replaces its entry, so a registration always names the
 /// record holding the current page rather than a superseded one.
 pub(super) fn register_record(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     staged_pages: &[StagedPage],
     log_id: u64,
@@ -172,7 +172,7 @@ pub(super) fn register_record(
 /// index. Same fact, different source, so it lands in the same table -- which is what lets the
 /// read path stay exactly as it was.
 pub(super) fn register_at(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
     log_id: u64,
@@ -196,7 +196,7 @@ pub(super) fn register_at(
 /// embedded engine serves shard 1, so without the filter one engine's registrations would pin
 /// every other engine's reclaim floor forever.
 pub(super) fn min_registered_sequence(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     store: &LocalWriteAheadLogStore,
 ) -> Option<u64> {
@@ -221,7 +221,7 @@ pub(super) fn min_registered_sequence(
 /// reclaim move at all. Newest are kept because a page written a moment ago is the one a read is
 /// most likely to want, and it is already in the record the writer just wrote.
 pub(super) fn oldest_registered_objects(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
 ) -> Vec<(u64, u64)> {
     let Ok(map) = registry().lock() else {
@@ -238,7 +238,7 @@ pub(super) fn oldest_registered_objects(
 }
 
 pub(super) fn registration_count(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
 ) -> usize {
     let Ok(map) = registry().lock() else {
@@ -257,7 +257,7 @@ pub(super) fn registration_count(
 /// needs, which is not a leak of bytes but of RECLAIM: the floor is the lowest live registration,
 /// so one stale entry holds the whole log.
 pub(super) fn deregister(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
 ) {
@@ -269,7 +269,7 @@ pub(super) fn deregister(
 
 /// Forget a shard's registrations. Called when the shard unloads; a reload replays the WAL and
 /// re-derives whatever it needs.
-pub(super) fn clear_shard(block_store: &crate::block_store::LocalBlockStore, shard_id: ShardId) {
+pub(super) fn clear_shard(block_store: &crate::block_store::BlockStore, shard_id: ShardId) {
     if let Ok(mut map) = registry().lock() {
         let owner = block_store.store_id();
         map.retain(|(store_id, shard, _), _| !(*store_id == owner && *shard == shard_id));
@@ -282,7 +282,7 @@ pub(super) fn clear_shard(block_store: &crate::block_store::LocalBlockStore, sha
 /// does not carry that page -- in every case the caller falls through to the behaviour it had
 /// before, so this can only turn a miss into a hit.
 pub(super) fn read_page(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
 ) -> Option<Vec<u8>> {

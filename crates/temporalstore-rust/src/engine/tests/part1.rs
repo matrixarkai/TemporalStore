@@ -1503,7 +1503,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
 fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
     let page_dir = unique_temp_path("compact-pages");
     let index_dir = unique_temp_path("compact-index");
-    let block_store = LocalBlockStore::new(&page_dir);
+    let block_store = BlockStore::new(&page_dir);
     let engine = TemporalEngine::with_cache_block_store_and_index_dir(
         MultiLayerCache::default(),
         block_store.clone(),

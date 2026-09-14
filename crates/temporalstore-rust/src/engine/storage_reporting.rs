@@ -893,7 +893,7 @@ pub(super) fn timestamped_kv_series<'a>(
 }
 
 pub(super) fn storage_feature_page_layout_report(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard: &ShardState,
 ) -> StorageFeaturePageLayoutReport {
     let mut report = StorageFeaturePageLayoutReport::default();

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! LocalBlockStore append/append_batch methods, split from block_store.rs.
+//! BlockStore append/append_batch methods, split from block_store.rs.
 use super::*;
 use super::record::sha256_bytes;
 
-impl LocalBlockStore {
+impl BlockStore {
     /// Force durability for writes made under relaxed (bulk) mode: fsync the
     /// active slab's data and persist the extent manifest once. No-op when
     /// nothing was deferred (e.g. the live per-append-fsync path).

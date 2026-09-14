@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! LocalBlockStore slab descriptor/summary + stream-backed slab runtime report, extracted from block_store.rs.
+//! BlockStore slab descriptor/summary + stream-backed slab runtime report, extracted from block_store.rs.
 
 use super::*;
 
@@ -25,7 +25,7 @@ fn catalog_state_to_slab_state(state: crate::index_log::SlabCatalogState) -> Blo
     }
 }
 
-impl LocalBlockStore {
+impl BlockStore {
     pub fn slab_descriptors(&self) -> Vec<BlockStoreSlabDescriptor> {
         self.inner
             .lock()

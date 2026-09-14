@@ -610,7 +610,7 @@ fn the_census_reads_every_map_that_holds_an_address() {
 #[ignore = "touches the filesystem; run by name"]
 fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = LocalBlockStore::new(dir.path());
+    let store = BlockStore::new(dir.path());
 
     let payload = b"a page whose header states which block of its object it is".to_vec();
     let object_id = 0x0123_4567_89ab_cdefu64;

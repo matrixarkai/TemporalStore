@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::block_store::{BlockAddress, LocalBlockStore};
+use crate::block_store::{BlockAddress, BlockStore};
 use crate::types::{
     FeatureFilter, FeatureFilterOp, ControlStateFamily,
     ControlStateSelectionType, SequenceFeatureRow, ShardId,
@@ -23,7 +23,7 @@ use super::state::PackedFeaturePageDecode;
 use super::{parse_i64, read_page_bytes, ShardState};
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
@@ -59,7 +59,7 @@ pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &Feature
 
 pub(super) fn sequence_rows_in_range(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,

@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use tokio::sync::oneshot;
 
-use crate::block_store::{BlockStoreError, LazyCheckpointSlab, LocalBlockStore, SharedSlabSource};
+use crate::block_store::{BlockStoreError, LazyCheckpointSlab, BlockStore, SharedSlabSource};
 use crate::engine::TemporalEngine;
 use crate::sdk::{self, v1};
 use crate::types::{Command, ExecuteRequest, ShardId, Status};
@@ -942,7 +942,7 @@ where
     pub async fn publish_block_slabs(
         &self,
         shard_id: ShardId,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let mut published = Vec::new();
         for block_slab_id in block_store.slab_ids()? {
@@ -962,7 +962,7 @@ where
         shard_id: ShardId,
         checkpoint_wal_index: u64,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         // R2 single-writer fence: a checkpoint publish is a durable-frontier advance, so a
         // superseded stale owner must be rejected here just as on a WAL append.
@@ -1066,7 +1066,7 @@ where
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let index = self.object_store.get(&self.index_key(shard_id)).await?;
         engine.install_index_bytes(shard_id, &index)?;
@@ -1184,7 +1184,7 @@ where
         &self,
         manifest: &SharedStoreCheckpointManifest,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<(), SharedStoreReplicationError> {
         let index = self.object_store.get(&manifest.index_key).await?;
         verify_checksum(
@@ -1207,7 +1207,7 @@ where
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         let manifest = self
             .list_checkpoints(shard_id)
@@ -2022,7 +2022,7 @@ where
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
         make_source: F,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError>
     where
@@ -2095,7 +2095,7 @@ impl SharedStoreReplicator<FileObjectStore> {
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(SharedPathSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
@@ -2116,7 +2116,7 @@ impl SharedStoreReplicator<MatrixObjectHttpStore> {
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(MatrixObjectSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
@@ -2180,7 +2180,7 @@ impl SharedStoreReplicator<crate::matrixobject_store::MatrixObjectObjectStore> {
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(MatrixObjectLocalSlabSource {

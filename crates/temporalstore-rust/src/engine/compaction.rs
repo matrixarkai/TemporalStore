@@ -45,7 +45,7 @@ pub(super) const COMPACTION_ROUND_PAGE_REFS: usize = 2_048;
 ///
 /// The relocation itself was never the problem -- it has a 256 MiB budget and resumes. This is
 /// the survey around it.
-fn slab_block_counts_by_slab(page_store: &LocalBlockStore) -> BTreeMap<u64, u64> {
+fn slab_block_counts_by_slab(page_store: &BlockStore) -> BTreeMap<u64, u64> {
     page_store
         .slab_block_counts()
         .unwrap_or_default()
@@ -55,7 +55,7 @@ fn slab_block_counts_by_slab(page_store: &LocalBlockStore) -> BTreeMap<u64, u64>
 }
 
 pub(super) fn compaction_utility_report(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard: &ShardState,
 ) -> ShardCompactionUtilityReport {
     compaction_utility_report_from_entries(page_store, shard, &collect_live_page_entries(shard))
@@ -67,7 +67,7 @@ pub(super) fn compaction_utility_report(
 /// builds several reports from that same set, so one walk can serve them all; the wrapper above
 /// keeps the old signature for callers with nothing to share.
 pub(super) fn compaction_utility_report_from_entries(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard: &ShardState,
     entries: &[LiveBlockEntry],
 ) -> ShardCompactionUtilityReport {
@@ -442,7 +442,7 @@ pub(super) fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, a
 }
 
 pub(super) fn compaction_model_layout_reports(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard: &ShardState,
 ) -> Vec<ShardCompactionModelLayoutReport> {
     let slab_page_counts = slab_block_counts_by_slab(page_store);
@@ -631,7 +631,7 @@ impl CompactionLayoutIndexRefs for ShardCompactionModelLayoutReport {
 }
 
 pub(super) fn compact_page_addresses<'a>(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
@@ -679,7 +679,7 @@ pub(super) fn compact_page_addresses<'a>(
 }
 
 pub(super) fn compact_feature_page_addresses(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::engine::constants::*;
-use crate::block_store::LocalBlockStore;
+use crate::block_store::BlockStore;
 use crate::block_store::BlockAddress;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEntity,
@@ -348,7 +348,7 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
 
 pub(super) fn read_context_value<T: ContextWire>(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
@@ -358,7 +358,7 @@ pub(super) fn read_context_value<T: ContextWire>(
 }
 
 pub(super) fn read_context_value_cold<T: ContextWire>(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     timeline_key: u64,
     address: &BlockAddress,
 ) -> Option<T> {
@@ -368,7 +368,7 @@ pub(super) fn read_context_value_cold<T: ContextWire>(
 
 pub(super) fn read_context_value_cached<T: ContextWire>(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
@@ -785,7 +785,7 @@ pub(super) fn validate_context_compression_event(
 
 pub(super) fn load_context_children(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -834,7 +834,7 @@ pub fn reset_context_children_dropped_before_scoring() {
 
 pub(super) fn load_context_node_vector(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -854,7 +854,7 @@ pub(super) fn load_context_node_vector(
 
 pub(super) fn load_context_node(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -879,7 +879,7 @@ pub(super) fn load_context_node(
 
 pub(super) fn load_context_summaries(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -922,7 +922,7 @@ pub(super) fn load_context_summaries(
 /// keeps walking only if a decode fails or an entry does not satisfy `valid_from_ms <= as_of_ms`.
 pub(super) fn load_newest_context_summary(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -950,7 +950,7 @@ pub(super) fn load_newest_context_summary(
 
 pub(super) fn load_latest_context_summary(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -965,7 +965,7 @@ pub(super) fn load_latest_context_summary(
 
 pub(super) fn load_context_compression_events(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -1031,7 +1031,7 @@ pub(super) fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn traverse_context_tree(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,

@@ -3038,7 +3038,7 @@ fn reconcile_timestamped_series_membership(
 }
 
 pub(super) fn reconcile_secondary_views_from_bucket_index(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard: &mut ShardState,
     warm: Option<(&MultiLayerCache, ShardId)>,
 ) {
@@ -3365,7 +3365,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
 }
 
 pub(super) fn insert_timestamped_secondary_view(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
     target: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
@@ -3435,7 +3435,7 @@ pub(super) fn insert_timestamped_secondary_view(
 /// slab/offset order, not write order.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_context_event_views(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
     events: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,

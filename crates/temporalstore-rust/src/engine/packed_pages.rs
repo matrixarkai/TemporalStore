@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
+use crate::block_store::{BlockAddress, BlockStoreError, BlockStore};
 use crate::types::{FeaturePoint, ShardId};
 use matrixcache::{CacheKey, MultiLayerCache};
 
@@ -201,7 +201,7 @@ pub(super) fn trim_timestamped_series(
 
 pub(super) fn append_timestamped_kv_pages(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     kind: &str,
     key: &str,
@@ -233,7 +233,7 @@ pub(super) fn append_timestamped_kv_pages(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn append_timestamped_kv_pages_keyed(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     kind: &str,
     key: &str,
@@ -262,7 +262,7 @@ pub(super) fn append_timestamped_kv_pages_keyed(
 #[allow(clippy::too_many_arguments)]
 fn append_timestamped_kv_pages_inner(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     kind: &str,
     key: &str,
@@ -494,7 +494,7 @@ fn split_at_checked(bytes: &[u8], at: usize) -> Option<(&[u8], &[u8])> {
 
 pub(super) fn read_feature_point(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
@@ -513,7 +513,7 @@ pub(super) fn read_feature_point(
 }
 
 pub(super) fn read_feature_point_cold(
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     timestamp_ms: u64,
     address: &BlockAddress,
 ) -> Option<FeaturePoint> {
@@ -532,7 +532,7 @@ pub(super) fn read_feature_point_cold(
 
 pub(super) fn read_feature_point_cached(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,

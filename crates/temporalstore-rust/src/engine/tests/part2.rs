@@ -694,7 +694,7 @@ fn page_reads_fill_compressed_block_cache() {
     );
     let engine = TemporalEngine::with_cache_block_store_and_index_dir(
         cache.clone(),
-        LocalBlockStore::new(dir.path().join("pages")),
+        BlockStore::new(dir.path().join("pages")),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

@@ -30,7 +30,7 @@ use std::sync::{Mutex, OnceLock};
 
 use matrixcache::{CacheEvictionRecord, MultiLayerCache};
 
-use crate::block_store::{BlockAddress, LocalBlockStore};
+use crate::block_store::{BlockAddress, BlockStore};
 use crate::types::ShardId;
 
 use super::constants::HOT_BLOCK_SLAB_ID;
@@ -76,7 +76,7 @@ fn parse_hot_selector(selector: &str) -> Option<(u64, Option<u32>)> {
 /// ever set it were four tests that set it AFTER building their engine, by which time this had
 /// already run. `TemporalEngine::disable_hot_page_spill_for_test` is how an engine is told, and
 /// it works because `register_eviction_callback` replaces the callback rather than adding one.
-pub(super) fn install_spill_handler(cache: &MultiLayerCache, block_store: &LocalBlockStore) {
+pub(super) fn install_spill_handler(cache: &MultiLayerCache, block_store: &BlockStore) {
     let block_store = block_store.clone();
     let hot_record_key = hot_page_record_key();
     cache.register_eviction_callback(move |record: CacheEvictionRecord| {
@@ -85,7 +85,7 @@ pub(super) fn install_spill_handler(cache: &MultiLayerCache, block_store: &Local
 }
 
 fn spill_evicted_hot_page(
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     hot_record_key: &str,
     record: CacheEvictionRecord,
 ) {

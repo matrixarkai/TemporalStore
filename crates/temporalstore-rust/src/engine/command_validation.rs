@@ -484,7 +484,7 @@ pub(super) fn now_epoch_seconds() -> u64 {
 
 pub(super) fn validate_command_preconditions(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     command: &Command,

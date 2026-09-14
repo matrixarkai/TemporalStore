@@ -133,7 +133,7 @@ impl DataNodeRuntime {
             // Pre-allocate the next data slab so a client append never has to roll inline.
             //
             // Rolling costs several fsyncs plus a slab-directory scan (see
-            // LocalBlockStore::prepare_next_slab). Left to the write path it lands on one
+            // BlockStore::prepare_next_slab). Left to the write path it lands on one
             // unlucky write as a latency outlier unrelated to that write's size. Doing it
             // here -- the stage that already exists and is already named "prepare" -- is what
             // this design does with PrepareNewZone in the same position of

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! LocalBlockStore read/read_range/install_slab methods, split from block_store.rs.
+//! BlockStore read/read_range/install_slab methods, split from block_store.rs.
 use super::*;
 use super::record::sha256_bytes;
 
-impl LocalBlockStore {
+impl BlockStore {
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
         // On-demand lazy recovery: if this slab lives only in shared storage after a
         // metadata-only restore, fetch + cache it before serving the read.

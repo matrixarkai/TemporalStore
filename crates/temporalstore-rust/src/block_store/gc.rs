@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! LocalBlockStore garbage-collection methods, extracted from block_store.rs.
+//! BlockStore garbage-collection methods, extracted from block_store.rs.
 
 use super::*;
 
-impl LocalBlockStore {
+impl BlockStore {
     /// Take the per-slab live tally the INDEX maintains.
     ///
     /// Publishing rather than deriving, because the store has no way to derive it: a page dies

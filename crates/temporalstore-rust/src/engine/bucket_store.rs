@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::block_store::{LocalBlockStore, BlockAddress};
+use crate::block_store::{BlockStore, BlockAddress};
 use crate::types::ShardId;
 use matrixcache::MultiLayerCache;
 
@@ -281,7 +281,7 @@ fn released_component_page_addresses(
 
 pub(super) fn read_bucket_index_value(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     model_id: &str,

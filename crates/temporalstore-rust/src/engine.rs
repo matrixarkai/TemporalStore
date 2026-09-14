@@ -102,7 +102,7 @@ use crate::control::{
     UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
-use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
+use crate::block_store::{BlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
@@ -122,7 +122,7 @@ use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 pub struct TemporalEngine {
     shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
     cache: MultiLayerCache,
-    page_store: LocalBlockStore,
+    page_store: BlockStore,
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
@@ -3664,7 +3664,7 @@ fn now_ms() -> u64 {
 /// Returns true if it wrote a compression record. Entities are never touched.
 fn maybe_auto_compress_context_node(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     tenant_hash: u64,
@@ -4272,7 +4272,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
 
 fn append_value(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
@@ -4323,7 +4323,7 @@ fn append_value(
 
 fn persist_control_state_page(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     key: &str,
@@ -4486,7 +4486,7 @@ fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) 
 
 fn read_page_bytes(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
 ) -> Option<Vec<u8>> {
@@ -4568,7 +4568,7 @@ fn read_page_bytes(
 /// the bytes should keep using `read_page_bytes`.
 fn read_page_shared(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
 ) -> Option<std::sync::Arc<[u8]>> {
@@ -4587,7 +4587,7 @@ fn read_page_shared(
     read_page_bytes(cache, page_store, shard_id, address).map(std::sync::Arc::from)
 }
 
-fn read_page_bytes_cold(page_store: &LocalBlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
+fn read_page_bytes_cold(page_store: &BlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
     page_store.read(address).ok()
 }
 

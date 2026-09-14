@@ -473,7 +473,7 @@ pub struct BlockStoreGcReport {
 ///
 /// The block store cannot derive this. It sees appends, and it sees whole slabs arrive and leave;
 /// an index entry that stopped pointing at an offset reaches it nowhere. So this arrives from the
-/// outside, through [`LocalBlockStore::publish_live_page_bytes`], and the store only reads it.
+/// outside, through [`BlockStore::publish_live_page_bytes`], and the store only reads it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabLive {
     pub live_page_refs: u64,
@@ -574,7 +574,7 @@ impl BlockStoreGcPolicy {
     ///
     /// It now sums the LIVE PAGE BYTES on the slab itself, taken from the per-slab tally the index
     /// maintains on its own mutation path and publishes through
-    /// `LocalBlockStore::publish_live_page_bytes`. The denominator moved with it, from the file
+    /// `BlockStore::publish_live_page_bytes`. The denominator moved with it, from the file
     /// size to the slab descriptor's `logical_bytes` -- the total ever appended there -- because a
     /// live page is counted at its logical length. `a_published_live_tally_makes_used_bytes_mean_
     /// live_page_bytes` shows the floor excluding a 90%-live slab, which is the first time this
@@ -679,7 +679,7 @@ pub(crate) const DELAYED_DESTROY_MIN_AGE_MS: u64 = 60 * 60 * 1000;
 /// the quarantine drained faster runs more rounds rather than one longer one.
 ///
 /// THE BUDGET IS SPENT ON WORK DONE, NOT ON ENTRIES LOOKED AT -- see
-/// [`LocalBlockStore::purge_delayed_destroy_slabs_capped`], where the difference is what makes
+/// [`BlockStore::purge_delayed_destroy_slabs_capped`], where the difference is what makes
 /// the cap advance instead of stalling.
 pub(crate) const DELAYED_DESTROY_MAX_SLABS_PER_ROUND: usize = 1_000;
 
@@ -750,7 +750,7 @@ pub enum BlockStoreSlabState {
 }
 
 /// Metadata for a SEALED slab whose bytes live in shared storage and are restored lazily.
-/// Passed to [`LocalBlockStore::install_lazy_checkpoint_slabs`] so a lazy-restore installs
+/// Passed to [`BlockStore::install_lazy_checkpoint_slabs`] so a lazy-restore installs
 /// complete slab descriptors before the first on-demand slab fetch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LazyCheckpointSlab {
@@ -1094,7 +1094,7 @@ pub struct BlockStoreRollReport {
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalBlockStore {
+pub struct BlockStore {
     inner: Arc<Mutex<BlockStoreInner>>,
     /// Whether a written page is staged into its log record. Shared by every clone of this
     /// store, and read on the write and read paths, so it is an atomic beside the lock rather
@@ -1102,7 +1102,7 @@ pub struct LocalBlockStore {
     block_in_wal: Arc<AtomicBool>,
 }
 
-impl LocalBlockStore {
+impl BlockStore {
     /// Which store this is, as a value that can be compared and hashed.
     ///
     /// Clones of one store share their inner handle, so they answer the same; two engines --
@@ -1189,7 +1189,7 @@ struct BlockStoreInner {
 /// when what it reads does not match the slabs on disk.
 const SLABS_UNWRITTEN_BEFORE_PERSIST: usize = 64;
 
-impl LocalBlockStore {
+impl BlockStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self::with_options(root, BlockStoreOptions::default())
     }
@@ -2139,7 +2139,7 @@ fn compute_slab_usage(
     usage_by_slab.into_values().map(|acc| acc.usage).collect()
 }
 
-impl Default for LocalBlockStore {
+impl Default for BlockStore {
     fn default() -> Self {
         let scratch = crate::scratch::owned_scratch_dir("pages");
         let store = Self::new(scratch.path());
@@ -2746,7 +2746,7 @@ mod tests {
 
     #[test]
     fn default_store_scratch_dir_dies_with_the_last_clone() {
-        let store = LocalBlockStore::default();
+        let store = BlockStore::default();
         let root = store.inner.lock().unwrap().root.clone();
         assert!(root.exists(), "Default must create its scratch dir");
         let clone = store.clone();
@@ -2759,7 +2759,7 @@ mod tests {
     #[test]
     fn explicit_root_survives_the_store() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         drop(store);
         assert!(dir.path().exists(), "a caller-supplied root must never be deleted");
     }
@@ -2767,7 +2767,7 @@ mod tests {
     #[test]
     fn active_slab_torn_tail_is_fenced_on_reopen() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let a1 = store.append(b"record-one").unwrap();
         let a2 = store.append(b"record-two").unwrap();
         drop(store);
@@ -2788,7 +2788,7 @@ mod tests {
         assert!(std::fs::metadata(&slab).unwrap().len() > clean_len);
         // Reopen: the torn tail must be physically fenced back to the readable prefix (mirrors
         // resume-at-committed-length), not left embedded mid-slab.
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         assert_eq!(
             std::fs::metadata(&slab).unwrap().len(),
             clean_len,
@@ -2819,7 +2819,7 @@ mod tests {
         // with byte-identical content, so unlike the append test the BYTES cannot tell the two
         // apart and the modification time is the observable.
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         for index in 0..8u64 {
             store.append(format!("record-{index}").as_bytes()).unwrap();
         }
@@ -2859,7 +2859,7 @@ mod tests {
         // durable in one shot at sync_durable()/seal. Proven by the manifest file bytes staying
         // byte-identical across a burst of appends, then changing exactly once at sync_durable.
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let manifest = slab_manifest_path(dir.path());
         // Land one append so the manifest exists at a known state, then snapshot it.
         store.append(b"seed").unwrap();
@@ -2890,7 +2890,7 @@ mod tests {
         // with the slab-manifest file deleted -- proving the folded catalog is a lossless source
         // of the durable slab state (diagnostics are recomputed from the slab separately).
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.append(b"a").unwrap();
         // Seal the first slab by rolling to a new active slab.
         store.roll_slab().unwrap();
@@ -2905,7 +2905,7 @@ mod tests {
         // Delete the slab-manifest file so the reopened store has no cached catalog file; it
         // reconstructs slabs from the durable slabs (reconcile-on-open), then we install the
         // folded catalog on top. The lifecycle states must match the pre-crash projection.
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         std::fs::remove_file(slab_manifest_path(dir.path())).ok();
         let changed = reopened.install_slab_catalog(&catalog).unwrap();
         let recovered = reopened.slab_catalog(0);
@@ -2926,7 +2926,7 @@ mod tests {
     #[test]
     fn gc_slabs_removes_old_non_current_slabs() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"current").unwrap();
         store.install_slab(1, b"old").unwrap();
         store.install_slab(2, b"keep").unwrap();
@@ -2953,7 +2953,7 @@ mod tests {
     fn prepare_next_slab_takes_the_roll_off_the_append_path() {
         const TARGET: u64 = 2048;
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
 
         let payload = vec![b'x'; 512];
         let mut guard = 0;
@@ -2982,7 +2982,7 @@ mod tests {
     fn prepare_next_slab_is_a_noop_below_target() {
         const TARGET: u64 = 1 << 20;
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.append(b"small").unwrap();
 
         assert!(!store.needs_slab_preparation_with_target(TARGET));
@@ -2998,7 +2998,7 @@ mod tests {
     fn prepare_next_slab_does_not_roll_an_empty_slab() {
         const TARGET: u64 = 2048;
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let payload = vec![b'y'; 512];
         let mut guard = 0;
         while !store.needs_slab_preparation_with_target(TARGET) {
@@ -3020,7 +3020,7 @@ mod tests {
     #[test]
     fn data_survives_when_prepare_never_runs() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let payload = vec![b'z'; 512];
         let mut addresses = Vec::new();
         for round in 0..8 {
@@ -3038,7 +3038,7 @@ mod tests {
     #[test]
     fn roll_slab_moves_future_appends_to_fresh_slab() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
         assert_eq!(first.block_slab_id, 0);
 
@@ -3055,13 +3055,13 @@ mod tests {
     #[test]
     fn reopened_store_appends_to_latest_existing_slab() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
         let roll = store.roll_slab().unwrap();
         let second = store.append(b"second").unwrap();
         assert_eq!(roll.new_block_slab_id, second.block_slab_id);
 
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         let third = reopened.append(b"third").unwrap();
 
         assert_eq!(third.block_slab_id, second.block_slab_id);
@@ -3075,7 +3075,7 @@ mod tests {
     #[test]
     fn reopen_reconciles_manifest_missing_existing_stream_slab() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
         store.roll_slab().unwrap();
         let second = store.append(b"second").unwrap();
@@ -3097,7 +3097,7 @@ mod tests {
         )
         .unwrap();
 
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         let descriptors = reopened.slab_descriptors();
 
         assert!(descriptors
@@ -3121,7 +3121,7 @@ mod tests {
     #[test]
     fn reopen_marks_manifest_slab_without_stream_file_as_purged() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
         store.roll_slab().unwrap();
         let second = store.append(b"second").unwrap();
@@ -3129,7 +3129,7 @@ mod tests {
 
         fs::remove_file(slab_path(dir.path(), first.block_slab_id)).unwrap();
 
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         let descriptors = reopened.slab_descriptors();
 
         assert!(descriptors
@@ -3151,7 +3151,7 @@ mod tests {
     #[test]
     fn installed_higher_slab_becomes_current_for_future_appends() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(3, b"restored-segment").unwrap();
 
         let next = store.append(b"after-restore").unwrap();
@@ -3187,7 +3187,7 @@ mod tests {
     #[test]
     fn the_envelope_carries_a_crc_not_a_digest() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let payload = b"digest-lives-with-the-page";
         let address = store.append(payload).unwrap();
 
@@ -3221,7 +3221,7 @@ mod tests {
     #[test]
     fn page_address_checksum_rejects_corrupt_slab_bytes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let address = store.append(b"verified-page").unwrap();
         // The address no longer carries a digest. The page does, and a read still verifies
         // against it -- corrupting the slab below must still be caught.
@@ -3239,7 +3239,7 @@ mod tests {
     #[test]
     fn page_address_matches_compact_slab_metadata_contract_and_checksum_alias() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let address = store
             .append_with_page_metadata(b"address-contract", Some(4242), Some(17))
             .unwrap();
@@ -3298,7 +3298,7 @@ mod tests {
     #[test]
     fn block_slab_records_have_self_describing_envelope() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let address = store.append(b"enveloped-page").unwrap();
         let raw = store.read_slab(address.block_slab_id).unwrap();
 
@@ -3309,7 +3309,7 @@ mod tests {
     #[test]
     fn page_id_mismatch_rejects_corrupt_address_metadata() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let mut address = store.append(b"identity-checked-page").unwrap();
         address.set_page_id(Some(address.page_id().unwrap() + 1));
 
@@ -3330,7 +3330,7 @@ mod tests {
         // Removing either field is a wire change -- both serialize and the compat corpora carry
         // them -- so the duplication stays. What must not happen is the two diverging quietly.
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.append(b"first").unwrap();
         store.roll_slab().unwrap();
         store.append(b"second").unwrap();
@@ -3379,7 +3379,7 @@ mod tests {
     #[test]
     fn a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.append(b"first").unwrap();
         store.roll_slab().unwrap();
         store.append(b"second-is-a-little-longer").unwrap();
@@ -3390,7 +3390,7 @@ mod tests {
         // OPEN TWO. The one that inspects the sealed slabs, stamps
         // `verified_source_mtime_unix_ms` onto their descriptors and writes the manifest out.
         // It skips nothing -- which is exactly why a two-open test exercises nothing.
-        let warm = LocalBlockStore::new(dir.path());
+        let warm = BlockStore::new(dir.path());
         assert_eq!(
             warm.slabs_skipped_reinspection_on_open(),
             0,
@@ -3428,7 +3428,7 @@ mod tests {
 
         // OPEN THREE. Editing the manifest does not touch the slab files, so every sealed slab
         // still matches what its descriptor was verified against and takes the skip.
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
 
         // THE DENOMINATOR FOR THE ROUTE, asserted BEFORE the property. Without it, a change that
         // quietly stopped skipping -- or a default that went back to re-verifying everything --
@@ -3490,7 +3490,7 @@ mod tests {
     #[test]
     fn a_folded_manifest_still_writes_the_keys_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.append(b"first").unwrap();
         store.roll_slab().unwrap();
         store.append(b"second").unwrap();
@@ -3534,7 +3534,7 @@ mod tests {
 
         // And the file this process wrote is one this process can read: the keys above are not
         // merely present, they are the ones the deserializer binds.
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         let descriptors = reopened.slab_descriptors();
         assert_eq!(
             descriptors.len(),
@@ -3546,7 +3546,7 @@ mod tests {
     #[test]
     fn rolled_slabs_stamp_new_slab_ids() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first = store.append(b"first-slab").unwrap();
         let roll = store.roll_slab().unwrap();
         let second = store.append(b"second-slab").unwrap();
@@ -3560,7 +3560,7 @@ mod tests {
     #[test]
     fn slab_manifest_tracks_roll_reopen_gc_and_purge() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first = store.append(b"first-slab").unwrap();
         store.roll_slab().unwrap();
         let second = store.append(b"second-slab").unwrap();
@@ -3622,7 +3622,7 @@ mod tests {
         assert_eq!(initial_slab_usage[0].reclaimable_page_store_used_bytes, 0);
         assert_eq!(initial_slab_usage[0].purged_page_store_used_bytes, 0);
 
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         let reopened_slabs = reopened.slab_descriptors();
         assert_eq!(reopened_slabs.len(), slabs.len());
         // The slab must survive a reopen unchanged. `verified_source_mtime_unix_ms` is excluded
@@ -3710,12 +3710,12 @@ mod tests {
             .unwrap();
         assert_eq!(purge.purged_block_slab_ids, vec![0]);
         assert!(purge.purged_physical_bytes > 0);
-        let purged = LocalBlockStore::new(dir.path()).slab_descriptors();
+        let purged = BlockStore::new(dir.path()).slab_descriptors();
         assert_eq!(purged[0].state, BlockStoreSlabState::Purged);
         assert_eq!(purged[0].created_unix_ms, slabs[0].created_unix_ms);
         assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
         assert_eq!(purged[1].state, BlockStoreSlabState::Active);
-        let purged_summary = LocalBlockStore::new(dir.path()).slab_summary();
+        let purged_summary = BlockStore::new(dir.path()).slab_summary();
         assert_eq!(purged_summary.purged_slabs, 1);
         assert_eq!(purged_summary.active_slabs, 1);
         assert_eq!(
@@ -3724,7 +3724,7 @@ mod tests {
         );
         assert_eq!(purged_summary.live_physical_bytes, purged[1].physical_bytes);
         assert_eq!(purged_summary.reclaimable_physical_bytes, 0);
-        let purged_slab_usage = LocalBlockStore::new(dir.path()).slab_usage();
+        let purged_slab_usage = BlockStore::new(dir.path()).slab_usage();
         let purged_first = purged_slab_usage
             .iter()
             .find(|slab| slab.block_slab_id == first.block_slab_id)
@@ -3743,13 +3743,13 @@ mod tests {
     #[test]
     fn missing_slab_manifest_rebuilds_from_existing_slabs() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first = store.append(b"first-slab").unwrap();
         store.roll_slab().unwrap();
         let second = store.append(b"second-slab").unwrap();
         fs::remove_file(slab_manifest_path(dir.path())).unwrap();
 
-        let rebuilt = LocalBlockStore::new(dir.path());
+        let rebuilt = BlockStore::new(dir.path());
         let slabs = rebuilt.slab_descriptors();
 
         assert_eq!(slabs.len(), 2);
@@ -3796,7 +3796,7 @@ mod tests {
     #[test]
     fn partial_slab_manifest_rebuild_preserves_readable_prefix_and_reports_corruption() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first_payload = b"sealed-readable-prefix".repeat(64);
         let first = store.append(&first_payload).unwrap();
         store.roll_slab().unwrap();
@@ -3812,7 +3812,7 @@ mod tests {
             .unwrap();
         fs::remove_file(slab_manifest_path(dir.path())).unwrap();
 
-        let rebuilt = LocalBlockStore::new(dir.path());
+        let rebuilt = BlockStore::new(dir.path());
         assert_eq!(rebuilt.read(&first).unwrap(), first_payload);
         assert_eq!(rebuilt.read(&second).unwrap(), b"active-clean-tail");
 
@@ -3860,7 +3860,7 @@ mod tests {
     #[test]
     fn logical_page_range_skips_record_envelopes_across_pages() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.append(b"abc").unwrap();
         store.append(b"def").unwrap();
 
@@ -3886,7 +3886,7 @@ mod tests {
 
         // Producer writes a real slab; capture its raw bytes to serve lazily to fresh nodes.
         let producer_dir = tempfile::tempdir().unwrap();
-        let producer = LocalBlockStore::new(producer_dir.path());
+        let producer = BlockStore::new(producer_dir.path());
         producer.append(b"abc").unwrap();
         producer.append(b"def").unwrap();
         let raw = producer.read_slab(0).unwrap();
@@ -3894,7 +3894,7 @@ mod tests {
 
         // read_range: fresh node, slab absent locally, shared source attached.
         let range_dir = tempfile::tempdir().unwrap();
-        let range_node = LocalBlockStore::new(range_dir.path());
+        let range_node = BlockStore::new(range_dir.path());
         range_node.attach_shared_slab_source(Arc::new(OneSlabSource {
             block_slab_id: 0,
             bytes: raw.clone(),
@@ -3920,7 +3920,7 @@ mod tests {
 
         // read_logical_range: independent fresh node so its fetch count starts at 0.
         let logical_dir = tempfile::tempdir().unwrap();
-        let logical_node = LocalBlockStore::new(logical_dir.path());
+        let logical_node = BlockStore::new(logical_dir.path());
         logical_node.attach_shared_slab_source(Arc::new(OneSlabSource {
             block_slab_id: 0,
             bytes: raw.clone(),
@@ -3980,7 +3980,7 @@ mod tests {
     #[test]
     fn compressed_page_records_round_trip_and_remain_logical() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first_payload = b"prefix-".repeat(80);
         let second_payload = b"suffix-".repeat(80);
         let first = store.append(&first_payload).unwrap();
@@ -4019,7 +4019,7 @@ mod tests {
     #[test]
     fn stream_backed_slab_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first_payload = b"slab-stream-first-".repeat(96);
         let second_payload = b"slab-stream-second-".repeat(96);
         let first = store
@@ -4079,7 +4079,7 @@ mod tests {
             vec![roll.previous_block_slab_id]
         );
 
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         assert_eq!(reopened.read(&third).unwrap(), third_payload);
         let report = reopened.stream_backed_slab_runtime_report().unwrap();
         assert!(report.runtime_ready, "{report:?}");
@@ -4132,7 +4132,7 @@ mod tests {
             purge.purged_block_slab_ids,
             vec![roll.previous_block_slab_id]
         );
-        let purged = LocalBlockStore::new(dir.path())
+        let purged = BlockStore::new(dir.path())
             .stream_backed_slab_runtime_report()
             .unwrap();
         assert!(purged.runtime_ready, "{purged:?}");
@@ -4154,7 +4154,7 @@ mod tests {
     #[test]
     fn slab_reports_describe_page_counts_bytes_and_compression() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first_payload = b"prefix-".repeat(80);
         let second_payload = b"suffix-".repeat(80);
         let first = store.append(&first_payload).unwrap();
@@ -4217,7 +4217,7 @@ mod tests {
     #[test]
     fn slab_reports_capture_first_corrupt_record_error() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let first = store.append(b"healthy").unwrap();
         let second = store.append(b"damaged").unwrap();
         let path = slab_path(dir.path(), second.block_slab_id);
@@ -4247,7 +4247,7 @@ mod tests {
         let payload = b"policy-controlled-".repeat(80);
 
         let disabled_dir = tempfile::tempdir().unwrap();
-        let disabled_store = LocalBlockStore::with_options(
+        let disabled_store = BlockStore::with_options(
             disabled_dir.path(),
             BlockStoreOptions {
                 compression_enabled: false,
@@ -4277,7 +4277,7 @@ mod tests {
         assert_eq!(disabled_store.stats().compression_bytes_saved, 0);
 
         let threshold_dir = tempfile::tempdir().unwrap();
-        let threshold_store = LocalBlockStore::with_options(
+        let threshold_store = BlockStore::with_options(
             threshold_dir.path(),
             BlockStoreOptions {
                 compression_min_bytes: payload.len() + 1,
@@ -4303,7 +4303,7 @@ mod tests {
     #[test]
     fn page_envelope_rejects_corrupt_compressed_payload() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let address = store.append(&b"compress-me-".repeat(80)).unwrap();
         let path = slab_path(dir.path(), address.block_slab_id);
         let mut slab = fs::read(&path).unwrap();
@@ -4320,7 +4320,7 @@ mod tests {
     #[test]
     fn page_envelope_rejects_corrupt_header_lengths() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let address = store.append(b"header-checked-page").unwrap();
         let path = slab_path(dir.path(), address.block_slab_id);
         let mut slab = fs::read(&path).unwrap();
@@ -4344,7 +4344,7 @@ mod tests {
     #[test]
     fn page_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None, None);
         fs::write(
             slab_path(dir.path(), legacy_address.block_slab_id),
@@ -4358,7 +4358,7 @@ mod tests {
     #[test]
     fn gc_slabs_retains_live_index_references_below_floor() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"current").unwrap();
         store.install_slab(1, b"live").unwrap();
         store.install_slab(2, b"stale").unwrap();
@@ -4395,7 +4395,7 @@ mod tests {
     #[test]
     fn a_quarantined_slab_waits_before_it_is_destroyed() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"stale").unwrap();
         store.install_slab(1, b"live").unwrap();
         store
@@ -4460,7 +4460,7 @@ mod tests {
     #[test]
     fn a_quarantined_slab_that_is_live_again_is_returned_not_destroyed() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"needed-again").unwrap();
         store.install_slab(1, b"really-stale").unwrap();
         store.install_slab(2, b"current").unwrap();
@@ -4545,7 +4545,7 @@ mod tests {
         // reusing that id would collide with a descriptor that legitimately exists.
         const ORPHAN: u64 = 7;
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(1, b"current").unwrap();
 
         // A file in quarantine that the manifest never learned about.
@@ -4608,7 +4608,7 @@ mod tests {
     #[test]
     fn a_purge_handed_a_slab_list_leaves_the_rest_in_quarantine() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"free-to-go").unwrap();
         store.install_slab(1, b"pinned-by-a-follower").unwrap();
         store.install_slab(2, b"current").unwrap();
@@ -4667,7 +4667,7 @@ mod tests {
     /// and scaling the other is not a measurement at all.
     fn purge_at_scale_arm(slabs: u64) {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
 
         // The quarantine state is built DIRECTLY rather than by installing and collecting
         // N slabs. Installing is the harness, not the subject: it summarises every slab and
@@ -4750,7 +4750,7 @@ mod tests {
         // size. This is the number that matters: how long the store lock is held by a round the
         // scheduler actually runs.
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let trash = delayed_destroy_dir(dir.path());
         fs::create_dir_all(&trash).unwrap();
         for id in 0..slabs {
@@ -4850,7 +4850,7 @@ mod tests {
     #[test]
     fn a_capped_purge_advances_and_drains_in_the_rounds_its_budget_predicts() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let slabs = 500u64;
         let budget = 40usize;
         quarantine_fixture(dir.path(), slabs);
@@ -4994,7 +4994,7 @@ mod tests {
     #[test]
     fn a_capped_purge_is_not_starved_by_the_slabs_it_must_skip() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let slabs = 1_000u64;
         let budget = 9usize;
         quarantine_fixture(dir.path(), slabs);
@@ -5071,7 +5071,7 @@ mod tests {
     #[test]
     fn a_capped_purge_re_checks_liveness_for_every_slab_it_reaches() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let slabs = 60u64;
         let budget = 7usize;
         quarantine_fixture(dir.path(), slabs);
@@ -5143,7 +5143,7 @@ mod tests {
     /// on the slab whenever an index has published a tally, and
     /// `a_published_live_tally_makes_used_bytes_mean_live_page_bytes` shows that ordering coming
     /// out highest-garbage first. This store has no publisher, so it exercises the unpublished
-    /// arm -- which is still what a bare `LocalBlockStore` does, and still orders by size.
+    /// arm -- which is still what a bare `BlockStore` does, and still orders by size.
     ///
     /// AN UNBOUNDED COLLECTOR DOES NOT CARE -- it takes every candidate, so the order only
     /// decides what happens first. A BUDGETED ONE DOES: the budget makes the order decide who
@@ -5161,7 +5161,7 @@ mod tests {
     #[test]
     fn the_collector_victim_order_is_size_while_every_candidate_reports_zero_used_bytes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         // Sizes deliberately disagree with id order, so an assertion about the resulting order
         // cannot be satisfied by the slabs merely coming back in the order they were made.
         store.install_slab(0, &vec![b'a'; 200]).unwrap();
@@ -5250,7 +5250,7 @@ mod tests {
         let mut measured: Vec<(u64, usize, u64)> = Vec::new();
         for slabs in [16u64, 64] {
             let dir = tempfile::tempdir().unwrap();
-            let store = LocalBlockStore::new(dir.path());
+            let store = BlockStore::new(dir.path());
             for id in 0..slabs {
                 store.install_slab(id, b"slab-contents").unwrap();
             }
@@ -5309,7 +5309,7 @@ mod tests {
         let mut measured: Vec<(usize, usize, u64)> = Vec::new();
         for live_count in [0u64, 48] {
             let dir = tempfile::tempdir().unwrap();
-            let store = LocalBlockStore::new(dir.path());
+            let store = BlockStore::new(dir.path());
             let slabs = 64u64;
             quarantine_fixture(dir.path(), slabs);
             assert_eq!(
@@ -5367,7 +5367,7 @@ mod tests {
     #[test]
     fn a_quarantine_round_is_durable_as_a_whole_after_the_fsyncs_are_hoisted() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let slabs = 32u64;
         for id in 0..slabs {
             store.install_slab(id, b"slab-contents").unwrap();
@@ -5382,7 +5382,7 @@ mod tests {
         assert_eq!(report.delayed_destroy_block_slab_ids.len() as u64, slabs - 1);
         drop(store);
 
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         assert_eq!(
             reopened.slab_ids().unwrap(),
             vec![slabs - 1],
@@ -5425,7 +5425,7 @@ mod tests {
     #[test]
     fn delayed_destroy_gc_quarantines_stale_slabs_before_purge() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"current").unwrap();
         store.install_slab(1, b"stale").unwrap();
         store.install_slab(2, b"live").unwrap();
@@ -5492,7 +5492,7 @@ mod tests {
     #[test]
     fn a_published_live_tally_makes_used_bytes_mean_live_page_bytes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         // Equal sizes, so nothing below can be satisfied by the slabs merely differing in size --
         // which is the key the order actually used to fall through to.
         store.install_slab(0, &vec![b'a'; 1_000]).unwrap();
@@ -5598,7 +5598,7 @@ mod tests {
     #[test]
     fn utility_gc_selects_low_utility_stale_slabs_with_bound() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"small").unwrap();
         store.install_slab(1, b"largest-stale-segment").unwrap();
         store.install_slab(2, b"live-segment").unwrap();
@@ -5676,7 +5676,7 @@ mod tests {
         // (garbage = 10_000 - slab live-fraction). Floor 0 (the default) reclaims every
         // eligible slab as before; a floor above a slab's garbage ratio excludes it.
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"stale-a").unwrap();
         store.install_slab(1, b"stale-b").unwrap();
         store.install_slab(2, b"kept-above-floor").unwrap();
@@ -5739,7 +5739,7 @@ mod tests {
         // and asserting only the first would leave the shipped path unexamined. This is the
         // second half -- the plumbing works, so 0 really does mean "chose not to", not "cannot".
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"a").unwrap();
         store.install_slab(1, b"b").unwrap();
         store.install_slab(2, b"current").unwrap();
@@ -5764,7 +5764,7 @@ mod tests {
     #[test]
     fn policy_gc_plans_and_applies_byte_bounded_destroy() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         store.install_slab(0, b"small").unwrap();
         store.install_slab(1, b"largest-stale-segment").unwrap();
         store.install_slab(2, b"live-segment").unwrap();
@@ -5832,7 +5832,7 @@ mod tests {
     fn quarantine_and_purge_timed_by_phase() {
         for slabs in [200u64, 800, 3_200] {
             let dir = tempfile::tempdir().unwrap();
-            let store = LocalBlockStore::new(dir.path());
+            let store = BlockStore::new(dir.path());
 
             let started = std::time::Instant::now();
             for id in 0..slabs {
@@ -5907,7 +5907,7 @@ mod tests {
     #[test]
     fn installing_slabs_does_not_write_a_manifest_each_time() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::new(dir.path());
+        let store = BlockStore::new(dir.path());
         let slabs = 512u64;
         for id in 0..slabs {
             store.install_slab(id, b"slab-contents").unwrap();
@@ -5924,7 +5924,7 @@ mod tests {
         );
         // And it is still correct: a reopen sees every slab, whether or not the last write landed.
         drop(store);
-        let reopened = LocalBlockStore::new(dir.path());
+        let reopened = BlockStore::new(dir.path());
         assert_eq!(
             reopened.slab_ids().unwrap().len(),
             slabs as usize,

@@ -66,7 +66,7 @@ fn stage_meta_outcome(
 /// Read a node record back, by the same two lookups every node reader here uses.
 fn load_context_node(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -97,7 +97,7 @@ fn load_context_node(
 #[allow(clippy::too_many_arguments)]
 fn write_context_node(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     object_key: &str,
@@ -177,7 +177,7 @@ fn drop_if_expired(
 
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     feature_max_size: usize,
     async_storage: bool,
     control_rollup_enabled: bool,

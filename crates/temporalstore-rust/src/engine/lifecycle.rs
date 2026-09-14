@@ -5,7 +5,7 @@ use super::*;
 
 impl Default for TemporalEngine {
     fn default() -> Self {
-        Self::with_cache_and_block_store(MultiLayerCache::default(), LocalBlockStore::default())
+        Self::with_cache_and_block_store(MultiLayerCache::default(), BlockStore::default())
     }
 }
 
@@ -35,10 +35,10 @@ pub(crate) static LAST_REPLAY_WATERMARK: std::sync::atomic::AtomicU64 =
 
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
-        Self::with_cache_and_block_store(cache, LocalBlockStore::default())
+        Self::with_cache_and_block_store(cache, BlockStore::default())
     }
 
-    pub fn with_cache_and_block_store(cache: MultiLayerCache, block_store: LocalBlockStore) -> Self {
+    pub fn with_cache_and_block_store(cache: MultiLayerCache, block_store: BlockStore) -> Self {
         let scratch = crate::scratch::owned_scratch_dir("indexes");
         let mut engine =
             Self::with_cache_block_store_and_index_dir(cache, block_store, scratch.path());
@@ -48,7 +48,7 @@ impl TemporalEngine {
 
     pub fn with_cache_block_store_and_index_dir(
         cache: MultiLayerCache,
-        block_store: LocalBlockStore,
+        block_store: BlockStore,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
         let index_dir = index_dir.into();
@@ -210,7 +210,7 @@ impl TemporalEngine {
         self.cache.clone()
     }
 
-    pub fn block_store(&self) -> LocalBlockStore {
+    pub fn block_store(&self) -> BlockStore {
         self.page_store.clone()
     }
 
@@ -218,7 +218,7 @@ impl TemporalEngine {
         since = "0.1.0",
         note = "use block_store; page naming remains only for legacy compatibility"
     )]
-    pub fn page_store(&self) -> LocalBlockStore {
+    pub fn page_store(&self) -> BlockStore {
         self.block_store()
     }
 
@@ -304,7 +304,7 @@ impl TemporalEngine {
         };
         Self::with_cache_block_store_and_index_dir(
             cache,
-            LocalBlockStore::with_options(block_store_dir, block_store_options),
+            BlockStore::with_options(block_store_dir, block_store_options),
             index_dir,
         )
     }
