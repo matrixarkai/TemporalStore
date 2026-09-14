@@ -23,7 +23,7 @@ This mode must be separate from the existing paths:
 Current readonly replicas already use replay:
 
 - The partition starts a replicator only on readonly partitions.
-- The replicator replays primary oplog records through the object manager's oplog replay path.
+- The replicator replays primary WAL records through the object manager's WAL replay path.
 - The replicator replays index-log records.
 - A remote partition stream can read primary stream bytes when `secondary_pull_stream_from_primary=true`.
 
@@ -55,7 +55,7 @@ sequenceDiagram
   L->>L: FSM applies committed mutation
   R1->>R1: FSM applies committed mutation
   R2->>R2: FSM applies committed mutation
-  L->>D: Commit local object/oplog/page/index state
+  L->>D: Commit local object/WAL/page/index state
   L-->>C: Ack after quorum commit
 ```
 
@@ -66,18 +66,18 @@ experimental flag is set.
 
 ### Apply path
 
-Followers should apply the exact committed oplog record:
+Followers should apply the exact committed WAL record:
 
 ```text
 data-raft FSM apply(index, bytes)
   parse the data-raft log entry
   locate the local partition
-  append committed oplog to local stream
-  replay the oplog into local object state (local_log_id, local_log_size, oplog)
+  append committed wal to local stream
+  replay the wal into local object state (local_log_id, local_log_size, wal)
   update applied index
 ```
 
-The object-manager oplog replay path already exists and handles:
+The object-manager WAL replay path already exists and handles:
 
 - sequence checks
 - slot dirty marking
@@ -96,10 +96,10 @@ Snapshot payload:
 - table name
 - partition config
 - last applied Raft index
-- last applied oplog sequence
+- last applied WAL sequence
 - index stream snapshot or serialized index metadata
 - page stream data needed by live index addresses
-- local oplog range needed after snapshot
+- local WAL range needed after snapshot
 
 Recommended first implementation:
 
@@ -134,10 +134,10 @@ For feature/risk serving, `replica_stale` is often acceptable. For strict read-a
   - partition info lookup
 
 - Op-logger
-  - builds and commits the oplog record
+  - builds and commits the WAL record
 
 - Object manager
-  - object-manager oplog replay
+  - object-manager WAL replay
 
 - Replicator
   - existing non-Raft replay loop
@@ -154,7 +154,7 @@ For feature/risk serving, `replica_stale` is often acceptable. For strict read-a
 
 These files provide:
 
-- `DataRaftLogEntry`: partition id, Raft index, local oplog id/size, and the committed oplog record
+- `DataRaftLogEntry`: partition id, Raft index, local WAL id/size, and the committed WAL record
 - `DataRaftCommandEntry`: partition id, Raft index, request id, and the batched execute-command request
 - data-raft log serialize
 - data-raft log parse
@@ -162,7 +162,7 @@ These files provide:
 - data-raft command parse
 - the data-raft committed-log applier (apply entry point)
 
-The applier parses a committed Raft payload and applies it through the object-manager oplog replay path.
+The applier parses a committed Raft payload and applies it through the object-manager WAL replay path.
 It is intentionally independent from a concrete Raft library, so the same path can be tested
 without starting a concrete Raft library and then reused by the future Raft FSM.
 
@@ -213,8 +213,8 @@ else:
 ### Milestone 1: single-process component test
 
 - Create a fake in-memory partition Raft group.
-- Propose a serialized oplog record.
-- Apply through the object-manager oplog replay path.
+- Propose a serialized WAL record.
+- Apply through the object-manager WAL replay path.
 - Verify STRING/HASH/FEATURE/TEMPORAL_AGGREGATE state matches leader.
 
 Exit criteria:

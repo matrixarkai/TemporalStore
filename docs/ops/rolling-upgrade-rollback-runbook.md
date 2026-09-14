@@ -58,7 +58,7 @@ After restart:
 - lifecycle snapshot restores the same shard ids and load generations.
 - read/write admission policy matches metaserver topology.
 - hot cache may be cold, but memory miss -> page/disk read -> refill succeeds.
-- Prometheus reports cache, page-store, oplog, ingestion, and lifecycle counters.
+- Prometheus reports cache, page-store, WAL, ingestion, and lifecycle counters.
 
 ## Proxy And Client Checks
 
@@ -95,7 +95,7 @@ Rollback immediately when any of these happen:
 4. Roll back data nodes one shard group at a time if errors are storage/lifecycle related.
 5. Roll back metaserver last unless topology mutation is the root cause.
 6. Re-run preflight and the quick chaos gate.
-7. Preserve lifecycle snapshots, slot dump manifests, index logs, oplogs, and proxy/client
+7. Preserve lifecycle snapshots, slot dump manifests, index logs, WALs, and proxy/client
    preflight JSON for audit.
 
 ## Post-Window Evidence

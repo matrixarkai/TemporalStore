@@ -51,7 +51,7 @@ Synchronous double-write creates problems exactly where MatrixArk needs predicta
 - benchmark and agent requests inherit offline analytics cost;
 - every resource chunk, audit payload, and debug trace increases hot-path write amplification.
 
-TemporalStore already has append/oplog semantics and replayable context records. Use that as the source for an outbox-style archiver instead of asking the API request to preserve history in two stores at once.
+TemporalStore already has append/WAL semantics and replayable context records. Use that as the source for an outbox-style archiver instead of asking the API request to preserve history in two stores at once.
 
 ## Large Object Problem
 
@@ -484,7 +484,7 @@ flowchart TD
   C["Write hot records to TemporalStore"]
   D["Mark dirty summary / compression / archive candidates"]
   E["Return to agent or importer"]
-  F["Async archiver tails oplog or scans archive candidates"]
+  F["Async archiver tails the WAL or scans archive candidates"]
   G["Idempotent write to MatrixKV"]
   K["Optional mirror to MatrixDB analytics"]
   H["Verify cold write"]
@@ -510,7 +510,7 @@ The archiver is an at-least-once worker with idempotent upserts.
 
 ```mermaid
 flowchart LR
-  A["TemporalStore oplog / prefix scan"]
+  A["TemporalStore WAL / prefix scan"]
   B["Archive policy filter"]
   C["Cold record batch"]
   D["MatrixKV cold archive records"]

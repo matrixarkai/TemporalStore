@@ -83,7 +83,7 @@ python3 tools/matrixark_mcp_server.py \
 ```
 
 The local JSONL `record_log` adapter is now a debug/CI path. Production should
-write context data directly to TemporalStore, using TemporalStore oplog,
+write context data directly to TemporalStore, using TemporalStore WAL,
 MatrixArk audit records, and replay records for durability and inspection.
 
 Apply a local API key:
@@ -141,7 +141,7 @@ MatrixArk should operate against either TemporalStore implementation through the
 | Serving data | ContextNode, ContextSummary, ContextEmbedding, ContextEvent, ContextEntity, ContextIndex, ResourceChunk, SkillManifest, ContextPackAudit. | Same logical records and wire shape. | Same record keys, timestamps, ids, and replay output. |
 | Ingestion | API, MCP, hook, batch/session commit, streaming, resource, skill, feedback. | Same ingestion APIs. | Same idempotency behavior and audit refs. |
 | Retrieval | Tree-first traversal, secondary-index filtering, event/entity/resource/skill selection, token-budget packing. | Same retrieval semantics. | Same selected refs and dropped-ref reasons for conformance tests. |
-| Storage mode | Local single node, multi data node, async oplog, future Raft HA. | Local single node first, then gateway-backed async writes and future HA mode. | Same health state and metrics labels. |
+| Storage mode | Local single node, multi data node, async WAL, future Raft HA. | Local single node first, then gateway-backed async writes and future HA mode. | Same health state and metrics labels. |
 | Benchmarking | LOCOMO, LongMemEval, scale tests, resource/skill tests. | Same unified tests. | Same artifacts: result JSON, report JSON/MD, hypotheses JSONL, ContextPack JSONL, judge JSONL. |
 
 Backend selection should be explicit:
@@ -283,7 +283,7 @@ Common fixes:
 - Backend mismatch: run the same conformance fixture with `MATRIXARK_MCP_BACKEND=local` and
   `MATRIXARK_MCP_BACKEND=temporalstore-rust`; compare ContextPack JSONL, selected refs, dropped refs, and audit rows.
 - Rust slow path: verify the Rust backend is a Rust proxy/binding, not CLI-per-operation.
-- slow path: verify async oplog, batch append, audit buffering, and data-node count before raising retrieval worker concurrency.
+- slow path: verify async WAL, batch append, audit buffering, and data-node count before raising retrieval worker concurrency.
 
 ## Product Conformance Target
 

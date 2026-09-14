@@ -605,7 +605,7 @@ def _parity_status(
         ),
         "note": (
             "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame "
-            "offsets, a protobuf oplog-index offset metadata sidecar, authoritative oplog-index "
+            "offsets, a protobuf wal-index offset metadata sidecar, authoritative wal-index "
             "metadata lookup/range reads, and incremental journal reopen/readback. MatrixObjectStore runtime evidence covers incremental disk-root "
             "reopen/readback."
         ),

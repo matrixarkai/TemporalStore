@@ -194,7 +194,7 @@ fi
 
 if [[ "${RUN_INGESTION_GATE}" == "1" ]]; then
   run_stage ingestion_write_path \
-    "fix queue replay, append batching, async oplog, or backend write timeout before MatrixArk context parity" \
+    "fix queue replay, append batching, async WAL, or backend write timeout before MatrixArk context parity" \
     env BUILD_TYPE="${BUILD_TYPE}" FORCE_BUILD="${INGESTION_FORCE_BUILD:-0}" DRY_RUN="${INGESTION_DRY_RUN}" RECORDS="${INGESTION_RECORDS}" BATCH_SIZE="${INGESTION_BATCH_SIZE}" ITERATIONS=1 SOURCES=api,kafka,flink bash tools/run_queue_ingestion_replay_ubuntu22.sh
 fi
 
