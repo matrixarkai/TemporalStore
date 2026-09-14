@@ -10,6 +10,22 @@ except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
     from matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
 
+# Bound explicitly rather than left to the star-import above. matrixark_mcp_core star-imports
+# matrixark_mcp_core_resource_io at the end of its body, and that module imports back from
+# matrixark_mcp_core at the top of its own. A process that enters through
+# matrixark_mcp_core_resource_io therefore runs core's star-import against a module that has
+# executed nothing past its own import block, and core re-exports 26 fewer names -- including
+# every one listed here, each of which is called below. Importing them from where they are
+# defined binds them whichever module entered first.
+try:  # package path
+    from tools.matrixark_mcp_core_resource_io import (
+        deployment_scope_from_args,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import (  # noqa: F401
+        deployment_scope_from_args,
+    )
+
 try:  # package path
     from tools.matrixark_pipeline_task_slim import pipeline_task_footprint_stats
 except ImportError:  # Direct script execution from tools/.

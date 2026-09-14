@@ -8,6 +8,22 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+# Bound explicitly rather than left to the star-import above. matrixark_mcp_core star-imports
+# matrixark_mcp_core_resource_io at the end of its body, and that module imports back from
+# matrixark_mcp_core at the top of its own. A process that enters through
+# matrixark_mcp_core_resource_io therefore runs core's star-import against a module that has
+# executed nothing past its own import block, and core re-exports 26 fewer names -- including
+# every one listed here, each of which is called below. Importing them from where they are
+# defined binds them whichever module entered first.
+try:  # package path
+    from tools.matrixark_mcp_core_resource_io import (
+        bounded_buffer_envelope,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import (  # noqa: F401
+        bounded_buffer_envelope,
+    )
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
     Any,
