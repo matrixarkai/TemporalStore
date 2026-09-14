@@ -74,21 +74,21 @@ fn main() {
     let skip_covered_sessions = env_bool("MATRIXARK_BACKFILL_SKIP_COVERED_SESSIONS");
     let cache_bytes: usize = std::env::var("MATRIXARK_BACKFILL_CACHE_BYTES")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .filter(|v| *v > 0)
         .unwrap_or(256 * 1024 * 1024);
     let flush_every_accepted: u64 = std::env::var("MATRIXARK_BACKFILL_FLUSH_EVERY_ACCEPTED")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(10_000);
     let sub_batch: usize = std::env::var("MATRIXARK_BACKFILL_SUB_BATCH")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .filter(|v| *v > 0)
         .unwrap_or(250);
     let max_body: usize = std::env::var("MATRIXARK_BACKFILL_MAX_BODY")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(2000);
     let agent_name = std::env::args()
         .skip(1)

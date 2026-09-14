@@ -8,6 +8,7 @@ fn data_raft_read_policy_from_env() -> DataRaftReadPolicy {
     let mode = std::env::var("TS_DATA_RAFT_READ_MODE")
         .or_else(|_| std::env::var("TS_SERVER_RAFT_READ_MODE"))
         .unwrap_or_else(|_| "leader".to_string())
+        .trim()
         .parse::<DataRaftReadMode>()
         .unwrap_or_else(|err| panic!("invalid TS_DATA_RAFT_READ_MODE: {err}"));
     DataRaftReadPolicy {

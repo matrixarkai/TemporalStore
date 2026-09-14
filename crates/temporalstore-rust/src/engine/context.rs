@@ -193,10 +193,10 @@ pub(super) fn default_traversal_candidates() -> usize {
 
 pub(super) fn context_compression_policy_from_env() -> ContextCompressionPolicy {
     fn env_usize(name: &str, default: usize) -> usize {
-        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        crate::env_flag::env_number(name, default)
     }
     fn env_u64(name: &str, default: u64) -> u64 {
-        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        crate::env_flag::env_number(name, default)
     }
     // A local name for the crate vocabulary, not a second one. Spelled out here it accepted
     // `1` and `true` only, and -- worse than the missing words -- it answered `false` for

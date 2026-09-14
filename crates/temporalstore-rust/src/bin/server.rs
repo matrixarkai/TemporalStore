@@ -104,7 +104,7 @@ fn main() {
         .unwrap_or_else(|| "127.0.0.1:17001".to_string());
     let shard_id = std::env::var("TS_SHARD_ID")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(1);
     let cache_dir =
         std::env::var("TS_CACHE_DIR").unwrap_or_else(|_| "target/temporalstore-cache".to_string());
@@ -118,11 +118,11 @@ fn main() {
         .unwrap_or_else(|_| "target/temporalstore-indexes".to_string());
     let cache_memory_bytes = std::env::var("TS_CACHE_MEMORY_BYTES")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(16 * 1024 * 1024);
     let node_id = std::env::var("TS_SERVER_NODE_ID")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or_default();
     // Whether this node already holds local shard state on disk, captured
     // BEFORE the engine constructs/loads (which may create empty dir
@@ -356,7 +356,7 @@ fn main() {
         .unwrap_or_default();
     let heartbeat_interval_ms = std::env::var("TS_SERVER_HEARTBEAT_INTERVAL_MS")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(3_000);
     let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
 
@@ -2278,31 +2278,19 @@ fn wire_matrixobject_networked_durability(
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 fn env_u32(name: &str, default: u32) -> u32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 fn env_i32(name: &str, default: i32) -> i32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 

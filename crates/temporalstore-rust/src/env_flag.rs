@@ -49,9 +49,83 @@ pub fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Read `name` as a number, falling back to `default` when it is unset, empty, or holds
+/// something that does not parse.
+///
+/// The numeric half of the same argument [`env_bool`] settles. `usize::from_str` rejects
+/// surrounding whitespace outright -- `" 64 ".parse::<usize>()` is an `Err` -- so a reader that
+/// hands it the raw value discards what the operator set and falls back to the default with no
+/// message. A shell export, a systemd `Environment=` line, a heredoc and a `.env` file all leave
+/// whitespace behind, and the boolean reader directly above already tolerates every one of them:
+///
+/// | written | a raw `value.parse()` | this one |
+/// |---|---|---|
+/// | `64` | `64` | `64` |
+/// | `" 64"` / `"64 "` / `"\t64\n"` | the default | `64` |
+/// | `wat` | the default | the default |
+///
+/// Fourteen local copies of this function existed, in seven files, and none of them trimmed. The
+/// crate had settled the vocabulary question for booleans and left the numeric twin sitting
+/// directly underneath it in the same files.
+pub fn env_number<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<T>().ok())
+        .unwrap_or(default)
+}
+
+/// The value of a numeric flag, or `None` when it is not one.
+///
+/// `None` is distinct from a zero the same way [`parse_bool`]'s is from `Some(false)`: a value
+/// nobody can read is not a request for zero. Callers that treat zero as "unset" keep doing that
+/// themselves -- `env_usize_any` filters it out on purpose -- rather than having it decided here.
+pub fn parse_number<T: std::str::FromStr>(raw: &str) -> Option<T> {
+    raw.trim().parse::<T>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_number_survives_the_whitespace_a_launcher_leaves_behind() {
+        // The failure this half of the module exists to prevent. Every one of these is an
+        // `Err` from `usize::from_str`, so a reader that skips the trim answers with its
+        // default and says nothing.
+        for written in ["64", " 64", "64 ", " 64 ", "\t64\n", "  64  "] {
+            assert_eq!(
+                Some(64usize),
+                parse_number::<usize>(written),
+                "{written:?} should read as 64"
+            );
+        }
+    }
+
+    #[test]
+    fn a_number_that_is_not_one_leaves_the_default_alone() {
+        for written in ["", "   ", "wat", "6 4", "64x", "-1"] {
+            assert_eq!(
+                None,
+                parse_number::<usize>(written),
+                "{written:?} should not parse as a usize"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_is_a_value_and_not_an_absence() {
+        // `env_usize_any` in the proxy treats 0 as "unset" and that is its decision to make.
+        // This reader does not make it for everyone: a cap of 0 that silently became the
+        // default would be the same silent discard, one layer up.
+        assert_eq!(Some(0usize), parse_number::<usize>(" 0 "));
+    }
+
+    #[test]
+    fn the_numeric_default_is_what_survives_an_unset_or_unreadable_variable() {
+        let unset = "TS_ENV_FLAG_NUMBER_NAME_THAT_IS_NEVER_SET";
+        assert_eq!(7usize, env_number(unset, 7usize));
+        assert_eq!(7u64, env_number(unset, 7u64));
+    }
 
     #[test]
     fn both_halves_of_the_vocabulary_are_understood() {

@@ -16,7 +16,7 @@ fn main() {
     let proxy = std::env::var("TS_PROXY_ADDR").unwrap_or_else(|_| "127.0.0.1:17000".to_string());
     let shard_id = std::env::var("TS_SHARD_ID")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(1);
     let client = TemporalStoreClient::new(proxy);
     let command = match args[1].as_str() {
