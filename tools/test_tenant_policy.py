@@ -71,6 +71,7 @@ class ResolutionOrderTest(unittest.TestCase):
                              "an edited policy file must take effect without a restart")
 
     def test_a_broken_policy_file_keeps_the_last_good_policy(self):
+        """The case the handler exists for: the SAME file is edited badly in place."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "tenants.json"
             path.write_text(json.dumps({"tenants": {"acme": {"max_secondary_index_records_per_scope": 99}}}),
@@ -81,6 +82,79 @@ class ResolutionOrderTest(unittest.TestCase):
             path.write_text("{ this is not json", encoding="utf-8")
             self.assertEqual(policy.resolve("max_secondary_index_records_per_scope", {"tenant_id": "acme"}), 99,
                              "a bad edit must not silently reset every tenant to defaults")
+
+    def test_a_broken_file_does_not_lend_another_files_policy(self):
+        """The cache is keyed by PATH, so a miss on one path may not answer with another's entry.
+
+        Two handlers in `_load_file_policies` face the same hazard -- the configured file cannot be
+        read, and the cache holds an entry for a DIFFERENT path. The unreadable-file branch asks
+        `_FILE_CACHE["path"] == path` before answering; the invalid-JSON branch did not, so:
+
+            repoint A -> B, B corrupt    A's tenant overrides applied, while B is configured
+            repoint A -> B, B missing    no overrides
+
+        A tenant named only in A kept its override while the file in force was B, which has never
+        mentioned it. Asserted for BOTH failure modes together, because the defect was the two
+        disagreeing rather than either answer on its own.
+        """
+        for label, break_it in (("corrupt", lambda p: p.write_text("{ not json", encoding="utf-8")),
+                                ("missing", lambda p: None)):
+            with self.subTest(second_file=label):
+                policy.clear_tenant_policy_cache()
+                with tempfile.TemporaryDirectory() as tmp:
+                    first = Path(tmp) / "first.json"
+                    second = Path(tmp) / "second.json"
+                    first.write_text(
+                        json.dumps({"tenants": {"acme": {"max_secondary_index_records_per_scope": 99}}}),
+                        encoding="utf-8")
+                    os.environ["MATRIXARK_TENANT_POLICY_PATH"] = str(first)
+                    self.assertEqual(
+                        policy.resolve("max_secondary_index_records_per_scope", {"tenant_id": "acme"}), 99,
+                        "the first file must load, or the rest of this proves nothing")
+                    break_it(second)
+                    os.environ["MATRIXARK_TENANT_POLICY_PATH"] = str(second)
+                    self.assertEqual(
+                        policy.resolve("max_secondary_index_records_per_scope", {"tenant_id": "acme"}), 128,
+                        "a %s policy file was served the PREVIOUS file's override for acme. The "
+                        "cache is keyed by path; an entry for another path is not an answer for "
+                        "this one." % label)
+
+    def test_the_warning_does_not_claim_to_keep_a_policy_it_did_not_keep(self):
+        """An operator reads this line to decide whether overrides are still in force.
+
+        On a cold process the cache starts empty, so "keeping last good policy" was the only thing
+        asserting that anything was kept. Nothing else in the process says otherwise.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tenants.json"
+            path.write_text("{ not json", encoding="utf-8")
+            os.environ["MATRIXARK_TENANT_POLICY_PATH"] = str(path)
+            policy.clear_tenant_policy_cache()
+            with self.assertLogs(policy.LOGGER, level="WARNING") as captured:
+                defaults, tenants = policy._load_file_policies()
+            self.assertEqual(({}, {}), (defaults, tenants),
+                             "nothing was ever loaded, so there is no policy to keep")
+            message = " ".join(captured.output)
+            self.assertIn("tenant_policy_file_invalid", message)
+            self.assertNotIn(
+                "keeping last good policy", message,
+                "the warning says a policy was kept while none was: %r" % message)
+
+    def test_the_warning_does_say_so_when_a_policy_really_is_kept(self):
+        """The other direction. Without this, deleting the phrase outright would also pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tenants.json"
+            path.write_text(json.dumps({"tenants": {"acme": {"max_secondary_index_records_per_scope": 99}}}),
+                            encoding="utf-8")
+            os.environ["MATRIXARK_TENANT_POLICY_PATH"] = str(path)
+            policy.clear_tenant_policy_cache()
+            self.assertEqual(policy.resolve("max_secondary_index_records_per_scope", {"tenant_id": "acme"}), 99)
+            os.utime(path, ns=(0, 0))
+            path.write_text("{ not json", encoding="utf-8")
+            with self.assertLogs(policy.LOGGER, level="WARNING") as captured:
+                _defaults, tenants = policy._load_file_policies()
+            self.assertTrue(tenants, "the last good policy for this path must still be served")
+            self.assertIn("keeping last good policy", " ".join(captured.output))
 
     def test_unknown_knobs_and_bad_values_are_dropped_not_fatal(self):
         policy.set_tenant_policy("acme", {"not_a_knob": 1, "max_secondary_index_records_per_scope": "seventeen"})
