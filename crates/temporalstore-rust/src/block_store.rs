@@ -1495,6 +1495,29 @@ impl LocalBlockStore {
         min_age_ms: u64,
         live_block_slab_ids: impl IntoIterator<Item = u64>,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        self.purge_delayed_destroy_slabs_selected(min_age_ms, live_block_slab_ids, None)
+    }
+
+    /// Purge only the quarantined slabs the caller NAMES.
+    ///
+    /// `None` purges every quarantined slab old enough, which is what this did before it could be
+    /// told otherwise. `Some(set)` purges only the intersection, and a quarantined slab left out
+    /// of the set is neither destroyed nor reported as too young -- it is simply not this round's
+    /// business, and it comes back as a candidate next round.
+    ///
+    /// THIS EXISTS SO THE RECLAIM GATE CAN STOP BEING ALL-OR-NOTHING. The dependency plan works
+    /// out, per slab, which candidates are pinned and which are free; until now the collector and
+    /// the purge both consulted a single store-wide boolean derived from that plan, so one pinned
+    /// slab suppressed the collection of every other candidate. Letting the plan's answer through
+    /// per slab requires the purge to accept a list: otherwise a purge that ran because SOME slab
+    /// was free would destroy the quarantined slabs the plan had specifically blocked, which is a
+    /// loss path rather than an inefficiency. The two changes only make sense together.
+    pub fn purge_delayed_destroy_slabs_selected(
+        &self,
+        min_age_ms: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+        selected_block_slab_ids: Option<BTreeSet<u64>>,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let trash_dir = delayed_destroy_dir(&inner.root);
@@ -1518,6 +1541,17 @@ impl LocalBlockStore {
                 .metadata()
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
+            // Not this round's business. Checked BEFORE the liveness re-check and before the
+            // age, because a slab the caller did not name should be left exactly as it is: not
+            // destroyed, not restored, and not reported as too young -- "too young" is a claim
+            // about a slab that was considered, and this one was not.
+            if selected_block_slab_ids
+                .as_ref()
+                .map(|selected| !selected.contains(&id))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             // THE LAST-CHANCE RE-CHECK, before the age is even consulted: a live slab is not
             // "too young to destroy", it is NOT FOR DESTROYING, and waiting longer would not
             // make it safe. It also must not be left where it is -- quarantine is a rename out
@@ -3035,6 +3069,86 @@ mod tests {
         }
     }
 
+    /// A band IS a slab -- but across DESERIALIZATION that is trusted, not enforced.
+    ///
+    /// `a_slab_descriptor_carries_the_same_number_twice` pins the invariant on the paths that
+    /// COMPUTE a band id: every one of them calls `band_id_for_slab`, which is the identity, so
+    /// a descriptor this process builds cannot diverge. The manifest is the hole. `band_id`
+    /// serializes, `load_slab_manifest_at` keeps whatever number the file carried, and
+    /// `gc_utility_candidates` is the one consumer that reads the STORED value instead of
+    /// recomputing it -- it groups slabs into bands by `band.band_id` and falls back to
+    /// `band_id_for_slab` only when no descriptor exists.
+    ///
+    /// So a manifest carrying a grouping band id -- which is what the field meant when a band
+    /// size and a slab size were configured separately -- would be honoured, and two slabs would
+    /// share a band. No manifest is believed to carry one: the two sizes were never configured
+    /// differently, so the historical value was the identity too. This pins the consequence
+    /// rather than the belief, and it is the guard to keep pointed at whatever the consolidation
+    /// of these two names leaves behind.
+    #[test]
+    fn a_stored_band_id_that_disagrees_with_its_slab_is_normalised_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.append(b"first").unwrap();
+        store.roll_slab().unwrap();
+        store.append(b"second").unwrap();
+        drop(store);
+
+        let manifest_path = slab_manifest_path(dir.path());
+        let raw = fs::read(&manifest_path).unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+
+        // DENOMINATOR: the manifest really has descriptors, and they really agree to begin with.
+        let bands = manifest["bands"].as_array_mut().expect("bands array");
+        assert!(
+            bands.len() >= 2,
+            "the manifest must really carry descriptors: {bands:?}"
+        );
+        for band in bands.iter() {
+            assert_eq!(
+                band["band_id"].as_u64(),
+                band["page_segment_id"].as_u64(),
+                "they agree before the edit"
+            );
+        }
+
+        // Make EVERY descriptor disagree, exactly as a grouping band id would have. Both the
+        // active slab and the sealed one, because they take different routes through the open:
+        // the active slab is always inspected, while a sealed slab whose size and mtime still
+        // match what it was verified against is kept from the manifest WITHOUT being re-read --
+        // and that skip is the route on which a stale field could survive.
+        for band in bands.iter_mut() {
+            band["band_id"] = serde_json::json!(999_u64);
+        }
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let reopened = LocalBlockStore::new(dir.path());
+        let descriptors = reopened.slab_descriptors();
+        assert!(
+            descriptors.len() >= 2,
+            "the reopened store must really have loaded the descriptors: {descriptors:?}"
+        );
+        let divergent = descriptors
+            .iter()
+            .filter(|descriptor| descriptor.band_id != descriptor.block_slab_id)
+            .collect::<Vec<_>>();
+
+        // THE ANSWER: the open NORMALISES it. `reconcile_slab_manifest_with_disk` rewrites
+        // `band_id` from `band_id_for_slab` for every slab it finds on disk, so a manifest
+        // cannot smuggle in a grouping the rest of the code would then honour -- including on
+        // the skip route, where the descriptor is otherwise kept as it was.
+        //
+        // That matters beyond this file. `gc_utility_candidates` is the one consumer that reads
+        // the STORED band id rather than recomputing it, and it groups slabs into bands by that
+        // value; if a divergent one could survive an open, two slabs would share a band there
+        // and nowhere else. They cannot. A band is a slab on every path into this store, not
+        // merely on the paths that compute one.
+        assert!(
+            divergent.is_empty(),
+            "a divergent stored band id must not survive the load: {divergent:?}"
+        );
+    }
+
     #[test]
     fn rolled_slabs_stamp_new_slab_ids() {
         let dir = tempfile::tempdir().unwrap();
@@ -4084,6 +4198,70 @@ mod tests {
             "past its wait, an undescribed slab is destroyed like any other"
         );
         assert!(store.delayed_destroy_slab_ids().unwrap().is_empty());
+    }
+
+    /// A purge told which slabs it may destroy destroys those and leaves the rest ALONE.
+    ///
+    /// The half of the per-slab reclaim gate that lives in this file. Once the collector stops
+    /// being suppressed by a single pinned slab, a round runs whenever ANY candidate is free --
+    /// and a purge that still swept the whole trash directory would then destroy the quarantined
+    /// slabs the dependency plan had specifically blocked. That converts a suppressed reclaim
+    /// into lost data, which is why the list and the gate move together.
+    ///
+    /// The two outcomes are asserted SEPARATELY. A purge that destroyed nothing would satisfy
+    /// "the blocked slab survived"; one that destroyed everything would satisfy "the free slab
+    /// was reclaimed". Only both together say the list was actually consulted.
+    #[test]
+    fn a_purge_handed_a_slab_list_leaves_the_rest_in_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"free-to-go").unwrap();
+        store.install_slab(1, b"pinned-by-a-follower").unwrap();
+        store.install_slab(2, b"current").unwrap();
+        store
+            .gc_slabs_before_with_live_refs_delayed_destroy(2, [2_u64])
+            .unwrap();
+
+        // DENOMINATOR: the purge really has two slabs to act on, so "one survived" is a choice
+        // it made rather than a directory that was empty.
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap(),
+            vec![0, 1],
+            "both slabs were really quarantined"
+        );
+
+        // Slab 1 is blocked upstream; only slab 0 is free.
+        let report = store
+            .purge_delayed_destroy_slabs_selected(
+                0,
+                Vec::<u64>::new(),
+                Some([0_u64].into_iter().collect()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.purged_block_slab_ids,
+            vec![0],
+            "the free slab is reclaimed -- one blocked slab no longer suppresses the others"
+        );
+        assert!(
+            report.retained_too_young_block_slab_ids.is_empty(),
+            "the blocked slab is not reported as too young: it was never considered, and saying \
+             'not yet' about it would describe a wait that is not what is holding it"
+        );
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap(),
+            vec![1],
+            "and the blocked slab is still in quarantine, undestroyed"
+        );
+
+        // Unnarrowed, it takes the rest: the list narrows this round, it does not retire a slab.
+        let rest = store.purge_delayed_destroy_slabs_older_than(0).unwrap();
+        assert_eq!(
+            rest.purged_block_slab_ids,
+            vec![1],
+            "once nothing blocks it, the slab is reclaimed on a later round"
+        );
     }
 
     #[test]

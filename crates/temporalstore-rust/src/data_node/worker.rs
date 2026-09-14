@@ -203,6 +203,7 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                         min_undumped_wal_records: 0,
                         min_undumped_wal_bytes: 0,
                         purge_delayed_destroy: false,
+                        purge_delayed_destroy_slab_ids: None,
                         prune_bucket_dump_manifests: false,
                         roll_forward_bucket_dump_installs: false,
                         follower_replay_cursors: Vec::new(),

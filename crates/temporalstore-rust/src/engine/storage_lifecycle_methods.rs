@@ -698,9 +698,13 @@ impl TemporalEngine {
                 purge_live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
             }
             self.page_store
-                .purge_delayed_destroy_slabs_checked(
+                .purge_delayed_destroy_slabs_selected(
                     crate::block_store::DELAYED_DESTROY_MIN_AGE_MS,
                     purge_live_block_slab_ids,
+                    request
+                        .purge_delayed_destroy_slab_ids
+                        .as_ref()
+                        .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>()),
                 )
                 .unwrap_or_default()
         } else {

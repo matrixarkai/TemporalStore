@@ -1491,6 +1491,7 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
             min_undumped_wal_records: 0,
             min_undumped_wal_bytes: 0,
             purge_delayed_destroy: false,
+            purge_delayed_destroy_slab_ids: None,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
@@ -3836,6 +3837,7 @@ fn what_the_index_gc_gate_says() {
             crate::engine::reports::StorageLifecycleRequest {
                 shard_id: 1,
                 purge_delayed_destroy: true,
+                purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: true,
                 roll_forward_bucket_dump_installs: true,
                 ..crate::engine::reports::StorageLifecycleRequest::default()
@@ -3898,6 +3900,7 @@ fn what_the_index_gc_gate_costs() {
         let lifecycle_request = || crate::engine::reports::StorageLifecycleRequest {
             shard_id: 1,
             purge_delayed_destroy: true,
+            purge_delayed_destroy_slab_ids: None,
             prune_bucket_dump_manifests: true,
             roll_forward_bucket_dump_installs: true,
             ..crate::engine::reports::StorageLifecycleRequest::default()

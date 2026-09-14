@@ -85,6 +85,49 @@ impl LocalBlockStore {
         )
     }
 
+    /// Policy-planned collection, narrowed to the slabs a caller's own analysis still allows.
+    ///
+    /// Two independent filters, deliberately kept separate. The POLICY decides which candidates
+    /// are worth collecting (garbage ratio, age, per-round budget); `allowed_block_slab_ids`
+    /// carries a decision the block store cannot make for itself -- which slabs are pinned by a
+    /// follower's replay cursor, a snapshot floor or a retained manifest. Intersecting them here
+    /// rather than folding one into the other keeps either side auditable on its own: the plan
+    /// still reports what the policy skipped, and what the caller withheld does not masquerade
+    /// as a policy decision.
+    ///
+    /// `None` allows everything the policy selected, which is what the unnarrowed entry does.
+    pub fn gc_slabs_before_with_live_refs_policy_limited(
+        &self,
+        retain_from_block_slab_id: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+        policy: BlockStoreGcPolicy,
+        delayed_destroy: bool,
+        allowed_block_slab_ids: Option<BTreeSet<u64>>,
+    ) -> Result<BlockStoreGcReport, BlockStoreError> {
+        let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
+        let selected = self
+            .gc_policy_plan(
+                retain_from_block_slab_id,
+                live_block_slab_ids.iter().copied(),
+                &policy,
+            )?
+            .selected_block_slab_ids
+            .into_iter()
+            .filter(|block_slab_id| {
+                allowed_block_slab_ids
+                    .as_ref()
+                    .map(|allowed| allowed.contains(block_slab_id))
+                    .unwrap_or(true)
+            })
+            .collect::<BTreeSet<_>>();
+        self.gc_slabs_before_with_live_refs_selected(
+            retain_from_block_slab_id,
+            live_block_slab_ids,
+            delayed_destroy,
+            Some(selected),
+        )
+    }
+
     pub fn gc_policy_plan(
         &self,
         retain_from_block_slab_id: u64,

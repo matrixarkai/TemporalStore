@@ -260,6 +260,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 min_undumped_wal_records: 0,
                 min_undumped_wal_bytes: 0,
                 purge_delayed_destroy: false,
+                purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: Vec::new(),

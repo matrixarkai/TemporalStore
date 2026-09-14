@@ -1758,6 +1758,7 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
         max_dump_buckets_per_round: 0,
         min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
@@ -2477,6 +2478,7 @@ fn the_lifecycle_purge_re_checks_liveness_and_returns_a_live_slab() {
     let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: 1,
         purge_delayed_destroy: true,
+        purge_delayed_destroy_slab_ids: None,
         ..Default::default()
     });
 
@@ -2508,6 +2510,100 @@ fn the_lifecycle_purge_re_checks_liveness_and_returns_a_live_slab() {
             value: Some(b"payload-in-slab-zero".to_vec())
         },
         "the key whose page lives in the restored slab still reads back"
+    );
+}
+
+/// One pinned slab no longer stops every other candidate being collected.
+///
+/// `safe_to_reclaim` is a single store-wide boolean, false whenever ANY candidate is blocked, and
+/// both reclaim stages consulted it while `reclaimable_block_slab_ids` -- the per-slab answer the
+/// same plan already computed -- went unread. A shard with one slab behind a lagging follower's
+/// replay cursor therefore collected nothing at all, for as long as that follower stayed behind,
+/// however many other slabs were free.
+///
+/// THE DENOMINATOR IS THE POINT OF THIS TEST: it asserts FIRST that the plan really does have a
+/// blocked candidate and a free one. A plan that blocked nothing would make "the free slab was
+/// collected" true for the wrong reason, and a plan that blocked everything would make "the
+/// pinned slab survived" true for the wrong reason. Both halves are then asserted separately.
+#[test]
+fn a_single_pinned_slab_does_not_suppress_the_other_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k0".to_string(),
+            value: b"v0".to_vec(),
+        },
+    });
+    engine.block_store().roll_slab().unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k1".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    engine.block_store().roll_slab().unwrap();
+    // Overwrite k0 so its live page moves OFF slab 0. Slab 0 is now genuinely dead -- without
+    // this it still holds a live page and is blocked on its own account, which would make the
+    // test's "free" candidate not free and prove nothing about the gate.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k0".to_string(),
+            value: b"v0-rewritten".to_vec(),
+        },
+    });
+
+    // One shared-store cursor pins slab 1 and everything above it; slab 0 is free.
+    let plan = engine.storage_page_gc_dependency_plan(
+        1,
+        vec![0, 1],
+        vec![StoragePageGcReplayCursor {
+            cursor_id: "lagging-follower".to_string(),
+            shard_id: 1,
+            retain_from_block_slab_id: 1,
+            reason: "follower has not replayed past slab one".to_string(),
+        }],
+        Vec::<BucketDumpRaftSnapshotRef>::new(),
+        None,
+        None,
+        0,
+    );
+
+    // DENOMINATOR, both sides.
+    assert_eq!(
+        plan.blocked_block_slab_ids,
+        vec![1],
+        "the plan must really have a BLOCKED candidate: {plan:?}"
+    );
+    assert_eq!(
+        plan.reclaimable_block_slab_ids,
+        vec![0],
+        "and really have a FREE one: {plan:?}"
+    );
+    assert!(
+        !plan.safe_to_reclaim,
+        "the store-wide boolean is false -- which is exactly what used to suppress slab 0: {plan:?}"
+    );
+
+    // The free subset is non-empty, so a round may proceed; the blocked slab is not in it.
+    assert!(
+        !plan.reclaimable_block_slab_ids.is_empty(),
+        "a round gated on the free subset runs, where one gated on safe_to_reclaim would not"
+    );
+    assert!(
+        !plan
+            .reclaimable_block_slab_ids
+            .contains(&1),
+        "and the pinned slab is excluded from what that round may touch"
     );
 }
 
@@ -2918,6 +3014,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
         max_dump_buckets_per_round: 0,
         min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
@@ -2944,6 +3041,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
         max_dump_buckets_per_round: 0,
         min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
@@ -3315,6 +3413,7 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
         max_dump_buckets_per_round: 0,
         min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
@@ -3328,6 +3427,7 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
         max_dump_buckets_per_round: 0,
         min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
@@ -3616,6 +3716,7 @@ fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy()
             max_dump_buckets_per_round: 0,
             min_undumped_wal_records: 0,
             purge_delayed_destroy: false,
+            purge_delayed_destroy_slab_ids: None,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
@@ -3634,6 +3735,7 @@ fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy()
         max_dump_buckets_per_round: 0,
         min_undumped_wal_records: 99,
         purge_delayed_destroy: false,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
@@ -3653,6 +3755,7 @@ fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy()
         max_dump_buckets_per_round: 2,
         min_undumped_wal_records: 1,
         purge_delayed_destroy: false,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
@@ -3671,6 +3774,7 @@ fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy()
         max_dump_buckets_per_round: 0,
         min_undumped_wal_records: 99,
         purge_delayed_destroy: false,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
@@ -6016,6 +6120,7 @@ fn what_the_lifecycle_plan_costs_alone() {
             min_undumped_wal_records: 0,
             min_undumped_wal_bytes: 0,
             purge_delayed_destroy: false,
+            purge_delayed_destroy_slab_ids: None,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
@@ -6169,6 +6274,7 @@ fn where_the_index_reclaim_time_goes() {
             min_undumped_wal_records: 0,
             min_undumped_wal_bytes: 0,
             purge_delayed_destroy: purge,
+            purge_delayed_destroy_slab_ids: None,
             prune_bucket_dump_manifests: prune,
             roll_forward_bucket_dump_installs: roll_forward,
             follower_replay_cursors: Vec::new(),

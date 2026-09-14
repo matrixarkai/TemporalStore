@@ -188,6 +188,7 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
         min_undumped_wal_records: 0,
         min_undumped_wal_bytes: 0,
         purge_delayed_destroy: true,
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: true,
         follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {

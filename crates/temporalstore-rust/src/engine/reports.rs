@@ -3172,6 +3172,13 @@ pub struct StorageLifecycleRequest {
     pub min_undumped_wal_bytes: u64,
     #[serde(default)]
     pub purge_delayed_destroy: bool,
+    /// Which quarantined slabs this round may destroy. `None` means every one old enough.
+    ///
+    /// The scheduled cycle fills this from the dependency plan's per-slab answer, so one pinned
+    /// slab no longer suppresses the destruction of the others -- and, just as importantly, a
+    /// round that runs because some slab is free cannot destroy the ones the plan blocked.
+    #[serde(default)]
+    pub purge_delayed_destroy_slab_ids: Option<Vec<u64>>,
     #[serde(default)]
     #[serde(rename = "prune_slot_dump_manifests")]
     pub prune_bucket_dump_manifests: bool,

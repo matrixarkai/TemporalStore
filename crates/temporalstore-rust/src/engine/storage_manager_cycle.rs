@@ -99,6 +99,7 @@ impl TemporalEngine {
                 u64::MAX
             },
             purge_delayed_destroy: request.enable_page_reclaim,
+            purge_delayed_destroy_slab_ids: None,
             prune_bucket_dump_manifests: request.enable_index_gc,
             roll_forward_bucket_dump_installs: request.enable_index_gc,
             follower_replay_cursors: request.follower_replay_cursors.clone(),
@@ -375,10 +376,29 @@ impl TemporalEngine {
             }
         }
 
+        // ONE PINNED SLAB NO LONGER SUPPRESSES THE REST.
+        //
+        // The dependency plan already works out, per slab, which candidates are pinned and which
+        // are free, and `reclaimable_block_slab_ids` has always named the free subset. Both
+        // reclaim stages then threw that away and consulted `safe_to_reclaim` -- a single
+        // store-wide boolean that is false whenever ANY candidate is blocked. A shard with one
+        // slab behind a lagging follower's replay cursor collected nothing at all, for as long
+        // as that follower stayed behind, however many other slabs were free.
+        //
+        // Gating per slab instead requires the purge below to take a LIST, and the two changes
+        // only make sense together: a purge that ran because some slab was free, but still swept
+        // the whole trash directory, would destroy exactly the quarantined slabs the plan had
+        // blocked. That is a loss path, not an inefficiency, which is why the collector's
+        // selection and the purge's selection move in the same commit.
+        let reclaimable_block_slab_ids = page_gc_dependency_plan
+            .reclaimable_block_slab_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
         if request.enable_page_reclaim
             && !request.dry_run
             && !plan.reclaim_candidates.is_empty()
-            && page_gc_dependency_plan.safe_to_reclaim
+            && !reclaimable_block_slab_ids.is_empty()
         {
             let retain_from_block_slab_id = plan
                 .reclaim_candidates
@@ -391,17 +411,18 @@ impl TemporalEngine {
             // shard being cycled (see the module header): otherwise a slab whose pages belong to
             // another shard is absent from this shard's live set and gets deleted.
             let reclaim_live_refs = self.live_block_slab_ids_all_shards();
-            match self.page_store.gc_slabs_before_with_live_refs_policy(
+            match self.page_store.gc_slabs_before_with_live_refs_policy_limited(
                 retain_from_block_slab_id,
                 reclaim_live_refs,
-                // garbage-ratio GC victim selection (specification): reclaim the
-                // highest-garbage bands first, keeping bands below the garbage floor.
-                // Floor 0 (the default) reclaims every eligible band as before.
+                // garbage-ratio victim selection: collect the highest-garbage bands first,
+                // keeping bands below the garbage floor. Floor 0 (the default) collects every
+                // eligible band as before.
                 BlockStoreGcPolicy::with_slab_garbage_floor(
                     request.page_gc_min_slab_garbage_basis_points,
                     None,
                 ),
                 true,
+                Some(reclaimable_block_slab_ids.clone()),
             ) {
                 Ok(report) => {
                     for block_slab_id in report
@@ -422,8 +443,15 @@ impl TemporalEngine {
             None
         } else {
             let mut lifecycle_request = plan_request.clone();
-            lifecycle_request.purge_delayed_destroy =
-                lifecycle_request.purge_delayed_destroy && page_gc_dependency_plan.safe_to_reclaim;
+            // The other half of the per-slab gate. The purge now runs whenever ANY quarantined
+            // slab is free -- but it is handed the free set, so the slabs the plan blocked are
+            // passed over rather than swept up by a round that was let in on someone else's
+            // behalf. Flipping the condition without passing the list would turn a suppressed
+            // reclaim into a destroyed dependency.
+            lifecycle_request.purge_delayed_destroy = lifecycle_request.purge_delayed_destroy
+                && !reclaimable_block_slab_ids.is_empty();
+            lifecycle_request.purge_delayed_destroy_slab_ids =
+                Some(reclaimable_block_slab_ids.iter().copied().collect());
             Some(self.apply_storage_lifecycle(lifecycle_request))
         };
         // apply_storage_lifecycle's warm phase brings freshly-dumped pages into DRAM.
