@@ -127,7 +127,7 @@ def create_app() -> Callable[..., Awaitable[None]]:
         from matrixark_mcp_server import MatrixArkMcpServer  # type: ignore
         from matrixark_mcp_backends import build_mcp_adapter, default_mcp_backend  # type: ignore
     import argparse
-    ns = argparse.Namespace(backend=os.environ.get("MATRIXARK_MCP_BACKEND", default_mcp_backend()))
+    ns = argparse.Namespace(backend=default_mcp_backend())
     adapter = build_mcp_adapter(ns)
     server = MatrixArkMcpServer(adapter, access_mode=(os.environ.get("MATRIXARK_ACCESS_MODE", "").strip() or "enforced"))
     return make_asgi_app(server)

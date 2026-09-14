@@ -736,7 +736,11 @@ def native_candidate_prefilter_required_for_backend(backend: str) -> bool:
 
 
 def default_mcp_backend() -> str:
-    configured = os.environ.get("MATRIXARK_MCP_BACKEND")
+    # Stripped, and empty-after-stripping counts as unset. A value carrying a stray space is
+    # what a .env line or a compose `environment:` entry produces without anyone seeing it, and
+    # passing it through means the backend validator refuses to start while quoting the operator
+    # the exact name they just set.
+    configured = os.environ.get("MATRIXARK_MCP_BACKEND", "").strip()
     if configured:
         return configured
     return "temporalstore-direct"

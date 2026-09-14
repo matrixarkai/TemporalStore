@@ -6175,7 +6175,7 @@ def _build_server_from_env() -> Any:
     parser = argparse.ArgumentParser(add_help=False)
     add_backend_arguments(parser)
     ns = parser.parse_args([])
-    ns.backend = os.environ.get("MATRIXARK_MCP_BACKEND", default_mcp_backend())
+    ns.backend = default_mcp_backend()
     event_log_override = os.environ.get("MATRIXARK_EVENT_LOG")
     if event_log_override:
         from pathlib import Path
