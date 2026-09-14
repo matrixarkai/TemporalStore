@@ -31,6 +31,27 @@ case "${MATRIXARK_MCP_PROFILE:-dev}" in
   prod|production|benchmark|bench|parity) fallback_default=0 ;;
 esac
 export MATRIXARK_TEMPORALSTORE_DISK_FALLBACK="${MATRIXARK_TEMPORALSTORE_DISK_FALLBACK:-$fallback_default}"
+
+# The same boolean vocabulary the hook wrappers and the backfill daemon use, and the one
+# `env_bool` gives the python side: `1 true yes on` / `0 false no off`, any case, and anything
+# else falls back to the flag's own default rather than counting as off. This file is a
+# standalone entry point -- it is matrixark_agent_config.DEFAULT_LAUNCHER, exec'd directly by
+# every agent integration -- so it sources nothing and carries its own copy, which
+# test_the_backfill_daemon_reads_its_own_switches compares against the others byte for byte.
+#
+# It replaced two switches reading in two vocabularies, neither of them this one:
+#
+#   MATRIXARK_MCP_AUTOSTART_NATIVE        == "1"                    only the literal 1
+#   MATRIXARK_TEMPORALSTORE_DISK_FALLBACK == "1" | "true" | "yes"    no `on`, lowercase only
+#
+matrixark_flag_on() {  # $1 = value, $2 = default ("1" means on)
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    *) [ "${2:-1}" = "1" ] ;;
+  esac
+}
+
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-}" && -n "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
   export MATRIXARK_TEMPORALSTORE_RUST_PROXY="$MATRIXARK_TEMPORALSTORE_RUST_CLI"
 fi
@@ -83,7 +104,8 @@ if [[ "$MATRIXARK_LOCAL_MODE" == "no-metaserver" || "$MATRIXARK_LOCAL_MODE" == "
   start_disk_fallback "$@"
 fi
 
-if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ) && "$MATRIXARK_MCP_AUTOSTART_NATIVE" == "1" ]]; then
+if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ]] \
+   && matrixark_flag_on "$MATRIXARK_MCP_AUTOSTART_NATIVE" 0; then
   host="${MATRIXARK_TEMPORALSTORE_METASERVER%%:*}"
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 2 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
@@ -92,11 +114,12 @@ if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACK
   fi
 fi
 
-if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ) && "$MATRIXARK_MCP_AUTOSTART_NATIVE" != "1" ]]; then
+if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ]] \
+   && ! matrixark_flag_on "$MATRIXARK_MCP_AUTOSTART_NATIVE" 0; then
   host="${MATRIXARK_TEMPORALSTORE_METASERVER%%:*}"
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 1 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
-    if [[ "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "1" || "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "true" || "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "yes" ]]; then
+    if matrixark_flag_on "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" "$fallback_default"; then
       echo "MatrixArk MCP Rust: TemporalStore metaserver $MATRIXARK_TEMPORALSTORE_METASERVER is not reachable; falling back to disk-backed retrieval." >&2
       start_disk_fallback "$@"
     fi
@@ -123,7 +146,7 @@ if ! bash "$ROOT/tools/wait_temporalstore_topology_ready.sh" \
   --prefix "$MATRIXARK_TEMPORALSTORE_PREFIX" \
   --rust-cli "$(if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ]]; then printf '%s' "$MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK"; else printf '%s' "$MATRIXARK_TEMPORALSTORE_RUST_PROXY"; fi)" \
   --timeout-ms "${MATRIXARK_BACKEND_READINESS_TIMEOUT_MS:-30000}" >&2; then
-  if [[ "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "1" || "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "true" || "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "yes" ]]; then
+  if matrixark_flag_on "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" "$fallback_default"; then
     echo "MatrixArk MCP Rust: TemporalStore is not ready; falling back to disk-backed retrieval." >&2
     start_disk_fallback "$@"
   fi

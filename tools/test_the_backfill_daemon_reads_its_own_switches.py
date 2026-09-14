@@ -43,7 +43,8 @@ from matrixark_mcp_env import env_bool
 DAEMON = "matrixark_backfill_daemon.sh"
 
 #: Every file that carries a copy of the shared shell boolean test.
-CARRIERS = (DAEMON, "matrixark_claude_hook.sh", "matrixark_codex_rust_hook.sh")
+CARRIERS = (DAEMON, "matrixark_claude_hook.sh", "matrixark_codex_rust_hook.sh",
+            "matrixark_mcp_rust_server.sh")
 
 #: flag -> default, as the daemon sets it. The default matters: it is the answer for every
 #: value in neither half of the vocabulary, and two of these four default ON.
@@ -106,10 +107,16 @@ class TheBackfillDaemonReadsItsOwnSwitches(unittest.TestCase):
         """A sweep that stops matching reads exactly like a clean sweep."""
         self.assertGreaterEqual(len(VALUES), 20)
         self.assertGreaterEqual(len(FLAGS), 4)
-        self.assertGreaterEqual(len(CARRIERS), 3)
+        self.assertGreaterEqual(len(CARRIERS), 4)
 
-    def test_the_three_copies_are_the_same_text(self) -> None:
-        """The control on the copies. One of them drifting is the failure this file prevents."""
+    def test_every_copy_is_the_same_text(self) -> None:
+        """The control on the copies. One of them drifting is the failure this file prevents.
+
+        Named for the property, not the count: it was `..._the_three_copies_...` when there were
+        three, and the fourth arrived with tools/matrixark_mcp_rust_server.sh. A test name that
+        carries a number goes stale the first time the number changes, and a stale name is read
+        as a stale test.
+        """
         texts = {name: _helper_text(name) for name in CARRIERS}
         for name, text in texts.items():
             self.assertIsNotNone(text, "%s no longer carries matrixark_flag_on" % name)
@@ -217,6 +224,91 @@ class TheBackfillDaemonReadsItsOwnSwitches(unittest.TestCase):
             "%s makes only %d matrixark_flag_on calls for %d boolean flags, so the rule above "
             "may be passing because the switches left rather than because they were fixed: %s"
             % (DAEMON, len(calls), len(FLAGS), calls))
+
+
+#: The launcher's own boolean switches, with the default each is exported with.
+#: `DISK_FALLBACK`'s default is profile-dependent -- 1, or 0 under prod/production/benchmark/
+#: bench -- which is why it is recorded as the expression rather than a literal.
+LAUNCHER = "matrixark_mcp_rust_server.sh"
+LAUNCHER_SWITCHES = ("MATRIXARK_MCP_AUTOSTART_NATIVE",
+                     "MATRIXARK_TEMPORALSTORE_DISK_FALLBACK")
+
+
+def _launcher_code_lines():
+    with open(os.path.join(TOOLS, LAUNCHER), encoding="utf-8", errors="replace") as handle:
+        return [line for line in handle.read().splitlines()
+                if not line.lstrip().startswith("#")]
+
+
+class TheDefaultLauncherDecidesBySharedVocabulary(unittest.TestCase):
+    """tools/matrixark_mcp_rust_server.sh is matrixark_agent_config.DEFAULT_LAUNCHER.
+
+    Its two switches were `== "1"` and `== "1" || == "true" || == "yes"`. Run out of the shipped
+    file over 24 values, that is 8 and 6 answers respectively that disagreed with `env_bool` --
+    every one of them a word written to turn something ON reading as off.
+
+    This file's general "no boolean literal anywhere" rule cannot be applied here: the launcher
+    legitimately compares MATRIXARK_LOCAL_MODE against `"1"` as an alias for embedded mode, and
+    MATRIXARK_MCP_BACKEND against backend names. So the rule is scoped to the two switch NAMES,
+    with a floor below that fails if either name stops appearing -- otherwise a rename would pass
+    this silently, which is the failure mode a name list always has.
+    """
+
+    def test_both_switches_are_still_in_the_launcher(self) -> None:
+        """The floor for the rule below. A renamed flag must fail, not vanish from the check."""
+        code = "\n".join(_launcher_code_lines())
+        self.assertGreater(len(code), 2000,
+                           "comment stripping left almost nothing of %s" % LAUNCHER)
+        for name in LAUNCHER_SWITCHES:
+            with self.subTest(flag=name):
+                self.assertIn(name, code,
+                              "%s no longer mentions %s, so the rule below checks nothing about "
+                              "it -- if it was renamed, rename it here too" % (LAUNCHER, name))
+
+    def test_neither_switch_is_compared_against_a_boolean_literal(self) -> None:
+        """The shape that was there, kept out by the switch's own name."""
+        offenders = []
+        for number, line in enumerate(_launcher_code_lines(), 1):
+            for name in LAUNCHER_SWITCHES:
+                if name not in line:
+                    continue
+                if re.search(r'(?:==|!=)\s*"?(?:1|0|true|false|yes|no|on|off)"?', line, re.I):
+                    offenders.append((number, name, line.strip()[:90]))
+        self.assertEqual(
+            [], offenders,
+            "%s decides a switch by comparing it against a boolean literal again. Every boolean "
+            "flag in this launcher goes through matrixark_flag_on; a comparison is a second "
+            "vocabulary starting in the file every agent integration exec's. %s"
+            % (LAUNCHER, offenders))
+
+    def test_both_switches_go_through_the_shared_test(self) -> None:
+        """The positive control.
+
+        A launcher that stopped reading its switches at all would satisfy the rule above
+        perfectly, so the calls are counted rather than assumed.
+        """
+        code = _launcher_code_lines()
+        for name in LAUNCHER_SWITCHES:
+            calls = [line.strip() for line in code
+                     if "matrixark_flag_on" in line and name in line]
+            with self.subTest(flag=name):
+                self.assertGreaterEqual(
+                    len(calls), 1,
+                    "%s makes no matrixark_flag_on call naming %s, so the rule above may be "
+                    "passing because the switch left rather than because it was fixed"
+                    % (LAUNCHER, name))
+
+    def test_the_launcher_is_the_default_launcher(self) -> None:
+        """Why this file cares. If the launcher stops being the default, say so deliberately."""
+        path = os.path.join(TOOLS, "matrixark_agent_config.py")
+        if not os.path.exists(path):
+            self.skipTest("matrixark_agent_config.py is not in this checkout")
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            body = handle.read()
+        self.assertIn(
+            'DEFAULT_LAUNCHER = "tools/%s"' % LAUNCHER, body,
+            "%s is no longer matrixark_agent_config.DEFAULT_LAUNCHER; the docstring above "
+            "explains this file's interest in it and would now be wrong" % LAUNCHER)
 
 
 if __name__ == "__main__":
