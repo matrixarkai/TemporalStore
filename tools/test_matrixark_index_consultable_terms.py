@@ -158,5 +158,234 @@ class TheFilterIsOnAndActuallyFilters(unittest.TestCase):
         self.assertFalse(self._reimport().INDEX_ONLY_CONSULTABLE_TERMS)
 
 
+class WhatTheIndexTermCapEverSees(unittest.TestCase):
+    """`limited_index_terms` ranks by kind, and only resource-chunk kinds ever reach it.
+
+    The priority tuple has twenty-three entries. Its only consumer is `limited_index_terms`, whose
+    only two callers are resource-chunk ingest paths building one closed list of nine kinds, so
+    fourteen entries -- `benchmark:`, `metric:` and `workload:` among them -- cannot appear in a
+    list handed to the ranking. Those three come from `benchmark_quality_index_terms`, which feeds
+    `candidate_index_terms` on the READ side. A comment here used to say they "were the first
+    dropped by `limited_index_terms`"; they never reach it to be dropped.
+
+    Leaving unreachable entries in the tuple is harmless. The silent failure is the opposite: a
+    kind the callers DO produce that is missing from the tuple ranks last and is the first thing
+    the cap drops. That is the half asserted below.
+    """
+
+    def _ingest_and_watch(self, text):
+        """One resource ingest, recording every term kind that reaches the ranking."""
+        import tempfile
+        from pathlib import Path
+
+        import matrixark_mcp_temporal_adapters  # noqa: F401  (imported first: backend cycle)
+        import matrixark_local_adapter_ingest as adapter_ingest
+        import matrixark_mcp_ingest_resource_chunk_records as chunk_records
+        from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
+
+        reached = set()
+        invocations = []
+        originals = {}
+
+        def watch(module):
+            real = getattr(module, "limited_index_terms", None)
+            if real is None:
+                return
+            originals[module] = real
+
+            def spy(terms, *, limit):
+                invocations.append(limit)
+                reached.update(str(term).partition(":")[0] for term in terms if term)
+                return real(terms, limit=limit)
+
+            module.limited_index_terms = spy
+
+        # Patch the CALLER's own global, which is the binding its function body resolves at call
+        # time. Patching the defining module does nothing: both callers took the name by import.
+        watch(adapter_ingest)
+        watch(chunk_records)
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "index-term-cap.jsonl")
+                document = Path(tmp_dir) / "benchmark-notes.md"
+                document.write_text(text, encoding="utf-8")
+                adapter.ingest(
+                    {
+                        "kind": "resource",
+                        "raw_uri": str(document),
+                        "resource_type": "md",
+                        "scope": {"account_id": "acct_cap", "tenant_id": "tenant_cap"},
+                        "messages": [{"role": "user", "content": "Import the benchmark notes."}],
+                        "wait": True,
+                    }
+                )
+                # A conversational ingest as well: `benchmark_quality_index_terms` runs from
+                # `candidate_index_terms`, over events and entities, not over resource chunks.
+                # Without this the "produced at all" denominator below is empty and the claim is
+                # free -- which is how this guard first failed.
+                adapter.ingest(
+                    {
+                        "scope": {
+                            "account_id": "acct_cap",
+                            "tenant_id": "tenant_cap",
+                            "user_id": "user_cap",
+                            "session_id": "session_cap",
+                        },
+                        "async_processing": False,
+                        "skip_prior_context": True,
+                        "messages": [{"role": "user", "content": text}],
+                    }
+                )
+                written = {
+                    str(record.get("index_name") or "").partition(":")[0]
+                    for record in adapter.read_all()
+                    if record.get("record_type") == "context_index"
+                }
+        finally:
+            for module, real in originals.items():
+                module.limited_index_terms = real
+        return reached, written, invocations
+
+    #: Text chosen so `benchmark_quality_index_terms` fires on all three of its kinds -- a named
+    #: benchmark, several metrics, and a `workload:` phrase. Without that the claim below is free.
+    TEXT = """# Benchmark Notes
+
+Locomo results: p99 latency and throughput improved. Recall and precision both rose.
+
+## Workload
+
+workload: mixed-read p95 latency held. LongMemEval hit-rate steady.
+"""
+
+    def test_the_kinds_the_comment_names_are_produced_but_never_reach_the_cap(self):
+        reached, written, invocations = self._ingest_and_watch(self.TEXT)
+        named = {"benchmark", "metric", "workload"}
+        # Two denominators. A run where the ranking was never consulted, or where none of the three
+        # kinds was produced at all, would satisfy the assertion below for the wrong reason.
+        self.assertTrue(invocations, "the ranking was never consulted; this proves nothing")
+        self.assertTrue(
+            named & written,
+            "no benchmark/metric/workload term was produced at all; this proves nothing",
+        )
+        self.assertEqual(set(), named & reached)
+
+    SKILL = """---
+name: retention-inspector
+description: Inspect retention and compaction evidence.
+triggers:
+  - retention
+  - compaction
+allowed_tools:
+  - matrixark_replay
+  - matrixark_retrieve
+status: active
+---
+
+# Retention Inspector
+
+Use this to inspect retention evidence for slabs, buckets and streams.
+
+## Compaction
+
+Slabs fold nightly with throughput and recall notes.
+"""
+
+    def test_the_cap_binds_on_a_skill_and_drops_the_lowest_ranked_kind(self):
+        """The rank order is not decoration -- it decides what survives every skill import.
+
+        A plain markdown chunk offers at most ten terms against a limit of ten, so nothing is
+        dropped and the order never shows. A skill chunk adds skill_name / skill_trigger /
+        skill_tool and goes over. Measured: fourteen candidates on one chunk, ten kept, and the
+        four dropped were all `keyword`, which ranks last of the nine producible kinds.
+        """
+        import tempfile
+        from pathlib import Path
+
+        import matrixark_mcp_temporal_adapters  # noqa: F401  (imported first: backend cycle)
+        import matrixark_local_adapter_ingest as adapter_ingest
+        from matrixark_mcp_indexing import SECONDARY_INDEX_PRIORITY_PREFIXES
+        from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
+
+        ranked = [prefix.rstrip(":") for prefix in SECONDARY_INDEX_PRIORITY_PREFIXES]
+        calls = []
+        real = adapter_ingest.limited_index_terms
+
+        def spy(terms, *, limit):
+            kept = real(terms, limit=limit)
+            unique = list(dict.fromkeys(term for term in terms if term))
+            calls.append((unique, kept))
+            return kept
+
+        adapter_ingest.limited_index_terms = spy
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "skill-cap.jsonl")
+                skill = Path(tmp_dir) / "SKILL.md"
+                skill.write_text(self.SKILL, encoding="utf-8")
+                adapter.ingest(
+                    {
+                        "kind": "skill",
+                        "raw_uri": str(skill),
+                        "resource_type": "skill",
+                        "scope": {"account_id": "acct_cap", "tenant_id": "tenant_cap"},
+                        "messages": [{"role": "user", "content": "Import the skill."}],
+                        "wait": True,
+                    }
+                )
+                manifests = sum(
+                    1 for record in adapter.read_all() if record.get("record_type") == "skill_manifest"
+                )
+        finally:
+            adapter_ingest.limited_index_terms = real
+
+        # Denominators. A run that ingested no skill, or never went over the limit, would make
+        # every claim below free.
+        self.assertEqual(1, manifests, "the skill was not ingested; this proves nothing")
+        binding = [(unique, kept) for unique, kept in calls if len(unique) > len(kept)]
+        self.assertTrue(binding, "the cap never bound; the rank order decided nothing here")
+
+        for unique, kept in binding:
+            dropped = [term for term in unique if term not in kept]
+            kept_ranks = [ranked.index(term.partition(":")[0]) for term in kept]
+            dropped_ranks = [ranked.index(term.partition(":")[0]) for term in dropped]
+            # Everything dropped ranks at or below everything kept: the cap took the tail of the
+            # order, not an arbitrary slice.
+            self.assertGreaterEqual(min(dropped_ranks), max(kept_ranks))
+            self.assertEqual(
+                {"keyword"}, {term.partition(":")[0] for term in dropped}
+            )
+
+    def test_the_callers_resolve_cores_copy_of_the_cap(self):
+        """There are two `limited_index_terms`. Checked by identity, not by reading imports.
+
+        Mutating `matrixark_mcp_indexing`'s body leaves every other guard in this file green,
+        because neither caller reaches it. The docstrings on both copies say so; this is what
+        keeps them honest, and what fails if the resolution ever moves.
+        """
+        import matrixark_mcp_temporal_adapters  # noqa: F401  (imported first: backend cycle)
+        import matrixark_local_adapter_ingest as adapter_ingest
+        import matrixark_mcp_core as core
+        import matrixark_mcp_indexing as indexing
+        import matrixark_mcp_ingest_resource_chunk_records as chunk_records
+
+        # Denominator: two copies really exist. If they were ever consolidated this test should be
+        # deleted, not quietly satisfied by both names pointing at one object.
+        self.assertIsNot(core.limited_index_terms, indexing.limited_index_terms)
+        for caller in (adapter_ingest, chunk_records):
+            self.assertIs(caller.limited_index_terms, core.limited_index_terms)
+        # The ORDER, unlike the capping loop, has exactly one definition.
+        self.assertIs(core.secondary_index_priority, indexing.secondary_index_priority)
+
+    def test_every_kind_that_reaches_the_cap_has_a_rank(self):
+        """The half that fails silently: a producible kind missing from the tuple ranks LAST."""
+        from matrixark_mcp_indexing import SECONDARY_INDEX_PRIORITY_PREFIXES
+
+        ranked = {prefix.rstrip(":") for prefix in SECONDARY_INDEX_PRIORITY_PREFIXES}
+        reached, _, invocations = self._ingest_and_watch(self.TEXT)
+        self.assertTrue(invocations, "the ranking was never consulted; this proves nothing")
+        self.assertTrue(reached, "no term reached the ranking; this proves nothing")
+        self.assertEqual(set(), reached - ranked)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2407,6 +2407,13 @@ except ImportError:  # Direct script execution from tools/.
 
 
 def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:
+    """Keep the `limit` highest-priority terms, ties broken by original position.
+
+    THIS is the copy the two resource-chunk ingest callers resolve (checked by identity);
+    `matrixark_mcp_indexing` defines a second one that nothing reaches. The order comes from
+    `secondary_index_priority`, imported from indexing just above, so the two copies cannot
+    disagree about ranking -- only about which `ordered_unique` they call.
+    """
     unique_terms = ordered_unique([term for term in terms if term])
     capped_limit = max(0, int(limit))
     return [
