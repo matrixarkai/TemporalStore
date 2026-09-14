@@ -8228,7 +8228,7 @@ candidates now {}",
 /// the manifest branch records the manifest it matched, the no-manifest branch records nothing,
 /// so an EMPTY set plus a non-zero covered count proves every slot took the branch under test.
 #[test]
-fn a_quiet_shard_with_every_slot_clean_can_reclaim_its_log() {
+fn a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,

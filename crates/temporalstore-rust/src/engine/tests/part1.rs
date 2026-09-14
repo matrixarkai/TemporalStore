@@ -9299,11 +9299,11 @@ fn what_each_plan_call_walks() {
     eprintln!("  [per-call] shard holds {live_pages} live pages");
 }
 
-///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_slot_range_saves -- --ignored --nocapture --test-threads=1
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_bucket_range_saves -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
-fn what_a_bounded_slot_range_saves() {
+fn what_a_bounded_bucket_range_saves() {
     const RECORDS: usize = 40_000;
 
     let run = |end_routing_bucket: u32| -> (usize, usize, usize, usize, u64) {
@@ -9347,14 +9347,14 @@ fn what_a_bounded_slot_range_saves() {
         (buckets.len(), shard.bucket_recency.len(), objects, pages, live)
     };
 
-    let (wide_slots, wide_recency, wide_objects, wide_pages, wide_live) = run(u32::MAX);
-    let (narrow_slots, narrow_recency, narrow_objects, narrow_pages, narrow_live) = run(1023);
+    let (wide_buckets, wide_recency, wide_objects, wide_pages, wide_live) = run(u32::MAX);
+    let (narrow_buckets, narrow_recency, narrow_objects, narrow_pages, narrow_live) = run(1023);
 
     let per = |v: u64| v as f64 / RECORDS as f64;
     println!();
     println!("  {RECORDS} records, same corpus, two slot ranges");
     println!("  structure            0..u32::MAX      0..1023");
-    println!("  slot map          {wide_slots:>13} {narrow_slots:>12}");
+    println!("  slot map          {wide_buckets:>13} {narrow_buckets:>12}");
     println!("  slot recency      {wide_recency:>13} {narrow_recency:>12}");
     println!("  object index      {wide_objects:>13} {narrow_objects:>12}");
     println!("  page index        {wide_pages:>13} {narrow_pages:>12}");
@@ -9369,7 +9369,7 @@ fn what_a_bounded_slot_range_saves() {
     println!("  object has to be findable. What collapses is the PER-SLOT overhead: one slot");
     println!("  node per record becomes one per 1024 records, and slot recency with it.");
 
-    assert!(narrow_slots <= 1024, "a bounded range must not exceed its slot count");
+    assert!(narrow_buckets <= 1024, "a bounded range must not exceed its slot count");
     assert_eq!(wide_objects, RECORDS, "every record should be indexed either way");
     assert_eq!(narrow_objects, RECORDS, "every record should be indexed either way");
 }
@@ -9377,18 +9377,18 @@ fn what_a_bounded_slot_range_saves() {
 /// Does a bounded slot range make writes CHEAPER, or only smaller?
 ///
 /// Bounding a one-box shard's routing-slot range saves 244 B/record of live memory
-/// (`what_a_bounded_slot_range_saves`) by collapsing four per-record homes into two. Whether it
+/// (`what_a_bounded_bucket_range_saves`) by collapsing four per-record homes into two. Whether it
 /// also makes a write faster is a separate question: fewer live entries does not by itself mean
 /// less work per write, and the two arms could allocate identically and just retain differently.
 ///
 /// Counted rather than timed, because a count says the same thing on a loaded machine and this
 /// box swings by 5-30% run to run.
 ///
-///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_bounded_slot_range_make_writes_cheaper -- --ignored --nocapture --test-threads=1
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_bounded_bucket_range_make_writes_cheaper -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
-fn does_a_bounded_slot_range_make_writes_cheaper() {
+fn does_a_bounded_bucket_range_make_writes_cheaper() {
     const RECORDS: u64 = 40_000;
 
     // Interleaved would be better still, but these two arms cannot share a process without
@@ -9689,7 +9689,7 @@ fn would_an_inline_component_pay() {
 /// does not.
 ///
 /// A write allocates ~40.7 kB and frees 97% of it to store a 512-byte value
-/// (`does_a_bounded_slot_range_make_writes_cheaper`), an eighty-fold amplification, and that churn
+/// (`does_a_bounded_bucket_range_make_writes_cheaper`), an eighty-fold amplification, and that churn
 /// is the write path's latency rather than anything retained. Whether to attack the copying or the
 /// bookkeeping depends on which one it is, and a single value size cannot tell them apart.
 ///
