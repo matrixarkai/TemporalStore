@@ -2410,6 +2410,107 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     assert_eq!(restart_boundary.missing_owner_page_refs, 0);
 }
 
+/// The lifecycle round's purge re-checks liveness, and the re-check REACHES it.
+///
+/// The block-store guards prove the re-check works when it is handed a live set. This proves the
+/// scheduled round actually hands it one -- the failure mode a re-check is most likely to have is
+/// not being wrong but being unreachable, declared on a method nothing in production calls with a
+/// non-empty set.
+///
+/// The quarantine here is deliberately WRONG: the collector is handed an empty live set, so it
+/// sets aside a slab holding a live page. That is the shape the re-check exists for, and forcing
+/// it is the only way to reach the branch without an upstream bug to wait for.
+///
+/// Asserted as three separate facts, because a combined one hides all three: the slab was
+/// restored rather than purged, the purge still reported it under `restored` rather than staying
+/// silent, and -- the only assertion that is about the data rather than the bookkeeping -- the
+/// key whose page lives in that slab still READS BACK.
+#[test]
+fn the_lifecycle_purge_re_checks_liveness_and_returns_a_live_slab() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "still-needed".to_string(),
+            value: b"payload-in-slab-zero".to_vec(),
+        },
+    });
+    engine.block_store().roll_slab().unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "written-later".to_string(),
+            value: b"payload-in-slab-one".to_vec(),
+        },
+    });
+
+    // DENOMINATOR ONE: slab 0 really holds a live page.
+    assert!(
+        engine.live_block_slab_ids(1).contains(&0),
+        "slab 0 must really be live for this to test anything: {:?}",
+        engine.live_block_slab_ids(1)
+    );
+
+    // The wrong quarantine: an empty live set, so the collector sets aside a live slab.
+    let quarantined = engine
+        .block_store()
+        .gc_slabs_before_with_live_refs_delayed_destroy(1, Vec::<u64>::new())
+        .unwrap();
+    // DENOMINATOR TWO: it really was quarantined, and really left the store.
+    assert_eq!(
+        quarantined.delayed_destroy_block_slab_ids,
+        vec![0],
+        "the slab was really quarantined"
+    );
+    assert!(
+        !engine.block_store().slab_ids().unwrap().contains(&0),
+        "and really left the store, so a reader cannot reach it by path"
+    );
+
+    let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        ..Default::default()
+    });
+
+    assert_eq!(
+        lifecycle.delayed_destroy_restored_slabs,
+        vec![0],
+        "the round's purge re-checked liveness and put the slab back"
+    );
+    assert!(
+        lifecycle.delayed_destroy_purged_slabs.is_empty(),
+        "and did not destroy it: {:?}",
+        lifecycle.delayed_destroy_purged_slabs
+    );
+    assert!(
+        engine.block_store().slab_ids().unwrap().contains(&0),
+        "the slab is readable by path again"
+    );
+
+    // The payoff: the data survived.
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "still-needed".to_string(),
+        },
+    });
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"payload-in-slab-zero".to_vec())
+        },
+        "the key whose page lives in the restored slab still reads back"
+    );
+}
+
 // shared-corpus: storage_gc_dependency_retention_matrix
 #[test]
 fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {

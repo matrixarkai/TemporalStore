@@ -614,6 +614,18 @@ pub struct BlockStorePurgeDelayedDestroyReport {
     pub retained_too_young_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_too_young_physical_bytes: u64,
+    /// Slabs taken BACK OUT of quarantine because the last-chance re-check found them live.
+    ///
+    /// Non-empty is an alarm, not routine: the collector decided this slab was unreferenced and
+    /// the re-check disagreed. The slab is returned to the store and the bytes are not freed.
+    #[serde(default)]
+    pub restored_block_slab_ids: Vec<u64>,
+    #[serde(default)]
+    pub restored_physical_bytes: u64,
+    /// Slabs the re-check found live but could NOT return, because a file already occupies the
+    /// id. They stay in quarantine: not destroyed, not restored.
+    #[serde(default)]
+    pub restore_blocked_block_slab_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1446,19 +1458,57 @@ impl LocalBlockStore {
     ///
     /// The age is a parameter so a caller that wants an immediate purge has to SAY so, rather
     /// than a suite quietly depending on there being no delay at all.
+    ///
+    /// Purges WITHOUT a liveness re-check. Every caller that can name a live set should call
+    /// [`Self::purge_delayed_destroy_slabs_checked`] instead; this spelling remains for the
+    /// callers that genuinely have nothing to re-check against.
     pub(crate) fn purge_delayed_destroy_slabs_older_than(
         &self,
         min_age_ms: u64,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        self.purge_delayed_destroy_slabs_checked(min_age_ms, std::iter::empty())
+    }
+
+    /// Purge quarantined slabs, re-checking liveness one last time before each destroy.
+    ///
+    /// THE DESTROY IS THE ONLY IRREVERSIBLE STEP, AND UNTIL NOW IT CONSULTED NOTHING. The purge
+    /// read a directory and a timestamp; it took no live set and re-read no index. Everything it
+    /// knew about whether a slab was still needed was decided in an earlier round, by the
+    /// collector that quarantined it, against the state of the store at THAT moment. Between the
+    /// two, a dump manifest can be written whose embedded index installs pages in a slab that was
+    /// unreferenced when the collector looked -- and the purge would unlink it without ever
+    /// asking.
+    ///
+    /// So the destroy asks again, against the live set the caller holds NOW, and a slab that
+    /// comes back live is not destroyed. It is taken back out of quarantine: renamed into the
+    /// store, its descriptor returned to `Sealed`, and reported in `restored_block_slab_ids`.
+    /// Un-quarantining is not a nicety here the way rolling a band back to its pre-collection
+    /// state would be elsewhere -- our phase 1 RENAMES the file, so a slab left sitting in the
+    /// trash directory is unreadable by path no matter how long the grace window runs. Declining
+    /// to destroy it would leave the reader just as broken. Moving it back is the whole repair.
+    ///
+    /// A restore is an ALARM. Reaching it means the collector and the re-check disagreed about
+    /// the same slab, which is a bug upstream of this function; the point of the re-check is that
+    /// the bug costs a log line and a rename instead of the data.
+    pub fn purge_delayed_destroy_slabs_checked(
+        &self,
+        min_age_ms: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
         let mut retained_too_young = Vec::new();
         let mut retained_too_young_physical_bytes = 0;
+        let mut restored = Vec::new();
+        let mut restored_physical_bytes = 0;
+        let mut restore_blocked = Vec::new();
         if !trash_dir.exists() {
             return Ok(BlockStorePurgeDelayedDestroyReport::default());
         }
+        let root = inner.root.clone();
         for entry in fs::read_dir(&trash_dir)? {
             let entry = entry?;
             let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) else {
@@ -1468,14 +1518,37 @@ impl LocalBlockStore {
                 .metadata()
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
+            // THE LAST-CHANCE RE-CHECK, before the age is even consulted: a live slab is not
+            // "too young to destroy", it is NOT FOR DESTROYING, and waiting longer would not
+            // make it safe. It also must not be left where it is -- quarantine is a rename out
+            // of the store, so the reader that needs it cannot reach it until the file is back.
+            if live_block_slab_ids.contains(&id) {
+                if restore_slab_from_delayed_destroy(&root, id, &entry.path())? {
+                    set_slab_state(&mut inner.bands, id, BlockStoreSlabState::Sealed);
+                    restored.push(id);
+                    restored_physical_bytes += bytes;
+                } else {
+                    restore_blocked.push(id);
+                }
+                continue;
+            }
             // Quarantining goes through `set_band_state`, which stamps `updated_unix_ms`, so the
-            // manifest already records WHEN this slab was set aside. A file timestamp would not:
-            // a rename keeps the mtime of the last append, and `created` is unavailable on many
-            // filesystems.
+            // manifest already records WHEN this slab was set aside.
             //
-            // A slab with no descriptor is purged. The manifest is what names slabs, so one it
-            // does not name cannot be reached -- keeping it would leak bytes protecting nothing.
-            let quarantined_at = inner.bands.get(&id).and_then(|band| band.updated_unix_ms);
+            // A DESCRIPTOR-LESS SLAB FALLS BACK TO THE FILE'S MTIME rather than being destroyed
+            // on sight. The two are written at different moments and a crash fits between them:
+            // the collector renames each slab into the trash directory inside its loop and
+            // persists the manifest only once, after it. Die mid-loop and the restarted process
+            // finds files in quarantine that the manifest never learned about -- freshly
+            // quarantined slabs with no stamp, which the old reading purged on the very next
+            // round with the full hour of grace skipped. The mtime is a weaker clock (a rename
+            // keeps the mtime of the last append, so it runs EARLY and the window it grants is
+            // shorter than the real one) but it is a clock, and a short window beats none.
+            let quarantined_at = inner
+                .bands
+                .get(&id)
+                .and_then(|band| band.updated_unix_ms)
+                .or_else(|| file_modified_unix_ms(&entry.path()));
             if let Some(quarantined_at) = quarantined_at {
                 if now_unix_ms().saturating_sub(quarantined_at) < min_age_ms {
                     retained_too_young.push(id);
@@ -1489,6 +1562,8 @@ impl LocalBlockStore {
             purged.push(id);
         }
         purged.sort_unstable();
+        restored.sort_unstable();
+        restore_blocked.sort_unstable();
         sync_dir(&trash_dir)?;
         persist_slab_manifest(&inner.root, &inner.bands)?;
         retained_too_young.sort_unstable();
@@ -1497,6 +1572,9 @@ impl LocalBlockStore {
             purged_physical_bytes,
             retained_too_young_block_slab_ids: retained_too_young,
             retained_too_young_physical_bytes,
+            restored_block_slab_ids: restored,
+            restored_physical_bytes,
+            restore_blocked_block_slab_ids: restore_blocked,
         })
     }
 
@@ -3856,6 +3934,156 @@ mod tests {
             store.delayed_destroy_slab_ids().unwrap().is_empty(),
             "quarantine is empty afterwards"
         );
+    }
+
+    /// The destroy re-checks liveness, and a slab that comes back live is UN-QUARANTINED.
+    ///
+    /// The shape the re-check exists for: the collector quarantines a slab nothing references,
+    /// and only afterwards does something -- a dump manifest whose embedded index installs pages
+    /// in it -- start needing it again. The purge that runs next is the irreversible step, and
+    /// before this it consulted only a directory listing and a timestamp.
+    ///
+    /// THE THREE OUTCOMES ARE ASSERTED SEPARATELY. A purge that destroyed nothing at all would
+    /// satisfy "the live slab survived"; one that restored everything would satisfy it too and
+    /// free nothing; and a restore that only declined to unlink, leaving the file in the trash
+    /// directory, would satisfy both while the slab stayed unreadable by path. So this asserts
+    /// that the dead slab WAS destroyed, that the live slab was NOT, and that the live slab is
+    /// back where a reader looks for it.
+    #[test]
+    fn a_quarantined_slab_that_is_live_again_is_returned_not_destroyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"needed-again").unwrap();
+        store.install_slab(1, b"really-stale").unwrap();
+        store.install_slab(2, b"current").unwrap();
+        store
+            .gc_slabs_before_with_live_refs_delayed_destroy(2, [2_u64])
+            .unwrap();
+
+        // THE DENOMINATOR. Both slabs are really in quarantine, and really out of the store, so
+        // the assertions below are about a purge that had two things to act on.
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap(),
+            vec![0, 1],
+            "both slabs were really quarantined"
+        );
+        assert_eq!(
+            store.slab_ids().unwrap(),
+            vec![2],
+            "and really left the store, so a reader cannot reach either by path"
+        );
+
+        // Slab 0 became live again after it was quarantined. Slab 1 did not.
+        let report = store
+            .purge_delayed_destroy_slabs_checked(0, [0_u64])
+            .unwrap();
+
+        assert_eq!(
+            report.restored_block_slab_ids,
+            vec![0],
+            "the slab that came back live is taken out of quarantine"
+        );
+        assert_eq!(
+            report.restored_physical_bytes,
+            b"needed-again".len() as u64
+        );
+        assert_eq!(
+            report.purged_block_slab_ids,
+            vec![1],
+            "and the one that is genuinely dead is still destroyed -- the re-check is not a \
+             blanket refusal to reclaim"
+        );
+        assert_eq!(report.purged_physical_bytes, b"really-stale".len() as u64);
+        assert!(report.restore_blocked_block_slab_ids.is_empty());
+
+        // The repair is the rename, not the reprieve: the slab is READABLE BY PATH again.
+        assert_eq!(
+            store.slab_ids().unwrap(),
+            vec![0, 2],
+            "the restored slab is back in the store where a reader looks for it"
+        );
+        assert_eq!(
+            store.read_slab(0).unwrap(),
+            b"needed-again".to_vec(),
+            "and its bytes are intact"
+        );
+        assert!(
+            store.delayed_destroy_slab_ids().unwrap().is_empty(),
+            "quarantine is empty: one restored, one destroyed, nothing stranded"
+        );
+    }
+
+    /// A quarantined slab the manifest does not name still gets a grace window.
+    ///
+    /// THIS IS A SECOND LINE, NOT THE FIRST. `reconcile_slab_manifest_with_disk` already walks the
+    /// trash directory on every open and stamps a `DelayedDestroy` descriptor onto every file it
+    /// finds there, described or not -- so the crash window inside the collector's loop (rename
+    /// each slab, persist the manifest once at the end, die in between) is repaired at the next
+    /// open, and within a live process the rename and the state write happen back to back under
+    /// one lock. The descriptor-less slab is therefore not reachable through the ordinary API,
+    /// which is why this constructs one directly.
+    ///
+    /// It is guarded anyway because the purge's own reading of the case was the OPPOSITE policy:
+    /// a slab with no descriptor was destroyed on sight, with the whole hour skipped. That is a
+    /// dangerous default to leave standing behind a repair in a different module -- the repair
+    /// can be narrowed, skipped for speed, or run after the purge, and then the destroy is
+    /// immediate again with nothing to say so.
+    ///
+    /// Asserted in BOTH directions, because one alone is passable: a purge that never destroyed
+    /// an undescribed slab at all would satisfy the first assertion and leak the bytes for ever.
+    #[test]
+    fn a_quarantined_slab_with_no_descriptor_still_waits() {
+        // An id no slab in this store uses: a fresh store already opens slab 0 active, and
+        // reusing that id would collide with a descriptor that legitimately exists.
+        const ORPHAN: u64 = 7;
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(1, b"current").unwrap();
+
+        // A file in quarantine that the manifest never learned about.
+        let trash = delayed_destroy_dir(dir.path());
+        fs::create_dir_all(&trash).unwrap();
+        fs::write(
+            trash.join(format!("page_segment_{ORPHAN:020}.seg.deleted.1")),
+            b"orphaned-by-a-crash",
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap(),
+            vec![ORPHAN],
+            "DENOMINATOR: the slab is really in quarantine, so the purge has something to act on"
+        );
+        assert!(
+            !store
+                .slab_descriptors()
+                .iter()
+                .any(|descriptor| descriptor.block_slab_id == ORPHAN),
+            "DENOMINATOR: and it really has no descriptor, so this exercises the fallback"
+        );
+
+        // The hour has not passed by ANY clock, so the purge must decline.
+        let held = store
+            .purge_delayed_destroy_slabs_older_than(DELAYED_DESTROY_MIN_AGE_MS)
+            .unwrap();
+        assert!(
+            held.purged_block_slab_ids.is_empty(),
+            "a slab quarantined moments ago must keep its grace even with no descriptor"
+        );
+        assert_eq!(
+            held.retained_too_young_block_slab_ids,
+            vec![ORPHAN],
+            "and the report must say it was held, not that there was nothing to do"
+        );
+
+        // But it is still reclaimable: the fallback grants a window, it does not grant immunity.
+        let purged = store.purge_delayed_destroy_slabs_older_than(0).unwrap();
+        assert_eq!(
+            purged.purged_block_slab_ids,
+            vec![ORPHAN],
+            "past its wait, an undescribed slab is destroyed like any other"
+        );
+        assert!(store.delayed_destroy_slab_ids().unwrap().is_empty());
     }
 
     #[test]

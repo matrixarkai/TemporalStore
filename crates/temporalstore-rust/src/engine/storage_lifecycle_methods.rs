@@ -686,8 +686,22 @@ impl TemporalEngine {
         };
         let cache_warmup_page_refs = cache_warmup.warmed_page_refs;
         let purge_report = if request.purge_delayed_destroy {
+            // THE LIVE SET AS IT IS NOW, not as it was when the collector quarantined these
+            // slabs. The destroy below is irreversible and the two moments are whole rounds
+            // apart; between them this same round may have written a dump manifest whose
+            // embedded index installs pages in a slab that was unreferenced when the collector
+            // looked. Assembled exactly as the operator `/gc` path assembles it -- live page
+            // refs across every loaded shard, widened by every slab a retained manifest's index
+            // can install -- so the two reclaim paths cannot disagree about what is still needed.
+            let mut purge_live_block_slab_ids = self.live_block_slab_ids_all_shards();
+            for manifest in self.list_bucket_dump_manifests(request.shard_id) {
+                purge_live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
+            }
             self.page_store
-                .purge_delayed_destroy_slabs_with_report()
+                .purge_delayed_destroy_slabs_checked(
+                    crate::block_store::DELAYED_DESTROY_MIN_AGE_MS,
+                    purge_live_block_slab_ids,
+                )
                 .unwrap_or_default()
         } else {
             Default::default()
@@ -746,6 +760,8 @@ impl TemporalEngine {
             cache_warmup,
             delayed_destroy_purged_slabs: purge_report.purged_block_slab_ids,
             delayed_destroy_purged_bytes: purge_report.purged_physical_bytes,
+            delayed_destroy_restored_slabs: purge_report.restored_block_slab_ids,
+            delayed_destroy_restored_bytes: purge_report.restored_physical_bytes,
             manifest_prune_plan,
             manifest_prune_report,
             install_roll_forward_reports,

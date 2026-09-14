@@ -1393,6 +1393,16 @@ pub struct StorageLifecycleReport {
     #[serde(alias = "delayed_destroy_purged_segments")]
     pub delayed_destroy_purged_slabs: Vec<u64>,
     pub delayed_destroy_purged_bytes: u64,
+    /// Slabs the purge's last-chance re-check found LIVE and put back in the store.
+    ///
+    /// Reported because it is an alarm an operator has to be able to see: it means the collector
+    /// quarantined a slab something still needed, and the re-check is the only reason the bytes
+    /// are still here. A round that restores is not a round that reclaimed nothing -- it is a
+    /// round that caught a bug, and the bug is upstream of the purge.
+    #[serde(default)]
+    pub delayed_destroy_restored_slabs: Vec<u64>,
+    #[serde(default)]
+    pub delayed_destroy_restored_bytes: u64,
     #[serde(default)]
     pub manifest_prune_plan: BucketDumpManifestPrunePlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1439,6 +1449,8 @@ impl Default for StorageLifecycleReport {
             cache_warmup: StorageCacheWarmupReport::default(),
             delayed_destroy_purged_slabs: Vec::new(),
             delayed_destroy_purged_bytes: 0,
+            delayed_destroy_restored_slabs: Vec::new(),
+            delayed_destroy_restored_bytes: 0,
             manifest_prune_plan: BucketDumpManifestPrunePlan::default(),
             manifest_prune_report: None,
             install_roll_forward_reports: Vec::new(),

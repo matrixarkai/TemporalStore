@@ -30,6 +30,32 @@ pub(crate) fn move_slab_to_delayed_destroy(
     Ok(())
 }
 
+/// Put a quarantined slab back where readers look for it.
+///
+/// The inverse of [`move_slab_to_delayed_destroy`], and the reason it has to exist: phase 1 of
+/// the delayed destroy RENAMES the file out of the store, so by the time the grace window is
+/// running the slab is already unreachable by path. A reader that still needs it cannot be
+/// served by waiting -- it can only be served by moving the file back.
+///
+/// Returns `false` and moves NOTHING when a file already sits at the destination. Restoring over
+/// it would replace a slab the store is currently serving with an older one of the same id, so
+/// the conservative answer is to leave the quarantined copy alone: the caller keeps it in
+/// quarantine rather than destroying it.
+pub(crate) fn restore_slab_from_delayed_destroy(
+    root: &Path,
+    block_slab_id: u64,
+    quarantined_path: &Path,
+) -> Result<bool, BlockStoreError> {
+    let destination = slab_path(root, block_slab_id);
+    if destination.exists() {
+        return Ok(false);
+    }
+    fs::rename(quarantined_path, &destination)?;
+    sync_parent_dir(quarantined_path)?;
+    sync_parent_dir(&destination)?;
+    Ok(true)
+}
+
 pub(crate) fn delayed_destroy_slab_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
     Ok(delayed_destroy_slab_reports_at(root)?
         .into_iter()
