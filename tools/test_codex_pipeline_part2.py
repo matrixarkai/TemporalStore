@@ -1552,35 +1552,93 @@ class _CodexPipelinePart2:
             )
             self.assertGreaterEqual(result["summary_dirty_count"], 1)
 
-            skipped = adapter.refresh_summaries(
-                {
-                    "scope": {
-                        "account_id": "acct_fast_skip",
-                        "tenant_id": "tenant_fast_skip",
-                        "user_id": "user_fast_skip",
-                        "session_id": "session_fast_skip_summary",
-                    },
-                    "limit": 16,
-                    "skip_dirty_reasons": ["new_event"],
-                }
-            )
-            self.assertEqual(0, skipped.get("refreshed_count", 0))
-            self.assertGreaterEqual(skipped.get("skipped_dirty_count", 0), 1)
-            self.assertGreaterEqual(skipped.get("skipped_dirty_reasons", {}).get("new_event", 0), 1)
-            self.assertFalse(any(record.get("record_type") == "context_summary" for record in adapter.read_all()))
+            scope = {
+                "account_id": "acct_fast_skip",
+                "tenant_id": "tenant_fast_skip",
+                "user_id": "user_fast_skip",
+                "session_id": "session_fast_skip_summary",
+            }
 
-            refreshed = adapter.refresh_summaries(
-                {
-                    "scope": {
-                        "account_id": "acct_fast_skip",
-                        "tenant_id": "tenant_fast_skip",
-                        "user_id": "user_fast_skip",
-                        "session_id": "session_fast_skip_summary",
-                    },
-                    "limit": 16,
-                }
+            def pending_marker_nodes():
+                by_reason = {}
+                for record in adapter.read_all():
+                    if record.get("record_type") != "context_summary_dirty":
+                        continue
+                    if record.get("status") != "pending":
+                        continue
+                    by_reason.setdefault(
+                        str(record.get("dirty_reason") or ""), set()
+                    ).add(tuple(record.get("node_path") or []))
+                return by_reason
+
+            def refreshed_nodes(refresh_result):
+                return {tuple(item.get("node_path") or []) for item in refresh_result.get("refreshed", [])}
+
+            def summary_hashes_by_node():
+                out = {}
+                for record in adapter.read_all():
+                    if record.get("record_type") != "context_summary":
+                        continue
+                    out.setdefault(tuple(record.get("node_path") or []), set()).add(
+                        record.get("summary_hash")
+                    )
+                return out
+
+            by_reason = pending_marker_nodes()
+            new_event_nodes = by_reason.get("new_event", set())
+            other_nodes = {
+                node
+                for reason, nodes in by_reason.items()
+                if reason != "new_event"
+                for node in nodes
+            }
+            new_event_only = new_event_nodes - other_nodes
+            # Denominators. The claim below is "a node marked ONLY by new_event is not refreshed",
+            # which is free if no such node exists -- and "a marker the list does not name still
+            # runs", which is free if every marker is a new_event one. One ingest produces both:
+            # new_event markers up the session chain, and a profile_entity_promoted marker on the
+            # profile node. Both sets are read from the store rather than written down here, so a
+            # change in how many of each the ingest emits does not silently empty either claim.
+            self.assertGreaterEqual(len(new_event_only), 1, "nothing was marked new_event to skip")
+            self.assertGreaterEqual(len(other_nodes), 1, "every marker was new_event, so the skip is unopposed")
+            # The BEFORE state. The ingest writes a batch_l0 summary of its own on one of these
+            # nodes, so "no summary exists here" is not the claim -- "the skipped pass added none"
+            # is, and that needs the before set.
+            summaries_before = summary_hashes_by_node()
+
+            skipped = adapter.refresh_summaries(
+                {"scope": scope, "limit": 16, "skip_dirty_reasons": ["new_event"]}
             )
-            self.assertGreaterEqual(refreshed.get("refreshed_count", 0), 1)
+            # The STORE first, then the report. A pass that does the work and says it did not is
+            # the failure shape worth catching, and only the stored summaries can tell you: the
+            # returned `refreshed` list is written by the same code that decided to skip.
+            summaries_after = summary_hashes_by_node()
+            for node in new_event_only:
+                self.assertEqual(
+                    summaries_before.get(node, set()),
+                    summaries_after.get(node, set()),
+                    f"the skipped pass summarized {node} anyway",
+                )
+            # Then the report, which must agree with it.
+            self.assertEqual(
+                len(by_reason["new_event"]),
+                skipped.get("skipped_dirty_reasons", {}).get("new_event", 0),
+            )
+            self.assertEqual(set(), refreshed_nodes(skipped) & new_event_only)
+            # What DOES run is the node marked for a reason the list does not name. This is not the
+            # skip leaking: the fast hook ingest commits its batch inline, so by this point there
+            # are no pending session events left and the profile entity was promoted from a
+            # COMMITTED event. An earlier version of this test asserted `refreshed_count == 0` and
+            # that no context_summary existed at all; both stopped being true when the ingest grew
+            # the inline commit and the profile promotion, neither of which is about this control,
+            # and the test sat red long enough to stop checking the lines below it.
+            self.assertEqual(other_nodes, refreshed_nodes(skipped))
+
+            # The skipped work is deferred, not dropped: the same pass without the list refreshes
+            # exactly the nodes the list held back.
+            refreshed = adapter.refresh_summaries({"scope": scope, "limit": 16})
+            self.assertEqual(new_event_only, refreshed_nodes(refreshed))
+            self.assertEqual({}, refreshed.get("skipped_dirty_reasons", {}))
 
     def test_retrieve_can_pre_refresh_dirty_summaries_before_serving(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
