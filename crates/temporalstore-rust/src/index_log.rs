@@ -844,10 +844,10 @@ where
     deserializer.deserialize_any(EitherShape)
 }
 
-/// Band lifecycle state folded into the index-log MetaItem. 1:1 with
-/// `block_store::BlockStoreSlabState` and with the on-disk band-state encoding
+/// Slab lifecycle state folded into the index-log MetaItem. 1:1 with
+/// `block_store::BlockStoreSlabState` and with the on-disk slab-state encoding
 /// (INIT/CREATED/FROZEN/RECYCLED): Active==CREATED, Sealed==FROZEN, DelayedDestroy/Purged
-/// cover the RECYCLED grace. Serialized snake_case so it round-trips with the band manifest's
+/// cover the RECYCLED grace. Serialized snake_case so it round-trips with the slab manifest's
 /// own state enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -858,13 +858,13 @@ pub enum SlabCatalogState {
     Purged,
 }
 
-/// One band catalog entry folded into the index-log MetaItem, mirroring this design
-/// the durable band catalog in the index-log anchor. Carries the DURABLE catalog fields the
-/// band descriptor tracks -- lifecycle state, byte counts, timestamps, page-id range, version.
-/// The band descriptor's DIAGNOSTIC fields (readable_prefix_physical_bytes / has_corruption /
+/// One slab catalog entry folded into the index-log MetaItem, mirroring this design
+/// the durable slab catalog in the index-log anchor. Carries the DURABLE catalog fields the
+/// slab descriptor tracks -- lifecycle state, byte counts, timestamps, page-id range, version.
+/// The slab descriptor's DIAGNOSTIC fields (readable_prefix_physical_bytes / has_corruption /
 /// first_error*) are intentionally ABSENT: they are recomputed on load by scanning the slab
-/// (`inspect_slab`, driven by `rebuild_band_manifest_at` / reconcile-on-open), exactly as the
-/// are not persisted. So this is the lossless durable projection of a band.
+/// (`inspect_slab`, driven by `rebuild_slab_manifest_at` / reconcile-on-open), exactly as the
+/// are not persisted. So this is the lossless durable projection of a slab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlabCatalogEntry {
     #[serde(alias = "zone_id")]
@@ -893,7 +893,7 @@ pub struct SlabCatalogEntry {
 /// and every delta record at or before it can be truncated. Matches
 /// MetaItem's `start_WAL_id` role in the native WAL vocabulary.
 ///
-/// `bands` folds the band catalog into the anchor, and serializes under its original
+/// `slabs` folds the slab catalog into the anchor, and serializes under its original
 /// `zones` key. It
 /// is populated ONLY at a threshold dump;
 /// with the gate off it is always empty and (via `skip_serializing_if`) not serialized, so an
@@ -908,7 +908,7 @@ pub struct MetaItem {
     #[serde(default)]
     pub timestamp_ms: u64,
     #[serde(rename = "zones", default)]
-    pub bands: Vec<SlabCatalogEntry>,
+    pub slabs: Vec<SlabCatalogEntry>,
     #[serde(rename = "zone_version", default)]
     pub slab_version: u64,
 }
@@ -1149,8 +1149,8 @@ fn indexlog_wal_only_sync() -> bool {
     !crate::engine::wal_legacy_recovery()
 }
 
-/// MANIFEST-CONFORMANCE FOLD, always on: the band catalog is folded into the index-log
-/// anchor at a threshold dump, and the per-write band-manifest file is no longer the catalog's
+/// MANIFEST-CONFORMANCE FOLD, always on: the slab catalog is folded into the index-log
+/// anchor at a threshold dump, and the per-write slab-manifest file is no longer the catalog's
 /// source of truth (it is reconstructed on load from the durable pages plus the folded anchor).
 /// `TS_INDEX_CATALOG_FOLD` used to be able to skip all of it. It shipped dark (the flip once
 /// broke proxy tests), then defaulted on once the upsert-delta and single-barrier work landed,
@@ -1159,7 +1159,7 @@ fn indexlog_wal_only_sync() -> bool {
 /// engine reclaim its index-log and WAL at all, so the off side disabled reclaim entirely.
 ///
 /// The off side's compatibility claim still holds and is not conditional on anything: an anchor
-/// whose `bands` is empty serializes with no `zones` key, byte-identical to a pre-fold MetaItem.
+/// whose `slabs` is empty serializes with no `zones` key, byte-identical to a pre-fold MetaItem.
 /// `meta_item_without_zones_serializes_byte_identically_to_pre_fold` asserts exactly that.
 ///
 /// Threshold decision for the background catalog/index dump, mirroring this design
@@ -1249,9 +1249,9 @@ impl LocalIndexLogStore {
             .insert(shard_id, std::time::Instant::now());
     }
 
-    /// The most recent `MetaItem` anchor carrying a folded band catalog, or `None` if no
-    /// anchor with a non-empty `bands` list has been written. Used on load (gate on) to seed the
-    /// block-store band catalog from the folded anchor when the band-manifest file is absent.
+    /// The most recent `MetaItem` anchor carrying a folded slab catalog, or `None` if no
+    /// anchor with a non-empty `slabs` list has been written. Used on load (gate on) to seed the
+    /// block-store slab catalog from the folded anchor when the slab-manifest file is absent.
     pub fn latest_slab_catalog(&self, shard_id: ShardId) -> Result<Option<MetaItem>, IndexLogError> {
         // The LAST matching record wins, so this cannot stop early -- but it never needed to
         // hold the records it walks past. It kept every record in the log, with every item each
@@ -1259,7 +1259,7 @@ impl LocalIndexLogStore {
         let mut latest = None;
         self.for_each_delta_record(shard_id, 0, |record| {
             if let Some(meta) = record.meta {
-                if !meta.bands.is_empty() {
+                if !meta.slabs.is_empty() {
                     latest = Some(meta);
                 }
             }
@@ -2941,15 +2941,15 @@ mod tests {
         assert_eq!(reopened.stats(7).last_sequence, 2);
     }
 
-    /// The band catalog is the LAST record that carries one, and nothing after it clears it.
+    /// The slab catalog is the LAST record that carries one, and nothing after it clears it.
     ///
     /// The fold keeps a running answer instead of every record it walks past, so three things
     /// an ordering change can break are pinned here: a later catalog must WIN; a later record
-    /// carrying a meta with NO bands must not replace it; and a log whose only meta carries no
-    /// bands must answer None rather than that meta.
+    /// carrying a meta with NO slabs must not replace it; and a log whose only meta carries no
+    /// slabs must answer None rather than that meta.
     ///
     /// The second and third are what make this more than one assertion. Writing it with only a
-    /// catalog-less record after the catalogs let a fold that kept "the last meta, bands or not"
+    /// catalog-less record after the catalogs let a fold that kept "the last meta, slabs or not"
     /// pass -- the record had no meta at all, so the wrong rule never fired.
     #[test]
     fn the_slab_catalog_is_the_last_record_that_carries_one() {
@@ -2961,7 +2961,7 @@ mod tests {
             start_wal_sequence: 1,
             timestamp_ms: 1,
             slab_version: 1,
-            bands: vec![SlabCatalogEntry {
+            slabs: vec![SlabCatalogEntry {
                 block_slab_id: slab,
                 state: SlabCatalogState::Active,
                 physical_bytes: 1,
@@ -2973,13 +2973,13 @@ mod tests {
                 version: 1,
             }],
         };
-        // A meta that carries no bands. An anchor looks like this whenever the fold is off.
+        // A meta that carries no slabs. An anchor looks like this whenever the fold is off.
         let slabless = MetaItem {
             version: 2,
             start_wal_sequence: 2,
             timestamp_ms: 2,
             slab_version: 0,
-            bands: Vec::new(),
+            slabs: Vec::new(),
         };
 
         store
@@ -2999,20 +2999,20 @@ mod tests {
 
         let found = store.latest_slab_catalog(4).unwrap().expect("a catalog");
         assert_eq!(
-            found.bands.first().map(|band| band.block_slab_id),
+            found.slabs.first().map(|slab| slab.block_slab_id),
             Some(22),
             "the last record CARRYING a catalog wins, and neither record after it clears it"
         );
 
-        // A log whose only meta carries no bands has no catalog to find. This is the control:
-        // a fold that kept the last meta whether or not it held bands passes the assertion
+        // A log whose only meta carries no slabs has no catalog to find. This is the control:
+        // a fold that kept the last meta whether or not it held slabs passes the assertion
         // above and fails here.
         store
             .append_delta(5, Vec::new(), Vec::new(), None, Some(slabless), false, true)
             .unwrap();
         assert!(
             store.latest_slab_catalog(5).unwrap().is_none(),
-            "a meta carrying no bands is not a catalog"
+            "a meta carrying no slabs is not a catalog"
         );
     }
 
@@ -3347,11 +3347,11 @@ mod tests {
 
     #[test]
     fn meta_item_without_zones_serializes_byte_identically_to_pre_fold() {
-        // Pre-fold compatibility invariant: an anchor whose `bands` is empty must serialize with
+        // Pre-fold compatibility invariant: an anchor whose `slabs` is empty must serialize with
         // NO `zones` key and NO
-        // `band_version` beyond what a pre-fold MetaItem produced. `band_version` defaults to 0
+        // `slab_version` beyond what a pre-fold MetaItem produced. `slab_version` defaults to 0
         // and is not skipped, so it appears; assert the value carries only the legacy three
-        // fields plus a zero band_version and no zones array.
+        // fields plus a zero slab_version and no zones array.
         let meta = MetaItem {
             version: 7,
             start_wal_sequence: 11,
@@ -3361,12 +3361,12 @@ mod tests {
         let value = serde_json::to_value(&meta).unwrap();
         let object = value.as_object().unwrap();
         // Every field is written now, empty or not: a row is read by position, so a field that
-        // disappears when it is empty moves every field behind it. An empty band list costs one
+        // disappears when it is empty moves every field behind it. An empty slab list costs one
         // byte and keeps the position of everything after it.
         assert_eq!(
-            object.get("zones").expect("bands are always written"),
+            object.get("zones").expect("the slab list is always written"),
             &serde_json::json!([]),
-            "an empty band list is written, not skipped"
+            "an empty slab list is written, not skipped"
         );
         assert_eq!(object.get("version").unwrap(), 7);
         assert_eq!(object.get("start_wal_sequence").unwrap(), 11);
@@ -3386,7 +3386,7 @@ mod tests {
             start_wal_sequence: 5,
             timestamp_ms: 100,
             slab_version: 3,
-            bands: vec![
+            slabs: vec![
                 SlabCatalogEntry {
                     block_slab_id: 0,
                     state: SlabCatalogState::Sealed,
@@ -3414,13 +3414,13 @@ mod tests {
         store
             .append_delta(4, Vec::new(), Vec::new(), Some(5), Some(meta.clone()), false, true)
             .unwrap();
-        // A reopen reads the folded catalog back exactly, and latest_band_catalog finds it.
+        // A reopen reads the folded catalog back exactly, and latest_slab_catalog finds it.
         let reopened = LocalIndexLogStore::new(dir.path());
         let recovered = reopened.latest_slab_catalog(4).unwrap().unwrap();
         assert_eq!(recovered, meta);
-        assert_eq!(recovered.bands.len(), 2);
-        assert_eq!(recovered.bands[0].state, SlabCatalogState::Sealed);
-        assert_eq!(recovered.bands[1].block_slab_id, 1);
+        assert_eq!(recovered.slabs.len(), 2);
+        assert_eq!(recovered.slabs[0].state, SlabCatalogState::Sealed);
+        assert_eq!(recovered.slabs[1].block_slab_id, 1);
     }
 
     #[test]
@@ -3432,7 +3432,7 @@ mod tests {
             start_wal_sequence: 1,
             timestamp_ms: 1,
             slab_version: 1,
-            bands: vec![SlabCatalogEntry {
+            slabs: vec![SlabCatalogEntry {
                 block_slab_id: 0,
                 state: SlabCatalogState::Active,
                 physical_bytes: 1,
@@ -3449,7 +3449,7 @@ mod tests {
             start_wal_sequence: 9,
             timestamp_ms: 9,
             slab_version: 2,
-            bands: vec![SlabCatalogEntry {
+            slabs: vec![SlabCatalogEntry {
                 block_slab_id: 0,
                 state: SlabCatalogState::Sealed,
                 physical_bytes: 2,
@@ -3464,7 +3464,7 @@ mod tests {
         store
             .append_delta(6, Vec::new(), Vec::new(), Some(1), Some(older), false, true)
             .unwrap();
-        // An anchor with no bands between them must not shadow the folded catalog.
+        // An anchor with no slabs between them must not shadow the folded catalog.
         store
             .append_delta(6, Vec::new(), Vec::new(), Some(5), Some(MetaItem::default()), false, true)
             .unwrap();

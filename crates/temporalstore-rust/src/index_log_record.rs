@@ -4,7 +4,7 @@
 //! The served-index log record, ported from the design described below.
 //!
 //! Direct port: same record shape, same field numbers, same framing (see [`crate::record_framing`]).
-//! Only the names follow this crate's vocabulary — routing bucket for slot, block for page, band
+//! Only the names follow this crate's vocabulary — routing bucket for slot, block for page, slab
 //! for zone, WAL for the operation log.
 //!
 //! The index log is the durable statement of *where blocks live* and *how far the WAL has been
@@ -13,13 +13,13 @@
 //!
 //!   * [`IndexMetaItem::start_wal_id`] is the dump watermark. Replay resumes from it, and WAL
 //!     truncation must never pass it — a record below the watermark has had its blocks
-//!     materialised into a band, one above it has not, and dropping the latter destroys the only
+//!     materialised into a slab, one above it has not, and dropping the latter destroys the only
 //!     durable copy.
-//!   * [`IndexItem::in_wal`] records whether a block still lives in the WAL rather than a band.
+//!   * [`IndexItem::in_wal`] records whether a block still lives in the WAL rather than a slab.
 //!     It is the flag that makes an address resolvable without a lookup table.
-//!   * [`BandInfo`] carries the band lifecycle. This design pre-allocates a band in an INIT
+//!   * [`SlabLifecycleInfo`] carries the slab lifecycle. This design pre-allocates a slab in an INIT
 //!     state, makes it durable, then creates the stream and moves it to CREATED — so a crash
-//!     between the two leaves a band that is reused rather than an orphaned stream.
+//!     between the two leaves a slab that is reused rather than an orphaned stream.
 
 use prost::Message;
 
@@ -66,12 +66,12 @@ pub struct IndexItem {
     #[prost(uint32, tag = "2")]
     pub block_id: u32,
     /// The block's address. When [`Self::in_wal`] is set this is the log id — the byte offset of
-    /// the WAL record carrying the block — otherwise it addresses a band.
+    /// the WAL record carrying the block — otherwise it addresses a slab.
     #[prost(uint64, tag = "3")]
     pub address: u64,
     #[prost(uint32, tag = "4")]
     pub size: u32,
-    /// The block still lives in the WAL and has not been dumped into a band yet.
+    /// The block still lives in the WAL and has not been dumped into a slab yet.
     #[prost(bool, tag = "5")]
     pub in_wal: bool,
     #[prost(bool, tag = "6")]
@@ -80,7 +80,7 @@ pub struct IndexItem {
     pub model_id: u32,
 }
 
-/// Band lifecycle state. This design calls a band a zone.
+/// Slab lifecycle state. This design calls a slab a zone.
 ///
 /// Numbering matches this design exactly, including that RECYCLED is 4 and 3 is unused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, ::prost::Enumeration)]
@@ -97,11 +97,11 @@ pub enum SlabState {
     Recycled = 4,
 }
 
-/// One band's lifecycle record.
+/// One slab's lifecycle record.
 #[derive(Clone, PartialEq, Message)]
-pub struct BandInfo {
+pub struct SlabLifecycleInfo {
     #[prost(uint32, tag = "1")]
-    pub band_id: u32,
+    pub slab_id: u32,
     #[prost(uint64, tag = "2")]
     pub total_bytes: u64,
     #[prost(enumeration = "SlabState", tag = "3")]
@@ -114,13 +114,13 @@ pub struct BandInfo {
     pub frozen_time_ms: u64,
     #[prost(uint64, tag = "7")]
     pub recycled_time_ms: u64,
-    /// Unique id for the band's lifetime, used to identify out-of-date blocks that point at a
-    /// band slot which has since been recycled.
+    /// Unique id for the slab's lifetime, used to identify out-of-date blocks that point at a
+    /// slab slot which has since been recycled.
     #[prost(uint64, tag = "8")]
     pub version: u64,
 }
 
-/// The index meta record: the dump watermark and the band catalogue.
+/// The index meta record: the dump watermark and the slab catalogue.
 #[derive(Clone, PartialEq, Message)]
 pub struct IndexMetaItem {
     #[prost(uint64, tag = "1")]
@@ -131,10 +131,10 @@ pub struct IndexMetaItem {
     #[prost(uint64, tag = "2")]
     pub start_wal_id: u64,
     #[prost(map = "uint32, message", tag = "3")]
-    pub bands: std::collections::HashMap<u32, BandInfo>,
+    pub slabs: std::collections::HashMap<u32, SlabLifecycleInfo>,
     #[prost(uint64, tag = "4")]
     pub timestamp_ms: u64,
-    /// Version of the band catalogue.
+    /// Version of the slab catalogue.
     #[prost(uint64, tag = "5")]
     pub slab_version: u64,
 }
@@ -230,12 +230,12 @@ mod tests {
     #[test]
     fn the_dump_watermark_round_trips_with_the_slab_catalogue() {
         // start_wal_id is what replay resumes from and what truncation must not pass, so it has
-        // to survive a round trip alongside the bands it describes.
-        let mut bands = std::collections::HashMap::new();
-        bands.insert(
+        // to survive a round trip alongside the slabs it describes.
+        let mut slabs = std::collections::HashMap::new();
+        slabs.insert(
             1,
-            BandInfo {
-                band_id: 1,
+            SlabLifecycleInfo {
+                slab_id: 1,
                 total_bytes: 1 << 20,
                 state: SlabState::Frozen as i32,
                 version: 7,
@@ -247,7 +247,7 @@ mod tests {
             meta_item: Some(IndexMetaItem {
                 version: 2,
                 start_wal_id: 987_654,
-                bands,
+                slabs,
                 timestamp_ms: 5,
                 slab_version: 7,
             }),
@@ -257,8 +257,8 @@ mod tests {
         let (decoded, _): (IndexLogRecord, usize) = decode_framed_at(&framed, 0).unwrap();
         let meta = decoded.meta_item.expect("meta item");
         assert_eq!(meta.start_wal_id, 987_654);
-        assert_eq!(meta.bands[&1].state, SlabState::Frozen as i32);
-        assert_eq!(meta.bands[&1].version, 7);
+        assert_eq!(meta.slabs[&1].state, SlabState::Frozen as i32);
+        assert_eq!(meta.slabs[&1].version, 7);
     }
 
     #[test]

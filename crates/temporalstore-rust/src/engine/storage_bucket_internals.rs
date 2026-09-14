@@ -244,7 +244,7 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        band_id: address.block_slab_id,
+        stored_slab_id: address.block_slab_id,
         slab_id: address.block_slab_id,
         page_id: address.page_id().unwrap_or(address.block_slab_id),
         offset: address.offset,
@@ -259,7 +259,7 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        band_id: address.block_slab_id,
+        stored_slab_id: address.block_slab_id,
         block_id: address.block_slab_id,
         offset: address.offset,
         length: address.length,
@@ -339,9 +339,9 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
             let page_address = storage_page_address_sample(shard_id, &entry.address);
             let block_address = storage_block_address_sample(shard_id, &entry.address);
             StorageBlockIndexEntrySample {
-                band: entry
+                stored_slab_id: entry
                     .address
-                    .band_id()
+                    .slab_id()
                     .unwrap_or(entry.address.block_slab_id),
                 checksum: String::new(),
                 generation: entry.address.object_id().unwrap_or(0),
@@ -613,7 +613,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
     entries.sort_by(|left, right| {
         (
             left.address
-                .band_id()
+                .slab_id()
                 .unwrap_or(left.address.block_slab_id),
             left.address.block_slab_id,
             left.address.offset,
@@ -623,7 +623,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
             .cmp(&(
                 right
                     .address
-                    .band_id()
+                    .slab_id()
                     .unwrap_or(right.address.block_slab_id),
                 right.address.block_slab_id,
                 right.address.offset,
@@ -642,7 +642,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
     }
     #[derive(Default)]
     struct SlabAcc {
-        band_id: u64,
+        stored_slab_id: u64,
         start_offset: u64,
         generation: u64,
         deleted_refs: u64,
@@ -666,17 +666,17 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
 
     let mut slabs_usage = BTreeMap::<u64, SlabUsageAcc>::new();
     let mut slabs = BTreeMap::<u64, SlabAcc>::new();
-    let mut bands = BTreeMap::<u64, SlabAccumulator>::new();
+    let mut slab_ranges = BTreeMap::<u64, SlabAccumulator>::new();
     let mut buckets = BTreeMap::<u32, BucketAcc>::new();
 
     for entry in &entries {
-        let band_id = entry
+        let stored_slab_id = entry
             .address
-            .band_id()
+            .slab_id()
             .unwrap_or(entry.address.block_slab_id);
         let slab_id = entry.address.block_slab_id;
         let generation = entry.address.object_id().unwrap_or(0);
-        let usage = slabs_usage.entry(band_id).or_default();
+        let usage = slabs_usage.entry(stored_slab_id).or_default();
         usage.slabs.insert(slab_id);
         usage.generation = usage.generation.max(generation);
         if entry.deleted {
@@ -686,7 +686,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         }
 
         let slab = slabs.entry(slab_id).or_insert_with(|| SlabAcc {
-            band_id,
+            stored_slab_id,
             start_offset: entry.address.offset,
             ..SlabAcc::default()
         });
@@ -698,20 +698,22 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
             slab.live_refs = slab.live_refs.saturating_add(1);
         }
 
-        let band = bands.entry(band_id).or_insert_with(|| SlabAccumulator {
-            min_offset: entry.address.offset,
-            max_offset: entry.address.offset.saturating_add(entry.address.length),
-            ..SlabAccumulator::default()
-        });
-        band.min_offset = band.min_offset.min(entry.address.offset);
-        band.max_offset = band
+        let range = slab_ranges
+            .entry(stored_slab_id)
+            .or_insert_with(|| SlabAccumulator {
+                min_offset: entry.address.offset,
+                max_offset: entry.address.offset.saturating_add(entry.address.length),
+                ..SlabAccumulator::default()
+            });
+        range.min_offset = range.min_offset.min(entry.address.offset);
+        range.max_offset = range
             .max_offset
             .max(entry.address.offset.saturating_add(entry.address.length));
-        band.generation = band.generation.max(generation);
+        range.generation = range.generation.max(generation);
         if entry.deleted {
-            band.deleted_refs = band.deleted_refs.saturating_add(1);
+            range.deleted_refs = range.deleted_refs.saturating_add(1);
         } else {
-            band.live_refs = band.live_refs.saturating_add(1);
+            range.live_refs = range.live_refs.saturating_add(1);
         }
 
         let bucket_id = entry
@@ -751,8 +753,8 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
     snapshot.storage_slab_usage_samples = slabs_usage
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
-        .map(|(band_id, usage)| StorageSlabUsageSample {
-            band_id,
+        .map(|(stored_slab_id, usage)| StorageSlabUsageSample {
+            stored_slab_id,
             total_bytes: usage.used_bytes.saturating_add(usage.stale_bytes),
             used_bytes: usage.used_bytes,
             stale_bytes: usage.stale_bytes,
@@ -778,26 +780,26 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
         .map(|(slab_id, slab)| StorageSlabSample {
             slab_id,
-            band: slab.band_id,
+            stored_slab_id: slab.stored_slab_id,
             start_offset: slab.start_offset,
             sealed: slab.live_refs == 0 || slab.deleted_refs > 0,
             generation: slab.generation,
         })
         .collect();
-    snapshot.band_samples = bands
+    snapshot.slab_range_samples = slab_ranges
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
-        .map(|(band_id, band)| StorageSlabSlabSample {
-            band: band_id,
-            block_range: vec![band.min_offset, band.max_offset],
-            reclaim_state: if band.deleted_refs > 0 && band.live_refs == 0 {
+        .map(|(stored_slab_id, range)| StorageSlabSlabSample {
+            stored_slab_id,
+            block_range: vec![range.min_offset, range.max_offset],
+            reclaim_state: if range.deleted_refs > 0 && range.live_refs == 0 {
                 "reclaimable".to_string()
-            } else if band.deleted_refs > 0 {
+            } else if range.deleted_refs > 0 {
                 "mixed_live_stale".to_string()
             } else {
                 "live".to_string()
             },
-            generation: band.generation,
+            generation: range.generation,
         })
         .collect();
     snapshot.bucket_samples = buckets

@@ -325,7 +325,7 @@ impl TemporalEngine {
     /// which skips per-record persistence). Also refreshes the index-log tail.
     pub fn flush_shard_index(&self, shard_id: ShardId) {
         // Make the chunk's deferred bulk writes durable before publishing the
-        // served index: fsync page slabs + band manifest, then the WAL. If the
+        // served index: fsync page slabs + slab manifest, then the WAL. If the
         // barrier FAILS, bail without pinning applied_wal_sequence or writing the index:
         // advancing the durable anchor past pages that never reached disk would suppress
         // their replay on reload -> silent data loss. advances the watermark only after
@@ -424,10 +424,10 @@ impl TemporalEngine {
         self.dump_index_catalog(shard_id)
     }
 
-    /// MANIFEST-CONFORMANCE FOLD dump: materialize the durable base index, fold the band catalog
-    /// into an index-log anchor (the durable band catalog, conformance), and
+    /// MANIFEST-CONFORMANCE FOLD dump: materialize the durable base index, fold the slab catalog
+    /// into an index-log anchor (the durable slab catalog, conformance), and
     /// advance the dumped watermark -- the batched, threshold-driven replacement for the per-write
-    /// band-manifest persist. No-op with the gate off. Ordering is single-barrier safe: pages +
+    /// slab-manifest persist. No-op with the gate off. Ordering is single-barrier safe: pages +
     /// WAL are fsynced, then the base index is written durably, then the folded anchor is fsync'd,
     /// and only THEN is the dumped watermark advanced. A crash at any earlier point leaves the
     /// watermark unadvanced, so the next cycle re-dumps rather than trusting a partial dump -- the
@@ -453,7 +453,7 @@ impl TemporalEngine {
         {
             return None;
         }
-        // 1. Make deferred data pages + the band manifest + the WAL durable BEFORE materializing
+        // 1. Make deferred data pages + the slab manifest + the WAL durable BEFORE materializing
         //    the dump, so nothing the anchor references is un-fsynced. Bail (without advancing the
         //    watermark) if the barrier fails; the next cycle retries.
         if self.page_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
@@ -478,18 +478,18 @@ impl TemporalEngine {
         {
             return None;
         }
-        // 3. Fold the band catalog into a MetaItem anchor and append it durably to the
-        //    index-log. This is this design's "dump the band catalog into the index log" step:
-        //    after it, the band catalog is recoverable from the durable log, so the per-write
-        //    band-manifest file stops being the source of truth.
+        // 3. Fold the slab catalog into a MetaItem anchor and append it durably to the
+        //    index-log. This is this design's "dump the slab catalog into the index log" step:
+        //    after it, the slab catalog is recoverable from the durable log, so the per-write
+        //    slab-manifest file stops being the source of truth.
         let slab_version = anchor;
-        let bands = self.page_store.slab_catalog(slab_version);
+        let slabs = self.page_store.slab_catalog(slab_version);
         let meta = crate::index_log::MetaItem {
             version: 1,
             start_wal_sequence: anchor,
             timestamp_ms: now_ms(),
             slab_version,
-            bands,
+            slabs,
         };
         let meta_sequence = match self.index_log_store.append_delta(
             shard_id,

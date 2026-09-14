@@ -285,7 +285,7 @@ impl TemporalEngine {
         //
         // Rolling is not cheap: it fsyncs the outgoing slab, scans the slab directory to pick
         // the next id, creates and fsyncs the new file, fsyncs the parent directory and
-        // persists the band manifest. Left to `append`, all of that lands on one unlucky client
+        // persists the slab manifest. Left to `append`, all of that lands on one unlucky client
         // write as a latency outlier unrelated to the size of the write that triggered it.
         //
         // TWO ROUND DRIVERS, AND ONLY ONE OF THEM DID THIS. `run_storage_manager_once` has
@@ -414,9 +414,9 @@ impl TemporalEngine {
             match self.page_store.gc_slabs_before_with_live_refs_policy_limited(
                 retain_from_block_slab_id,
                 reclaim_live_refs,
-                // garbage-ratio victim selection: collect the highest-garbage bands first,
-                // keeping bands below the garbage floor. Floor 0 (the default) collects every
-                // eligible band as before.
+                // garbage-ratio victim selection: collect the highest-garbage slabs first,
+                // keeping slabs below the garbage floor. Floor 0 (the default) collects every
+                // eligible slab as before.
                 BlockStoreGcPolicy::with_slab_garbage_floor(
                     request.page_gc_min_slab_garbage_basis_points,
                     None,
@@ -1172,7 +1172,7 @@ impl TemporalEngine {
 
         // MANIFEST-CONFORMANCE FOLD threshold dump (gate on only, never on a dry run): if the undumped
         // index-log gap has crossed `index_dump_wal_gap_bytes`, materialize the base index +
-        // fold the band/zone catalog into an index-log anchor here, in the background cycle --
+        // fold the slab/zone catalog into an index-log anchor here, in the background cycle --
         // mirroring this design's background `StorageManager` dump-on-WAL-gap cadence, never
         // per write. No-op with the gate off, so the cycle stays byte-identical when the fold is
         // not enabled.

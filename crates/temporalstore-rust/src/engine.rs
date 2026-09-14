@@ -1883,8 +1883,8 @@ impl TemporalEngine {
                     && (!checksums_recorded || entry.checksum.is_some())
             })
         });
-        let band_report = self.page_store.stream_backed_slab_runtime_report().ok();
-        let stream_backed_slab_api_ready = band_report
+        let slab_report = self.page_store.stream_backed_slab_runtime_report().ok();
+        let stream_backed_slab_api_ready = slab_report
             .as_ref()
             .map(|report| {
                 report.slab_manifest_ready
@@ -1989,11 +1989,11 @@ impl TemporalEngine {
             bucket_count: physical_index.bucket_count,
             page_index_count: physical_index.page_index_count,
             block_index_count,
-            stream_band_count: band_report
+            stream_slab_count: slab_report
                 .as_ref()
-                .map(|report| report.band_count)
+                .map(|report| report.slab_count)
                 .unwrap_or_default(),
-            stream_record_count: band_report
+            stream_record_count: slab_report
                 .as_ref()
                 .map(|report| report.stream_record_count)
                 .unwrap_or_default(),
@@ -3443,7 +3443,7 @@ pub(super) fn wal_only_sync() -> bool {
 
 /// TS_WAL_SINGLE_BARRIER: the true SINGLE write-path durability barrier. Only the WAL takes a
 /// synchronous fdatasync per write (1.00/write); the data-page fdatasync, the served-index
-/// delta-log fdatasync, the band-manifest persist, and the base-index sync are all deferred.
+/// delta-log fdatasync, the slab-manifest persist, and the base-index sync are all deferred.
 /// Correctness rests on the WAL + the durable dump checkpoint being a COMPLETE source of truth:
 ///  - config changes (feature_max_size etc.) become durable and WAL-sequence-ordered via a
 ///    per-shard config-log, so replay re-derives config-driven eviction (trims) at the exact

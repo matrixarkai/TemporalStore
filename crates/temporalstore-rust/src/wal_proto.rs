@@ -373,7 +373,8 @@ fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::
         // anything currently reads the difference.
         routing_bucket: None,
         generation: address.generation(),
-        // Derivable from the slab now that a band IS one, so the log stops restating it.
+        // Derivable from the slab id, so the log stops restating it. The proto field keeps its
+        // original name: `temporalstore.proto` is the wire, and nothing in this fold touches it.
         band_id: None,
         // The digest, not its transcription. Half the bytes, same value.
         checksum: None,

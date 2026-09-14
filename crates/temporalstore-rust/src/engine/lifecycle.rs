@@ -442,17 +442,17 @@ impl TemporalEngine {
         // say which watermark it was rather than leaving it to be guessed at.
         #[cfg(test)]
         LAST_REPLAY_WATERMARK.store(replay_watermark, std::sync::atomic::Ordering::SeqCst);
-        // MANIFEST-CONFORMANCE FOLD recovery (gate on only): seed the band catalog from the folded
-        // band-catalog anchor recovered from the index-log. This is applied AFTER the block
+        // MANIFEST-CONFORMANCE FOLD recovery (gate on only): seed the slab catalog from the folded
+        // slab-catalog anchor recovered from the index-log. This is applied AFTER the block
         // store already reconciled its catalog from the durable pages on open, so it only
         // RESTORES the catalog fields a pure disk scan cannot infer (exact lifecycle state,
-        // creation/update timestamps, logical byte count, page-id range) and installs bands for
-        // reclaimed slabs with no live file. It never deletes a reconciled band and never lowers
+        // creation/update timestamps, logical byte count, page-id range) and installs slabs for
+        // reclaimed slabs with no live file. It never deletes a reconciled slab and never lowers
         // physical bytes below the slab's real size, so it cannot lose durable state -- it is a
         // metadata refinement over the lossless disk-derived catalog, making the per-write
-        // band-manifest file unnecessary as the catalog's source of truth.
+        // slab-manifest file unnecessary as the catalog's source of truth.
         if let Ok(Some(meta)) = self.index_log_store.latest_slab_catalog(request.shard_id) {
-            let _ = self.page_store.install_slab_catalog(&meta.bands);
+            let _ = self.page_store.install_slab_catalog(&meta.slabs);
         }
         let mut state = loaded.unwrap_or_default();
         promote_model_maps_to_bucket_index_authority(

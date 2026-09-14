@@ -179,11 +179,11 @@ pub(super) fn bucket_storage_summaries(
             .entry(routing_bucket)
             .or_default()
             .insert(entry.address.block_slab_id);
-        if let Some(band_id) = entry.address.band_id() {
+        if let Some(stored_slab_id) = entry.address.slab_id() {
             summary.last_compacted_slab = Some(
                 summary
                     .last_compacted_slab
-                    .map_or(band_id, |current| current.max(band_id)),
+                    .map_or(stored_slab_id, |current| current.max(stored_slab_id)),
             );
         }
     }
@@ -369,7 +369,7 @@ pub(super) fn storage_physical_index_report(
             length: entry.address.length,
             page_id: entry.address.page_id(),
             object_id: entry.address.object_id(),
-            band_id: entry.address.band_id(),
+            stored_slab_id: entry.address.slab_id(),
             // The index does not hold a digest; a caller wanting one reads the page.
             checksum: None,
             dirty: entry.dirty,
@@ -421,7 +421,7 @@ pub(super) fn storage_physical_index_report(
                 length: page.address.length,
                 page_id: page.address.page_id(),
                 object_id: Some(page.object_id()),
-                band_id: page.address.band_id(),
+                stored_slab_id: page.address.slab_id(),
                 checksum: None,
                 dirty: page.dirty,
                 deleted: page.deleted,

@@ -4918,7 +4918,7 @@ fn what_each_address_field_actually_ranges_over() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut pages = 0usize;
     let (mut slab, mut offset, mut length) = (0u64, 0u64, 0u64);
-    let (mut page_id, mut object_id, mut generation, mut band) = (0u64, 0u64, 0u64, 0u64);
+    let (mut page_id, mut object_id, mut generation, mut derived_slab) = (0u64, 0u64, 0u64, 0u64);
     let mut routing = 0u32;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_key, page) in bucket.page_index.iter() {
@@ -4930,7 +4930,7 @@ fn what_each_address_field_actually_ranges_over() {
             page_id = page_id.max(a.page_id().unwrap_or(0));
             object_id = object_id.max(a.object_id().unwrap_or(0));
             generation = generation.max(a.generation().unwrap_or(0));
-            band = band.max(a.band_id().unwrap_or(0));
+            derived_slab = derived_slab.max(a.slab_id().unwrap_or(0));
             routing = routing.max(a.routing_bucket().unwrap_or(0));
         }
     }
@@ -4946,7 +4946,7 @@ fn what_each_address_field_actually_ranges_over() {
     page_id       {page_id:>22}  {:>2} bits
     object_id     {object_id:>22}  {:>2} bits   a hash -- bounded by nothing
     generation    {generation:>22}  {:>2} bits
-    band_id       {band:>22}  {:>2} bits
+    slab_id       {derived_slab:>22}  {:>2} bits
     routing_slot  {routing:>22}  {:>2} bits   already u32
 
     a maximum observed here is NOT a bound: it says a field is a candidate,
@@ -4954,7 +4954,7 @@ fn what_each_address_field_actually_ranges_over() {
     value is produced, so a violation fails loudly instead of truncating.
 ",
         bits(slab), bits(offset), bits(length), bits(page_id),
-        bits(object_id), bits(generation), bits(band), bits(u64::from(routing)),
+        bits(object_id), bits(generation), bits(derived_slab), bits(u64::from(routing)),
     );
 }
 
@@ -6492,7 +6492,7 @@ fn the_index_wire_keys_are_what_they_were() {
         listed,
         vec![
             "address",
-            // "b", the band, is gone: a band IS a slab, so an address derives it from
+            // "b", the older grouping id, is gone: a slab IS the unit, so an address derives it from
             // `block_slab_id` rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
             // value is read and ignored.
@@ -11893,14 +11893,14 @@ fn what_a_live_record_is_made_of() {
             );
             if let Some(address) = item.resolved_address() {
                 println!(
-                    "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} band={:?}",
+                    "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} slab_id={:?}",
                     address.block_slab_id,
                     address.offset,
                     address.length,
                     address.page_id(),
                     address.object_id(),
                     address.generation(),
-                    address.band_id(),
+                    address.slab_id(),
                 );
                 println!(
                     "[census]   item.object_id == address.object_id()? {}",
@@ -13640,7 +13640,7 @@ fn which_parts_of_a_page_address_are_populated() {
 
     let mut pages = 0usize;
     let (mut page_id, mut object_id, mut routing_bucket) = (0usize, 0usize, 0usize);
-    let (mut generation, mut band_id, mut sha256) = (0usize, 0usize, 0usize);
+    let (mut generation, mut slab_id, mut sha256) = (0usize, 0usize, 0usize);
     let mut compactable = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.page_index.values() {
@@ -13650,7 +13650,7 @@ fn which_parts_of_a_page_address_are_populated() {
             object_id += usize::from(a.object_id().is_some());
             routing_bucket += usize::from(a.routing_bucket().is_some());
             generation += usize::from(a.generation().is_some());
-            band_id += usize::from(a.band_id().is_some());
+            slab_id += usize::from(a.slab_id().is_some());
             compactable += usize::from(a.compact_slab_address().is_some());
         }
     }
@@ -13665,13 +13665,13 @@ fn which_parts_of_a_page_address_are_populated() {
     object_id        {object_id:>6}  {:>5.1}%   16 B
     routing_slot     {routing_bucket:>6}  {:>5.1}%    8 B
     generation       {generation:>6}  {:>5.1}%   16 B
-    band_id          {band_id:>6}  {:>5.1}%   16 B
+    slab_id          {slab_id:>6}  {:>5.1}%   16 B
     sha256           {sha256:>6}  {:>5.1}%   24 B inline + heap
 
     fit the compact (slab, offset) u64: {compactable:>6}  {:>5.1}%
 ",
         pct(page_id), pct(object_id), pct(routing_bucket),
-        pct(generation), pct(band_id), pct(sha256), pct(compactable),
+        pct(generation), pct(slab_id), pct(sha256), pct(compactable),
     );
 
     // A report. What must hold is that the walk saw addresses at all -- a zero everywhere would
@@ -17993,16 +17993,16 @@ fn a_compaction_round_stops_at_the_page_ref_budget() {
 
 #[test]
 fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
-    // `zone` was the older name for a band, and `zones` is keyed by `band_id`
-    // (storage_bucket_internals.rs) -- so the aggregate is the BAND level reported under an old
-    // name, not a separate level. The Rust identifiers moved to band; the WIRE must not, because
+    // `zone` was the older name for a slab, and `zones` is keyed by `band_id`
+    // (storage_bucket_internals.rs) -- so the aggregate is the SLAB level reported under an old
+    // name, not a separate level. The Rust identifiers moved to slab; the WIRE must not, because
     // the compat corpora pin "zone_id" 31 times and "storage_zone_samples" twice, and Python
     // readers use those names.
     //
     // This asserts the pinning directly. A rename that dropped the #[serde(rename = ...)] would
     // compile, pass every type-level test, and silently change the exported shape.
     let sample = crate::engine::reports::StorageSlabUsageSample {
-        band_id: 7,
+        stored_slab_id: 7,
         total_bytes: 300,
         used_bytes: 200,
         stale_bytes: 100,
@@ -18011,7 +18011,7 @@ fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
     let encoded = serde_json::to_value(&sample).expect("serialize");
     assert!(
         encoded.get("zone_id").is_some(),
-        "the band id must still go out as zone_id: {encoded}"
+        "the stored slab id must still go out as zone_id: {encoded}"
     );
     assert!(
         encoded.get("band_id").is_none(),
@@ -18031,7 +18031,7 @@ fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
     let decoded: crate::engine::reports::StorageSlabUsageSample =
         serde_json::from_str(r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#)
             .expect("an old-name payload must still decode");
-    assert_eq!(decoded.band_id, 9);
+    assert_eq!(decoded.stored_slab_id, 9);
 }
 
 #[test]

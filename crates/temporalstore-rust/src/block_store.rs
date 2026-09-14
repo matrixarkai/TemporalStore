@@ -14,8 +14,8 @@ use thiserror::Error;
 use crate::storage_config::effective_block_slab_target_bytes;
 
 mod paths;
-mod band_manifest;
-mod band_reports;
+mod slab_manifest;
+mod slab_reports;
 mod append;
 mod read;
 mod gc;
@@ -46,7 +46,7 @@ use record::{
     sha256_hex, summarize_slab,
     PageRecordCompression,
 };
-use self::band_manifest::*;
+use self::slab_manifest::*;
 pub(crate) use slab_ids::*;
 #[cfg(test)]
 use record::{BLOCK_RECORD_COMPRESSION_NONE, BLOCK_RECORD_COMPRESSION_ZSTD};
@@ -79,8 +79,8 @@ pub enum BlockStoreError {
 /// pattern to mean "absent", so each one pays a whole extra word for its tag, and every page in
 /// the index holds an address for the life of the shard.
 ///
-/// A sentinel would be cheaper and is NOT available here: `0` is a legitimate `band_id` and a
-/// legitimate `routing_slot` -- there is a test asserting `band_id == Some(0)` -- so "zero means
+/// A sentinel would be cheaper and is NOT available here: `0` is a legitimate `stored_slab_id` and a
+/// legitimate `routing_slot` -- there is a test asserting `stored_slab_id == Some(0)` -- so "zero means
 /// absent" would silently erase real values. A byte of presence bits costs almost nothing and
 /// cannot make that mistake.
 ///
@@ -101,7 +101,7 @@ const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
 /// `page_segment_id` alone cost more than the offset it labels. Every short name carries every
 /// spelling this field has ever had as an alias, so anything already written still loads:
 /// `block_slab_id` and its `page_segment_id` rename, `routing_bucket` and its `routing_slot`
-/// rename, `band_id` with its older `extent_id`/`zone_id`, and `sha256` with its `checksum`.
+/// rename, `stored_slab_id` with its older `extent_id`/`zone_id`, and `sha256` with its `checksum`.
 ///
 /// This does change the shape a NEW record is written in, so a binary older than this cannot
 /// read one -- the same trade the WAL and the index item made before it. Old to new is safe;
@@ -254,16 +254,16 @@ impl BlockAddress {
         (self.present & ADDRESS_HAS_GENERATION != 0).then_some(self.generation)
     }
 
-    /// The band this address is in, which is the slab it is in.
+    /// The slab this address is in, which is the slab it is in.
     ///
     /// Derived rather than stored. It was a function of the slab AND two configuration sizes,
     /// which is what made it unsafe to derive: a reader whose configuration had moved would
-    /// reconstruct a different band than the writer meant. With one size there is nothing to
-    /// disagree about, so the band is a fact about the address instead of a field beside it.
+    /// reconstruct a different slab than the writer meant. With one size there is nothing to
+    /// disagree about, so the slab is a fact about the address instead of a field beside it.
     ///
     /// Still an `Option` because every caller reads it as one, and it now answers `Some` for
     /// every address -- a slab is always known.
-    pub fn band_id(&self) -> Option<u64> {
+    pub fn slab_id(&self) -> Option<u64> {
         Some(self.block_slab_id)
     }
 
@@ -371,7 +371,7 @@ pub struct BlockStoreStats {
     pub compressed_records_read: u64,
     #[serde(default)]
     pub compression_bytes_saved: u64,
-    /// Times the whole band manifest was written out.
+    /// Times the whole slab manifest was written out.
     ///
     /// Writing it costs the whole manifest, so one write per slab install made installing n slabs
     /// cost n manifests -- and each install cost time proportional to how many slabs already
@@ -502,10 +502,10 @@ pub struct BlockStoreGcPolicy {
     pub max_utility_score: Option<u64>,
     #[serde(default)]
     pub min_age_ms: Option<u64>,
-    /// Reclaim only bands whose garbage ratio (10_000 - utility_basis_points) is at
-    /// least this many basis points. `None`/0 reclaims every eligible band (today's
+    /// Reclaim only slabs whose garbage ratio (10_000 - utility_basis_points) is at
+    /// least this many basis points. `None`/0 reclaims every eligible slab (today's
     /// behavior). The garbage-ratio gate (reclaim the most-garbage zones),
-    /// expressed against Rust bands.
+    /// expressed against Rust slabs.
     #[serde(default)]
     #[serde(rename = "min_band_garbage_basis_points")]
     pub min_slab_garbage_basis_points: Option<u64>,
@@ -522,33 +522,35 @@ impl BlockStoreGcPolicy {
         }
     }
 
-    /// Reclaim eligible bands whose garbage ratio is at least
-    /// `min_band_garbage_basis_points`, highest-garbage first, optionally bounded by a
-    /// minimum band age. Mirrors selecting the maximum-garbage-rate zone under GC.
+    /// Reclaim eligible slabs whose garbage ratio is at least
+    /// `min_slab_garbage_basis_points` (on the wire, `min_band_garbage_basis_points`),
+    /// highest-garbage first, optionally bounded by a
+    /// minimum slab age. Mirrors selecting the maximum-garbage-rate zone under GC.
     /// A garbage floor that CANNOT currently exclude anything. Measured, not assumed.
     ///
-    /// The floor is compared against a BAND's live fraction, and a band's used bytes sum only the
-    /// slabs in it that are not collectable. `band_id_for_slab` is the identity function, so every
-    /// band holds exactly one slab -- and a candidate is by definition below the retention floor,
-    /// not current and not live, so its band's used bytes are zero. Utility is therefore 0, garbage
-    /// is 10,000 basis points, and every candidate clears every possible floor.
+    /// The floor is compared against a slab's live fraction, and a slab's used bytes sum only the
+    /// slabs grouped under its stored id that are not collectable. That group is always the slab
+    /// itself -- and a candidate is by definition below the retention floor, not current and not
+    /// live, so its own used bytes are zero. Utility is therefore 0, garbage is 10,000 basis
+    /// points, and every candidate clears every possible floor.
     ///
     /// `can_the_page_gc_garbage_floor_bind` asserts this: the floor excludes 0 of N candidates,
     /// every one at 10,000 bp garbage with 0 used bytes. Setting this to a larger number changes
     /// nothing today.
     ///
-    /// WAITING FOR A BAND TO HOLD SEVERAL SLABS IS THE WRONG FIX, and an earlier reading of this
-    /// said otherwise. A band IS a slab -- `band_id_for_slab` is the identity, and
-    /// `a_stored_band_id_that_disagrees_with_its_slab_is_normalised_on_load` shows even a manifest
-    /// cannot introduce a grouping -- so that moment does not arrive, and the design this floor
-    /// was drawn from does not group either: one unit, one backing file, exactly as here.
+    /// WAITING FOR A STORED ID TO GROUP SEVERAL SLABS IS THE WRONG FIX, and an earlier reading of
+    /// this said otherwise. The stored id IS the slab id -- the only grouping key ever used was
+    /// the slab's own address, and
+    /// `a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load` shows even a
+    /// manifest cannot introduce a grouping -- so that moment does not arrive, and the design this
+    /// floor was drawn from does not group either: one unit, one backing file, exactly as here.
     ///
     /// Its floor binds anyway, because its per-unit used-bytes counter sums the LIVE PAGE BYTES
     /// inside the unit, maintained incrementally as pages are appended and deleted. A slab 30%
     /// live reports 3,000 bp utility, and a 4,000 bp garbage floor is then a real question with a
-    /// real answer. Ours sums whole slab FILE SIZES of the slabs in the band that are not
-    /// collectable -- and since the candidate filter is the exact negation of that test, a
-    /// candidate's band contributes nothing and every candidate reports 0 used bytes.
+    /// real answer. Ours sums whole slab FILE SIZES of the slabs that are not collectable -- and
+    /// since the candidate filter is the exact negation of that test, a candidate contributes
+    /// nothing and every candidate reports 0 used bytes.
     ///
     /// So the floor is not merely degenerate, it is measuring the wrong quantity: "is this whole
     /// slab collectable" (always yes, by construction) instead of "how much of this slab is still
@@ -655,9 +657,9 @@ pub enum BlockStoreSlabState {
     Purged,
 }
 
-/// Metadata for a SEALED band whose bytes live in shared storage and are restored lazily.
-/// Passed to [`LocalBlockStore::install_lazy_checkpoint_bands`] so a lazy-restore installs
-/// complete band descriptors before the first on-demand slab fetch.
+/// Metadata for a SEALED slab whose bytes live in shared storage and are restored lazily.
+/// Passed to [`LocalBlockStore::install_lazy_checkpoint_slabs`] so a lazy-restore installs
+/// complete slab descriptors before the first on-demand slab fetch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LazyCheckpointSlab {
     pub block_slab_id: u64,
@@ -673,15 +675,20 @@ pub struct LazyCheckpointSlab {
 pub struct BlockStoreSlabDescriptor {
     /// The same number as [`Self::block_slab_id`], always.
     ///
-    /// A band IS a slab: `band_id_for_slab` is the identity function, and every construction site
-    /// passes the slab id into it. `band` is simply the older name -- the aliases below record
-    /// the lineage `zone_id` -> `extent_id` -> `band_id`.
+    /// The manifest is the ONE way a second spelling of a slab id enters the process, so this is
+    /// the number that arrives from disk rather than one this code computed. It used to divide a
+    /// slab's byte range by a separate size, so one of these could have grouped several slabs;
+    /// nothing ever configured the two sizes differently and the grouping was never exercised,
+    /// which is why the map is keyed by slab id with one descriptor per slab.
     ///
-    /// It stays because it SERIALIZES and the compat corpora carry it, so dropping it is a wire
-    /// break rather than a cleanup. Read `block_slab_id` in new code; the two cannot diverge, and
-    /// `a_slab_descriptor_carries_the_same_number_twice` fails if they ever do.
-    #[serde(alias = "extent_id", alias = "zone_id")]
-    pub band_id: u64,
+    /// It stays because it SERIALIZES -- under its original key, which the wire names below
+    /// record as `zone_id` -> `extent_id` -> `band_id` -- and the compat corpora carry it, so
+    /// dropping it is a wire break rather than a cleanup. Read `block_slab_id` in new code; the
+    /// two cannot diverge, `reconcile_slab_manifest_with_disk` normalises this one from the map
+    /// key on every open, and `a_slab_descriptor_carries_the_same_number_twice` fails if they
+    /// ever do.
+    #[serde(rename = "band_id", alias = "extent_id", alias = "zone_id")]
+    pub stored_slab_id: u64,
     #[serde(rename = "page_segment_id")]
     pub block_slab_id: u64,
     pub state: BlockStoreSlabState,
@@ -782,12 +789,12 @@ pub struct BlockStoreSlabSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabUsage {
-    #[serde(alias = "extent_id", alias = "zone_id")]
-    pub band_id: u64,
+    #[serde(rename = "band_id", alias = "extent_id", alias = "zone_id")]
+    pub stored_slab_id: u64,
     #[serde(rename = "page_segment_id")]
     pub block_slab_id: u64,
     #[serde(rename = "storage_zone_id", default)]
-    pub storage_band_id: u64,
+    pub storage_slab_id: u64,
     #[serde(default)]
     #[serde(alias = "stream_segment_id")]
     pub stream_slab_id: u64,
@@ -816,8 +823,8 @@ pub struct StreamBackedSlabRuntimeReport {
     #[serde(default)]
     #[serde(rename = "band_lifecycle_states")]
     pub slab_lifecycle_states: Vec<String>,
-    #[serde(alias = "extent_count", alias = "zone_count")]
-    pub band_count: u64,
+    #[serde(rename = "band_count", alias = "extent_count", alias = "zone_count")]
+    pub slab_count: u64,
     #[serde(alias = "active_zones")]
     #[serde(rename = "active_bands")]
     pub active_slabs: u64,
@@ -976,8 +983,12 @@ pub struct BlockStoreBlockIndexReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct BlockStoreSlabManifest {
     version: u32,
-    #[serde(alias = "extents", alias = "zones")]
-    bands: Vec<BlockStoreSlabDescriptor>,
+    /// ON-DISK KEY, NOT THE RUST NAME. `slab_manifest.json` is a format an already-deployed
+    /// binary reads, and the descriptor's `band_id` carries no `#[serde(default)]`, so a manifest
+    /// written under new keys is unreadable to it rather than merely unfamiliar.
+    /// `a_folded_manifest_still_writes_the_keys_on_disk` pins both keys.
+    #[serde(rename = "bands", alias = "extents", alias = "zones")]
+    slabs: Vec<BlockStoreSlabDescriptor>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1046,7 +1057,7 @@ struct BlockStoreInner {
     write_offset: u64,
     next_page_id: u64,
     options: BlockStoreOptions,
-    bands: BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: BTreeMap<u64, BlockStoreSlabDescriptor>,
     /// Slab installs since the manifest was last written out. Writing it costs the whole manifest,
     /// so it is written every so often rather than every install; the load rebuilds from the slabs
     /// when what it reads does not match them.
@@ -1065,12 +1076,12 @@ struct BlockStoreInner {
     scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
 }
 
-/// Slab installs allowed to go by before the band manifest is written out.
+/// Slab installs allowed to go by before the slab manifest is written out.
 ///
 /// Writing it costs the whole manifest, so writing it per install makes installing n slabs cost n
 /// manifests. Deferring trades that for a rebuild after a crash, which the load does for itself
 /// when what it reads does not match the slabs on disk.
-const BANDS_UNWRITTEN_BEFORE_PERSIST: usize = 64;
+const SLABS_UNWRITTEN_BEFORE_PERSIST: usize = 64;
 
 impl LocalBlockStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -1087,9 +1098,9 @@ impl LocalBlockStore {
             .unwrap_or_default();
         let manifest_exists =
             slab_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
-        let (mut bands, mut manifest_rebuilt) = if manifest_exists {
+        let (mut slabs, mut manifest_rebuilt) = if manifest_exists {
             match load_slab_manifest_at(&root) {
-                Ok(bands) => (bands, false),
+                Ok(slabs) => (slabs, false),
                 Err(_) => (rebuild_slab_manifest_at(&root).unwrap_or_default(), true),
             }
         } else {
@@ -1104,12 +1115,12 @@ impl LocalBlockStore {
         // counter here used to mean reading every block header in every slab to work out one
         // integer -- on a live-store copy, the bulk of a steady-state open.
         let next_page_id = 0;
-        let reconciled = reconcile_slab_manifest_with_disk(&root, &mut bands).unwrap_or_default();
+        let reconciled = reconcile_slab_manifest_with_disk(&root, &mut slabs).unwrap_or_default();
         let slab_manifest_reconciled_on_open = reconciled.changed;
         let slabs_skipped_reinspection_on_open = reconciled.slabs_skipped_reinspection;
         manifest_rebuilt |= slab_manifest_reconciled_on_open;
         ensure_slab_descriptor(
-            &mut bands,
+            &mut slabs,
             &root,
             block_slab_id,
             BlockStoreSlabState::Active,
@@ -1120,9 +1131,9 @@ impl LocalBlockStore {
         // permanently mid-slab and, via the early-halting page-id scan, regress next_page_id ->
         // page-id/generation reuse -> stale reads. Mirror the resume-at-committed-length:
         // physically truncate the active slab to its readable prefix and resume there.
-        let active_readable_prefix = bands
+        let active_readable_prefix = slabs
             .get(&block_slab_id)
-            .map(|band| band.readable_prefix_physical_bytes);
+            .map(|slab| slab.readable_prefix_physical_bytes);
         if let Some(readable_prefix) = active_readable_prefix {
             if readable_prefix < write_offset {
                 if let Ok(file) = OpenOptions::new()
@@ -1136,10 +1147,10 @@ impl LocalBlockStore {
                             let _ = dir.sync_all();
                         }
                         write_offset = readable_prefix;
-                        if let Some(band) = bands.get_mut(&block_slab_id) {
-                            band.physical_bytes = readable_prefix;
-                            band.has_corruption = false;
-                            band.first_error_offset = None;
+                        if let Some(slab) = slabs.get_mut(&block_slab_id) {
+                            slab.physical_bytes = readable_prefix;
+                            slab.has_corruption = false;
+                            slab.first_error_offset = None;
                         }
                         manifest_rebuilt = true;
                     }
@@ -1147,7 +1158,7 @@ impl LocalBlockStore {
             }
         }
         if manifest_rebuilt {
-            let _ = persist_slab_manifest(&root, &bands);
+            let _ = persist_slab_manifest(&root, &slabs);
         }
         Self {
             inner: Arc::new(Mutex::new(BlockStoreInner {
@@ -1157,7 +1168,7 @@ impl LocalBlockStore {
                 write_offset,
                 next_page_id,
                 options,
-                bands,
+                slabs,
                 slabs_unwritten: 0,
                 slab_manifest_reconciled_on_open,
                 slabs_skipped_reinspection_on_open,
@@ -1223,17 +1234,17 @@ impl LocalBlockStore {
         inner.write_offset = 0;
         inner.next_page_id = inner.next_page_id.max(next_page_id_floor);
         let now = now_unix_ms();
-        // Any previously-active local band is now sealed; the reserved slab is active.
-        for band in inner.bands.values_mut() {
-            if band.state == BlockStoreSlabState::Active {
-                band.state = BlockStoreSlabState::Sealed;
-                band.updated_unix_ms = Some(now);
+        // Any previously-active local slab is now sealed; the reserved slab is active.
+        for slab in inner.slabs.values_mut() {
+            if slab.state == BlockStoreSlabState::Active {
+                slab.state = BlockStoreSlabState::Sealed;
+                slab.updated_unix_ms = Some(now);
             }
         }
-        inner.bands.insert(
+        inner.slabs.insert(
             new_slab_id,
             BlockStoreSlabDescriptor {
-                band_id: band_id_for_slab(new_slab_id),
+                stored_slab_id: new_slab_id,
                 block_slab_id: new_slab_id,
                 state: BlockStoreSlabState::Active,
                 physical_bytes: 0,
@@ -1249,65 +1260,65 @@ impl LocalBlockStore {
                 first_error: None,
             },
         );
-        persist_slab_manifest(&inner.root, &inner.bands)?;
+        persist_slab_manifest(&inner.root, &inner.slabs)?;
         Ok(())
     }
 
-    /// Install SEALED band descriptors for the slabs a lazy checkpoint restore backs from shared
+    /// Install SEALED slab descriptors for the slabs a lazy checkpoint restore backs from shared
     /// storage. The slab bytes are NOT local yet (they are fetched on demand through the attached
     /// shared read-through), but a GC/compaction cycle running between restore and the first fetch
-    /// must still see these sealed bands, or it accounts on an incomplete picture and could
-    /// reclaim prematurely. Recording them here makes `band_summary()`/`band_descriptors()`
+    /// must still see these sealed slabs, or it accounts on an incomplete picture and could
+    /// reclaim prematurely. Recording them here makes `slab_summary()`/`slab_descriptors()`
     /// complete immediately after restore. Any slab id that is the current active slab, or already
     /// has a descriptor (e.g. it was fetched or is local), is left untouched. Call AFTER
     /// [`reserve_lazy_checkpoint_range`] so the reserved slab is the active one and every
     /// checkpoint slab is correctly sealed.
     pub fn install_lazy_checkpoint_slabs(
         &self,
-        bands: &[LazyCheckpointSlab],
+        slabs: &[LazyCheckpointSlab],
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let root = inner.root.clone();
         let active = inner.block_slab_id;
         let mut changed = false;
-        for band in bands {
+        for slab in slabs {
             // Never touch the active (reserved) slab — it holds live local writes.
-            if band.block_slab_id == active {
+            if slab.block_slab_id == active {
                 continue;
             }
             // If the slab is materialized locally (already fetched / a real local slab), its
             // existing descriptor reflects real on-disk bytes and is authoritative — leave it.
-            if slab_path(&root, band.block_slab_id).exists() {
+            if slab_path(&root, slab.block_slab_id).exists() {
                 continue;
             }
             // Lazily-backed checkpoint slab: install (or replace a fresh-store placeholder — a
             // freshly opened block store seeds an empty Active descriptor for slab 0, which
             // `reserve_lazy_checkpoint_range` then seals; that stale empty descriptor must be
-            // overwritten with the checkpoint's real band metadata, not skipped) a complete
+            // overwritten with the checkpoint's real slab metadata, not skipped) a complete
             // SEALED descriptor so accounting is correct before any fetch.
             let descriptor = BlockStoreSlabDescriptor {
-                band_id: band_id_for_slab(band.block_slab_id),
-                block_slab_id: band.block_slab_id,
+                stored_slab_id: slab.block_slab_id,
+                block_slab_id: slab.block_slab_id,
                 state: BlockStoreSlabState::Sealed,
-                physical_bytes: band.physical_bytes,
-                logical_bytes: band.logical_bytes,
-                created_unix_ms: band.created_unix_ms,
-                updated_unix_ms: band.updated_unix_ms,
-                first_page_id: band.first_page_id,
-                last_page_id: band.last_page_id,
-                readable_prefix_physical_bytes: band.physical_bytes,
+                physical_bytes: slab.physical_bytes,
+                logical_bytes: slab.logical_bytes,
+                created_unix_ms: slab.created_unix_ms,
+                updated_unix_ms: slab.updated_unix_ms,
+                first_page_id: slab.first_page_id,
+                last_page_id: slab.last_page_id,
+                readable_prefix_physical_bytes: slab.physical_bytes,
                 verified_source_mtime_unix_ms: None,
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,
             };
-            if inner.bands.get(&band.block_slab_id) != Some(&descriptor) {
-                inner.bands.insert(band.block_slab_id, descriptor);
+            if inner.slabs.get(&slab.block_slab_id) != Some(&descriptor) {
+                inner.slabs.insert(slab.block_slab_id, descriptor);
                 changed = true;
             }
         }
         if changed {
-            persist_slab_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.slabs)?;
         }
         Ok(())
     }
@@ -1349,7 +1360,7 @@ impl LocalBlockStore {
     ///
     /// Rolling is not cheap: `roll_slab_inner` fsyncs the outgoing slab, scans the slab
     /// directory to pick the next id, creates and fsyncs the new file, fsyncs the parent
-    /// directory, and persists the band manifest. Run inline from `append` -- which is where
+    /// directory, and persists the slab manifest. Run inline from `append` -- which is where
     /// it runs today -- one unlucky client write pays all of that on top of its own
     /// durability barrier, a latency outlier unrelated to the size of the write that
     /// triggered it.
@@ -1438,7 +1449,7 @@ impl LocalBlockStore {
                 .inner
                 .lock()
                 .expect("block store lock poisoned")
-                .bands,
+                .slabs,
         )
     }
 
@@ -1505,7 +1516,7 @@ impl LocalBlockStore {
     /// So the destroy asks again, against the live set the caller holds NOW, and a slab that
     /// comes back live is not destroyed. It is taken back out of quarantine: renamed into the
     /// store, its descriptor returned to `Sealed`, and reported in `restored_block_slab_ids`.
-    /// Un-quarantining is not a nicety here the way rolling a band back to its pre-collection
+    /// Un-quarantining is not a nicety here the way rolling a slab back to its pre-collection
     /// state would be elsewhere -- our phase 1 RENAMES the file, so a slab left sitting in the
     /// trash directory is unreadable by path no matter how long the grace window runs. Declining
     /// to destroy it would leave the reader just as broken. Moving it back is the whole repair.
@@ -1581,7 +1592,7 @@ impl LocalBlockStore {
             // of the store, so the reader that needs it cannot reach it until the file is back.
             if live_block_slab_ids.contains(&id) {
                 if restore_slab_from_delayed_destroy(&root, id, &entry.path())? {
-                    set_slab_state(&mut inner.bands, id, BlockStoreSlabState::Sealed);
+                    set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Sealed);
                     restored.push(id);
                     restored_physical_bytes += bytes;
                 } else {
@@ -1589,7 +1600,7 @@ impl LocalBlockStore {
                 }
                 continue;
             }
-            // Quarantining goes through `set_band_state`, which stamps `updated_unix_ms`, so the
+            // Quarantining goes through `set_slab_state`, which stamps `updated_unix_ms`, so the
             // manifest already records WHEN this slab was set aside.
             //
             // A DESCRIPTOR-LESS SLAB FALLS BACK TO THE FILE'S MTIME rather than being destroyed
@@ -1602,9 +1613,9 @@ impl LocalBlockStore {
             // keeps the mtime of the last append, so it runs EARLY and the window it grants is
             // shorter than the real one) but it is a clock, and a short window beats none.
             let quarantined_at = inner
-                .bands
+                .slabs
                 .get(&id)
-                .and_then(|band| band.updated_unix_ms)
+                .and_then(|slab| slab.updated_unix_ms)
                 .or_else(|| file_modified_unix_ms(&entry.path()));
             if let Some(quarantined_at) = quarantined_at {
                 if now_unix_ms().saturating_sub(quarantined_at) < min_age_ms {
@@ -1615,14 +1626,14 @@ impl LocalBlockStore {
             }
             purged_physical_bytes += bytes;
             fs::remove_file(entry.path())?;
-            set_slab_state(&mut inner.bands, id, BlockStoreSlabState::Purged);
+            set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Purged);
             purged.push(id);
         }
         purged.sort_unstable();
         restored.sort_unstable();
         restore_blocked.sort_unstable();
         sync_dir(&trash_dir)?;
-        persist_slab_manifest(&inner.root, &inner.bands)?;
+        persist_slab_manifest(&inner.root, &inner.slabs)?;
         retained_too_young.sort_unstable();
         Ok(BlockStorePurgeDelayedDestroyReport {
             purged_block_slab_ids: purged,
@@ -1658,13 +1669,13 @@ impl LocalBlockStore {
         let quarantined = delayed_destroy_slab_ids_at(&root)?;
         let mut moved = 0usize;
         for block_slab_id in quarantined {
-            if let Some(band) = inner.bands.get_mut(&block_slab_id) {
-                let stamp = band.updated_unix_ms.unwrap_or_else(now_unix_ms);
-                band.updated_unix_ms = Some(stamp.saturating_sub(age_ms));
+            if let Some(slab) = inner.slabs.get_mut(&block_slab_id) {
+                let stamp = slab.updated_unix_ms.unwrap_or_else(now_unix_ms);
+                slab.updated_unix_ms = Some(stamp.saturating_sub(age_ms));
                 moved += 1;
             }
         }
-        persist_slab_manifest(&root, &inner.bands)?;
+        persist_slab_manifest(&root, &inner.slabs)?;
         Ok(moved)
     }
 
@@ -1762,7 +1773,7 @@ pub(crate) fn page_wal_single_barrier() -> bool {
     !crate::engine::wal_legacy_recovery()
 }
 
-/// Bands are neither preallocated nor recycled, and both are deliberate.
+/// Slabs are neither preallocated nor recycled, and both are deliberate.
 ///
 /// The log does preallocate, and it measured **2.16x** cheaper per append for doing so
 /// (1131 us against 2444, ranges [1042-1285] and [2442-2565], six interleaved runs). So the same
@@ -1779,8 +1790,8 @@ pub(crate) fn page_wal_single_barrier() -> bool {
 /// (see the note on `page_wal_only_sync`). Preallocating would remove a cost that is not being
 /// paid.
 ///
-/// Recycling a band rather than creating and unlinking one is the same story from the other end.
-/// What it saves is the create and the unlink -- and bands are large, so that turnover is rare
+/// Recycling a slab rather than creating and unlinking one is the same story from the other end.
+/// What it saves is the create and the unlink -- and slabs are large, so that turnover is rare
 /// against the writes going through them. Reusing already-allocated blocks is the other half of the
 /// preallocation argument, and it lapses for the same reason.
 ///
@@ -1816,12 +1827,12 @@ fn roll_slab_inner(
     file.sync_all()?;
     sync_parent_dir(&path)?;
     let transition_unix_ms = now_unix_ms();
-    if let Some(previous) = inner.bands.get_mut(&previous_block_slab_id) {
+    if let Some(previous) = inner.slabs.get_mut(&previous_block_slab_id) {
         previous.state = BlockStoreSlabState::Sealed;
         previous.updated_unix_ms = Some(transition_unix_ms);
     }
     let new_slab = BlockStoreSlabDescriptor {
-        band_id: band_id_for_slab(inner.block_slab_id),
+        stored_slab_id: inner.block_slab_id,
         block_slab_id: inner.block_slab_id,
         state: BlockStoreSlabState::Active,
         physical_bytes: 0,
@@ -1837,8 +1848,8 @@ fn roll_slab_inner(
         first_error: None,
     };
     let block_slab_id = inner.block_slab_id;
-    inner.bands.insert(block_slab_id, new_slab);
-    persist_slab_manifest(&inner.root, &inner.bands)?;
+    inner.slabs.insert(block_slab_id, new_slab);
+    persist_slab_manifest(&inner.root, &inner.slabs)?;
     Ok(BlockStoreRollReport {
         previous_block_slab_id,
         new_block_slab_id: inner.block_slab_id,
@@ -1863,7 +1874,7 @@ fn slab_lifecycle_states(summary: &BlockStoreSlabSummary) -> Vec<String> {
 }
 
 fn compute_slab_usage(
-    bands: &BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &BTreeMap<u64, BlockStoreSlabDescriptor>,
 ) -> Vec<BlockStoreSlabUsage> {
     #[derive(Debug, Clone)]
     struct SlabUsageAcc {
@@ -1884,23 +1895,23 @@ fn compute_slab_usage(
     }
 
     let mut usage_by_slab = BTreeMap::<u64, SlabUsageAcc>::new();
-    for band in bands.values() {
-        let (live, reclaimable, purged) = match band.state {
+    for slab in slabs.values() {
+        let (live, reclaimable, purged) = match slab.state {
             BlockStoreSlabState::Active | BlockStoreSlabState::Sealed => {
-                (band.physical_bytes, 0, 0)
+                (slab.physical_bytes, 0, 0)
             }
-            BlockStoreSlabState::DelayedDestroy => (0, band.physical_bytes, 0),
-            BlockStoreSlabState::Purged => (0, 0, band.physical_bytes),
+            BlockStoreSlabState::DelayedDestroy => (0, slab.physical_bytes, 0),
+            BlockStoreSlabState::Purged => (0, 0, slab.physical_bytes),
         };
         let entry = usage_by_slab
-            .entry(band.band_id)
+            .entry(slab.stored_slab_id)
             .or_insert_with(|| SlabUsageAcc {
                 usage: BlockStoreSlabUsage {
-                    band_id: band.band_id,
-                    block_slab_id: band.block_slab_id,
-                    storage_band_id: band.band_id,
-                    stream_slab_id: band.block_slab_id,
-                    state: band.state,
+                    stored_slab_id: slab.stored_slab_id,
+                    block_slab_id: slab.block_slab_id,
+                    storage_slab_id: slab.stored_slab_id,
+                    stream_slab_id: slab.block_slab_id,
+                    state: slab.state,
                     used_bytes: 0,
                     live_bytes: 0,
                     reclaimable_bytes: 0,
@@ -1914,28 +1925,28 @@ fn compute_slab_usage(
                 },
             });
         let usage = &mut entry.usage;
-        usage.block_slab_id = usage.block_slab_id.min(band.block_slab_id);
-        usage.stream_slab_id = usage.stream_slab_id.min(band.block_slab_id);
-        usage.state = merged_slab_state(usage.state, band.state);
-        usage.used_bytes = usage.used_bytes.saturating_add(band.physical_bytes);
+        usage.block_slab_id = usage.block_slab_id.min(slab.block_slab_id);
+        usage.stream_slab_id = usage.stream_slab_id.min(slab.block_slab_id);
+        usage.state = merged_slab_state(usage.state, slab.state);
+        usage.used_bytes = usage.used_bytes.saturating_add(slab.physical_bytes);
         usage.live_bytes = usage.live_bytes.saturating_add(live);
         usage.reclaimable_bytes = usage.reclaimable_bytes.saturating_add(reclaimable);
         usage.purged_bytes = usage.purged_bytes.saturating_add(purged);
         usage.page_store_used_bytes = usage
             .page_store_used_bytes
-            .saturating_add(band.physical_bytes);
+            .saturating_add(slab.physical_bytes);
         usage.live_page_store_used_bytes = usage.live_page_store_used_bytes.saturating_add(live);
         usage.reclaimable_page_store_used_bytes = usage
             .reclaimable_page_store_used_bytes
             .saturating_add(reclaimable);
         usage.purged_page_store_used_bytes =
             usage.purged_page_store_used_bytes.saturating_add(purged);
-        usage.first_page_id = match (usage.first_page_id, band.first_page_id) {
+        usage.first_page_id = match (usage.first_page_id, slab.first_page_id) {
             (Some(left), Some(right)) => Some(left.min(right)),
             (None, right) => right,
             (left, None) => left,
         };
-        usage.last_page_id = match (usage.last_page_id, band.last_page_id) {
+        usage.last_page_id = match (usage.last_page_id, slab.last_page_id) {
             (Some(left), Some(right)) => Some(left.max(right)),
             (None, right) => right,
             (left, None) => left,
@@ -1973,7 +1984,7 @@ mod address_size_tests {
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
         generation: Option<u64>,
-        band_id: Option<u64>,
+        stored_slab_id: Option<u64>,
         sha256: Option<[u8; 32]>,
     }
 
@@ -1994,8 +2005,8 @@ mod address_size_tests {
     /// legitimate `generation`, so "zero means absent" would erase real values -- this is why the
     /// byte exists instead of a sentinel.
     ///
-    /// The band was a third example here and is no longer one: a band IS a slab, so it is always
-    /// known, never absent, and needs no bit.
+    /// The grouping id was a third example here and is no longer one: it is the slab's own id, so
+    /// it is always known, never absent, and needs no bit.
     #[test]
     fn zero_is_distinguishable_from_absent() {
         let zero = BlockAddress::from_parts(1, 0, 0, None, None, Some(0), Some(0));
@@ -2005,8 +2016,8 @@ mod address_size_tests {
         assert_eq!(absent.routing_bucket(), None);
         assert_eq!(absent.generation(), None);
         assert_ne!(zero, absent);
-        assert_eq!(zero.band_id(), Some(1), "the band is the slab, present either way");
-        assert_eq!(absent.band_id(), Some(1));
+        assert_eq!(zero.slab_id(), Some(1), "the slab id is derived, present either way");
+        assert_eq!(absent.slab_id(), Some(1));
     }
 
     /// Clearing a value must clear its bit, or the next read reports a stale one as present.
@@ -2050,7 +2061,7 @@ mod address_size_tests {
         assert_eq!(json["rs"], 3, "the routing bucket");
         assert!(
             json.get("b").is_none(),
-            "a band is the slab, so it is derived rather than written"
+            "the slab id is derived rather than written"
         );
         for long in ["page_segment_id", "routing_slot", "band_id", "object_id", "generation"] {
             assert!(
@@ -2087,7 +2098,7 @@ mod tests {
 
     /// A rename may not quietly drop a durable name.
     ///
-    /// The vocabulary migration -- page to block, zone to band, slot to bucket -- is deliberate and
+    /// The vocabulary migration -- page to block, zone to slab, slot to bucket -- is deliberate and
     /// only half done, and what keeps it safe is that every historical spelling survives as a serde
     /// alias, so a store written by an older build still loads. `BlockAddressWire` states the rule
     /// directly: every short name carries every spelling the field has ever had.
@@ -2436,14 +2447,14 @@ mod tests {
         assert_eq!(address.object_id(), Some(122110326161599232));
         assert_eq!(address.routing_bucket(), Some(545210715));
         assert_eq!(address.generation(), Some(2));
-        // A band is the slab now, so a band STORED against a different slab is accepted and
+        // A slab is the slab now, so a slab STORED against a different slab is accepted and
         // ignored rather than believed. This record says slab 3 and zone 4, which could only have
-        // been written under a configuration that sized bands and slabs differently -- one the
+        // been written under a configuration that sized slabs and slabs differently -- one the
         // tree never set, and no longer has a knob for.
         assert_eq!(
-            address.band_id(),
+            address.slab_id(),
             Some(3),
-            "the band answers the slab, whatever an older record stored beside it"
+            "the address answers the slab, whatever an older record stored beside it"
         );
         // And the digest is accepted and dropped rather than rejected: an index written before the
         // address stopped carrying one still loads, which is the whole point of keeping the alias.
@@ -2556,7 +2567,7 @@ mod tests {
         // page-GC path had no such guard and rewrote it unconditionally, once per round, on a
         // stage the periodic loop runs whenever page pressure holds.
         //
-        // It is not a cheap write: it serialises every band, fsyncs the temp file, renames it and
+        // It is not a cheap write: it serialises every slab, fsyncs the temp file, renames it and
         // fsyncs the parent directory -- two fsyncs. A round that reclaimed nothing rewrites it
         // with byte-identical content, so unlike the append test the BYTES cannot tell the two
         // apart and the modification time is the observable.
@@ -2595,8 +2606,8 @@ mod tests {
     #[test]
     fn per_append_does_not_reserialize_the_slab_manifest_on_the_default_path() {
         // MANIFEST-CONFORMANCE FOLD no-O(n) proof: on the default single-barrier path the per-append
-        // band-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
-        // write, growing with the band count) is OFF the write path. Appending many records must
+        // slab-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
+        // write, growing with the slab count) is OFF the write path. Appending many records must
         // NOT rewrite `page_extent_manifest.json` each time; the catalog is deferred and made
         // durable in one shot at sync_durable()/seal. Proven by the manifest file bytes staying
         // byte-identical across a burst of appends, then changing exactly once at sync_durable.
@@ -2614,7 +2625,7 @@ mod tests {
         assert_eq!(
             std::fs::read(&manifest).unwrap(),
             after_seed,
-            "the band manifest must NOT be re-serialized per append on the default path"
+            "the slab manifest must NOT be re-serialized per append on the default path"
         );
         // The deferred catalog materializes in one shot; now it reflects the burst (bytes grew).
         store.sync_durable().unwrap();
@@ -2627,25 +2638,25 @@ mod tests {
 
     #[test]
     fn slab_catalog_folds_slabs_and_install_reconstructs_lifecycle() {
-        // MANIFEST-CONFORMANCE FOLD round-trip at the block-store layer: project the band catalog into
-        // the durable SlabCatalogEntry subset, then reconstruct the band lifecycle from that projection
-        // with the band-manifest file deleted -- proving the folded catalog is a lossless source
-        // of the durable band state (diagnostics are recomputed from the slab separately).
+        // MANIFEST-CONFORMANCE FOLD round-trip at the block-store layer: project the slab catalog into
+        // the durable SlabCatalogEntry subset, then reconstruct the slab lifecycle from that projection
+        // with the slab-manifest file deleted -- proving the folded catalog is a lossless source
+        // of the durable slab state (diagnostics are recomputed from the slab separately).
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         store.append(b"a").unwrap();
-        // Seal the first band by rolling to a new active slab.
+        // Seal the first slab by rolling to a new active slab.
         store.roll_slab().unwrap();
         store.append(b"b").unwrap();
         store.sync_durable().unwrap();
         let catalog = store.slab_catalog(7);
-        // Two bands: the sealed first slab and the active second slab.
+        // Two slabs: the sealed first slab and the active second slab.
         assert_eq!(catalog.len(), 2);
         assert!(catalog.iter().any(|z| z.state == crate::index_log::SlabCatalogState::Sealed));
         assert!(catalog.iter().any(|z| z.state == crate::index_log::SlabCatalogState::Active));
         assert!(catalog.iter().all(|z| z.version == 7));
-        // Delete the band-manifest file so the reopened store has no cached catalog file; it
-        // reconstructs bands from the durable slabs (reconcile-on-open), then we install the
+        // Delete the slab-manifest file so the reopened store has no cached catalog file; it
+        // reconstructs slabs from the durable slabs (reconcile-on-open), then we install the
         // folded catalog on top. The lifecycle states must match the pre-crash projection.
         let reopened = LocalBlockStore::new(dir.path());
         std::fs::remove_file(slab_manifest_path(dir.path())).ok();
@@ -2658,7 +2669,7 @@ mod tests {
             assert_eq!(
                 state_of(entry.block_slab_id, &recovered),
                 Some(entry.state),
-                "band {} lifecycle must reconstruct from the folded catalog",
+                "slab {} lifecycle must reconstruct from the folded catalog",
                 entry.block_slab_id
             );
         }
@@ -2830,7 +2841,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|band| band["page_segment_id"] == serde_json::json!(first.block_slab_id))
+            .find(|slab| slab["page_segment_id"] == serde_json::json!(first.block_slab_id))
             .unwrap()
             .clone()]);
         fs::write(
@@ -2844,12 +2855,12 @@ mod tests {
 
         assert!(descriptors
             .iter()
-            .any(|band| band.block_slab_id == first.block_slab_id
-                && band.state == BlockStoreSlabState::Sealed));
+            .any(|slab| slab.block_slab_id == first.block_slab_id
+                && slab.state == BlockStoreSlabState::Sealed));
         assert!(descriptors
             .iter()
-            .any(|band| band.block_slab_id == second.block_slab_id
-                && band.state == BlockStoreSlabState::Active));
+            .any(|slab| slab.block_slab_id == second.block_slab_id
+                && slab.state == BlockStoreSlabState::Active));
         let report = reopened.stream_backed_slab_runtime_report().unwrap();
         assert!(report.slab_manifest_reconciled_on_open);
         assert!(report.slab_manifest_disk_consistent);
@@ -2876,12 +2887,12 @@ mod tests {
 
         assert!(descriptors
             .iter()
-            .any(|band| band.block_slab_id == first.block_slab_id
-                && band.state == BlockStoreSlabState::Purged));
+            .any(|slab| slab.block_slab_id == first.block_slab_id
+                && slab.state == BlockStoreSlabState::Purged));
         assert!(descriptors
             .iter()
-            .any(|band| band.block_slab_id == second.block_slab_id
-                && band.state == BlockStoreSlabState::Active));
+            .any(|slab| slab.block_slab_id == second.block_slab_id
+                && slab.state == BlockStoreSlabState::Active));
         let report = reopened.stream_backed_slab_runtime_report().unwrap();
         assert!(report.slab_manifest_reconciled_on_open);
         assert!(report.slab_manifest_disk_consistent);
@@ -2955,8 +2966,8 @@ mod tests {
             4,
             "the field is the checksum and nothing else: no padding, no marker"
         );
-        // Six u64, one u32 and the presence byte. It was 64 while a band was a seventh
-        // field; a band is a slab, so it is read off `block_slab_id` instead of stored.
+        // Six u64, one u32 and the presence byte. It was 64 while the grouping id was a seventh
+        // field; it is the slab's own id, so it is read off `block_slab_id` instead of stored.
         assert_eq!(std::mem::size_of::<BlockAddress>(), 56);
     }
 
@@ -2992,7 +3003,7 @@ mod tests {
         assert_eq!(address.page_id(), Some(0));
         assert_eq!(address.object_id(), Some(4242));
         assert_eq!(address.routing_bucket(), Some(17));
-        assert_eq!(address.band_id(), Some(0));
+        assert_eq!(address.slab_id(), Some(0));
         assert_eq!(address.compact_slab_id(), Some(0));
         assert_eq!(address.compact_slab_offset(), Some(0));
         assert_eq!(address.compact_slab_address(), Some(0));
@@ -3019,7 +3030,7 @@ mod tests {
             // Some(page_id)) and on read (record decode derives it), so the legacy
             // alias JSON must carry it or the round-trip deserializes to None.
             "generation": address.generation(),
-            "band_id": address.band_id(),
+            "band_id": address.slab_id(),
             // A document written before the digest left the index carries it under this
             // alias. It must still LOAD -- accepted and ignored -- which is what this asserts.
             "checksum": sha256_hex(b"address-contract"),
@@ -3061,10 +3072,9 @@ mod tests {
 
     #[test]
     fn a_slab_descriptor_carries_the_same_number_twice() {
-        // `band_id_for_slab` is the identity function, so a descriptor's `band_id` and its
-        // `block_slab_id` are ONE value under two names. Every construction site says so:
-        // band_id_for_slab(inner.block_slab_id), band_id_for_slab(band.block_slab_id),
-        // band_id_for_slab(new_slab_id).
+        // A descriptor's `stored_slab_id` and its `block_slab_id` are ONE value under two names.
+        // Every construction site says so: each one now writes the slab id itself into both,
+        // which is what removing the identity helper made visible.
         //
         // `rolled_slabs_stamp_new_slab_ids` below pins that for an ADDRESS. This pins it for the
         // DESCRIPTOR, which is the struct that actually stores both, and where a caller picks
@@ -3086,24 +3096,24 @@ mod tests {
         );
         for descriptor in &descriptors {
             assert_eq!(
-                descriptor.band_id, descriptor.block_slab_id,
-                "a band IS a slab: band_id and block_slab_id must never diverge"
+                descriptor.stored_slab_id, descriptor.block_slab_id,
+                "one unit, one id: stored_slab_id and block_slab_id must never diverge"
             );
         }
     }
 
-    /// A band IS a slab -- but across DESERIALIZATION that is trusted, not enforced, and the
-    /// route where it is trusted hardest is the one an open deliberately does not look at.
+    /// The stored id IS the slab id -- but across DESERIALIZATION that is trusted, not enforced,
+    /// and the route where it is trusted hardest is the one an open deliberately does not look at.
     ///
     /// `a_slab_descriptor_carries_the_same_number_twice` pins the invariant on the paths that
-    /// COMPUTE a band id: every one of them calls `band_id_for_slab`, which is the identity, so
-    /// a descriptor this process builds cannot diverge. The manifest is the hole. `band_id`
-    /// serializes and `load_slab_manifest_at` keeps whatever number the file carried.
+    /// COMPUTE it: every one of them writes the slab id itself, so a descriptor this process
+    /// builds cannot diverge. The manifest is the hole. `stored_slab_id` serializes, under the
+    /// older `band_id` key, and `load_slab_manifest_at` keeps whatever number the file carried.
     ///
     /// Consumers then read that stored number instead of recomputing it: `gc_utility_candidates`
-    /// groups slabs into bands by it in two places, and `compute_slab_usage` keys its per-slab
-    /// usage rows by it. Two slabs carrying one id are summed together there, so each one's GC
-    /// utility is scored against the other one's bytes.
+    /// groups slabs by it in two places, and `compute_slab_usage` keys its per-slab usage rows by
+    /// it. Two slabs carrying one id are summed together there, so each one's GC utility is
+    /// scored against the other one's bytes.
     ///
     /// THE ROUTE THIS GUARD EXISTS FOR IS THE SKIP. Re-inspecting a sealed slab whose size and
     /// mtime still match what it was verified against is the bulk of a cold open, so by default
@@ -3114,12 +3124,13 @@ mod tests {
     /// and proved nothing about the route its own comment named. It takes THREE opens, and the
     /// skipped count is asserted non-zero HERE, as a denominator, before any property is.
     ///
-    /// No manifest is believed to carry a divergent id today -- the historical grouping value
-    /// was the identity too, because a band size and a slab size were never configured
-    /// differently. This pins the consequence rather than the belief, and it is the guard to
-    /// keep pointed at whatever the consolidation of these two names leaves behind.
+    /// No manifest is believed to carry a divergent id today -- the historical grouping value was
+    /// the identity too, because the grouping size and the slab size were never configured
+    /// differently. This pins the consequence rather than the belief, and it is the guard the
+    /// consolidation of the two names is judged against: the code now says slab everywhere, the
+    /// manifest still says band, and this is where those two meet.
     #[test]
-    fn a_stored_band_id_that_disagrees_with_its_slab_is_normalised_on_load() {
+    fn a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         store.append(b"first").unwrap();
@@ -3145,24 +3156,26 @@ mod tests {
         let mut manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
 
         // DENOMINATOR: the manifest really has descriptors, and they really agree to begin with.
-        let bands = manifest["bands"].as_array_mut().expect("bands array");
+        // The KEYS read here are the on-disk spelling and are deliberately not the Rust one:
+        // "bands" and "band_id" are the format, `slabs` and `stored_slab_id` are the code.
+        let entries = manifest["bands"].as_array_mut().expect("bands array");
         assert!(
-            bands.len() >= 3,
-            "the manifest must really carry descriptors: {bands:?}"
+            entries.len() >= 3,
+            "the manifest must really carry descriptors: {entries:?}"
         );
-        for band in bands.iter() {
+        for entry in entries.iter() {
             assert_eq!(
-                band["band_id"].as_u64(),
-                band["page_segment_id"].as_u64(),
+                entry["band_id"].as_u64(),
+                entry["page_segment_id"].as_u64(),
                 "they agree before the edit"
             );
         }
 
-        // Make EVERY descriptor disagree, exactly as a grouping band id would have. The active
-        // slab is always inspected and would be rewritten whatever this file said; the two
-        // sealed ones are the point.
-        for band in bands.iter_mut() {
-            band["band_id"] = serde_json::json!(999_u64);
+        // Make EVERY descriptor disagree, exactly as a grouping id would have. The active slab is
+        // always inspected and would be rewritten whatever this file said; the two sealed ones
+        // are the point.
+        for entry in entries.iter_mut() {
+            entry["band_id"] = serde_json::json!(999_u64);
         }
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
@@ -3186,7 +3199,7 @@ mod tests {
         );
         let divergent = descriptors
             .iter()
-            .filter(|descriptor| descriptor.band_id != descriptor.block_slab_id)
+            .filter(|descriptor| descriptor.stored_slab_id != descriptor.block_slab_id)
             .collect::<Vec<_>>();
 
         // THE ANSWER: the open NORMALISES it. `reconcile_slab_manifest_with_disk` ends with a
@@ -3199,8 +3212,8 @@ mod tests {
         );
 
         // AND THE CONSEQUENCE, at the consumer that groups by the stored value. Each slab is its
-        // own band, so each candidate's band bytes are its own bytes and no one else's. Under a
-        // shared id the two collectable slabs report each other's bytes as their band total and
+        // own group, so each candidate's group bytes are its own bytes and no one else's. Under a
+        // shared id the two collectable slabs report each other's bytes as their group total and
         // their GC utility is scored against the wrong denominator.
         let candidates = reopened
             .gc_utility_candidates(2, Vec::<u64>::new())
@@ -3212,47 +3225,113 @@ mod tests {
         for candidate in &candidates {
             assert_eq!(
                 candidate.total_bytes, candidate.bytes,
-                "each slab is its own band, so its band's bytes are its own: {candidate:?}"
+                "each slab is its own group, so its group bytes are its own: {candidate:?}"
             );
         }
+    }
+
+    /// The CODE says slab. The FILE still says band, and that is the point.
+    ///
+    /// `slab_manifest.json` is read by binaries that are already deployed, and the descriptor's
+    /// `band_id` carries no `#[serde(default)]` -- so a manifest written under renamed keys is
+    /// not "an older shape with a missing field", it is unreadable. There is no alias mechanism
+    /// on the WRITE side to soften that: serde writes exactly one name per field.
+    ///
+    /// Renaming a Rust field whose wire name was IMPLICIT is the way that happens by accident.
+    /// It compiles, every type-level test still passes, and the only thing that changed is the
+    /// bytes on disk. This asserts the bytes.
+    #[test]
+    fn a_folded_manifest_still_writes_the_keys_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.append(b"first").unwrap();
+        store.roll_slab().unwrap();
+        store.append(b"second").unwrap();
+        store.sync_durable().unwrap();
+        drop(store);
+
+        let raw = fs::read(slab_manifest_path(dir.path())).expect("the manifest must be on disk");
+        let manifest: serde_json::Value = serde_json::from_slice(&raw).expect("valid json");
+
+        // DENOMINATOR FIRST: read the array under the key it must be written at, and prove it is
+        // not empty. Without this every per-entry assertion below is vacuously true.
+        let entries = manifest
+            .get("bands")
+            .unwrap_or_else(|| panic!("the slab list must be written under \"bands\": {manifest}"))
+            .as_array()
+            .expect("an array");
+        assert!(
+            entries.len() >= 2,
+            "this guard needs descriptors to look at, and found {}: {manifest}",
+            entries.len()
+        );
+        assert!(
+            manifest.get("slabs").is_none(),
+            "the Rust field name must NOT reach the file: {manifest}"
+        );
+
+        for entry in entries {
+            assert!(
+                entry.get("band_id").is_some(),
+                "every descriptor keeps its on-disk id key: {entry}"
+            );
+            assert!(
+                entry.get("page_segment_id").is_some(),
+                "and the slab-id key it already had: {entry}"
+            );
+            assert!(
+                entry.get("stored_slab_id").is_none(),
+                "the Rust field name must NOT reach the file: {entry}"
+            );
+        }
+
+        // And the file this process wrote is one this process can read: the keys above are not
+        // merely present, they are the ones the deserializer binds.
+        let reopened = LocalBlockStore::new(dir.path());
+        let descriptors = reopened.slab_descriptors();
+        assert_eq!(
+            descriptors.len(),
+            entries.len(),
+            "every descriptor on disk must come back: {descriptors:?}"
+        );
     }
 
     #[test]
     fn rolled_slabs_stamp_new_slab_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-band").unwrap();
+        let first = store.append(b"first-slab").unwrap();
         let roll = store.roll_slab().unwrap();
-        let second = store.append(b"second-band").unwrap();
+        let second = store.append(b"second-slab").unwrap();
 
-        assert_eq!(first.band_id(), Some(first.block_slab_id));
-        assert_eq!(second.band_id(), Some(second.block_slab_id));
-        assert_eq!(second.band_id(), Some(roll.new_block_slab_id));
-        assert_ne!(first.band_id(), second.band_id());
+        assert_eq!(first.slab_id(), Some(first.block_slab_id));
+        assert_eq!(second.slab_id(), Some(second.block_slab_id));
+        assert_eq!(second.slab_id(), Some(roll.new_block_slab_id));
+        assert_ne!(first.slab_id(), second.slab_id());
     }
 
     #[test]
     fn slab_manifest_tracks_roll_reopen_gc_and_purge() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-band").unwrap();
+        let first = store.append(b"first-slab").unwrap();
         store.roll_slab().unwrap();
-        let second = store.append(b"second-band").unwrap();
+        let second = store.append(b"second-slab").unwrap();
 
-        let bands = store.slab_descriptors();
-        assert_eq!(bands.len(), 2);
-        assert_eq!(bands[0].block_slab_id, first.block_slab_id);
-        assert_eq!(bands[0].state, BlockStoreSlabState::Sealed);
-        assert_eq!(bands[0].first_page_id, first.page_id());
-        assert_eq!(bands[0].last_page_id, first.page_id());
-        assert!(bands[0].created_unix_ms.is_some());
-        assert!(bands[0].updated_unix_ms.is_some());
-        assert_eq!(bands[1].block_slab_id, second.block_slab_id);
-        assert_eq!(bands[1].state, BlockStoreSlabState::Active);
-        assert_eq!(bands[1].first_page_id, second.page_id());
-        assert_eq!(bands[1].last_page_id, second.page_id());
-        assert!(bands[1].created_unix_ms.is_some());
-        assert!(bands[1].updated_unix_ms.is_some());
+        let slabs = store.slab_descriptors();
+        assert_eq!(slabs.len(), 2);
+        assert_eq!(slabs[0].block_slab_id, first.block_slab_id);
+        assert_eq!(slabs[0].state, BlockStoreSlabState::Sealed);
+        assert_eq!(slabs[0].first_page_id, first.page_id());
+        assert_eq!(slabs[0].last_page_id, first.page_id());
+        assert!(slabs[0].created_unix_ms.is_some());
+        assert!(slabs[0].updated_unix_ms.is_some());
+        assert_eq!(slabs[1].block_slab_id, second.block_slab_id);
+        assert_eq!(slabs[1].state, BlockStoreSlabState::Active);
+        assert_eq!(slabs[1].first_page_id, second.page_id());
+        assert_eq!(slabs[1].last_page_id, second.page_id());
+        assert!(slabs[1].created_unix_ms.is_some());
+        assert!(slabs[1].updated_unix_ms.is_some());
         assert!(slab_manifest_path(dir.path()).exists());
         let initial_summary = store.slab_summary();
         assert_eq!(initial_summary.sealed_slabs, 1);
@@ -3261,15 +3340,15 @@ mod tests {
         assert_eq!(initial_summary.purged_slabs, 0);
         assert_eq!(
             initial_summary.sealed_physical_bytes,
-            bands[0].physical_bytes
+            slabs[0].physical_bytes
         );
         assert_eq!(
             initial_summary.active_physical_bytes,
-            bands[1].physical_bytes
+            slabs[1].physical_bytes
         );
         assert_eq!(
             initial_summary.live_physical_bytes,
-            bands[0].physical_bytes + bands[1].physical_bytes
+            slabs[0].physical_bytes + slabs[1].physical_bytes
         );
         assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
         assert!(initial_summary.oldest_known_slab_unix_ms.is_some());
@@ -3280,40 +3359,40 @@ mod tests {
         assert!(initial_summary.oldest_reclaimable_slab_age_ms.is_none());
         let initial_slab_usage = store.slab_usage();
         assert_eq!(initial_slab_usage.len(), 2);
-        assert_eq!(initial_slab_usage[0].band_id, bands[0].band_id);
+        assert_eq!(initial_slab_usage[0].stored_slab_id, slabs[0].stored_slab_id);
         assert_eq!(
             initial_slab_usage[0].block_slab_id,
-            bands[0].block_slab_id
+            slabs[0].block_slab_id
         );
         assert_eq!(
             initial_slab_usage[0].page_store_used_bytes,
-            bands[0].physical_bytes
+            slabs[0].physical_bytes
         );
         assert_eq!(
             initial_slab_usage[0].live_page_store_used_bytes,
-            bands[0].physical_bytes
+            slabs[0].physical_bytes
         );
         assert_eq!(initial_slab_usage[0].reclaimable_page_store_used_bytes, 0);
         assert_eq!(initial_slab_usage[0].purged_page_store_used_bytes, 0);
 
         let reopened = LocalBlockStore::new(dir.path());
         let reopened_slabs = reopened.slab_descriptors();
-        assert_eq!(reopened_slabs.len(), bands.len());
-        // The band must survive a reopen unchanged. `verified_source_mtime_unix_ms` is excluded
-        // because it is not part of the band: it records when the descriptor was last checked
+        assert_eq!(reopened_slabs.len(), slabs.len());
+        // The slab must survive a reopen unchanged. `verified_source_mtime_unix_ms` is excluded
+        // because it is not part of the slab: it records when the descriptor was last checked
         // against the file, and the two sides differ on that for a good reason, asserted below.
-        let strip = |band: &BlockStoreSlabDescriptor| {
-            let mut band = band.clone();
-            band.verified_source_mtime_unix_ms = None;
-            band
+        let strip = |slab: &BlockStoreSlabDescriptor| {
+            let mut slab = slab.clone();
+            slab.verified_source_mtime_unix_ms = None;
+            slab
         };
-        assert_eq!(strip(&reopened_slabs[0]), strip(&bands[0]));
+        assert_eq!(strip(&reopened_slabs[0]), strip(&slabs[0]));
         // The original store wrote and sealed this slab without ever inspecting it, so it has
         // nothing verified to record; the reopen reconciled, which inspected it, so it does.
         assert!(
-            bands[0].verified_source_mtime_unix_ms.is_none(),
+            slabs[0].verified_source_mtime_unix_ms.is_none(),
             "a slab this process only wrote has not been verified by inspection: {:?}",
-            bands[0]
+            slabs[0]
         );
         assert!(
             reopened_slabs[0].verified_source_mtime_unix_ms.is_some(),
@@ -3322,19 +3401,19 @@ mod tests {
         );
         assert_eq!(
             reopened_slabs[1].block_slab_id,
-            bands[1].block_slab_id
+            slabs[1].block_slab_id
         );
-        assert_eq!(reopened_slabs[1].state, bands[1].state);
+        assert_eq!(reopened_slabs[1].state, slabs[1].state);
         assert_eq!(
             reopened_slabs[1].physical_bytes,
-            bands[1].physical_bytes
+            slabs[1].physical_bytes
         );
-        assert_eq!(reopened_slabs[1].logical_bytes, bands[1].logical_bytes);
+        assert_eq!(reopened_slabs[1].logical_bytes, slabs[1].logical_bytes);
         assert_eq!(
             reopened_slabs[1].created_unix_ms,
-            bands[1].created_unix_ms
+            slabs[1].created_unix_ms
         );
-        assert!(reopened_slabs[1].updated_unix_ms >= bands[1].updated_unix_ms);
+        assert!(reopened_slabs[1].updated_unix_ms >= slabs[1].updated_unix_ms);
 
         let report = reopened
             .gc_slabs_before_with_live_refs_delayed_destroy(1, std::iter::empty())
@@ -3343,8 +3422,8 @@ mod tests {
         let delayed = reopened.slab_descriptors();
         assert_eq!(delayed[0].state, BlockStoreSlabState::DelayedDestroy);
         assert!(delayed[0].physical_bytes > 0);
-        assert_eq!(delayed[0].created_unix_ms, bands[0].created_unix_ms);
-        assert!(delayed[0].updated_unix_ms >= bands[0].updated_unix_ms);
+        assert_eq!(delayed[0].created_unix_ms, slabs[0].created_unix_ms);
+        assert!(delayed[0].updated_unix_ms >= slabs[0].updated_unix_ms);
         assert_eq!(delayed[1].state, BlockStoreSlabState::Active);
         let delayed_summary = reopened.slab_summary();
         assert_eq!(delayed_summary.delayed_destroy_slabs, 1);
@@ -3371,7 +3450,7 @@ mod tests {
         let delayed_slab_usage = reopened.slab_usage();
         let delayed_first = delayed_slab_usage
             .iter()
-            .find(|band| band.block_slab_id == first.block_slab_id)
+            .find(|slab| slab.block_slab_id == first.block_slab_id)
             .unwrap();
         assert_eq!(
             delayed_first.reclaimable_page_store_used_bytes,
@@ -3386,7 +3465,7 @@ mod tests {
         assert!(purge.purged_physical_bytes > 0);
         let purged = LocalBlockStore::new(dir.path()).slab_descriptors();
         assert_eq!(purged[0].state, BlockStoreSlabState::Purged);
-        assert_eq!(purged[0].created_unix_ms, bands[0].created_unix_ms);
+        assert_eq!(purged[0].created_unix_ms, slabs[0].created_unix_ms);
         assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
         assert_eq!(purged[1].state, BlockStoreSlabState::Active);
         let purged_summary = LocalBlockStore::new(dir.path()).slab_summary();
@@ -3401,7 +3480,7 @@ mod tests {
         let purged_slab_usage = LocalBlockStore::new(dir.path()).slab_usage();
         let purged_first = purged_slab_usage
             .iter()
-            .find(|band| band.block_slab_id == first.block_slab_id)
+            .find(|slab| slab.block_slab_id == first.block_slab_id)
             .unwrap();
         assert_eq!(
             purged_first.purged_page_store_used_bytes,
@@ -3418,27 +3497,27 @@ mod tests {
     fn missing_slab_manifest_rebuilds_from_existing_slabs() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-band").unwrap();
+        let first = store.append(b"first-slab").unwrap();
         store.roll_slab().unwrap();
-        let second = store.append(b"second-band").unwrap();
+        let second = store.append(b"second-slab").unwrap();
         fs::remove_file(slab_manifest_path(dir.path())).unwrap();
 
         let rebuilt = LocalBlockStore::new(dir.path());
-        let bands = rebuilt.slab_descriptors();
+        let slabs = rebuilt.slab_descriptors();
 
-        assert_eq!(bands.len(), 2);
-        assert_eq!(bands[0].block_slab_id, first.block_slab_id);
-        assert_eq!(bands[0].state, BlockStoreSlabState::Sealed);
-        assert_eq!(bands[0].first_page_id, first.page_id());
-        assert_eq!(bands[0].last_page_id, first.page_id());
-        assert!(bands[0].created_unix_ms.is_some());
-        assert!(bands[0].updated_unix_ms.is_some());
-        assert_eq!(bands[1].block_slab_id, second.block_slab_id);
-        assert_eq!(bands[1].state, BlockStoreSlabState::Active);
-        assert_eq!(bands[1].first_page_id, second.page_id());
-        assert_eq!(bands[1].last_page_id, second.page_id());
-        assert!(bands[1].created_unix_ms.is_some());
-        assert!(bands[1].updated_unix_ms.is_some());
+        assert_eq!(slabs.len(), 2);
+        assert_eq!(slabs[0].block_slab_id, first.block_slab_id);
+        assert_eq!(slabs[0].state, BlockStoreSlabState::Sealed);
+        assert_eq!(slabs[0].first_page_id, first.page_id());
+        assert_eq!(slabs[0].last_page_id, first.page_id());
+        assert!(slabs[0].created_unix_ms.is_some());
+        assert!(slabs[0].updated_unix_ms.is_some());
+        assert_eq!(slabs[1].block_slab_id, second.block_slab_id);
+        assert_eq!(slabs[1].state, BlockStoreSlabState::Active);
+        assert_eq!(slabs[1].first_page_id, second.page_id());
+        assert_eq!(slabs[1].last_page_id, second.page_id());
+        assert!(slabs[1].created_unix_ms.is_some());
+        assert!(slabs[1].updated_unix_ms.is_some());
         assert!(slab_manifest_path(dir.path()).exists());
 
         let report = rebuilt.stream_backed_slab_runtime_report().unwrap();
@@ -3452,7 +3531,7 @@ mod tests {
             report
                 .slab_usage
                 .iter()
-                .map(|band| band.page_store_used_bytes)
+                .map(|slab| slab.page_store_used_bytes)
                 .sum::<u64>(),
             report.physical_bytes
         );
@@ -3490,10 +3569,10 @@ mod tests {
         assert_eq!(rebuilt.read(&first).unwrap(), first_payload);
         assert_eq!(rebuilt.read(&second).unwrap(), b"active-clean-tail");
 
-        let bands = rebuilt.slab_descriptors();
-        let sealed = bands
+        let slabs = rebuilt.slab_descriptors();
+        let sealed = slabs
             .iter()
-            .find(|band| band.block_slab_id == first.block_slab_id)
+            .find(|slab| slab.block_slab_id == first.block_slab_id)
             .unwrap();
         assert_eq!(sealed.state, BlockStoreSlabState::Sealed);
         assert!(sealed.has_corruption);
@@ -3543,7 +3622,7 @@ mod tests {
 
     #[test]
     fn read_range_and_logical_range_drive_shared_slab_read_through() {
-        // On-demand lazy recovery must cover band-report / streaming reads too:
+        // On-demand lazy recovery must cover slab-report / streaming reads too:
         // read_range and read_logical_range on a metadata-only restored node must pull a
         // not-yet-fetched checkpoint slab from shared storage on first access (previously
         // they hit a local File::open miss instead of the shared read-through).
@@ -3694,8 +3773,8 @@ mod tests {
     fn stream_backed_slab_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first_payload = b"band-stream-first-".repeat(96);
-        let second_payload = b"band-stream-second-".repeat(96);
+        let first_payload = b"slab-stream-first-".repeat(96);
+        let second_payload = b"slab-stream-second-".repeat(96);
         let first = store
             .append_with_page_metadata(&first_payload, Some(11), Some(7))
             .unwrap();
@@ -3714,7 +3793,7 @@ mod tests {
         assert_eq!(logical, expected);
 
         let roll = store.roll_slab().unwrap();
-        let third_payload = b"band-stream-third-".repeat(96);
+        let third_payload = b"slab-stream-third-".repeat(96);
         let third = store
             .append_with_page_metadata(&third_payload, Some(13), Some(8))
             .unwrap();
@@ -3735,7 +3814,7 @@ mod tests {
             before_gc
                 .slab_usage
                 .iter()
-                .map(|band| band.page_store_used_bytes)
+                .map(|slab| slab.page_store_used_bytes)
                 .sum::<u64>(),
             before_gc.physical_bytes
         );
@@ -3763,7 +3842,7 @@ mod tests {
             report.slab_lifecycle_states,
             vec!["active", "delayed_destroy"]
         );
-        assert!(report.band_count >= 2);
+        assert!(report.slab_count >= 2);
         assert!(report.stream_slab_count >= 1);
         assert!(report.logical_stream_read_ready);
         assert!(report.append_roll_ready);
@@ -3773,13 +3852,13 @@ mod tests {
         assert!(report
             .slab_usage
             .iter()
-            .any(|band| band.state == BlockStoreSlabState::DelayedDestroy
-                && band.reclaimable_page_store_used_bytes > 0));
+            .any(|slab| slab.state == BlockStoreSlabState::DelayedDestroy
+                && slab.reclaimable_page_store_used_bytes > 0));
         assert!(report
             .slab_usage
             .iter()
-            .any(|band| band.state == BlockStoreSlabState::Active
-                && band.live_page_store_used_bytes > 0));
+            .any(|slab| slab.state == BlockStoreSlabState::Active
+                && slab.live_page_store_used_bytes > 0));
         assert!(report.envelope_checksum_ready);
         assert!(report.compression_stream_ready);
         assert!(report.delayed_destroy_ready);
@@ -3818,8 +3897,8 @@ mod tests {
         assert!(purged
             .slab_usage
             .iter()
-            .any(|band| band.state == BlockStoreSlabState::Purged
-                && band.purged_page_store_used_bytes > 0));
+            .any(|slab| slab.state == BlockStoreSlabState::Purged
+                && slab.purged_page_store_used_bytes > 0));
         assert!(purged.purge_lifecycle_ready);
         assert!(purged.append_roll_ready);
         assert!(purged.page_id_continuity_ready);
@@ -4551,9 +4630,9 @@ mod tests {
 
     #[test]
     fn slab_garbage_floor_gates_reclaim_by_garbage_ratio() {
-        // garbage-ratio GC conformance: reclaim is gated on a minimum band garbage ratio
-        // (garbage = 10_000 - band live-fraction). Floor 0 (the default) reclaims every
-        // eligible band as before; a floor above a band's garbage ratio excludes it.
+        // garbage-ratio GC conformance: reclaim is gated on a minimum slab garbage ratio
+        // (garbage = 10_000 - slab live-fraction). Floor 0 (the default) reclaims every
+        // eligible slab as before; a floor above a slab's garbage ratio excludes it.
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         store.install_slab(0, b"stale-a").unwrap();
@@ -4601,7 +4680,7 @@ mod tests {
     #[test]
     fn the_production_gc_policy_ships_with_both_round_budgets_off() {
         let shipped = BlockStoreGcPolicy::with_slab_garbage_floor(
-            crate::engine::reports::DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS,
+            crate::engine::reports::DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
             None,
         );
         assert_eq!(
@@ -4732,7 +4811,7 @@ mod tests {
 
     /// Installing slabs must not cost more as the store fills up.
     ///
-    /// Writing the band manifest costs the whole manifest, so writing it per install made
+    /// Writing the slab manifest costs the whole manifest, so writing it per install made
     /// installing n slabs cost n manifests: measured at 111.7 ms per install with two hundred slabs
     /// in the store and 270.7 ms with eight hundred. Written every so often instead, both are about
     /// 5.4 ms and the cost stops tracking the size of the store.

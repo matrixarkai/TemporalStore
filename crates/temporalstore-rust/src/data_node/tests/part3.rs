@@ -4889,13 +4889,13 @@ fn what_the_stage_order_buys() {
 /// So it still prints the table -- that is the useful part when this eventually changes -- and it
 /// now ASSERTS the invariant behind it: every candidate reports 0 used bytes and therefore 10,000
 /// basis points of garbage, and the floor excludes none of them. The reason is structural. The
-/// floor is compared against a band's live fraction; a band's used bytes sum the slabs in it that
-/// are NOT collectable; `band_id_for_slab` is the identity so a band holds exactly one slab; and
+/// floor is compared against a slab's live fraction; a slab's used bytes sum the slabs grouped
+/// under its stored id that are NOT collectable; that group is always the slab itself; and
 /// a candidate is by definition not current and not live. The candidate filter is the exact
-/// negation of the used-bytes filter, so a candidate's band can never contribute to its own used
+/// negation of the used-bytes filter, so a candidate can never contribute to its own used
 /// bytes.
 ///
-/// This is NOT waiting for a band to hold several slabs. It is waiting for used bytes to mean
+/// This is NOT waiting for a stored id to group several slabs. It is waiting for used bytes to mean
 /// live PAGE bytes within the slab instead of whole file sizes of neighbouring slabs. When that
 /// lands, this test fails -- and that failure is the signal that the knob has become real, which
 /// is why the assertions name what they depend on.
@@ -4940,7 +4940,7 @@ fn can_the_page_gc_garbage_floor_bind() {
             u64::MAX,
             live.iter().copied(),
             &crate::block_store::BlockStoreGcPolicy::with_slab_garbage_floor(
-                crate::engine::reports::DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS,
+                crate::engine::reports::DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
                 None,
             ),
         )
@@ -4955,7 +4955,7 @@ fn can_the_page_gc_garbage_floor_bind() {
     eprintln!("     slab   total_b    used_b   utility_bp   garbage_bp   floor_keeps_it");
     for candidate in plan.candidates.iter() {
         let garbage = 10_000u64.saturating_sub(candidate.utility_basis_points);
-        let kept = garbage < crate::engine::reports::DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS;
+        let kept = garbage < crate::engine::reports::DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS;
         eprintln!(
             "  {:>7}  {:>8}  {:>8}   {:>10}   {:>10}   {}",
             candidate.block_slab_id,
@@ -4980,7 +4980,7 @@ fn can_the_page_gc_garbage_floor_bind() {
         "no candidates, so this measures nothing about the floor: {plan:?}"
     );
     assert!(
-        crate::engine::reports::DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS > 0,
+        crate::engine::reports::DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS > 0,
         "a floor of zero excludes nothing by definition and would make this vacuous"
     );
 

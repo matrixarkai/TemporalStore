@@ -8,7 +8,7 @@
 //!
 //!   * [`BlockHeader`] — the per-block descriptor. This is what the log-item-to-block
 //!     conversion fills in, and it is where [`BlockHeader::block_in_wal`] records that a
-//!     block's bytes are still in the WAL rather than in a band.
+//!     block's bytes are still in the WAL rather than in a slab.
 //!   * [`SlabInfo`] / [`SlabHeader`] / [`BlockFooter`] — the slabbed-stream layer. A stream
 //!     is a chain of slabs; each slab carries a header naming the whole chain, and the
 //!     fixed-size blocks inside it end with a footer that makes a torn tail detectable on
@@ -68,7 +68,7 @@ pub struct BlockHeader {
     pub model_id: u32,
     #[prost(enumeration = "BlockCompression", tag = "9")]
     pub compress: i32,
-    /// The block's bytes live in the WAL record at [`Self::wal_sequence`], not in a band. Set
+    /// The block's bytes live in the WAL record at [`Self::wal_sequence`], not in a slab. Set
     /// for every block that has not been dumped yet.
     #[prost(bool, tag = "10")]
     pub block_in_wal: bool,

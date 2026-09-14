@@ -164,9 +164,9 @@ pub struct SharedStoreBlockSlab {
     pub key: String,
     pub byte_size: u64,
     pub sha256: String,
-    // Per-slab SEALED-band metadata carried so a lazy restore can install complete band
+    // Per-slab SEALED-slab metadata carried so a lazy restore can install complete slab
     // descriptors (physical/logical bytes + page-id range) BEFORE the first on-demand slab
-    // fetch, keeping GC/compaction accounting from under-counting sealed shared bands between
+    // fetch, keeping GC/compaction accounting from under-counting sealed shared slabs between
     // restore and first fetch. All default so older manifests (without these fields) still load;
     // `byte_size` above is the slab's physical byte size.
     #[serde(default)]
@@ -967,7 +967,7 @@ where
         // R2 single-writer fence: a checkpoint publish is a durable-frontier advance, so a
         // superseded stale owner must be rejected here just as on a WAL append.
         self.enforce_fence(shard_id).await?;
-        // Durability barrier: fsync any bulk-deferred page bytes and persist the band manifest
+        // Durability barrier: fsync any bulk-deferred page bytes and persist the slab manifest
         // BEFORE capturing the slab set, mirroring the local dump path
         // (bucket_dump_manifest_methods) which fsyncs pages+WAL before recording slab ids. Without
         // this a relaxed (bulk) writer could enumerate a slab whose tail bytes are not yet on disk,
@@ -994,12 +994,12 @@ where
             .put(&index_key, Bytes::from(index.clone()))
             .await?;
 
-        // Snapshot the local band descriptors so each uploaded slab carries its sealed-band
+        // Snapshot the local slab descriptors so each uploaded slab carries its sealed-slab
         // metadata (logical bytes + page-id range) into the manifest for S3 restore-time install.
         let slab_by_slab: BTreeMap<u64, _> = block_store
             .slab_descriptors()
             .into_iter()
-            .map(|band| (band.block_slab_id, band))
+            .map(|slab| (slab.block_slab_id, slab))
             .collect();
         let mut block_slabs = Vec::new();
         let mut uploaded_slab_ids = std::collections::BTreeSet::new();
@@ -1010,17 +1010,17 @@ where
                 .put(&key, Bytes::from(bytes.clone()))
                 .await?;
             uploaded_slab_ids.insert(block_slab_id);
-            let band = slab_by_slab.get(&block_slab_id);
+            let slab = slab_by_slab.get(&block_slab_id);
             block_slabs.push(SharedStoreBlockSlab {
                 block_slab_id,
                 key,
                 byte_size: bytes.len() as u64,
                 sha256: sha256_hex(&bytes),
-                logical_bytes: band.map(|band| band.logical_bytes).unwrap_or(0),
-                first_page_id: band.and_then(|band| band.first_page_id),
-                last_page_id: band.and_then(|band| band.last_page_id),
-                created_unix_ms: band.and_then(|band| band.created_unix_ms),
-                updated_unix_ms: band.and_then(|band| band.updated_unix_ms),
+                logical_bytes: slab.map(|slab| slab.logical_bytes).unwrap_or(0),
+                first_page_id: slab.and_then(|slab| slab.first_page_id),
+                last_page_id: slab.and_then(|slab| slab.last_page_id),
+                created_unix_ms: slab.and_then(|slab| slab.created_unix_ms),
+                updated_unix_ms: slab.and_then(|slab| slab.updated_unix_ms),
             });
         }
 
@@ -2061,10 +2061,10 @@ where
         // and new writes never overwrite a slab still served lazily from shared storage.
         if !manifest.block_slabs.is_empty() {
             block_store.reserve_lazy_checkpoint_range(max_slab_id, manifest.next_page_id)?;
-            // S3: install SEALED band descriptors for the lazily-backed checkpoint slabs so
+            // S3: install SEALED slab descriptors for the lazily-backed checkpoint slabs so
             // GC/compaction accounting is complete immediately after restore, before the first
             // on-demand fetch materializes any slab locally. Runs AFTER the reserve so the freshly
-            // reserved slab stays the active band and every checkpoint slab is sealed.
+            // reserved slab stays the active slab and every checkpoint slab is sealed.
             let lazy_slabs: Vec<LazyCheckpointSlab> = manifest
                 .block_slabs
                 .iter()
@@ -3803,8 +3803,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn s3_lazy_restore_installs_complete_sealed_band_descriptors_before_any_fetch() {
-        // S3: after a lazy metadata restore, the sealed-band descriptors for the checkpoint's
+    async fn s3_lazy_restore_installs_complete_sealed_slab_descriptors_before_any_fetch() {
+        // S3: after a lazy metadata restore, the sealed-slab descriptors for the checkpoint's
         // lazily-backed slabs are installed immediately, so GC/compaction accounting is complete
         // BEFORE the first on-demand slab fetch (previously they under-counted until a fetch).
         let dir = tempfile::tempdir().unwrap();
@@ -3822,7 +3822,7 @@ mod tests {
             .slab_descriptors()
             .into_iter()
             .find(|b| b.block_slab_id == 0)
-            .expect("primary must have a band for slab 0");
+            .expect("primary must have a descriptor for slab 0");
         assert!(primary_slab.logical_bytes > 0);
 
         let (_store, replicator) = test_shared_store(dir.path());
@@ -3830,7 +3830,7 @@ mod tests {
             .publish_checkpoint(1, 1, &primary, &primary.block_store())
             .await
             .unwrap();
-        // The manifest carries the per-slab band metadata.
+        // The manifest carries the per-slab slab metadata.
         let slab0 = manifest
             .block_slabs
             .iter()
@@ -3850,20 +3850,20 @@ mod tests {
             !follower.block_store().slab_ids().unwrap().contains(&0),
             "checkpoint slab 0 must not be materialized locally yet"
         );
-        // ...but the sealed band descriptor for slab 0 is already present and complete.
+        // ...but the sealed slab descriptor for slab 0 is already present and complete.
         let follower_slab = follower
             .block_store()
             .slab_descriptors()
             .into_iter()
             .find(|b| b.block_slab_id == 0)
-            .expect("restore must install a band descriptor for the lazily-backed slab 0");
+            .expect("restore must install a slab descriptor for the lazily-backed slab 0");
         assert_eq!(follower_slab.state, crate::block_store::BlockStoreSlabState::Sealed);
         assert_eq!(follower_slab.logical_bytes, primary_slab.logical_bytes);
         assert_eq!(follower_slab.physical_bytes, slab0.byte_size);
-        // The band summary counts the sealed shared band immediately (accounting is complete).
+        // The slab summary counts the sealed shared slab immediately (accounting is complete).
         assert!(
             follower.block_store().slab_summary().sealed_slabs >= 1,
-            "sealed shared band must be counted before any lazy fetch"
+            "the sealed shared slab must be counted before any lazy fetch"
         );
         assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
     }

@@ -38,7 +38,7 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
-        // On-demand lazy recovery: drive the shared-store read-through for band-report /
+        // On-demand lazy recovery: drive the shared-store read-through for slab-report /
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
@@ -59,7 +59,7 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
-        // On-demand lazy recovery: drive the shared-store read-through for band-report /
+        // On-demand lazy recovery: drive the shared-store read-through for slab-report /
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
@@ -84,16 +84,16 @@ impl LocalBlockStore {
         Ok(fs::read(slab_path(&root, block_slab_id))?)
     }
 
-    /// Install one slab, and rewrite the whole band manifest.
+    /// Install one slab, and rewrite the whole slab manifest.
     ///
     /// The manifest rewrite is the expensive part and it grows with the store: every install
-    /// serializes every band descriptor, writes them to a fresh file, fsyncs it, renames it and
+    /// serializes every slab descriptor, writes them to a fresh file, fsyncs it, renames it and
     /// fsyncs the directory. Installing n slabs therefore writes the manifest n times. Timed by
     /// phase on one machine: 111.7 ms per install at 200 slabs, 270.7 ms at 800 -- while purging
     /// all of them afterwards costs about 0.65 ms each, so the collection is not what is dear here.
     ///
     /// Fixable, and not fixed: the manifest is a CACHE, rebuildable from the slabs themselves by
-    /// `rebuild_band_manifest_at`, so it does not have to be written on every install. Writing it
+    /// `rebuild_slab_manifest_at`, so it does not have to be written on every install. Writing it
     /// periodically needs the load path to notice a stale one -- comparing its set against the
     /// slabs actually present -- because a stale manifest is trusted today, which is worse than a
     /// missing one.
@@ -130,10 +130,10 @@ impl LocalBlockStore {
         }
         let is_current_slab = block_slab_id == inner.block_slab_id;
         let now = now_unix_ms();
-        inner.bands.insert(
+        inner.slabs.insert(
             block_slab_id,
             BlockStoreSlabDescriptor {
-                band_id: band_id_for_slab(block_slab_id),
+                stored_slab_id: block_slab_id,
                 block_slab_id,
                 state: if is_current_slab {
                     BlockStoreSlabState::Active
@@ -158,11 +158,11 @@ impl LocalBlockStore {
             },
         );
         if is_current_slab {
-            for band in inner.bands.values_mut() {
-                if band.block_slab_id != block_slab_id
-                    && band.state == BlockStoreSlabState::Active
+            for slab in inner.slabs.values_mut() {
+                if slab.block_slab_id != block_slab_id
+                    && slab.state == BlockStoreSlabState::Active
                 {
-                    band.state = BlockStoreSlabState::Sealed;
+                    slab.state = BlockStoreSlabState::Sealed;
                 }
             }
         }
@@ -171,10 +171,10 @@ impl LocalBlockStore {
         // rebuilds from the slabs when what it reads does not match them, so the worst a deferred
         // write costs is a rebuild after a crash.
         inner.slabs_unwritten = inner.slabs_unwritten.saturating_add(1);
-        if inner.slabs_unwritten >= BANDS_UNWRITTEN_BEFORE_PERSIST {
+        if inner.slabs_unwritten >= SLABS_UNWRITTEN_BEFORE_PERSIST {
             inner.slabs_unwritten = 0;
             inner.stats.slab_manifest_writes = inner.stats.slab_manifest_writes.saturating_add(1);
-            persist_slab_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.slabs)?;
         }
         Ok(())
     }

@@ -3074,7 +3074,7 @@ fn read_string(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
 #[test]
 fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() {
     // MANIFEST-CONFORMANCE FOLD cadence: with a tiny WAL gap, a threshold dump fires once the
-    // undumped index-log has grown past it, folding the band catalog into an index-log
+    // undumped index-log has grown past it, folding the slab catalog into an index-log
     // MetaItem anchor; below the gap nothing is dumped. Matches
     // index-meta dump background cadence -- never a per-write dump.
     let dir = tempfile::tempdir().unwrap();
@@ -3102,10 +3102,10 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
         "dump fires once the undumped gap crosses the threshold"
     );
     let catalog = engine.index_log_store().latest_slab_catalog(1).unwrap();
-    let catalog = catalog.expect("a folded band catalog must be durable after the dump");
+    let catalog = catalog.expect("a folded slab catalog must be durable after the dump");
     assert!(
-        !catalog.bands.is_empty(),
-        "the dump must fold at least the active band into the anchor"
+        !catalog.slabs.is_empty(),
+        "the dump must fold at least the active slab into the anchor"
     );
     // The watermark advanced: the undumped gap reset, so an immediate re-check does not re-dump.
     assert!(
@@ -3351,8 +3351,8 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_pages() {
 
 #[test]
 fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
-    // MANIFEST-CONFORMANCE FOLD round-trip: write, dump (folds the catalog), delete the band-manifest
-    // file, reload -- every acked key must survive AND the band lifecycle must reconstruct from
+    // MANIFEST-CONFORMANCE FOLD round-trip: write, dump (folds the catalog), delete the slab-manifest
+    // file, reload -- every acked key must survive AND the slab lifecycle must reconstruct from
     // the folded index-log MetaItem, proving the fold is a lossless catalog source.
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
@@ -3370,7 +3370,7 @@ fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
         .unwrap()
         .expect("catalog folded");
     drop(engine);
-    // Delete the band-manifest file: the catalog must come back from the index-log fold, not the
+    // Delete the slab-manifest file: the catalog must come back from the index-log fold, not the
     // per-write file.
     let manifest = page_dir.join("page_extent_manifest.json");
     if manifest.exists() {
@@ -3392,10 +3392,10 @@ fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
     }
     // The folded lifecycle states are present in the reconstructed catalog.
     let recovered = restarted.block_store().slab_catalog(0);
-    for entry in &folded.bands {
+    for entry in &folded.slabs {
         assert!(
             recovered.iter().any(|z| z.block_slab_id == entry.block_slab_id),
-            "band {} must be present after reload from the fold",
+            "slab {} must be present after reload from the fold",
             entry.block_slab_id
         );
     }
@@ -3403,7 +3403,7 @@ fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
 
 #[test]
 fn manifest_fold_on_does_not_resurrect_evicted_feature_points_on_reload() {
-    // The #22 resurrection trap must still hold with the fold ON: the fold touches the band
+    // The #22 resurrection trap must still hold with the fold ON: the fold touches the slab
     // catalog (M1), NOT the per-write served-index delta / key_states nor the WAL config-log, so
     // config-driven feature_max_size eviction stays durable and does not resurrect on reload.
     let dir = tempfile::tempdir().unwrap();

@@ -18,7 +18,7 @@ impl LocalBlockStore {
         if let Ok(file) = OpenOptions::new().append(true).open(&path) {
             file.sync_data()?;
         }
-        persist_slab_manifest(&inner.root, &inner.bands)?;
+        persist_slab_manifest(&inner.root, &inner.slabs)?;
         inner.relaxed_dirty = false;
         Ok(())
     }
@@ -61,13 +61,13 @@ impl LocalBlockStore {
         fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
         let page_id = u64::from(block_index);
-        let mut band_id = band_id_for_slab(inner.block_slab_id);
+        let mut stored_slab_id = inner.block_slab_id;
         let mut record = encode_page_record(
             bytes,
             page_id,
             object_id,
             routing_bucket,
-            band_id,
+            stored_slab_id,
             inner.options,
         )?;
         if should_roll_before_append(
@@ -76,13 +76,13 @@ impl LocalBlockStore {
             slab_target_bytes,
         ) {
             roll_slab_inner(&mut inner)?;
-            band_id = band_id_for_slab(inner.block_slab_id);
+            stored_slab_id = inner.block_slab_id;
             record = encode_page_record(
                 bytes,
                 page_id,
                 object_id,
                 routing_bucket,
-                band_id,
+                stored_slab_id,
                 inner.options,
             )?;
         }
@@ -99,7 +99,7 @@ impl LocalBlockStore {
         //    which pins the replay anchor and re-drives the whole chunk -- may defer it.
         //  * `defer_manifest` defers the per-record extent-manifest persist (write-tmp +
         //    fsync + rename EVERY record -- barriers 5/6) to sync_durable()/slab-seal. SAFE
-        //    even with pages kept durable: the manifest is band/GC metadata reconstructed
+        //    even with pages kept durable: the manifest is slab/GC metadata reconstructed
         //    by reconcile-on-open from the durable page records, never a read dependency.
         let defer_data_sync = bulk_relaxed_durability() || page_wal_single_barrier();
         let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
@@ -110,7 +110,7 @@ impl LocalBlockStore {
         let block_slab_id = inner.block_slab_id;
         let write_offset = inner.write_offset;
         upsert_slab_after_append(
-            &mut inner.bands,
+            &mut inner.slabs,
             block_slab_id,
             write_offset,
             record.logical_len as u64,
@@ -119,7 +119,7 @@ impl LocalBlockStore {
         if defer_manifest {
             inner.relaxed_dirty = true;
         } else {
-            persist_slab_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.slabs)?;
         }
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
@@ -152,13 +152,13 @@ impl LocalBlockStore {
 
         for (bytes, object_id, routing_bucket, block_index) in records {
             let page_id = u64::from(block_index);
-            let mut band_id = band_id_for_slab(inner.block_slab_id);
+            let mut stored_slab_id = inner.block_slab_id;
             let mut record = encode_page_record(
                 bytes,
                 page_id,
                 object_id,
                 routing_bucket,
-                band_id,
+                stored_slab_id,
                 inner.options,
             )?;
             if should_roll_before_append(
@@ -171,13 +171,13 @@ impl LocalBlockStore {
                     current.sync_data()?;
                 }
                 roll_slab_inner(&mut inner)?;
-                band_id = band_id_for_slab(inner.block_slab_id);
+                stored_slab_id = inner.block_slab_id;
                 record = encode_page_record(
                     &bytes,
                     page_id,
                     object_id,
                     routing_bucket,
-                    band_id,
+                    stored_slab_id,
                     inner.options,
                 )?;
             }
@@ -193,7 +193,7 @@ impl LocalBlockStore {
             let block_slab_id = inner.block_slab_id;
             let write_offset = inner.write_offset;
             upsert_slab_after_append(
-                &mut inner.bands,
+                &mut inner.slabs,
                 block_slab_id,
                 write_offset,
                 record.logical_len as u64,
@@ -226,7 +226,7 @@ impl LocalBlockStore {
         if defer_manifest {
             inner.relaxed_dirty = true;
         } else {
-            persist_slab_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.slabs)?;
         }
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);

@@ -2038,7 +2038,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     assert!(report.bucket_count >= 1);
     assert!(report.page_index_count >= 1);
     assert!(report.block_index_count >= 1);
-    assert!(report.stream_band_count >= 2);
+    assert!(report.stream_slab_count >= 2);
     assert!(report.stream_record_count >= 3);
     assert_eq!(
         report.storage_manager_stage_order,
@@ -2629,7 +2629,7 @@ fn crash_recovery_rebuilds_missing_slab_manifest_from_page_stream() {
     assert_eq!(report.wal_records, 2);
     assert!(report.all_live_pages_readable);
     assert!(report.slab_summary.live_physical_bytes > 0);
-    // The band manifest was rebuilt (from the page stream on the default path; from WAL-replayed
+    // The slab manifest was rebuilt (from the page stream on the default path; from WAL-replayed
     // pages under the single barrier). Recovery of both acked writes is asserted by the reads below.
     assert!(page_dir.join("page_extent_manifest.json").exists());
     if !crate::engine::wal_single_barrier() {
@@ -2744,7 +2744,7 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         Some(page_routing_bucket("k", 10, 20))
     );
     assert_eq!(
-        string_address.band_id(),
+        string_address.slab_id(),
         Some(string_address.block_slab_id)
     );
     assert_eq!(
@@ -2755,7 +2755,7 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         hash_address.routing_bucket(),
         Some(page_routing_bucket("h", 10, 20))
     );
-    assert_eq!(hash_address.band_id(), Some(hash_address.block_slab_id));
+    assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id));
     assert_ne!(string_address.object_id(), hash_address.object_id());
 }
 
@@ -7431,19 +7431,19 @@ fn what_grows_outside_the_shard_index() {
             });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
-        let bands = engine.page_store.slab_descriptors().len();
+        let descriptors = engine.page_store.slab_descriptors().len();
         let slabs = engine.page_store.slab_ids().map(|v| v.len()).unwrap_or(0);
         let strings = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             shards.get(&1).expect("loaded shard").strings.len()
         };
-        (bands, slabs, strings)
+        (descriptors, slabs, strings)
     };
 
     const SMALL: u64 = 20_000;
     const LARGE: u64 = 160_000;
-    let (small_bands, small_slabs, small_strings) = counts_at(SMALL);
-    let (large_bands, large_slabs, large_strings) = counts_at(LARGE);
+    let (small_slab_descriptors, small_slabs, small_strings) = counts_at(SMALL);
+    let (large_slab_descriptors, large_slabs, large_strings) = counts_at(LARGE);
 
     println!();
     println!("  structure          at {SMALL:>7}   at {LARGE:>7}   per record   grows?");
@@ -7453,12 +7453,12 @@ fn what_grows_outside_the_shard_index() {
                  if per > 0.01 { "yes" } else { "no" });
         per
     };
-    let slab_per = row("page bands", small_bands, large_bands);
+    let slab_per = row("slab descriptors", small_slab_descriptors, large_slab_descriptors);
     row("page slabs", small_slabs, large_slabs);
     row("index entries", small_strings, large_strings);
 
     println!();
-    println!("  A band descriptor is on the order of 100 bytes, so at {slab_per:.4} bands per");
+    println!("  A slab descriptor is on the order of 100 bytes, so at {slab_per:.4} descriptors per");
     println!("  record it accounts for roughly {:.1} bytes of the ~842 unattributed.", slab_per * 100.0);
     if slab_per * 100.0 < 100.0 {
         println!("  That is nowhere near enough: the page store is NOT where the memory goes, and");

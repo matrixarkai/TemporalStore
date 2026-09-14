@@ -549,7 +549,7 @@ pub struct BucketStorageSummary {
 /// What the code CAN check, and does: every reader in this repository accepts both spellings.
 /// The aliases are on the struct, the round-trip is asserted in both directions below, and no
 /// Python tool reads this document -- the `logical_bytes`/`physical_bytes` names in `tools/`
-/// belong to the band extent manifest, which is a different file with different fields.
+/// belong to the slab extent manifest, which is a different file with different fields.
 ///
 impl BucketStorageSummary {
     /// Write the summary under one spelling or the other.
@@ -603,8 +603,8 @@ impl BucketStorageSummary {
         // Absent stays absent: the derived writer skipped this when None, and a manifest that
         // started emitting nulls would be bigger, not smaller.
         match self.last_compacted_slab.as_ref() {
-            Some(band) => {
-                out.serialize_field(if short { "lcz" } else { "last_compacted_zone" }, band)?
+            Some(slab) => {
+                out.serialize_field(if short { "lcz" } else { "last_compacted_zone" }, slab)?
             }
             None => out.skip_field(if short { "lcz" } else { "last_compacted_zone" })?,
         }
@@ -651,7 +651,7 @@ pub struct StoragePhysicalPageIndex {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
     #[serde(rename = "zone_id", default, skip_serializing_if = "Option::is_none")]
-    pub band_id: Option<u64>,
+    pub stored_slab_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
     pub dirty: bool,
@@ -1167,6 +1167,12 @@ pub struct PublicStorageContract {
     pub stream: String,
     #[serde(alias = "segment")]
     pub slab: String,
+    /// NOT folded into [`Self::slab`], deliberately.
+    ///
+    /// This struct is a CATALOG of the public storage vocabulary, one entry per published name,
+    /// and its keys are the wire. `slab` sits right beside it, so folding the two would delete a
+    /// published entry rather than rename a field -- a wire change wearing a rename's clothes.
+    /// Everywhere else in the crate a band is spelled slab; here the older name is the payload.
     pub band: String,
     #[serde(rename = "slot")]
     pub bucket: String,
@@ -1225,6 +1231,7 @@ pub struct PublicStorageFeatureShapes {
     pub stream_fields: Vec<String>,
     #[serde(alias = "segment_fields")]
     pub slab_fields: Vec<String>,
+    /// NOT folded into [`Self::slab_fields`], for the reason on [`PublicStorageContract::band`].
     pub band_fields: Vec<String>,
     #[serde(rename = "slot_fields")]
     pub bucket_fields: Vec<String>,
@@ -2054,7 +2061,7 @@ pub fn default_storage_gc_snapshot() -> StorageGcSnapshot {
 pub struct StoragePageAddressSample {
     pub shard_id: u64,
     #[serde(rename = "zone_id")]
-    pub band_id: u64,
+    pub stored_slab_id: u64,
     #[serde(alias = "segment_id")]
     pub slab_id: u64,
     pub page_id: u64,
@@ -2067,7 +2074,7 @@ pub struct StoragePageAddressSample {
 pub struct StorageBlockAddressSample {
     pub shard_id: u64,
     #[serde(rename = "zone_id")]
-    pub band_id: u64,
+    pub stored_slab_id: u64,
     pub block_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -2087,7 +2094,8 @@ pub struct StoragePageIndexEntrySample {
 pub struct StorageBlockIndexEntrySample {
     pub page_address: StoragePageAddressSample,
     pub block_address: StorageBlockAddressSample,
-    pub band: u64,
+    #[serde(rename = "band")]
+    pub stored_slab_id: u64,
     pub checksum: String,
     pub generation: u64,
 }
@@ -2157,14 +2165,14 @@ pub fn default_storage_index_snapshot() -> StorageIndexSnapshot {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// A band's byte accounting and the slabs it holds.
+/// A slab's byte accounting and the slabs it holds.
 ///
-/// Keyed by `band_id`, the same key as [`StorageSlabBandSample`], which carries that band's block
-/// range and reclaim state. Two shapes over one entity, not two levels -- "zone" was the older
-/// name for a band, and the wire still uses it.
+/// Keyed by `stored_slab_id`, the same key as [`StorageSlabSlabSample`], which carries that
+/// slab's block range and reclaim state. Two shapes over one entity, not two levels -- "zone"
+/// and "band" were both older names for a slab, and the wire still uses them.
 pub struct StorageSlabUsageSample {
     #[serde(rename = "zone_id")]
-    pub band_id: u64,
+    pub stored_slab_id: u64,
     pub total_bytes: u64,
     pub used_bytes: u64,
     pub stale_bytes: u64,
@@ -2187,9 +2195,10 @@ pub struct StorageSlabSample {
     #[serde(alias = "segment_id")]
     pub slab_id: u64,
     /// The same number as [`Self::slab_id`], always -- see
-    /// [`crate::block_store::BlockStoreSlabDescriptor::band_id`]. Kept because it serializes and
-    /// the compat corpora carry it.
-    pub band: u64,
+    /// [`crate::block_store::BlockStoreSlabDescriptor::stored_slab_id`]. Kept because it
+    /// serializes, under the older key, and the compat corpora carry it.
+    #[serde(rename = "band")]
+    pub stored_slab_id: u64,
     pub start_offset: u64,
     pub sealed: bool,
     pub generation: u64,
@@ -2197,7 +2206,8 @@ pub struct StorageSlabSample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageSlabSlabSample {
-    pub band: u64,
+    #[serde(rename = "band")]
+    pub stored_slab_id: u64,
     pub block_range: Vec<u64>,
     pub reclaim_state: String,
     pub generation: u64,
@@ -2247,7 +2257,8 @@ pub struct StorageTopologySnapshot {
     #[serde(alias = "segment_samples")]
     pub slab_samples: Vec<StorageSlabSample>,
     #[serde(default)]
-    pub band_samples: Vec<StorageSlabSlabSample>,
+    #[serde(rename = "band_samples")]
+    pub slab_range_samples: Vec<StorageSlabSlabSample>,
     #[serde(default)]
     #[serde(rename = "slot_samples")]
     pub bucket_samples: Vec<StorageBucketSample>,
@@ -2272,7 +2283,7 @@ pub fn storage_topology_snapshot_from_metrics(
         storage_slab_usage_samples: Vec::new(),
         stream_samples: Vec::new(),
         slab_samples: Vec::new(),
-        band_samples: Vec::new(),
+        slab_range_samples: Vec::new(),
         bucket_samples: Vec::new(),
     }
 }
@@ -3321,9 +3332,9 @@ pub struct StorageManagerCycleRequest {
     #[serde(default = "commit_dirty_buckets_before_truncation_default")]
     #[serde(rename = "index_gc_commit_dirty_slots_before_truncation")]
     pub index_gc_commit_dirty_buckets_before_truncation: bool,
-    /// Reclaim only bands whose garbage ratio is at least this many basis points
-    /// (garbage = 10_000 - band live-fraction). 0 reclaims every eligible band
-    /// (today's behavior). The garbage-ratio GC gate, expressed against bands.
+    /// Reclaim only slabs whose garbage ratio is at least this many basis points
+    /// (garbage = 10_000 - slab live-fraction). 0 reclaims every eligible slab
+    /// (today's behavior). The garbage-ratio GC gate, expressed against slabs.
     #[serde(default)]
     #[serde(rename = "page_gc_min_band_garbage_basis_points")]
     pub page_gc_min_slab_garbage_basis_points: u64,
@@ -3363,7 +3374,7 @@ pub struct StorageManagerCycleRequest {
 /// | hot buckets expired per round | 100 | 128 | the same order |
 /// | cold buckets expired per round | 5 | 8 | small on purpose either way: a cold bucket has to be loaded before it can be expired |
 /// | eviction victims per round | 10 | 16 | the same order |
-/// | band garbage before reclaim | 50% | 40% | see the note on the constant |
+/// | slab garbage before reclaim | 50% | 40% | see the note on the constant |
 pub const DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND: usize = 256;
 /// Index-log size below which a sweep is not worth running. Matches the post-dump sweep's
 /// reclaimable-bytes threshold, so the two things that rewrite this log agree about when it is
@@ -3380,14 +3391,14 @@ pub const DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND: usize = 128;
 pub const DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND: usize = 8;
 /// Buckets evicted per round once the cache is over its memory pressure threshold.
 pub const DEFAULT_EVICTION_BATCH_LIMIT: usize = 16;
-/// Garbage share a band must carry before GC will reclaim it, in basis points.
+/// Garbage share a slab must carry before GC will reclaim it, in basis points.
 ///
 /// Expected to be INERT today, and set anyway so the policy is stated rather than implied: our
-/// GC only destroys bands with no live refs at all, and a band with no live refs is 10 000 basis
+/// GC only destroys slabs with no live refs at all, and a slab with no live refs is 10 000 basis
 /// points of garbage, which clears any threshold below it. It binds only if a future GC starts
-/// offering partially-live bands as candidates -- which is exactly when a threshold should
+/// offering partially-live slabs as candidates -- which is exactly when a threshold should
 /// already be in place rather than being added in a hurry.
-pub const DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS: u64 = 4_000;
+pub const DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 4_000;
 
 impl Default for StorageManagerCycleRequest {
     fn default() -> Self {
@@ -3427,7 +3438,7 @@ impl Default for StorageManagerCycleRequest {
             index_gc_max_entries_per_round: DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
             index_gc_commit_dirty_buckets_before_truncation: true,
             page_gc_min_slab_garbage_basis_points:
-                DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS,
+                DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
             prepare_slab_target_bytes: 0,
         }
     }
@@ -3665,7 +3676,8 @@ pub struct StorageDataStructureApiParityReport {
     pub bucket_count: usize,
     pub page_index_count: usize,
     pub block_index_count: u64,
-    pub stream_band_count: u64,
+    #[serde(rename = "stream_band_count")]
+    pub stream_slab_count: u64,
     pub stream_record_count: u64,
     pub storage_manager_stage_order: Vec<String>,
     pub blockers: Vec<String>,

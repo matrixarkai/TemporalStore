@@ -170,7 +170,7 @@ impl LocalBlockStore {
                 .min_age_ms
                 .map(|min_age| candidate.age_ms.unwrap_or_default() >= min_age)
                 .unwrap_or(true);
-            // Garbage-ratio gate (GetGarbageRate threshold): keep bands whose
+            // Garbage-ratio gate (GetGarbageRate threshold): keep slabs whose
             // garbage ratio is below the floor. garbage = 10_000 - live-fraction.
             let garbage_allowed = policy
                 .min_slab_garbage_basis_points
@@ -239,13 +239,13 @@ impl LocalBlockStore {
                 .metadata()
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
-            let band_id = inner
-                .bands
+            let stored_slab_id = inner
+                .slabs
                 .get(block_slab_id)
-                .map(|band| band.band_id)
-                .unwrap_or_else(|| band_id_for_slab(*block_slab_id));
-            *slab_total_bytes.entry(band_id).or_default() = slab_total_bytes
-                .get(&band_id)
+                .map(|slab| slab.stored_slab_id)
+                .unwrap_or(*block_slab_id);
+            *slab_total_bytes.entry(stored_slab_id).or_default() = slab_total_bytes
+                .get(&stored_slab_id)
                 .copied()
                 .unwrap_or_default()
                 .saturating_add(bytes);
@@ -253,8 +253,8 @@ impl LocalBlockStore {
             let is_current = *block_slab_id == current_block_slab_id;
             let is_live = live_block_slab_ids.contains(block_slab_id);
             if !below_retention_floor || is_current || is_live {
-                *slab_used_bytes.entry(band_id).or_default() = slab_used_bytes
-                    .get(&band_id)
+                *slab_used_bytes.entry(stored_slab_id).or_default() = slab_used_bytes
+                    .get(&stored_slab_id)
                     .copied()
                     .unwrap_or_default()
                     .saturating_add(bytes);
@@ -271,17 +271,17 @@ impl LocalBlockStore {
                     .metadata()
                     .map(|metadata| metadata.len())
                     .unwrap_or_default();
-                let band = inner.bands.get(&block_slab_id);
-                let created_unix_ms = band.and_then(|band| band.created_unix_ms);
-                let updated_unix_ms = band.and_then(|band| band.updated_unix_ms);
+                let slab = inner.slabs.get(&block_slab_id);
+                let created_unix_ms = slab.and_then(|slab| slab.created_unix_ms);
+                let updated_unix_ms = slab.and_then(|slab| slab.updated_unix_ms);
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
-                let band_id = band
-                    .map(|band| band.band_id)
-                    .unwrap_or_else(|| band_id_for_slab(block_slab_id));
-                let total_bytes = slab_total_bytes.get(&band_id).copied().unwrap_or(bytes);
-                let used_bytes = slab_used_bytes.get(&band_id).copied().unwrap_or_default();
+                let stored_slab_id = slab
+                    .map(|slab| slab.stored_slab_id)
+                    .unwrap_or(block_slab_id);
+                let total_bytes = slab_total_bytes.get(&stored_slab_id).copied().unwrap_or(bytes);
+                let used_bytes = slab_used_bytes.get(&stored_slab_id).copied().unwrap_or_default();
                 let stale_bytes = total_bytes.saturating_sub(used_bytes);
                 let utility_basis_points = if total_bytes == 0 {
                     0
@@ -307,7 +307,7 @@ impl LocalBlockStore {
             }
         }
         candidates.sort_by(|left, right| {
-            // Reclaim the highest-garbage band first: a lower band live-fraction
+            // Reclaim the highest-garbage slab first: a lower slab live-fraction
             // (utility_basis_points) means more garbage, so ascending live-fraction ==
             // descending garbage ratio. That is the GC victim order, which the previous
             // key (a categorical utility_score, uniformly 0 for all candidates) never
@@ -382,7 +382,7 @@ impl LocalBlockStore {
                 if delayed_destroy {
                     move_slab_to_delayed_destroy(&inner.root, block_slab_id)?;
                     set_slab_state(
-                        &mut inner.bands,
+                        &mut inner.slabs,
                         block_slab_id,
                         BlockStoreSlabState::DelayedDestroy,
                     );
@@ -391,7 +391,7 @@ impl LocalBlockStore {
                 } else {
                     fs::remove_file(slab_path(&inner.root, block_slab_id))?;
                     set_slab_state(
-                        &mut inner.bands,
+                        &mut inner.slabs,
                         block_slab_id,
                         BlockStoreSlabState::Purged,
                     );
@@ -412,16 +412,16 @@ impl LocalBlockStore {
         }
         // Only when this round actually changed something.
         //
-        // `inner.bands` is mutated in exactly one place in the loop above -- `set_slab_state`,
+        // `inner.slabs` is mutated in exactly one place in the loop above -- `set_slab_state`,
         // inside the branch that also pushes onto `removed` -- so an empty `removed` means the
         // manifest would be rewritten with byte-identical content. That rewrite is not free: it
-        // serialises every band, fsyncs the temp file, renames it, and fsyncs the parent
+        // serialises every slab, fsyncs the temp file, renames it, and fsyncs the parent
         // directory. TWO fsyncs, on a stage the periodic loop runs whenever page pressure holds.
         //
         // Measured on a fixture where the store settles at three slabs and a round reclaims
         // nothing: 4.0 ms per round before, and the round does no other durable work.
         if !removed.is_empty() {
-            persist_slab_manifest(&inner.root, &inner.bands)?;
+            persist_slab_manifest(&inner.root, &inner.slabs)?;
         }
         Ok(BlockStoreGcReport {
             retain_from_block_slab_id,

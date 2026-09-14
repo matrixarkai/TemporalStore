@@ -948,7 +948,7 @@ struct WriteAheadLogInner {
     verified_len_by_shard: HashMap<ShardId, u64>,
     // Lowest sequence whose record may still hold the only copy of a block's bytes -- the dump
     // watermark. A block written into the WAL is addressed by the byte offset of its record and
-    // has no copy in a band until it is dumped, so reclaiming that record destroys the block.
+    // has no copy in a slab until it is dumped, so reclaiming that record destroys the block.
     // GC clamps its retain floor to this. Absent = no shard has WAL-resident blocks, and GC is
     // unconstrained, which is the behaviour when nothing registers a floor.
     block_retention_floor_by_shard: HashMap<ShardId, u64>,
@@ -1889,7 +1889,7 @@ impl LocalWriteAheadLogStore {
     /// Hold WAL reclaim at `sequence`: records at or above it may still be the only copy of a
     /// block's bytes, so GC must not reclaim past it.
     ///
-    /// Set this to the dump watermark and advance it as blocks are dumped into bands. Until a
+    /// Set this to the dump watermark and advance it as blocks are dumped into slabs. Until a
     /// shard registers a floor its GC is unconstrained, so this is inert for callers that do not
     /// put blocks in the WAL.
     /// Whether two handles address the SAME underlying log (clones of one store). Registrations
@@ -2048,7 +2048,7 @@ impl LocalWriteAheadLogStore {
         // sequence for exactly this continuity reason. Clamp the retain floor to keep the tail.
         let effective_retain = retain_from_sequence.min(last_sequence);
         // Never reclaim past the block-retention floor. A record at or above it may carry the
-        // only copy of a block's bytes -- a block in the WAL has no copy in a band until it is
+        // only copy of a block's bytes -- a block in the WAL has no copy in a slab until it is
         // dumped -- so removing it loses data that the served index still points at, and the
         // read fails at some later, unrelated moment.
         let floor = inner
@@ -7378,7 +7378,7 @@ mod tests {
 
     #[test]
     fn advancing_the_floor_lets_the_held_back_records_go() {
-        // The floor is the dump watermark: as blocks are dumped into bands the WAL stops being
+        // The floor is the dump watermark: as blocks are dumped into slabs the WAL stops being
         // their only copy, and the records become reclaimable.
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
@@ -9038,7 +9038,7 @@ mod tests {
     /// Unlinking pieces honours the block-retention floor.
     ///
     /// A record at or above that floor may hold the only copy of a block's bytes -- a block in the
-    /// log has no copy in a band until it is dumped -- so reclaim narrows the caller's retain point
+    /// log has no copy in a slab until it is dumped -- so reclaim narrows the caller's retain point
     /// to it. Dropping whole pieces has to respect the narrowed point too, or reclaim removes
     /// exactly what the floor exists to keep, and the loss surfaces later as a read that fails.
     #[test]

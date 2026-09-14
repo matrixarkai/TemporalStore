@@ -14,9 +14,9 @@ use super::{
 
 /// A block record carries only what the index cannot tell a reader.
 ///
-/// The index entry already holds the object id, the block id, the routing bucket and the band,
-/// so a copy in every record said nothing new -- and the band was derivable twice over, being
-/// `band_id_for_slab` of the slab the record already sits in. Those are gone.
+/// The index entry already holds the object id, the block id, the routing bucket and the slab,
+/// so a copy in every record said nothing new -- and the grouping id was derivable twice over,
+/// being the id of the slab the record already sits in. Those are gone.
 ///
 /// What is left is the checksum and the length, at constant offsets, so any field is one slice
 /// rather than a walk. The length stays in the record even though the address carries it too:
@@ -166,7 +166,7 @@ struct PageRecordHeader {
     page_id: Option<u64>,
     object_id: Option<u64>,
     routing_bucket: Option<u32>,
-    band_id: Option<u64>,
+    slab_id: Option<u64>,
     pub(super) compression: PageRecordCompression,
 }
 
@@ -196,7 +196,7 @@ pub(super) fn encode_page_record(
     page_id: u64,
     object_id: Option<u64>,
     routing_bucket: Option<u32>,
-    band_id: u64,
+    slab_id: u64,
     options: BlockStoreOptions,
 ) -> Result<EncodedPageRecord, BlockStoreError> {
     let checksum_field = page_record_checksum_field(payload);
@@ -222,9 +222,10 @@ pub(super) fn encode_page_record(
             format!("block of {block_size} bytes does not fit a block size field"),
         ));
     }
-    // The object id, the routing bucket and the band are the index's to remember. The band was
-    // derivable from the slab on top of that. None of them are written here any more.
-    let _ = (object_id, routing_bucket, band_id);
+    // The object id, the routing bucket and the slab id are the index's to remember. The slab id
+    // was derivable from the record's own position on top of that. None of them are written here
+    // any more.
+    let _ = (object_id, routing_bucket, slab_id);
     let codec = match compression {
         PageRecordCompression::None => u32::from(BLOCK_RECORD_COMPRESSION_NONE),
         PageRecordCompression::Zstd => u32::from(BLOCK_RECORD_COMPRESSION_ZSTD),
@@ -336,13 +337,13 @@ pub(super) fn decode_page_record(
             ));
         }
     }
-    if let (Some(address_slab_id), Some(record_slab_id)) = (address.band_id(), header.band_id)
+    if let (Some(address_slab_id), Some(record_slab_id)) = (address.slab_id(), header.slab_id)
     {
         if address_slab_id != record_slab_id {
             return Err(corrupt_page_envelope(
                 address,
                 format!(
-                    "band id mismatch: address {address_slab_id}, record {record_slab_id}"
+                    "slab id mismatch: address {address_slab_id}, record {record_slab_id}"
                 ),
             ));
         }
@@ -514,7 +515,7 @@ fn parse_page_record_header(
         // The index holds these. A record that repeated them could only ever agree or be wrong.
         object_id: None,
         routing_bucket: None,
-        band_id: None,
+        slab_id: None,
         compression,
     })
 }
@@ -874,7 +875,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                     compact_slab_address: address.compact_slab_address(),
                     compact_slab_id: address.compact_slab_id(),
                     compact_slab_offset: address.compact_slab_offset(),
-                    storage_slab_id: header.band_id,
+                    storage_slab_id: header.slab_id,
                     object_id: header.object_id,
                     model_id: None,
                     block_id: header.page_id,
@@ -956,7 +957,7 @@ mod page_record_format_tests {
     /// What the record carries comes back; what the index carries does not.
     ///
     /// A block record holds a checksum, its size and its block id. The object id, the routing
-    /// bucket and the band used to be repeated here as well, where they could only ever agree
+    /// bucket and the slab id used to be repeated here as well, where they could only ever agree
     /// with the index or be wrong. They are gone, and this states that they are: reading them
     /// back as `None` is the contract, not an oversight.
     #[test]
@@ -985,7 +986,7 @@ mod page_record_format_tests {
         assert_eq!(header.stored_len, payload.len());
         assert_eq!(header.object_id, None, "the index holds the object id");
         assert_eq!(header.routing_bucket, None, "the index holds the routing bucket");
-        assert_eq!(header.band_id, None, "the band is the slab the record sits in");
+        assert_eq!(header.slab_id, None, "the index holds the slab the record sits in");
         let decoded = decode_page_record(&encoded.bytes, &address()).expect("decode");
         assert_eq!(decoded.payload, payload);
     }
@@ -1083,7 +1084,7 @@ mod reused_zstd_context_tests {
             // The record no longer carries these; the index does.
             object_id: None,
             routing_bucket: None,
-            band_id: None,
+            slab_id: None,
             compression: PageRecordCompression::Zstd,
         }
     }

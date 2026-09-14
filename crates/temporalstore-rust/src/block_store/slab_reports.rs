@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! LocalBlockStore band descriptor/summary + stream-backed band runtime report, extracted from block_store.rs.
+//! LocalBlockStore slab descriptor/summary + stream-backed slab runtime report, extracted from block_store.rs.
 
 use super::*;
 
-/// Map a band descriptor's lifecycle state to the index-log `SlabCatalogState` (1:1). Kept a free fn
+/// Map a slab descriptor's lifecycle state to the index-log `SlabCatalogState` (1:1). Kept a free fn
 /// so both directions of the MANIFEST-CONFORMANCE FOLD conversion share one mapping.
 fn slab_state_to_catalog_state(state: BlockStoreSlabState) -> crate::index_log::SlabCatalogState {
     match state {
@@ -30,7 +30,7 @@ impl LocalBlockStore {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .bands
+            .slabs
             .values()
             .cloned()
             .collect()
@@ -53,38 +53,38 @@ impl LocalBlockStore {
             .slabs_skipped_reinspection_on_open
     }
 
-    /// MANIFEST-CONFORMANCE FOLD: project the in-memory band catalog into the DURABLE `SlabCatalogEntry`
-    /// subset kept in the index-log band catalog. Only the durable fields ride in
-    /// the fold; the band descriptor's diagnostic fields (readable_prefix / corruption / errors)
+    /// MANIFEST-CONFORMANCE FOLD: project the in-memory slab catalog into the DURABLE `SlabCatalogEntry`
+    /// subset kept in the index-log slab catalog. Only the durable fields ride in
+    /// the fold; the slab descriptor's diagnostic fields (readable_prefix / corruption / errors)
     /// are deliberately dropped -- they are recomputed on load by scanning the slab, exactly as
-    /// this design does not persist them. `band_version` stamps every entry so a folded anchor
+    /// this design does not persist them. `slab_version` stamps every entry so a folded anchor
     /// carries a monotonically-versioned snapshot.
     pub fn slab_catalog(&self, slab_version: u64) -> Vec<crate::index_log::SlabCatalogEntry> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .bands
+            .slabs
             .values()
-            .map(|band| crate::index_log::SlabCatalogEntry {
-                block_slab_id: band.block_slab_id,
-                state: slab_state_to_catalog_state(band.state),
-                physical_bytes: band.physical_bytes,
-                logical_bytes: band.logical_bytes,
-                created_unix_ms: band.created_unix_ms,
-                updated_unix_ms: band.updated_unix_ms,
-                first_page_id: band.first_page_id,
-                last_page_id: band.last_page_id,
+            .map(|slab| crate::index_log::SlabCatalogEntry {
+                block_slab_id: slab.block_slab_id,
+                state: slab_state_to_catalog_state(slab.state),
+                physical_bytes: slab.physical_bytes,
+                logical_bytes: slab.logical_bytes,
+                created_unix_ms: slab.created_unix_ms,
+                updated_unix_ms: slab.updated_unix_ms,
+                first_page_id: slab.first_page_id,
+                last_page_id: slab.last_page_id,
                 version: slab_version,
             })
             .collect()
     }
 
-    /// MANIFEST-CONFORMANCE FOLD recovery: seed the band catalog from a folded `SlabCatalogEntry` snapshot
+    /// MANIFEST-CONFORMANCE FOLD recovery: seed the slab catalog from a folded `SlabCatalogEntry` snapshot
     /// recovered from the index-log MetaItem. Applied on load AFTER the block store has already
     /// reconciled from durable pages (reconcile stays authoritative for on-disk physical bytes
     /// and diagnostics), so this only RESTORES the catalog fields a pure disk scan cannot infer:
     /// the exact lifecycle state, the creation/update timestamps, the logical byte count, and the
-    /// first/last page-id range. It never deletes a band reconcile found on disk and never
+    /// first/last page-id range. It never deletes a slab reconcile found on disk and never
     /// downgrades physical bytes below what the slab actually holds -- so it cannot lose durable
     /// state; it is a metadata refinement layered on the lossless disk-derived catalog. Persists
     /// the merged manifest once. Returns whether anything changed.
@@ -97,32 +97,32 @@ impl LocalBlockStore {
         let mut changed = false;
         for entry in catalog {
             let state = catalog_state_to_slab_state(entry.state);
-            match inner.bands.get_mut(&entry.block_slab_id) {
-                Some(band) => {
-                    let before = band.clone();
+            match inner.slabs.get_mut(&entry.block_slab_id) {
+                Some(slab) => {
+                    let before = slab.clone();
                     // Never override the live ACTIVE slab's disk-derived state (it holds the open
                     // write frontier); for every other slab adopt the folded lifecycle state.
                     if entry.block_slab_id != active {
-                        band.state = state;
+                        slab.state = state;
                     }
-                    band.created_unix_ms = band.created_unix_ms.or(entry.created_unix_ms);
-                    if band.updated_unix_ms.is_none() {
-                        band.updated_unix_ms = entry.updated_unix_ms;
+                    slab.created_unix_ms = slab.created_unix_ms.or(entry.created_unix_ms);
+                    if slab.updated_unix_ms.is_none() {
+                        slab.updated_unix_ms = entry.updated_unix_ms;
                     }
-                    if band.logical_bytes == 0 {
-                        band.logical_bytes = entry.logical_bytes;
+                    if slab.logical_bytes == 0 {
+                        slab.logical_bytes = entry.logical_bytes;
                     }
-                    band.first_page_id = band.first_page_id.or(entry.first_page_id);
-                    band.last_page_id = band.last_page_id.or(entry.last_page_id);
-                    changed |= *band != before;
+                    slab.first_page_id = slab.first_page_id.or(entry.first_page_id);
+                    slab.last_page_id = slab.last_page_id.or(entry.last_page_id);
+                    changed |= *slab != before;
                 }
                 None => {
-                    // A band the disk scan did not surface (e.g. a purged/reclaimed slab with no
+                    // A slab the disk scan did not surface (e.g. a purged/reclaimed slab with no
                     // live file): install it from the fold so accounting/GC see the full history.
-                    inner.bands.insert(
+                    inner.slabs.insert(
                         entry.block_slab_id,
                         BlockStoreSlabDescriptor {
-                            band_id: band_id_for_slab(entry.block_slab_id),
+                            stored_slab_id: entry.block_slab_id,
                             block_slab_id: entry.block_slab_id,
                             state,
                             physical_bytes: entry.physical_bytes,
@@ -144,7 +144,7 @@ impl LocalBlockStore {
         }
         if changed {
             let root = inner.root.clone();
-            persist_slab_manifest(&root, &inner.bands)?;
+            persist_slab_manifest(&root, &inner.slabs)?;
         }
         Ok(changed)
     }
@@ -155,7 +155,7 @@ impl LocalBlockStore {
                 .inner
                 .lock()
                 .expect("block store lock poisoned")
-                .bands,
+                .slabs,
         )
     }
 
@@ -163,22 +163,22 @@ impl LocalBlockStore {
         &self,
     ) -> Result<StreamBackedSlabRuntimeReport, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let bands = inner.bands.clone();
+        let slabs = inner.slabs.clone();
         let root = inner.root.clone();
         let options = inner.options;
         let stats = inner.stats;
         let slab_manifest_reconciled_on_open = inner.slab_manifest_reconciled_on_open;
         drop(inner);
 
-        let summary = summarize_slabs(&bands);
-        let slab_usage = compute_slab_usage(&bands);
-        let slab_stats_ready = slab_usage.iter().all(|band| {
-            band.band_id == band_id_for_slab(band.block_slab_id)
-                && band.page_store_used_bytes
-                    == band
+        let summary = summarize_slabs(&slabs);
+        let slab_usage = compute_slab_usage(&slabs);
+        let slab_stats_ready = slab_usage.iter().all(|slab| {
+            slab.stored_slab_id == slab.block_slab_id
+                && slab.page_store_used_bytes
+                    == slab
                         .live_page_store_used_bytes
-                        .saturating_add(band.reclaimable_page_store_used_bytes)
-                        .saturating_add(band.purged_page_store_used_bytes)
+                        .saturating_add(slab.reclaimable_page_store_used_bytes)
+                        .saturating_add(slab.purged_page_store_used_bytes)
         });
         let slab_reports = {
             let mut reports = Vec::new();
@@ -199,17 +199,17 @@ impl LocalBlockStore {
             .into_iter()
             .map(|report| report.block_slab_id)
             .collect::<BTreeSet<_>>();
-        let manifest_missing_stream_slabs = bands
+        let manifest_missing_stream_slabs = slabs
             .values()
-            .filter(|band| {
-                !matches!(band.state, BlockStoreSlabState::Purged)
-                    && !live_slab_ids.contains(&band.block_slab_id)
-                    && !delayed_slab_ids.contains(&band.block_slab_id)
+            .filter(|slab| {
+                !matches!(slab.state, BlockStoreSlabState::Purged)
+                    && !live_slab_ids.contains(&slab.block_slab_id)
+                    && !delayed_slab_ids.contains(&slab.block_slab_id)
             })
             .count() as u64;
         let manifest_extra_stream_slabs = live_slab_ids
             .iter()
-            .filter(|block_slab_id| !bands.contains_key(block_slab_id))
+            .filter(|block_slab_id| !slabs.contains_key(block_slab_id))
             .count() as u64;
         let slab_manifest_disk_consistent =
             manifest_missing_stream_slabs == 0 && manifest_extra_stream_slabs == 0;
@@ -265,21 +265,21 @@ impl LocalBlockStore {
                 .saturating_add(summary.purged_slabs)
                 > 0;
         let slab_manifest_ready = slab_manifest_path(&root).exists()
-            && !bands.is_empty()
-            && bands
+            && !slabs.is_empty()
+            && slabs
                 .values()
-                .all(|band| band.band_id == band_id_for_slab(band.block_slab_id));
+                .all(|slab| slab.stored_slab_id == slab.block_slab_id);
         let slab_manifest_rebuild_ready = slab_manifest_ready
             && slab_reports.iter().all(|report| {
-                bands
+                slabs
                     .get(&report.block_slab_id)
-                    .map(|band| {
-                        band.first_page_id == report.first_page_id
-                            && band.last_page_id == report.last_page_id
-                            && band.logical_bytes == report.logical_bytes
-                            && band.readable_prefix_physical_bytes
+                    .map(|slab| {
+                        slab.first_page_id == report.first_page_id
+                            && slab.last_page_id == report.last_page_id
+                            && slab.logical_bytes == report.logical_bytes
+                            && slab.readable_prefix_physical_bytes
                                 == report.readable_prefix_physical_bytes
-                            && band.has_corruption == report.has_corruption
+                            && slab.has_corruption == report.has_corruption
                     })
                     .unwrap_or(false)
             });
@@ -288,15 +288,15 @@ impl LocalBlockStore {
                 .iter()
                 .filter(|report| report.has_corruption)
                 .all(|report| {
-                    bands
+                    slabs
                         .get(&report.block_slab_id)
-                        .map(|band| {
-                            band.has_corruption
-                                && band.first_error_offset == report.first_error_offset
-                                && band.readable_prefix_physical_bytes
+                        .map(|slab| {
+                            slab.has_corruption
+                                && slab.first_error_offset == report.first_error_offset
+                                && slab.readable_prefix_physical_bytes
                                     == report.readable_prefix_physical_bytes
-                                && band.first_page_id == report.first_page_id
-                                && band.last_page_id == report.last_page_id
+                                && slab.first_page_id == report.first_page_id
+                                && slab.last_page_id == report.last_page_id
                         })
                         .unwrap_or(false)
                 });
@@ -363,7 +363,7 @@ impl LocalBlockStore {
         Ok(StreamBackedSlabRuntimeReport {
             runtime_ready,
             slab_lifecycle_states,
-            band_count: bands.len() as u64,
+            slab_count: slabs.len() as u64,
             active_slabs: summary.active_slabs,
             sealed_slabs: summary.sealed_slabs,
             delayed_destroy_slabs: summary.delayed_destroy_slabs,
