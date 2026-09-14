@@ -876,6 +876,13 @@ pub(crate) fn execute_on_shard(
             member,
             window_ms,
         } => {
+            // Lazy expiry, as every other kind's arms do. Without it a key reads as
+            // live for the whole interval between its deadline and whichever sweep
+            // round happens to collect it -- and these two fail CLOSED while it lasts:
+            // a lapsed seen-set still answers "duplicate" and suppresses work that
+            // should run, a lapsed bucket still answers "denied" and keeps rejecting a
+            // caller whose limit was meant to have been discarded.
+            remove_if_expired(shard, &key);
             let now = resolve_now_ms();
             let floor = now.saturating_sub(window_ms);
             // No page backs a seen-set; it lives in the index snapshot. So the outcome carries
@@ -920,15 +927,35 @@ pub(crate) fn execute_on_shard(
                 value: i64::from(duplicate),
             }
         }
-        Command::SeenCard { key } => CommandResponse::Integer {
-            value: shard.seen.get(&key).map_or(0, |seen| seen.by_member.len()) as i64,
-        },
+        Command::SeenCard { key } => {
+            // A count is a read like any other: a set whose deadline has passed counts zero,
+            // not whatever it held when the deadline arrived. The removal is a real change to
+            // the shard, so it is reported as one -- the same shape `StringGet` and
+            // `CommonExists` use.
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            CommandResponse::Integer {
+                value: shard.seen.get(&key).map_or(0, |seen| seen.by_member.len()) as i64,
+            }
+        }
         Command::BucketTake {
             key,
             tokens,
             capacity,
             refill_per_sec,
         } => {
+            // Lazy expiry, as every other kind's arms do. Without it a key reads as
+            // live for the whole interval between its deadline and whichever sweep
+            // round happens to collect it -- and these two fail CLOSED while it lasts:
+            // a lapsed seen-set still answers "duplicate" and suppresses work that
+            // should run, a lapsed bucket still answers "denied" and keeps rejecting a
+            // caller whose limit was meant to have been discarded.
+            remove_if_expired(shard, &key);
             let now = resolve_now_ms();
             let current = shard.buckets.get(&key).copied();
             let (allowed, remaining, retry_after_ms, next) =
@@ -993,6 +1020,12 @@ pub(crate) fn execute_on_shard(
             capacity,
             refill_per_sec,
         } => {
+            // A peek that drops a lapsed bucket has changed the shard, so it says so -- the
+            // answer below then describes a bucket at full capacity, which is what the caller
+            // would get from the next take.
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+            }
             let now = resolve_now_ms();
             let current = shard.buckets.get(&key).copied();
             let (allowed, remaining, retry_after_ms, _) =

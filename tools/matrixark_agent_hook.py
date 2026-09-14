@@ -40,6 +40,7 @@ from typing import Any
 
 try:
     from tools.matrixark_codex_hook import (
+        DEFAULT_IDLE_COMMIT_TIMEOUT_MS,
         build_server,
         call_tool,
         close_server_best_effort,
@@ -70,6 +71,7 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_codex_hook import (  # type: ignore
+        DEFAULT_IDLE_COMMIT_TIMEOUT_MS,
         build_server,
         call_tool,
         close_server_best_effort,
@@ -101,7 +103,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 Json = dict[str, Any]
-DEFAULT_IDLE_COMMIT_TIMEOUT_MS = 120_000
 
 
 BEFORE_LLM_EVENTS = {

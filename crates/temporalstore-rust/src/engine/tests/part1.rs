@@ -10336,3 +10336,259 @@ fn what_carrying_the_page_in_the_record_costs() {
         eprintln!("  {value_len:>7}   {carried:>13}   {uncarried:>15}   {ratio:>5.2}x");
     }
 }
+
+/// A cycle request with every stage OFF except prepare.
+///
+/// Compaction rolls a slab of its own when it starts a round, and reclaim can destroy one, so a
+/// round with every stage enabled could change the slab set for a reason that has nothing to do
+/// with prepare -- and the roll assertions below would still pass with the prepare body deleted.
+/// Turning the rest off is what makes a roll attributable to the stage the test names.
+#[cfg(test)]
+fn only_prepare_may_roll() -> StorageManagerCycleRequest {
+    StorageManagerCycleRequest {
+        enable_wal_reclaim: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_page_reclaim: false,
+        enable_page_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    }
+}
+
+/// The maintenance round's own fixture for the prepare stage: a shard whose active data slab is
+/// already at `target`, so the stage has work and a round that does nothing is a failure rather
+/// than a shrug.
+///
+/// Returns the engine, its temp dir (which must outlive it) and the slab id the writes filled.
+#[cfg(test)]
+fn shard_with_a_full_data_slab(
+    target: u64,
+) -> (TemporalEngine, tempfile::TempDir, u64) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let mut written = 0usize;
+    while !engine
+        .block_store()
+        .needs_slab_preparation_with_target(target)
+    {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("prepare-{written:06}"),
+                value: vec![b'p'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {written}: {:?}", response.status);
+        written += 1;
+        assert!(
+            written < 20_000,
+            "wrote {written} records without reaching a {target}-byte slab target",
+        );
+    }
+    let filled = engine
+        .block_store()
+        .slab_ids()
+        .expect("slab ids")
+        .into_iter()
+        .max()
+        .expect("the writes created at least one slab");
+    (engine, dir, filled)
+}
+
+/// The prepare stage pre-allocates the next data slab, instead of only reporting that it did.
+///
+/// `run_storage_manager_once` has rolled here since the stage was written. This driver -- the one
+/// the data-node worker and the embedded proxy both run -- had a prepare stage whose body was a
+/// report and nothing else, so on those deployments every slab boundary was paid for inline by
+/// one unlucky client append.
+///
+/// THE HALVES ARE ASSERTED SEPARATELY. A round can roll a slab and not say so, and it can name a
+/// slab it did not roll; a single combined check passes on either of those.
+#[test]
+fn the_prepare_stage_rolls_the_next_data_slab() {
+    const TARGET: u64 = 64 * 1024;
+    let (engine, _dir, filled) = shard_with_a_full_data_slab(TARGET);
+
+    // DENOMINATOR: the stage has work. Without this a store that never reached the target would
+    // make "no roll" the correct answer and the assertions below vacuous.
+    assert!(
+        engine
+            .block_store()
+            .needs_slab_preparation_with_target(TARGET),
+        "the fixture did not fill a slab to the target, so prepare has nothing to do",
+    );
+
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_prepare: true,
+        prepare_slab_target_bytes: TARGET,
+        ..only_prepare_may_roll()
+    });
+
+    // HALF ONE: a slab was actually rolled.
+    let after = engine
+        .block_store()
+        .slab_ids()
+        .expect("slab ids")
+        .into_iter()
+        .max()
+        .expect("slabs exist");
+    assert!(
+        after > filled,
+        "the round left the store on slab {after} with the active slab already at the \
+{TARGET}-byte target: prepare rolled nothing, so the next client append pays for the roll",
+    );
+    assert!(
+        !engine
+            .block_store()
+            .needs_slab_preparation_with_target(TARGET),
+        "the active slab is still at target after prepare ran",
+    );
+
+    // HALF TWO: the round SAYS which slab it rolled to. A stage that acts silently cannot be
+    // read by an operator, and `applied` on this stage only ever meant "the stage ran".
+    let prepare = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "prepare")
+        .expect("the round reports a prepare stage");
+    assert_eq!(
+        prepare.prepared_block_slab_id,
+        Some(after),
+        "the prepare stage rolled to slab {after} and reported {:?}",
+        prepare.prepared_block_slab_id,
+    );
+    assert!(prepare.applied, "prepare reported applied=false while rolling a slab");
+    assert!(
+        report.errors.is_empty(),
+        "prepare reported errors: {:?}",
+        report.errors,
+    );
+}
+
+/// Prepare is a no-op while the active slab has room, and says so.
+///
+/// Without this the fix above could be "roll on every round", which would mint an empty slab per
+/// cycle forever -- a worse failure than the one it replaces, and one that the roll assertion
+/// alone would not catch.
+#[test]
+fn the_prepare_stage_does_not_roll_a_slab_with_room() {
+    const TARGET: u64 = 64 * 1024;
+    let (engine, _dir, filled) = shard_with_a_full_data_slab(TARGET);
+    // Roll once, so the active slab is fresh and empty.
+    let first = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_prepare: true,
+        prepare_slab_target_bytes: TARGET,
+        ..only_prepare_may_roll()
+    });
+    // DENOMINATOR: the first round DID roll, so the second round's "no roll" is a decision about
+    // a fresh slab and not a store that never reached the target at all.
+    let rolled = first
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "prepare")
+        .and_then(|stage| stage.prepared_block_slab_id);
+    assert!(
+        rolled.is_some() && rolled > Some(filled),
+        "the first round did not roll, so this measures nothing (filled {filled}, rolled {rolled:?})",
+    );
+
+    let before = engine.block_store().slab_ids().expect("slab ids").len();
+    let second = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_prepare: true,
+        prepare_slab_target_bytes: TARGET,
+        ..only_prepare_may_roll()
+    });
+    let after = engine.block_store().slab_ids().expect("slab ids").len();
+    assert_eq!(
+        after, before,
+        "a second round rolled again on a slab with room: prepare mints an empty slab per cycle",
+    );
+    let prepare = second
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "prepare")
+        .expect("the round reports a prepare stage");
+    assert_eq!(
+        prepare.prepared_block_slab_id, None,
+        "prepare reported a roll it did not perform",
+    );
+}
+
+/// A round that is not allowed to prepare does not roll, at either of the two switches.
+///
+/// `enable_prepare: false` is the operator switch; `dry_run` is the "tell me what you would do"
+/// one. Both are asserted here because they are separate conditions in the stage and a single
+/// combined check would pass with either of them broken.
+#[test]
+fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
+    const TARGET: u64 = 64 * 1024;
+
+    let (engine, _dir, filled) = shard_with_a_full_data_slab(TARGET);
+    // DENOMINATOR, stated once for both arms: this store IS at target, so an enabled round here
+    // would roll.
+    assert!(
+        engine
+            .block_store()
+            .needs_slab_preparation_with_target(TARGET),
+        "the fixture did not fill a slab, so neither arm below is refusing anything",
+    );
+
+    let disabled = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_prepare: false,
+        prepare_slab_target_bytes: TARGET,
+        ..only_prepare_may_roll()
+    });
+    let after_disabled = engine
+        .block_store()
+        .slab_ids()
+        .expect("slab ids")
+        .into_iter()
+        .max()
+        .expect("slabs exist");
+    assert_eq!(
+        after_disabled, filled,
+        "a round with prepare disabled rolled a slab anyway",
+    );
+    assert_eq!(
+        disabled
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "prepare")
+            .and_then(|stage| stage.prepared_block_slab_id),
+        None,
+    );
+
+    let dry = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_prepare: true,
+        dry_run: true,
+        prepare_slab_target_bytes: TARGET,
+        ..only_prepare_may_roll()
+    });
+    let after_dry = engine
+        .block_store()
+        .slab_ids()
+        .expect("slab ids")
+        .into_iter()
+        .max()
+        .expect("slabs exist");
+    assert_eq!(after_dry, filled, "a dry run rolled a slab");
+    assert_eq!(
+        dry.stages
+            .iter()
+            .find(|stage| stage.stage == "prepare")
+            .and_then(|stage| stage.prepared_block_slab_id),
+        None,
+    );
+}

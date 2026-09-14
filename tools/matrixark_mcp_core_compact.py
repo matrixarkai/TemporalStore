@@ -60,6 +60,9 @@ __all__ = ['HOT_SERVING_RECORD_TYPES', 'COMPACT_SCOPE_RECORD_TYPES', 'COMPACT_TI
 # below. Appending to the lower block broke this module with a NameError at import.
 try:
     from .matrixark_mcp_serving_records import (  # noqa: F401
+        COMPACT_DERIVED_SCOPE_FIELDS,
+        COMPACT_SCOPE_RECORD_TYPES,
+        COMPACT_TIMESTAMP_RECORD_TYPES,
         COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS,
         COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
@@ -68,10 +71,15 @@ try:
         HOT_EMBEDDING_COMPACT_TYPES,
         HOT_EMBEDDING_LINEAGE_FIELDS,
         HOT_SERVING_RECORD_TYPES,
+        HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES,
         NODE_PATH_HEAVY_RECORD_TYPES,
+        TOPOLOGY_DERIVED_PATH_RECORD_TYPES,
     )
 except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_serving_records import (  # noqa: F401
+        COMPACT_DERIVED_SCOPE_FIELDS,
+        COMPACT_SCOPE_RECORD_TYPES,
+        COMPACT_TIMESTAMP_RECORD_TYPES,
         COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS,
         COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
@@ -80,29 +88,12 @@ except ImportError:  # Direct script execution from tools/.
         HOT_EMBEDDING_COMPACT_TYPES,
         HOT_EMBEDDING_LINEAGE_FIELDS,
         HOT_SERVING_RECORD_TYPES,
+        HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES,
         NODE_PATH_HEAVY_RECORD_TYPES,
+        TOPOLOGY_DERIVED_PATH_RECORD_TYPES,
     )
 
 
-COMPACT_SCOPE_RECORD_TYPES = HOT_SERVING_RECORD_TYPES | {
-    "context_node",
-    "context_child_ref",
-    "context_summary",
-    "context_summary_dirty",
-    "context_compression_event",
-    "context_event_retention_marker",
-    "resource_manifest",
-    "resource_registry",
-    "skill_manifest",
-    "skill_registry",
-    "skill_registry_update",
-}
-COMPACT_TIMESTAMP_RECORD_TYPES = COMPACT_SCOPE_RECORD_TYPES | {
-    "session_buffer_event",
-    "matrixark_async_pipeline_task",
-}
-TOPOLOGY_DERIVED_PATH_RECORD_TYPES = {"context_child_ref"}
-HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES = {"batch_l0"}
 
 
 try:  # the implementation lives in matrixark_mcp_serving_records; this module re-exports it
@@ -132,7 +123,6 @@ CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 # Fields that are useful while debugging a request but are derivable from
 # scope_key, event_time_key, node_path, or ContextEmbedding metadata. Keep them
 # out of hot serving records unless the caller explicitly asks for debug data.
-COMPACT_DERIVED_SCOPE_FIELDS = {"_explicit_scope_keys"}
 
 
 def compact_record_scope(record: Json) -> Json:
