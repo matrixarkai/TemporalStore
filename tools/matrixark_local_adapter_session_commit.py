@@ -51,6 +51,12 @@ def _load_skill_discovery():
     return mod
 
 
+#: The record types skill discovery dedupes against. Named once because the narrowed read asks for
+#: exactly these and the loop keeps exactly these: ask for one fewer and rows are lost with no error
+#: anywhere, which is the failure the two-list shape invites.
+SKILL_DISCOVERY_RECORD_TYPES = ("skill_manifest", "skill_registry")
+
+
 class _LocalAdapterSessionCommitMixin:
     def _maybe_discover_skills(self, scope: Json, messages: list, *, final_session_boundary: bool) -> Json | None:
         """Mine reusable skills from the committed session and persist them (gated, safe).
@@ -65,9 +71,19 @@ class _LocalAdapterSessionCommitMixin:
             _skill_discovery = _load_skill_discovery()
             session_id = ":".join(str(part) for part in session_buffer_key_from_scope(scope))
             events = _skill_discovery.events_from_leaned_messages(messages, session_id)
+            # The same narrowing the two reads below use, for the same reason: this asked the
+            # store for EVERYTHING and then kept two record types out of it. It runs once per
+            # final session boundary, so the cost is a whole-store read per finished session.
+            #
+            # `_commit_records_of_types` is what makes it safe to narrow here. A scan that could
+            # not answer returns None, not [], and None sends this back to the full read -- which
+            # matters more here than anywhere else in the commit path, because these rows are what
+            # discovery DEDUPES against. An empty answer that was really a failure would look like
+            # "this user has no skills yet" and discovery would re-capture every one of them,
+            # changing stored data rather than just reading slowly.
             local_records = [
-                record for record in self.read_all()
-                if record.get("record_type") in {"skill_manifest", "skill_registry"}
+                record for record in self._commit_records_of_types(list(SKILL_DISCOVERY_RECORD_TYPES))
+                if record.get("record_type") in set(SKILL_DISCOVERY_RECORD_TYPES)
             ]
             return _skill_discovery.discover_capture_for_session(
                 events, scope=scope, ingest_records=self.append_many,
