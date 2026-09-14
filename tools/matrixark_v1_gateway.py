@@ -1860,7 +1860,17 @@ def _model_config_snapshot() -> Json:
     # put their key, so a second answer here is worse than none.
     extraction_key_env = _gwconfig._env_name(_gwconfig.SETTINGS_BY_KEY["extraction.api_key"], {})
     embedding_key_env = _gwconfig._env_name(_gwconfig.SETTINGS_BY_KEY["embedding.api_key"], {})
-    require_model_embeddings = _env("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS") in {"1", "true", "yes", "on"}
+    # _env_bool, not a membership test against the same four words: `_env` strips but does not
+    # lowercase, so `ON`, `TRUE`, `Yes` read as off here while the engine that ENFORCES this flag
+    # reads them as on, and so does mcp_embeddings._truthy_env. A snapshot that reports a
+    # guarantee as off while its named enforcer has it on is worse than no snapshot.
+    #
+    # The RAW value, not `_env`'s: _env_bool returns its default only for None, and `_env`
+    # answers "" for an unset variable. Handing it the raw value is what the other four call
+    # sites in this file do, and it is what keeps the `False` below meaningful rather than
+    # decorative. _env_bool strips for itself.
+    require_model_embeddings = _env_bool(
+        os.environ.get("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS"), False)
 
     extraction: Json = {
         "provider": extraction_provider,
@@ -2031,8 +2041,11 @@ def _model_config_snapshot() -> Json:
     _extraction_choice = (_env("MATRIXARK_UNDERSTANDING_PROVIDER")
                           or _env("MATRIXARK_EXTRACTION_PROVIDER"))
     _summary_writes = _gwconfig.summary_provider_effect(_summary_raw, _extraction_choice)
-    _require_model_summaries = _env("MATRIXARK_REQUIRE_MODEL_SUMMARIES") in {"1", "true", "yes",
-                                                                            "on"}
+    # Same as require_model_embeddings above, and this one is reported beside
+    # "require_model_enforced_by": "engine" -- so the case-sensitive read made the snapshot
+    # contradict the component it names in the very next field.
+    _require_model_summaries = _env_bool(
+        os.environ.get("MATRIXARK_REQUIRE_MODEL_SUMMARIES"), False)
     summary = {
         "provider": _summary_choice,
         # Only when the variable is absent. Set-to-empty is a choice of rules, not a deferral.
