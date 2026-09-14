@@ -92,22 +92,28 @@ def dashboard_message_rows(records: list[Json], scope: Json) -> list[Json]:
     return rows
 
 
-def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
-    status_rank = {"pending": 0, "extraction_committed": 1, "summary_completed": 2}
-    latest_by_task: dict[int, Json] = {}
-    for row in rows:
-        try:
-            task_hash = int(row.get("task_hash") or row.get("event_id_hash"))
-        except (TypeError, ValueError):
-            continue
-        current = latest_by_task.get(task_hash)
-        current_rank = status_rank.get(str(current.get("status") or ""), -1) if current else -1
-        row_rank = status_rank.get(str(row.get("status") or ""), -1)
-        current_time = int(current.get("updated_at_ms") or current.get("created_at_ms") or 0) if current else -1
-        row_time = int(row.get("updated_at_ms") or row.get("created_at_ms") or 0)
-        if current is None or (row_rank, row_time) >= (current_rank, current_time):
-            latest_by_task[task_hash] = row
-    return list(latest_by_task.values())
+# This module kept its own copy of the status ranking, and that copy knows three statuses where
+# the live one knows nine. The selection is `(rank, time) >= (rank, time)`, so RANK DOMINATES and
+# an unknown status ranks -1.
+#
+# Here every idle_commit_* status is unknown, so they all tie at -1 and the timestamp decides.
+# That is right whenever the records arrive in order and wrong when they do not:
+#
+#     scheduled t=100, skipped   t=200   live: skipped     orphan: skipped
+#     scheduled t=200, skipped   t=100   live: skipped     orphan: SCHEDULED
+#     scheduled t=200, committed t=100   live: committed   orphan: SCHEDULED
+#
+# A task whose terminal record carries the earlier stamp reads as still scheduled through this
+# module and as finished through the live one.
+#
+# The live copy also carries the note explaining why `idle_commit_skipped` is in its map at all:
+# left out, it ranked -1 BELOW the `idle_commit_scheduled` it completes, so the completion lost to
+# its own precursor. That is the same failure this copy still has for all five of the statuses it
+# does not know.
+try:  # the implementation lives in matrixark_mcp_async_readiness; this module re-exports it
+    from tools.matrixark_mcp_async_readiness import latest_async_pipeline_rows
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_async_readiness import latest_async_pipeline_rows
 
 
 def dashboard_rows_for_table(records: list[Json], table: str, scope: Json) -> list[Json]:

@@ -24,58 +24,30 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 
-def serving_memory_layer_budget(memory_layer_budget: Any) -> Json:
-    if not isinstance(memory_layer_budget, dict):
-        return {}
-    compact = dict(memory_layer_budget)
-    for field in [
-        "by_source_role",
-        "by_hook_type",
-        "by_codex_event",
-        "source_message_counts_by_role",
-        "source_hook_counts_by_type",
-        "source_codex_event_counts_by_event",
-    ]:
-        compact.pop(field, None)
-    return compact
+# The companion of serving_memory_layer_pressure above, and short in the same way: it
+# rebuilt the dict inline instead of calling compact_memory_layer_budget_roles, kept
+# `by_memory_selection_policy` that the live one drops, and skipped both
+# strip_default_debug_lineage_fields and the empty-sub-dict prune at the end.
+try:  # the implementation lives in matrixark_mcp_context_pack; this module re-exports it
+    from tools.matrixark_mcp_context_pack import (
+        serving_memory_layer_budget,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_context_pack import (
+        serving_memory_layer_budget,
+    )
 
 
-def serving_memory_layer_pressure(memory_layer_pressure: Any) -> Json:
-    if not isinstance(memory_layer_pressure, dict):
-        return {}
-    compact = dict(memory_layer_pressure)
-    lineage_dimensions = {
-        "by_source_role",
-        "by_hook_type",
-        "by_codex_event",
-        "source_message_counts_by_role",
-        "source_hook_counts_by_type",
-        "source_codex_event_counts_by_event",
-    }
-    for list_field in ["pressure_dimensions", "dropped_dimensions"]:
-        values = compact.get(list_field)
-        if isinstance(values, list):
-            compact[list_field] = [value for value in values if str(value) not in lineage_dimensions]
-    by_dimension = compact.get("by_dimension")
-    if isinstance(by_dimension, dict):
-        compact["by_dimension"] = {
-            str(key): value for key, value in by_dimension.items() if str(key) not in lineage_dimensions
-        }
-    for field in [
-        "assistant_memory_pressure",
-        "user_memory_pressure",
-        "tool_memory_pressure",
-        "assistant_source_message_pressure",
-        "user_source_message_pressure",
-        "tool_source_message_pressure",
-        "hook_boundary_source_pressure",
-        "after_llm_source_pressure",
-        "tool_result_source_pressure",
-        "stop_event_source_pressure",
-        "post_tool_use_source_pressure",
-    ]:
-        compact.pop(field, None)
-    return compact
+# The copy here stopped after the field-stripping loop. The live one also calls
+# strip_default_debug_lineage_fields and then prunes `by_dimension`: it drops empty dimension
+# entries, removes `by_*` names from pressure_dimensions and dropped_dimensions once their
+# dimension is gone, and drops by_dimension entirely when nothing is left. Twenty lines of
+# cleanup this copy did not do, so the same payload came out of the two paths with different
+# keys in it.
+try:  # the implementation lives in matrixark_mcp_context_pack; this module re-exports it
+    from tools.matrixark_mcp_context_pack import serving_memory_layer_pressure
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_context_pack import serving_memory_layer_pressure
 
 
 def attach_python_retrieval_metrics(
