@@ -178,7 +178,19 @@ _matrixark_start_rust_proxy_daemon() {
 
 _matrixark_start_rust_proxy_daemon
 
-if [[ "${MATRIXARK_BACKFILL_ON_START:-auto}" != "0" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "false" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "no" ]]; then
+# MATRIXARK_BACKFILL_ON_START is read by this wrapper and by matrixark_claude_hook.sh, and the
+# two spelled the off-set differently. This one listed `0`, `false` and `no` and nothing else, so
+# `off` -- a word in the shared FALSE_VALUES, and one the Claude wrapper already honoured -- started
+# the daemon anyway; `OFF`, `Off`, `False`, `FALSE`, `No` and `NO` did too. The daemon writes into
+# the operator's store, so the disagreement was not cosmetic: the flag set off stopped backfill
+# under Claude and did nothing here.
+#
+# `auto` is the unset default. It is in neither set and falls through to the default, on.
+_matrixark_backfill_enabled() {
+  matrixark_flag_on "${MATRIXARK_BACKFILL_ON_START:-auto}" 1
+}
+
+if _matrixark_backfill_enabled; then
   setsid bash "$ROOT/tools/matrixark_backfill_daemon.sh" >/dev/null 2>&1 </dev/null &
   disown 2>/dev/null || true
 fi

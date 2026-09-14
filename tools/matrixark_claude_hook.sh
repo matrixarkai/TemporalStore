@@ -133,11 +133,12 @@ EVENT="${EVENT:-$PAYLOAD_EVENT}"
 EVENT="${EVENT:-UserPromptSubmit}"
 SESSION="${PAYLOAD_SESSION:-claude_session}"
 
+# Answers exactly what the hand-written case below it answered, for every value in the shared
+# vocabulary -- see test_one_flag_has_one_boolean_vocabulary. The case is gone because the other
+# reader of this flag, matrixark_codex_rust_hook.sh, wrote its own shorter list and disagreed.
+# `auto` is the unset default. It is in neither set and falls through to the default, on.
 _matrixark_backfill_enabled() {
-  case "${MATRIXARK_BACKFILL_ON_START:-auto}" in
-    0|false|False|FALSE|no|No|NO|off|Off|OFF) return 1 ;;
-    *) return 0 ;;
-  esac
+  matrixark_flag_on "${MATRIXARK_BACKFILL_ON_START:-auto}" 1
 }
 
 _matrixark_start_backfill_daemon() {
