@@ -19,10 +19,20 @@ from typing import Any
 # 'canonical_scope_key' from partially initialized module", and four suites could not load.
 #
 # Each name was compared against core's view before being moved: eight resolve to the same
-# definition either way. `canonical_storage_route` does NOT -- core's honours `durability` and
-# matrixark_mcp_storage_options' returns a `read_preference` core's does not, with neither a
-# superset -- so that one still comes from core, at its single call site below, and the choice of
-# implementation is unchanged.
+# definition either way. `canonical_storage_route` does NOT, so that one still comes from core, at
+# its single call site below, and the choice of implementation is unchanged.
+#
+# CORRECTED. This note used to say core's copy honours `durability` while the other returns a
+# `read_preference` core's does not, "with neither a superset". Measured, the second half is wrong:
+# BOTH honour `durability`, nothing is honoured by core alone, and every field core emits the other
+# emits too. matrixark_mcp_storage_options' copy is a strict SUPERSET -- it additionally honours
+# `read_preference` and additionally emits `durability`, `read_preference` and `replica_read`.
+#
+# That changes what the pin means. "Neither a superset" would make either choice a considered
+# trade; a strict superset makes this one a choice to emit three fields fewer. It is still not this
+# change's call to switch -- doing so alters what `storage_route` holds on records the store already
+# has -- but the reason now says what is actually true. test_which_storage_route_copy_is_wider
+# asserts the relationship in both directions so the comment and the code cannot drift apart again.
 Json = dict[str, Any]
 
 try:  # package path
@@ -185,8 +195,9 @@ def attach_storage_route(record: Json) -> Json:
     if "storage_route" not in record or not isinstance(record.get("storage_route"), dict):
         if route_source:
             # From core deliberately: see the note on the imports above. The copy in
-            # matrixark_mcp_storage_options answers differently and choosing between them is not
-            # this change's to make, so this keeps the one that has always run here.
+            # matrixark_mcp_storage_options is a strict superset -- this one emits three fields
+            # fewer (`durability`, `read_preference`, `replica_read`) -- and choosing between them
+            # is not this change's to make, so this keeps the one that has always run here.
             try:  # package path
                 from .matrixark_mcp_core import canonical_storage_route
             except ImportError:  # top-level path
