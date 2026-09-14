@@ -17,6 +17,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+try:  # package path
+    from tools.matrixark_mcp_env import env_bool as _env_bool
+except ImportError:  # running from inside tools/, as this reader does
+    from matrixark_mcp_env import env_bool as _env_bool  # type: ignore
+
 
 class ModelState:
     def __init__(
@@ -460,7 +465,13 @@ def main() -> int:
         default=int(os.environ.get("TEMPORALSTORE_HF_EMBEDDING_DIM", "").strip() or "32"),
         help="Deterministic hash embedding dimension for local baseline bootstraps.",
     )
-    parser.add_argument("--preload", action="store_true", default=os.environ.get("TEMPORALSTORE_HF_READER_PRELOAD", "1") != "0")
+    # env_bool, not `!= "0"`: the raw comparison neither trims nor speaks the shared
+    # vocabulary, so `0 ` with a trailing space and `false`, `no` and `off` all read as ON.
+    parser.add_argument(
+        "--preload",
+        action="store_true",
+        default=_env_bool("TEMPORALSTORE_HF_READER_PRELOAD", True),
+    )
     args = parser.parse_args()
 
     state = ModelState(
