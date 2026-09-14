@@ -190,17 +190,10 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_resource_io import parse_s3_uri
 
 
-def _cloud_resource_bucket(args: Json, envelope: Json) -> str:
-    bucket = str(
-        args.get("s3_bucket")
-        or envelope.get("metadata", {}).get("s3_bucket")
-        or os.environ.get("MATRIXARK_RESOURCE_S3_BUCKET")
-        or os.environ.get("MATRIXARK_S3_BUCKET")
-        or ""
-    ).strip()
-    if not bucket:
-        raise MatrixArkError("cloud raw resource storage requires s3_bucket or MATRIXARK_RESOURCE_S3_BUCKET")
-    return bucket
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import _cloud_resource_bucket
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import _cloud_resource_bucket  # noqa: F401
 
 
 def _cloud_resource_prefix(args: Json, envelope: Json) -> str:

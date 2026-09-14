@@ -51,12 +51,29 @@ if TOOLS not in sys.path:
 #: costs nothing and changes nothing outside this module.
 CYCLE_PARENT = "matrixark_mcp_core"
 
+#: Names published through their home module's `__all__` when they were consolidated.
+#:
+#: RECORDED, not read back. The obvious spelling of this check -- "if the name is in `__all__`,
+#: assert it is in `__all__`" -- skips the one case it exists for, because a name that has been
+#: dropped fails the condition and is never asserted on. That is a test that cannot fail.
+PUBLISHED_THROUGH_ALL = frozenset({
+    "compact_local_context_refs",
+    "local_context_refs_for_pack",
+    "_cloud_resource_bucket",
+})
+
 #: name -> (module holding the one implementation, other modules it must resolve from)
 CONSOLIDATED = {
     "compact_local_context_refs": (
         "matrixark_mcp_core_packing", ("matrixark_mcp_budget_pack",)),
     "local_context_refs_for_pack": (
         "matrixark_mcp_core_packing", ("matrixark_mcp_budget_pack",)),
+    # A LEADING UNDERSCORE IS A CONVENTION, NOT A SCOPE, and here it is overruled explicitly:
+    # `_cloud_resource_bucket` is listed in matrixark_mcp_core_resource_io.__all__, so it is
+    # published on purpose despite the underscore. Both modules defined it identically; the
+    # published one is the home.
+    "_cloud_resource_bucket": (
+        "matrixark_mcp_core_resource_io", ("matrixark_mcp_resources",)),
 }
 
 
@@ -117,6 +134,36 @@ class AConsolidatedHelperStillResolvesEverywhere(unittest.TestCase):
                     home, owner,
                     "%s is recorded as implemented in %s and is implemented in %s"
                     % (name, home, owner))
+
+
+    def test_a_name_published_through_all_stays_published(self) -> None:
+        """`__all__` is not decoration: it is what `from X import *` re-exports.
+
+        `matrixark_mcp_core` pulls several of these modules in with `import *`, so a name dropped
+        from a home module's `__all__` stops resolving from core even though the home still
+        defines it. That is a public-surface change no import of the home module itself would
+        reveal, and nothing else here catches it -- measured.
+        """
+        for name in sorted(PUBLISHED_THROUGH_ALL):
+            home = CONSOLIDATED[name][0]
+            with self.subTest(name=name, module=home):
+                exported = getattr(_import(home), "__all__", None)
+                self.assertIsNotNone(
+                    exported,
+                    "%s no longer declares __all__, so %s is no longer published through it"
+                    % (home, name))
+                self.assertIn(
+                    name, exported,
+                    "%s was published through %s.__all__ and no longer is. Anything reaching it "
+                    "through a star-import of that module loses it" % (name, home))
+
+    def test_every_published_name_is_recorded(self) -> None:
+        """The control on the list above: it must name only consolidated helpers."""
+        unknown = sorted(PUBLISHED_THROUGH_ALL - set(CONSOLIDATED))
+        self.assertEqual(
+            [], unknown,
+            "%s are recorded as published but are not consolidated helpers, so nothing else in "
+            "this file says where they live" % ", ".join(unknown))
 
 
 if __name__ == "__main__":
