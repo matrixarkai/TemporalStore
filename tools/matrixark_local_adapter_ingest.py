@@ -16,6 +16,36 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+# Bound explicitly rather than left to the star-import above. matrixark_mcp_core star-imports
+# matrixark_mcp_core_resource_io at the end of its body, and that module imports back from
+# matrixark_mcp_core at the top of its own. A process that enters through
+# matrixark_mcp_core_resource_io therefore runs core's star-import against a module that has
+# executed nothing past its own import block, and core re-exports 26 fewer names -- including
+# every one listed here, each of which is called below. Importing them from where they are
+# defined binds them whichever module entered first.
+try:  # package path
+    from tools.matrixark_mcp_core_resource_io import (
+        aggregate_parse_warnings_from_chunks,
+        bound_resource_event_text,
+        cleanup_temp_paths,
+        deployment_scope_from_args,
+        resolve_raw_resource_for_ingest,
+        resource_chunk_materialization_enabled,
+        resource_storage_mode_from_args,
+        rewrite_chunk_uris,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import (  # noqa: F401
+        aggregate_parse_warnings_from_chunks,
+        bound_resource_event_text,
+        cleanup_temp_paths,
+        deployment_scope_from_args,
+        resolve_raw_resource_for_ingest,
+        resource_chunk_materialization_enabled,
+        resource_storage_mode_from_args,
+        rewrite_chunk_uris,
+    )
+
 import re as _re
 import warnings as _warnings
 

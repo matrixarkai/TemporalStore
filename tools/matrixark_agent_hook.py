@@ -1087,7 +1087,41 @@ def augment_payload_with_transcript(payload: Json, *, event: str) -> None:
         payload["last_assistant_message"] = text
 
 
-def additional_context_from_retrieve(retrieve: Json | None, *, max_chars: int = 8000) -> str:
+#: What this hook may hand back in one invocation, when the operator has not said.
+#:
+#: Kept at the value this hook has always used. The portal's default for the control below is
+#: 40000, which matrixark_codex_hook uses -- the two hooks build different blocks and have always
+#: had different budgets, and raising this one to match would quintuple what every Claude turn
+#: receives. That is a sizing decision, not the wiring this fixes.
+_AGENT_ADDITIONAL_CONTEXT_CHAR_LIMIT = 8000
+
+
+def _additional_context_char_limit() -> int:
+    """The documented hook control, read here as well as in the Codex hook.
+
+    `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` is offered on the operator page as "how many
+    characters of retrieved context ONE HOOK INVOCATION may hand back" and listed in the generated
+    engine-flag inventory. matrixark_codex_hook resolves it; this hook did not, so a value set on
+    the page reached one of its two subjects and the other stayed at a literal.
+
+    The same floor and the same tolerance for a non-integer as the Codex reader, so one control
+    does not mean two things: a value below 1000 is raised to it, and anything unparseable falls
+    back rather than raising -- a hook that dies on a malformed number takes the turn with it.
+    """
+    # No branch on the value: int("") raises, so "not set" and "not a number" are the same case
+    # and share one handler. Written this way deliberately -- `if not raw:` reads to the flag-surface
+    # ratchet as a value DECIDING a branch, which is what a path gate looks like, and a character
+    # limit is not one. The first version of this helper moved the gating-and-settable count from
+    # 55 to 56 and the ceiling caught it.
+    try:
+        return max(1000, int(os.environ.get(
+            "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT", "").strip()))
+    except ValueError:
+        return _AGENT_ADDITIONAL_CONTEXT_CHAR_LIMIT
+
+
+def additional_context_from_retrieve(retrieve: Json | None, *,
+                                    max_chars: int | None = None) -> str:
     """Flatten a retrieve context pack into the Claude Code additionalContext string.
 
     The native context pack returns retrieved memory as ``groups[].items[].text``.
@@ -1098,6 +1132,8 @@ def additional_context_from_retrieve(retrieve: Json | None, *, max_chars: int = 
     can inject. Returns "" when nothing was retrieved so the fail-open ``{}``
     contract is preserved.
     """
+    if max_chars is None:
+        max_chars = _additional_context_char_limit()
     if not isinstance(retrieve, dict):
         return ""
     lines: list[str] = []

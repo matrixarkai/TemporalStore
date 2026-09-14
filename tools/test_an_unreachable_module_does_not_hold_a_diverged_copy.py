@@ -85,7 +85,17 @@ from collections import defaultdict
 #: 36 -> 35 for infer_entity_field_patches, where the live copy has a branch this one lacked
 #: (a negative preference produces a patch there and nothing here) AND an lru_cached helper
 #: that fixed a quadratic scan -- 33 s against 1.2 s on a 256 KB ingest. The copy had neither.
-RECORDED_DIVERGED = 35
+#:
+#: 35 -> 34 for _cloud_resource_prefix. matrixark_mcp_resources re-exports is_s3_uri, parse_s3_uri
+#: and _cloud_resource_bucket from matrixark_mcp_core_resource_io in one run and then defined the
+#: next name in that family locally -- skipped, on the evidence, because it was the one that was no
+#: longer identical. It never appended agent_id, so an agent-scoped envelope built
+#: matrixark/raw/<acct>/<tenant>/<user> where the live copy builds .../<agent>: two agents sharing
+#: one raw-blob prefix. The live ingest path was never on that copy -- matrixark_mcp_core's
+#: star-import delivers core_resource_io's, checked by asking the bound function's __globals__
+#: rather than by reading imports -- so this was latent, not a live leak. Adopting the re-export
+#: makes the two the same object, and _s3_client beside it went the same way while still verbatim.
+RECORDED_DIVERGED = 34
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -93,7 +103,10 @@ RECORDED_DIVERGED = 35
 #: number above -- 66 verbatim copies went with work that landed since and did not bank this line.
 #: Banked here, because a ceiling left sixty-six above the truth is not a ratchet, it is a number
 #: that will pass whatever happens next.
-RECORDED_SHADOWED = 45
+#: 42 on the tree this was last measured on against a ceiling of 45, and 40 now: the two helpers
+#: above account for the fall, and the three that were already slack are banked with them. A
+#: ceiling three above the truth passes a change that adds three.
+RECORDED_SHADOWED = 40
 
 _CACHE: dict[str, object] = {}
 

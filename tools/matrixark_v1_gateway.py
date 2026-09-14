@@ -5061,7 +5061,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             if denied is not None:
                 return await _json(send, 403, denied)
             params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
-            include = (params.get("include_defaults") or [""])[0].strip().lower() in ("1", "true")
+            include = _env_bool((params.get("include_defaults") or [""])[0], False)
             return await _json(send, 200, _gwconfig.export_settings(include_defaults=include))
 
         # ---- probe the configured model endpoints (auth + admin scope) -----------------------
@@ -5181,7 +5181,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                     "detail": "target must be extraction or embedding",
                 })
             discovered = {"available": False, "reason": "not_probed"}
-            if (params.get("probe") or ["1"])[0].strip().lower() in ("1", "true", "yes"):
+            if _env_bool((params.get("probe") or ["1"])[0], True):
                 discovered = await asyncio.to_thread(_gwconfig.discover_models, target)
             body: Json = {"status": "ok", **_model_picker_body(target),
                           "discovered": discovered}
@@ -5227,7 +5227,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 #
                 # Scoped to the tenant from the key, like everything else on this route. The
                 # listing function can answer for every tenant and that form is not served here.
-                if (params.get("overrides") or [""])[0].strip() in ("1", "true", "yes"):
+                if _env_bool((params.get("overrides") or [""])[0], False):
                     listing = policy_mod.policy_overrides(only_tenant=tenant_id)
                     return await _json(send, 200, {
                         "tenant": tenant_id,
@@ -5746,7 +5746,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             if limit and limit.strip().isdigit():
                 args["limit"] = min(int(limit), CATALOG_LIST_LIMIT_MAX)
             if is_skills:
-                if str(_qc("include_disabled") or "").strip().lower() in ("1", "true", "yes"):
+                if _env_bool(_qc("include_disabled"), False):
                     args["include_disabled"] = True
             else:
                 resource_type = _qc("resource_type")
