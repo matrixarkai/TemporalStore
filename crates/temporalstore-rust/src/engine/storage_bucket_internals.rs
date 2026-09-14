@@ -18,15 +18,15 @@ pub static BLOCK_SLAB_LIVE_DRIFTS: std::sync::atomic::AtomicU64 =
 /// The per-slab live tally AS THE WALK SEES IT. This is the DEFINITION; the maintained counter is
 /// held to it.
 ///
-/// Deliberately built from `collect_live_page_entries` and not from the model maps: that walk is
+/// Deliberately built from `collect_live_block_entries` and not from the model maps: that walk is
 /// what every existing per-slab live figure is built from -- the bucket index, plus the model-map
 /// supplement for released buckets -- so the two sides of the drift check are the same question
 /// asked twice, not two different questions that happen to be close.
 pub(super) fn recompute_block_slab_live(shard: &ShardState) -> BTreeMap<u64, SlabLiveTally> {
     let mut tallies: BTreeMap<u64, SlabLiveTally> = BTreeMap::new();
-    for entry in collect_live_page_entries(shard) {
+    for entry in collect_live_block_entries(shard) {
         let tally = tallies.entry(entry.address.block_slab_id).or_default();
-        tally.page_refs = tally.page_refs.saturating_add(1);
+        tally.block_refs = tally.block_refs.saturating_add(1);
         tally.bytes = tally.bytes.saturating_add(entry.address.length);
     }
     tallies
@@ -60,13 +60,13 @@ pub(super) fn reconcile_block_slab_live(shard: &mut ShardState) -> BlockSlabLive
         for block_slab_id in slabs {
             let maintained = shard.bucket_index.block_slab_live.tally(block_slab_id);
             let walked = recomputed.get(&block_slab_id).copied().unwrap_or_default();
-            let refs = maintained.page_refs as i64 - walked.page_refs as i64;
+            let refs = maintained.block_refs as i64 - walked.block_refs as i64;
             let bytes = maintained.bytes as i64 - walked.bytes as i64;
             if refs == 0 && bytes == 0 {
                 continue;
             }
             report.drifted_slabs = report.drifted_slabs.saturating_add(1);
-            report.page_ref_drift = report.page_ref_drift.saturating_add(refs);
+            report.block_ref_drift = report.block_ref_drift.saturating_add(refs);
             report.byte_drift = report.byte_drift.saturating_add(bytes);
             if bytes.abs() > worst_bytes.abs() || report.worst_block_slab_id.is_none() {
                 worst_bytes = bytes;
@@ -100,24 +100,24 @@ pub(super) fn storage_slab_integrity_report(
     let discovered_block_slab_count = recovery.block_slab_reports.len();
     let live_block_slab_count = recovery.live_block_slab_ids.len();
     let orphan_block_slab_count = boundary.orphan_block_slab_ids.len();
-    let stale_page_ref_count = boundary.stale_index_page_refs.len();
+    let stale_block_ref_count = boundary.stale_index_block_refs.len();
     let corrupt_block_slab_count = boundary.corrupt_block_slab_ids.len();
-    let unreadable_page_ref_count = recovery.unreadable_page_refs.len();
-    let unreadable_page_bytes = boundary.unreadable_page_bytes;
-    let owner_mismatch_page_ref_count = boundary.owner_mismatch_page_refs.len();
-    let missing_owner_page_ref_count = boundary.missing_owner_page_refs;
+    let unreadable_block_ref_count = recovery.unreadable_block_refs.len();
+    let unreadable_block_bytes = boundary.unreadable_block_bytes;
+    let owner_mismatch_block_ref_count = boundary.owner_mismatch_block_refs.len();
+    let missing_owner_block_ref_count = boundary.missing_owner_block_refs;
     let reclaim_required = orphan_block_slab_count > 0
         || recovery
             .block_slab_live_reports
             .iter()
-            .any(|report| report.stale_page_estimate > 0);
-    let integrity_ok = stale_page_ref_count == 0
+            .any(|report| report.stale_block_estimate > 0);
+    let integrity_ok = stale_block_ref_count == 0
         && corrupt_block_slab_count == 0
-        && unreadable_page_ref_count == 0
-        && unreadable_page_bytes == 0
-        && owner_mismatch_page_ref_count == 0
-        && missing_owner_page_ref_count == 0
-        && recovery.all_live_pages_readable;
+        && unreadable_block_ref_count == 0
+        && unreadable_block_bytes == 0
+        && owner_mismatch_block_ref_count == 0
+        && missing_owner_block_ref_count == 0
+        && recovery.all_live_blocks_readable;
 
     StorageSlabIntegrityReport {
         shard_id,
@@ -125,12 +125,12 @@ pub(super) fn storage_slab_integrity_report(
         discovered_block_slab_count,
         live_block_slab_count,
         orphan_block_slab_count,
-        stale_page_ref_count,
+        stale_block_ref_count,
         corrupt_block_slab_count,
-        unreadable_page_ref_count,
-        unreadable_page_bytes,
-        owner_mismatch_page_ref_count,
-        missing_owner_page_ref_count,
+        unreadable_block_ref_count,
+        unreadable_block_bytes,
+        owner_mismatch_block_ref_count,
+        missing_owner_block_ref_count,
         reclaim_required,
         integrity_ok,
     }
@@ -149,10 +149,10 @@ pub(super) fn storage_reclaim_candidates_from_slab_reports(
         .iter()
         .filter_map(|report| {
             let fully_stale = fully_stale_slab_ids.contains(&report.block_slab_id);
-            let stale_page_estimate = if fully_stale {
+            let stale_block_estimate = if fully_stale {
                 report.page_count
             } else {
-                report.stale_page_estimate
+                report.stale_block_estimate
             };
             let stale_physical_bytes = if fully_stale {
                 report.physical_bytes
@@ -161,21 +161,21 @@ pub(super) fn storage_reclaim_candidates_from_slab_reports(
                     .physical_bytes
                     .saturating_sub(report.live_physical_bytes)
             };
-            if stale_page_estimate == 0 && stale_physical_bytes == 0 {
+            if stale_block_estimate == 0 && stale_physical_bytes == 0 {
                 return None;
             }
             let reclaim_score = stale_physical_bytes
                 .saturating_mul(10_000_u64.saturating_sub(report.live_ref_density_basis_points))
                 .saturating_div(10_000)
-                .saturating_add(stale_page_estimate);
+                .saturating_add(stale_block_estimate);
             Some(StorageReclaimCandidate {
                 block_slab_id: report.block_slab_id,
                 physical_bytes: report.physical_bytes,
                 live_physical_bytes: report.live_physical_bytes,
                 stale_physical_bytes,
                 page_count: report.page_count,
-                live_page_refs: report.live_page_refs,
-                stale_page_estimate,
+                live_block_refs: report.live_block_refs,
+                stale_block_estimate,
                 live_ref_density_basis_points: report.live_ref_density_basis_points,
                 reclaim_score,
                 reason: if fully_stale {
@@ -223,10 +223,10 @@ pub(super) fn annotate_storage_manager_admin_stage_fields(
                 .collect();
         }
         stage.bytes_reclaimed = stage
-            .page_bytes_reclaimed
+            .block_bytes_reclaimed
             .max(stage.cache_disk_bytes_removed)
             .max(stage.before_bytes.saturating_sub(stage.after_bytes));
-        stage.pages_compacted = stage.rewritten_page_refs;
+        stage.blocks_compacted = stage.rewritten_block_refs;
         if stage.wal_floor_sequence == 0 {
             stage.wal_floor_sequence = stage.retain_from_wal_sequence;
         }
@@ -299,12 +299,12 @@ pub(super) struct LiveBlockEntry {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct StoragePageOwnershipValidation {
-    pub(super) mismatches: Vec<StorageRecoveryPageOwnerMismatch>,
-    pub(super) missing_owner_page_refs: usize,
+pub(super) struct StorageBlockOwnershipValidation {
+    pub(super) mismatches: Vec<StorageRecoveryBlockOwnerMismatch>,
+    pub(super) missing_owner_block_refs: usize,
 }
 
-pub(super) fn live_page_entry(
+pub(super) fn live_block_entry(
     object_key: impl Into<String>,
     kind: impl Into<String>,
     component: Option<String>,
@@ -361,7 +361,7 @@ pub(super) fn storage_index_snapshot_with_samples(
 ) -> StorageIndexSnapshot {
     storage_index_snapshot_with_samples_from_entries(
         shard_id,
-        &collect_live_page_entries(shard),
+        &collect_live_block_entries(shard),
         snapshot,
     )
 }
@@ -369,7 +369,7 @@ pub(super) fn storage_index_snapshot_with_samples(
 /// The same samples, from live-page entries the caller ALREADY has.
 ///
 /// All four `*_snapshot_with_samples` builders run back to back inside ONE read lock in
-/// `apply_storage_lifecycle`, and each was calling `collect_live_page_entries` for its own copy of
+/// `apply_storage_lifecycle`, and each was calling `collect_live_block_entries` for its own copy of
 /// every live page -- then sorting all of it to take EIGHT samples. `who_walks_the_shard` measured
 /// the four at 1.0x the shard apiece.
 ///
@@ -412,7 +412,7 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
             StoragePageIndexEntrySample {
                 logical_key: entry.object_key.clone().to_string(),
                 timestamp_range: None,
-                page_addresses: vec![page_address],
+                block_addresses: vec![page_address],
                 append_watermark: entry.address.offset,
                 generation: entry.address.object_id().unwrap_or(0),
             }
@@ -454,13 +454,13 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
                 model: entry.kind.to_string(),
                 table: entry.kind.to_string(),
                 object_key: entry.object_key.to_string(),
-                page_chain: Vec::new(),
+                block_chain: Vec::new(),
                 delete_marker: entry.deleted,
                 generation: entry.address.object_id().unwrap_or(0),
             });
-        if sample.page_chain.len() < MAX_STORAGE_INDEX_SAMPLES {
+        if sample.block_chain.len() < MAX_STORAGE_INDEX_SAMPLES {
             sample
-                .page_chain
+                .block_chain
                 .push(storage_page_address_sample(shard_id, &entry.address));
         }
         sample.delete_marker |= entry.deleted;
@@ -491,7 +491,7 @@ pub(super) fn storage_watermark_snapshot_with_samples(
     storage_watermark_snapshot_with_samples_from_entries(
         shard_id,
         shard,
-        &collect_live_page_entries(shard),
+        &collect_live_block_entries(shard),
         snapshot,
     )
 }
@@ -567,7 +567,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
     storage_gc_snapshot_with_samples_from_entries(
         shard_id,
         shard,
-        &collect_live_page_entries(shard),
+        &collect_live_block_entries(shard),
         snapshot,
     )
 }
@@ -680,7 +680,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
     storage_topology_snapshot_with_samples_from_entries(
         shard_id,
         shard,
-        &collect_live_page_entries(shard),
+        &collect_live_block_entries(shard),
         snapshot,
     )
 }
@@ -746,7 +746,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
     struct BucketAcc {
         dirty_generation: u64,
         object_refs: BTreeSet<u64>,
-        page_refs: Vec<StoragePageAddressSample>,
+        block_refs: Vec<StoragePageAddressSample>,
         delete_markers: BTreeSet<String>,
     }
 
@@ -809,8 +809,8 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         let bucket = buckets.entry(bucket_id).or_default();
         bucket.dirty_generation = bucket.dirty_generation.max(generation);
         bucket.object_refs.insert(generation);
-        if bucket.page_refs.len() < MAX_STORAGE_TOPOLOGY_SAMPLES {
-            bucket.page_refs
+        if bucket.block_refs.len() < MAX_STORAGE_TOPOLOGY_SAMPLES {
+            bucket.block_refs
                 .push(storage_page_address_sample(shard_id, &entry.address));
         }
         if entry.deleted {
@@ -823,11 +823,11 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         bucket.dirty_generation = bucket.dirty_generation.max(runtime_bucket.dirty_generation);
         bucket.object_refs
             .extend(runtime_bucket.object_index.iter().copied());
-        for page in runtime_bucket.page_index.values() {
-            if bucket.page_refs.len() >= MAX_STORAGE_TOPOLOGY_SAMPLES {
+        for page in runtime_bucket.block_index.values() {
+            if bucket.block_refs.len() >= MAX_STORAGE_TOPOLOGY_SAMPLES {
                 break;
             }
-            bucket.page_refs
+            bucket.block_refs
                 .push(storage_page_address_sample(shard_id, &page.address));
             if page.deleted {
                 bucket.delete_markers
@@ -899,8 +899,8 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
                 .into_iter()
                 .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
                 .collect(),
-            page_refs: bucket
-                .page_refs
+            block_refs: bucket
+                .block_refs
                 .into_iter()
                 .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
                 .collect(),
@@ -915,47 +915,47 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
     snapshot
 }
 
-/// Running total of live-page entries materialized by [`collect_live_page_entries`].
+/// Running total of live-page entries materialized by [`collect_live_block_entries`].
 ///
 /// This walk is `O(live pages)` and clones two strings per entry, and several callers run it on
 /// a background loop, so its cost is easy to introduce and hard to notice. The counter makes it
 /// measurable: a test can assert that a code path's scan volume does not grow with the store.
-static LIVE_PAGE_SCAN_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LIVE_BLOCK_SCAN_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Live-page entries materialized since the last reset.
-pub fn live_page_scan_entries() -> u64 {
-    LIVE_PAGE_SCAN_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)
+pub fn live_block_scan_entries() -> u64 {
+    LIVE_BLOCK_SCAN_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Reset the scan counter. For tests measuring one operation's scan volume.
-pub fn reset_live_page_scan_entries() {
-    LIVE_PAGE_SCAN_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
+pub fn reset_live_block_scan_entries() {
+    LIVE_BLOCK_SCAN_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Running total of bucket `page_index` entries visited by the bucket-maintenance walks.
 ///
-/// Distinct from [`LIVE_PAGE_SCAN_ENTRIES`], which counts materialized live-page entries. This
+/// Distinct from [`LIVE_BLOCK_SCAN_ENTRIES`], which counts materialized live-page entries. This
 /// one counts the cheaper-looking `bucket.page_index.values()` passes -- `update_bucket_layout`
 /// and the per-object dirty-state clear. Each is `O(pages in the bucket)` and they run inside
 /// loops over buckets, so their cost is a product, not a sum, and does not show up in any single
 /// obvious place.
-static BUCKET_PAGE_INDEX_VISITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static BUCKET_BLOCK_INDEX_VISITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Bucket `page_index` entries visited since the last reset.
-pub fn bucket_page_index_visits() -> u64 {
-    BUCKET_PAGE_INDEX_VISITS.load(std::sync::atomic::Ordering::Relaxed)
+pub fn bucket_block_index_visits() -> u64 {
+    BUCKET_BLOCK_INDEX_VISITS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Reset the bucket-visit counter. For tests measuring one operation's maintenance volume.
-pub fn reset_bucket_page_index_visits() {
-    BUCKET_PAGE_INDEX_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
+pub fn reset_bucket_block_index_visits() {
+    BUCKET_BLOCK_INDEX_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn note_bucket_page_visits(count: usize) {
-    BUCKET_PAGE_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+fn note_bucket_block_visits(count: usize) {
+    BUCKET_BLOCK_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Per-site attribution for [`BUCKET_PAGE_INDEX_VISITS`], so a scaling result names the walk that
+/// Per-site attribution for [`BUCKET_BLOCK_INDEX_VISITS`], so a scaling result names the walk that
 /// caused it rather than leaving it to be inferred from arithmetic.
 pub mod bucket_visit_sites {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -984,10 +984,10 @@ pub mod bucket_visit_sites {
 
 fn note_site(site: &std::sync::atomic::AtomicU64, count: usize) {
     site.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
-    note_bucket_page_visits(count);
+    note_bucket_block_visits(count);
 }
 
-/// Per-CALLER attribution for [`LIVE_PAGE_SCAN_ENTRIES`], keyed by the source location that asked.
+/// Per-CALLER attribution for [`LIVE_BLOCK_SCAN_ENTRIES`], keyed by the source location that asked.
 ///
 /// The total alone says a round walks the shard N times; it does not say WHO. Attributing it by
 /// hand hit a wall: `apply_storage_lifecycle` measures 10.0x while every one of its callees sums
@@ -999,7 +999,7 @@ fn note_site(site: &std::sync::atomic::AtomicU64, count: usize) {
 /// function has about twenty of them and a threaded-through label would have to be right at every
 /// one to be trustworthy. The location is resolved at compile time; the cost here is one map
 /// update per CALL, on a path that is already walking every live page in the shard.
-fn live_page_scan_sites() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, u64>> {
+fn live_block_scan_sites() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, u64>> {
     static SITES: std::sync::OnceLock<
         std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
     > = std::sync::OnceLock::new();
@@ -1007,30 +1007,30 @@ fn live_page_scan_sites() -> &'static std::sync::Mutex<std::collections::BTreeMa
 }
 
 /// Entries materialized per calling site since the last reset, as `file:line -> entries`.
-pub fn live_page_scan_sites_snapshot() -> std::collections::BTreeMap<String, u64> {
-    live_page_scan_sites()
+pub fn live_block_scan_sites_snapshot() -> std::collections::BTreeMap<String, u64> {
+    live_block_scan_sites()
         .lock()
         .map(|sites| sites.clone())
         .unwrap_or_default()
 }
 
-/// Clear the per-site tallies. Pairs with [`reset_live_page_scan_entries`].
-pub fn reset_live_page_scan_sites() {
-    if let Ok(mut sites) = live_page_scan_sites().lock() {
+/// Clear the per-site tallies. Pairs with [`reset_live_block_scan_entries`].
+pub fn reset_live_block_scan_sites() {
+    if let Ok(mut sites) = live_block_scan_sites().lock() {
         sites.clear();
     }
 }
 
 #[track_caller]
-pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
+pub(super) fn collect_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let entries = if !shard.bucket_index.bucket_map.is_empty() {
-        collect_bucket_index_live_page_entries(shard)
+        collect_bucket_index_live_block_entries(shard)
     } else {
-        collect_model_live_page_entries(shard)
+        collect_model_live_block_entries(shard)
     };
-    LIVE_PAGE_SCAN_ENTRIES.fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    LIVE_BLOCK_SCAN_ENTRIES.fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
     let caller = std::panic::Location::caller();
-    if let Ok(mut sites) = live_page_scan_sites().lock() {
+    if let Ok(mut sites) = live_block_scan_sites().lock() {
         *sites
             .entry(format!("{}:{}", caller.file(), caller.line()))
             .or_insert(0) += entries.len() as u64;
@@ -1044,7 +1044,7 @@ pub(super) fn mark_async_dirty_object(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) {
-    let routing_bucket = page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
     // bucket a dirty object belongs to used to recompute this hash for itself.
     shard.dirty_objects.insert(object_key, routing_bucket);
@@ -1062,7 +1062,7 @@ pub(super) fn mark_async_dirty_object(
     note_bucket_flags_stale(shard, routing_bucket);
 }
 
-pub(super) fn rebuild_bucket_page_ownership(
+pub(super) fn rebuild_bucket_block_ownership(
     shard_id: ShardId,
     shard: &mut ShardState,
     start_routing_bucket: u32,
@@ -1093,15 +1093,15 @@ pub(super) fn rebuild_bucket_page_ownership(
     // bucket at a time. Nothing is released afterwards, and a registry that outlived the map it
     // names would make the page walk supplement buckets that are already whole.
     shard.bucket_index.released_buckets.clear();
-    for entry in collect_model_live_page_entries(shard) {
+    for entry in collect_model_live_block_entries(shard) {
         let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
-            page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
+            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
         if routing_bucket < start_routing_bucket || routing_bucket > end_routing_bucket {
             continue;
         }
         let object_id = entry.address.object_id().unwrap_or_else(|| {
-            stable_page_object_id(
+            stable_block_object_id(
                 shard_id,
                 &entry.kind,
                 &entry.object_key,
@@ -1131,7 +1131,7 @@ pub(super) fn rebuild_bucket_page_ownership(
         // of this rebuild. Both, deliberately: the charge keeps this site honest if the shape of
         // the function changes, and the seed is what makes the result independent of whatever the
         // tally held before `bucket_map.clear()` above.
-        bucket.page_index.insert(
+        bucket.block_index.insert(
             BlockIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -1148,13 +1148,13 @@ pub(super) fn rebuild_bucket_page_ownership(
             &mut shard.bucket_index.block_slab_live,
         );
     }
-    shard.bucket_index.rebuild_object_page_lookup();
+    shard.bucket_index.rebuild_object_block_lookup();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         bucket.meta_loaded = true;
         bucket.loading = false;
-        bucket.in_memory = !bucket.page_index.is_empty();
+        bucket.in_memory = !bucket.block_index.is_empty();
         bucket.deleted =
-            !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
+            !bucket.block_index.is_empty() && bucket.block_index.values().all(|page| page.deleted);
         update_bucket_layout(bucket);
     }
     // Every page above was charged as it was filed, and the tally started empty, so it now
@@ -1169,7 +1169,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> bool {
-    let model_entries = collect_model_live_page_entries(shard);
+    let model_entries = collect_model_live_block_entries(shard);
     if model_entries.is_empty() {
         return false;
     }
@@ -1187,7 +1187,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                 })
                 .unwrap_or(false);
             !released
-                && !shard.bucket_index.contains_object_page_address(
+                && !shard.bucket_index.contains_object_block_address(
                     &entry.kind,
                     &entry.object_key,
                     entry.component.as_deref(),
@@ -1197,7 +1197,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
     if !bucket_index_missing_entry {
         return false;
     }
-    rebuild_bucket_page_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+    rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
     refresh_bucket_runtime_flags(shard);
     true
 }
@@ -1207,7 +1207,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
 /// would see a shard with no objects of those kinds at all.
 ///
 /// THIS COVERS ONE OF THREE, and the sentence here used to say there was only one. Checked field
-/// by field against `collect_model_live_page_entries`, which is what the manifest cross-check
+/// by field against `collect_model_live_block_entries`, which is what the manifest cross-check
 /// reads: of the twelve maps it walks, three are `skip_serializing` --
 ///
 ///   * `hashes`            rebuilt below
@@ -1228,7 +1228,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
 ///
 ///   1. Rebuild them too. But these maps are keyed by TIMESTAMP and the bucket-index entries for
 ///      them carry `component: None` (see the `context_event` arm of
-///      `collect_model_live_page_entries`), so the keys are not recoverable from the index.
+///      `collect_model_live_block_entries`), so the keys are not recoverable from the index.
 ///      Synthesising keys would make the cross-check agree while putting invented timestamps into
 ///      a time-keyed map, which is worse than the failure it cures.
 ///   2. Have the cross-check compare only the maps that SURVIVE serialization. A map the manifest
@@ -1248,7 +1248,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
         return;
     }
     let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
-    for entry in collect_bucket_index_live_page_entries(shard) {
+    for entry in collect_bucket_index_live_block_entries(shard) {
         if entry.deleted || &*entry.kind != "hash" {
             continue;
         }
@@ -1262,10 +1262,10 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     }
 }
 
-pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
+pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.page_index.values() {
+        for page in bucket.block_index.values() {
             entries.push(LiveBlockEntry {
                 object_key: page.object_key.clone(),
                 kind: page.model_id.clone(),
@@ -1290,7 +1290,7 @@ pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<
     // explicit routing bucket equal to the bucket's own -- so the filter below needs no hash
     // fallback and cannot claim a page for the wrong bucket.
     if !shard.bucket_index.released_buckets.is_empty() {
-        for entry in collect_model_live_page_entries(shard) {
+        for entry in collect_model_live_block_entries(shard) {
             let Some(routing_bucket) = entry.address.routing_bucket() else {
                 continue;
             };
@@ -1305,17 +1305,17 @@ pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<
 /// The identity a released page is compared by, so a release can prove it is reversible.
 ///
 /// `object_id` is deliberately NOT part of it: the bucket index stamps one into the address it
-/// files (`upsert_bucket_index_page_with` calls `set_object_id`), and the model map's copy of the
+/// files (`upsert_bucket_index_block_with` calls `set_object_id`), and the model map's copy of the
 /// same page may not carry it. Comparing on it would refuse every release for a difference that
 /// reload reproduces on its own.
-type ReleasedPageIdentity = (String, String, Option<String>, u64, u64, u64, Option<u64>, Option<u64>);
+type ReleasedBlockIdentity = (String, String, Option<String>, u64, u64, u64, Option<u64>, Option<u64>);
 
-fn released_page_identity(
+fn released_block_identity(
     model_id: &str,
     object_key: &str,
     component: Option<&str>,
     address: &BlockAddress,
-) -> ReleasedPageIdentity {
+) -> ReleasedBlockIdentity {
     (
         model_id.to_string(),
         object_key.to_string(),
@@ -1338,12 +1338,12 @@ fn released_page_identity(
 ///      `skip_serializing` on `ShardState` and are rebuilt FROM the bucket index on load, so a
 ///      released bucket of one of those kinds would have nothing to rebuild from the moment the
 ///      index was written and read back.
-///   2. A READ MUST STILL RESOLVE IT. `bucket_index_page_address` -- the slow read path -- looks
+///   2. A READ MUST STILL RESOLVE IT. `bucket_index_block_address` -- the slow read path -- looks
 ///      an address up THROUGH the bucket index, so a released page has to be findable in its model
-///      map by `(kind, object_key, component)` alone. `model_map_page_address` is that lookup, and
+///      map by `(kind, object_key, component)` alone. `model_map_block_address` is that lookup, and
 ///      it is a point lookup, not a scan. Kinds whose objects span components or timestamps
 ///      (`set`, `zset`, `list`, `feature`, the context series) are also read whole through
-///      `bucket_index_component_page_addresses`, which has no equivalent point lookup, so they
+///      `bucket_index_component_block_addresses`, which has no equivalent point lookup, so they
 ///      stay out until one exists.
 ///
 /// That leaves the two component-less, single-page, serialized kinds -- which is also where the
@@ -1354,10 +1354,10 @@ fn released_model_kind_is_addressable(kind: &str) -> bool {
 
 /// The address of a page held by a RELEASED bucket, from the model map the page lives in.
 ///
-/// The counterpart to `bucket_index_page_address`: same question, asked of the maps instead of the
+/// The counterpart to `bucket_index_block_address`: same question, asked of the maps instead of the
 /// index. Only the kinds `released_model_kind_is_addressable` admits are answerable here, and that
 /// is not a coincidence -- it is the same list, for this reason.
-pub(super) fn model_map_page_address(
+pub(super) fn model_map_block_address(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
@@ -1375,7 +1375,7 @@ pub(super) fn model_map_page_address(
 /// The guard matters: without it this would answer for a page whose bucket is resident and whose
 /// index entry is absent for some other reason -- which is a disagreement the promote reconcile
 /// exists to find and repair, not one to paper over on the read path.
-pub(super) fn released_bucket_page_address(
+pub(super) fn released_bucket_block_address(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
@@ -1384,7 +1384,7 @@ pub(super) fn released_bucket_page_address(
     if shard.bucket_index.released_buckets.is_empty() {
         return None;
     }
-    let address = model_map_page_address(shard, model_id, object_key, component)?;
+    let address = model_map_block_address(shard, model_id, object_key, component)?;
     let routing_bucket = address.routing_bucket()?;
     shard
         .bucket_index
@@ -1403,7 +1403,7 @@ pub(super) const RELEASABLE_MODEL_KINDS: [&str; 2] = ["string", "context_node"];
 
 /// Drop a deleted object's id from its RELEASED bucket's object index.
 ///
-/// `release_bucket_pages` empties `page_index` and KEEPS `object_index`; the keeping is the only
+/// `release_bucket_blocks` empties `page_index` and KEEPS `object_index`; the keeping is the only
 /// thing that tells a released bucket from one legitimately holding nothing, and since
 /// `classify_bucket_layout` was corrected the object count is the sole authority for whether a
 /// bucket is empty at all. Both delete paths remove an object by walking `page_index` -- which a
@@ -1439,7 +1439,7 @@ pub(super) fn settle_released_bucket_object_delete(
     for model_id in RELEASABLE_MODEL_KINDS {
         // Answers only for a page whose bucket really is released -- a resident bucket with a
         // missing index entry is a disagreement for the promote reconcile, not for a delete.
-        let Some(address) = released_bucket_page_address(shard, model_id, object_key, None) else {
+        let Some(address) = released_bucket_block_address(shard, model_id, object_key, None) else {
             continue;
         };
         // A release refuses any page whose address does not name its own bucket, so the first of
@@ -1462,11 +1462,11 @@ pub(super) fn settle_released_bucket_object_delete(
     settled
 }
 
-/// What one call to [`release_bucket_pages`] managed.
+/// What one call to [`release_bucket_blocks`] managed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct BucketReleaseOutcome {
     pub(super) released_buckets: Vec<u32>,
-    pub(super) released_pages: usize,
+    pub(super) released_blocks: usize,
     /// Candidates that failed a precondition. A release that quietly did nothing and a release
     /// that was refused are different answers, and the eviction report publishes both.
     pub(super) refused_buckets: usize,
@@ -1474,7 +1474,7 @@ pub(super) struct BucketReleaseOutcome {
 
 /// Dump-and-release: drop the named buckets' resident page lists, keeping the nodes routable.
 ///
-/// This is the half that was missing. `evict_cache` drops CACHED PAGES and leaves every
+/// This is the half that was missing. `evict_cache` drops CACHED BLOCKS and leaves every
 /// `BucketNode` whole, so eviction could free only what the cache held and the index -- the part
 /// that actually grows one entry per record -- was untouchable. Releasing a bucket frees its
 /// `page_index` and its lookup refs while the node, its `object_index` and its durable watermarks
@@ -1483,7 +1483,7 @@ pub(super) struct BucketReleaseOutcome {
 /// Every precondition is CHECKED here, against this shard's live state, rather than assumed from
 /// how the caller chose its candidates. See the residency-flag doc on `BucketNode` for why each
 /// one is needed.
-pub(super) fn release_bucket_pages(
+pub(super) fn release_bucket_blocks(
     shard: &mut ShardState,
     candidates: &[u32],
 ) -> BucketReleaseOutcome {
@@ -1495,8 +1495,8 @@ pub(super) fn release_bucket_pages(
     // One model-map walk for the whole batch, not one per bucket. This is the set a reload would
     // rebuild from, so comparing the resident pages against it is the proof the release is
     // reversible.
-    let mut derived: BTreeMap<u32, BTreeSet<ReleasedPageIdentity>> = BTreeMap::new();
-    for entry in collect_model_live_page_entries(shard) {
+    let mut derived: BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>> = BTreeMap::new();
+    for entry in collect_model_live_block_entries(shard) {
         let Some(routing_bucket) = entry.address.routing_bucket() else {
             continue;
         };
@@ -1506,14 +1506,14 @@ pub(super) fn release_bucket_pages(
         derived
             .entry(routing_bucket)
             .or_default()
-            .insert(released_page_identity(
+            .insert(released_block_identity(
                 &entry.kind,
                 &entry.object_key,
                 entry.component.as_deref(),
                 &entry.address,
             ));
     }
-    let lookup_established = !shard.bucket_index.object_page_lookup.is_empty();
+    let lookup_established = !shard.bucket_index.object_block_lookup.is_empty();
     for routing_bucket in wanted {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
@@ -1522,40 +1522,40 @@ pub(super) fn release_bucket_pages(
             || bucket.loading
             || bucket.dirty
             || bucket.deleted
-            || bucket.page_index.is_empty()
+            || bucket.block_index.is_empty()
         {
             outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
             continue;
         }
-        let page_shape_allows_release = bucket.page_index.values().all(|page| {
+        let block_shape_allows_release = bucket.block_index.values().all(|page| {
             !page.dirty
                 && !page.deleted
                 && page.address.routing_bucket() == Some(routing_bucket)
                 && released_model_kind_is_addressable(&page.model_id)
         });
-        if !page_shape_allows_release {
+        if !block_shape_allows_release {
             outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
             continue;
         }
         // The lookup refs for each page must point at THIS bucket, or dropping the page's lookup
         // entry below would also drop a ref some other bucket still owns.
         let lookup_is_local = !lookup_established
-            || bucket.page_index.values().all(|page| {
+            || bucket.block_index.values().all(|page| {
                 shard
                     .bucket_index
-                    .page_refs_for(&page.model_id, &page.object_key, page.component.as_deref())
-                    .map(|refs| refs.iter().all(|page_ref| page_ref.routing_bucket == routing_bucket))
+                    .block_refs_for(&page.model_id, &page.object_key, page.component.as_deref())
+                    .map(|refs| refs.iter().all(|block_ref| block_ref.routing_bucket == routing_bucket))
                     .unwrap_or(false)
             });
         if !lookup_is_local {
             outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
             continue;
         }
-        let resident: BTreeSet<ReleasedPageIdentity> = bucket
-            .page_index
+        let resident: BTreeSet<ReleasedBlockIdentity> = bucket
+            .block_index
             .values()
             .map(|page| {
-                released_page_identity(
+                released_block_identity(
                     &page.model_id,
                     &page.object_key,
                     page.component.as_deref(),
@@ -1570,7 +1570,7 @@ pub(super) fn release_bucket_pages(
             continue;
         }
         let dropped: Vec<(Arc<str>, Arc<str>, Option<Arc<str>>)> = bucket
-            .page_index
+            .block_index
             .values()
             .map(|page| {
                 (
@@ -1583,7 +1583,7 @@ pub(super) fn release_bucket_pages(
         let page_count = dropped.len();
         if lookup_established {
             for (model_id, object_key, component) in &dropped {
-                shard.bucket_index.remove_object_page_lookup_entry(
+                shard.bucket_index.remove_object_block_lookup_entry(
                     model_id,
                     object_key,
                     component.as_deref(),
@@ -1595,7 +1595,7 @@ pub(super) fn release_bucket_pages(
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("bucket read immutably above");
-        bucket.page_index = crate::engine::state::BlockIndexMap::Empty;
+        bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
         bucket.meta_loaded = true;
         bucket.loading = false;
         bucket.in_memory = false;
@@ -1604,14 +1604,14 @@ pub(super) fn release_bucket_pages(
         bucket.layout = classify_bucket_layout(bucket.object_index.len(), 0);
         shard.bucket_index.released_buckets.insert(routing_bucket);
         outcome.released_buckets.push(routing_bucket);
-        outcome.released_pages = outcome.released_pages.saturating_add(page_count);
+        outcome.released_blocks = outcome.released_blocks.saturating_add(page_count);
     }
     outcome
 }
 
 /// Load a released bucket's page list back, from the maps a read already resolves through.
 ///
-/// The mirror of [`release_bucket_pages`], and the reason releasing is safe. Returns false when
+/// The mirror of [`release_bucket_blocks`], and the reason releasing is safe. Returns false when
 /// the bucket is not released -- an already-resident bucket is a no-op, not an error, which is
 /// what lets every mutation site call this unconditionally.
 pub(super) fn reload_released_bucket(
@@ -1632,12 +1632,12 @@ pub(super) fn reload_released_bucket(
         return false;
     }
     let mut pages: Vec<(BlockIndex, u64)> = Vec::new();
-    for entry in collect_model_live_page_entries(shard) {
+    for entry in collect_model_live_block_entries(shard) {
         if entry.address.routing_bucket() != Some(routing_bucket) {
             continue;
         }
         let object_id = entry.address.object_id().unwrap_or_else(|| {
-            stable_page_object_id(
+            stable_block_object_id(
                 shard_id,
                 &entry.kind,
                 &entry.object_key,
@@ -1670,16 +1670,16 @@ pub(super) fn reload_released_bucket(
     let mut installed: Vec<(u64, BlockIndex)> = Vec::with_capacity(pages.len());
     for (page, object_id) in pages {
         bucket.object_index.insert(object_id);
-        // NOT charged. `release_bucket_pages` did not discharge these -- the pages stayed live
+        // NOT charged. `release_bucket_blocks` did not discharge these -- the pages stayed live
         // the whole time it held them out of the index -- so counting them here would double
         // every released bucket the first time anything touched it again.
-        let handle = bucket.page_index.insert_released(page.clone());
+        let handle = bucket.block_index.insert_released(page.clone());
         installed.push((handle, page));
     }
     bucket.meta_loaded = true;
-    bucket.in_memory = !bucket.page_index.is_empty();
+    bucket.in_memory = !bucket.block_index.is_empty();
     bucket.loading = false;
-    if bucket.page_index.is_empty() {
+    if bucket.block_index.is_empty() {
         // Everything the bucket held was deleted while it was released. Nothing routes here any
         // more, so the node goes rather than lingering with a stale object index.
         shard.bucket_index.bucket_map.remove(&routing_bucket);
@@ -1690,7 +1690,7 @@ pub(super) fn reload_released_bucket(
     for (handle, page) in installed {
         shard
             .bucket_index
-            .insert_object_page_lookup(routing_bucket, handle, &page);
+            .insert_object_block_lookup(routing_bucket, handle, &page);
     }
     shard.bucket_index.released_buckets.remove(&routing_bucket);
     note_bucket_flags_stale(shard, routing_bucket);
@@ -1725,7 +1725,7 @@ pub(super) fn bucket_index_resident_bytes(shard: &ShardState) -> u64 {
         .bucket_index
         .bucket_map
         .values()
-        .map(|bucket| bucket.page_index.len() as u64)
+        .map(|bucket| bucket.block_index.len() as u64)
         .sum();
     nodes
         .saturating_mul(std::mem::size_of::<BucketNode>() as u64)
@@ -1733,7 +1733,7 @@ pub(super) fn bucket_index_resident_bytes(shard: &ShardState) -> u64 {
 }
 
 /// Cheap O(1)-per-map check for whether the shard holds ANY live model-map entry that
-/// `collect_model_live_page_entries` would enumerate. Used to avoid latching the phase-1
+/// `collect_model_live_block_entries` would enumerate. Used to avoid latching the phase-1
 /// `promote_scan_done` fast-skip flag before the shard has any state to reconcile. Short-circuits
 /// on the first non-empty map; never clones.
 pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
@@ -1743,7 +1743,7 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.lists.is_empty()
         || !shard.zsets.is_empty()
         || !shard.features.is_empty()
-        || !shard.control_state_pages.is_empty()
+        || !shard.control_state_blocks.is_empty()
         || !shard.context_nodes.is_empty()
         || !shard.context_events.is_empty()
         || !shard.context_indexes.is_empty()
@@ -1763,17 +1763,17 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
 /// corpus doubled.
 ///
 /// Feature and Sequence writes already maintain the index this way on the write path, and REPLAY
-/// already does it for these very kinds (`lifecycle.rs`, via the same `sync_bucket_index_object_pages`).
+/// already does it for these very kinds (`lifecycle.rs`, via the same `sync_bucket_index_object_blocks`).
 /// The context write path was the one that did not.
 ///
-/// The kinds and the maps below mirror `collect_model_live_page_entries` arm for arm, deliberately:
+/// The kinds and the maps below mirror `collect_model_live_block_entries` arm for arm, deliberately:
 /// maintenance and rebuild then derive from the same source and cannot disagree about which kind a
 /// page belongs to. `context_entity` composes its key from the collection key and the entity hash,
 /// which is exactly the sort of detail a hand-written command-to-kind mapping gets wrong.
 ///
 /// Returns whether anything was synced, so the caller can fall back to a rebuild for a write this
 /// does not cover rather than silently leaving the index stale.
-/// Keys `sync_context_pages_for_object` found nothing for, recorded so they can be named.
+/// Keys `sync_context_blocks_for_object` found nothing for, recorded so they can be named.
 ///
 /// One uncovered key forces a rebuild for the whole write, so what matters is WHICH keys are
 /// uncovered, not how many. Reading the command list to guess at them has already been wrong more
@@ -1808,7 +1808,7 @@ pub mod uncovered_maintenance {
 
 /// Sync only the components a command actually wrote.
 ///
-/// [`sync_context_pages_for_object`] is given an object key and nothing else, so it re-upserts
+/// [`sync_context_blocks_for_object`] is given an object key and nothing else, so it re-upserts
 /// EVERY field that object holds. For a record hash carrying one field per record that is one
 /// upsert per stored record on every write, and each upsert removes and reinserts an entry in the
 /// object's component vector -- two `Vec` shifts whose tails are the whole object. The cost is
@@ -1816,7 +1816,7 @@ pub mod uncovered_maintenance {
 ///
 /// Measured on a production-corpus one-box at a 260 MB store: a single-message ingest cost 40.1 s
 /// of datanode CPU out of a 52 s wall, and a DWARF-unwound profile put 60.9% of engine CPU in
-/// memmove under `remove_object_page_lookup_entry`, reached from here. With this path taken the
+/// memmove under `remove_object_block_lookup_entry`, reached from here. With this path taken the
 /// same ingest cost 0.13 s of datanode CPU.
 ///
 /// The batch path already knows the exact `(kind, object_key, component)` a command wrote --
@@ -1827,7 +1827,7 @@ pub mod uncovered_maintenance {
 /// Returns false if any component's address is not in the shard maps; the caller then runs the
 /// whole-object sync exactly as before, so a shape this does not model costs a fallback rather
 /// than a stale index.
-pub(super) fn sync_pages_for_written_components(
+pub(super) fn sync_blocks_for_written_components(
     shard: &mut ShardState,
     shard_id: ShardId,
     components: &[(&'static str, String, Option<String>)],
@@ -1853,7 +1853,7 @@ pub(super) fn sync_pages_for_written_components(
         // dirty: true, stage: false -- the flags the whole-object sync uses for a hash field: the
         // write staged its own outcome already and a second would have replay install the same
         // page twice.
-        upsert_bucket_index_page_with(
+        upsert_bucket_index_block_with(
             shard,
             shard_id,
             kind,
@@ -1867,7 +1867,7 @@ pub(super) fn sync_pages_for_written_components(
     true
 }
 
-pub(super) fn sync_context_pages_for_object(
+pub(super) fn sync_context_blocks_for_object(
     shard: &mut ShardState,
     shard_id: ShardId,
     object_key: &str,
@@ -1956,10 +1956,10 @@ pub(super) fn sync_context_pages_for_object(
     // fields, 8,388 at 1,600. Filtering before the clone makes the ordinary case, where the write
     // path already registered its own page, cost nothing here.
     //
-    // `had_hash_pages` still asks whether the object HAS hash pages, not how many needed filing.
+    // `had_hash_blocks` still asks whether the object HAS hash pages, not how many needed filing.
     // Those differ once the filter can empty the list, and answering the second question would
     // report an already-synced object as uncovered -- which sends the caller into a full rebuild.
-    let had_hash_pages = shard
+    let had_hash_blocks = shard
         .hashes
         .get(object_key)
         .is_some_and(|fields| !fields.is_empty());
@@ -1970,7 +1970,7 @@ pub(super) fn sync_context_pages_for_object(
             fields
                 .iter()
                 .filter(|(field, address)| {
-                    !shard.bucket_index.contains_object_page_address(
+                    !shard.bucket_index.contains_object_block_address(
                         "hash",
                         object_key,
                         Some(field.as_str()),
@@ -1984,7 +1984,7 @@ pub(super) fn sync_context_pages_for_object(
     for (field, address) in hash_fields {
         // `stage: false` -- the write staged its own outcome under its own kind already, and a
         // second one would have replay install the same page twice.
-        upsert_bucket_index_page_with(
+        upsert_bucket_index_block_with(
             shard,
             shard_id,
             "hash",
@@ -1996,7 +1996,7 @@ pub(super) fn sync_context_pages_for_object(
         );
     }
 
-    if groups.is_empty() && !had_hash_pages {
+    if groups.is_empty() && !had_hash_blocks {
         #[cfg(test)]
         uncovered_maintenance::note(object_key);
         return false;
@@ -2005,7 +2005,7 @@ pub(super) fn sync_context_pages_for_object(
         // File the newest page, not every page the object has ever had.
         //
         // These kinds carry no component, so all of an object's pages file under the same
-        // (kind, key, None). `upsert_bucket_index_page_with` drops that entry's existing refs
+        // (kind, key, None). `upsert_bucket_index_block_with` drops that entry's existing refs
         // before inserting, so filing a list leaves only its last element -- the other entries
         // are removed again on the way past. The index holds ONE ref per object here either way;
         // this reaches it without the removals and inserts in between.
@@ -2022,27 +2022,27 @@ pub(super) fn sync_context_pages_for_object(
             live.clear();
             live.push(newest);
         }
-        sync_bucket_index_object_pages(shard, shard_id, kind, &key, live, true);
+        sync_bucket_index_object_blocks(shard, shard_id, kind, &key, live, true);
     }
     true
 }
 
-pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
+pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
     entries.extend(
         shard
             .strings
             .iter()
-            .map(|(key, address)| live_page_entry(key.clone(), "string", None, address.clone())),
+            .map(|(key, address)| live_block_entry(key.clone(), "string", None, address.clone())),
     );
     for (key, fields) in &shard.hashes {
         entries.extend(fields.iter().map(|(field, address)| {
-            live_page_entry(key.clone(), "hash", Some(field.clone()), address.clone())
+            live_block_entry(key.clone(), "hash", Some(field.clone()), address.clone())
         }));
     }
     for (key, members) in &shard.zsets {
         entries.extend(members.iter().map(|(member, (biased, address))| {
-            live_page_entry(
+            live_block_entry(
                 key.clone(),
                 "zset",
                 Some(format!("{biased:016x}{}", hex::encode(member))),
@@ -2052,7 +2052,7 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LiveBlo
     }
     for (key, elements) in &shard.lists {
         entries.extend(elements.iter().map(|(seq, address)| {
-            live_page_entry(
+            live_block_entry(
                 key.clone(),
                 "list",
                 Some(format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64))),
@@ -2062,7 +2062,7 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LiveBlo
     }
     for (key, members) in &shard.sets {
         entries.extend(members.iter().map(|(member, address)| {
-            live_page_entry(
+            live_block_entry(
                 key.clone(),
                 "set",
                 Some(hex::encode(member)),
@@ -2072,41 +2072,41 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LiveBlo
     }
     for (key, series) in &shard.features {
         entries.extend(
-            unique_timestamped_kv_page_addresses(series)
+            unique_timestamped_kv_block_addresses(series)
                 .into_iter()
-                .map(|address| live_page_entry(key.clone(), "feature", None, address)),
+                .map(|address| live_block_entry(key.clone(), "feature", None, address)),
         );
     }
     entries.extend(
         shard
-            .control_state_pages
+            .control_state_blocks
             .iter()
-            .map(|(key, address)| live_page_entry(key.clone(), "control_state", None, address.clone())),
+            .map(|(key, address)| live_block_entry(key.clone(), "control_state", None, address.clone())),
     );
     entries.extend(
         shard.context_nodes.iter().map(|(key, address)| {
-            live_page_entry(key.clone(), "context_node", None, address.clone())
+            live_block_entry(key.clone(), "context_node", None, address.clone())
         }),
     );
     for (key, series) in &shard.context_events {
         entries.extend(
-            unique_timestamped_kv_page_addresses(series)
+            unique_timestamped_kv_block_addresses(series)
                 .into_iter()
-                .map(|address| live_page_entry(key.clone(), "context_event", None, address)),
+                .map(|address| live_block_entry(key.clone(), "context_event", None, address)),
         );
     }
     for (key, series) in &shard.context_indexes {
         entries.extend(
-            unique_timestamped_kv_page_addresses(series)
+            unique_timestamped_kv_block_addresses(series)
                 .into_iter()
-                .map(|address| live_page_entry(key.clone(), "context_index", None, address)),
+                .map(|address| live_block_entry(key.clone(), "context_index", None, address)),
         );
     }
     for (key, series) in &shard.context_audits {
         entries.extend(
-            unique_timestamped_kv_page_addresses(series)
+            unique_timestamped_kv_block_addresses(series)
                 .into_iter()
-                .map(|address| live_page_entry(key.clone(), "context_audit", None, address)),
+                .map(|address| live_block_entry(key.clone(), "context_audit", None, address)),
         );
     }
     // Entities live grouped by node in memory but persist one entry per entity, under the same
@@ -2115,7 +2115,7 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LiveBlo
     // this change format-compatible in both directions.
     for (collection_key, series) in &shard.context_entities {
         entries.extend(series.iter().map(|(entity_hash, address)| {
-            live_page_entry(
+            live_block_entry(
                 format!("{collection_key}:{entity_hash}"),
                 "context_entity",
                 None,
@@ -2125,29 +2125,29 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LiveBlo
     }
     for (key, series) in &shard.context_children {
         entries.extend(
-            unique_timestamped_kv_page_addresses(series)
+            unique_timestamped_kv_block_addresses(series)
                 .into_iter()
-                .map(|address| live_page_entry(key.clone(), "context_child", None, address)),
+                .map(|address| live_block_entry(key.clone(), "context_child", None, address)),
         );
     }
     for (key, series) in &shard.context_summaries {
         entries.extend(
-            unique_timestamped_kv_page_addresses(series)
+            unique_timestamped_kv_block_addresses(series)
                 .into_iter()
-                .map(|address| live_page_entry(key.clone(), "context_summary", None, address)),
+                .map(|address| live_block_entry(key.clone(), "context_summary", None, address)),
         );
     }
     for (key, series) in &shard.context_compressions {
         entries.extend(
-            unique_timestamped_kv_page_addresses(series)
+            unique_timestamped_kv_block_addresses(series)
                 .into_iter()
-                .map(|address| live_page_entry(key.clone(), "context_compression", None, address)),
+                .map(|address| live_block_entry(key.clone(), "context_compression", None, address)),
         );
     }
     entries
 }
 
-pub(super) fn page_physical_identity_key(
+pub(super) fn block_physical_identity_key(
     address: &BlockAddress,
 ) -> (
     u64,
@@ -2169,7 +2169,7 @@ pub(super) fn page_physical_identity_key(
     )
 }
 
-pub(super) fn upsert_bucket_index_page(
+pub(super) fn upsert_bucket_index_block(
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
@@ -2178,7 +2178,7 @@ pub(super) fn upsert_bucket_index_page(
     address: BlockAddress,
     dirty: bool,
 ) {
-    upsert_bucket_index_page_with(shard, shard_id, kind, object_key, component, address, dirty, true)
+    upsert_bucket_index_block_with(shard, shard_id, kind, object_key, component, address, dirty, true)
 }
 
 /// The same, with a say over whether an outcome is staged for the record.
@@ -2191,7 +2191,7 @@ pub(super) fn upsert_bucket_index_page(
 /// would then install the same page twice under two kinds. `stage: false` says "file this page in
 /// the index; the record already knows about it".
 #[allow(clippy::too_many_arguments)]
-pub(super) fn upsert_bucket_index_page_with(
+pub(super) fn upsert_bucket_index_block_with(
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
@@ -2203,14 +2203,14 @@ pub(super) fn upsert_bucket_index_page_with(
 ) {
     let routing_bucket = address
         .routing_bucket()
-        .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
+        .unwrap_or_else(|| block_routing_bucket(object_key, 0, u32::MAX));
     // Filing a page into a RELEASED bucket would leave the node holding one page and claiming to
     // be resident, with the rest of its pages still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
     reload_released_bucket(shard, shard_id, routing_bucket);
     let object_id = address
         .object_id()
-        .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
+        .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key, component.as_deref()));
     // This IS the outcome: an object, its identity, and where its page ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
@@ -2242,33 +2242,33 @@ pub(super) fn upsert_bucket_index_page_with(
     // Buckets whose pages this upsert disturbs. Collected while the bucket borrows are live and
     // recorded once they end, so the per-write refresh can skip the rest of the shard.
     let mut touched_buckets: Vec<u32> = Vec::new();
-    let lookup_enabled = !shard.bucket_index.object_page_lookup.is_empty();
-    let direct_page_refs = if lookup_enabled {
+    let lookup_enabled = !shard.bucket_index.object_block_lookup.is_empty();
+    let direct_block_refs = if lookup_enabled {
         shard
             .bucket_index
-            .page_refs_for(&entry.kind, &entry.object_key, entry.component.as_deref())
+            .block_refs_for(&entry.kind, &entry.object_key, entry.component.as_deref())
             .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
     } else {
         None
     };
-    shard.bucket_index.remove_object_page_lookup_entry(
+    shard.bucket_index.remove_object_block_lookup_entry(
         &entry.kind,
         &entry.object_key,
         entry.component.as_deref(),
     );
-    if let Some(page_refs) = direct_page_refs {
-        for page_ref in page_refs {
-            let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&page_ref.routing_bucket) else {
+    if let Some(block_refs) = direct_block_refs {
+        for block_ref in block_refs {
+            let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) else {
                 continue;
             };
-            touched_buckets.push(page_ref.routing_bucket);
+            touched_buckets.push(block_ref.routing_bucket);
             let removed_object_id = bucket
-                .page_index
-                .remove(&page_ref.page_ref_key, &mut shard.bucket_index.block_slab_live)
+                .block_index
+                .remove(&block_ref.block_ref_key, &mut shard.bucket_index.block_slab_live)
                 .map(|page| page.object_id());
             if let Some(removed_object_id) = removed_object_id {
                 if !bucket
-                    .page_index
+                    .block_index
                     .values()
                     .any(|page| page.object_id() == removed_object_id)
                 {
@@ -2284,15 +2284,15 @@ pub(super) fn upsert_bucket_index_page_with(
             ..
         } = &mut shard.bucket_index;
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
-            note_site(&bucket_visit_sites::REMOVE_ALL_BUCKETS, bucket.page_index.len());
+            note_site(&bucket_visit_sites::REMOVE_ALL_BUCKETS, bucket.block_index.len());
             touched_buckets.push(*routing_bucket);
-            bucket.page_index.retain(&mut *live, |_, page| {
+            bucket.block_index.retain(&mut *live, |_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
                     && page.component.as_deref() == entry.component.as_deref())
             });
             if !bucket
-                .page_index
+                .block_index
                 .values()
                 .any(|page| page.object_id() == object_id)
             {
@@ -2301,13 +2301,13 @@ pub(super) fn upsert_bucket_index_page_with(
             classify_bucket_layout_in_place(bucket);
         }
     }
-    let mut page_ref_key: u64 = 0;
+    let mut block_ref_key: u64 = 0;
     // Give the address the id the entry is filed under, so one field answers for both. Without
     // this, a page whose address arrived without an object id would lose the fallback identity
     // computed for it.
     let mut address = entry.address;
     address.set_object_id(Some(object_id));
-    let page_index = BlockIndex {
+    let block_index = BlockIndex {
         object_key: entry.object_key,
         model_id: entry.kind,
         component: entry.component.clone(),
@@ -2335,17 +2335,17 @@ pub(super) fn upsert_bucket_index_page_with(
         bucket.in_memory = true;
         bucket.object_index.insert(object_id);
         // The handle the map assigns is what the lookup records, so the two cannot disagree.
-        page_ref_key = bucket.page_index.insert(page_index.clone(), &mut shard.bucket_index.block_slab_live);
+        block_ref_key = bucket.block_index.insert(block_index.clone(), &mut shard.bucket_index.block_slab_live);
         classify_bucket_layout_in_place(bucket);
         touched_buckets.push(routing_bucket);
     }
     shard
         .bucket_index
-        .insert_object_page_lookup(routing_bucket, page_ref_key, &page_index);
+        .insert_object_block_lookup(routing_bucket, block_ref_key, &block_index);
     shard.buckets_pending_flag_refresh.extend(touched_buckets);
 }
 
-pub(super) fn sync_bucket_index_object_pages(
+pub(super) fn sync_bucket_index_object_blocks(
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
@@ -2353,7 +2353,7 @@ pub(super) fn sync_bucket_index_object_pages(
     addresses: Vec<BlockAddress>,
     dirty: bool,
 ) {
-    sync_bucket_index_object_pages_with_mode(shard, shard_id, kind, object_key, addresses, dirty, true)
+    sync_bucket_index_object_blocks_with_mode(shard, shard_id, kind, object_key, addresses, dirty, true)
 }
 
 /// Publish pages for an object into the bucket index.
@@ -2373,7 +2373,7 @@ pub(super) fn sync_bucket_index_object_pages(
 ///
 /// Both are decidable at the call site: `BTreeMap::insert` reports the value it displaced, and
 /// the trim reports whether it removed anything.
-pub(super) fn sync_bucket_index_object_pages_with_mode(
+pub(super) fn sync_bucket_index_object_blocks_with_mode(
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
@@ -2384,7 +2384,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
 ) {
     let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
-    // Same reason as `upsert_bucket_index_page_with`: publish into a released bucket and the node
+    // Same reason as `upsert_bucket_index_block_with`: publish into a released bucket and the node
     // is left half-resident. Reload every bucket these addresses land in first.
     if !shard.bucket_index.released_buckets.is_empty() {
         let landing: BTreeSet<u32> = addresses
@@ -2403,8 +2403,8 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
     // lookup without it, so a shard can come up with entries and no total. The wholesale rebuild
     // this replaces re-established the total on every series write, which hid that. Tie the two
     // together instead: either both are established or the next write establishes both.
-    let lookup_needs_establishing = shard.bucket_index.object_page_lookup.is_empty()
-        || shard.bucket_index.object_component_page_refs.is_none();
+    let lookup_needs_establishing = shard.bucket_index.object_block_lookup.is_empty()
+        || shard.bucket_index.object_component_block_refs.is_none();
     // Components whose pages this call drops, so the lookup can be corrected for exactly those
     // instead of being rebuilt from every page in the shard.
     let mut removed_components: BTreeSet<Option<Arc<str>>> = BTreeSet::new();
@@ -2418,11 +2418,11 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
     } else {
         shard
             .bucket_index
-            .object_page_refs(kind, object_key)
-            .map(|page_refs| {
-                page_refs
+            .object_block_refs(kind, object_key)
+            .map(|block_refs| {
+                block_refs
                     .all_refs()
-                    .map(|page_ref| page_ref.routing_bucket)
+                    .map(|block_ref| block_ref.routing_bucket)
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default()
@@ -2435,23 +2435,23 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
         let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
-        let before = bucket.page_index.len();
-        bucket.page_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+        let before = bucket.block_index.len();
+        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
             let matches_object = &*page.model_id == kind && &*page.object_key == object_key;
             if matches_object {
                 removed_components.insert(page.component.clone());
             }
             !matches_object
         });
-        if bucket.page_index.len() != before {
+        if bucket.block_index.len() != before {
             removed_any = true;
             touched_buckets.insert(routing_bucket);
             bucket.dirty |= dirty;
-            bucket.deleted = bucket.page_index.is_empty();
+            bucket.deleted = bucket.block_index.is_empty();
             if dirty {
                 bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             }
-            bucket.in_memory = !bucket.page_index.is_empty();
+            bucket.in_memory = !bucket.block_index.is_empty();
             update_bucket_layout(bucket);
         }
     }
@@ -2459,7 +2459,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
     if !lookup_needs_establishing {
         // Only this object's own entries were dropped above, so only they need correcting.
         for component in &removed_components {
-            shard.bucket_index.remove_object_page_lookup_entry(
+            shard.bucket_index.remove_object_block_lookup_entry(
                 kind,
                 object_key,
                 component.as_deref(),
@@ -2480,7 +2480,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
         BlockAddress,
     >::new();
     for address in addresses {
-        unique_addresses.insert(page_physical_identity_key(&address), address);
+        unique_addresses.insert(block_physical_identity_key(&address), address);
     }
 
     // Hoisted: neither changes across iterations, and each cost a String plus an Arc that copies
@@ -2491,10 +2491,10 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
     for address in unique_addresses.into_values() {
         let routing_bucket = address
             .routing_bucket()
-            .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
+            .unwrap_or_else(|| block_routing_bucket(object_key, 0, u32::MAX));
         let object_id = address
             .object_id()
-            .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
+            .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key, None));
         let entry = LiveBlockEntry {
             object_key: Arc::clone(&object_key_arc),
             kind: Arc::clone(&kind_arc),
@@ -2524,7 +2524,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
         bucket.in_memory = true;
         bucket.object_index.insert(object_id);
         bucket.deleted_object_index.remove(&object_id);
-        let mut page_ref_key: u64 = 0;
+        let mut block_ref_key: u64 = 0;
         let page = BlockIndex {
             object_key: entry.object_key,
             model_id: entry.kind,
@@ -2539,7 +2539,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
             log_backed: entry.log_backed,
         };
         // The map assigns the handle; the lookup records the same one.
-        let page_ref_key = bucket.page_index.insert(page.clone(), &mut shard.bucket_index.block_slab_live);
+        let block_ref_key = bucket.block_index.insert(page.clone(), &mut shard.bucket_index.block_slab_live);
         // `object_index` was just given this object id above, so the set is already correct and only
         // the label needs re-deriving. `update_bucket_layout` would rebuild the set by walking every
         // page in the bucket -- once per address published, which is what made a write cost the
@@ -2549,7 +2549,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
         if !lookup_needs_establishing {
             shard
                 .bucket_index
-                .insert_object_page_lookup(routing_bucket, page_ref_key, &page);
+                .insert_object_block_lookup(routing_bucket, block_ref_key, &page);
         }
     }
 
@@ -2573,7 +2573,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
                 .bucket_map
                 .get(routing_bucket)
                 .is_some_and(|bucket| {
-                    bucket.page_index.is_empty() && bucket.object_index.is_empty()
+                    bucket.block_index.is_empty() && bucket.object_index.is_empty()
                 });
             if now_empty {
                 shard.bucket_index.bucket_map.remove(routing_bucket);
@@ -2581,14 +2581,14 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
         }
     }
     if lookup_needs_establishing {
-        shard.bucket_index.rebuild_object_page_lookup();
+        shard.bucket_index.rebuild_object_block_lookup();
     }
 }
 
 /// The label a bucket wears, from how many objects it holds and how many pages are resident.
 ///
-/// EMPTY IS ABOUT OBJECTS, NOT PAGES. A bucket with no resident pages is not thereby empty: a
-/// RELEASED bucket is exactly that shape -- `release_bucket_pages` clears `page_index` and
+/// EMPTY IS ABOUT OBJECTS, NOT BLOCKS. A bucket with no resident pages is not thereby empty: a
+/// RELEASED bucket is exactly that shape -- `release_bucket_blocks` clears `page_index` and
 /// deliberately keeps `object_index`, which is the only thing distinguishing a released bucket
 /// from one that genuinely holds nothing -- and a bucket whose pages live only in the model maps
 /// is still holding every object it held before.
@@ -2599,12 +2599,12 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
 /// derive default, so the mislabel also made a populated bucket read as one nothing had ever
 /// classified. The page count now only chooses BETWEEN the non-empty labels, and the object
 /// count alone decides whether the bucket is empty at all.
-pub(super) fn classify_bucket_layout(object_count: usize, page_ref_count: usize) -> BucketLayoutState {
-    match (object_count, page_ref_count) {
+pub(super) fn classify_bucket_layout(object_count: usize, block_ref_count: usize) -> BucketLayoutState {
+    match (object_count, block_ref_count) {
         (0, _) => BucketLayoutState::Empty,
         (1, 0) => BucketLayoutState::SingleObject,
-        (1, 1) => BucketLayoutState::SinglePageObject,
-        (1, _) => BucketLayoutState::MultiPageObject,
+        (1, 1) => BucketLayoutState::SingleBlockObject,
+        (1, _) => BucketLayoutState::MultiBlockObject,
         _ => BucketLayoutState::MultiObject,
     }
 }
@@ -2613,8 +2613,8 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
     match layout {
         BucketLayoutState::Empty => "empty",
         BucketLayoutState::SingleObject => "single_object",
-        BucketLayoutState::SinglePageObject => "single_page_object",
-        BucketLayoutState::MultiPageObject => "multi_page_object",
+        BucketLayoutState::SingleBlockObject => "single_page_object",
+        BucketLayoutState::MultiBlockObject => "multi_page_object",
         BucketLayoutState::MultiObject => "multi_object",
     }
 }
@@ -2630,7 +2630,7 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
 /// inserts, superseding overwrites, expiries and deletes. Reconstruct paths, which build
 /// `bucket_map` from page entries where nothing maintained the set, keep the full rebuild.
 fn classify_bucket_layout_in_place(bucket: &mut BucketNode) {
-    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
+    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.block_index.len());
 }
 
 /// Pages visited by `update_bucket_layout`, attributed to the CALL SITE that asked for it.
@@ -2680,32 +2680,32 @@ pub mod layout_by_caller {
 // attribute adds a hidden location argument at every call site and this is a write path.
 #[cfg_attr(test, track_caller)]
 pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
-    note_site(&bucket_visit_sites::LAYOUT, bucket.page_index.len());
+    note_site(&bucket_visit_sites::LAYOUT, bucket.block_index.len());
     // Tests only: this takes a lock, and `update_bucket_layout` is on a write path. It exists
     // because the visit counter lives INSIDE this function and so reports how much work happened
     // without saying who asked for it -- with ten callers, that was the difference between a fix
     // and a guess.
     #[cfg(test)]
-    layout_by_caller::note(std::panic::Location::caller(), bucket.page_index.len());
+    layout_by_caller::note(std::panic::Location::caller(), bucket.block_index.len());
     let live_object_ids: BTreeSet<u64> = bucket
-        .page_index
+        .block_index
         .values()
         .filter(|page| !page.deleted)
         .map(|page| page.object_id())
         .collect();
     if !live_object_ids.is_empty() {
         bucket.object_index = live_object_ids.into();
-    } else if !bucket.page_index.is_empty() {
+    } else if !bucket.block_index.is_empty() {
         bucket.object_index.clear();
     }
-    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
+    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.block_index.len());
 }
 
 /// Note that a bucket's derived runtime flags may be stale.
 ///
 /// Called where the routing bucket is already in hand. Recording it is cheap; the alternative --
 /// deriving it from the object key later -- is not sound, because a stored address may carry an
-/// explicit routing bucket that disagrees with `page_routing_bucket`.
+/// explicit routing bucket that disagrees with `block_routing_bucket`.
 pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u32) {
     shard.buckets_pending_flag_refresh.insert(routing_bucket);
 }
@@ -2735,13 +2735,13 @@ fn refresh_one_bucket_runtime_flags(
 ) {
     bucket.meta_loaded = true;
     bucket.loading = false;
-    bucket.in_memory = !bucket.page_index.is_empty();
+    bucket.in_memory = !bucket.block_index.is_empty();
     // `all` and `any` stop at the first page that decides the answer, so neither is a reliable
     // full pass; during ingest the dirty check in particular answers on page one.
     bucket.deleted =
-        !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
+        !bucket.block_index.is_empty() && bucket.block_index.values().all(|page| page.deleted);
     bucket.dirty |= bucket
-        .page_index
+        .block_index
         .values()
         .any(|page| page.dirty || dirty_objects.contains(page.object_key.as_ref()));
     // The TTL is the one guaranteed full pass: a minimum has to look at every page, and each
@@ -2752,9 +2752,9 @@ fn refresh_one_bucket_runtime_flags(
     if expires_at_ms.is_empty() {
         bucket.ttl_ms = None;
     } else {
-        note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.page_index.len());
+        note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.block_index.len());
         bucket.ttl_ms = bucket
-            .page_index
+            .block_index
             .values()
             .filter_map(|page| expires_at_ms.get(page.object_key.as_ref()).copied())
             .map(|expires_at| expires_at.saturating_sub(now))
@@ -2764,7 +2764,7 @@ fn refresh_one_bucket_runtime_flags(
         update_bucket_layout(bucket);
     } else {
         bucket.layout =
-            classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
+            classify_bucket_layout(bucket.object_index.len(), bucket.block_index.len());
     }
 }
 
@@ -2859,7 +2859,7 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
     }
 }
 
-pub(super) fn object_still_has_hot_page(shard: &ShardState, object_key: &str) -> bool {
+pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -> bool {
     shard
         .strings
         .get(object_key)
@@ -2877,23 +2877,23 @@ pub(super) fn object_still_has_hot_page(shard: &ShardState, object_key: &str) ->
 }
 
 pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_key: &str) {
-    if object_still_has_hot_page(shard, object_key) {
+    if object_still_has_hot_block(shard, object_key) {
         return;
     }
     shard.dirty_objects.remove(object_key);
     for bucket in shard.bucket_index.bucket_map.values_mut() {
-        note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
+        note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.block_index.len());
         let mut touched = false;
-        for page in bucket.page_index.pages_mut_unaccounted() {
+        for page in bucket.block_index.blocks_mut_unaccounted() {
             if &*page.object_key == object_key {
                 page.dirty = false;
                 touched = true;
             }
         }
         if touched {
-            note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
+            note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.block_index.len());
             bucket.dirty = bucket
-                .page_index
+                .block_index
                 .values()
                 .any(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()));
             update_bucket_layout(bucket);
@@ -2908,7 +2908,7 @@ pub(super) fn rebuild_bucket_first_index(
     end_routing_bucket: u32,
 ) {
     // Preserve tombstone (deleted) object ids across the rebuild. A delete removes the object
-    // from the model maps (strings/hashes/...), so collect_model_live_page_entries no longer
+    // from the model maps (strings/hashes/...), so collect_model_live_block_entries no longer
     // sees it, but the object manager must keep reporting it as a tombstone until GC reclaims
     // the slot. The deserialize + reconcile load path keeps deleted_object_index; a
     // promote/rebuild reconstruct (flush or the WAL-replay tail) would otherwise silently drop
@@ -2921,12 +2921,12 @@ pub(super) fn rebuild_bucket_first_index(
         .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.clone()))
         .collect();
     let mut bucket_index = CoreIndex::default();
-    for entry in collect_model_live_page_entries(shard) {
+    for entry in collect_model_live_block_entries(shard) {
         let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
-            page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
+            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
         let object_id = entry.address.object_id().unwrap_or_else(|| {
-            stable_page_object_id(
+            stable_block_object_id(
                 shard_id,
                 &entry.kind,
                 &entry.object_key,
@@ -2942,14 +2942,14 @@ pub(super) fn rebuild_bucket_first_index(
                 in_memory: true,
                 ..BucketNode::default()
             });
-        let page_dirty = shard.dirty_objects.contains(entry.object_key.as_ref()) || entry.dirty;
-        bucket.dirty |= page_dirty;
-        if page_dirty {
+        let block_dirty = shard.dirty_objects.contains(entry.object_key.as_ref()) || entry.dirty;
+        bucket.dirty |= block_dirty;
+        if block_dirty {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
         bucket.in_memory |= true;
         bucket.object_index.insert(object_id);
-        bucket.page_index.insert(
+        bucket.block_index.insert(
             BlockIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -2959,7 +2959,7 @@ pub(super) fn rebuild_bucket_first_index(
                     address.set_object_id(Some(object_id));
                     address
                 },
-                dirty: page_dirty,
+                dirty: block_dirty,
                 deleted: entry.deleted,
                 log_backed: entry.log_backed,
             },
@@ -2984,10 +2984,10 @@ pub(super) fn rebuild_bucket_first_index(
         }
         bucket.deleted_object_index.extend(deleted);
     }
-    bucket_index.rebuild_object_page_lookup();
+    bucket_index.rebuild_object_block_lookup();
     shard.bucket_index = bucket_index;
     // The local index charged every page it filed, and it arrived empty, so the tally travelled
-    // here with it and is already right. Same reason as `rebuild_bucket_page_ownership`: a walk to
+    // here with it and is already right. Same reason as `rebuild_bucket_block_ownership`: a walk to
     // confirm it is the walk being removed.
     shard.bucket_index.block_slab_live.mark_ready();
 }
@@ -3004,16 +3004,16 @@ pub(super) fn rebuild_bucket_first_index(
 /// This is why `promote` never clears the model maps: they remain the membership source.
 fn reconcile_timestamped_series_membership(
     persisted: &HashMap<String, BTreeMap<u64, BlockAddress>>,
-    page_derived: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    block_derived: HashMap<String, BTreeMap<u64, BlockAddress>>,
 ) -> HashMap<String, BTreeMap<u64, BlockAddress>> {
     let mut result: HashMap<String, BTreeMap<u64, BlockAddress>> = HashMap::new();
-    for (key, page_series) in page_derived {
+    for (key, block_series) in block_derived {
         match persisted.get(&key) {
             Some(persisted_series) => {
                 let merged = persisted_series
                     .iter()
                     .map(|(timestamp_ms, persisted_address)| {
-                        let address = page_series
+                        let address = block_series
                             .get(timestamp_ms)
                             .cloned()
                             .unwrap_or_else(|| persisted_address.clone());
@@ -3023,7 +3023,7 @@ fn reconcile_timestamped_series_membership(
                 result.insert(key, merged);
             }
             None => {
-                result.insert(key, page_series);
+                result.insert(key, block_series);
             }
         }
     }
@@ -3046,7 +3046,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         return;
     }
 
-    let entries = collect_bucket_index_live_page_entries(shard)
+    let entries = collect_bucket_index_live_block_entries(shard)
         .into_iter()
         .filter(|entry| !entry.deleted)
         .collect::<Vec<_>>();
@@ -3082,7 +3082,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut zsets = HashMap::<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>::new();
     let mut features = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
-    let mut control_state_pages = HashMap::new();
+    let mut control_state_blocks = HashMap::new();
     let mut context_events = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_event_timeline = HashMap::<String, BTreeMap<u64, u64>>::new();
     let mut context_indexes = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
@@ -3184,7 +3184,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                         control_state.insert(entry.object_key.clone().to_string(), series);
                     }
                 }
-                control_state_pages.insert(entry.object_key.to_string(), entry.address);
+                control_state_blocks.insert(entry.object_key.to_string(), entry.address);
             }
             "context_event" => {
                 saw_context_events = true;
@@ -3301,7 +3301,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         let mut merged = control_state;
         merged.extend(persisted);
         shard.control_state = merged;
-        shard.control_state_pages = control_state_pages;
+        shard.control_state_blocks = control_state_blocks;
         // The rollup ladder is a derived view of control_state; drop it so it rebuilds
         // lazily from the series reconcile just materialized.
         super::control_rollup::clear_all(shard);
@@ -3378,7 +3378,7 @@ pub(super) fn insert_timestamped_secondary_view(
     // re-read every page under the same lock; collect the bytes we just read for a
     // single batched cache.put_batch() at the end of reconcile (24k individual
     // cache.put lock cycles -> one). The key MUST match the retrieval read path
-    // (read_page_bytes) or the entries never get hit.
+    // (read_block_bytes) or the entries never get hit.
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,
@@ -3390,14 +3390,14 @@ pub(super) fn insert_timestamped_secondary_view(
         warm_batch.push((key, bytes.clone()));
     }
     let timestamps = bytes
-        .and_then(|bytes| match decode_feature_page_strict(&bytes) {
-            PackedFeaturePageDecode::Packed(points) => Some(
+        .and_then(|bytes| match decode_feature_block_strict(&bytes) {
+            PackedFeatureBlockDecode::Packed(points) => Some(
                 points
                     .into_iter()
                     .map(|point| point.timestamp_ms)
                     .collect::<Vec<_>>(),
             ),
-            PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
+            PackedFeatureBlockDecode::Legacy | PackedFeatureBlockDecode::Corrupt(_) => None,
         })
         .unwrap_or_default();
     let series = target.entry(object_key).or_default();
@@ -3455,9 +3455,9 @@ pub(super) fn insert_context_event_views(
         warm_batch.push((key, bytes.clone()));
     }
     let points = bytes
-        .and_then(|bytes| match decode_feature_page_strict(&bytes) {
-            PackedFeaturePageDecode::Packed(points) => Some(points),
-            PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
+        .and_then(|bytes| match decode_feature_block_strict(&bytes) {
+            PackedFeatureBlockDecode::Packed(points) => Some(points),
+            PackedFeatureBlockDecode::Legacy | PackedFeatureBlockDecode::Corrupt(_) => None,
         })
         .unwrap_or_default();
     let series = events.entry(object_key.clone()).or_default();
@@ -3480,8 +3480,8 @@ pub(super) fn insert_context_event_views(
     }
 }
 
-pub(super) fn expected_live_page_object_id(shard_id: ShardId, entry: &LiveBlockEntry) -> u64 {
-    stable_page_object_id(
+pub(super) fn expected_live_block_object_id(shard_id: ShardId, entry: &LiveBlockEntry) -> u64 {
+    stable_block_object_id(
         shard_id,
         &entry.kind,
         &entry.object_key,
@@ -3494,11 +3494,11 @@ pub(super) fn validate_bucket_ownership_index(
     shard: &ShardState,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
-) -> StoragePageOwnershipValidation {
+) -> StorageBlockOwnershipValidation {
     validate_bucket_ownership_index_from_entries(
         shard_id,
         shard,
-        &collect_live_page_entries(shard),
+        &collect_live_block_entries(shard),
         start_routing_bucket,
         end_routing_bucket,
     )
@@ -3506,7 +3506,7 @@ pub(super) fn validate_bucket_ownership_index(
 
 /// The same validation against live-page entries the caller ALREADY has.
 ///
-/// `collect_live_page_entries` materializes every live page in the shard, and callers that need
+/// `collect_live_block_entries` materializes every live page in the shard, and callers that need
 /// several derived reports were each walking for their own copy. Taking a slice lets one walk
 /// serve all of them. The wrapper above keeps the old signature for callers with nothing to share.
 pub(super) fn validate_bucket_ownership_index_from_entries(
@@ -3515,13 +3515,13 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
     entries: &[LiveBlockEntry],
     start_routing_bucket: u32,
     end_routing_bucket: u32,
-) -> StoragePageOwnershipValidation {
-    let mut validation = StoragePageOwnershipValidation::default();
+) -> StorageBlockOwnershipValidation {
+    let mut validation = StorageBlockOwnershipValidation::default();
     for entry in entries {
-        let expected_object_id = expected_live_page_object_id(shard_id, entry);
+        let expected_object_id = expected_live_block_object_id(shard_id, entry);
         let expected_routing_bucket =
-            page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
-        let expected_page_id = entry.address.page_id();
+            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
+        let expected_block_id = entry.address.page_id();
         let object_mismatch = entry
             .address
             .object_id()
@@ -3531,31 +3531,31 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
             .routing_bucket()
             .is_some_and(|actual| actual != expected_routing_bucket);
         if entry.address.object_id().is_none() || entry.address.routing_bucket().is_none() {
-            validation.missing_owner_page_refs =
-                validation.missing_owner_page_refs.saturating_add(1);
+            validation.missing_owner_block_refs =
+                validation.missing_owner_block_refs.saturating_add(1);
         }
-        let bucket_page_present = shard
+        let bucket_block_present = shard
             .bucket_index
             .bucket_map
             .get(&expected_routing_bucket)
             .is_some_and(|bucket| {
                 bucket.object_index.contains(&expected_object_id)
-                    && bucket.page_index.values().any(|page| {
+                    && bucket.block_index.values().any(|page| {
                         page.address.block_slab_id == entry.address.block_slab_id
                             && page.address.offset == entry.address.offset
                             && page.address.length == entry.address.length
-                            && page.address.page_id() == expected_page_id
+                            && page.address.page_id() == expected_block_id
                             && page.model_id == entry.kind
                     })
             });
-        if !bucket_page_present {
-            validation.missing_owner_page_refs =
-                validation.missing_owner_page_refs.saturating_add(1);
+        if !bucket_block_present {
+            validation.missing_owner_block_refs =
+                validation.missing_owner_block_refs.saturating_add(1);
         }
         if object_mismatch || bucket_mismatch {
             validation
                 .mismatches
-                .push(StorageRecoveryPageOwnerMismatch {
+                .push(StorageRecoveryBlockOwnerMismatch {
                     object_key: entry.object_key.to_string(),
                     block_slab_id: entry.address.block_slab_id,
                     offset: entry.address.offset,

@@ -18,9 +18,9 @@ use crate::types::{
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_pages::decode_feature_page_strict;
-use super::state::PackedFeaturePageDecode;
-use super::{parse_i64, read_page_bytes, ShardState};
+use super::packed_pages::decode_feature_block_strict;
+use super::state::PackedFeatureBlockDecode;
+use super::{parse_i64, read_block_bytes, ShardState};
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -28,14 +28,14 @@ pub(super) fn read_sequence_row(
     timestamp_ms: u64,
     address: &BlockAddress,
 ) -> Option<SequenceFeatureRow> {
-    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => points
+    let bytes = read_block_bytes(cache, block_store, shard_id, address)?;
+    match decode_feature_block_strict(&bytes) {
+        PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
             .find(|point| point.timestamp_ms == timestamp_ms)
             .and_then(|point| serde_json::from_slice(&point.value).ok()),
-        PackedFeaturePageDecode::Legacy => serde_json::from_slice(&bytes).ok(),
-        PackedFeaturePageDecode::Corrupt(_) => None,
+        PackedFeatureBlockDecode::Legacy => serde_json::from_slice(&bytes).ok(),
+        PackedFeatureBlockDecode::Corrupt(_) => None,
     }
 }
 

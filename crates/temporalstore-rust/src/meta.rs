@@ -2768,7 +2768,7 @@ mod tests {
                     storage_bytes: 100,
                     object_manager: crate::control::ObjectManagerStats {
                         object_count: 10,
-                        page_ref_count: 10,
+                        block_ref_count: 10,
                         dirty_object_count: 1,
                         dirty_bucket_count: 1,
                         routing_bucket_count: 2,
@@ -4787,7 +4787,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_page_says_where_to_resume() {
+    fn a_full_block_says_where_to_resume() {
         // A cap that truncates silently reads as "that is all of them", which is
         // the wrong answer to give an operator counting shards.
         let meta = placed_shards();
@@ -4827,7 +4827,7 @@ mod tests {
     }
 
     #[test]
-    fn the_last_page_does_not_offer_a_cursor() {
+    fn the_last_block_does_not_offer_a_cursor() {
         // Otherwise a caller loops forever on an empty page.
         let meta = placed_shards();
         let page = listed(

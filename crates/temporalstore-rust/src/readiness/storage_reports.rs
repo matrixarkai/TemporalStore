@@ -243,10 +243,10 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let dependency = storage_cache_dependency_matrix_report();
     let cache_pressure = storage_ssd_cache_pressure_readiness_report();
 
-    let orphan_page_detection_ready = true;
-    let missing_page_ref_detection_ready = true;
-    let stale_page_ref_detection_ready = true;
-    let corrupt_page_index_wal_snapshot_evidence_ready = true;
+    let orphan_block_detection_ready = true;
+    let missing_block_ref_detection_ready = true;
+    let stale_block_ref_detection_ready = true;
+    let corrupt_block_index_wal_snapshot_evidence_ready = true;
     let follower_cursor_safe_gc_ready = dependency.follower_cursor_retention_ready
         && dependency.raft_snapshot_manifest_retention_ready;
     let cache_pressure_and_refill_ready = cache_pressure.local_pressure_ready
@@ -255,8 +255,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         migration.shared_store_sync_replay_ready && migration.shared_store_async_replay_ready;
     let unified_storage_corpus_ready =
         migration.unified_runner_ready && migration.external_binary_exporter_ready;
-    let first_class_bucket_object_page_index_ready = true;
-    let first_class_bucket_object_page_index_evidence = vec![
+    let first_class_bucket_object_block_index_ready = true;
+    let first_class_bucket_object_block_index_evidence = vec![
         "ShardState owns slot_objects as the canonical routing-slot -> object -> page-ref index"
             .to_string(),
         "write and delete paths incrementally synchronize changed objects into the slot index"
@@ -339,12 +339,12 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "shared corpus case storage_merged_dump_load_policy validates restore-engine install and stale-load rejection".to_string(),
     ];
     let merged_dump_load_policy_blockers = Vec::new();
-    let rust_storage_lifecycle_behavior_ready = orphan_page_detection_ready
-        && missing_page_ref_detection_ready
-        && stale_page_ref_detection_ready
+    let rust_storage_lifecycle_behavior_ready = orphan_block_detection_ready
+        && missing_block_ref_detection_ready
+        && stale_block_ref_detection_ready
         && follower_cursor_safe_gc_ready
         && shared_store_sync_async_replay_ready
-        && first_class_bucket_object_page_index_ready
+        && first_class_bucket_object_block_index_ready
         && native_bucket_store_layout_transition_ready
         && model_layout_compaction_ready;
     let rust_storage_lifecycle_behavior_evidence = vec![
@@ -364,16 +364,16 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !rust_storage_lifecycle_behavior_ready {
         missing.push("Rust storage lifecycle behavior evidence".to_string());
     }
-    if !orphan_page_detection_ready {
+    if !orphan_block_detection_ready {
         missing.push("orphan page detection".to_string());
     }
-    if !missing_page_ref_detection_ready {
+    if !missing_block_ref_detection_ready {
         missing.push("missing page reference detection".to_string());
     }
-    if !stale_page_ref_detection_ready {
+    if !stale_block_ref_detection_ready {
         missing.push("stale page reference detection".to_string());
     }
-    if !corrupt_page_index_wal_snapshot_evidence_ready {
+    if !corrupt_block_index_wal_snapshot_evidence_ready {
         missing.push("corrupt page/index/wal/snapshot evidence".to_string());
     }
     if !follower_cursor_safe_gc_ready {
@@ -388,7 +388,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !unified_storage_corpus_ready {
         missing.push("unified storage corpus evidence".to_string());
     }
-    if !first_class_bucket_object_page_index_ready {
+    if !first_class_bucket_object_block_index_ready {
         missing.push("first-class slot/object/page ownership index".to_string());
     }
     if !native_object_manager_runtime_ready {
@@ -416,16 +416,16 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     StorageProductionPostureReport {
         rust_storage_lifecycle_behavior_ready,
         rust_storage_lifecycle_behavior_evidence,
-        orphan_page_detection_ready,
-        missing_page_ref_detection_ready,
-        stale_page_ref_detection_ready,
-        corrupt_page_index_wal_snapshot_evidence_ready,
+        orphan_block_detection_ready,
+        missing_block_ref_detection_ready,
+        stale_block_ref_detection_ready,
+        corrupt_block_index_wal_snapshot_evidence_ready,
         follower_cursor_safe_gc_ready,
         cache_pressure_and_refill_ready,
         shared_store_sync_async_replay_ready,
         unified_storage_corpus_ready,
-        first_class_bucket_object_page_index_ready,
-        first_class_bucket_object_page_index_evidence,
+        first_class_bucket_object_block_index_ready,
+        first_class_bucket_object_block_index_evidence,
         native_object_manager_runtime_ready,
         native_object_manager_runtime_evidence,
         native_object_manager_runtime_blockers,

@@ -16,8 +16,8 @@ impl BlockStore {
             address.offset,
             address.length,
         )?;
-        let decoded = decode_page_record(&bytes, address)?;
-        // `decode_page_record` just verified this payload against the digest stored in the
+        let decoded = decode_block_record(&bytes, address)?;
+        // `decode_block_record` just verified this payload against the digest stored in the
         // page envelope, and cross-checked the record header's page id, object id and routing
         // slot against this address. A second comparison against a digest carried in the index
         // added nothing to either: the first covers corruption, the second covers an entry
@@ -26,7 +26,7 @@ impl BlockStore {
         inner.stats.reads += 1;
         inner.stats.bytes_read += address.length;
         inner.stats.logical_bytes_read += decoded.logical_len as u64;
-        if decoded.compression == PageRecordCompression::Zstd {
+        if decoded.compression == BlockRecordCompression::Zstd {
             inner.stats.compressed_records_read += 1;
         }
         Ok(bytes)
@@ -125,8 +125,8 @@ impl BlockStore {
             inner.write_offset = bytes.len() as u64;
         }
         let slab_summary = summarize_slab(bytes, block_slab_id)?;
-        if let Some(max_page_id) = slab_summary.last_page_id {
-            inner.next_page_id = inner.next_page_id.max(max_page_id.saturating_add(1));
+        if let Some(max_block_id) = slab_summary.last_block_id {
+            inner.next_page_id = inner.next_page_id.max(max_block_id.saturating_add(1));
         }
         let is_current_slab = block_slab_id == inner.block_slab_id;
         let now = now_unix_ms();
@@ -148,8 +148,8 @@ impl BlockStore {
                         .unwrap_or(now),
                 ),
                 updated_unix_ms: Some(now),
-                first_page_id: slab_summary.first_page_id,
-                last_page_id: slab_summary.last_page_id,
+                first_block_id: slab_summary.first_block_id,
+                last_block_id: slab_summary.last_block_id,
                 readable_prefix_physical_bytes: bytes.len() as u64,
                 verified_source_mtime_unix_ms: None,
                 has_corruption: false,

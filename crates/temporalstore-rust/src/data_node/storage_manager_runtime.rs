@@ -23,15 +23,15 @@ pub(super) fn storage_manager_runtime_initial_report(
         phase_wal_reclaim_enabled: options.request.enable_wal_reclaim,
         phase_expire_enabled: options.request.enable_expire,
         phase_evict_enabled: options.request.enable_evict,
-        phase_page_gc_enabled: options.request.enable_page_reclaim,
-        phase_compaction_enabled: options.request.enable_page_compaction,
+        phase_block_gc_enabled: options.request.enable_block_reclaim,
+        phase_compaction_enabled: options.request.enable_block_compaction,
         phase_index_gc_enabled: options.request.enable_index_gc,
         bounded_max_dump_buckets_per_round: options.request.max_dump_buckets_per_round,
         configured_follower_cursor_count: options.request.follower_replay_cursors.len(),
         configured_raft_snapshot_ref_count: options.request.raft_snapshot_refs.len(),
-        configured_page_gc_raft_install_floor_slab_id: options
+        configured_block_gc_raft_install_floor_slab_id: options
             .request
-            .page_gc_raft_install_floor_slab_id,
+            .block_gc_raft_install_floor_slab_id,
         ..StorageManagerRuntimeReport::default()
     }
 }
@@ -87,7 +87,7 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
         }
         bytes_reclaimed = bytes_reclaimed
             .saturating_add(stage.bytes_reclaimed)
-            .saturating_add(stage.page_bytes_reclaimed)
+            .saturating_add(stage.block_bytes_reclaimed)
             .saturating_add(stage.cache_disk_bytes_removed)
             .saturating_add(stage.before_bytes.saturating_sub(stage.after_bytes));
         pressure_before = pressure_before.max(stage.pressure_before);
@@ -122,7 +122,7 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
             .saturating_add(cycle.pressure_snapshot.disk_cache_bytes)
             .saturating_add(cycle.pressure_snapshot.bucket_index_resident_bytes),
         memory_cache_pressure_score: cycle.pressure_snapshot.memory_cache_pressure_score,
-        live_page_summaries_measured: cycle.pressure_snapshot.live_page_summaries_measured,
+        live_block_summaries_measured: cycle.pressure_snapshot.live_block_summaries_measured,
         expired_bucket_object_scan_debt: cycle.pressure_snapshot.expired_bucket_object_scan_debt,
         delayed_destroy_slab_count: cycle.pressure_snapshot.delayed_destroy_slab_count,
         delayed_destroy_bytes: cycle.pressure_snapshot.delayed_destroy_bytes,

@@ -4,14 +4,14 @@
 use std::sync::atomic::AtomicU64;
 
 pub(super) const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
-pub(super) const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
+pub(super) const FEATURE_BLOCK_MAGIC: &[u8] = b"TSFPG1\n";
 
 /// The byte format. Distinct from the JSON magic so a page written before it still identifies
 /// itself, rather than being read as a length that happens to parse.
-pub(super) const FEATURE_PAGE_BINARY_MAGIC: &[u8] = b"TSFPB1\n";
+pub(super) const FEATURE_BLOCK_BINARY_MAGIC: &[u8] = b"TSFPB1\n";
 #[cfg(test)]
-pub(super) const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize =
-    crate::storage_config::DEFAULT_CONTEXT_PAGE_TARGET_BYTES;
+pub(super) const TIMESTAMPED_KV_BLOCK_TARGET_BYTES: usize =
+    crate::storage_config::DEFAULT_CONTEXT_BLOCK_TARGET_BYTES;
 pub(super) const CONTEXT_TIMELINE_FANOUT: u64 = 1024 * 1024;
 pub(super) const CONTEXT_DEFAULT_LIMIT: usize = 100;
 pub(super) const CONTEXT_MAX_LIMIT: usize = 1000;
@@ -40,4 +40,4 @@ pub(super) const CONTEXT_NODE_FIELD: &str = "meta";
 /// `pub(crate)` so [`crate::wal_record::is_wal_resident`] can answer for both sentinels in one
 /// place rather than each site comparing by hand.
 pub(crate) const HOT_BLOCK_SLAB_ID: u64 = u64::MAX;
-pub(super) static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);
+pub(super) static HOT_BLOCK_OFFSET: AtomicU64 = AtomicU64::new(1);

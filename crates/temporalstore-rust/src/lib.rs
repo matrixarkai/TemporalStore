@@ -133,14 +133,14 @@ pub use engine::reports::{
     BucketDumpManifestPruneReport, BucketDumpRaftSnapshotRef, BucketDumpRaftSnapshotRetentionBlock,
     BucketStorageSummary, StorageCacheInspectionReport, StorageCacheInvalidateBucketRequest,
     StorageCacheBucketSummary, StorageCacheWarmupReport, StorageDataStructureApiParityReport,
-    StorageFeaturePageError, StorageFeaturePageLayoutReport, StorageFeaturePageTimestampMismatch,
+    StorageFeatureBlockError, StorageFeatureBlockLayoutReport, StorageFeatureBlockTimestampMismatch,
     StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
     StorageLogCompatibilityReport, StorageObjectLifecycleReport,
-    StoragePageFormatCompatibilityReport, StorageProductionReadinessPolicy,
+    StorageBlockFormatCompatibilityReport, StorageProductionReadinessPolicy,
     StorageProductionReadinessReport, StorageProductionReadinessRequest, StorageReclaimCandidate,
-    StorageRecoveryBoundaryReport, StorageRecoveryPageError, StorageRecoveryPageOwnerMismatch,
+    StorageRecoveryBoundaryReport, StorageRecoveryBlockError, StorageRecoveryBlockOwnerMismatch,
     StorageRecoveryReport, StorageRecoverySlabLiveReport, StorageSlabIntegrityReport,
-    StorageTimestampedPageFamilyReport,
+    StorageTimestampedBlockFamilyReport,
 };
 pub use engine::TemporalEngine;
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};

@@ -259,7 +259,7 @@ fn what_a_dump_costs_as_the_shard_grows() {
 
 /// What one compaction costs, and for how long it holds the shard.
 ///
-/// `compact_shard_pages` takes the shard write lock for the whole relocation, so its duration IS
+/// `compact_shard_blocks` takes the shard write lock for the whole relocation, so its duration IS
 /// the stall every reader and writer of the shard sees.
 ///
 /// It is no longer unbounded: the round relocates at most `COMPACTION_ROUND_BYTES` and resumes
@@ -316,14 +316,14 @@ fn what_the_compaction_budget_buys() {
         }
         let started = std::time::Instant::now();
         let report = engine
-            .compact_shard_pages_with_budget(1, budget)
+            .compact_shard_blocks_with_budget(1, budget)
             .expect("compaction should run");
         let elapsed = started.elapsed();
         eprintln!(
             "  [budget] {:>9} KiB -> first round {:>9.1} ms, {:>6} page refs moved",
             budget / 1024,
             elapsed.as_secs_f64() * 1000.0,
-            report.rewritten_page_refs,
+            report.rewritten_block_refs,
         );
     }
 }
@@ -350,13 +350,13 @@ fn what_a_whole_shard_compaction_costs() {
             });
         }
         let started = std::time::Instant::now();
-        let report = engine.compact_shard_pages(1).expect("compaction runs");
+        let report = engine.compact_shard_blocks(1).expect("compaction runs");
         let elapsed = started.elapsed();
         println!(
             "  [compaction] {objects:>6} objects -> {:>7.1} ms holding the shard, {} page refs rewritten ({:.1} us each)",
             elapsed.as_secs_f64() * 1000.0,
-            report.rewritten_page_refs,
-            elapsed.as_secs_f64() * 1_000_000.0 / report.rewritten_page_refs.max(1) as f64,
+            report.rewritten_block_refs,
+            elapsed.as_secs_f64() * 1_000_000.0 / report.rewritten_block_refs.max(1) as f64,
         );
     }
 }
@@ -465,7 +465,7 @@ fn replicated_execute_selects_sync_async_or_raft_without_restart() {
 
 // shared-corpus: context_events_slabs_entities_child_refs context_event_index_audit_dirty_models
 #[test]
-fn context_models_match_keys_timeline_pages_and_filters() {
+fn context_models_match_keys_timeline_blocks_and_filters() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024,
@@ -941,13 +941,13 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         engine
             .bucket_storage_summaries(1)
             .iter()
-            .map(|summary| summary.page_ref_count)
+            .map(|summary| summary.block_ref_count)
             .sum::<u64>()
             >= 5
     );
     let recovery = engine.storage_recovery_report(1);
     assert!(
-        recovery.total_page_refs >= 5,
+        recovery.total_block_refs >= 5,
         "context pages should be visible to recovery accounting"
     );
 }
@@ -1500,10 +1500,10 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
 }
 
 #[test]
-fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
-    let page_dir = unique_temp_path("compact-pages");
+fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
+    let block_dir = unique_temp_path("compact-pages");
     let index_dir = unique_temp_path("compact-index");
-    let block_store = BlockStore::new(&page_dir);
+    let block_store = BlockStore::new(&block_dir);
     let engine = TemporalEngine::with_cache_block_store_and_index_dir(
         MultiLayerCache::default(),
         block_store.clone(),
@@ -1550,20 +1550,20 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
     );
     assert_eq!(engine.live_block_slab_ids(1), vec![0]);
 
-    let report = engine.compact_shard_pages(1).unwrap();
+    let report = engine.compact_shard_blocks(1).unwrap();
     assert_eq!(report.previous_block_slab_id, 0);
     assert_eq!(report.compacted_block_slab_id, 1);
-    assert_eq!(report.rewritten_page_refs, 2);
+    assert_eq!(report.rewritten_block_refs, 2);
     assert_eq!(report.stale_block_slab_ids, vec![0]);
     assert_eq!(report.before.live_block_slab_count, 1);
-    assert_eq!(report.before.total_page_count, 3);
-    assert_eq!(report.before.live_page_refs, 2);
-    assert_eq!(report.before.stale_page_estimate, 1);
+    assert_eq!(report.before.total_block_count, 3);
+    assert_eq!(report.before.live_block_refs, 2);
+    assert_eq!(report.before.stale_block_estimate, 1);
     assert_eq!(report.before.live_ref_density_basis_points, 6_666);
     assert_eq!(report.after.live_block_slab_count, 1);
-    assert_eq!(report.after.total_page_count, 2);
-    assert_eq!(report.after.live_page_refs, 2);
-    assert_eq!(report.after.stale_page_estimate, 0);
+    assert_eq!(report.after.total_block_count, 2);
+    assert_eq!(report.after.live_block_refs, 2);
+    assert_eq!(report.after.stale_block_estimate, 0);
     assert_eq!(report.after.live_ref_density_basis_points, 10_000);
     assert_eq!(engine.live_block_slab_ids(1), vec![1]);
     {
@@ -1577,19 +1577,19 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
             .expect("hash address");
         assert_eq!(
             string_address.object_id(),
-            Some(stable_page_object_id(1, "string", "k", None))
+            Some(stable_block_object_id(1, "string", "k", None))
         );
         assert_eq!(
             string_address.routing_bucket(),
-            Some(page_routing_bucket("k", 0, u32::MAX))
+            Some(block_routing_bucket("k", 0, u32::MAX))
         );
         assert_eq!(
             hash_address.object_id(),
-            Some(stable_page_object_id(1, "hash", "h", Some("f")))
+            Some(stable_block_object_id(1, "hash", "h", Some("f")))
         );
         assert_eq!(
             hash_address.routing_bucket(),
-            Some(page_routing_bucket("h", 0, u32::MAX))
+            Some(block_routing_bucket("h", 0, u32::MAX))
         );
     }
 
@@ -1636,7 +1636,7 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
 
 #[test]
 // shared-corpus: storage_dump_load_recovery storage_cache_refill storage_tombstone_compaction;
-fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density() {
+fn block_compaction_reports_model_layouts_delete_markers_object_blocks_and_density() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -1756,7 +1756,7 @@ fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density
     assert!(before.object_lifecycle.delete_marked_object_ids >= 1);
     assert!(before.object_lifecycle.stale_object_ids >= 1);
 
-    let report = engine.compact_shard_pages(1).unwrap();
+    let report = engine.compact_shard_blocks(1).unwrap();
     assert!(report.model_layout_compaction_ready, "{report:?}");
     assert!(report.model_layout_compaction_blockers.is_empty());
     assert!(report
@@ -1767,8 +1767,8 @@ fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density
         .model_layout_compaction_evidence
         .iter()
         .any(|item| item.contains("tombstone object ids are preserved")));
-    assert_eq!(report.rewritten_object_pages, report.rewritten_page_refs);
-    assert!(report.rewritten_object_pages >= 5);
+    assert_eq!(report.rewritten_object_blocks, report.rewritten_block_refs);
+    assert!(report.rewritten_object_blocks >= 5);
     assert!(report.reclaimable_stale_block_slab_count >= 1);
     assert_eq!(
         report.reclaimable_stale_block_slab_count,
@@ -1778,8 +1778,8 @@ fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density
     assert!(report.delete_marker_policy_model_count >= 1);
     assert!(report.stale_density_policy_model_count >= 1);
     assert!(report.layout_aware_policy_model_count >= 5);
-    assert!(report.before.stale_page_estimate >= 1);
-    assert_eq!(report.after.stale_page_estimate, 0);
+    assert!(report.before.stale_block_estimate >= 1);
+    assert_eq!(report.after.stale_block_estimate, 0);
     assert!(
         report.before.live_ref_density_basis_points < report.after.live_ref_density_basis_points
     );
@@ -1796,14 +1796,14 @@ fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density
             .find(|layout| layout.kind == kind)
             .unwrap_or_else(|| panic!("missing layout for {kind}: {:?}", report.model_layouts))
     };
-    assert_eq!(layout("string").unique_page_refs, 2);
-    assert_eq!(layout("hash").unique_page_refs, 1);
+    assert_eq!(layout("string").unique_block_refs, 2);
+    assert_eq!(layout("hash").unique_block_refs, 1);
     // Sequence folds into the feature family (shared timestamped-KV storage), so the
     // feature layout now aggregates both the feature series and the formerly separate
     // sequence series; there is no distinct "sequence" layout.
     assert_eq!(layout("feature").index_refs, 4);
-    assert_eq!(layout("feature").unique_page_refs, 2);
-    assert_eq!(layout("feature").packed_timestamped_pages, 2);
+    assert_eq!(layout("feature").unique_block_refs, 2);
+    assert_eq!(layout("feature").packed_timestamped_blocks, 2);
     assert_eq!(layout("context_event").index_refs, 1);
     assert_eq!(layout("context_summary").index_refs, 1);
 
@@ -1826,8 +1826,8 @@ fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density
     assert!(policy("control_state").layout_aware_rewrite_required);
     assert!(policy("context_event").layout_aware_rewrite_required);
     assert!(policy("context_summary").layout_aware_rewrite_required);
-    assert!(policy("hash").object_page_packing_enabled);
-    assert!(policy("feature").cold_page_rewrite_eligible_refs >= 1);
+    assert!(policy("hash").object_block_packing_enabled);
+    assert!(policy("feature").cold_block_rewrite_eligible_refs >= 1);
 
     let rewrite_policy = |model_id: &str| {
         report
@@ -1850,18 +1850,18 @@ fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density
         "context_summary",
     ] {
         assert!(
-            rewrite_policy(model_id).rewritten_page_refs >= 1,
+            rewrite_policy(model_id).rewritten_block_refs >= 1,
             "expected rewrite evidence for {model_id}"
         );
     }
 
     let after = engine.storage_recovery_report(1);
-    assert_eq!(after.object_lifecycle.owner_mismatch_page_refs, 0);
-    assert_eq!(after.object_lifecycle.missing_owner_page_refs, 0);
+    assert_eq!(after.object_lifecycle.owner_mismatch_block_refs, 0);
+    assert_eq!(after.object_lifecycle.missing_owner_block_refs, 0);
     assert_eq!(after.object_lifecycle.reused_object_id_conflicts, 0);
     assert_eq!(
-        after.object_lifecycle.live_page_refs,
-        report.after.live_page_refs
+        after.object_lifecycle.live_block_refs,
+        report.after.live_block_refs
     );
     assert!(after
         .object_lifecycle
@@ -1869,7 +1869,7 @@ fn page_compaction_reports_model_layouts_delete_markers_object_pages_and_density
         .iter()
         .any(|key| key == "compact-set"));
     let object_runtime = engine.object_manager_runtime_report(1);
-    assert!(object_runtime.object_page_count >= 1);
+    assert!(object_runtime.object_block_count >= 1);
     assert!(
         engine
             .bucket_storage_summaries(1)
@@ -2025,7 +2025,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
 
     let report = engine.storage_data_structure_api_parity_report(1);
     assert!(report.ready, "{report:?}");
-    assert!(report.bucket_object_page_authority_ready);
+    assert!(report.bucket_object_block_authority_ready);
     assert!(report.bucket_store_layout_api_ready);
     assert!(report.object_manager_runtime_api_ready);
     assert!(report.block_address_api_ready);
@@ -2109,7 +2109,7 @@ fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc()
         shard_id: 1,
         apply: true,
         expire_records: true,
-        compact_pages: true,
+        compact_blocks: true,
         lifecycle: StorageLifecycleRequest {
             shard_id: 1,
             max_dump_buckets_per_round: 16,
@@ -2179,31 +2179,31 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
             .bucket_index
             .bucket_map
             .values_mut()
-            .flat_map(|bucket| bucket.page_index.pages_mut_unaccounted())
+            .flat_map(|bucket| bucket.block_index.blocks_mut_unaccounted())
             .find(|page| page.object_key == Arc::from("owned"))
             .expect("owned slot page");
         page.address.set_object_id(Some(page.object_id().wrapping_add(1)));
     }
 
     let recovery = engine.storage_recovery_report(1);
-    assert_eq!(recovery.owner_mismatch_page_refs.len(), 1);
+    assert_eq!(recovery.owner_mismatch_block_refs.len(), 1);
     assert!(!recovery.slab_integrity.integrity_ok);
-    assert_eq!(recovery.slab_integrity.owner_mismatch_page_ref_count, 1);
-    assert_eq!(recovery.slab_integrity.missing_owner_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.owner_mismatch_block_ref_count, 1);
+    assert_eq!(recovery.slab_integrity.missing_owner_block_ref_count, 0);
     assert_eq!(recovery.object_lifecycle.live_object_ids, 1);
-    assert_eq!(recovery.object_lifecycle.live_page_refs, 1);
-    assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 1);
+    assert_eq!(recovery.object_lifecycle.live_block_refs, 1);
+    assert_eq!(recovery.object_lifecycle.owner_mismatch_block_refs, 1);
     assert_eq!(
-        recovery.owner_mismatch_page_refs[0].expected_object_id,
-        stable_page_object_id(1, "string", "owned", None)
+        recovery.owner_mismatch_block_refs[0].expected_object_id,
+        stable_block_object_id(1, "string", "owned", None)
     );
-    assert_eq!(recovery.boundary.owner_mismatch_page_refs.len(), 1);
+    assert_eq!(recovery.boundary.owner_mismatch_block_refs.len(), 1);
     assert_eq!(
-        recovery.boundary.object_lifecycle.owner_mismatch_page_refs,
+        recovery.boundary.object_lifecycle.owner_mismatch_block_refs,
         1
     );
 
-    let err = engine.compact_shard_pages(1).unwrap_err();
+    let err = engine.compact_shard_blocks(1).unwrap_err();
     assert_eq!(err.code, "page_compaction_owner_mismatch");
 }
 
@@ -2233,7 +2233,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .bucket_index
             .bucket_map
             .values()
-            .flat_map(|bucket| bucket.page_index.values())
+            .flat_map(|bucket| bucket.block_index.values())
             .find(|page| page.object_key == Arc::from("first"))
             .map(|page| page.object_id())
             .expect("first object id");
@@ -2241,7 +2241,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .bucket_index
             .bucket_map
             .values_mut()
-            .flat_map(|bucket| bucket.page_index.pages_mut_unaccounted())
+            .flat_map(|bucket| bucket.block_index.blocks_mut_unaccounted())
             .find(|page| page.object_key == Arc::from("second"))
             .expect("second slot page");
         second.address.set_object_id(Some(first_object_id));
@@ -2250,13 +2250,13 @@ fn recovery_reports_reused_object_id_conflicts() {
 
     let recovery = engine.storage_recovery_report(1);
     assert_eq!(recovery.object_lifecycle.live_object_ids, 2);
-    assert_eq!(recovery.object_lifecycle.live_page_refs, 2);
+    assert_eq!(recovery.object_lifecycle.live_block_refs, 2);
     assert_eq!(recovery.object_lifecycle.reused_object_id_conflicts, 1);
     assert_eq!(
         recovery.object_lifecycle.reused_object_ids,
         vec![reused_object_id]
     );
-    assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 1);
+    assert_eq!(recovery.object_lifecycle.owner_mismatch_block_refs, 1);
     assert_eq!(
         recovery
             .boundary
@@ -2267,11 +2267,11 @@ fn recovery_reports_reused_object_id_conflicts() {
 }
 
 #[test]
-fn crash_recovery_report_covers_wal_index_page_and_slab_manifest() {
+fn crash_recovery_report_covers_wal_index_block_and_slab_manifest() {
     let cache_dir = unique_temp_path("recovery-cache");
-    let page_dir = unique_temp_path("recovery-pages");
+    let block_dir = unique_temp_path("recovery-pages");
     let index_dir = unique_temp_path("recovery-index");
-    let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+    let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
 
     assert!(
@@ -2301,7 +2301,7 @@ fn crash_recovery_report_covers_wal_index_page_and_slab_manifest() {
             .ok
     );
 
-    let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+    let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &block_dir, &index_dir);
     recovered.load_shard(1);
     let report = recovered.storage_recovery_report(1);
 
@@ -2310,9 +2310,9 @@ fn crash_recovery_report_covers_wal_index_page_and_slab_manifest() {
     // descriptors, per-slab density -- differs from the delta-fold path. It still recovers every
     // acked write (asserted by the reads below) with all live pages readable and integral.
     if crate::engine::wal_single_barrier() {
-        assert!(report.all_live_pages_readable);
+        assert!(report.all_live_blocks_readable);
         assert!(report.slab_integrity.integrity_ok);
-        assert_eq!(report.slab_integrity.unreadable_page_ref_count, 0);
+        assert_eq!(report.slab_integrity.unreadable_block_ref_count, 0);
     } else {
     assert!(report.index_bytes > 0);
     assert!(report.index_write_atomic);
@@ -2320,15 +2320,15 @@ fn crash_recovery_report_covers_wal_index_page_and_slab_manifest() {
     assert_eq!(report.index_log_records, 2);
     assert_eq!(report.active_block_slab_ids, vec![0, 1]);
     assert_eq!(report.live_block_slab_ids, vec![0, 1]);
-    assert_eq!(report.total_page_refs, 2);
-    assert_eq!(report.readable_page_refs, 2);
-    assert!(report.all_live_pages_readable);
+    assert_eq!(report.total_block_refs, 2);
+    assert_eq!(report.readable_block_refs, 2);
+    assert!(report.all_live_blocks_readable);
     assert!(report.slab_integrity.integrity_ok);
     assert!(!report.slab_integrity.reclaim_required);
     assert_eq!(report.slab_integrity.indexed_block_slab_count, 2);
     assert_eq!(report.slab_integrity.discovered_block_slab_count, 2);
     assert_eq!(report.slab_integrity.live_block_slab_count, 2);
-    assert_eq!(report.slab_integrity.unreadable_page_ref_count, 0);
+    assert_eq!(report.slab_integrity.unreadable_block_ref_count, 0);
     assert_eq!(report.slab_descriptors.len(), 2);
     assert_eq!(
         report.slab_descriptors[0].state,
@@ -2356,16 +2356,16 @@ fn crash_recovery_report_covers_wal_index_page_and_slab_manifest() {
     assert_eq!(report.block_slab_live_reports.len(), 2);
     assert_eq!(report.block_slab_live_reports[0].block_slab_id, 0);
     assert_eq!(report.block_slab_live_reports[0].page_count, 1);
-    assert_eq!(report.block_slab_live_reports[0].live_page_refs, 1);
+    assert_eq!(report.block_slab_live_reports[0].live_block_refs, 1);
     assert_eq!(
-        report.block_slab_live_reports[0].readable_live_page_refs,
+        report.block_slab_live_reports[0].readable_live_block_refs,
         1
     );
     assert_eq!(
-        report.block_slab_live_reports[0].unreadable_live_page_refs,
+        report.block_slab_live_reports[0].unreadable_live_block_refs,
         0
     );
-    assert_eq!(report.block_slab_live_reports[0].stale_page_estimate, 0);
+    assert_eq!(report.block_slab_live_reports[0].stale_block_estimate, 0);
     assert_eq!(
         report.block_slab_live_reports[0].live_ref_density_basis_points,
         10_000
@@ -2411,9 +2411,9 @@ fn crash_recovery_report_covers_wal_index_page_and_slab_manifest() {
 #[test]
 fn crash_recovery_report_marks_stale_slab_density_after_overwrite() {
     let cache_dir = unique_temp_path("recovery-density-cache");
-    let page_dir = unique_temp_path("recovery-density-pages");
+    let block_dir = unique_temp_path("recovery-density-pages");
     let index_dir = unique_temp_path("recovery-density-index");
-    let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+    let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
 
     assert!(
@@ -2441,7 +2441,7 @@ fn crash_recovery_report_marks_stale_slab_density_after_overwrite() {
             .ok
     );
 
-    let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+    let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &block_dir, &index_dir);
     recovered.load_shard(1);
     // The overwrite keeps exactly one live object ("hot"="new", 3 bytes) under any recovery mode.
     assert_eq!(
@@ -2465,8 +2465,8 @@ fn crash_recovery_report_marks_stale_slab_density_after_overwrite() {
         .expect("segment 0 live-density report");
 
     // The single live object is exactly the same regardless of recovery mode.
-    assert_eq!(slab.live_page_refs, 1);
-    assert_eq!(slab.readable_live_page_refs, 1);
+    assert_eq!(slab.live_block_refs, 1);
+    assert_eq!(slab.readable_live_block_refs, 1);
     assert_eq!(slab.live_logical_bytes, 3);
     assert_eq!(slab.live_object_count, 1);
     assert_eq!(slab.live_routing_bucket_count, 1);
@@ -2478,19 +2478,19 @@ fn crash_recovery_report_marks_stale_slab_density_after_overwrite() {
         // power cut the un-synced pages are gone and replay rebuilds them cleanly. Physical density
         // is therefore not asserted under the flag.
         assert_eq!(slab.page_count, 2);
-        assert_eq!(slab.stale_page_estimate, 1);
+        assert_eq!(slab.stale_block_estimate, 1);
         assert_eq!(slab.live_ref_density_basis_points, 5_000);
     }
 }
 
 #[test]
 // shared-corpus: storage_cache_refill storage_matrixraft_cache_refill_pressure;
-fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory() {
+fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_memory() {
     let root = tempfile::tempdir().unwrap();
     let cache_dir = root.path().join("cache");
-    let page_dir = root.path().join("pages");
+    let block_dir = root.path().join("pages");
     let index_dir = root.path().join("index");
-    let engine = TemporalEngine::with_local_dirs(128, &cache_dir, &page_dir, &index_dir);
+    let engine = TemporalEngine::with_local_dirs(128, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
 
     assert!(
@@ -2506,7 +2506,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
             .ok
     );
 
-    let page_key = {
+    let block_key = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let address = shard.strings.get("cold-key").expect("indexed page address");
@@ -2536,13 +2536,13 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
     assert!(engine.cache().stats().misses >= 2);
     assert!(engine.cache().stats().puts >= 2);
     assert_eq!(
-        engine.cache().get_memory(&page_key),
+        engine.cache().get_memory(&block_key),
         Some(b"cold-value".to_vec())
     );
 
     let _ = engine.cache().invalidate(&CacheKey::string(1, "cold-key"));
     engine.cache().clear_memory_for_test();
-    assert_eq!(engine.cache().get_memory(&page_key), None);
+    assert_eq!(engine.cache().get_memory(&block_key), None);
     let reads_before_disk_cache = engine.block_store().stats().reads;
     let disk_cache_read = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -2559,14 +2559,14 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
     assert_eq!(engine.block_store().stats().reads, reads_before_disk_cache);
     assert!(engine.cache().stats().disk_hits >= 1);
     assert_eq!(
-        engine.cache().get_memory(&page_key),
+        engine.cache().get_memory(&block_key),
         Some(b"cold-value".to_vec())
     );
 
     let cold_restart = TemporalEngine::with_local_dirs(
         128,
         root.path().join("fresh-cache"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     cold_restart.load_shard(1);
@@ -2588,11 +2588,11 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
 }
 
 #[test]
-fn crash_recovery_rebuilds_missing_slab_manifest_from_page_stream() {
+fn crash_recovery_rebuilds_missing_slab_manifest_from_block_stream() {
     let cache_dir = unique_temp_path("recovery-rebuild-cache");
-    let page_dir = unique_temp_path("recovery-rebuild-pages");
+    let block_dir = unique_temp_path("recovery-rebuild-pages");
     let index_dir = unique_temp_path("recovery-rebuild-index");
-    let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+    let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
 
     assert!(
@@ -2621,17 +2621,17 @@ fn crash_recovery_rebuilds_missing_slab_manifest_from_page_stream() {
             .ok
     );
 
-    fs::remove_file(page_dir.join("page_extent_manifest.json")).unwrap();
-    let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+    fs::remove_file(block_dir.join("page_extent_manifest.json")).unwrap();
+    let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &block_dir, &index_dir);
     recovered.load_shard(1);
     let report = recovered.storage_recovery_report(1);
 
     assert_eq!(report.wal_records, 2);
-    assert!(report.all_live_pages_readable);
+    assert!(report.all_live_blocks_readable);
     assert!(report.slab_summary.live_physical_bytes > 0);
     // The slab manifest was rebuilt (from the page stream on the default path; from WAL-replayed
     // pages under the single barrier). Recovery of both acked writes is asserted by the reads below.
-    assert!(page_dir.join("page_extent_manifest.json").exists());
+    assert!(block_dir.join("page_extent_manifest.json").exists());
     if !crate::engine::wal_single_barrier() {
         // Default path: the delta fold reconstructs the exact on-disk page layout at the original
         // addresses, so the sealed(slab 0)+active(slab 1) split from the out-of-band roll_slab()
@@ -2641,7 +2641,7 @@ fn crash_recovery_rebuilds_missing_slab_manifest_from_page_stream() {
         assert_eq!(report.index_log_records, 2);
         assert_eq!(report.active_block_slab_ids, vec![0, 1]);
         assert_eq!(report.live_block_slab_ids, vec![0, 1]);
-        assert_eq!(report.total_page_refs, 2);
+        assert_eq!(report.total_block_refs, 2);
         assert_eq!(report.slab_descriptors.len(), 2);
         assert_eq!(
             report.slab_descriptors[0].state,
@@ -2683,7 +2683,7 @@ fn crash_recovery_rebuilds_missing_slab_manifest_from_page_stream() {
 }
 
 #[test]
-fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
+fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
     let engine = TemporalEngine::default();
     assert!(
         engine
@@ -2737,11 +2737,11 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
 
     assert_eq!(
         string_address.object_id(),
-        Some(stable_page_object_id(1, "string", "k", None))
+        Some(stable_block_object_id(1, "string", "k", None))
     );
     assert_eq!(
         string_address.routing_bucket(),
-        Some(page_routing_bucket("k", 10, 20))
+        Some(block_routing_bucket("k", 10, 20))
     );
     assert_eq!(
         string_address.slab_id(),
@@ -2749,11 +2749,11 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
     );
     assert_eq!(
         hash_address.object_id(),
-        Some(stable_page_object_id(1, "hash", "h", Some("f")))
+        Some(stable_block_object_id(1, "hash", "h", Some("f")))
     );
     assert_eq!(
         hash_address.routing_bucket(),
-        Some(page_routing_bucket("h", 10, 20))
+        Some(block_routing_bucket("h", 10, 20))
     );
     assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id));
     assert_ne!(string_address.object_id(), hash_address.object_id());
@@ -3778,12 +3778,12 @@ fn what_reading_one_summary_actually_costs() {
         };
 
         // Warm, so neither half is charged for filling a cache that a steady-state read finds warm.
-        let _ = super::read_page_bytes(&engine.cache, &engine.page_store, 1, &address);
+        let _ = super::read_block_bytes(&engine.cache, &engine.page_store, 1, &address);
 
         let read_probe = crate::alloc_probe::Probe::start();
         let mut bytes = Vec::new();
         for _ in 0..5 {
-            bytes = super::read_page_bytes(&engine.cache, &engine.page_store, 1, &address)
+            bytes = super::read_block_bytes(&engine.cache, &engine.page_store, 1, &address)
                 .expect("the page must read, or the split below is measuring a None");
         }
         let read = read_probe.stop();
@@ -3791,10 +3791,10 @@ fn what_reading_one_summary_actually_costs() {
         let decode_probe = crate::alloc_probe::Probe::start();
         let mut points = 0usize;
         for _ in 0..5 {
-            points = match super::packed_pages::decode_feature_page_strict(&bytes) {
-                super::state::PackedFeaturePageDecode::Packed(p) => p.len(),
-                super::state::PackedFeaturePageDecode::Legacy => 1,
-                super::state::PackedFeaturePageDecode::Corrupt(_) => 0,
+            points = match super::packed_pages::decode_feature_block_strict(&bytes) {
+                super::state::PackedFeatureBlockDecode::Packed(p) => p.len(),
+                super::state::PackedFeatureBlockDecode::Legacy => 1,
+                super::state::PackedFeatureBlockDecode::Corrupt(_) => 0,
             };
         }
         let decode = decode_probe.stop();
@@ -3830,11 +3830,11 @@ fn what_reading_one_summary_actually_costs() {
             .iter()
             .filter(|a| crate::wal_record::is_wal_resident(a.block_slab_id))
             .count();
-        let with_page_id = addresses.iter().filter(|a| a.page_id().is_some()).count();
+        let with_block_id = addresses.iter().filter(|a| a.page_id().is_some()).count();
         let distinct_slabs: std::collections::BTreeSet<u64> =
             addresses.iter().map(|a| a.block_slab_id).collect();
         println!(
-            "         {wal_resident}/120 wal_resident addresses, {with_page_id} carry a page_id, {} distinct slabs, block_in_wal enabled={}",
+            "         {wal_resident}/120 wal_resident addresses, {with_block_id} carry a page_id, {} distinct slabs, block_in_wal enabled={}",
             distinct_slabs.len(),
             engine.page_store.block_in_wal(),
         );
@@ -3843,10 +3843,10 @@ fn what_reading_one_summary_actually_costs() {
         let walk_probe = crate::alloc_probe::Probe::start();
         let mut decoded = 0usize;
         for address in &addresses {
-            if let Some(page) = super::read_page_bytes(&engine.cache, &engine.page_store, 1, address)
+            if let Some(page) = super::read_block_bytes(&engine.cache, &engine.page_store, 1, address)
             {
-                if let super::state::PackedFeaturePageDecode::Packed(points) =
-                    super::packed_pages::decode_feature_page_strict(&page)
+                if let super::state::PackedFeatureBlockDecode::Packed(points) =
+                    super::packed_pages::decode_feature_block_strict(&page)
                 {
                     decoded += points.len();
                 }
@@ -3897,10 +3897,10 @@ fn what_reading_one_summary_actually_costs() {
 /// clustering could remove nearly all of them; a high number means they already share and there is
 /// nothing here worth a storage-layout change.
 ///
-///   cargo test -p temporalstore-rust --lib how_many_pages_do_a_retrieves_candidates_span -- --ignored --nocapture --test-threads=1
+///   cargo test -p temporalstore-rust --lib how_many_blocks_do_a_retrieves_candidates_span -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
-fn how_many_pages_do_a_retrieves_candidates_span() {
+fn how_many_blocks_do_a_retrieves_candidates_span() {
     println!(
         "
   nodes   distinct extents   nodes/extent   distinct slabs   bytes addressed
@@ -4177,7 +4177,7 @@ fn does_the_per_ingest_reconstruct_change_anything() {
             .map(|(routing_bucket, bucket)| {
                 (
                     *routing_bucket,
-                    bucket.page_index.len(),
+                    bucket.block_index.len(),
                     bucket.object_index.len(),
                     bucket.deleted_object_index.len(),
                     format!("{:?}", bucket.layout),
@@ -4321,7 +4321,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
         let shard = shards.get(&1).expect("loaded shard");
         let mut rows: Vec<String> = Vec::new();
         for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
-            for (field_key, page) in bucket.page_index.iter() {
+            for (field_key, page) in bucket.block_index.iter() {
                 rows.push(format!(
                     "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
                     page.object_key,
@@ -4508,7 +4508,7 @@ fn which_write_primitive_grows_with_the_store() {
 
         // The series primitive, on a fresh key.
         let warm_key = format!("probe:series:warm:{rung}");
-        let _ = super::packed_pages::append_timestamped_kv_pages(
+        let _ = super::packed_pages::append_timestamped_kv_blocks(
             &engine.cache,
             &engine.page_store,
             1,
@@ -4525,7 +4525,7 @@ fn which_write_primitive_grows_with_the_store() {
         );
         let key = format!("probe:series:{rung}");
         let probe = crate::alloc_probe::Probe::start();
-        let _ = super::packed_pages::append_timestamped_kv_pages(
+        let _ = super::packed_pages::append_timestamped_kv_blocks(
             &engine.cache,
             &engine.page_store,
             1,
@@ -4588,9 +4588,9 @@ fn which_write_primitive_grows_with_the_store() {
 /// A summary write costs 1,554 allocations at 40 memories and 10,671 at 320; a node write is flat
 /// at ~197. The append primitives underneath both are flat, no rebuild fires, and every counted
 /// bucket walk is flat -- so the cost is in the maintenance that succeeds, not in the write and not
-/// in a fallback. The two arms differ in which branch of `sync_context_pages_for_object` they take:
-/// a node's page is filed under `shard.hashes` and goes through `upsert_bucket_index_page_with`, a
-/// summary is a timestamped series and goes through `sync_bucket_index_object_pages`.
+/// in a fallback. The two arms differ in which branch of `sync_context_blocks_for_object` they take:
+/// a node's page is filed under `shard.hashes` and goes through `upsert_bucket_index_block_with`, a
+/// summary is a timestamped series and goes through `sync_bucket_index_object_blocks`.
 ///
 /// Calling maintenance directly, on the same grown stores, one key of each kind, decides it.
 ///
@@ -4708,11 +4708,11 @@ fn what_post_write_maintenance_costs_per_key_kind() {
         let shard = shards.get_mut(&1).expect("loaded shard");
         for (label, key) in [("context node   ", &node_key), ("context summary", &summary_key)] {
             // Warm once: the first maintenance of a key does one-off work.
-            let _ = super::storage_bucket_internals::sync_context_pages_for_object(
+            let _ = super::storage_bucket_internals::sync_context_blocks_for_object(
                 shard, 1, key,
             );
             let probe = crate::alloc_probe::Probe::start();
-            let covered = super::storage_bucket_internals::sync_context_pages_for_object(
+            let covered = super::storage_bucket_internals::sync_context_blocks_for_object(
                 shard, 1, key,
             );
             let allocs = probe.stop().allocs;
@@ -4732,7 +4732,7 @@ fn what_post_write_maintenance_costs_per_key_kind() {
 
 /// The incrementally maintained object->page lookup must equal a rebuilt one.
 ///
-/// `sync_bucket_index_object_pages` used to end by rebuilding the shard's entire object->page
+/// `sync_bucket_index_object_blocks` used to end by rebuilding the shard's entire object->page
 /// lookup, which made every timestamped-series write O(pages in the shard) -- 10,457 allocations for
 /// one summary write at 320 memories against 27 for a node write, which never reaches that path.
 /// The rebuild is now confined to establishing an empty lookup, and the steady state applies only
@@ -4744,7 +4744,7 @@ fn what_post_write_maintenance_costs_per_key_kind() {
 /// object's entries and inserts new ones, and applying those two in the wrong order deletes what the
 /// same call just wrote.
 #[test]
-fn the_maintained_page_lookup_matches_a_rebuilt_one() {
+fn the_maintained_block_lookup_matches_a_rebuilt_one() {
     use crate::context_workflow::{
         ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
         ContextModelProviderConfig, ContextSourceKind,
@@ -4818,15 +4818,15 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("loaded shard");
 
-    let maintained = shard.bucket_index.object_page_lookup.clone();
-    let maintained_total = shard.bucket_index.object_component_page_refs;
+    let maintained = shard.bucket_index.object_block_lookup.clone();
+    let maintained_total = shard.bucket_index.object_component_block_refs;
     assert!(
         !maintained.is_empty(),
         "the lookup is empty, so this test would pass without maintaining anything"
     );
 
-    shard.bucket_index.rebuild_object_page_lookup();
-    let rebuilt = &shard.bucket_index.object_page_lookup;
+    shard.bucket_index.rebuild_object_block_lookup();
+    let rebuilt = &shard.bucket_index.object_block_lookup;
 
     // Identity is (model, object) now rather than one concatenated key, so the comparison
     // names both halves instead of a composite.
@@ -4861,7 +4861,7 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
         differing.iter().take(4).collect::<Vec<_>>(),
     );
     assert_eq!(
-        maintained_total, shard.bucket_index.object_component_page_refs,
+        maintained_total, shard.bucket_index.object_component_block_refs,
         "the page-ref total drifted; the stats path reads it instead of walking the shard"
     );
 }
@@ -4910,7 +4910,7 @@ fn where_a_record_is_kept() {
         ("sets", shard.sets.len()),
         ("expires_at_ms", shard.expires_at_ms.len()),
         ("seen", shard.seen.len()),
-        ("wal_resident_pages", shard.wal_resident_pages.len()),
+        ("wal_resident_pages", shard.wal_resident_blocks.len()),
         ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
     ];
 
@@ -5308,7 +5308,7 @@ fn how_much_of_rss_per_record_is_live() {
 /// Is a put expensive because it STORES, or because it EVICTS?
 ///
 /// Storing a 1 KB page measured 51 allocations and 43.6 KB
-/// (`what_the_page_cache_costs_per_call`), which is a 43x amplification and too large to be the
+/// (`what_the_block_cache_costs_per_call`), which is a 43x amplification and too large to be the
 /// copy. That measurement used a cache too small to hold the working set, so every put also
 /// evicted. This separates the two: the same put into a cache with room to spare cannot be
 /// evicting.
@@ -5392,7 +5392,7 @@ fn is_a_put_expensive_to_store_or_to_evict() {
 
 /// Does a missed lookup pay for tiers that hold nothing?
 ///
-/// A cache miss costs 18 allocations (`what_the_page_cache_costs_per_call`), which contradicts
+/// A cache miss costs 18 allocations (`what_the_block_cache_costs_per_call`), which contradicts
 /// `get_with_tier`'s own claim that a miss "releases the lock having touched nothing". One
 /// candidate: the lookup walks memory, then pmem, then SSD, and the SSD tier builds its key as a
 /// String before asking -- so a tier with no capacity still costs something to consult.
@@ -5467,18 +5467,18 @@ fn does_a_miss_pay_for_empty_tiers() {
 /// What the CACHE costs, split into the three calls a page-read miss makes.
 ///
 /// A miss spends ~60 allocations and ~86 KB inside the cache against 13 allocations and 1.5 KB
-/// actually reading the page (`where_a_page_read_miss_allocates`). That is the read path's real
+/// actually reading the page (`where_a_block_read_miss_allocates`). That is the read path's real
 /// memory cost, and 60 is too many to guess at: this splits it into building the key, the lookup
 /// that misses, and the put that stores the page.
 ///
 /// Keys and buffers are built BEFORE the measured window -- `put` takes both by value, and
 /// counting their construction would attribute the caller's work to the cache.
 ///
-///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_page_cache_costs_per_call -- --ignored --nocapture --test-threads=1
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_block_cache_costs_per_call -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
-fn what_the_page_cache_costs_per_call() {
+fn what_the_block_cache_costs_per_call() {
     use matrixcache::CacheKey;
 
     let dir = tempfile::tempdir().unwrap();
@@ -5561,16 +5561,16 @@ fn what_the_page_cache_costs_per_call() {
 /// Where the 38 allocations of a page-read MISS actually go.
 ///
 /// A hit costs 2 allocations and 92 bytes; a miss costs 38 and 141 KB for a 1 KB page
-/// (`what_a_page_read_costs_hit_against_miss`). On a corpus larger than the cache essentially
+/// (`what_a_block_read_costs_hit_against_miss`). On a corpus larger than the cache essentially
 /// every read misses, so the miss path is the one a deployment runs. This splits it into the
 /// three things it does -- the failed cache lookup, the block-store read, and the put that
 /// caches the result -- because each implies a different fix and 38 is too many to guess at.
 ///
-///   cargo test --features alloc-probe -p temporalstore-rust --lib where_a_page_read_miss_allocates -- --ignored --nocapture --test-threads=1
+///   cargo test --features alloc-probe -p temporalstore-rust --lib where_a_block_read_miss_allocates -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
-fn where_a_page_read_miss_allocates() {
+fn where_a_block_read_miss_allocates() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         8 * 1024,
@@ -5619,7 +5619,7 @@ fn where_a_page_read_miss_allocates() {
     for round in 0..ROUNDS {
         let address = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_page_bytes(&engine.cache, page_store, 1, address);
+        let got = super::read_block_bytes(&engine.cache, page_store, 1, address);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         whole_allocs += counts.allocs;
@@ -5651,9 +5651,9 @@ fn where_a_page_read_miss_allocates() {
 
 /// What a page read costs on a HIT against a MISS.
 ///
-/// `read_page_shared` exists so the node fetch does not own a copy of the page, and on a cache
+/// `read_block_shared` exists so the node fetch does not own a copy of the page, and on a cache
 /// hit that is exactly what happens: `get_shared` hands back an `Arc<[u8]>`. Its miss path is
-/// `read_page_bytes(..).map(Arc::from)`, and `Arc::<[u8]>::from(Vec<u8>)` allocates a second
+/// `read_block_bytes(..).map(Arc::from)`, and `Arc::<[u8]>::from(Vec<u8>)` allocates a second
 /// buffer and copies the page into it before dropping the Vec -- so a miss pays MORE than the
 /// owning read it delegates to, and the saving applies to hits only.
 ///
@@ -5664,11 +5664,11 @@ fn where_a_page_read_miss_allocates() {
 ///
 /// The cache clear sits OUTSIDE the measured window, so what is counted is the read alone.
 ///
-///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_page_read_costs_hit_against_miss -- --ignored --nocapture --test-threads=1
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_block_read_costs_hit_against_miss -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
-fn what_a_page_read_costs_hit_against_miss() {
+fn what_a_block_read_costs_hit_against_miss() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
@@ -5704,7 +5704,7 @@ fn what_a_page_read_costs_hit_against_miss() {
 
     // Warm once: the first read of anything touches one-off structures that would otherwise be
     // counted against whichever arm ran first.
-    let warm = super::read_page_shared(cache, page_store, 1, &address)
+    let warm = super::read_block_shared(cache, page_store, 1, &address)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
@@ -5714,7 +5714,7 @@ fn what_a_page_read_costs_hit_against_miss() {
     let mut hit_bytes = 0u64;
     for _ in 0..ROUNDS {
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_page_shared(cache, page_store, 1, &address);
+        let got = super::read_block_shared(cache, page_store, 1, &address);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the hit path");
         hit_allocs += counts.allocs;
@@ -5738,9 +5738,9 @@ fn what_a_page_read_costs_hit_against_miss() {
     };
     assert!(addresses.len() >= 8, "need several pages to cycle through: {}", addresses.len());
     let small_cache = &small.cache;
-    let small_pages = &small.page_store;
+    let small_blocks = &small.page_store;
     for address in &addresses {
-        let _ = super::read_page_shared(small_cache, small_pages, 1, address);
+        let _ = super::read_block_shared(small_cache, small_blocks, 1, address);
     }
 
     let mut miss_allocs = 0u64;
@@ -5748,7 +5748,7 @@ fn what_a_page_read_costs_hit_against_miss() {
     for round in 0..ROUNDS {
         let address = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_page_shared(small_cache, small_pages, 1, address);
+        let got = super::read_block_shared(small_cache, small_blocks, 1, address);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the miss path");
         miss_allocs += counts.allocs;
@@ -5762,7 +5762,7 @@ fn what_a_page_read_costs_hit_against_miss() {
     for round in 0..ROUNDS {
         let address = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_page_bytes(small_cache, small_pages, 1, address);
+        let got = super::read_block_bytes(small_cache, small_blocks, 1, address);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         owning_allocs += counts.allocs;
@@ -5802,7 +5802,7 @@ fn what_a_page_read_costs_hit_against_miss() {
 ///
 /// Retrieve is 16.4 allocations per candidate and the node fetch is 15.0 of them -- the largest
 /// remaining cost on any indicator once ingest went flat. `load_context_node` is a map lookup, then
-/// `read_page_bytes`, then `context_from_bytes`. The lookup cannot be 15, so it is one of the other
+/// `read_block_bytes`, then `context_from_bytes`. The lookup cannot be 15, so it is one of the other
 /// two, and each implies a different fix: a read that dominates asks for buffer reuse, a decode that
 /// dominates asks about the record's shape -- four Strings and two vectors per node, built whether
 /// or not the scoring pass reads them.
@@ -5881,12 +5881,12 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
     let page_store = &engine.page_store;
 
     // Warm: the first read of a page touches one-off structures.
-    let warm = super::read_page_bytes(cache, page_store, 1, &address)
+    let warm = super::read_block_bytes(cache, page_store, 1, &address)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
     let probe = crate::alloc_probe::Probe::start();
-    let bytes = super::read_page_bytes(cache, page_store, 1, &address)
+    let bytes = super::read_block_bytes(cache, page_store, 1, &address)
         .expect("the page reads back");
     let read_allocs = probe.stop().allocs;
 
@@ -7591,7 +7591,7 @@ fn where_a_record_is_kept_everywhere() {
     let buckets = &shard.bucket_index.bucket_map;
     let object_index: usize = buckets.values().map(|b| b.object_index.len()).sum();
     let deleted_object_index: usize = buckets.values().map(|b| b.deleted_object_index.len()).sum();
-    let page_index: usize = buckets.values().map(|b| b.page_index.len()).sum();
+    let block_index: usize = buckets.values().map(|b| b.block_index.len()).sum();
 
     let rows: Vec<(&str, usize)> = vec![
         ("strings", shard.strings.len()),
@@ -7607,7 +7607,7 @@ fn where_a_record_is_kept_everywhere() {
         ("feature_rollups", shard.feature_rollups.len()),
         ("sequences", shard.sequences.len()),
         ("control_state", shard.control_state.len()),
-        ("control_state_pages", shard.control_state_pages.len()),
+        ("control_state_pages", shard.control_state_blocks.len()),
         ("control_state_changes", shard.control_state_changes.len()),
         ("control_state_change_sketch", shard.control_state_change_sketch.len()),
         ("control_state_selection", shard.control_state_selection.len()),
@@ -7625,16 +7625,16 @@ fn where_a_record_is_kept_everywhere() {
         ("context_dirty_index", shard.context_dirty_index.len()),
         ("context_embedding_dirty_index", shard.context_embedding_dirty_index.len()),
         ("context_compression_watermark", shard.context_compression_watermark.len()),
-        ("wal_resident_pages", shard.wal_resident_pages.len()),
+        ("wal_resident_pages", shard.wal_resident_blocks.len()),
         ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
         ("dirty_objects", shard.dirty_objects.len()),
         ("bucket_recency", shard.bucket_recency.len()),
         ("bucket_index.bucket_map", buckets.len()),
         ("bucket_index.kind_pool", shard.bucket_index.kind_pool.len()),
-        ("bucket_index.object_page_lookup", shard.bucket_index.object_page_lookup.len()),
+        ("bucket_index.object_page_lookup", shard.bucket_index.object_block_lookup.len()),
         ("  .object_index", object_index),
         ("  .deleted_object_index", deleted_object_index),
-        ("  .page_index", page_index),
+        ("  .page_index", block_index),
     ];
 
     // Extent, so this cannot silently under-report the way its predecessor did. ShardState has 42
@@ -7902,9 +7902,9 @@ fn fingerprinting_does_not_scale_with_the_manifest_count() {
         }
         let manifests = engine.list_bucket_dump_manifests(1).len();
 
-        crate::engine::reset_live_page_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
         let _ = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
-        (crate::engine::live_page_scan_entries(), manifests)
+        (crate::engine::live_block_scan_entries(), manifests)
     };
 
     let (few_volume, few_manifests) = scan_volume_for(2);
@@ -7942,7 +7942,7 @@ fn fingerprinting_does_not_scale_with_the_manifest_count() {
 ///
 /// It derives three things from the live-page set -- page ownership validation, the object
 /// lifecycle report, and the per-slab live-ref counts -- and used to call
-/// `collect_live_page_entries` separately for each. That materializes every live page in the
+/// `collect_live_block_entries` separately for each. That materializes every live page in the
 /// shard into a fresh Vec, so the call cost 3x the shard, measured by `what_each_plan_call_walks`
 /// as the largest single piece of `apply_storage_lifecycle` (itself 12x).
 ///
@@ -7973,33 +7973,33 @@ fn the_object_lifecycle_snapshot_walks_the_shard_once() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let live_pages: u64 = engine
+    let live_blocks: u64 = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count as u64)
+        .map(|summary| summary.block_ref_count as u64)
         .sum();
     // Denominator: with no live pages every walk count is 0 and the equality below would hold
     // for a shard that stored nothing.
-    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+    assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let report = engine.storage_object_lifecycle_snapshot(1);
-    let walked = crate::engine::live_page_scan_entries();
+    let walked = crate::engine::live_block_scan_entries();
 
     // The snapshot must still SAY something -- a call that returned an empty report would walk
     // once trivially and pass.
     assert!(
-        report.live_page_refs > 0 || report.live_object_ids > 0,
+        report.live_block_refs > 0 || report.live_object_ids > 0,
         "the snapshot reported nothing, so the walk it did was not the real one: {report:?}",
     );
 
     assert_eq!(
-        walked, live_pages,
+        walked, live_blocks,
         "storage_object_lifecycle_snapshot materialized {walked} live-page entries for a shard \
-holding {live_pages} live pages -- that is {:.1} walks, and it should be exactly one. Its three \
+holding {live_blocks} live pages -- that is {:.1} walks, and it should be exactly one. Its three \
 consumers (ownership validation, the lifecycle report, the per-slab ref counts) share one walk; \
 if a fourth consumer was added, give it the slice rather than its own scan.",
-        walked as f64 / live_pages as f64,
+        walked as f64 / live_blocks as f64,
     );
 }
 
@@ -8047,14 +8047,14 @@ fn what_apply_storage_lifecycle_walks() {
             });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
-        let live_pages: u64 = engine
+        let live_blocks: u64 = engine
             .bucket_storage_summaries(1)
             .iter()
-            .map(|summary| summary.page_ref_count as u64)
+            .map(|summary| summary.block_ref_count as u64)
             .sum();
-        crate::engine::reset_live_page_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
         let _ = engine.apply_storage_lifecycle(request);
-        (crate::engine::live_page_scan_entries(), live_pages)
+        (crate::engine::live_block_scan_entries(), live_blocks)
     };
 
     let all_on = || crate::engine::reports::StorageLifecycleRequest {
@@ -8065,13 +8065,13 @@ fn what_apply_storage_lifecycle_walks() {
         ..crate::engine::reports::StorageLifecycleRequest::default()
     };
 
-    let (baseline, live_pages) = walks_for(all_on());
-    assert!(live_pages > 0, "fixture stored no live pages");
+    let (baseline, live_blocks) = walks_for(all_on());
+    assert!(live_blocks > 0, "fixture stored no live pages");
     assert!(baseline > 0, "apply_storage_lifecycle walked nothing; this attributes nothing");
     eprintln!(
         "  [apply-lc] everything on                        {baseline:>8} entries = {:>5.1}x the shard \
-({live_pages} live pages)",
-        baseline as f64 / live_pages as f64,
+({live_blocks} live pages)",
+        baseline as f64 / live_blocks as f64,
     );
 
     for (name, request) in [
@@ -8100,7 +8100,7 @@ fn what_apply_storage_lifecycle_walks() {
         let delta = baseline as i64 - without as i64;
         eprintln!(
             "  [apply-lc] {name:<40} {without:>8} entries (delta {delta:>+8}, {:>+5.1}x){}",
-            delta as f64 / live_pages as f64,
+            delta as f64 / live_blocks as f64,
             if delta == 0 { "   <- 0: unproven, not evidence of absence" } else { "" },
         );
     }
@@ -8111,7 +8111,7 @@ fn what_apply_storage_lifecycle_walks() {
 /// Before any budget is consulted, the stage builds several whole-shard reports under the shard
 /// WRITE lock, so every read and write on the shard queues behind them. Three of those reports
 /// take the same live-page set -- ownership validation, the compaction utility report, and the
-/// object lifecycle report -- and each used to call `collect_live_page_entries` for its own copy.
+/// object lifecycle report -- and each used to call `collect_live_block_entries` for its own copy.
 ///
 /// Measured at 4,000 objects, one round walked 9.0x the shard when each report walked for itself.
 /// Sharing one walk across the three took it to 7.0x; giving `object_manager_runtime_report` the
@@ -8123,7 +8123,7 @@ fn what_apply_storage_lifecycle_walks() {
 /// for the relocation work itself, which is legitimately outside what these changes control.
 /// Pinning the total exactly would make this test fail for unrelated reasons.
 #[test]
-fn a_compaction_round_shares_one_walk_across_its_live_page_consumers() {
+fn a_compaction_round_shares_one_walk_across_its_live_block_consumers() {
     const RECORDS: usize = 1_000;
 
     let dir = tempfile::tempdir().unwrap();
@@ -8145,16 +8145,16 @@ fn a_compaction_round_shares_one_walk_across_its_live_page_consumers() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let live_pages: u64 = engine
+    let live_blocks: u64 = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count as u64)
+        .map(|summary| summary.block_ref_count as u64)
         .sum();
-    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+    assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
 
-    crate::engine::reset_live_page_scan_entries();
-    let report = engine.compact_shard_pages_with_budgets(1, u64::MAX, usize::MAX);
-    let walked = crate::engine::live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
+    let report = engine.compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX);
+    let walked = crate::engine::live_block_scan_entries();
     assert!(report.is_ok(), "compaction failed: {report:?}");
 
     // Denominator: a round that did no walking at all would satisfy any upper bound.
@@ -8163,10 +8163,10 @@ fn a_compaction_round_shares_one_walk_across_its_live_page_consumers() {
         "the compaction round materialized nothing, so the bound below measures nothing",
     );
 
-    let multiple = walked as f64 / live_pages as f64;
+    let multiple = walked as f64 / live_blocks as f64;
     assert!(
         multiple <= 5.0,
-        "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_pages} \
+        "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_blocks} \
 live pages). Its ownership validation, utility report, object lifecycle report and object-manager \
 report all share ONE `collect_live_page_entries`: 9.0x when each walked for itself, 7.0x with \
 three sharing, 4.0x with all four. If a new preamble report needs the live-page set, pass it the \
@@ -8420,12 +8420,12 @@ fn cold_shard_for_warmup_measurement(dir: &std::path::Path, records: usize) -> T
 #[cfg(test)]
 fn measured_cache_warmup(
     engine: &TemporalEngine,
-) -> (crate::engine::MaintenancePageReadCounts, usize) {
-    crate::engine::reset_maintenance_page_read_counts();
+) -> (crate::engine::MaintenanceBlockReadCounts, usize) {
+    crate::engine::reset_maintenance_block_read_counts();
     let report = engine.storage_cache_warmup_report(1, Vec::<u32>::new());
     (
-        crate::engine::maintenance_page_read_counts(),
-        report.warmed_page_refs,
+        crate::engine::maintenance_block_read_counts(),
+        report.warmed_block_refs,
     )
 }
 
@@ -8445,7 +8445,7 @@ fn measured_cache_warmup(
 /// Both arms must warm the same pages, which is what stops this from being satisfied by a
 /// warm-up that did nothing.
 #[test]
-fn the_cache_warmup_reads_pages_after_the_shard_guard_drops() {
+fn the_cache_warmup_reads_blocks_after_the_shard_guard_drops() {
     const RECORDS: usize = 200;
 
     let control_dir = tempfile::tempdir().unwrap();
@@ -8460,12 +8460,12 @@ fn the_cache_warmup_reads_pages_after_the_shard_guard_drops() {
     eprintln!(
         "[cache warmup] under the guard: {} of {} page read(s) under the guard, \
 {control_warmed} page refs warmed",
-        control.page_reads_under_guard, control.page_reads_total,
+        control.block_reads_under_guard, control.block_reads_total,
     );
     eprintln!(
         "[cache warmup] shipped:         {} of {} page read(s) under the guard, \
 {shipped_warmed} page refs warmed",
-        shipped.page_reads_under_guard, shipped.page_reads_total,
+        shipped.block_reads_under_guard, shipped.block_reads_total,
     );
 
     // DENOMINATORS FIRST. A warm-up that warmed nothing, or that found every page already
@@ -8480,30 +8480,30 @@ guard never ran and nothing here is measuring the warm-up",
         "the arms must warm the same pages for their read counts to be comparable",
     );
     assert!(
-        control.page_reads_total > 0 && shipped.page_reads_total > 0,
+        control.block_reads_total > 0 && shipped.block_reads_total > 0,
         "an arm read no pages off the block store at all ({} / {}), so the fixture was already \
 cached and neither arm is a subject for the claim below",
-        control.page_reads_total,
-        shipped.page_reads_total,
+        control.block_reads_total,
+        shipped.block_reads_total,
     );
     assert_eq!(
-        control.page_reads_total, shipped.page_reads_total,
+        control.block_reads_total, shipped.block_reads_total,
         "the arms read a different number of pages ({} vs {}), so the counts are not comparable",
-        control.page_reads_total, shipped.page_reads_total,
+        control.block_reads_total, shipped.block_reads_total,
     );
 
     // POSITIVE CONTROL: the counter can see a read inside the region, because here is one.
     assert_eq!(
-        control.page_reads_under_guard, control.page_reads_total,
+        control.block_reads_under_guard, control.block_reads_total,
         "the control arm reads every page inside the guarded region and the counter saw {} of \
 {}. The measurement is broken, not the code under it: the assertion below would pass against an \
 engine that had stopped counting entirely",
-        control.page_reads_under_guard, control.page_reads_total,
+        control.block_reads_under_guard, control.block_reads_total,
     );
 
     // THE ASSERTION THE REGION CHANGE MADE.
     assert_eq!(
-        shipped.page_reads_under_guard, 0,
+        shipped.block_reads_under_guard, 0,
         "the cache warm-up read {} of {} pages off the block store while still holding the \
 shard-table read guard. A read guard excludes every writer, so a warm of the whole shard stops \
 all writes on it for the length of the I/O -- and the warm-up has no per-round budget, so that \
@@ -8511,8 +8511,8 @@ length grows with the store. Collect the addresses under the guard, drop it, the
 `collect_live_page_entries` already materializes the whole set, and nothing in the loop touches \
 the shard. If a new step genuinely needs the shard itself, say why here rather than widening the \
 region",
-        shipped.page_reads_under_guard,
-        shipped.page_reads_total,
+        shipped.block_reads_under_guard,
+        shipped.block_reads_total,
     );
 }
 
@@ -8557,7 +8557,7 @@ fn the_compaction_flush_stays_inside_its_write_guard() {
 
     crate::engine::reset_index_encode_counts();
     let report = engine
-        .compact_shard_pages_with_budgets(1, u64::MAX, usize::MAX)
+        .compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX)
         .expect("compaction round must succeed");
     let counts = crate::engine::index_encode_counts();
 
@@ -8568,7 +8568,7 @@ rewritten",
         counts.encode_bytes_under_guard,
         counts.encodes_total,
         counts.encode_bytes_total,
-        report.rewritten_page_refs,
+        report.rewritten_block_refs,
     );
 
     // Denominator: a round that published no index says nothing about where the publish happened.
@@ -8591,7 +8591,7 @@ opens is unrecoverable durable loss",
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_the_compaction_preamble_walks -- --ignored --nocapture
 ///
-/// `compact_shard_pages_with_budgets` takes the shard WRITE lock and then, before any budget is
+/// `compact_shard_blocks_with_budgets` takes the shard WRITE lock and then, before any budget is
 /// consulted, builds six reports. A round's WORK is bounded and resumable -- `compaction_rounds`
 /// continues a round a budget cut short -- but this preamble is not: it runs in full every time
 /// the stage runs, and every read and write on the shard queues behind it.
@@ -8627,12 +8627,12 @@ fn what_the_compaction_preamble_walks() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let live_pages: u64 = engine
+    let live_blocks: u64 = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count as u64)
+        .map(|summary| summary.block_ref_count as u64)
         .sum();
-    assert!(live_pages > 0, "fixture stored no live pages");
+    assert!(live_blocks > 0, "fixture stored no live pages");
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
@@ -8641,43 +8641,43 @@ fn what_the_compaction_preamble_walks() {
     let mut report = |label: &str, walked: u64| {
         eprintln!(
             "  [preamble] {label:<38} {walked:>8} entries = {:>5.1}x the shard",
-            walked as f64 / live_pages as f64,
+            walked as f64 / live_blocks as f64,
         );
     };
 
-    crate::engine::reset_live_page_scan_entries();
-    let _ = engine.validate_shard_page_ownership(1, shard);
-    let walked = crate::engine::live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
+    let _ = engine.validate_shard_block_ownership(1, shard);
+    let walked = crate::engine::live_block_scan_entries();
     total += walked;
     report("validate_shard_page_ownership", walked);
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = crate::engine::collect_live_block_slab_ids(shard);
-    let walked = crate::engine::live_page_scan_entries();
+    let walked = crate::engine::live_block_scan_entries();
     total += walked;
     report("collect_live_block_slab_ids", walked);
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = crate::engine::compaction::compaction_utility_report(&engine.page_store, shard);
-    let walked = crate::engine::live_page_scan_entries();
+    let walked = crate::engine::live_block_scan_entries();
     total += walked;
     report("compaction_utility_report", walked);
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = crate::engine::storage_reporting::storage_object_lifecycle_report(1, shard);
-    let walked = crate::engine::live_page_scan_entries();
+    let walked = crate::engine::live_block_scan_entries();
     total += walked;
     report("storage_object_lifecycle_report", walked);
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = crate::engine::compaction::compaction_model_layout_reports(&engine.page_store, shard);
-    let walked = crate::engine::live_page_scan_entries();
+    let walked = crate::engine::live_block_scan_entries();
     total += walked;
     report("compaction_model_layout_reports", walked);
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = crate::engine::storage_reporting::object_manager_runtime_report(1, shard, 0, u32::MAX);
-    let walked = crate::engine::live_page_scan_entries();
+    let walked = crate::engine::live_block_scan_entries();
     total += walked;
     report("object_manager_runtime_report", walked);
 
@@ -8686,26 +8686,26 @@ fn what_the_compaction_preamble_walks() {
     // directly rather than the live-page set -- so it SHOULD contribute nothing here, and if it
     // does the assumption is wrong. These two rows are not added to the total above; they are a
     // breakdown OF it.
-    crate::engine::reset_live_page_scan_entries();
-    let _ = crate::engine::storage_reporting::bucket_object_page_ownership_report(
+    crate::engine::reset_live_block_scan_entries();
+    let _ = crate::engine::storage_reporting::bucket_object_block_ownership_report(
         1, shard, 0, u32::MAX,
     );
     report(
         "  of which: bucket_object_page_ownership",
-        crate::engine::live_page_scan_entries(),
+        crate::engine::live_block_scan_entries(),
     );
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = crate::engine::object_manager::runtime_report(shard);
     report(
         "  of which: object_manager::runtime_report",
-        crate::engine::live_page_scan_entries(),
+        crate::engine::live_block_scan_entries(),
     );
 
     eprintln!(
-        "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_pages} live pages)",
+        "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_blocks} live pages)",
         "SUM OF STANDALONE CALLS",
-        total as f64 / live_pages as f64,
+        total as f64 / live_blocks as f64,
     );
     assert!(total > 0, "the preamble walked nothing; this attributes nothing");
 
@@ -8719,14 +8719,14 @@ fn what_the_compaction_preamble_walks() {
     // What changes is the real call, where the sharing happens. Measured last because it takes the
     // shard WRITE lock and mutates.
     drop(shards);
-    crate::engine::reset_live_page_scan_entries();
-    let compaction = engine.compact_shard_pages_with_budgets(1, u64::MAX, usize::MAX);
-    let walked = crate::engine::live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
+    let compaction = engine.compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX);
+    let walked = crate::engine::live_block_scan_entries();
     assert!(compaction.is_ok(), "compaction failed: {compaction:?}");
     eprintln!(
         "  [preamble] {:<38} {walked:>8} entries = {:>5.1}x the shard   <- the real one",
         "compact_shard_pages_with_budgets",
-        walked as f64 / live_pages as f64,
+        walked as f64 / live_blocks as f64,
     );
     assert!(
         walked > 0,
@@ -8930,7 +8930,7 @@ before the dump.",
 ///
 ///                                        So SEVEN is the worst case, not the only case. An idle
 ///                                        round is THREE, pinned separately by
-///                                        `an_idle_round_does_not_walk_the_live_pages_to_populate_a_report`
+///                                        `an_idle_round_does_not_walk_the_live_blocks_to_populate_a_report`
 ///                                        at 8,000 and 80,000 records. Do not raise this number to
 ///                                        cover an idle regression -- that test is where an idle
 ///                                        round is measured, and it asserts the dirty half at
@@ -8942,7 +8942,7 @@ before the dump.",
 ///                                        data, so it cannot share a live-shard walk.
 ///
 /// THE SEVENTH IS GONE, AND IT WAS THE ONE NAMED AS THE REMAINING CANDIDATE:
-/// `collect_live_page_addresses` via `storage_reclaim_slab_reports`. That function builds the
+/// `collect_live_block_addresses` via `storage_reclaim_slab_reports`. That function builds the
 /// per-slab live/stale tally the reclaim planner reads, and it read `live_page_refs` and
 /// `live_physical_bytes` by materializing every live page in the shard. Both are now maintained on
 /// the index's own mutation path and read in O(slabs). The walk is not shared, deferred or
@@ -8952,7 +8952,7 @@ before the dump.",
 /// If this fails HIGH, a new walk was added: give it the existing slice. If it fails LOW, a walk
 /// was removed -- lower the constant and say which one, in the commit.
 #[test]
-fn one_call_walks_the_live_pages_a_known_number_of_times() {
+fn one_call_walks_the_live_blocks_a_known_number_of_times() {
     const RECORDS: usize = 1_000;
     const EXPECTED_MULTIPLE: u64 = 6;
 
@@ -8975,16 +8975,16 @@ fn one_call_walks_the_live_pages_a_known_number_of_times() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let live_pages: u64 = engine
+    let live_blocks: u64 = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count as u64)
+        .map(|summary| summary.block_ref_count as u64)
         .sum();
     // Denominator: with no live pages every walk materializes nothing and any multiple holds.
-    assert!(live_pages > 0, "fixture stored no live pages, so this measures nothing");
+    assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
 
-    crate::engine::reset_live_page_scan_entries();
-    crate::engine::reset_live_page_scan_sites();
+    crate::engine::reset_live_block_scan_entries();
+    crate::engine::reset_live_block_scan_sites();
     let _ = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
         shard_id: 1,
         purge_delayed_destroy: true,
@@ -8992,22 +8992,22 @@ fn one_call_walks_the_live_pages_a_known_number_of_times() {
         roll_forward_bucket_dump_installs: true,
         ..crate::engine::reports::StorageLifecycleRequest::default()
     });
-    let walked = crate::engine::live_page_scan_entries();
-    let sites = crate::engine::live_page_scan_sites_snapshot();
+    let walked = crate::engine::live_block_scan_entries();
+    let sites = crate::engine::live_block_scan_sites_snapshot();
 
-    let multiple = walked / live_pages.max(1);
+    let multiple = walked / live_blocks.max(1);
     if multiple != EXPECTED_MULTIPLE {
         let mut rows: Vec<(&String, &u64)> = sites.iter().collect();
         rows.sort_by(|left, right| right.1.cmp(left.1));
         let breakdown = rows
             .iter()
             .map(|(site, entries)| {
-                format!("\n    {:>5.1}x  {site}", **entries as f64 / live_pages as f64)
+                format!("\n    {:>5.1}x  {site}", **entries as f64 / live_blocks as f64)
             })
             .collect::<String>();
         panic!(
             "one `apply_storage_lifecycle` walked the live pages {multiple}x, expected \
-{EXPECTED_MULTIPLE}x ({walked} entries for {live_pages} live pages). Per site:{breakdown}\n  Higher means a new walk was added -- pass it the slice the call already has. Lower means one was \
+{EXPECTED_MULTIPLE}x ({walked} entries for {live_blocks} live pages). Per site:{breakdown}\n  Higher means a new walk was added -- pass it the slice the call already has. Lower means one was \
 removed -- lower EXPECTED_MULTIPLE and name it in the commit. Three of the seven are irreducible \
 and the doc above says why; do not file the constant down without reading it."
         );
@@ -9023,7 +9023,7 @@ and the doc above says why; do not file the constant down without reading it."
 /// them -- each row can only call a function from outside, which is exactly what the missing four
 /// are not.
 ///
-/// `collect_live_page_entries` is `#[track_caller]`, so it records the source location that asked.
+/// `collect_live_block_entries` is `#[track_caller]`, so it records the source location that asked.
 /// This prints that tally for one call, which names the four directly instead of inferring them.
 ///
 /// Read it as "file:line -> entries materialized". A line appearing with N times the shard's live
@@ -9051,15 +9051,15 @@ fn who_walks_the_shard() {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    let live_pages: u64 = engine
+    let live_blocks: u64 = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count as u64)
+        .map(|summary| summary.block_ref_count as u64)
         .sum();
-    assert!(live_pages > 0, "fixture stored no live pages");
+    assert!(live_blocks > 0, "fixture stored no live pages");
 
-    crate::engine::reset_live_page_scan_entries();
-    crate::engine::reset_live_page_scan_sites();
+    crate::engine::reset_live_block_scan_entries();
+    crate::engine::reset_live_block_scan_sites();
     let _ = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
         shard_id: 1,
         purge_delayed_destroy: true,
@@ -9067,8 +9067,8 @@ fn who_walks_the_shard() {
         roll_forward_bucket_dump_installs: true,
         ..crate::engine::reports::StorageLifecycleRequest::default()
     });
-    let total = crate::engine::live_page_scan_entries();
-    let sites = crate::engine::live_page_scan_sites_snapshot();
+    let total = crate::engine::live_block_scan_entries();
+    let sites = crate::engine::live_block_scan_sites_snapshot();
 
     assert!(total > 0, "apply_storage_lifecycle walked nothing; this attributes nothing");
     assert!(
@@ -9077,15 +9077,15 @@ fn who_walks_the_shard() {
     );
 
     eprintln!(
-        "  [who] apply_storage_lifecycle -> {total} entries = {:>4.1}x the shard ({live_pages} live pages)",
-        total as f64 / live_pages as f64,
+        "  [who] apply_storage_lifecycle -> {total} entries = {:>4.1}x the shard ({live_blocks} live pages)",
+        total as f64 / live_blocks as f64,
     );
     let mut rows: Vec<(&String, &u64)> = sites.iter().collect();
     rows.sort_by(|left, right| right.1.cmp(left.1));
     for (site, entries) in rows {
         eprintln!(
             "  [who]   {:>5.1}x  {entries:>8}  {site}",
-            *entries as f64 / live_pages as f64,
+            *entries as f64 / live_blocks as f64,
         );
     }
 
@@ -9101,7 +9101,7 @@ fn who_walks_the_shard() {
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_each_plan_call_walks -- --ignored --nocapture
 ///
-/// `which_stages_walk_every_live_page` attributes a round's 35x live-page walk to two stages --
+/// `which_stages_walk_every_live_block` attributes a round's 35x live-page walk to two stages --
 /// `reclaim_index` 18x and `reclaim_wal` 16x -- but not to the CALLS inside them. An earlier
 /// attempt to explain reclaim_wal's 16x as per-manifest fingerprinting was arithmetic on an
 /// assumed manifest count, and measurement refuted it: making that fingerprinting lazy left the
@@ -9138,12 +9138,12 @@ fn what_each_plan_call_walks() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let live_pages: u64 = engine
+    let live_blocks: u64 = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count as u64)
+        .map(|summary| summary.block_ref_count as u64)
         .sum();
-    assert!(live_pages > 0, "fixture stored no live pages");
+    assert!(live_blocks > 0, "fixture stored no live pages");
 
     let lifecycle_request = || crate::engine::reports::StorageLifecycleRequest {
         shard_id: 1,
@@ -9156,21 +9156,21 @@ fn what_each_plan_call_walks() {
     let mut report = |label: &str, walked: u64| {
         eprintln!(
             "  [per-call] {label:<34} {walked:>8} entries = {:>5.1}x the shard",
-            walked as f64 / live_pages as f64,
+            walked as f64 / live_blocks as f64,
         );
     };
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.bucket_storage_summaries(1);
-    report("bucket_storage_summaries", crate::engine::live_page_scan_entries());
+    report("bucket_storage_summaries", crate::engine::live_block_scan_entries());
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
-    report("storage_wal_reclaim_plan", crate::engine::live_page_scan_entries());
+    report("storage_wal_reclaim_plan", crate::engine::live_block_scan_entries());
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.storage_lifecycle_plan(lifecycle_request());
-    report("storage_lifecycle_plan", crate::engine::live_page_scan_entries());
+    report("storage_lifecycle_plan", crate::engine::live_block_scan_entries());
 
     // Split that 2.0x across the three calls it makes. `bucket_storage_summaries` is measured
     // above at 1.0x, so ONE of the other two carries the second walk -- and neither is an obvious
@@ -9181,48 +9181,48 @@ fn what_each_plan_call_walks() {
     // of the function that every grep had missed.
     //
     // These rows are a breakdown OF the row above, not additions to the total.
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.live_block_slab_ids(1);
-    report("  of which: live_block_slab_ids", crate::engine::live_page_scan_entries());
+    report("  of which: live_block_slab_ids", crate::engine::live_block_scan_entries());
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.storage_reclaim_slab_reports(1);
     report(
         "  of which: storage_reclaim_slab_reports",
-        crate::engine::live_page_scan_entries(),
+        crate::engine::live_block_scan_entries(),
     );
 
     // The unconditional pieces of `apply_storage_lifecycle`. None of them is gated by a request
     // flag -- `what_apply_storage_lifecycle_walks` subtracts every flag and moves nothing -- so
     // they have to be measured directly rather than by toggling the request.
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.storage_object_lifecycle_snapshot(1);
-    report("storage_object_lifecycle_snapshot", crate::engine::live_page_scan_entries());
+    report("storage_object_lifecycle_snapshot", crate::engine::live_block_scan_entries());
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(1, Vec::new());
-    report("bucket_dump_manifest_prune_plan", crate::engine::live_page_scan_entries());
+    report("bucket_dump_manifest_prune_plan", crate::engine::live_block_scan_entries());
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.bucket_dump_install_roll_forward_reports(1);
-    report("bucket_dump_install_roll_forward_reports", crate::engine::live_page_scan_entries());
+    report("bucket_dump_install_roll_forward_reports", crate::engine::live_block_scan_entries());
 
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.storage_cache_warmup_report(1, Vec::new());
-    report("storage_cache_warmup_report", crate::engine::live_page_scan_entries());
+    report("storage_cache_warmup_report", crate::engine::live_block_scan_entries());
 
     // The rest of `apply_storage_lifecycle`'s callees. After #1586 it is 10.0x and the pieces
     // measured above account for roughly six of that, so about four are still unnamed. Every
     // previous hoist in this chain was found by closing exactly this kind of gap between a
     // parent's total and the sum of its children.
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(1, Vec::new());
-    report("manifest_prune_plan (again, post-fix)", crate::engine::live_page_scan_entries());
+    report("manifest_prune_plan (again, post-fix)", crate::engine::live_block_scan_entries());
 
     // MUTATING from here.
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let _ = engine.roll_forward_bucket_dump_installs(1);
-    report("roll_forward_bucket_dump_installs (mutates)", crate::engine::live_page_scan_entries());
+    report("roll_forward_bucket_dump_installs (mutates)", crate::engine::live_block_scan_entries());
 
     // EVERY MUTATING CALL GETS ITS OWN SHARD.
     //
@@ -9257,11 +9257,11 @@ fn what_each_plan_call_walks() {
         let pages: u64 = engine
             .bucket_storage_summaries(1)
             .iter()
-            .map(|summary| summary.page_ref_count as u64)
+            .map(|summary| summary.block_ref_count as u64)
             .sum();
-        crate::engine::reset_live_page_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
         run(&engine);
-        let walked = crate::engine::live_page_scan_entries();
+        let walked = crate::engine::live_block_scan_entries();
         eprintln!(
             "  [per-call] {label:<40} {walked:>8} entries = {:>5.1}x the shard",
             walked as f64 / pages.max(1) as f64,
@@ -9277,7 +9277,7 @@ fn what_each_plan_call_walks() {
     mutating_walk("clear_dumped_bucket_dirty_state", &|engine| {
         if let Ok(manifest) = engine.create_bucket_dump_manifest(1, Vec::new()) {
             // The manifest creation itself walks, so reset again and time only the clear.
-            crate::engine::reset_live_page_scan_entries();
+            crate::engine::reset_live_block_scan_entries();
             engine.clear_dumped_bucket_dirty_state(1, &manifest);
         } else {
             eprintln!("  [per-call] (no manifest created; the row below measures nothing)");
@@ -9296,7 +9296,7 @@ fn what_each_plan_call_walks() {
         });
     });
 
-    eprintln!("  [per-call] shard holds {live_pages} live pages");
+    eprintln!("  [per-call] shard holds {live_blocks} live pages");
 }
 
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_bucket_range_saves -- --ignored --nocapture --test-threads=1
@@ -9343,12 +9343,12 @@ fn what_a_bounded_bucket_range_saves() {
         let shard = shards.get(&1).expect("loaded shard");
         let buckets = &shard.bucket_index.bucket_map;
         let objects: usize = buckets.values().map(|b| b.object_index.len()).sum();
-        let pages: usize = buckets.values().map(|b| b.page_index.len()).sum();
+        let pages: usize = buckets.values().map(|b| b.block_index.len()).sum();
         (buckets.len(), shard.bucket_recency.len(), objects, pages, live)
     };
 
-    let (wide_buckets, wide_recency, wide_objects, wide_pages, wide_live) = run(u32::MAX);
-    let (narrow_buckets, narrow_recency, narrow_objects, narrow_pages, narrow_live) = run(1023);
+    let (wide_buckets, wide_recency, wide_objects, wide_blocks, wide_live) = run(u32::MAX);
+    let (narrow_buckets, narrow_recency, narrow_objects, narrow_blocks, narrow_live) = run(1023);
 
     let per = |v: u64| v as f64 / RECORDS as f64;
     println!();
@@ -9357,7 +9357,7 @@ fn what_a_bounded_bucket_range_saves() {
     println!("  slot map          {wide_buckets:>13} {narrow_buckets:>12}");
     println!("  slot recency      {wide_recency:>13} {narrow_recency:>12}");
     println!("  object index      {wide_objects:>13} {narrow_objects:>12}");
-    println!("  page index        {wide_pages:>13} {narrow_pages:>12}");
+    println!("  page index        {wide_blocks:>13} {narrow_blocks:>12}");
     println!();
     println!("  live memory       {:>11.0} B {:>10.0} B  per record",
              per(wide_live), per(narrow_live));
@@ -9529,7 +9529,7 @@ fn what_each_home_costs() {
     freed_rows.push(("bucket_recency", per));
     let per = freed_by(&mut || shard.dirty_objects.clear());
     freed_rows.push(("dirty_objects", per));
-    let per = freed_by(&mut || shard.bucket_index.object_page_lookup.clear());
+    let per = freed_by(&mut || shard.bucket_index.object_block_lookup.clear());
     freed_rows.push(("bucket_index.object_page_lookup", per));
     let per = freed_by(&mut || {
         for bucket in shard.bucket_index.bucket_map.values_mut() {
@@ -9615,7 +9615,7 @@ fn would_an_inline_component_pay() {
         let mut objects = 0usize;
         let mut components = 0usize;
         let mut one_component = 0usize;
-        for (_model, _key, refs) in shard.bucket_index.object_page_lookup.iter() {
+        for (_model, _key, refs) in shard.bucket_index.object_block_lookup.iter() {
             objects += 1;
             components += refs.by_component.len();
             if refs.by_component.len() == 1 {
@@ -9637,7 +9637,7 @@ fn would_an_inline_component_pay() {
         component: None,
         refs: crate::engine::state::BlockRefs::One(crate::engine::state::BlockLookupRef {
             routing_bucket: 7,
-            page_ref_key: 99,
+            block_ref_key: 99,
         }),
     };
 
@@ -10001,7 +10001,7 @@ fn what_a_thousand_records_hides() {
 
 /// Dropping emptied buckets must not walk every bucket.
 ///
-/// `sync_bucket_index_object_pages` ended with `bucket_map.retain(..)` to drop buckets it had
+/// `sync_bucket_index_object_blocks` ended with `bucket_map.retain(..)` to drop buckets it had
 /// emptied. `dirty` is true for a write, so that ran on every one, and at the default routing-slot
 /// range the map holds a bucket per record -- O(corpus) per command. Profiling a degraded node put
 /// 94.2% of self time in that one retain, and an 8-hour run went 7 ms -> 105 ms per message.
@@ -10073,13 +10073,13 @@ fn a_bounded_compaction_round_resumes_instead_of_rolling_again() {
     let mut relocated = 0usize;
     loop {
         let report = engine
-            .compact_shard_pages_with_budget(1, 300)
+            .compact_shard_blocks_with_budget(1, 300)
             .expect("a bounded round succeeds");
         rounds += 1;
-        relocated += report.rewritten_page_refs;
+        relocated += report.rewritten_block_refs;
         slabs_filled.insert(report.compacted_block_slab_id);
         reads_all_hold(&format!("after round {rounds}"));
-        if report.pages_left_by_budget == 0 {
+        if report.blocks_left_by_budget == 0 {
             break;
         }
         assert!(rounds < 100, "the rounds are not converging: {rounds} of them");
@@ -10103,10 +10103,10 @@ fn a_bounded_compaction_round_resumes_instead_of_rolling_again() {
     // The control: with the real budget a compaction finishes in one round, leaving nothing
     // behind. This is what keeps every existing assertion about a single compaction true.
     let whole = engine
-        .compact_shard_pages(1)
+        .compact_shard_blocks(1)
         .expect("an unbounded round succeeds");
     assert_eq!(
-        whole.pages_left_by_budget, 0,
+        whole.blocks_left_by_budget, 0,
         "the shipped budget must finish a store this size in one round"
     );
     reads_all_hold("after the unbounded round");
@@ -10156,7 +10156,7 @@ fn emptied_buckets_are_dropped_without_walking_the_map() {
         let map = &shards.get(&1).expect("shard").bucket_index.bucket_map;
         let empties = map
             .values()
-            .filter(|b| b.page_index.is_empty() && b.object_index.is_empty())
+            .filter(|b| b.block_index.is_empty() && b.object_index.is_empty())
             .count();
         (map.len(), empties)
     };
@@ -10306,16 +10306,16 @@ fn the_two_expiry_indexes_agree() {
 
 /// What does carrying the page in the WAL record cost? Prints.
 ///
-///   cargo test -p temporalstore-rust --lib what_carrying_the_page_in_the_record_costs \
+///   cargo test -p temporalstore-rust --lib what_carrying_the_block_in_the_record_costs \
 ///       -- --ignored --nocapture --test-threads=1
 ///
 /// A synchronous write calls `append_value`, which writes the page to the BLOCK STORE with
-/// `append_with_page_metadata` and -- when `block_in_wal()` is on, which is the default -- also
+/// `append_with_block_metadata` and -- when `block_in_wal()` is on, which is the default -- also
 /// stages those same bytes into the WAL record. The code says why: the single barrier acks on the
 /// WAL fsync and defers the block fsync, so at ack time the block store holds the page in buffers
 /// and nowhere else. Carrying it makes the record self-sufficient.
 ///
-/// With the carry off -- `stop_putting_pages_in_the_log_for_test()`, the other arm below -- the
+/// With the carry off -- `stop_putting_blocks_in_the_log_for_test()`, the other arm below -- the
 /// WAL record holds the command alone, the page index addresses the page in the block store, and
 /// a read is served from there once the dump has moved it out of buffers. One copy made durable
 /// later, rather than two copies at ack time.
@@ -10324,14 +10324,14 @@ fn the_two_expiry_indexes_agree() {
 /// This prints what the carry costs on both sides of the log.
 #[test]
 #[ignore]
-fn what_carrying_the_page_in_the_record_costs() {
+fn what_carrying_the_block_in_the_record_costs() {
     const WRITES: usize = 2_000;
 
     fn run(carry: bool, value_len: usize) -> (u64, u64) {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         if !carry {
-            engine.block_store().stop_putting_pages_in_the_log_for_test();
+            engine.block_store().stop_putting_blocks_in_the_log_for_test();
         }
         for index in 0..WRITES {
             engine.execute(ExecuteRequest {
@@ -10376,8 +10376,8 @@ fn only_prepare_may_roll() -> StorageManagerCycleRequest {
         enable_wal_reclaim: false,
         enable_evict: false,
         enable_expire: false,
-        enable_page_reclaim: false,
-        enable_page_compaction: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
         enable_index_gc: false,
         ..StorageManagerCycleRequest::default()
     }
@@ -10622,10 +10622,10 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
 
 /// Walks of the shard's live-page set per maintenance round, on a SETTLED shard and on the same
 /// shard with ONE dirty bucket. Set from measurement by
-/// `an_idle_round_does_not_walk_the_live_pages_to_populate_a_report`, which prints the per-site
+/// `an_idle_round_does_not_walk_the_live_blocks_to_populate_a_report`, which prints the per-site
 /// breakdown when either moves.
 ///
-/// BOTH FELL BY ONE, and it is the same walk in each: `collect_live_page_addresses` via
+/// BOTH FELL BY ONE, and it is the same walk in each: `collect_live_block_addresses` via
 /// `storage_reclaim_slab_reports`. That function builds the per-slab live/stale tally the reclaim
 /// planner reads, and it filled `live_page_refs` and `live_physical_bytes` by materialising every
 /// live page in the shard. Both are now maintained on the index's own mutation path and read in
@@ -10638,7 +10638,7 @@ const EXPECTED_DIRTY_MULTIPLE: u64 = 6;
 /// What one round walked, at one corpus size.
 struct RoundWalkMeasurement {
     records: usize,
-    live_pages: u64,
+    live_blocks: u64,
     idle_multiple: u64,
     dirty_multiple: u64,
     idle_breakdown: String,
@@ -10662,7 +10662,7 @@ struct RoundWalkMeasurement {
 /// when there is work; without it, "never walks" would pass this test just as well as
 /// "walks only when it must".
 #[test]
-fn an_idle_round_does_not_walk_the_live_pages_to_populate_a_report() {
+fn an_idle_round_does_not_walk_the_live_blocks_to_populate_a_report() {
     let small = measure_round_walks(8_000);
     let large = measure_round_walks(80_000);
 
@@ -10670,7 +10670,7 @@ fn an_idle_round_does_not_walk_the_live_pages_to_populate_a_report() {
         eprintln!(
             "{} records ({} live pages): idle {}x, one dirty bucket {}x",
             measurement.records,
-            measurement.live_pages,
+            measurement.live_blocks,
             measurement.idle_multiple,
             measurement.dirty_multiple,
         );
@@ -10685,7 +10685,7 @@ fn an_idle_round_does_not_walk_the_live_pages_to_populate_a_report() {
 Higher means a walk came back; lower means one more was removed -- lower the constant and name it.",
             measurement.records,
             measurement.idle_multiple,
-            measurement.live_pages,
+            measurement.live_blocks,
             measurement.idle_breakdown,
         );
     }
@@ -10698,7 +10698,7 @@ walks. If this fell to the idle number, the conditional is firing when it must n
 that did not look is being reported as a plan that found nothing.",
             measurement.records,
             measurement.dirty_multiple,
-            measurement.live_pages,
+            measurement.live_blocks,
             measurement.dirty_breakdown,
         );
     }
@@ -10773,12 +10773,12 @@ taken on a shard that still has work to do. Nothing below is evidence until this
         !summaries.is_empty(),
         "{records} records: no bucket summaries at all -- the fixture stored nothing"
     );
-    let live_pages: u64 = summaries
+    let live_blocks: u64 = summaries
         .iter()
-        .map(|summary| summary.page_ref_count as u64)
+        .map(|summary| summary.block_ref_count as u64)
         .sum();
     assert!(
-        live_pages > 0,
+        live_blocks > 0,
         "{records} records: the shard holds no live pages, so every walk materialises nothing and \
 any walk count holds vacuously"
     );
@@ -10799,19 +10799,19 @@ test is not the branch that runs"
             .map(|(site, entries)| {
                 format!(
                     "\n    {label}  {:>5.1}x  {site}",
-                    **entries as f64 / live_pages as f64
+                    **entries as f64 / live_blocks as f64
                 )
             })
             .collect::<String>()
     };
 
     // ---- IDLE ROUND ----
-    crate::engine::reset_live_page_scan_entries();
-    crate::engine::reset_live_page_scan_sites();
+    crate::engine::reset_live_block_scan_entries();
+    crate::engine::reset_live_block_scan_sites();
     let (plan_builds_before, _) = crate::engine::storage_plan_build_counts();
     let idle_report = engine.apply_storage_lifecycle(request());
-    let idle_walked = crate::engine::live_page_scan_entries();
-    let idle_sites = crate::engine::live_page_scan_sites_snapshot();
+    let idle_walked = crate::engine::live_block_scan_entries();
+    let idle_sites = crate::engine::live_block_scan_sites_snapshot();
     let (plan_builds_after, _) = crate::engine::storage_plan_build_counts();
     assert!(
         plan_builds_after > plan_builds_before,
@@ -10836,18 +10836,18 @@ zero would mean nothing"
 {dirty_buckets_now}. The halves must differ in the dirty index and in nothing else."
     );
 
-    crate::engine::reset_live_page_scan_entries();
-    crate::engine::reset_live_page_scan_sites();
+    crate::engine::reset_live_block_scan_entries();
+    crate::engine::reset_live_block_scan_sites();
     let dirty_report = engine.apply_storage_lifecycle(request());
-    let dirty_walked = crate::engine::live_page_scan_entries();
-    let dirty_sites = crate::engine::live_page_scan_sites_snapshot();
+    let dirty_walked = crate::engine::live_block_scan_entries();
+    let dirty_sites = crate::engine::live_block_scan_sites_snapshot();
     assert_eq!(dirty_report.shard_id, 1);
 
     RoundWalkMeasurement {
         records,
-        live_pages,
-        idle_multiple: idle_walked / live_pages.max(1),
-        dirty_multiple: dirty_walked / live_pages.max(1),
+        live_blocks,
+        idle_multiple: idle_walked / live_blocks.max(1),
+        dirty_multiple: dirty_walked / live_blocks.max(1),
         idle_breakdown: breakdown("idle ", &idle_sites),
         dirty_breakdown: breakdown("dirty", &dirty_sites),
     }

@@ -4,7 +4,7 @@
 //! Do a deleted hash field and a deleted set member survive a restart?
 //!
 //! `hash` and `set` are two of the five kinds whose typed removal goes through
-//! `mark_bucket_index_page_deleted`, which stages `address: None, deleted: true`, while their arms
+//! `mark_bucket_index_block_deleted`, which stages `address: None, deleted: true`, while their arms
 //! in `apply_outcome_item` open by demanding an address. `list`, `zset` and `string` are confirmed
 //! to refuse the load because of it; these two share the arm shape and had no coverage at all.
 //!

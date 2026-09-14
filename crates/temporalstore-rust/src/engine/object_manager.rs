@@ -12,10 +12,14 @@ pub(super) struct ObjectRuntimeState {
     pub routing_bucket: u32,
     pub object_keys: Vec<String>,
     pub model_ids: Vec<String>,
-    pub page_ref_count: usize,
-    pub hot_page_ref_count: usize,
-    pub cold_page_ref_count: usize,
-    pub deleted_page_ref_count: usize,
+    #[serde(rename = "page_ref_count")]
+    pub block_ref_count: usize,
+    #[serde(rename = "hot_page_ref_count")]
+    pub hot_block_ref_count: usize,
+    #[serde(rename = "cold_page_ref_count")]
+    pub cold_block_ref_count: usize,
+    #[serde(rename = "deleted_page_ref_count")]
+    pub deleted_block_ref_count: usize,
     pub residency: String,
     pub dirty: bool,
     pub deleted: bool,
@@ -30,7 +34,8 @@ pub(super) struct ObjectManagerRuntimeReport {
     #[serde(rename = "slot_index_authority")]
     pub bucket_index_authority: bool,
     pub live_object_count: usize,
-    pub live_page_ref_count: usize,
+    #[serde(rename = "live_page_ref_count")]
+    pub live_block_ref_count: usize,
     pub missing_object_owner_refs: usize,
     pub reused_object_ids: usize,
     pub dirty_object_count: usize,
@@ -38,7 +43,8 @@ pub(super) struct ObjectManagerRuntimeReport {
     pub hot_object_count: usize,
     pub cold_object_count: usize,
     pub mixed_residency_object_count: usize,
-    pub object_page_transition_count: usize,
+    #[serde(rename = "object_page_transition_count")]
+    pub object_block_transition_count: usize,
     pub loading_object_count: usize,
     pub in_memory_object_count: usize,
     pub ttl_object_count: usize,
@@ -51,7 +57,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     let mut missing_object_owner_refs = 0usize;
     let mut object_ref_counts = std::collections::BTreeMap::<u64, usize>::new();
     let mut objects = std::collections::BTreeMap::<u64, ObjectRuntimeState>::new();
-    let mut live_page_ref_count = 0usize;
+    let mut live_block_ref_count = 0usize;
 
     for bucket in shard.bucket_index.bucket_map.values() {
         for object_id in &bucket.object_index {
@@ -64,10 +70,10 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     routing_bucket: bucket.routing_bucket,
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
-                    page_ref_count: 0,
-                    hot_page_ref_count: 0,
-                    cold_page_ref_count: 0,
-                    deleted_page_ref_count: 0,
+                    block_ref_count: 0,
+                    hot_block_ref_count: 0,
+                    cold_block_ref_count: 0,
+                    deleted_block_ref_count: 0,
                     residency: "cold".to_string(),
                     dirty: bucket.dirty,
                     deleted: object_deleted,
@@ -85,8 +91,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 (existing, None) => existing,
             };
         }
-        for page in bucket.page_index.values() {
-            live_page_ref_count = live_page_ref_count.saturating_add(1);
+        for page in bucket.block_index.values() {
+            live_block_ref_count = live_block_ref_count.saturating_add(1);
             object_ids.insert(page.object_id());
             *object_ref_counts.entry(page.object_id()).or_default() += 1;
             if page.address.object_id() != Some(page.object_id()) {
@@ -99,10 +105,10 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     routing_bucket: bucket.routing_bucket,
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
-                    page_ref_count: 0,
-                    hot_page_ref_count: 0,
-                    cold_page_ref_count: 0,
-                    deleted_page_ref_count: 0,
+                    block_ref_count: 0,
+                    hot_block_ref_count: 0,
+                    cold_block_ref_count: 0,
+                    deleted_block_ref_count: 0,
                     residency: "cold".to_string(),
                     dirty: false,
                     deleted: false,
@@ -110,17 +116,17 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     in_memory: false,
                     ttl_ms: None,
                 });
-            object.page_ref_count = object.page_ref_count.saturating_add(1);
+            object.block_ref_count = object.block_ref_count.saturating_add(1);
             object.dirty |= page.dirty || bucket.dirty;
             let object_deleted =
                 page.deleted || bucket.deleted || bucket.deleted_object_index.contains(&page.object_id());
             object.deleted |= object_deleted;
             if object_deleted {
-                object.deleted_page_ref_count = object.deleted_page_ref_count.saturating_add(1);
+                object.deleted_block_ref_count = object.deleted_block_ref_count.saturating_add(1);
             } else if bucket.in_memory && !page.log_backed {
-                object.hot_page_ref_count = object.hot_page_ref_count.saturating_add(1);
+                object.hot_block_ref_count = object.hot_block_ref_count.saturating_add(1);
             } else {
-                object.cold_page_ref_count = object.cold_page_ref_count.saturating_add(1);
+                object.cold_block_ref_count = object.cold_block_ref_count.saturating_add(1);
             }
             object.loading |= bucket.loading;
             object.in_memory |= bucket.in_memory;
@@ -141,14 +147,14 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
         .into_values()
         .map(|mut object| {
             object.residency = if object.deleted
-                && (object.page_ref_count == 0
-                    || object.deleted_page_ref_count >= object.page_ref_count)
+                && (object.block_ref_count == 0
+                    || object.deleted_block_ref_count >= object.block_ref_count)
             {
                 "deleted".to_string()
-            } else if object.hot_page_ref_count > 0 && object.cold_page_ref_count > 0 {
+            } else if object.hot_block_ref_count > 0 && object.cold_block_ref_count > 0 {
                 "mixed".to_string()
-            } else if object.hot_page_ref_count > 0
-                || (object.page_ref_count == 0 && object.in_memory)
+            } else if object.hot_block_ref_count > 0
+                || (object.block_ref_count == 0 && object.in_memory)
             {
                 "hot".to_string()
             } else {
@@ -162,7 +168,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
         object_manager_runtime_module: true,
         bucket_index_authority: !shard.bucket_index.bucket_map.is_empty(),
         live_object_count: object_ids.len(),
-        live_page_ref_count,
+        live_block_ref_count,
         missing_object_owner_refs,
         reused_object_ids: object_ref_counts.values().filter(|refs| **refs > 1).count(),
         dirty_object_count: objects.iter().filter(|object| object.dirty).count(),
@@ -179,11 +185,11 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             .iter()
             .filter(|object| object.residency == "mixed")
             .count(),
-        object_page_transition_count: objects
+        object_block_transition_count: objects
             .iter()
             .filter(|object| {
-                object.page_ref_count > 1
-                    || object.deleted_page_ref_count > 0
+                object.block_ref_count > 1
+                    || object.deleted_block_ref_count > 0
                     || object.residency == "mixed"
             })
             .count(),

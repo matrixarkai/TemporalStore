@@ -267,7 +267,7 @@ fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
                 });
             }
             1 => {
-                let _ = engine.compact_shard_pages(1);
+                let _ = engine.compact_shard_blocks(1);
             }
             _ => {
                 let command = gen_command(&mut rng);

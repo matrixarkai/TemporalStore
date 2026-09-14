@@ -72,8 +72,8 @@ impl BlockStore {
                 logical_bytes: slab.logical_bytes,
                 created_unix_ms: slab.created_unix_ms,
                 updated_unix_ms: slab.updated_unix_ms,
-                first_page_id: slab.first_page_id,
-                last_page_id: slab.last_page_id,
+                first_block_id: slab.first_block_id,
+                last_block_id: slab.last_block_id,
                 version: slab_version,
             })
             .collect()
@@ -112,8 +112,8 @@ impl BlockStore {
                     if slab.logical_bytes == 0 {
                         slab.logical_bytes = entry.logical_bytes;
                     }
-                    slab.first_page_id = slab.first_page_id.or(entry.first_page_id);
-                    slab.last_page_id = slab.last_page_id.or(entry.last_page_id);
+                    slab.first_block_id = slab.first_block_id.or(entry.first_block_id);
+                    slab.last_block_id = slab.last_block_id.or(entry.last_block_id);
                     changed |= *slab != before;
                 }
                 None => {
@@ -129,8 +129,8 @@ impl BlockStore {
                             logical_bytes: entry.logical_bytes,
                             created_unix_ms: entry.created_unix_ms,
                             updated_unix_ms: entry.updated_unix_ms,
-                            first_page_id: entry.first_page_id,
-                            last_page_id: entry.last_page_id,
+                            first_block_id: entry.first_block_id,
+                            last_block_id: entry.last_block_id,
                             readable_prefix_physical_bytes: entry.physical_bytes,
                             verified_source_mtime_unix_ms: None,
                             has_corruption: false,
@@ -174,11 +174,11 @@ impl BlockStore {
         let slab_usage = compute_slab_usage(&slabs);
         let slab_stats_ready = slab_usage.iter().all(|slab| {
             slab.stored_slab_id == slab.block_slab_id
-                && slab.page_store_used_bytes
+                && slab.block_store_used_bytes
                     == slab
-                        .live_page_store_used_bytes
-                        .saturating_add(slab.reclaimable_page_store_used_bytes)
-                        .saturating_add(slab.purged_page_store_used_bytes)
+                        .live_block_store_used_bytes
+                        .saturating_add(slab.reclaimable_block_store_used_bytes)
+                        .saturating_add(slab.purged_block_store_used_bytes)
         });
         let slab_reports = {
             let mut reports = Vec::new();
@@ -241,19 +241,19 @@ impl BlockStore {
             .iter()
             .map(|report| report.readable_prefix_physical_bytes)
             .sum::<u64>();
-        let first_page_id = slab_reports
+        let first_block_id = slab_reports
             .iter()
-            .filter_map(|report| report.first_page_id)
+            .filter_map(|report| report.first_block_id)
             .min();
-        let last_page_id = slab_reports
+        let last_block_id = slab_reports
             .iter()
-            .filter_map(|report| report.last_page_id)
+            .filter_map(|report| report.last_block_id)
             .max();
         // Block ids are indexes INSIDE an object now, not a run of numbers handed out across
         // the store, so "first to last covers exactly this many records" is no longer a
         // property the store has: two objects in one slab both start at block 0. What still
         // holds is that a slab holding records reports the range it holds.
-        let page_id_continuity_ready = match (first_page_id, last_page_id) {
+        let block_id_continuity_ready = match (first_block_id, last_block_id) {
             (Some(first), Some(last)) => stream_record_count > 0 && last >= first,
             _ => stream_record_count == 0,
         };
@@ -274,8 +274,8 @@ impl BlockStore {
                 slabs
                     .get(&report.block_slab_id)
                     .map(|slab| {
-                        slab.first_page_id == report.first_page_id
-                            && slab.last_page_id == report.last_page_id
+                        slab.first_block_id == report.first_block_id
+                            && slab.last_block_id == report.last_block_id
                             && slab.logical_bytes == report.logical_bytes
                             && slab.readable_prefix_physical_bytes
                                 == report.readable_prefix_physical_bytes
@@ -295,8 +295,8 @@ impl BlockStore {
                                 && slab.first_error_offset == report.first_error_offset
                                 && slab.readable_prefix_physical_bytes
                                     == report.readable_prefix_physical_bytes
-                                && slab.first_page_id == report.first_page_id
-                                && slab.last_page_id == report.last_page_id
+                                && slab.first_block_id == report.first_block_id
+                                && slab.last_block_id == report.last_block_id
                         })
                         .unwrap_or(false)
                 });
@@ -355,7 +355,7 @@ impl BlockStore {
                     .to_string(),
             );
         }
-        if !page_id_continuity_ready {
+        if !block_id_continuity_ready {
             blockers.push("stream page ids are not contiguous across bands".to_string());
         }
 
@@ -374,9 +374,9 @@ impl BlockStore {
             physical_bytes,
             logical_bytes,
             stream_record_count,
-            first_page_id,
-            last_page_id,
-            page_id_continuity_ready,
+            first_block_id,
+            last_block_id,
+            block_id_continuity_ready,
             logical_stream_bytes_read: stats.logical_bytes_read,
             slab_state_transition_count,
             logical_stream_read_ready,

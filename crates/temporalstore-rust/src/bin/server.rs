@@ -1244,7 +1244,7 @@ fn restore_shared_index_before_load(
 ) -> Option<u64> {
     let replicator = replicator.as_ref()?;
     let after_wal_index =
-        match runtime.block_on(replicator.restore_index_and_page_addresses(
+        match runtime.block_on(replicator.restore_index_and_block_addresses(
             shard_id,
             engine,
             &engine.block_store(),
@@ -1315,18 +1315,18 @@ fn replay_shared_wal_tail(
 ///
 /// A successor installs an address; it can only serve that address if the bytes are reachable.
 /// Locally they are in the block store. Across nodes they are not, unless something carries them.
-fn gather_result_pages(
+fn gather_result_blocks(
     engine: &TemporalEngine,
     shard_id: ShardId,
     outcomes: &[temporalstore_rust::wal::WalOutcomeItem],
-) -> Vec<temporalstore_rust::wal::StagedPage> {
+) -> Vec<temporalstore_rust::wal::StagedBlock> {
     let mut pages = Vec::new();
     for item in outcomes {
         let Some(address) = item.resolved_address() else {
             continue;
         };
         if let Ok(bytes) = engine.block_store().read(&address) {
-            pages.push(temporalstore_rust::wal::StagedPage {
+            pages.push(temporalstore_rust::wal::StagedBlock {
                 object_id: item.object_id,
                 bytes,
             });
@@ -1402,7 +1402,7 @@ fn publish_shard_checkpoint(
             // Empty on the local record for a synchronous write -- that page went to the block
             // store rather than into the record -- so they are gathered here.
             staged_pages: if record.staged_pages.is_empty() {
-                gather_result_pages(engine, shard_id, &record.outcomes)
+                gather_result_blocks(engine, shard_id, &record.outcomes)
             } else {
                 record.staged_pages
             },
@@ -1931,7 +1931,7 @@ fn wire_matrixobject_durability(
         // the latest checkpoint, then replay ONLY the WAL tail after it -- old pages are read
         // out of the store on demand. A store with no checkpoint yet (or a failed restore)
         // falls back to the full replay from 0: the old behavior, correct but O(history).
-        let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(
+        let after_wal_index = match rt.block_on(replicator.restore_index_and_block_addresses(
             shard_id,
             engine,
             &engine.block_store(),
@@ -2171,7 +2171,7 @@ fn wire_matrixobject_networked_durability(
     // Fresh node: rebuild from the networked store via conformance lazy
     // data-follow (index + address map, then WAL tail; old pages fetched on demand).
     if !local_state_present {
-        let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(
+        let after_wal_index = match rt.block_on(replicator.restore_index_and_block_addresses(
             shard_id,
             engine,
             &engine.block_store(),
@@ -2194,7 +2194,7 @@ fn wire_matrixobject_networked_durability(
         };
         // Read the just-restored on-disk index into memory so this node auto-serves the
         // followed data. The process-level startup load was deferred to here precisely
-        // so it observes the index installed by `restore_index_and_page_addresses`
+        // so it observes the index installed by `restore_index_and_block_addresses`
         // above; the shared WAL-tail replay below then needs a loaded shard (it applies
         // through `engine.execute`). Join-empty placement instead loads via a later
         // `/load`, so `auto_load` is false and the load is skipped here (behavior

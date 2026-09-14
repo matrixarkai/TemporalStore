@@ -70,9 +70,11 @@ struct StorageProductionCaseSummary {
     fault_matrix_ready: bool,
     fault_matrix_passed_count: usize,
     fault_matrix_scenario_count: usize,
-    cache_warmup_page_refs: usize,
+    #[serde(rename = "cache_warmup_page_refs")]
+    cache_warmup_block_refs: usize,
     cache_warmup_block_store_reads: usize,
-    cache_warmup_failed_page_refs: usize,
+    #[serde(rename = "cache_warmup_failed_page_refs")]
+    cache_warmup_failed_block_refs: usize,
     cache_memory_hits: u64,
     cache_disk_hits: u64,
     cache_puts: u64,
@@ -94,15 +96,21 @@ struct StorageRecoveryErrorSummary {
     #[serde(alias = "orphan_page_segment_count")]
     #[serde(rename = "orphan_page_slab_count")]
     orphan_block_slab_count: usize,
-    stale_page_ref_count: usize,
+    #[serde(rename = "stale_page_ref_count")]
+    stale_block_ref_count: usize,
     #[serde(alias = "corrupt_page_segment_count")]
     #[serde(rename = "corrupt_page_slab_count")]
     corrupt_block_slab_count: usize,
-    unreadable_page_ref_count: usize,
-    unreadable_page_bytes: u64,
-    owner_mismatch_page_ref_count: usize,
-    missing_owner_page_ref_count: usize,
-    corrupt_packed_feature_pages: usize,
+    #[serde(rename = "unreadable_page_ref_count")]
+    unreadable_block_ref_count: usize,
+    #[serde(rename = "unreadable_page_bytes")]
+    unreadable_block_bytes: u64,
+    #[serde(rename = "owner_mismatch_page_ref_count")]
+    owner_mismatch_block_ref_count: usize,
+    #[serde(rename = "missing_owner_page_ref_count")]
+    missing_owner_block_ref_count: usize,
+    #[serde(rename = "corrupt_packed_feature_pages")]
+    corrupt_packed_feature_blocks: usize,
     missing_indexed_timestamps: usize,
     orphan_packed_timestamps: usize,
     duplicate_packed_timestamps: usize,
@@ -162,9 +170,9 @@ async fn main() {
 
 async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProductionCaseSummary {
     let case_root = root.join(&case.name);
-    let page_dir = case_root.join("pages");
+    let block_dir = case_root.join("pages");
     let index_dir = case_root.join("indexes");
-    let mut engine = new_engine(&case_root, &page_dir, &index_dir, case.shard_id);
+    let mut engine = new_engine(&case_root, &block_dir, &index_dir, case.shard_id);
     execute_steps(&engine, case.shard_id, &case.operations, &case.name);
     let dirty_buckets = engine
         .bucket_storage_summaries(case.shard_id)
@@ -197,11 +205,11 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
             wal_sequence: 0,
             index_log_sequence: 0,
         }],
-        page_gc_shared_store_cursors: Vec::new(),
-        page_gc_raft_snapshot_refs: Vec::new(),
-        page_gc_checkpoint_floor_slab_id: None,
-        page_gc_raft_install_floor_slab_id: None,
-        page_gc_delayed_destroy_grace_ms: 0,
+        block_gc_shared_store_cursors: Vec::new(),
+        block_gc_raft_snapshot_refs: Vec::new(),
+        block_gc_checkpoint_floor_slab_id: None,
+        block_gc_raft_install_floor_slab_id: None,
+        block_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: true,
         warm_cache: true,
     });
@@ -210,7 +218,7 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
     assert_recovery_ok(&recovery_before_restart, &case.name);
 
     drop(engine);
-    engine = new_engine(&case_root, &page_dir, &index_dir, case.shard_id);
+    engine = new_engine(&case_root, &block_dir, &index_dir, case.shard_id);
     engine
         .install_bucket_dump_manifest(&installable_manifest)
         .expect("storage production manifest install after restart should succeed");
@@ -241,9 +249,9 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
         fault_matrix_ready: fault_matrix.production_ready_slice,
         fault_matrix_passed_count: fault_matrix.passed_count,
         fault_matrix_scenario_count: fault_matrix.scenario_count,
-        cache_warmup_page_refs: lifecycle.cache_warmup.considered_page_refs,
+        cache_warmup_block_refs: lifecycle.cache_warmup.considered_block_refs,
         cache_warmup_block_store_reads: lifecycle.cache_warmup.block_store_reads,
-        cache_warmup_failed_page_refs: lifecycle.cache_warmup.failed_page_refs,
+        cache_warmup_failed_block_refs: lifecycle.cache_warmup.failed_block_refs,
         cache_memory_hits: cache_stats.memory_hits,
         cache_disk_hits: cache_stats.disk_hits,
         cache_puts: cache_stats.puts,
@@ -337,11 +345,11 @@ fn assert_lifecycle_ok(report: &StorageLifecycleReport, case_name: &str) {
     };
     assert!(!manifest.checksum.is_empty());
     assert!(!manifest.bucket_ids.is_empty());
-    assert!(report.cache_warmup.considered_page_refs > 0);
-    assert_eq!(report.cache_warmup.failed_page_refs, 0);
+    assert!(report.cache_warmup.considered_block_refs > 0);
+    assert_eq!(report.cache_warmup.failed_block_refs, 0);
     assert!(
         report.cache_warmup.block_store_reads > 0
-            || report.cache_warmup.already_cached_page_refs > 0,
+            || report.cache_warmup.already_cached_block_refs > 0,
         "case={case_name} did not prove cache warmup via block-store read or existing cache refs"
     );
     assert!(
@@ -374,33 +382,33 @@ fn assert_recovery_ok(report: &StorageRecoveryReport, case_name: &str) {
     );
     assert!(report.slab_integrity.orphan_block_slab_count <= 1);
     assert_eq!(
-        report.feature_page_layout.duplicate_packed_timestamps.len(),
+        report.feature_block_layout.duplicate_packed_timestamps.len(),
         0
     );
 }
 
 fn recovery_ok(report: &StorageRecoveryReport) -> bool {
-    report.all_live_pages_readable
+    report.all_live_blocks_readable
         && report.slab_integrity.integrity_ok
-        && report.slab_integrity.stale_page_ref_count == 0
+        && report.slab_integrity.stale_block_ref_count == 0
         && report.slab_integrity.corrupt_block_slab_count == 0
-        && report.slab_integrity.unreadable_page_ref_count == 0
-        && report.slab_integrity.owner_mismatch_page_ref_count == 0
-        && report.slab_integrity.missing_owner_page_ref_count == 0
+        && report.slab_integrity.unreadable_block_ref_count == 0
+        && report.slab_integrity.owner_mismatch_block_ref_count == 0
+        && report.slab_integrity.missing_owner_block_ref_count == 0
         && report
-            .feature_page_layout
-            .corrupt_packed_feature_pages
+            .feature_block_layout
+            .corrupt_packed_feature_blocks
             .is_empty()
         && report
-            .feature_page_layout
+            .feature_block_layout
             .missing_indexed_timestamps
             .is_empty()
         && report
-            .feature_page_layout
+            .feature_block_layout
             .orphan_packed_timestamps
             .is_empty()
         && report
-            .feature_page_layout
+            .feature_block_layout
             .duplicate_packed_timestamps
             .is_empty()
 }
@@ -408,19 +416,19 @@ fn recovery_ok(report: &StorageRecoveryReport) -> bool {
 fn recovery_error_summary(report: &StorageRecoveryReport) -> StorageRecoveryErrorSummary {
     StorageRecoveryErrorSummary {
         orphan_block_slab_count: report.slab_integrity.orphan_block_slab_count,
-        stale_page_ref_count: report.slab_integrity.stale_page_ref_count,
+        stale_block_ref_count: report.slab_integrity.stale_block_ref_count,
         corrupt_block_slab_count: report.slab_integrity.corrupt_block_slab_count,
-        unreadable_page_ref_count: report.slab_integrity.unreadable_page_ref_count,
-        unreadable_page_bytes: report.slab_integrity.unreadable_page_bytes,
-        owner_mismatch_page_ref_count: report.slab_integrity.owner_mismatch_page_ref_count,
-        missing_owner_page_ref_count: report.slab_integrity.missing_owner_page_ref_count,
-        corrupt_packed_feature_pages: report
-            .feature_page_layout
-            .corrupt_packed_feature_pages
+        unreadable_block_ref_count: report.slab_integrity.unreadable_block_ref_count,
+        unreadable_block_bytes: report.slab_integrity.unreadable_block_bytes,
+        owner_mismatch_block_ref_count: report.slab_integrity.owner_mismatch_block_ref_count,
+        missing_owner_block_ref_count: report.slab_integrity.missing_owner_block_ref_count,
+        corrupt_packed_feature_blocks: report
+            .feature_block_layout
+            .corrupt_packed_feature_blocks
             .len(),
-        missing_indexed_timestamps: report.feature_page_layout.missing_indexed_timestamps.len(),
-        orphan_packed_timestamps: report.feature_page_layout.orphan_packed_timestamps.len(),
-        duplicate_packed_timestamps: report.feature_page_layout.duplicate_packed_timestamps.len(),
+        missing_indexed_timestamps: report.feature_block_layout.missing_indexed_timestamps.len(),
+        orphan_packed_timestamps: report.feature_block_layout.orphan_packed_timestamps.len(),
+        duplicate_packed_timestamps: report.feature_block_layout.duplicate_packed_timestamps.len(),
         replay_boundary_wal_sequence: report.boundary.selected_replay_wal_sequence,
         replay_boundary_index_log_sequence: report.boundary.selected_replay_index_log_sequence,
     }
@@ -514,8 +522,8 @@ fn redis(engine: &TemporalEngine, shard_id: u64, args: Vec<&[u8]>) -> RespValue 
     )
 }
 
-fn new_engine(root: &Path, page_dir: &Path, index_dir: &Path, shard_id: u64) -> TemporalEngine {
-    let engine = TemporalEngine::with_local_dirs(256, root.join("cache"), page_dir, index_dir);
+fn new_engine(root: &Path, block_dir: &Path, index_dir: &Path, shard_id: u64) -> TemporalEngine {
+    let engine = TemporalEngine::with_local_dirs(256, root.join("cache"), block_dir, index_dir);
     engine.load_shard(shard_id);
     engine
 }

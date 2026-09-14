@@ -13,7 +13,7 @@ use serde_json::Value;
 use temporalstore_rust::client::{
     ClientMetaSyncLoopOptions, ReplicaReadPolicy as ClientReplicaReadPolicy,
 };
-use temporalstore_rust::engine::reports::{StorageManagerCycleRequest, StoragePageGcReplayCursor};
+use temporalstore_rust::engine::reports::{StorageManagerCycleRequest, StorageBlockGcReplayCursor};
 use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
 use temporalstore_rust::meta::{TopologyVersionReport, TopologyVersionRequest};
 use temporalstore_rust::partition_id::PartitionId;
@@ -423,14 +423,14 @@ fn response_kind(response: &CommandResponse) -> &'static str {
 
 fn run_engine_case(case: &UnifiedCase) {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
-    let mut engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    let mut engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
 
     for step in &case.steps {
         if step.restart_before {
             drop(engine);
-            engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+            engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
         }
         if maybe_run_engine_adapter_command(case, step, &engine) {
             continue;
@@ -466,11 +466,11 @@ fn run_engine_case(case: &UnifiedCase) {
 
 fn run_client_case(case: &UnifiedCase) {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = Arc::new(Mutex::new(new_engine(
         dir.path(),
-        &page_dir,
+        &block_dir,
         &index_dir,
         case.shard_id,
     )));
@@ -527,7 +527,7 @@ fn run_client_case(case: &UnifiedCase) {
         );
         if step.restart_before {
             *engine.lock().expect("engine lock poisoned") =
-                new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+                new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
         }
         if command_kind(&step.command) == "existing_test"
             || step
@@ -3513,9 +3513,9 @@ fn load_storage_migration_case(case_name: &str) -> StorageMigrationCase {
 
 fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
-    let mut engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    let mut engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
 
     execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
 
@@ -3528,7 +3528,7 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
     assert!(
         summaries
             .iter()
-            .any(|summary| summary.dirty_generation > 0 && summary.page_ref_count > 0),
+            .any(|summary| summary.dirty_generation > 0 && summary.block_ref_count > 0),
         "case={} should track dirty generations and page refs",
         case.name
     );
@@ -3546,7 +3546,7 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
     assert_clean_storage_recovery(&engine, case.shard_id, &case.name);
 
     drop(engine);
-    engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
     engine
         .install_bucket_dump_manifest(&manifest)
         .unwrap_or_else(|status| {
@@ -3558,14 +3558,14 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
 
 fn verify_storage_recovery_reconciles_bucket_index_to_model_views(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
-    let engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    let engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
 
     execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
 
     drop(engine);
-    let recovered = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    let recovered = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
     assert_clean_storage_recovery(&recovered, case.shard_id, &case.name);
     execute_storage_steps(&recovered, case.shard_id, &case.expected_reads, &case.name);
 }
@@ -3645,16 +3645,16 @@ fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
             wal_sequence: 0,
             index_log_sequence: 0,
         }],
-        page_gc_shared_store_cursors: Vec::new(),
-        page_gc_raft_snapshot_refs: Vec::new(),
-        page_gc_checkpoint_floor_slab_id: None,
-        page_gc_raft_install_floor_slab_id: None,
-        page_gc_delayed_destroy_grace_ms: 0,
+        block_gc_shared_store_cursors: Vec::new(),
+        block_gc_raft_snapshot_refs: Vec::new(),
+        block_gc_checkpoint_floor_slab_id: None,
+        block_gc_raft_install_floor_slab_id: None,
+        block_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: true,
         warm_cache: true,
     });
     assert!(lifecycle.dump_manifest.is_some());
-    assert_eq!(lifecycle.cache_warmup.failed_page_refs, 0);
+    assert_eq!(lifecycle.cache_warmup.failed_block_refs, 0);
     assert!(
         lifecycle.manifest_prune_plan.retained_manifest_ids.len()
             >= lifecycle.manifest_prune_plan.prunable_manifest_ids.len(),
@@ -3854,8 +3854,8 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         }
     );
     let restart_boundary = restarted.storage_recovery_boundary_report(shard_id);
-    assert!(restart_boundary.stale_index_page_refs.is_empty());
-    assert_eq!(restart_boundary.missing_owner_page_refs, 0);
+    assert!(restart_boundary.stale_index_block_refs.is_empty());
+    assert_eq!(restart_boundary.missing_owner_block_refs, 0);
 }
 
 fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
@@ -3895,10 +3895,10 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
         .unwrap();
     assert_eq!(delayed.delayed_destroy_block_slab_ids, vec![0]);
 
-    let matrix = engine.storage_page_gc_dependency_plan(
+    let matrix = engine.storage_block_gc_dependency_plan(
         shard_id,
         vec![0, 1],
-        vec![StoragePageGcReplayCursor {
+        vec![StorageBlockGcReplayCursor {
             cursor_id: "unified-shared-store-follower".to_string(),
             shard_id,
             retain_from_block_slab_id: 0,
@@ -4010,7 +4010,7 @@ fn verify_storage_cache_replacement_policy_soak(shard_id: u64) {
         "cache pressure should leave disk-tier refill evidence"
     );
 
-    let target_page_key = string_page_cache_key(&engine, shard_id, "soak-target");
+    let target_block_key = string_block_cache_key(&engine, shard_id, "soak-target");
     let evict_report = engine.apply_storage_eviction(shard_id, 1, 4, true, false);
     assert_eq!(evict_report.mode, "evict_cache");
     assert!(evict_report.pressure_gate_open, "{evict_report:?}");
@@ -4027,9 +4027,9 @@ fn verify_storage_cache_replacement_policy_soak(shard_id: u64) {
         "eviction should remove memory or disk-cache entries: {evict_report:?}"
     );
 
-    let _ = engine.cache().invalidate(&target_page_key);
+    let _ = engine.cache().invalidate(&target_block_key);
     engine.cache().clear_memory_for_test();
-    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    assert_eq!(engine.cache().get_memory(&target_block_key), None);
     let block_reads_before = engine.block_store().stats().reads;
     let disk_hits_before = engine.cache().stats().disk_hits;
     assert_eq!(
@@ -4046,7 +4046,7 @@ fn verify_storage_cache_replacement_policy_soak(shard_id: u64) {
         }
     );
     assert_eq!(
-        engine.cache().get_memory(&target_page_key),
+        engine.cache().get_memory(&target_block_key),
         Some(target_value)
     );
     assert!(
@@ -4182,8 +4182,8 @@ fn verify_storage_cache_refill_pressure(shard_id: u64) {
         engine.cache().stats().disk_bytes > 0,
         "persistent read path should populate disk cache"
     );
-    let target_page_key = string_page_cache_key(&engine, shard_id, "target");
-    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    let target_block_key = string_block_cache_key(&engine, shard_id, "target");
+    assert_eq!(engine.cache().get_memory(&target_block_key), None);
     let disk_hits_before = engine.cache().stats().disk_hits;
     let block_reads_before = engine.block_store().stats().reads;
     assert_eq!(
@@ -4205,7 +4205,7 @@ fn verify_storage_cache_refill_pressure(shard_id: u64) {
         "cold target read should use disk cache or block store"
     );
     assert_eq!(
-        engine.cache().get_memory(&target_page_key),
+        engine.cache().get_memory(&target_block_key),
         Some(target_value)
     );
 }
@@ -4253,9 +4253,9 @@ fn verify_storage_cold_read_after_eviction(shard_id: u64) {
     assert!(engine.block_store().stats().reads > block_reads_before);
 }
 
-fn string_page_cache_key(engine: &TemporalEngine, shard_id: u64, key: &str) -> CacheKey {
+fn string_block_cache_key(engine: &TemporalEngine, shard_id: u64, key: &str) -> CacheKey {
     engine
-        .string_page_cache_key_for_test(shard_id, key)
+        .string_block_cache_key_for_test(shard_id, key)
         .unwrap_or_else(|| panic!("key {key} should have a page address"))
 }
 
@@ -4312,14 +4312,14 @@ fn verify_storage_cache_refill(case: &StorageMigrationCase) {
     let selected_buckets = engine
         .bucket_storage_summaries(case.shard_id)
         .into_iter()
-        .filter(|summary| summary.page_ref_count > 0)
+        .filter(|summary| summary.block_ref_count > 0)
         .map(|summary| summary.routing_bucket)
         .collect::<Vec<_>>();
     let report = engine.storage_cache_warmup_report(case.shard_id, selected_buckets);
-    assert!(report.considered_page_refs > 0);
+    assert!(report.considered_block_refs > 0);
     assert!(report.page_store_reads > 0);
-    assert_eq!(report.failed_page_refs, 0);
-    assert_eq!(report.warmed_page_refs, report.considered_page_refs);
+    assert_eq!(report.failed_block_refs, 0);
+    assert_eq!(report.warmed_block_refs, report.considered_block_refs);
     let after = engine.storage_cache_inspection_report(case.shard_id);
     assert!(!after.entries.is_empty());
     assert!(!after.bucket_summaries.is_empty());
@@ -4393,9 +4393,9 @@ fn verify_storage_stream_backed_slab_runtime() {
 
 fn verify_random_size_reopen_scan() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
-    let engine = new_engine(dir.path(), &page_dir, &index_dir, 1);
+    let engine = new_engine(dir.path(), &block_dir, &index_dir, 1);
 
     let mut expected = Vec::new();
     for i in 0..24usize {
@@ -4420,7 +4420,7 @@ fn verify_random_size_reopen_scan() {
     }
 
     drop(engine);
-    let reopened = new_engine(dir.path(), &page_dir, &index_dir, 1);
+    let reopened = new_engine(dir.path(), &block_dir, &index_dir, 1);
     for (key, value) in &expected {
         let response = reopened.execute(ExecuteRequest {
             shard_id: 1,
@@ -4467,12 +4467,12 @@ fn verify_random_size_reopen_scan() {
 
 fn verify_cross_block_large_values() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -4499,7 +4499,7 @@ fn verify_cross_block_large_values() {
     let reopened = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     reopened.load_shard(1);
@@ -4589,35 +4589,35 @@ fn execute_storage_steps(
 fn assert_clean_storage_recovery(engine: &TemporalEngine, shard_id: u64, case_name: &str) {
     let recovery = engine.storage_recovery_report(shard_id);
     assert!(
-        recovery.all_live_pages_readable,
+        recovery.all_live_blocks_readable,
         "case={} live pages should be readable: {:?}",
-        case_name, recovery.unreadable_page_refs
+        case_name, recovery.unreadable_block_refs
     );
     assert!(
         recovery.slab_integrity.integrity_ok,
         "case={} segment integrity failed: {:?}",
         case_name, recovery.slab_integrity
     );
-    assert_eq!(recovery.slab_integrity.stale_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.stale_block_ref_count, 0);
     assert_eq!(recovery.slab_integrity.corrupt_block_slab_count, 0);
-    assert_eq!(recovery.slab_integrity.unreadable_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.unreadable_block_ref_count, 0);
     assert_eq!(
         recovery
-            .feature_page_layout
+            .feature_block_layout
             .missing_indexed_timestamps
             .len(),
         0,
         "case={} missing indexed timestamps: {:?}",
         case_name,
-        recovery.feature_page_layout.missing_indexed_timestamps
+        recovery.feature_block_layout.missing_indexed_timestamps
     );
     assert_eq!(
-        recovery.feature_page_layout.orphan_packed_timestamps.len(),
+        recovery.feature_block_layout.orphan_packed_timestamps.len(),
         0
     );
     assert_eq!(
         recovery
-            .feature_page_layout
+            .feature_block_layout
             .duplicate_packed_timestamps
             .len(),
         0
@@ -4827,11 +4827,11 @@ fn expected_status_code(expected: &UnifiedExpected) -> Option<&str> {
     }
 }
 
-fn new_engine(root: &Path, page_dir: &Path, index_dir: &Path, shard_id: u64) -> TemporalEngine {
+fn new_engine(root: &Path, block_dir: &Path, index_dir: &Path, shard_id: u64) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         root.join(format!("cache-{shard_id}")),
-        page_dir,
+        block_dir,
         index_dir,
     );
     engine.load_shard(shard_id);

@@ -196,12 +196,12 @@ impl ObjectStore for MatrixObjectObjectStore {
             if objects.is_empty() {
                 break;
             }
-            let page_len = objects.len();
+            let block_len = objects.len();
             marker = objects
                 .last()
                 .map(|metadata| metadata.object_id.key.clone());
             out.extend(objects.into_iter().map(|metadata| metadata.object_id.key));
-            if page_len < limit {
+            if block_len < limit {
                 break;
             }
         }

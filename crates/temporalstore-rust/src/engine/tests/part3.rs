@@ -6,7 +6,7 @@
 use super::*;
 
 #[test]
-fn control_api_reads_page_and_index_streams() {
+fn control_api_reads_block_and_index_streams() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -295,7 +295,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     // The bucket-index page entries serialize under abbreviated field names on some builds
     // and full names on others, so accept either: what is being asserted is that the hash
     // write is recorded with the right page address, not how the fields are spelled.
-    let hash_page = served["slot_index"]["slot_map"]
+    let hash_block = served["slot_index"]["slot_map"]
         .as_object()
         .expect("served index carries the bucket map")
         .values()
@@ -312,9 +312,9 @@ fn control_api_reads_and_scans_index_log_stream() {
             key == Some(&serde_json::json!("h")) && component == Some(&serde_json::json!("f"))
         })
         .expect("the hash h/f write is recorded in the bucket index");
-    let address = hash_page
+    let address = hash_block
         .get("address")
-        .or_else(|| hash_page.get("a"))
+        .or_else(|| hash_block.get("a"))
         .expect("the recorded page carries its address");
     // Either spelling: the field is written short now and the long name is kept as a read alias,
     // which is exactly how this test already reads `object_key` and `component` above.
@@ -497,7 +497,7 @@ fn string_set_conditional_supports_nx_xx_and_get() {
 }
 
 #[test]
-fn recovery_validates_all_timestamped_kv_page_families() {
+fn recovery_validates_all_timestamped_kv_block_families() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         8 * 1024,
@@ -645,56 +645,56 @@ fn recovery_validates_all_timestamped_kv_page_families() {
     // coalesced index (commit 9390d110), so it no longer contributes a persisted
     // timestamped page: feature 16 (8 feature + 8 sequence, now folded into the
     // feature family) + context_event/index/audit 1 each = 19.
-    assert_eq!(report.feature_page_layout.indexed_timestamped_points, 19);
+    assert_eq!(report.feature_block_layout.indexed_timestamped_points, 19);
     // Every page the index points at is a packed page, which is the property this is for and
     // does not depend on how densely one packs. The count this replaced -- at least ten pages --
     // moved when the page format did: the same 19 points, asserted just above, now occupy 6 pages
     // because a point costs about a quarter of what it cost as JSON. Ten LEGACY pages would have
     // satisfied the old assertion; none satisfy this one.
     assert_eq!(
-        report.feature_page_layout.packed_timestamped_pages,
-        report.feature_page_layout.unique_timestamped_page_refs,
+        report.feature_block_layout.packed_timestamped_blocks,
+        report.feature_block_layout.unique_timestamped_block_refs,
         "pages landed as: {} packed, {} legacy, {} corrupt, {} unique refs; first corrupt: {:?}",
-        report.feature_page_layout.packed_timestamped_pages,
-        report.feature_page_layout.legacy_timestamped_value_pages,
-        report.feature_page_layout.corrupt_packed_feature_pages.len(),
-        report.feature_page_layout.unique_timestamped_page_refs,
-        report.feature_page_layout.corrupt_packed_feature_pages.first()
+        report.feature_block_layout.packed_timestamped_blocks,
+        report.feature_block_layout.legacy_timestamped_value_blocks,
+        report.feature_block_layout.corrupt_packed_feature_blocks.len(),
+        report.feature_block_layout.unique_timestamped_block_refs,
+        report.feature_block_layout.corrupt_packed_feature_blocks.first()
     );
     assert!(
-        report.feature_page_layout.packed_timestamped_pages > 0,
+        report.feature_block_layout.packed_timestamped_blocks > 0,
         "no packed pages at all, so the assertion above proved nothing"
     );
     assert_eq!(
-        report.feature_page_layout.legacy_timestamped_value_pages, 0,
+        report.feature_block_layout.legacy_timestamped_value_blocks, 0,
         "a legacy single-value page survived where a packed one was expected"
     );
     assert!(
         report
-            .feature_page_layout
-            .unique_timestamped_page_refs
-            .saturating_sub(report.feature_page_layout.packed_timestamped_pages)
-            <= report.feature_page_layout.legacy_timestamped_value_pages
+            .feature_block_layout
+            .unique_timestamped_block_refs
+            .saturating_sub(report.feature_block_layout.packed_timestamped_blocks)
+            <= report.feature_block_layout.legacy_timestamped_value_blocks
     );
     assert!(report
-        .feature_page_layout
-        .corrupt_packed_feature_pages
+        .feature_block_layout
+        .corrupt_packed_feature_blocks
         .is_empty());
     assert!(report
-        .feature_page_layout
+        .feature_block_layout
         .missing_indexed_timestamps
         .is_empty());
     assert!(report
-        .feature_page_layout
+        .feature_block_layout
         .orphan_packed_timestamps
         .is_empty());
     assert!(report
-        .feature_page_layout
+        .feature_block_layout
         .duplicate_packed_timestamps
         .is_empty());
 
     let families = report
-        .feature_page_layout
+        .feature_block_layout
         .families
         .iter()
         .map(|family| (family.kind.as_str(), family))
@@ -710,14 +710,14 @@ fn recovery_validates_all_timestamped_kv_page_families() {
         let family = families.get(kind).expect("timestamped family report");
         assert!(family.indexed_points > 0, "{kind}");
         assert!(family.packed_pages > 0, "{kind}");
-        assert_eq!(family.corrupt_pages, 0, "{kind}");
+        assert_eq!(family.corrupt_blocks, 0, "{kind}");
         assert_eq!(family.mismatch_count, 0, "{kind}");
     }
     assert!(
         families
             .get("feature")
             .expect("feature family")
-            .unique_page_refs
+            .unique_block_refs
             > 1
     );
 
@@ -991,7 +991,7 @@ fn control_state_selection_omitted_occur_time_resolves_to_now_like_native() {
 }
 
 #[test]
-fn live_block_slab_ids_includes_control_state_pages() {
+fn live_block_slab_ids_includes_control_state_blocks() {
     // control_state_pages is page-backed; omitting it from the GC live set let a slab holding
     // only a control-state page be reclaimed while still index-referenced -> DataLoss on read.
     let engine = TemporalEngine::default();
@@ -1827,7 +1827,7 @@ fn stats_include_style_partition_and_object_manager_accounting() {
     let stats = engine.get_stats(9).stats.unwrap();
     assert_eq!(stats.total_records, 6);
     assert_eq!(stats.object_manager.object_count, 6);
-    assert_eq!(stats.object_manager.page_ref_count, 9);
+    assert_eq!(stats.object_manager.block_ref_count, 9);
     assert_eq!(stats.object_manager.dirty_object_count, 6);
     assert!(stats.object_manager.dirty_bucket_count > 0);
     assert!(stats.object_manager.dirty_bucket_count <= 6);
@@ -1847,7 +1847,7 @@ fn stats_include_style_partition_and_object_manager_accounting() {
 }
 
 #[test]
-fn prometheus_metrics_include_records_cache_page_and_wal() {
+fn prometheus_metrics_include_records_cache_block_and_wal() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     engine.execute(ExecuteRequest {
@@ -1940,7 +1940,7 @@ fn bucket_storage_summaries_track_live_refs_dirty_buckets_and_manifest_sequence(
     assert_eq!(
         summaries
             .iter()
-            .map(|summary| summary.page_ref_count)
+            .map(|summary| summary.block_ref_count)
             .sum::<u64>(),
         3
     );
@@ -1968,7 +1968,7 @@ fn bucket_storage_summaries_track_live_refs_dirty_buckets_and_manifest_sequence(
 }
 
 #[test]
-fn rebuild_bucket_page_ownership_preserves_dirty_watermarks() {
+fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     // rebuild clears + rebuilds bucket_map from the model maps; it must carry over the durable
     // per-bucket dirty_generation / last_dump_sequence. Rebuilding them from BucketNode::default()
     // (as manifest-install / promote do) zeroed the watermarks, making a restored shard mismatch
@@ -1988,13 +1988,13 @@ fn rebuild_bucket_page_ownership_preserves_dirty_watermarks() {
             ..BucketNode::default()
         },
     );
-    rebuild_bucket_page_ownership(1, &mut shard, 0, u32::MAX);
+    rebuild_bucket_block_ownership(1, &mut shard, 0, u32::MAX);
     let bucket = shard
         .bucket_index
         .bucket_map
         .get(&3)
         .expect("bucket 3 should be rebuilt from the string page");
-    assert!(!bucket.page_index.is_empty(), "the page should be re-indexed");
+    assert!(!bucket.block_index.is_empty(), "the page should be re-indexed");
     assert_eq!(
         bucket.dirty_generation, 7,
         "dirty_generation must survive the rebuild"
@@ -2007,7 +2007,7 @@ fn rebuild_bucket_page_ownership_preserves_dirty_watermarks() {
 
 // shared-corpus: storage_dump_load_recovery
 #[test]
-fn bucket_page_ownership_is_first_class_and_survives_reload() {
+fn bucket_block_ownership_is_first_class_and_survives_reload() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2048,10 +2048,10 @@ fn bucket_page_ownership_is_first_class_and_survives_reload() {
     assert_eq!(physical_before_reload.missing_object_id_count, 0);
     assert_eq!(physical_before_reload.missing_routing_bucket_count, 0);
     assert!(physical_before_reload.bucket_nodes.iter().any(|bucket| {
-        bucket.page_ref_count == 2
+        bucket.block_ref_count == 2
             && bucket.object_count == 2
             && bucket.dirty_generation >= 2
-            && bucket.page_indexes.iter().all(|page| {
+            && bucket.block_indexes.iter().all(|page| {
                 page.model_id == "hash" && page.dirty && !page.deleted && !page.log_backed
             })
     }));
@@ -2063,12 +2063,12 @@ fn bucket_page_ownership_is_first_class_and_survives_reload() {
             .sum::<u64>(),
         2
     );
-    let ownership = engine.bucket_object_page_ownership_report(1);
+    let ownership = engine.bucket_object_block_ownership_report(1);
     assert!(ownership.first_class_index_present);
     assert!(!ownership.derived_from_model_maps);
-    assert_eq!(ownership.page_ref_count, 2);
-    assert_eq!(ownership.missing_owner_page_ref_count, 0);
-    assert_eq!(ownership.owner_mismatch_page_ref_count, 0);
+    assert_eq!(ownership.block_ref_count, 2);
+    assert_eq!(ownership.missing_owner_block_ref_count, 0);
+    assert_eq!(ownership.owner_mismatch_block_ref_count, 0);
     let physical = engine.storage_physical_index_report(1);
     assert!(physical.bucket_index_authority);
     assert_eq!(physical.page_index_count, 2);
@@ -2092,13 +2092,13 @@ fn bucket_page_ownership_is_first_class_and_survives_reload() {
     assert!(physical_after_reload
         .bucket_nodes
         .iter()
-        .any(|bucket| bucket.page_ref_count == 2 && bucket.object_count == 2));
-    let reloaded_ownership = engine.bucket_object_page_ownership_report(1);
+        .any(|bucket| bucket.block_ref_count == 2 && bucket.object_count == 2));
+    let reloaded_ownership = engine.bucket_object_block_ownership_report(1);
     assert!(reloaded_ownership.first_class_index_present);
     assert!(!reloaded_ownership.derived_from_model_maps);
-    assert_eq!(reloaded_ownership.page_ref_count, 2);
-    assert_eq!(reloaded_ownership.missing_owner_page_ref_count, 0);
-    assert_eq!(reloaded_ownership.owner_mismatch_page_ref_count, 0);
+    assert_eq!(reloaded_ownership.block_ref_count, 2);
+    assert_eq!(reloaded_ownership.missing_owner_block_ref_count, 0);
+    assert_eq!(reloaded_ownership.owner_mismatch_block_ref_count, 0);
     let reloaded_physical = engine.storage_physical_index_report(1);
     assert!(reloaded_physical.bucket_index_authority);
     assert_eq!(reloaded_physical.page_index_count, 2);
@@ -2199,13 +2199,13 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
     }
 
     let recovery = engine.storage_recovery_report(1);
-    assert_eq!(recovery.total_page_refs, 1);
-    assert_eq!(recovery.readable_page_refs, 1);
-    assert!(recovery.all_live_pages_readable);
-    assert!(recovery.owner_mismatch_page_refs.is_empty());
-    assert_eq!(recovery.missing_owner_page_refs, 0);
-    assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 0);
-    assert_eq!(recovery.slab_integrity.owner_mismatch_page_ref_count, 0);
+    assert_eq!(recovery.total_block_refs, 1);
+    assert_eq!(recovery.readable_block_refs, 1);
+    assert!(recovery.all_live_blocks_readable);
+    assert!(recovery.owner_mismatch_block_refs.is_empty());
+    assert_eq!(recovery.missing_owner_block_refs, 0);
+    assert_eq!(recovery.object_lifecycle.owner_mismatch_block_refs, 0);
+    assert_eq!(recovery.slab_integrity.owner_mismatch_block_ref_count, 0);
     assert!(recovery.slab_integrity.integrity_ok);
 }
 
@@ -2262,7 +2262,7 @@ fn legacy_model_maps_are_promoted_to_bucket_index_authority() {
 
 // shared-corpus: storage_cold_read_page_address_fallback
 #[test]
-fn cold_read_uses_bucket_page_address_after_cache_and_model_maps_are_cleared() {
+fn cold_read_uses_bucket_block_address_after_cache_and_model_maps_are_cleared() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2317,9 +2317,9 @@ fn cold_read_uses_bucket_page_address_after_cache_and_model_maps_are_cleared() {
 fn recovery_reconciles_model_views_from_bucket_index_authority() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
-    let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
+    let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
     assert!(
         engine
@@ -2345,7 +2345,7 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     damaged.strings.clear();
     std::fs::write(&index_path, crate::engine::encode_index_bytes(&damaged)).unwrap();
 
-    let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
+    let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &block_dir, &index_dir);
     recovered.load_shard(1);
     {
         let shards = recovered.shards.read().expect("engine lock poisoned");
@@ -2407,9 +2407,9 @@ fn core_index_loads_legacy_bucket_page_field_names() {
     let index: CoreIndex = serde_json::from_str(legacy_json).unwrap();
     let bucket = index.bucket_map.get(&7).expect("legacy slot should load");
     assert!(bucket.object_index.contains(&42));
-    assert_eq!(bucket.page_index.len(), 1);
+    assert_eq!(bucket.block_index.len(), 1);
     assert_eq!(
-        bucket.page_index
+        bucket.block_index
             .values()
             .next()
             .expect("legacy page index should load")
@@ -2450,11 +2450,11 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
         3,
         BucketNode {
             routing_bucket: 3,
-            layout: BucketLayoutState::SinglePageObject,
+            layout: BucketLayoutState::SingleBlockObject,
             meta_loaded: true,
             in_memory: true,
             object_index: [30].into_iter().collect(),
-            page_index: [(
+            block_index: [(
                 "string:k::1:0".to_string(),
                 BlockIndex {
                     object_key: Arc::from("k".to_string()),
@@ -2476,12 +2476,12 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
         4,
         BucketNode {
             routing_bucket: 4,
-            layout: BucketLayoutState::MultiPageObject,
+            layout: BucketLayoutState::MultiBlockObject,
             meta_loaded: true,
             loading: true,
             in_memory: true,
             object_index: [40].into_iter().collect(),
-            page_index: [
+            block_index: [
                 (
                     "feature:k::2:0".to_string(),
                     BlockIndex {
@@ -2521,7 +2521,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             meta_loaded: true,
             in_memory: true,
             object_index: [50, 51].into_iter().collect(),
-            page_index: [
+            block_index: [
                 (
                     "hash:k:a:3:0".to_string(),
                     BlockIndex {
@@ -2557,8 +2557,8 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
     let report = bucket_store::runtime_report(&shard);
     assert_eq!(report.empty_buckets, 1);
     assert_eq!(report.single_object_buckets, 1);
-    assert_eq!(report.single_page_object_buckets, 1);
-    assert_eq!(report.multi_page_object_buckets, 1);
+    assert_eq!(report.single_block_object_buckets, 1);
+    assert_eq!(report.multi_block_object_buckets, 1);
     assert_eq!(report.multi_object_buckets, 1);
     assert_eq!(report.deleted_bucket_count, 1);
     assert_eq!(report.loading_bucket_count, 1);
@@ -2660,7 +2660,7 @@ fn control_state_set_and_get_with_options_is_idempotent_on_uuid_replay() {
 // shared-corpus: storage_object_manager_bucketstore_runtime_authority;
 /// The layout label of a bucket holding NO resident pages, asked once per object-count half.
 ///
-/// A released bucket is exactly this shape: release_bucket_pages empties page_index and keeps
+/// A released bucket is exactly this shape: release_bucket_blocks empties page_index and keeps
 /// object_index, then relabels with a page count of zero. The one-object half answered
 /// single_object; the two-or-more half answered empty -- the same label a bucket holding
 /// nothing gets, and the label a never-classified bucket defaults to. So a released bucket
@@ -2670,7 +2670,7 @@ fn control_state_set_and_get_with_options_is_idempotent_on_uuid_replay() {
 /// The halves are asserted separately because a combined count hid it: summing "labelled
 /// correctly" over both halves reads high, since the one-object half was always right.
 #[test]
-fn bucket_layout_label_without_pages_answers_the_object_count_on_both_halves() {
+fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() {
     // Denominator first: an empty sweep over either half would make every assertion below
     // vacuous, and both halves must be non-empty for the comparison between them to mean
     // anything.
@@ -2786,7 +2786,7 @@ fn released_multi_object_buckets_are_not_counted_as_empty_buckets() {
         "the report must have seen every fixture bucket"
     );
     assert_eq!(
-        report.page_ref_count, 0,
+        report.block_ref_count, 0,
         "every fixture bucket has an emptied page index"
     );
     assert_eq!(

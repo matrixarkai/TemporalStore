@@ -195,7 +195,7 @@ impl TemporalEngine {
             .collect::<BTreeSet<_>>();
         // REFRESH A DUMP THAT STILL NAMES A SLAB COMPACTION HAS EMPTIED.
         //
-        // `run_gc_inner` and `storage_page_gc_dependency_plan` both hold back every slab a bucket
+        // `run_gc_inner` and `storage_block_gc_dependency_plan` both hold back every slab a bucket
         // dump manifest names, and they are right to: installing that dump READS those pages, so
         // destroying the slab makes the dump uninstallable and a lagging replica unservable.
         // #1565 stopped such a slab freezing the retain FLOOR; it deliberately did not make the
@@ -308,21 +308,21 @@ impl TemporalEngine {
         if request.purge_delayed_destroy && !delayed_destroy_reports.is_empty() {
             reasons.push("delayed_destroy_purge".to_string());
         }
-        let page_gc_dependency_plan = self.storage_page_gc_dependency_plan(
+        let block_gc_dependency_plan = self.storage_block_gc_dependency_plan(
             request.shard_id,
             reclaim_candidates
                 .iter()
                 .map(|candidate| candidate.block_slab_id),
-            request.page_gc_shared_store_cursors.clone(),
-            request.page_gc_raft_snapshot_refs.clone(),
-            request.page_gc_checkpoint_floor_slab_id,
-            request.page_gc_raft_install_floor_slab_id,
-            request.page_gc_delayed_destroy_grace_ms,
+            request.block_gc_shared_store_cursors.clone(),
+            request.block_gc_raft_snapshot_refs.clone(),
+            request.block_gc_checkpoint_floor_slab_id,
+            request.block_gc_raft_install_floor_slab_id,
+            request.block_gc_delayed_destroy_grace_ms,
         );
-        if !page_gc_dependency_plan
+        if !block_gc_dependency_plan
             .candidate_block_slab_ids
             .is_empty()
-            && !page_gc_dependency_plan.safe_to_reclaim
+            && !block_gc_dependency_plan.safe_to_reclaim
         {
             reasons.push("page_gc_dependency_blocked".to_string());
         }
@@ -366,16 +366,16 @@ impl TemporalEngine {
         }
     }
 
-    pub fn storage_page_gc_dependency_plan(
+    pub fn storage_block_gc_dependency_plan(
         &self,
         shard_id: ShardId,
         candidate_block_slab_ids: impl IntoIterator<Item = u64>,
-        shared_store_cursors: impl IntoIterator<Item = StoragePageGcReplayCursor>,
+        shared_store_cursors: impl IntoIterator<Item = StorageBlockGcReplayCursor>,
         raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
         checkpoint_snapshot_floor: Option<u64>,
         raft_snapshot_install_floor: Option<u64>,
         delayed_destroy_grace_ms: u64,
-    ) -> StoragePageGcDependencyPlan {
+    ) -> StorageBlockGcDependencyPlan {
         let mut candidate_block_slab_ids = candidate_block_slab_ids
             .into_iter()
             .collect::<BTreeSet<_>>()
@@ -417,13 +417,13 @@ impl TemporalEngine {
         let mut dependency_blocks = Vec::new();
         for block_slab_id in &candidate_block_slab_ids {
             if live_set.contains(block_slab_id) {
-                dependency_blocks.push(StoragePageGcDependencyBlock {
+                dependency_blocks.push(StorageBlockGcDependencyBlock {
                     block_slab_id: *block_slab_id,
                     dependency: "live_page_ref".to_string(),
                     owner_id: format!("shard:{shard_id}"),
                     reason: "indexed live page references still point at this page segment"
                         .to_string(),
-                    ..StoragePageGcDependencyBlock::default()
+                    ..StorageBlockGcDependencyBlock::default()
                 });
             }
             if manifest_set.contains(block_slab_id) {
@@ -433,12 +433,12 @@ impl TemporalEngine {
                     .map(|manifest| manifest.manifest_id.clone())
                     .collect::<Vec<_>>()
                     .join(",");
-                dependency_blocks.push(StoragePageGcDependencyBlock {
+                dependency_blocks.push(StorageBlockGcDependencyBlock {
                     block_slab_id: *block_slab_id,
                     dependency: "slot_dump_manifest".to_string(),
                     owner_id,
                     reason: "slot dump manifest still names this page segment".to_string(),
-                    ..StoragePageGcDependencyBlock::default()
+                    ..StorageBlockGcDependencyBlock::default()
                 });
             }
             for cursor in shared_store_cursors
@@ -446,7 +446,7 @@ impl TemporalEngine {
                 .filter(|cursor| cursor.shard_id == shard_id)
             {
                 if *block_slab_id >= cursor.retain_from_block_slab_id {
-                    dependency_blocks.push(StoragePageGcDependencyBlock {
+                    dependency_blocks.push(StorageBlockGcDependencyBlock {
                         block_slab_id: *block_slab_id,
                         dependency: "shared_store_replay_cursor".to_string(),
                         owner_id: cursor.cursor_id.clone(),
@@ -457,7 +457,7 @@ impl TemporalEngine {
                         } else {
                             cursor.reason.clone()
                         },
-                        ..StoragePageGcDependencyBlock::default()
+                        ..StorageBlockGcDependencyBlock::default()
                     });
                 }
             }
@@ -466,14 +466,14 @@ impl TemporalEngine {
                 .filter(|snapshot| snapshot.shard_id == shard_id)
             {
                 if *block_slab_id >= snapshot.index_log_sequence {
-                    dependency_blocks.push(StoragePageGcDependencyBlock {
+                    dependency_blocks.push(StorageBlockGcDependencyBlock {
                         block_slab_id: *block_slab_id,
                         dependency: "raft_snapshot_ref".to_string(),
                         owner_id: snapshot.snapshot_id.clone(),
                         retain_from_block_slab_id: Some(snapshot.index_log_sequence),
                         reason: "Raft snapshot reference has not released this page segment floor"
                             .to_string(),
-                        ..StoragePageGcDependencyBlock::default()
+                        ..StorageBlockGcDependencyBlock::default()
                     });
                 }
             }
@@ -481,27 +481,27 @@ impl TemporalEngine {
                 .map(|floor| *block_slab_id >= floor)
                 .unwrap_or(false)
             {
-                dependency_blocks.push(StoragePageGcDependencyBlock {
+                dependency_blocks.push(StorageBlockGcDependencyBlock {
                     block_slab_id: *block_slab_id,
                     dependency: "checkpoint_snapshot_floor".to_string(),
                     owner_id: format!("checkpoint:{shard_id}"),
                     retain_from_block_slab_id: checkpoint_snapshot_floor,
                     reason: "checkpoint/snapshot floor still retains this page segment".to_string(),
-                    ..StoragePageGcDependencyBlock::default()
+                    ..StorageBlockGcDependencyBlock::default()
                 });
             }
             if raft_snapshot_install_floor
                 .map(|floor| *block_slab_id >= floor)
                 .unwrap_or(false)
             {
-                dependency_blocks.push(StoragePageGcDependencyBlock {
+                dependency_blocks.push(StorageBlockGcDependencyBlock {
                     block_slab_id: *block_slab_id,
                     dependency: "raft_snapshot_install_floor".to_string(),
                     owner_id: format!("raft-install:{shard_id}"),
                     retain_from_block_slab_id: raft_snapshot_install_floor,
                     reason: "Raft snapshot install floor still retains this page segment"
                         .to_string(),
-                    ..StoragePageGcDependencyBlock::default()
+                    ..StorageBlockGcDependencyBlock::default()
                 });
             }
             if delayed_destroy_grace_ms > 0 {
@@ -511,7 +511,7 @@ impl TemporalEngine {
                 {
                     let retain_until = modified_unix_ms.saturating_add(delayed_destroy_grace_ms);
                     if now < retain_until {
-                        dependency_blocks.push(StoragePageGcDependencyBlock {
+                        dependency_blocks.push(StorageBlockGcDependencyBlock {
                             block_slab_id: *block_slab_id,
                             dependency: "delayed_destroy_grace_period".to_string(),
                             owner_id: format!("delayed-destroy:{block_slab_id}"),
@@ -519,7 +519,7 @@ impl TemporalEngine {
                             reason:
                                 "delayed-destroy grace period has not elapsed for this page segment"
                                     .to_string(),
-                            ..StoragePageGcDependencyBlock::default()
+                            ..StorageBlockGcDependencyBlock::default()
                         });
                     }
                 }
@@ -558,7 +558,7 @@ impl TemporalEngine {
         if candidate_set.is_empty() {
             blocker_reasons.clear();
         }
-        StoragePageGcDependencyPlan {
+        StorageBlockGcDependencyPlan {
             shard_id,
             safe_to_reclaim: !candidate_set.is_empty() && dependency_blocks.is_empty(),
             candidate_block_slab_ids,
@@ -672,7 +672,7 @@ impl TemporalEngine {
                 // log until it is written to again.
                 bucket.first_dirty_wal_sequence = 0;
                 bucket.first_dirty_index_log_sequence = 0;
-                for page in bucket.page_index.pages_mut_unaccounted() {
+                for page in bucket.block_index.blocks_mut_unaccounted() {
                     page.dirty = false;
                 }
             }
@@ -729,7 +729,7 @@ impl TemporalEngine {
                 ..StorageCacheWarmupReport::default()
             }
         };
-        let cache_warmup_page_refs = cache_warmup.warmed_page_refs;
+        let cache_warmup_block_refs = cache_warmup.warmed_block_refs;
         let purge_report = if request.purge_delayed_destroy {
             // THE LIVE SET AS IT IS NOW, not as it was when the collector quarantined these
             // slabs. The destroy below is irreversible and the two moments are whole rounds
@@ -805,7 +805,7 @@ impl TemporalEngine {
             dump_manifest,
             cache_entries_removed,
             cache_disk_bytes_removed,
-            cache_warmup_page_refs,
+            cache_warmup_block_refs,
             cache_warmup,
             delayed_destroy_purged_slabs: purge_report.purged_block_slab_ids,
             delayed_destroy_purged_bytes: purge_report.purged_physical_bytes,
@@ -825,7 +825,7 @@ impl TemporalEngine {
         {
             // ONE walk for all four sampling snapshots.
             //
-            // Each of these built its own `collect_live_page_entries` -- a fresh Vec of every live
+            // Each of these built its own `collect_live_block_entries` -- a fresh Vec of every live
             // page in the shard -- and then sorted all of it to take EIGHT samples. Four walks and
             // four full sorts, for about thirty-two sample rows. `who_walks_the_shard` measured
             // them at 1.0x the shard apiece, 4.0x of `apply_storage_lifecycle`'s 10.0x.
@@ -834,7 +834,7 @@ impl TemporalEngine {
             // lock above covers all four, `&ShardState` is unchanged throughout, and these produce
             // report SAMPLES rather than a decision. A shared snapshot cannot change what the
             // system does; it only makes the four samples describe one moment instead of four.
-            let sampling_entries = collect_live_page_entries(shard);
+            let sampling_entries = collect_live_block_entries(shard);
             report.storage_index_snapshot = storage_index_snapshot_with_samples_from_entries(
                 request.shard_id,
                 &sampling_entries,
@@ -934,9 +934,9 @@ impl TemporalEngine {
         //
         // This was an EAGER pass over every retained manifest, and each entry is a full
         // shard-sized walk: `bucket_generation_fingerprints_by_bucket` calls
-        // `collect_live_page_entries`. So the plan paid one whole-shard walk PER RETAINED
+        // `collect_live_block_entries`. So the plan paid one whole-shard walk PER RETAINED
         // MANIFEST, every round, before knowing whether any bucket would consult them --
-        // measured by `which_stages_walk_every_live_page` as the bulk of reclaim_wal's 16x.
+        // measured by `which_stages_walk_every_live_block` as the bulk of reclaim_wal's 16x.
         //
         // The search below is newest-first and short-circuits, and most buckets match the
         // newest manifest, so nearly all of those walks were computed and thrown away.
@@ -1340,7 +1340,7 @@ impl TemporalEngine {
         // the cycle puts its `raft_snapshot_refs` when it builds this request
         // (`storage_manager_cycle.rs`), so it is the same list under the name this struct uses.
         let follower_replay_cursors = request.follower_replay_cursors.clone();
-        let raft_snapshot_refs = request.page_gc_raft_snapshot_refs.clone();
+        let raft_snapshot_refs = request.block_gc_raft_snapshot_refs.clone();
         let plan = self.storage_lifecycle_plan(request);
         let wal_plan =
             self.storage_wal_reclaim_plan(shard_id, follower_replay_cursors, raft_snapshot_refs);
@@ -1662,7 +1662,7 @@ impl TemporalEngine {
                 let mut logical_bytes = 0u64;
                 let mut physical_bytes = 0u64;
                 let mut dirty_object_count = 0u64;
-                for page in bucket.page_index.values() {
+                for page in bucket.block_index.values() {
                     if page.deleted {
                         continue;
                     }
@@ -1843,7 +1843,7 @@ impl TemporalEngine {
                 .collect::<Vec<_>>();
             let mut shards = self.shards.write().expect("shards lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
-                release = crate::engine::storage_bucket_internals::release_bucket_pages(
+                release = crate::engine::storage_bucket_internals::release_bucket_blocks(
                     shard,
                     &candidates,
                 );
@@ -1864,7 +1864,7 @@ impl TemporalEngine {
             let mut pending_index_flush = None;
             let mut shards = self.shards.write().expect("shards lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
-                let object_keys = collect_live_page_entries(shard)
+                let object_keys = collect_live_block_entries(shard)
                     .into_iter()
                     .filter_map(|entry| {
                         let bucket = entry
@@ -1957,7 +1957,7 @@ impl TemporalEngine {
             cache_disk_bytes_removed,
             dropped_object_count,
             bucket_index_buckets_released: release.released_buckets.len(),
-            bucket_index_pages_released: release.released_pages,
+            bucket_index_blocks_released: release.released_blocks,
             bucket_index_release_refused: release.refused_buckets,
             bucket_index_bytes_before,
             bucket_index_bytes_after,

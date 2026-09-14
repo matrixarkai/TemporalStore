@@ -593,7 +593,8 @@ pub struct ContextModelDescriptor {
     pub model_id: u8,
     pub name: String,
     pub key_family: String,
-    pub page_primitive: String,
+    #[serde(rename = "page_primitive")]
+    pub block_primitive: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
 }
@@ -612,14 +613,14 @@ fn context_model_descriptor_entry(
     model_id: u8,
     name: &str,
     key_family: &str,
-    page_primitive: &str,
+    block_primitive: &str,
     aliases: &[&str],
 ) -> ContextModelDescriptor {
     ContextModelDescriptor {
         model_id,
         name: name.to_string(),
         key_family: key_family.to_string(),
-        page_primitive: page_primitive.to_string(),
+        block_primitive: block_primitive.to_string(),
         aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
     }
 }

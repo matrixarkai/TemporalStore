@@ -20,7 +20,7 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
     object_lifecycle_report_from_entries(
         shard_id,
         shard,
-        collect_live_page_entries(shard),
+        collect_live_block_entries(shard),
         selected_buckets,
         routing_bucket_for_key,
     )
@@ -39,7 +39,7 @@ pub(super) fn storage_object_lifecycle_report_for_buckets_from_model_maps(
     object_lifecycle_report_from_entries(
         shard_id,
         shard,
-        collect_model_live_page_entries(shard),
+        collect_model_live_block_entries(shard),
         selected_buckets,
         routing_bucket_for_key,
     )
@@ -64,14 +64,14 @@ pub(super) fn object_lifecycle_report_from_entries(
         .collect::<Vec<_>>();
     let mut expected_object_ids = BTreeSet::new();
     let mut actual_object_owners = BTreeMap::<u64, BTreeSet<u64>>::new();
-    let mut missing_owner_page_refs = 0u64;
-    let mut owner_mismatch_page_refs = 0u64;
+    let mut missing_owner_block_refs = 0u64;
+    let mut owner_mismatch_block_refs = 0u64;
 
     for entry in &entries {
-        let expected_object_id = expected_live_page_object_id(shard_id, entry);
+        let expected_object_id = expected_live_block_object_id(shard_id, entry);
         expected_object_ids.insert(expected_object_id);
         if entry.address.object_id().is_none() || entry.address.routing_bucket().is_none() {
-            missing_owner_page_refs = missing_owner_page_refs.saturating_add(1);
+            missing_owner_block_refs = missing_owner_block_refs.saturating_add(1);
         }
         match entry.address.object_id() {
             Some(actual_object_id) => {
@@ -80,7 +80,7 @@ pub(super) fn object_lifecycle_report_from_entries(
                     .or_default()
                     .insert(expected_object_id);
                 if actual_object_id != expected_object_id {
-                    owner_mismatch_page_refs = owner_mismatch_page_refs.saturating_add(1);
+                    owner_mismatch_block_refs = owner_mismatch_block_refs.saturating_add(1);
                 }
             }
             None => {}
@@ -106,12 +106,12 @@ pub(super) fn object_lifecycle_report_from_entries(
 
     StorageObjectLifecycleReport {
         live_object_ids: expected_object_ids.len() as u64,
-        live_page_refs: entries.len() as u64,
+        live_block_refs: entries.len() as u64,
         stale_object_ids: 0,
         delete_marked_object_ids: delete_marked_object_keys.len() as u64,
         reused_object_id_conflicts: reused_object_ids.len() as u64,
-        missing_owner_page_refs,
-        owner_mismatch_page_refs,
+        missing_owner_block_refs,
+        owner_mismatch_block_refs,
         reused_object_ids,
         delete_marked_object_keys,
     }
@@ -123,7 +123,7 @@ pub(super) fn bucket_dump_entries_by_key(
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> BTreeMap<String, BlockAddress> {
-    collect_live_page_entries(shard)
+    collect_live_block_entries(shard)
         .into_iter()
         .filter(|entry| {
             let routing_bucket = entry
@@ -135,7 +135,7 @@ pub(super) fn bucket_dump_entries_by_key(
         .map(|entry| {
             let component = entry.component.unwrap_or_default();
             let page_id = entry.address.page_id().unwrap_or_else(|| {
-                stable_page_object_id(
+                stable_block_object_id(
                     shard_id,
                     &entry.kind,
                     &entry.object_key,
@@ -168,11 +168,11 @@ pub(super) fn bucket_storage_summaries(
 ) -> Vec<BucketStorageSummary> {
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
     let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
-    for entry in collect_live_page_entries(shard) {
+    for entry in collect_live_block_entries(shard) {
         // The shard's OWN routing range, which is what every other consumer of this fallback
         // uses -- `rebuild_bucket_first_index`, `refresh_pending_bucket_runtime_flags` and the
         // dirty-key loop at the foot of this function all reach for
-        // `page_routing_bucket(key, start, end)`. This site reached for `bucket_for_object(key,
+        // `block_routing_bucket(key, start, end)`. This site reached for `bucket_for_object(key,
         // 0, u32::MAX)` instead, which is the same answer only while the shard spans the whole
         // range. Narrow the range -- `TS_SHARD_END_ROUTING_SLOT=1023` is the setting that cuts
         // resident memory 45% -- and the two place the same page in different buckets: this one
@@ -186,13 +186,13 @@ pub(super) fn bucket_storage_summaries(
         // latent half -- an address that reaches here without one (a page rebuilt from a source
         // that did not carry it) is placed where the rest of the engine already places it.
         let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
-            page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
+            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
         let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
             routing_bucket,
             ..BucketStorageSummary::default()
         });
-        summary.page_ref_count = summary.page_ref_count.saturating_add(1);
+        summary.block_ref_count = summary.block_ref_count.saturating_add(1);
         summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length);
         summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length);
         // Record which page slab backs each bucket so bucket-dump manifests carry the
@@ -263,7 +263,7 @@ pub(super) fn bucket_storage_summaries(
     buckets.into_values().collect()
 }
 
-const NATIVE_PACKED_PAGE_INDEX_SIZE: usize = 17;
+const NATIVE_PACKED_BLOCK_INDEX_SIZE: usize = 17;
 const NATIVE_PACKED_BUCKET_NODE_SIZE: usize = 24;
 
 pub(super) fn storage_model_code(kind: &str) -> u8 {
@@ -291,10 +291,10 @@ pub(super) fn physical_address_word(address: &BlockAddress) -> u64 {
     address.block_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
 
-pub(super) fn native_packed_page_index_bytes(
-    page: &StoragePhysicalPageIndex,
-) -> [u8; NATIVE_PACKED_PAGE_INDEX_SIZE] {
-    let mut bytes = [0u8; NATIVE_PACKED_PAGE_INDEX_SIZE];
+pub(super) fn native_packed_block_index_bytes(
+    page: &StoragePhysicalBlockIndex,
+) -> [u8; NATIVE_PACKED_BLOCK_INDEX_SIZE] {
+    let mut bytes = [0u8; NATIVE_PACKED_BLOCK_INDEX_SIZE];
     bytes[0] = page.object_id.unwrap_or_default() as u8;
     bytes[1] = storage_model_code(&page.model_id);
     bytes[2..4].copy_from_slice(&(page.page_id.unwrap_or_default() as u16).to_le_bytes());
@@ -308,30 +308,30 @@ pub(super) fn native_packed_page_index_bytes(
 
 pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode) -> [u8; NATIVE_PACKED_BUCKET_NODE_SIZE] {
     let mut bytes = [0u8; NATIVE_PACKED_BUCKET_NODE_SIZE];
-    let page_in_log = bucket.page_indexes.iter().any(|page| page.log_backed);
-    let trivial_page = bucket.page_ref_count <= 1;
-    let page_deleted = bucket.page_ref_count == 0;
+    let page_in_log = bucket.block_indexes.iter().any(|page| page.log_backed);
+    let trivial_block = bucket.block_ref_count <= 1;
+    let block_deleted = bucket.block_ref_count == 0;
     let mut flags = 0u32;
     flags |= (bucket.ttl_ms.is_some() as u32) << 1;
     flags |= (bucket.dirty as u32) << 2;
     flags |= (bucket.loading as u32) << 4;
     flags |= (bucket.in_memory as u32) << 5;
     flags |= (bucket.dirty as u32) << 6;
-    flags |= (page_deleted as u32) << 7;
+    flags |= (block_deleted as u32) << 7;
     flags |= (page_in_log as u32) << 8;
-    flags |= (trivial_page as u32) << 9;
+    flags |= (trivial_block as u32) << 9;
     let flag_bytes = flags.to_le_bytes();
     bytes[0..3].copy_from_slice(&flag_bytes[0..3]);
     bytes[3..7].copy_from_slice(&(bucket.physical_bytes as u32).to_le_bytes());
     let model_code = bucket
-        .page_indexes
+        .block_indexes
         .first()
         .map(|page| storage_model_code(&page.model_id))
         .unwrap_or_default();
     bytes[7] = model_code;
     bytes[8..16].copy_from_slice(&bucket.ttl_ms.unwrap_or_default().to_le_bytes());
     let address = bucket
-        .page_indexes
+        .block_indexes
         .first()
         .map(|page| page.block_slab_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
         .unwrap_or_default();
@@ -359,24 +359,24 @@ pub(super) fn storage_physical_index_report(
                     dirty: summary.dirty_object_count > 0,
                     meta_loaded: true,
                     loading: false,
-                    in_memory: summary.page_ref_count > 0,
+                    in_memory: summary.block_ref_count > 0,
                     ttl_ms: None,
                     object_count: summary.object_count,
-                    page_ref_count: summary.page_ref_count,
+                    block_ref_count: summary.block_ref_count,
                     logical_bytes: summary.logical_bytes,
                     physical_bytes: summary.physical_bytes,
                     dirty_generation: summary.dirty_generation,
                     last_dump_sequence: summary.last_dump_sequence,
                     native_packed_bucket_node_len: NATIVE_PACKED_BUCKET_NODE_SIZE,
                     native_packed_bucket_node_hex: String::new(),
-                    page_indexes: Vec::new(),
+                    block_indexes: Vec::new(),
                 },
             )
         })
         .collect::<BTreeMap<_, _>>();
 
     let mut missing_routing_bucket_count = 0usize;
-    for entry in collect_live_page_entries(shard) {
+    for entry in collect_live_block_entries(shard) {
         if entry.address.routing_bucket().is_none() {
             missing_routing_bucket_count = missing_routing_bucket_count.saturating_add(1);
         }
@@ -394,7 +394,7 @@ pub(super) fn storage_physical_index_report(
                 native_packed_bucket_node_len: NATIVE_PACKED_BUCKET_NODE_SIZE,
                 ..StoragePhysicalBucketNode::default()
             });
-        let mut page_index = StoragePhysicalPageIndex {
+        let mut block_index = StoragePhysicalBlockIndex {
             object_key: entry.object_key.clone().to_string(),
             model_id: entry.kind.clone().to_string(),
             component: entry.component.clone().map(|value| value.to_string()),
@@ -410,12 +410,12 @@ pub(super) fn storage_physical_index_report(
             dirty: entry.dirty,
             deleted: entry.deleted,
             log_backed: entry.log_backed,
-            native_packed_page_index_len: NATIVE_PACKED_PAGE_INDEX_SIZE,
-            native_packed_page_index_hex: String::new(),
+            native_packed_block_index_len: NATIVE_PACKED_BLOCK_INDEX_SIZE,
+            native_packed_block_index_hex: String::new(),
         };
-        page_index.native_packed_page_index_hex =
-            hex::encode(native_packed_page_index_bytes(&page_index));
-        bucket.page_indexes.push(page_index);
+        block_index.native_packed_block_index_hex =
+            hex::encode(native_packed_block_index_bytes(&block_index));
+        bucket.block_indexes.push(block_index);
     }
     for (routing_bucket, runtime_bucket) in &shard.bucket_index.bucket_map {
         let bucket = buckets
@@ -432,11 +432,11 @@ pub(super) fn storage_physical_index_report(
         bucket.in_memory = runtime_bucket.in_memory;
         bucket.ttl_ms = runtime_bucket.ttl_ms;
         bucket.object_count = runtime_bucket.object_index.len() as u64;
-        bucket.page_ref_count = runtime_bucket.page_index.len() as u64;
+        bucket.block_ref_count = runtime_bucket.block_index.len() as u64;
         bucket.dirty_generation = runtime_bucket.dirty_generation;
         bucket.last_dump_sequence = runtime_bucket.last_dump_sequence;
-        for page in runtime_bucket.page_index.values() {
-            let already_present = bucket.page_indexes.iter().any(|existing| {
+        for page in runtime_bucket.block_index.values() {
+            let already_present = bucket.block_indexes.iter().any(|existing| {
                 existing.object_key.as_str() == page.object_key.as_ref()
                     && *existing.model_id == *page.model_id
                     && existing.component.as_deref() == page.component.as_deref()
@@ -446,7 +446,7 @@ pub(super) fn storage_physical_index_report(
             if already_present {
                 continue;
             }
-            let mut page_index = StoragePhysicalPageIndex {
+            let mut block_index = StoragePhysicalBlockIndex {
                 object_key: page.object_key.clone().to_string(),
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone().map(|value| value.to_string()),
@@ -461,16 +461,16 @@ pub(super) fn storage_physical_index_report(
                 dirty: page.dirty,
                 deleted: page.deleted,
                 log_backed: page.log_backed,
-                native_packed_page_index_len: NATIVE_PACKED_PAGE_INDEX_SIZE,
-                native_packed_page_index_hex: String::new(),
+                native_packed_block_index_len: NATIVE_PACKED_BLOCK_INDEX_SIZE,
+                native_packed_block_index_hex: String::new(),
             };
-            page_index.native_packed_page_index_hex =
-                hex::encode(native_packed_page_index_bytes(&page_index));
-            bucket.page_indexes.push(page_index);
+            block_index.native_packed_block_index_hex =
+                hex::encode(native_packed_block_index_bytes(&block_index));
+            bucket.block_indexes.push(block_index);
         }
     }
     for bucket in buckets.values_mut() {
-        bucket.page_indexes.sort_by(|left, right| {
+        bucket.block_indexes.sort_by(|left, right| {
             left.object_key
                 .cmp(&right.object_key)
                 .then(left.model_id.cmp(&right.model_id))
@@ -480,13 +480,13 @@ pub(super) fn storage_physical_index_report(
         });
         if !shard.bucket_index.bucket_map.contains_key(&bucket.routing_bucket) {
             let object_count = bucket
-                .page_indexes
+                .block_indexes
                 .iter()
                 .filter_map(|page| page.object_id)
                 .collect::<BTreeSet<_>>()
                 .len();
             bucket.layout =
-                bucket_layout_name(classify_bucket_layout(object_count, bucket.page_indexes.len()))
+                bucket_layout_name(classify_bucket_layout(object_count, bucket.block_indexes.len()))
                     .to_string();
         }
         bucket.native_packed_bucket_node_len = NATIVE_PACKED_BUCKET_NODE_SIZE;
@@ -494,21 +494,21 @@ pub(super) fn storage_physical_index_report(
     }
     let page_index_count = buckets
         .values()
-        .map(|bucket| bucket.page_indexes.len())
+        .map(|bucket| bucket.block_indexes.len())
         .sum::<usize>();
-    let page_indexes = buckets
+    let block_indexes = buckets
         .values()
-        .flat_map(|bucket| bucket.page_indexes.iter())
+        .flat_map(|bucket| bucket.block_indexes.iter())
         .collect::<Vec<_>>();
-    let missing_object_id_count = page_indexes
+    let missing_object_id_count = block_indexes
         .iter()
         .filter(|page| page.object_id.is_none())
         .count();
-    let missing_page_id_count = page_indexes
+    let missing_block_id_count = block_indexes
         .iter()
         .filter(|page| page.page_id.is_none())
         .count();
-    let missing_checksum_count = page_indexes
+    let missing_checksum_count = block_indexes
         .iter()
         .filter(|page| page.checksum.is_none())
         .count();
@@ -522,9 +522,9 @@ pub(super) fn storage_physical_index_report(
         dirty_bucket_count: buckets.values().filter(|bucket| bucket.dirty).count(),
         missing_object_id_count,
         missing_routing_bucket_count,
-        missing_page_id_count,
+        missing_block_id_count,
         missing_checksum_count,
-        native_packed_page_index_size: NATIVE_PACKED_PAGE_INDEX_SIZE,
+        native_packed_block_index_size: NATIVE_PACKED_BLOCK_INDEX_SIZE,
         native_packed_bucket_node_size: NATIVE_PACKED_BUCKET_NODE_SIZE,
         native_packed_layout_compatible: true,
         bucket_nodes: buckets.into_values().collect(),
@@ -540,7 +540,7 @@ pub(super) fn object_manager_runtime_report(
     object_manager_runtime_report_from_entries(
         shard_id,
         shard,
-        &collect_live_page_entries(shard),
+        &collect_live_block_entries(shard),
         start_routing_bucket,
         end_routing_bucket,
     )
@@ -559,7 +559,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> ObjectManagerRuntimeReport {
-    let ownership = bucket_object_page_ownership_report_from_entries(
+    let ownership = bucket_object_block_ownership_report_from_entries(
         shard_id,
         shard,
         entries,
@@ -571,7 +571,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
         shard_id,
         routing_bucket_count: shard.bucket_index.bucket_map.len() as u64,
         object_count: object_runtime.live_object_count as u64,
-        page_ref_count: object_runtime.live_page_ref_count as u64,
+        block_ref_count: object_runtime.live_block_ref_count as u64,
         hot_object_count: object_runtime.hot_object_count as u64,
         cold_object_count: object_runtime.cold_object_count as u64,
         mixed_residency_object_count: object_runtime.mixed_residency_object_count as u64,
@@ -579,7 +579,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
         dirty_object_count: object_runtime.dirty_object_count as u64,
         loading_object_count: object_runtime.loading_object_count as u64,
         ttl_object_count: object_runtime.ttl_object_count as u64,
-        object_page_transition_count: object_runtime.object_page_transition_count as u64,
+        object_block_transition_count: object_runtime.object_block_transition_count as u64,
         dirty_bucket_count: shard
             .bucket_index
             .bucket_map
@@ -593,8 +593,8 @@ pub(super) fn object_manager_runtime_report_from_entries(
             .map(|bucket| bucket.dirty_generation)
             .max()
             .unwrap_or_default(),
-        missing_owner_page_ref_count: ownership.missing_owner_page_ref_count,
-        owner_mismatch_page_ref_count: ownership.owner_mismatch_page_ref_count,
+        missing_owner_block_ref_count: ownership.missing_owner_block_ref_count,
+        owner_mismatch_block_ref_count: ownership.owner_mismatch_block_ref_count,
         evidence: vec![
             "runtime owns page refs in the first-class slot index".to_string(),
             "runtime tracks dirty generations and dirty routing slots in SlotNode".to_string(),
@@ -625,11 +625,11 @@ pub(super) fn object_manager_runtime_report_from_entries(
         }
         match bucket.layout {
             BucketLayoutState::Empty => {}
-            BucketLayoutState::SingleObject | BucketLayoutState::SinglePageObject => {
-                report.object_page_count = report.object_page_count.saturating_add(1);
+            BucketLayoutState::SingleObject | BucketLayoutState::SingleBlockObject => {
+                report.object_block_count = report.object_block_count.saturating_add(1);
             }
-            BucketLayoutState::MultiPageObject => {
-                report.multi_page_object_count = report.multi_page_object_count.saturating_add(1);
+            BucketLayoutState::MultiBlockObject => {
+                report.multi_block_object_count = report.multi_block_object_count.saturating_add(1);
             }
             BucketLayoutState::MultiObject => {}
         }
@@ -640,19 +640,19 @@ pub(super) fn object_manager_runtime_report_from_entries(
             .blockers
             .push("first-class slot_objects runtime index is empty".to_string());
     }
-    if ownership.missing_owner_page_ref_count > 0 {
+    if ownership.missing_owner_block_ref_count > 0 {
         report
             .blockers
             .push("page refs are missing object/routing-slot ownership metadata".to_string());
     }
-    if ownership.owner_mismatch_page_ref_count > 0 {
+    if ownership.owner_mismatch_block_ref_count > 0 {
         report
             .blockers
             .push("page refs disagree with expected object owners".to_string());
     }
     // Count live timestamped-kv pages (feature/sequence and the context
-    // timeline families). collect_live_page_entries already dedupes packed series
-    // pages via unique_timestamped_kv_page_addresses, so this is the packed page
+    // timeline families). collect_live_block_entries already dedupes packed series
+    // pages via unique_timestamped_kv_block_addresses, so this is the packed page
     // count. Previously this field was left at its default (0).
     const TIMESTAMPED_KINDS: [&str; 8] = [
         "feature",
@@ -664,7 +664,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
         "context_summary",
         "context_compression",
     ];
-    report.packed_timestamped_page_count = entries
+    report.packed_timestamped_block_count = entries
         .iter()
         .filter(|entry| TIMESTAMPED_KINDS.contains(&entry.kind.as_ref()))
         .count() as u64;
@@ -672,55 +672,55 @@ pub(super) fn object_manager_runtime_report_from_entries(
     report
 }
 
-pub(super) fn bucket_object_page_ownership_report(
+pub(super) fn bucket_object_block_ownership_report(
     shard_id: ShardId,
     shard: &ShardState,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
-) -> BucketObjectPageOwnershipReport {
-    bucket_object_page_ownership_report_from_entries(
+) -> BucketObjectBlockOwnershipReport {
+    bucket_object_block_ownership_report_from_entries(
         shard_id,
         shard,
-        &collect_live_page_entries(shard),
+        &collect_live_block_entries(shard),
         start_routing_bucket,
         end_routing_bucket,
     )
 }
 
 /// The same report, from live-page entries the caller ALREADY has.
-pub(super) fn bucket_object_page_ownership_report_from_entries(
+pub(super) fn bucket_object_block_ownership_report_from_entries(
     shard_id: ShardId,
     shard: &ShardState,
     entries: &[LiveBlockEntry],
     start_routing_bucket: u32,
     end_routing_bucket: u32,
-) -> BucketObjectPageOwnershipReport {
-    let mut report = BucketObjectPageOwnershipReport {
+) -> BucketObjectBlockOwnershipReport {
+    let mut report = BucketObjectBlockOwnershipReport {
         shard_id,
         first_class_index_present: !shard.bucket_index.bucket_map.is_empty(),
         derived_from_model_maps: shard.bucket_index.bucket_map.is_empty(),
-        ..BucketObjectPageOwnershipReport::default()
+        ..BucketObjectBlockOwnershipReport::default()
     };
-    report.page_ref_count = entries.len();
+    report.block_ref_count = entries.len();
     for entry in entries {
         let routing_bucket = entry.address.routing_bucket().unwrap_or_default();
         if routing_bucket < start_routing_bucket || routing_bucket > end_routing_bucket {
             continue;
         }
-        let expected_object_id = stable_page_object_id(
+        let expected_object_id = stable_block_object_id(
             shard_id,
             &entry.kind,
             &entry.object_key,
             entry.component.as_deref(),
         );
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
-            report.missing_owner_page_ref_count =
-                report.missing_owner_page_ref_count.saturating_add(1);
+            report.missing_owner_block_ref_count =
+                report.missing_owner_block_ref_count.saturating_add(1);
             continue;
         };
         if !bucket.object_index.contains(&expected_object_id) {
-            report.owner_mismatch_page_ref_count =
-                report.owner_mismatch_page_ref_count.saturating_add(1);
+            report.owner_mismatch_block_ref_count =
+                report.owner_mismatch_block_ref_count.saturating_add(1);
         }
     }
     report
@@ -765,7 +765,7 @@ pub(super) fn comparable_bucket_dump_summaries(
     }
     summaries.retain(|summary| {
         summary.object_count > 0
-            || summary.page_ref_count > 0
+            || summary.block_ref_count > 0
             || summary.logical_bytes > 0
             || summary.physical_bytes > 0
     });
@@ -788,7 +788,7 @@ pub(super) fn bucket_dump_summary_matches_current_generation(
     manifest_summary.routing_bucket == current_summary.routing_bucket
         && manifest_summary.dirty_generation == current_summary.dirty_generation
         && manifest_summary.object_count == current_summary.object_count
-        && manifest_summary.page_ref_count == current_summary.page_ref_count
+        && manifest_summary.block_ref_count == current_summary.block_ref_count
         && manifest_summary.logical_bytes == current_summary.logical_bytes
         && manifest_summary.physical_bytes == current_summary.physical_bytes
         && manifest_slabs == current_slabs
@@ -798,7 +798,7 @@ pub(super) fn bucket_dump_summary_matches_current_generation(
 
 pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BTreeMap<u32, BTreeSet<String>> {
     let mut by_bucket = BTreeMap::<u32, BTreeSet<String>>::new();
-    for entry in collect_live_page_entries(shard) {
+    for entry in collect_live_block_entries(shard) {
         let routing_bucket = entry
             .address
             .routing_bucket()
@@ -821,14 +821,14 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
     by_bucket
 }
 
-pub(super) fn collect_live_page_addresses(shard: &ShardState) -> Vec<BlockAddress> {
-    collect_live_page_entries(shard)
+pub(super) fn collect_live_block_addresses(shard: &ShardState) -> Vec<BlockAddress> {
+    collect_live_block_entries(shard)
         .into_iter()
         .map(|entry| entry.address)
         .collect()
 }
 
-pub(super) fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, BlockAddress>) -> Vec<BlockAddress> {
+pub(super) fn unique_timestamped_kv_block_addresses(series: &BTreeMap<u64, BlockAddress>) -> Vec<BlockAddress> {
     let mut addresses = series
         .values()
         .cloned()
@@ -844,8 +844,8 @@ pub(super) fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, BlockA
     addresses
 }
 
-pub(super) fn unique_feature_page_addresses(series: &BTreeMap<u64, BlockAddress>) -> Vec<BlockAddress> {
-    unique_timestamped_kv_page_addresses(series)
+pub(super) fn unique_feature_block_addresses(series: &BTreeMap<u64, BlockAddress>) -> Vec<BlockAddress> {
+    unique_timestamped_kv_block_addresses(series)
 }
 
 pub(super) fn timestamped_kv_series<'a>(
@@ -892,12 +892,12 @@ pub(super) fn timestamped_kv_series<'a>(
     series
 }
 
-pub(super) fn storage_feature_page_layout_report(
+pub(super) fn storage_feature_block_layout_report(
     page_store: &BlockStore,
     shard: &ShardState,
-) -> StorageFeaturePageLayoutReport {
-    let mut report = StorageFeaturePageLayoutReport::default();
-    let mut family_reports = BTreeMap::<String, StorageTimestampedPageFamilyReport>::new();
+) -> StorageFeatureBlockLayoutReport {
+    let mut report = StorageFeatureBlockLayoutReport::default();
+    let mut family_reports = BTreeMap::<String, StorageTimestampedBlockFamilyReport>::new();
     let mut inspected_addresses = HashSet::<BlockAddress>::new();
     for (kind, key, series) in timestamped_kv_series(shard) {
         report.indexed_timestamped_points = report
@@ -908,9 +908,9 @@ pub(super) fn storage_feature_page_layout_report(
                 report.indexed_feature_points.saturating_add(series.len());
         }
         let family = family_reports.entry(kind.to_string()).or_insert_with(|| {
-            StorageTimestampedPageFamilyReport {
+            StorageTimestampedBlockFamilyReport {
                 kind: kind.to_string(),
-                ..StorageTimestampedPageFamilyReport::default()
+                ..StorageTimestampedBlockFamilyReport::default()
             }
         });
         family.indexed_points = family.indexed_points.saturating_add(series.len());
@@ -921,29 +921,29 @@ pub(super) fn storage_feature_page_layout_report(
                 .or_default()
                 .insert(*timestamp_ms);
         }
-        report.unique_timestamped_page_refs = report
-            .unique_timestamped_page_refs
+        report.unique_timestamped_block_refs = report
+            .unique_timestamped_block_refs
             .saturating_add(timestamps_by_address.len());
-        family.unique_page_refs = family
-            .unique_page_refs
+        family.unique_block_refs = family
+            .unique_block_refs
             .saturating_add(timestamps_by_address.len());
         if kind == "feature" {
-            report.unique_feature_page_refs = report
-                .unique_feature_page_refs
+            report.unique_feature_block_refs = report
+                .unique_feature_block_refs
                 .saturating_add(timestamps_by_address.len());
         }
 
         for (address, indexed_timestamps) in timestamps_by_address {
             inspected_addresses.insert(address.clone());
             match page_store.read(&address) {
-                Ok(bytes) => match decode_feature_page_strict(&bytes) {
-                    PackedFeaturePageDecode::Packed(points) => {
-                        report.packed_timestamped_pages =
-                            report.packed_timestamped_pages.saturating_add(1);
+                Ok(bytes) => match decode_feature_block_strict(&bytes) {
+                    PackedFeatureBlockDecode::Packed(points) => {
+                        report.packed_timestamped_blocks =
+                            report.packed_timestamped_blocks.saturating_add(1);
                         family.packed_pages = family.packed_pages.saturating_add(1);
                         if kind == "feature" {
-                            report.packed_feature_pages =
-                                report.packed_feature_pages.saturating_add(1);
+                            report.packed_feature_blocks =
+                                report.packed_feature_blocks.saturating_add(1);
                         }
                         let mut packed_timestamp_counts = BTreeMap::<u64, usize>::new();
                         for point in &points {
@@ -952,7 +952,7 @@ pub(super) fn storage_feature_page_layout_report(
                                 .or_default();
                             if *count == 1 {
                                 report.duplicate_packed_timestamps.push(
-                                    feature_page_timestamp_mismatch(
+                                    feature_block_timestamp_mismatch(
                                         kind,
                                         key,
                                         point.timestamp_ms,
@@ -971,7 +971,7 @@ pub(super) fn storage_feature_page_layout_report(
                             indexed_timestamps.difference(&packed_timestamps).copied()
                         {
                             report.missing_indexed_timestamps.push(
-                                feature_page_timestamp_mismatch(kind, key, timestamp_ms, &address),
+                                feature_block_timestamp_mismatch(kind, key, timestamp_ms, &address),
                             );
                             family.mismatch_count = family.mismatch_count.saturating_add(1);
                         }
@@ -980,7 +980,7 @@ pub(super) fn storage_feature_page_layout_report(
                         {
                             report
                                 .orphan_packed_timestamps
-                                .push(feature_page_timestamp_mismatch(
+                                .push(feature_block_timestamp_mismatch(
                                     kind,
                                     key,
                                     timestamp_ms,
@@ -989,44 +989,44 @@ pub(super) fn storage_feature_page_layout_report(
                             family.mismatch_count = family.mismatch_count.saturating_add(1);
                         }
                     }
-                    PackedFeaturePageDecode::Corrupt(error) => {
+                    PackedFeatureBlockDecode::Corrupt(error) => {
                         report
-                            .corrupt_packed_feature_pages
-                            .push(feature_page_error(kind, key, &address, error));
-                        family.corrupt_pages = family.corrupt_pages.saturating_add(1);
+                            .corrupt_packed_feature_blocks
+                            .push(feature_block_error(kind, key, &address, error));
+                        family.corrupt_blocks = family.corrupt_blocks.saturating_add(1);
                     }
-                    PackedFeaturePageDecode::Legacy => {
-                        report.legacy_timestamped_value_pages =
-                            report.legacy_timestamped_value_pages.saturating_add(1);
-                        family.legacy_value_pages = family.legacy_value_pages.saturating_add(1);
+                    PackedFeatureBlockDecode::Legacy => {
+                        report.legacy_timestamped_value_blocks =
+                            report.legacy_timestamped_value_blocks.saturating_add(1);
+                        family.legacy_value_blocks = family.legacy_value_blocks.saturating_add(1);
                         if kind == "feature" {
-                            report.legacy_feature_value_pages =
-                                report.legacy_feature_value_pages.saturating_add(1);
+                            report.legacy_feature_value_blocks =
+                                report.legacy_feature_value_blocks.saturating_add(1);
                         }
                         if indexed_timestamps.len() > 1 {
-                            report.corrupt_packed_feature_pages.push(feature_page_error(
+                            report.corrupt_packed_feature_blocks.push(feature_block_error(
                                 kind,
                                 key,
                                 &address,
                                 "legacy timestamped value page shared by multiple timestamps",
                             ));
-                            family.corrupt_pages = family.corrupt_pages.saturating_add(1);
+                            family.corrupt_blocks = family.corrupt_blocks.saturating_add(1);
                         }
                     }
                 },
                 Err(err) => {
-                    report.corrupt_packed_feature_pages.push(feature_page_error(
+                    report.corrupt_packed_feature_blocks.push(feature_block_error(
                         kind,
                         key,
                         &address,
                         err.to_string(),
                     ));
-                    family.corrupt_pages = family.corrupt_pages.saturating_add(1);
+                    family.corrupt_blocks = family.corrupt_blocks.saturating_add(1);
                 }
             }
         }
     }
-    for entry in collect_bucket_index_live_page_entries(shard) {
+    for entry in collect_bucket_index_live_block_entries(shard) {
         if entry.deleted || inspected_addresses.contains(&entry.address) {
             continue;
         }
@@ -1044,29 +1044,29 @@ pub(super) fn storage_feature_page_layout_report(
             continue;
         }
         let family = family_reports.entry(entry.kind.clone().to_string()).or_insert_with(|| {
-            StorageTimestampedPageFamilyReport {
+            StorageTimestampedBlockFamilyReport {
                 kind: entry.kind.clone().to_string(),
-                ..StorageTimestampedPageFamilyReport::default()
+                ..StorageTimestampedBlockFamilyReport::default()
             }
         });
-        report.unique_timestamped_page_refs = report.unique_timestamped_page_refs.saturating_add(1);
-        family.unique_page_refs = family.unique_page_refs.saturating_add(1);
+        report.unique_timestamped_block_refs = report.unique_timestamped_block_refs.saturating_add(1);
+        family.unique_block_refs = family.unique_block_refs.saturating_add(1);
         if &*entry.kind == "feature" {
-            report.unique_feature_page_refs = report.unique_feature_page_refs.saturating_add(1);
+            report.unique_feature_block_refs = report.unique_feature_block_refs.saturating_add(1);
         }
         match page_store.read(&entry.address) {
-            Ok(bytes) => match decode_feature_page_strict(&bytes) {
-                PackedFeaturePageDecode::Packed(points) => {
-                    report.packed_timestamped_pages =
-                        report.packed_timestamped_pages.saturating_add(1);
+            Ok(bytes) => match decode_feature_block_strict(&bytes) {
+                PackedFeatureBlockDecode::Packed(points) => {
+                    report.packed_timestamped_blocks =
+                        report.packed_timestamped_blocks.saturating_add(1);
                     family.packed_pages = family.packed_pages.saturating_add(1);
                     if &*entry.kind == "feature" {
-                        report.packed_feature_pages = report.packed_feature_pages.saturating_add(1);
+                        report.packed_feature_blocks = report.packed_feature_blocks.saturating_add(1);
                     }
                     for point in points {
                         report
                             .orphan_packed_timestamps
-                            .push(feature_page_timestamp_mismatch(
+                            .push(feature_block_timestamp_mismatch(
                                 &entry.kind,
                                 &entry.object_key,
                                 point.timestamp_ms,
@@ -1075,33 +1075,33 @@ pub(super) fn storage_feature_page_layout_report(
                         family.mismatch_count = family.mismatch_count.saturating_add(1);
                     }
                 }
-                PackedFeaturePageDecode::Corrupt(error) => {
-                    report.corrupt_packed_feature_pages.push(feature_page_error(
+                PackedFeatureBlockDecode::Corrupt(error) => {
+                    report.corrupt_packed_feature_blocks.push(feature_block_error(
                         &entry.kind,
                         &entry.object_key,
                         &entry.address,
                         error,
                     ));
-                    family.corrupt_pages = family.corrupt_pages.saturating_add(1);
+                    family.corrupt_blocks = family.corrupt_blocks.saturating_add(1);
                 }
-                PackedFeaturePageDecode::Legacy => {
-                    report.legacy_timestamped_value_pages =
-                        report.legacy_timestamped_value_pages.saturating_add(1);
-                    family.legacy_value_pages = family.legacy_value_pages.saturating_add(1);
+                PackedFeatureBlockDecode::Legacy => {
+                    report.legacy_timestamped_value_blocks =
+                        report.legacy_timestamped_value_blocks.saturating_add(1);
+                    family.legacy_value_blocks = family.legacy_value_blocks.saturating_add(1);
                     if &*entry.kind == "feature" {
-                        report.legacy_feature_value_pages =
-                            report.legacy_feature_value_pages.saturating_add(1);
+                        report.legacy_feature_value_blocks =
+                            report.legacy_feature_value_blocks.saturating_add(1);
                     }
                 }
             },
             Err(err) => {
-                report.corrupt_packed_feature_pages.push(feature_page_error(
+                report.corrupt_packed_feature_blocks.push(feature_block_error(
                     &entry.kind,
                     &entry.object_key,
                     &entry.address,
                     err.to_string(),
                 ));
-                family.corrupt_pages = family.corrupt_pages.saturating_add(1);
+                family.corrupt_blocks = family.corrupt_blocks.saturating_add(1);
             }
         }
     }
@@ -1109,13 +1109,13 @@ pub(super) fn storage_feature_page_layout_report(
     report
 }
 
-pub(super) fn feature_page_error(
+pub(super) fn feature_block_error(
     kind: &str,
     key: &str,
     address: &BlockAddress,
     error: impl Into<String>,
-) -> StorageFeaturePageError {
-    StorageFeaturePageError {
+) -> StorageFeatureBlockError {
+    StorageFeatureBlockError {
         kind: kind.to_string(),
         key: key.to_string(),
         block_slab_id: address.block_slab_id,
@@ -1125,13 +1125,13 @@ pub(super) fn feature_page_error(
     }
 }
 
-pub(super) fn feature_page_timestamp_mismatch(
+pub(super) fn feature_block_timestamp_mismatch(
     kind: &str,
     key: &str,
     timestamp_ms: u64,
     address: &BlockAddress,
-) -> StorageFeaturePageTimestampMismatch {
-    StorageFeaturePageTimestampMismatch {
+) -> StorageFeatureBlockTimestampMismatch {
+    StorageFeatureBlockTimestampMismatch {
         kind: kind.to_string(),
         key: key.to_string(),
         timestamp_ms,

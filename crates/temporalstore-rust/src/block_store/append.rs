@@ -32,10 +32,10 @@ impl BlockStore {
         bytes: &[u8],
         object_id: Option<u64>,
     ) -> Result<BlockAddress, BlockStoreError> {
-        self.append_with_page_metadata(bytes, object_id, None)
+        self.append_with_block_metadata(bytes, object_id, None)
     }
 
-    pub fn append_with_page_metadata(
+    pub fn append_with_block_metadata(
         &self,
         bytes: &[u8],
         object_id: Option<u64>,
@@ -55,14 +55,14 @@ impl BlockStore {
         bytes: &[u8],
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
-        block_index: u32,
+        block_ordinal: u32,
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
-        let page_id = u64::from(block_index);
+        let page_id = u64::from(block_ordinal);
         let mut stored_slab_id = inner.block_slab_id;
-        let mut record = encode_page_record(
+        let mut record = encode_block_record(
             bytes,
             page_id,
             object_id,
@@ -77,7 +77,7 @@ impl BlockStore {
         ) {
             roll_slab_inner(&mut inner)?;
             stored_slab_id = inner.block_slab_id;
-            record = encode_page_record(
+            record = encode_block_record(
                 bytes,
                 page_id,
                 object_id,
@@ -101,8 +101,8 @@ impl BlockStore {
         //    fsync + rename EVERY record -- barriers 5/6) to sync_durable()/slab-seal. SAFE
         //    even with pages kept durable: the manifest is slab/GC metadata reconstructed
         //    by reconcile-on-open from the durable page records, never a read dependency.
-        let defer_data_sync = bulk_relaxed_durability() || page_wal_single_barrier();
-        let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
+        let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
+        let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();
         if !defer_data_sync {
             file.sync_data()?;
         }
@@ -124,7 +124,7 @@ impl BlockStore {
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
         inner.stats.logical_bytes_written += record.logical_len as u64;
-        if record.compression == PageRecordCompression::Zstd {
+        if record.compression == BlockRecordCompression::Zstd {
             inner.stats.compressed_records_written += 1;
             inner.stats.compression_bytes_saved +=
                 record.logical_len.saturating_sub(record.stored_len) as u64;
@@ -132,7 +132,7 @@ impl BlockStore {
         Ok(address)
     }
 
-    pub fn append_batch_with_page_metadata(
+    pub fn append_batch_with_block_metadata(
         &self,
         records: Vec<BlockAppendRecord<'_>>,
     ) -> Result<Vec<BlockAddress>, BlockStoreError> {
@@ -150,10 +150,10 @@ impl BlockStore {
         let mut compressed_records_written = 0u64;
         let mut compression_bytes_saved = 0u64;
 
-        for (bytes, object_id, routing_bucket, block_index) in records {
-            let page_id = u64::from(block_index);
+        for (bytes, object_id, routing_bucket, block_ordinal) in records {
+            let page_id = u64::from(block_ordinal);
             let mut stored_slab_id = inner.block_slab_id;
-            let mut record = encode_page_record(
+            let mut record = encode_block_record(
                 bytes,
                 page_id,
                 object_id,
@@ -172,7 +172,7 @@ impl BlockStore {
                 }
                 roll_slab_inner(&mut inner)?;
                 stored_slab_id = inner.block_slab_id;
-                record = encode_page_record(
+                record = encode_block_record(
                     &bytes,
                     page_id,
                     object_id,
@@ -202,7 +202,7 @@ impl BlockStore {
             writes = writes.saturating_add(1);
             bytes_written = bytes_written.saturating_add(address.length);
             logical_bytes_written = logical_bytes_written.saturating_add(record.logical_len as u64);
-            if record.compression == PageRecordCompression::Zstd {
+            if record.compression == BlockRecordCompression::Zstd {
                 compressed_records_written = compressed_records_written.saturating_add(1);
                 compression_bytes_saved = compression_bytes_saved
                     .saturating_add(record.logical_len.saturating_sub(record.stored_len) as u64);
@@ -215,8 +215,8 @@ impl BlockStore {
         // open); base-only recovery re-derives every post-dump page by WAL replay, so a
         // never-fsync'd page is rebuilt, never left dangling. Under the TS_WAL_LEGACY_RECOVERY
         // escape hatch both barriers stay synchronous on the live path (delta-fold recovery).
-        let defer_data_sync = bulk_relaxed_durability() || page_wal_single_barrier();
-        let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
+        let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
+        let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();
         if let Some(mut current) = file {
             current.flush()?;
             if !defer_data_sync {

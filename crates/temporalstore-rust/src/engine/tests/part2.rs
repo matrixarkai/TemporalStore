@@ -6,7 +6,7 @@
 use super::*;
 
 #[test]
-fn memory_miss_reads_local_page_file_using_index_address() {
+fn memory_miss_reads_local_block_file_using_index_address() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -166,8 +166,8 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
     assert!(observation.observed_cache_invalidation);
     assert!(observation.cache_memory_bytes > 0);
     assert!(observation.cache_disk_bytes > 0);
-    assert!(observation.local_page_bytes_written > 0);
-    assert!(observation.local_page_bytes_read > 0);
+    assert!(observation.local_block_bytes_written > 0);
+    assert!(observation.local_block_bytes_read > 0);
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
         "persistent page read should populate block-cache files"
     );
 
-    let target_page_key = {
+    let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let address = shards
             .get(&1)
@@ -250,7 +250,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
         )
     };
     assert_eq!(
-        cache.get_memory(&target_page_key),
+        cache.get_memory(&target_block_key),
         None,
         "target page block should have been evicted from memory"
     );
@@ -279,7 +279,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
         "block cache should serve the read and promote it to memory"
     );
     assert_eq!(
-        cache.get_memory(&target_page_key),
+        cache.get_memory(&target_block_key),
         Some(target_value),
         "disk block hit should promote the page block into memory"
     );
@@ -351,7 +351,7 @@ fn cache_replacement_policy_soak() {
         "pressure pass should leave a disk-cache tier for cold read refill"
     );
 
-    let target_page_key = {
+    let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let address = shards
             .get(&1)
@@ -386,9 +386,9 @@ fn cache_replacement_policy_soak() {
         "eviction should remove at least one cache entry or disk-cache block: {evict_report:?}"
     );
 
-    let _ = engine.cache().invalidate(&target_page_key);
+    let _ = engine.cache().invalidate(&target_block_key);
     engine.cache().clear_memory_for_test();
-    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    assert_eq!(engine.cache().get_memory(&target_block_key), None);
     let block_reads_before = engine.block_store().stats().reads;
     let disk_hits_before = engine.cache().stats().disk_hits;
     let cold_target = engine.execute(ExecuteRequest {
@@ -404,7 +404,7 @@ fn cache_replacement_policy_soak() {
         }
     );
     assert_eq!(
-        engine.cache().get_memory(&target_page_key),
+        engine.cache().get_memory(&target_block_key),
         Some(target_value.clone()),
         "cold read should refill memory from disk cache or page store"
     );
@@ -414,7 +414,7 @@ fn cache_replacement_policy_soak() {
         "cold read should be backed by disk cache or persistent page store"
     );
     engine.cache().clear_memory_for_test();
-    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    assert_eq!(engine.cache().get_memory(&target_block_key), None);
     let refill_samples_before = engine.cache().stats().refill_latency_samples;
     let disk_refill_target = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -583,10 +583,10 @@ fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
 #[test]
 fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let original =
-        TemporalEngine::with_local_dirs(32, dir.path().join("cache-a"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(32, dir.path().join("cache-a"), &block_dir, &index_dir);
     original.load_shard(1);
     let target_value = b"restart-target-value-0123456789".to_vec();
     let write = original.execute(ExecuteRequest {
@@ -600,11 +600,11 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     assert_eq!(original.block_store().stats().writes, 1);
 
     let restarted =
-        TemporalEngine::with_local_dirs(32, dir.path().join("cache-b"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(32, dir.path().join("cache-b"), &block_dir, &index_dir);
     restarted.load_shard(1);
     let restarted_cache = restarted.cache();
     let restarted_block_store = restarted.block_store();
-    let target_page_key = {
+    let target_block_key = {
         let shards = restarted.shards.read().expect("shards lock poisoned");
         let address = shards
             .get(&1)
@@ -640,7 +640,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
         "restart should miss memory and load the persisted page once"
     );
     assert_eq!(
-        restarted_cache.get_memory(&target_page_key),
+        restarted_cache.get_memory(&target_block_key),
         Some(target_value.clone()),
         "persistent page read should refill the memory cache"
     );
@@ -650,7 +650,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     );
 
     restarted_cache.clear_memory_for_test();
-    assert_eq!(restarted_cache.get_memory(&target_page_key), None);
+    assert_eq!(restarted_cache.get_memory(&target_block_key), None);
     let disk_hits_before = restarted_cache.stats().disk_hits;
     let page_reads_before = restarted_block_store.stats().reads;
     let second_read = restarted.execute(ExecuteRequest {
@@ -675,14 +675,14 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
         "disk block cache should serve the second read"
     );
     assert_eq!(
-        restarted_cache.get_memory(&target_page_key),
+        restarted_cache.get_memory(&target_block_key),
         Some(target_value),
         "disk block hit should promote the page block back into memory"
     );
 }
 
 #[test]
-fn page_reads_fill_compressed_block_cache() {
+fn block_reads_fill_compressed_block_cache() {
     let dir = tempfile::tempdir().unwrap();
     let cache = MultiLayerCache::with_block_options(
         1024 * 1024,
@@ -865,7 +865,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
 }
 
 #[test]
-fn async_hot_page_survives_memory_eviction_via_spill() {
+fn async_hot_block_survives_memory_eviction_via_spill() {
     // Regression for the log-backed hot-page read-as-missing bug (gap P1): under async_storage a
     // write lives ONLY in the memory tier at a synthetic hot-page address. If the memory-only
     // entry is evicted before the next dump, a read used to miss the cache, hit a non-existent
@@ -975,10 +975,10 @@ fn set_async_config(engine: &TemporalEngine, shard_id: ShardId) {
 fn atomic_batch_survives_restart_when_complete() {
     // Positive control for gap E3: a fully-persisted atomic batch replays in full on restart.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-a"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-a"), &block_dir, &index_dir);
     engine.load_shard(1);
     set_async_config(&engine, 1);
     let batch = engine.batch_execute(BatchExecuteRequest {
@@ -993,7 +993,7 @@ fn atomic_batch_survives_restart_when_complete() {
     drop(engine);
 
     let restarted =
-        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-b"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-b"), &block_dir, &index_dir);
     restarted.load_shard(1);
     for (key, value) in [("b0", "v0"), ("b1", "v1"), ("b2", "v2")] {
         let read = restarted.execute(ExecuteRequest {
@@ -1015,10 +1015,10 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
     // WAL line; on restart the WHOLE batch must be discarded -- never a partially-applied prefix
     // that a retry would double-apply.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-a"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-a"), &block_dir, &index_dir);
     engine.load_shard(1);
     set_async_config(&engine, 1);
     // A standalone durable write before the batch, to prove only the batch is dropped.
@@ -1081,7 +1081,7 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
     std::fs::write(&wal_path, truncated).expect("rewrite wal");
 
     let restarted =
-        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-b"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-b"), &block_dir, &index_dir);
     restarted.load_shard(1);
 
     // The pre-batch durable write survives.
@@ -1159,12 +1159,12 @@ fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
 }
 
 #[test]
-fn durable_index_survives_restart_and_points_to_page_file() {
+fn durable_index_survives_restart_and_points_to_block_file() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache-a");
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
-    let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
+    let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
     engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -1175,7 +1175,7 @@ fn durable_index_survives_restart_and_points_to_page_file() {
     });
 
     let restarted =
-        TemporalEngine::with_local_dirs(1024, dir.path().join("cache-b"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1024, dir.path().join("cache-b"), &block_dir, &index_dir);
     restarted.load_shard(1);
     let response = restarted.execute(ExecuteRequest {
         shard_id: 1,
@@ -1199,12 +1199,12 @@ fn async_write_survives_restart_via_wal_replay_like_native() {
     // Startup load replays the wal and recovers the write. Rust must replay
     // its WAL on shard load the same way, or the async write is silently lost.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -1234,7 +1234,7 @@ fn async_write_survives_restart_via_wal_replay_like_native() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -1262,12 +1262,12 @@ fn async_write_survives_restart_via_wal_replay_like_native() {
 #[test]
 fn read_during_wal_replay_recovery_returns_retryable_not_false_null() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -1301,7 +1301,7 @@ fn read_during_wal_replay_recovery_returns_retryable_not_false_null() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     let watermark = restarted.test_publish_recovering_shard(1);
@@ -1349,12 +1349,12 @@ fn read_during_wal_replay_recovery_returns_retryable_not_false_null() {
 #[test]
 fn control_state_coalesced_write_survives_restart_via_wal_replay() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -1393,7 +1393,7 @@ fn control_state_coalesced_write_survives_restart_via_wal_replay() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -1658,12 +1658,12 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
     // the (later) restart clock -- otherwise crash recovery resurrects a key past its
     // deadline with a fresh restart-time+ttl lifetime.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -1695,7 +1695,7 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -1715,12 +1715,12 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
 #[test]
 fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -1798,7 +1798,7 @@ fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() 
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     // Assert the LOAD, not just what is readable after it. `load_shard` throws its response
@@ -1847,12 +1847,12 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_native() {
     // for every key on the shard). ReplayWal re-applies logged effects without
     // re-checking preconditions. The canary below proves the shard actually recovered.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -1929,7 +1929,7 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_native() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     // Assert the LOAD, not just what is readable after it. `load_shard` throws its response
@@ -2147,12 +2147,12 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     // reconcile-from-pages must keep the persisted (trimmed) membership -- the evicted points
     // must NOT resurrect on reload (writes per-timestamp deleted tombstones for this).
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -2210,7 +2210,7 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     let restarted = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -2303,7 +2303,7 @@ fn object_lifecycle_snapshot_matches_the_recovery_report() {
 /// answer would be right -- it would just cost a full-store read on a loop that runs every
 /// thirty seconds. Counting the reads is the only thing that shows it.
 #[test]
-fn planning_a_maintenance_round_reads_no_pages() {
+fn planning_a_maintenance_round_reads_no_blocks() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
@@ -2326,31 +2326,31 @@ fn planning_a_maintenance_round_reads_no_pages() {
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
-        page_gc_shared_store_cursors: Vec::new(),
-        page_gc_raft_snapshot_refs: Vec::new(),
-        page_gc_checkpoint_floor_slab_id: None,
-        page_gc_raft_install_floor_slab_id: None,
-        page_gc_delayed_destroy_grace_ms: 0,
+        block_gc_shared_store_cursors: Vec::new(),
+        block_gc_raft_snapshot_refs: Vec::new(),
+        block_gc_checkpoint_floor_slab_id: None,
+        block_gc_raft_install_floor_slab_id: None,
+        block_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: false,
         warm_cache: false,
     };
     // Settle first: the fixture's own dump is not what this measures.
     engine.apply_storage_lifecycle(lifecycle.clone());
 
-    let live_pages = engine.live_page_count_for_test(1);
+    let live_blocks = engine.live_block_count_for_test(1);
     assert!(
-        live_pages >= 300,
-        "the fixture must hold pages worth reading: {live_pages}"
+        live_blocks >= 300,
+        "the fixture must hold pages worth reading: {live_blocks}"
     );
 
     let before = engine.block_store().stats().reads;
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let plan = engine.storage_lifecycle_plan(lifecycle.clone());
     let planned = engine.block_store().stats().reads.saturating_sub(before);
-    let surveyed = crate::engine::live_page_scan_entries();
+    let surveyed = crate::engine::live_block_scan_entries();
     assert_eq!(
         planned, 0,
-        "planning read {planned} pages with {live_pages} live -- it is scanning the store"
+        "planning read {planned} pages with {live_blocks} live -- it is scanning the store"
     );
     // NON-VACUITY: the plan must have inspected the shard, or "it read 0 pages" is the report of
     // a call that did nothing.
@@ -2368,7 +2368,7 @@ fn planning_a_maintenance_round_reads_no_pages() {
     // remove.
     assert!(
         surveyed > 0,
-        "the plan materialised no live-page entries at all with {live_pages} live pages, so the \
+        "the plan materialised no live-page entries at all with {live_blocks} live pages, so the \
 zero-read count above proves nothing"
     );
     // DELIBERATELY NOT ASSERTED EITHER WAY: whether this plan skipped the summary walk.
@@ -2380,7 +2380,7 @@ zero-read count above proves nothing"
     // here even though no slot is dirty.
     //
     // That is the conditional working, not failing, and it is why the idle measurement in
-    // `an_idle_round_does_not_walk_the_live_pages_to_populate_a_report` settles in a bounded LOOP
+    // `an_idle_round_does_not_walk_the_live_blocks_to_populate_a_report` settles in a bounded LOOP
     // rather than a single round. Pinning a value here would pin the vacated-slab refresh instead
     // of the thing this test measures.
 
@@ -2389,7 +2389,7 @@ zero-read count above proves nothing"
     let applied = engine.block_store().stats().reads.saturating_sub(before);
     assert_eq!(
         applied, 0,
-        "applying read {applied} pages with {live_pages} live -- it is scanning the store"
+        "applying read {applied} pages with {live_blocks} live -- it is scanning the store"
     );
 }
 
@@ -2429,11 +2429,11 @@ fn what_the_plan_phase_costs() {
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: Vec::new(),
-                page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: Vec::new(),
-                page_gc_checkpoint_floor_slab_id: None,
-                page_gc_raft_install_floor_slab_id: None,
-                page_gc_delayed_destroy_grace_ms: 0,
+                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_raft_snapshot_refs: Vec::new(),
+                block_gc_checkpoint_floor_slab_id: None,
+                block_gc_raft_install_floor_slab_id: None,
+                block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             });
@@ -2556,11 +2556,11 @@ fn the_wal_byte_threshold_measures_undumped_bytes_not_the_whole_log() {
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
-        page_gc_shared_store_cursors: Vec::new(),
-        page_gc_raft_snapshot_refs: Vec::new(),
-        page_gc_checkpoint_floor_slab_id: None,
-        page_gc_raft_install_floor_slab_id: None,
-        page_gc_delayed_destroy_grace_ms: 0,
+        block_gc_shared_store_cursors: Vec::new(),
+        block_gc_raft_snapshot_refs: Vec::new(),
+        block_gc_checkpoint_floor_slab_id: None,
+        block_gc_raft_install_floor_slab_id: None,
+        block_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: false,
         warm_cache: false,
     };
@@ -2660,15 +2660,15 @@ fn what_the_slab_survey_costs() {
     let walk_ms = started.elapsed().as_secs_f64() * 1000.0 / rounds as f64;
     eprintln!("    header walk   warm={walk_ms:.2} ms  (slabs={})", counts.len());
     eprintln!("    => slab_reports is {:.1}x the header walk", warm_ms / walk_ms.max(0.0001));
-    let survey_pages: u64 = store
+    let survey_blocks: u64 = store
         .slab_reports()
         .unwrap_or_default()
         .iter()
         .map(|report| report.page_count)
         .sum();
-    let walk_pages: u64 = counts.iter().map(|entry| entry.2).sum();
-    eprintln!("    page_count: slab_reports={survey_pages} header_walk={walk_pages} {}",
-        if survey_pages == walk_pages { "AGREE" } else { "DISAGREE" });
+    let walk_blocks: u64 = counts.iter().map(|entry| entry.2).sum();
+    eprintln!("    page_count: slab_reports={survey_blocks} header_walk={walk_blocks} {}",
+        if survey_blocks == walk_blocks { "AGREE" } else { "DISAGREE" });
 }
 
 /// What does the boundary report cost, and how many pages does a whole round read? Prints.
@@ -2699,7 +2699,7 @@ fn what_a_round_still_reads() {
         };
         cycle(&engine);
 
-        let live = engine.live_page_count_for_test(1) as u64;
+        let live = engine.live_block_count_for_test(1) as u64;
 
         let before = engine.block_store().stats().reads;
         let started = std::time::Instant::now();
@@ -2986,11 +2986,11 @@ fn a_capped_dump_takes_the_oldest_undumped_bucket_first() {
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
-        page_gc_shared_store_cursors: Vec::new(),
-        page_gc_raft_snapshot_refs: Vec::new(),
-        page_gc_checkpoint_floor_slab_id: None,
-        page_gc_raft_install_floor_slab_id: None,
-        page_gc_delayed_destroy_grace_ms: 0,
+        block_gc_shared_store_cursors: Vec::new(),
+        block_gc_raft_snapshot_refs: Vec::new(),
+        block_gc_checkpoint_floor_slab_id: None,
+        block_gc_raft_install_floor_slab_id: None,
+        block_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: false,
         warm_cache: false,
     });
@@ -3107,10 +3107,10 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
     // MetaItem anchor; below the gap nothing is dumped. Matches
     // index-meta dump background cadence -- never a per-write dump.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &block_dir, &index_dir);
     engine.load_shard(1);
     write_string(&engine, "k0", b"v0");
     // A gap far larger than the current index-log must NOT dump.
@@ -3156,10 +3156,10 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
 #[test]
 fn a_catalog_dump_waits_out_the_interval_before_the_next_one() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &block_dir, &index_dir);
     engine.load_shard(1);
     for i in 0..8 {
         write_string(&engine, &format!("k{i}"), b"value");
@@ -3210,10 +3210,10 @@ fn a_catalog_dump_waits_out_the_interval_before_the_next_one() {
 #[test]
 fn counting_a_logs_records_agrees_with_scanning_it() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &block_dir, &index_dir);
     engine.load_shard(1);
 
     // Empty first: a log with no file at all must count zero rather than fail.
@@ -3262,10 +3262,10 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     // reclaiming them must SHRINK both files on disk, keep the cadence alive (watermark
     // measured from the post-reclaim length), and leave a reload byte-exact.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &block_dir, &index_dir);
     engine.load_shard(1);
     for i in 0..60 {
         write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
@@ -3311,7 +3311,7 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     let restarted = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -3325,7 +3325,7 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
 }
 
 #[test]
-fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_pages() {
+fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_blocks() {
     // An async write's page can live ONLY in its WAL record (served back through the
     // block-in-WAL registration). A post-dump WAL sweep must pin its floor at the lowest
     // registered sequence so that record survives, even when the dump anchor is far above it.
@@ -3384,10 +3384,10 @@ fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
     // file, reload -- every acked key must survive AND the slab lifecycle must reconstruct from
     // the folded index-log MetaItem, proving the fold is a lossless catalog source.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &page_dir, &index_dir);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &block_dir, &index_dir);
     engine.load_shard(1);
     for i in 0..50 {
         write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
@@ -3401,14 +3401,14 @@ fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
     drop(engine);
     // Delete the slab-manifest file: the catalog must come back from the index-log fold, not the
     // per-write file.
-    let manifest = page_dir.join("page_extent_manifest.json");
+    let manifest = block_dir.join("page_extent_manifest.json");
     if manifest.exists() {
         std::fs::remove_file(&manifest).unwrap();
     }
     let restarted = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -3436,12 +3436,12 @@ fn manifest_fold_on_does_not_resurrect_evicted_feature_points_on_reload() {
     // catalog (M1), NOT the per-write served-index delta / key_states nor the WAL config-log, so
     // config-driven feature_max_size eviction stays durable and does not resurrect on reload.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -3499,7 +3499,7 @@ fn manifest_fold_on_does_not_resurrect_evicted_feature_points_on_reload() {
     let restarted = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -3615,7 +3615,7 @@ fn hash_incrby_skips_leading_whitespace_in_stored_value_like_native() {
 }
 
 #[test]
-fn feature_append_packs_many_timestamp_values_into_one_page() {
+fn feature_append_packs_many_timestamp_values_into_one_block() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let first = SequenceFeatureRow {
@@ -3664,10 +3664,10 @@ fn feature_append_packs_many_timestamp_values_into_one_page() {
     assert_eq!(first_address, second_address);
     assert_eq!(
         first_address.object_id(),
-        Some(stable_page_object_id(1, "feature", "packed-feature", None))
+        Some(stable_block_object_id(1, "feature", "packed-feature", None))
     );
     let packed_bytes = engine.block_store().read(&first_address).unwrap();
-    let packed_points = decode_feature_page(&packed_bytes).expect("packed feature page");
+    let packed_points = decode_feature_block(&packed_bytes).expect("packed feature page");
     assert_eq!(packed_points.len(), 2);
     assert_eq!(packed_points[0].timestamp_ms, 10);
     assert_eq!(packed_points[1].timestamp_ms, 20);
@@ -3854,7 +3854,7 @@ fn feature_policy_aliases_first_update_and_block() {
 }
 
 #[test]
-fn feature_append_chunks_and_persists_timestamped_kv_pages() {
+fn feature_append_chunks_and_persists_timestamped_kv_blocks() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let points = (0..10)
@@ -3878,7 +3878,7 @@ fn feature_append_chunks_and_persists_timestamped_kv_pages() {
             .get(&1)
             .and_then(|shard| shard.features.get("chunked-feature"))
             .expect("feature series should exist");
-        unique_timestamped_kv_page_addresses(series)
+        unique_timestamped_kv_block_addresses(series)
     };
     assert!(
         addresses.len() > 1,
@@ -3888,12 +3888,12 @@ fn feature_append_chunks_and_persists_timestamped_kv_pages() {
     for address in &addresses {
         assert_eq!(
             address.object_id(),
-            Some(stable_page_object_id(1, "feature", "chunked-feature", None))
+            Some(stable_block_object_id(1, "feature", "chunked-feature", None))
         );
         let bytes = engine.block_store().read(address).unwrap();
-        let chunk = decode_feature_page(&bytes).expect("persisted packed page chunk");
+        let chunk = decode_feature_block(&bytes).expect("persisted packed page chunk");
         assert!(!chunk.is_empty());
-        assert!(bytes.len() <= TIMESTAMPED_KV_PAGE_TARGET_BYTES + 12 * 1024);
+        assert!(bytes.len() <= TIMESTAMPED_KV_BLOCK_TARGET_BYTES + 12 * 1024);
         persisted_timestamps.extend(chunk.into_iter().map(|point| point.timestamp_ms));
     }
     persisted_timestamps.sort_unstable();
@@ -3923,7 +3923,7 @@ fn feature_append_keeps_oversized_single_timestamped_value_readable() {
     engine.load_shard(1);
     let points = vec![FeaturePoint {
         timestamp_ms: 1_000,
-        value: vec![b'x'; TIMESTAMPED_KV_PAGE_TARGET_BYTES + 8 * 1024],
+        value: vec![b'x'; TIMESTAMPED_KV_BLOCK_TARGET_BYTES + 8 * 1024],
     }];
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -3940,12 +3940,12 @@ fn feature_append_keeps_oversized_single_timestamped_value_readable() {
             .get(&1)
             .and_then(|shard| shard.features.get("oversized-single-feature"))
             .expect("feature series should exist");
-        unique_timestamped_kv_page_addresses(series)
+        unique_timestamped_kv_block_addresses(series)
     };
     assert_eq!(addresses.len(), 1);
     let bytes = engine.block_store().read(&addresses[0]).unwrap();
-    assert!(bytes.len() > TIMESTAMPED_KV_PAGE_TARGET_BYTES);
-    assert_eq!(decode_feature_page(&bytes).unwrap(), points);
+    assert!(bytes.len() > TIMESTAMPED_KV_BLOCK_TARGET_BYTES);
+    assert_eq!(decode_feature_block(&bytes).unwrap(), points);
 
     let query = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -3965,7 +3965,7 @@ fn feature_append_keeps_oversized_single_timestamped_value_readable() {
 }
 
 #[test]
-fn feature_recovery_validates_packed_page_layout() {
+fn feature_recovery_validates_packed_block_layout() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let response = engine.execute(ExecuteRequest {
@@ -3987,26 +3987,26 @@ fn feature_recovery_validates_packed_page_layout() {
     assert!(response.status.ok);
 
     let report = engine.storage_recovery_report(1);
-    assert_eq!(report.feature_page_layout.indexed_feature_points, 2);
-    assert_eq!(report.feature_page_layout.unique_feature_page_refs, 1);
-    assert_eq!(report.feature_page_layout.packed_feature_pages, 1);
-    assert_eq!(report.feature_page_layout.legacy_feature_value_pages, 0);
+    assert_eq!(report.feature_block_layout.indexed_feature_points, 2);
+    assert_eq!(report.feature_block_layout.unique_feature_block_refs, 1);
+    assert_eq!(report.feature_block_layout.packed_feature_blocks, 1);
+    assert_eq!(report.feature_block_layout.legacy_feature_value_blocks, 0);
     assert!(report
-        .feature_page_layout
-        .corrupt_packed_feature_pages
+        .feature_block_layout
+        .corrupt_packed_feature_blocks
         .is_empty());
     assert!(report
-        .feature_page_layout
+        .feature_block_layout
         .missing_indexed_timestamps
         .is_empty());
     assert!(report
-        .feature_page_layout
+        .feature_block_layout
         .orphan_packed_timestamps
         .is_empty());
 }
 
 #[test]
-fn feature_recovery_reports_index_timestamp_missing_from_packed_page() {
+fn feature_recovery_reports_index_timestamp_missing_from_packed_block() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let response = engine.execute(ExecuteRequest {
@@ -4040,7 +4040,7 @@ fn feature_recovery_reports_index_timestamp_missing_from_packed_page() {
     let report = engine.storage_recovery_report(1);
     assert_eq!(
         report
-            .feature_page_layout
+            .feature_block_layout
             .missing_indexed_timestamps
             .iter()
             .map(|mismatch| mismatch.timestamp_ms)
@@ -4051,7 +4051,7 @@ fn feature_recovery_reports_index_timestamp_missing_from_packed_page() {
     assert!(readiness
         .blockers
         .contains(&"feature_page_layout_mismatch".to_string()));
-    assert_eq!(readiness.feature_page_layout_mismatch_count, 1);
+    assert_eq!(readiness.feature_block_layout_mismatch_count, 1);
 }
 
 #[test]
@@ -4088,7 +4088,7 @@ fn feature_recovery_reports_packed_timestamp_orphaned_from_index() {
     let report = engine.storage_recovery_report(1);
     assert_eq!(
         report
-            .feature_page_layout
+            .feature_block_layout
             .orphan_packed_timestamps
             .iter()
             .map(|mismatch| mismatch.timestamp_ms)
@@ -4099,14 +4099,14 @@ fn feature_recovery_reports_packed_timestamp_orphaned_from_index() {
     assert!(readiness
         .blockers
         .contains(&"feature_page_layout_mismatch".to_string()));
-    assert_eq!(readiness.feature_page_layout_mismatch_count, 1);
+    assert_eq!(readiness.feature_block_layout_mismatch_count, 1);
 }
 
 #[test]
-fn feature_recovery_reports_duplicate_timestamps_inside_packed_page() {
+fn feature_recovery_reports_duplicate_timestamps_inside_packed_block() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
-    let duplicate_page = encode_feature_page(&[
+    let duplicate_block = encode_feature_block(&[
         FeaturePoint {
             timestamp_ms: 10,
             value: b"ten".to_vec(),
@@ -4122,10 +4122,10 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_page() {
     ]);
     let address = engine
         .block_store()
-        .append_with_page_metadata(
-            &duplicate_page,
-            Some(stable_page_object_id(1, "feature", "layout-feature", None)),
-            Some(page_routing_bucket("layout-feature", 0, u32::MAX)),
+        .append_with_block_metadata(
+            &duplicate_block,
+            Some(stable_block_object_id(1, "feature", "layout-feature", None)),
+            Some(block_routing_bucket("layout-feature", 0, u32::MAX)),
         )
         .expect("duplicate packed page append");
 
@@ -4143,7 +4143,7 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_page() {
     let report = engine.storage_recovery_report(1);
     assert_eq!(
         report
-            .feature_page_layout
+            .feature_block_layout
             .duplicate_packed_timestamps
             .iter()
             .map(|mismatch| mismatch.timestamp_ms)
@@ -4151,32 +4151,32 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_page() {
         vec![10]
     );
     assert!(report
-        .feature_page_layout
+        .feature_block_layout
         .missing_indexed_timestamps
         .is_empty());
     assert!(report
-        .feature_page_layout
+        .feature_block_layout
         .orphan_packed_timestamps
         .is_empty());
     let readiness = engine.storage_production_readiness_report(1);
     assert!(readiness
         .blockers
         .contains(&"feature_page_layout_mismatch".to_string()));
-    assert_eq!(readiness.feature_page_layout_mismatch_count, 1);
+    assert_eq!(readiness.feature_block_layout_mismatch_count, 1);
 }
 
 #[test]
-fn feature_recovery_reports_corrupt_packed_timestamped_page() {
+fn feature_recovery_reports_corrupt_packed_timestamped_block() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
-    let mut corrupt_page = FEATURE_PAGE_MAGIC.to_vec();
-    corrupt_page.extend_from_slice(br#"{"version":1,"points":"not-a-point-list"}"#);
+    let mut corrupt_block = FEATURE_BLOCK_MAGIC.to_vec();
+    corrupt_block.extend_from_slice(br#"{"version":1,"points":"not-a-point-list"}"#);
     let address = engine
         .block_store()
-        .append_with_page_metadata(
-            &corrupt_page,
-            Some(stable_page_object_id(1, "feature", "corrupt-feature", None)),
-            Some(page_routing_bucket("corrupt-feature", 0, u32::MAX)),
+        .append_with_block_metadata(
+            &corrupt_block,
+            Some(stable_block_object_id(1, "feature", "corrupt-feature", None)),
+            Some(block_routing_bucket("corrupt-feature", 0, u32::MAX)),
         )
         .expect("corrupt packed page append");
 
@@ -4209,38 +4209,38 @@ fn feature_recovery_reports_corrupt_packed_timestamped_page() {
     assert!(readiness
         .blockers
         .contains(&"feature_page_layout_mismatch".to_string()));
-    assert_eq!(readiness.corrupt_feature_page_count, 1);
+    assert_eq!(readiness.corrupt_feature_block_count, 1);
     assert!(
-        readiness.feature_page_layout.corrupt_packed_feature_pages[0]
+        readiness.feature_block_layout.corrupt_packed_feature_blocks[0]
             .error
             .contains("invalid packed feature page payload")
     );
 }
 
 #[test]
-fn feature_recovery_reports_unsupported_packed_timestamped_page_version() {
+fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
-    let page = PackedFeaturePage {
+    let page = PackedFeatureBlock {
         version: 2,
         points: vec![FeaturePoint {
             timestamp_ms: 10,
             value: b"ten".to_vec(),
         }],
     };
-    let mut bytes = FEATURE_PAGE_MAGIC.to_vec();
+    let mut bytes = FEATURE_BLOCK_MAGIC.to_vec();
     bytes.extend_from_slice(&serde_json::to_vec(&page).unwrap());
     let address = engine
         .block_store()
-        .append_with_page_metadata(
+        .append_with_block_metadata(
             &bytes,
-            Some(stable_page_object_id(
+            Some(stable_block_object_id(
                 1,
                 "feature",
                 "versioned-feature",
                 None,
             )),
-            Some(page_routing_bucket("versioned-feature", 0, u32::MAX)),
+            Some(block_routing_bucket("versioned-feature", 0, u32::MAX)),
         )
         .expect("unsupported packed page append");
 
@@ -4256,16 +4256,16 @@ fn feature_recovery_reports_unsupported_packed_timestamped_page_version() {
 
     let readiness = engine.storage_production_readiness_report(1);
     assert!(!readiness.production_ready);
-    assert_eq!(readiness.corrupt_feature_page_count, 1);
+    assert_eq!(readiness.corrupt_feature_block_count, 1);
     assert!(
-        readiness.feature_page_layout.corrupt_packed_feature_pages[0]
+        readiness.feature_block_layout.corrupt_packed_feature_blocks[0]
             .error
             .contains("unsupported packed feature page version 2")
     );
 }
 
 #[test]
-fn feature_compaction_rewrites_shared_packed_page_once() {
+fn feature_compaction_rewrites_shared_packed_block_once() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let response = engine.execute(ExecuteRequest {
@@ -4287,10 +4287,10 @@ fn feature_compaction_rewrites_shared_packed_page_once() {
     assert!(response.status.ok);
 
     let before = engine.storage_recovery_report(1);
-    assert_eq!(before.total_page_refs, 1);
-    let report = engine.compact_shard_pages(1).unwrap();
-    assert_eq!(report.rewritten_page_refs, 1);
-    assert_eq!(report.after.live_page_refs, 1);
+    assert_eq!(before.total_block_refs, 1);
+    let report = engine.compact_shard_blocks(1).unwrap();
+    assert_eq!(report.rewritten_block_refs, 1);
+    assert_eq!(report.after.live_block_refs, 1);
 
     let (first_address, second_address) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
@@ -4330,8 +4330,8 @@ fn feature_compaction_rewrites_shared_packed_page_once() {
         }
     );
     let after = engine.storage_recovery_report(1);
-    assert_eq!(after.total_page_refs, 1);
-    assert_eq!(after.object_lifecycle.live_page_refs, 1);
+    assert_eq!(after.total_block_refs, 1);
+    assert_eq!(after.object_lifecycle.live_block_refs, 1);
     assert_eq!(after.object_lifecycle.reused_object_id_conflicts, 0);
 }
 
@@ -4937,12 +4937,12 @@ fn control_state_distinct_sketch_bounds_high_cardinality() {
 #[test]
 fn control_state_distinct_sketch_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -4975,7 +4975,7 @@ fn control_state_distinct_sketch_survives_restart() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -5517,12 +5517,12 @@ fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
 #[test]
 fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -5583,7 +5583,7 @@ fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
     let restarted = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -5601,7 +5601,7 @@ fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
 
 /// What does the default control-state write cost as the counter grows?
 ///
-/// `persist_control_state_page` serialises the WHOLE counter series to JSON and appends it as a
+/// `persist_control_state_block` serialises the WHOLE counter series to JSON and appends it as a
 /// page, once per increment -- so a counter holding n points re-writes all n on the n+1th. The
 /// function already carries the escape (`async_storage && control_coalesce_persist`), but `flag()`
 /// resolves an absent flag to false, so the whole-series rewrite is the default.
@@ -5704,10 +5704,10 @@ fn what_one_control_state_increment_costs_as_the_counter_grows() {
     );
 
     for points in [64_usize, 256, 1024] {
-        let (d_allocs, d_bytes, d_pages) = arm(points, false);
-        let (c_allocs, c_bytes, c_pages) = arm(points, true);
+        let (d_allocs, d_bytes, d_blocks) = arm(points, false);
+        let (c_allocs, c_bytes, c_blocks) = arm(points, true);
         println!(
-            "  {points:>7}   {d_allocs:>14}   {d_bytes:>5}   {d_pages:>5}     {c_allocs:>16}   {c_bytes:>5}   {c_pages:>5}"
+            "  {points:>7}   {d_allocs:>14}   {d_bytes:>5}   {d_blocks:>5}     {c_allocs:>16}   {c_bytes:>5}   {c_blocks:>5}"
         );
     }
 

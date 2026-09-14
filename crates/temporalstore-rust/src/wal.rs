@@ -259,7 +259,7 @@ pub struct WriteAheadLogRecord {
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
-    pub staged_pages: Vec<StagedPage>,
+    pub staged_pages: Vec<StagedBlock>,
     /// What this write did, stated as results rather than as the operation that caused them.
     ///
     /// Called `outcomes` and not `items` on purpose: [`WriteAheadLogRecordMetadata`] already has
@@ -521,7 +521,7 @@ mod outcome_value_serde {
 
 /// A page put aside during a write, to be carried in that write's log record.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StagedPage {
+pub struct StagedBlock {
     /// The object the page belongs to, which is what a read has when it comes looking.
     pub object_id: u64,
     /// The page contents.
@@ -1068,7 +1068,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         sync: bool,
-        staged_pages: Vec<StagedPage>,
+        staged_pages: Vec<StagedBlock>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         self.append_with_sync_inner(shard_id, command, sync, staged_pages, Vec::new())
     }
@@ -1080,7 +1080,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         sync: bool,
-        staged_pages: Vec<StagedPage>,
+        staged_pages: Vec<StagedBlock>,
         outcomes: Vec<WalOutcomeItem>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         self.append_with_sync_inner(shard_id, command, sync, staged_pages, outcomes)
@@ -1101,7 +1101,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         sync: bool,
-        staged_pages: Vec<StagedPage>,
+        staged_pages: Vec<StagedBlock>,
         outcomes: Vec<WalOutcomeItem>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         // The durable barrier is deferred out of the append critical section (below), so the
@@ -1197,7 +1197,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         outcomes: Vec<WalOutcomeItem>,
-        staged_pages: Vec<StagedPage>,
+        staged_pages: Vec<StagedBlock>,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         // Acquiring the append lock creates the directory the first time it opens the lock
@@ -1294,7 +1294,7 @@ impl LocalWriteAheadLogStore {
         &self,
         shard_id: ShardId,
         outcomes: Vec<WalOutcomeItem>,
-        staged_pages: Vec<StagedPage>,
+        staged_pages: Vec<StagedBlock>,
         sync: bool,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
@@ -7716,7 +7716,7 @@ mod tests {
     }
 
     #[test]
-    fn a_staged_page_costs_about_a_third_over_its_contents() {
+    fn a_staged_block_costs_about_a_third_over_its_contents() {
         // A byte vector serializes as an array of numbers -- about 5 bytes of log per byte of
         // page -- which is what kept this from being on by default. Encoded, the record should
         // be close to the page it carries.
@@ -7729,7 +7729,7 @@ mod tests {
                 value: Vec::new(),
             }),
             metadata: None,
-            staged_pages: vec![StagedPage {
+            staged_pages: vec![StagedBlock {
                 object_id: 7,
                 bytes: page.clone(),
             }],
@@ -7760,7 +7760,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_with_no_staged_page_is_unchanged_on_disk() {
+    fn a_record_with_no_staged_block_is_unchanged_on_disk() {
         // The gate-off path must serialize exactly as it did before staging existed.
         let record = WriteAheadLogRecord {
             shard_id: 1,

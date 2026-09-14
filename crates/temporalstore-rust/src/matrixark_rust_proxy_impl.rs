@@ -5058,10 +5058,10 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
             eprintln!(
                 "matrixark_rust_proxy_async_cache_warm root={} considered={} warmed={} already_cached={} failed={} bytes={}",
                 warm_root.display(),
-                report.considered_page_refs,
-                report.warmed_page_refs,
-                report.already_cached_page_refs,
-                report.failed_page_refs,
+                report.considered_block_refs,
+                report.warmed_block_refs,
+                report.already_cached_block_refs,
+                report.failed_block_refs,
                 report.warmed_bytes
             );
         });

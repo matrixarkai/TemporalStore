@@ -469,7 +469,7 @@ fn the_running_scheduler_reaches_every_phase() {
         ("reclaim_wal", stats.storage_manager_reclaim_wal_runs),
         ("reclaim_memory", stats.storage_manager_reclaim_memory_runs),
         ("expire", stats.storage_manager_expire_runs),
-        ("reclaim_page", stats.storage_manager_reclaim_page_runs),
+        ("reclaim_page", stats.storage_manager_reclaim_block_runs),
         ("compact", stats.storage_manager_compact_runs),
         ("index_gc", stats.storage_manager_index_gc_runs),
     ] {
@@ -1139,8 +1139,8 @@ fn gc_does_not_clear_the_dirty_scheduling_tracker() {
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: None,
-            page_gc_delayed_destroy: false,
-            page_gc_invalidate_removed_slabs_only: false,
+            block_gc_delayed_destroy: false,
+            block_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -1495,11 +1495,11 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
-            page_gc_shared_store_cursors: Vec::new(),
-            page_gc_raft_snapshot_refs: Vec::new(),
-            page_gc_checkpoint_floor_slab_id: None,
-            page_gc_raft_install_floor_slab_id: None,
-            page_gc_delayed_destroy_grace_ms: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            block_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: true,
         },
@@ -1639,12 +1639,12 @@ fn runtime_storage_manager_loop_runs_style_pressure_stages() {
         .signals
         .iter()
         .any(|signal| signal.name == "cache_disk_bytes"));
-    let compact_pages = report
+    let compact_blocks = report
         .pressure_decisions
         .iter()
         .find(|decision| decision.stage == "compact_pages")
         .unwrap();
-    assert!(compact_pages
+    assert!(compact_blocks
         .signals
         .iter()
         .any(|signal| signal.name == "reclaimable_physical_bytes"));
@@ -1674,7 +1674,7 @@ fn runtime_storage_manager_loop_runs_style_pressure_stages() {
     assert_eq!(stats.storage_manager_reclaim_wal_runs, 1);
     assert_eq!(stats.storage_manager_reclaim_memory_runs, 1);
     assert_eq!(stats.storage_manager_expire_runs, 1);
-    assert_eq!(stats.storage_manager_reclaim_page_runs, 1);
+    assert_eq!(stats.storage_manager_reclaim_block_runs, 1);
     assert_eq!(stats.storage_manager_compact_runs, 1);
     assert_eq!(stats.storage_manager_index_gc_runs, 1);
 }
@@ -1816,7 +1816,7 @@ fn runtime_storage_manager_scale_repeats_style_pressure_stages() {
     );
     assert_eq!(stats.storage_manager_expire_runs, reports.len() as u64);
     assert_eq!(
-        stats.storage_manager_reclaim_page_runs,
+        stats.storage_manager_reclaim_block_runs,
         reports.len() as u64
     );
     assert_eq!(stats.storage_manager_compact_runs, reports.len() as u64);
@@ -2039,7 +2039,7 @@ fn runtime_cancel_reports_not_found_and_already_finished_jobs() {
 }
 
 #[test]
-fn runtime_compaction_rewrites_live_pages_and_reports_stale_slabs() {
+fn runtime_compaction_rewrites_live_blocks_and_reports_stale_slabs() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (key, value) in [
@@ -2080,13 +2080,13 @@ fn runtime_compaction_rewrites_live_pages_and_reports_stale_slabs() {
     assert_eq!(output.previous_block_slab_id, 0);
     assert_eq!(output.compacted_block_slab_id, 1);
     assert_eq!(output.stale_block_slab_ids, vec![0]);
-    assert_eq!(output.before.total_page_count, 3);
-    assert_eq!(output.before.live_page_refs, 2);
-    assert_eq!(output.before.stale_page_estimate, 1);
+    assert_eq!(output.before.total_block_count, 3);
+    assert_eq!(output.before.live_block_refs, 2);
+    assert_eq!(output.before.stale_block_estimate, 1);
     assert_eq!(output.before.live_ref_density_basis_points, 6_666);
-    assert_eq!(output.after.total_page_count, 2);
-    assert_eq!(output.after.live_page_refs, 2);
-    assert_eq!(output.after.stale_page_estimate, 0);
+    assert_eq!(output.after.total_block_count, 2);
+    assert_eq!(output.after.live_block_refs, 2);
+    assert_eq!(output.after.stale_block_estimate, 0);
     assert_eq!(output.after.live_ref_density_basis_points, 10_000);
     assert_eq!(engine.live_block_slab_ids(1), vec![1]);
     assert_eq!(
@@ -2148,8 +2148,8 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             retain_wal_from_sequence: Some(3),
             retain_index_log_from_sequence: Some(2),
             retain_block_slabs_from_id: Some(2),
-            page_gc_delayed_destroy: false,
-            page_gc_invalidate_removed_slabs_only: false,
+            block_gc_delayed_destroy: false,
+            block_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2178,7 +2178,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
     // references, even when retain_block_slabs_from_id would sweep it and it is no longer in
     // the resident live set. Deleting it makes the manifest uninstallable and loses data on
     // a lagging follower's replay / snapshot-install. The gated storage-manager cycle blocks
-    // this via storage_page_gc_dependency_plan; the operator path must mirror the guard.
+    // this via storage_block_gc_dependency_plan; the operator path must mirror the guard.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2231,8 +2231,8 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: Some(u64::MAX),
-            page_gc_delayed_destroy: false,
-            page_gc_invalidate_removed_slabs_only: false,
+            block_gc_delayed_destroy: false,
+            block_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2404,8 +2404,8 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
             retain_wal_from_sequence: Some(2),
             retain_index_log_from_sequence: Some(2),
             retain_block_slabs_from_id: None,
-            page_gc_delayed_destroy: false,
-            page_gc_invalidate_removed_slabs_only: false,
+            block_gc_delayed_destroy: false,
+            block_gc_invalidate_removed_slabs_only: false,
         }),
     };
     runtime
@@ -2517,8 +2517,8 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: None,
-            page_gc_delayed_destroy: false,
-            page_gc_invalidate_removed_slabs_only: false,
+            block_gc_delayed_destroy: false,
+            block_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2829,7 +2829,7 @@ fn storage_manager_runtime_collects_the_report_of_a_cycle_that_outlived_its_wait
             enable_prepare: true,
             enable_wal_reclaim: true,
             enable_evict: true,
-            enable_page_reclaim: true,
+            enable_block_reclaim: true,
             enable_index_gc: true,
             ..StorageManagerCycleRequest::default()
         },
@@ -2938,8 +2938,8 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             enable_wal_reclaim: true,
             enable_expire: false,
             enable_evict: true,
-            enable_page_reclaim: true,
-            enable_page_compaction: false,
+            enable_block_reclaim: true,
+            enable_block_compaction: false,
             enable_index_gc: true,
             warm_cache: true,
             follower_replay_cursors: vec![crate::engine::reports::BucketDumpFollowerReplayCursor {
@@ -2956,7 +2956,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
                 wal_sequence: 1,
                 index_log_sequence: 1,
             }],
-            page_gc_raft_install_floor_slab_id: Some(1),
+            block_gc_raft_install_floor_slab_id: Some(1),
             ..StorageManagerCycleRequest::default()
         },
         controller: RequestController { timeout_ms: 30_000 },
@@ -3006,13 +3006,13 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(running.phase_wal_reclaim_enabled);
     assert!(!running.phase_expire_enabled);
     assert!(running.phase_evict_enabled);
-    assert!(running.phase_page_gc_enabled);
+    assert!(running.phase_block_gc_enabled);
     assert!(!running.phase_compaction_enabled);
     assert!(running.phase_index_gc_enabled);
     assert_eq!(running.configured_follower_cursor_count, 1);
     assert_eq!(running.configured_raft_snapshot_ref_count, 1);
     assert_eq!(
-        running.configured_page_gc_raft_install_floor_slab_id,
+        running.configured_block_gc_raft_install_floor_slab_id,
         Some(1)
     );
     assert!(running.last_job_id.is_some());
@@ -3182,7 +3182,7 @@ fn storage_manager_runtime_jitter_and_backoff_are_bounded() {
     assert!(report.phase_wal_reclaim_enabled);
     assert!(report.phase_expire_enabled);
     assert!(report.phase_evict_enabled);
-    assert!(report.phase_page_gc_enabled);
+    assert!(report.phase_block_gc_enabled);
     assert!(report.phase_compaction_enabled);
     assert!(report.phase_index_gc_enabled);
 }
@@ -3334,8 +3334,8 @@ fn what_each_maintenance_stage_costs() {
             ("reclaim_wal", StorageManagerOptions { enable_wal_reclaim: false, ..Default::default() }),
             ("reclaim_memory", StorageManagerOptions { enable_memory_reclaim: false, ..Default::default() }),
             ("expire", StorageManagerOptions { enable_expire: false, ..Default::default() }),
-            ("reclaim_page", StorageManagerOptions { enable_page_gc: false, ..Default::default() }),
-            ("compact_pages", StorageManagerOptions { enable_page_compaction: false, ..Default::default() }),
+            ("reclaim_page", StorageManagerOptions { enable_block_gc: false, ..Default::default() }),
+            ("compact_pages", StorageManagerOptions { enable_block_compaction: false, ..Default::default() }),
             ("reclaim_index", StorageManagerOptions { enable_index_gc: false, ..Default::default() }),
             ("reap_metrics", StorageManagerOptions { enable_metrics_reap: false, ..Default::default() }),
         ] {
@@ -4165,9 +4165,9 @@ fn what_the_index_gc_gate_costs() {
 
 /// How many times does ONE maintenance round materialize EVERY live page? Prints.
 ///
-///   cargo test --release -p temporalstore-rust --lib how_many_times_a_round_walks_every_live_page -- --ignored --nocapture
+///   cargo test --release -p temporalstore-rust --lib how_many_times_a_round_walks_every_live_block -- --ignored --nocapture
 ///
-/// `collect_live_page_entries` builds a fresh `Vec<LiveBlockEntry>` holding every live page in the
+/// `collect_live_block_entries` builds a fresh `Vec<LiveBlockEntry>` holding every live page in the
 /// shard. It has roughly twenty call sites, and a single periodic round reaches many of them:
 /// `storage_wal_reclaim_plan` (via `bucket_storage_summaries`), `storage_lifecycle_plan`, the
 /// compaction preamble, eviction victim selection, dump-manifest creation. None of them shares a
@@ -4184,7 +4184,7 @@ fn what_the_index_gc_gate_costs() {
 /// are wired rather than of how much work the round was asked to do".
 #[test]
 #[ignore]
-fn how_many_times_a_round_walks_every_live_page() {
+fn how_many_times_a_round_walks_every_live_block() {
     for records in [2_000usize, 8_000] {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
@@ -4201,10 +4201,10 @@ fn how_many_times_a_round_walks_every_live_page() {
 
         // Measured BEFORE the runtime takes the engine, and before the counter is reset, so this
         // report's own walk is not counted against the round.
-        let live_pages: u64 = engine
+        let live_blocks: u64 = engine
             .bucket_storage_summaries(1)
             .iter()
-            .map(|summary| summary.page_ref_count as u64)
+            .map(|summary| summary.block_ref_count as u64)
             .sum();
 
         let runtime = DataNodeRuntime::new_without_workers_with_options(
@@ -4216,24 +4216,24 @@ fn how_many_times_a_round_walks_every_live_page() {
             },
         );
 
-        crate::engine::reset_live_page_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
         let started = std::time::Instant::now();
         let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
         let round_ms = started.elapsed().as_micros() as f64 / 1000.0;
-        let scanned = crate::engine::live_page_scan_entries();
+        let scanned = crate::engine::live_block_scan_entries();
 
         // Denominators. A shard with no live pages, or a round that walked nothing, would make
         // the ratio below meaningless rather than zero.
-        assert!(live_pages > 0, "fixture stored no live pages");
+        assert!(live_blocks > 0, "fixture stored no live pages");
         assert!(
             scanned > 0,
             "the round materialized no live-page entries, so it never reached the stages this measures",
         );
 
         eprintln!(
-            "  [walks] {records:>6} records, {live_pages:>6} live pages -> round {round_ms:>8.1} ms \
+            "  [walks] {records:>6} records, {live_blocks:>6} live pages -> round {round_ms:>8.1} ms \
 materialized {scanned:>8} live-page entries = {:>5.1}x the shard, stages {:?}",
-            scanned as f64 / live_pages as f64,
+            scanned as f64 / live_blocks as f64,
             report.executed_stages,
         );
     }
@@ -4241,9 +4241,9 @@ materialized {scanned:>8} live-page entries = {:>5.1}x the shard, stages {:?}",
 
 /// WHICH stages do the walking? Attributes the round's live-page scan volume per stage. Prints.
 ///
-///   cargo test --release -p temporalstore-rust --lib which_stages_walk_every_live_page -- --ignored --nocapture
+///   cargo test --release -p temporalstore-rust --lib which_stages_walk_every_live_block -- --ignored --nocapture
 ///
-/// `how_many_times_a_round_walks_every_live_page` establishes that one round materializes every
+/// `how_many_times_a_round_walks_every_live_block` establishes that one round materializes every
 /// live page ~35x. That number says a fix is worth doing but not where to apply it. This names the
 /// stages, by toggling each one off and diffing the scan counter -- the same subtract-one-stage
 /// shape `what_each_maintenance_stage_costs` uses for time, so the two can be read together.
@@ -4256,7 +4256,7 @@ materialized {scanned:>8} live-page entries = {:>5.1}x the shard, stages {:?}",
 /// single stage would.
 #[test]
 #[ignore]
-fn which_stages_walk_every_live_page() {
+fn which_stages_walk_every_live_block() {
     fn build(objects: usize) -> (tempfile::TempDir, DataNodeRuntime) {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
@@ -4288,9 +4288,9 @@ fn which_stages_walk_every_live_page() {
 
     fn scan_once(objects: usize, options: StorageManagerOptions) -> (u64, Vec<String>) {
         let (_dir, runtime) = build(objects);
-        crate::engine::reset_live_page_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
         let report = runtime.run_storage_manager_once(1, options);
-        (crate::engine::live_page_scan_entries(), report.executed_stages)
+        (crate::engine::live_block_scan_entries(), report.executed_stages)
     }
 
     for objects in [4_000usize] {
@@ -4322,8 +4322,8 @@ time(s) and the WAL reclaim plan {wal_builds} time(s); each walks the shard"
             ("reclaim_wal", StorageManagerOptions { enable_wal_reclaim: false, ..Default::default() }),
             ("reclaim_memory", StorageManagerOptions { enable_memory_reclaim: false, ..Default::default() }),
             ("expire", StorageManagerOptions { enable_expire: false, ..Default::default() }),
-            ("reclaim_page", StorageManagerOptions { enable_page_gc: false, ..Default::default() }),
-            ("compact_pages", StorageManagerOptions { enable_page_compaction: false, ..Default::default() }),
+            ("reclaim_page", StorageManagerOptions { enable_block_gc: false, ..Default::default() }),
+            ("compact_pages", StorageManagerOptions { enable_block_compaction: false, ..Default::default() }),
             ("reclaim_index", StorageManagerOptions { enable_index_gc: false, ..Default::default() }),
             ("reap_metrics", StorageManagerOptions { enable_metrics_reap: false, ..Default::default() }),
         ] {
@@ -4536,7 +4536,7 @@ round with no writer is the one to open a thread on."
     );
     let quiet_engine = quiet_runtime.engine();
     let no_compaction = StorageManagerOptions {
-        enable_page_compaction: false,
+        enable_block_compaction: false,
         ..StorageManagerOptions::default()
     };
     let mut quiet_first = 0u64;
@@ -4707,7 +4707,7 @@ fn what_one_round_rebuilds() {
 ///
 /// #1470 said the periodic scheduler reached none of `gc_before_sequence`'s production callers.
 /// That was too strong, and this is the measurement that says so. `run_gc_inner` truncates BOTH
-/// logs and the page-GC stage calls it -- but only when `stale_page_pressure` holds. #1470's
+/// logs and the page-GC stage calls it -- but only when `stale_block_pressure` holds. #1470's
 /// probe wrote 1,512 keys and never deleted, so there were no stale slabs, the gate was false,
 /// and the stage never ran. "Six rounds reclaimed 0" was true for a WRITE-ONLY workload and I
 /// generalised it into "the loop never truncates".
@@ -4766,17 +4766,17 @@ fn what_gates_the_periodic_truncation() {
         let engine_before = runtime.engine();
         let before = wal_records(&engine_before, 1);
         let mut report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
-        let mut page_gc_rounds = 0;
+        let mut block_gc_rounds = 0;
         if report.executed_stages.iter().any(|stage| stage == "reclaim_page") {
-            page_gc_rounds += 1;
+            block_gc_rounds += 1;
         }
         for _ in 0..5 {
             report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
             if report.executed_stages.iter().any(|stage| stage == "reclaim_page") {
-                page_gc_rounds += 1;
+                block_gc_rounds += 1;
             }
         }
-        let _ = page_gc_rounds;
+        let _ = block_gc_rounds;
         let engine_after = runtime.engine();
         let after = wal_records(&engine_after, 1);
         // Why did (or did not) it reclaim? The plan is the thing that decides.
@@ -4793,7 +4793,7 @@ fn what_gates_the_periodic_truncation() {
         );
         eprintln!(
             "  {label:>13}  log-resident pages still registered: {}",
-            engine_after.wal_resident_page_count(1)
+            engine_after.wal_resident_block_count(1)
         );
         // The clamp `gc_before_sequence` actually applies. A permissive plan still cannot drop
         // anything above this, so it is the field that explains a safe plan reclaiming nothing.
@@ -4804,7 +4804,7 @@ fn what_gates_the_periodic_truncation() {
         );
         eprintln!(
             "  {label:>12}: stale_slabs={} reclaim_candidates={} reclaimable_bytes={} \
-             page_gc_rounds={page_gc_rounds}/6 wal {before} -> {after}",
+             page_gc_rounds={block_gc_rounds}/6 wal {before} -> {after}",
             report.pressure.stale_block_slab_count,
             report.pressure.reclaim_candidate_count,
             report.pressure.reclaimable_physical_bytes,
@@ -5147,21 +5147,21 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
     let charges = crate::engine::block_slab_live_charges();
-    let live_pages = engine.live_page_count_for_test(1) as u64;
+    let live_blocks = engine.live_block_count_for_test(1) as u64;
     let slabs = engine
         .block_slab_live_tallies(1)
         .expect("a derived tally")
         .len() as u64;
 
     // THE DENOMINATORS, before any ratio is taken.
-    assert!(live_pages > 0, "no live pages, so nothing below measures anything");
+    assert!(live_blocks > 0, "no live pages, so nothing below measures anything");
     assert!(slabs > 0, "no slabs in the tally: {slabs}");
 
     // ARM A: the tally withheld, so the report falls back to the walk.
     engine.forget_block_slab_live_for_test(1);
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let walked_reports = engine.storage_reclaim_slab_reports_for_test(1);
-    let walked_entries = crate::engine::live_page_scan_entries();
+    let walked_entries = crate::engine::live_block_scan_entries();
 
     // ARM B: the tally restored, same shard, same question.
     let drift = engine.block_slab_live_drift_check(1);
@@ -5169,11 +5169,11 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
         drift.is_clean(),
         "the tally had drifted before the measurement, so arm B is not the same answer: {drift:?}"
     );
-    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_block_scan_entries();
     let tallied_reports = engine.storage_reclaim_slab_reports_for_test(1);
-    let tallied_entries = crate::engine::live_page_scan_entries();
+    let tallied_entries = crate::engine::live_block_scan_entries();
 
-    eprintln!("  records={RECORDS} keyspace={KEYSPACE} live_pages={live_pages} slabs={slabs}");
+    eprintln!("  records={RECORDS} keyspace={KEYSPACE} live_pages={live_blocks} slabs={slabs}");
     eprintln!("  REMOVED: live page entries materialized by one reclaim report");
     eprintln!("    walked  = {walked_entries}");
     eprintln!("    tallied = {tallied_entries}");
@@ -5181,28 +5181,28 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
     eprintln!(
         "    charges = {charges}  ({:.2} per record, {:.2} per live page)",
         charges as f64 / RECORDS as f64,
-        charges as f64 / live_pages as f64
+        charges as f64 / live_blocks as f64
     );
 
     // THE SAME ANSWER. A cheaper round that reports something else is not a saving.
     let walked_live: Vec<(u64, u64, u64)> = walked_reports
         .iter()
-        .filter(|report| report.live_page_refs > 0 || report.live_physical_bytes > 0)
+        .filter(|report| report.live_block_refs > 0 || report.live_physical_bytes > 0)
         .map(|report| {
             (
                 report.block_slab_id,
-                report.live_page_refs,
+                report.live_block_refs,
                 report.live_physical_bytes,
             )
         })
         .collect();
     let tallied_live: Vec<(u64, u64, u64)> = tallied_reports
         .iter()
-        .filter(|report| report.live_page_refs > 0 || report.live_physical_bytes > 0)
+        .filter(|report| report.live_block_refs > 0 || report.live_physical_bytes > 0)
         .map(|report| {
             (
                 report.block_slab_id,
-                report.live_page_refs,
+                report.live_block_refs,
                 report.live_physical_bytes,
             )
         })
@@ -5223,8 +5223,8 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
         "the tallied arm still walked {tallied_entries} live page entries -- the fallback fired"
     );
     assert!(
-        walked_entries >= live_pages,
-        "the walked arm materialized {walked_entries} entries for {live_pages} live pages, which \
+        walked_entries >= live_blocks,
+        "the walked arm materialized {walked_entries} entries for {live_blocks} live pages, which \
          is fewer than one walk: this arm is not measuring the walk"
     );
     // The charge is per page written, not per page in the shard: a bounded cost on the write
@@ -5239,7 +5239,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
 /// Can the page-GC garbage floor ever exclude a slab IN A RUNNING STORE? It still cannot -- and
 /// the reason has moved, which is the whole content of this update.
 ///
-///   cargo test -p temporalstore-rust --lib can_the_page_gc_garbage_floor_bind \
+///   cargo test -p temporalstore-rust --lib can_the_block_gc_garbage_floor_bind \
 ///       -- --nocapture --test-threads=1
 ///
 /// THE OLD REASON, now gone. `used_bytes` summed the file sizes of the slabs grouped under a
@@ -5258,7 +5258,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
 /// partially-live slab, because a slab holding one live page is not a candidate at all. That is
 /// the same all-or-nothing rule that lets one live page pin a whole slab, and widening it means
 /// relocating the survivors first -- a compaction decision with its own measurement.
-/// `a_published_live_tally_makes_used_bytes_mean_live_page_bytes` (block_store.rs) is the other
+/// `a_published_live_tally_makes_used_bytes_mean_live_block_bytes` (block_store.rs) is the other
 /// half: given a 90%-live candidate, the shipped 4,000 bp floor DOES exclude it. The knob is real
 /// machinery now; what it is waiting for is a caller that presents it with a partially-live slab.
 ///
@@ -5267,7 +5267,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
 /// necessarily. `slab_live_fractions` asks the same question of every slab, and the table below
 /// prints the answer; the assertion under it is that the figure discriminates.
 #[test]
-fn can_the_page_gc_garbage_floor_bind() {
+fn can_the_block_gc_garbage_floor_bind() {
     const BATCH: usize = 400;
     const ROUNDS: usize = 6;
     const KEYSPACE: usize = 100;
@@ -5315,7 +5315,7 @@ fn can_the_page_gc_garbage_floor_bind() {
             u64::MAX,
             live.iter().copied(),
             &crate::block_store::BlockStoreGcPolicy::with_slab_garbage_floor(
-                crate::engine::reports::DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+                crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
                 None,
             ),
         )
@@ -5330,7 +5330,7 @@ fn can_the_page_gc_garbage_floor_bind() {
     eprintln!("     slab   total_b    used_b   utility_bp   garbage_bp   floor_keeps_it");
     for candidate in plan.candidates.iter() {
         let garbage = 10_000u64.saturating_sub(candidate.utility_basis_points);
-        let kept = garbage < crate::engine::reports::DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS;
+        let kept = garbage < crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS;
         eprintln!(
             "  {:>7}  {:>8}  {:>8}   {:>10}   {:>10}   {}",
             candidate.block_slab_id,
@@ -5355,7 +5355,7 @@ fn can_the_page_gc_garbage_floor_bind() {
         "no candidates, so this measures nothing about the floor: {plan:?}"
     );
     assert!(
-        crate::engine::reports::DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS > 0,
+        crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS > 0,
         "a floor of zero excludes nothing by definition and would make this vacuous"
     );
 
@@ -5748,7 +5748,7 @@ fn what_drops_the_shard_cache() {
 /// The assertion is the invariant that separates them: a round that reclaimed NOTHING must
 /// invalidate nothing. Measured, whole-shard drops 200-400 entries on such a round.
 #[test]
-fn a_page_gc_round_invalidates_only_what_it_reclaimed() {
+fn a_block_gc_round_invalidates_only_what_it_reclaimed() {
     const BATCH: usize = 300;
     const ROUNDS: usize = 6;
     const KEYSPACE: usize = 100;
@@ -5821,7 +5821,7 @@ fn a_page_gc_round_invalidates_only_what_it_reclaimed() {
 
 /// Does a page-GC round's cost grow with the number of slabs the store holds? Prints.
 ///
-///   cargo test -p temporalstore-rust --lib what_a_page_gc_round_walks \
+///   cargo test -p temporalstore-rust --lib what_a_block_gc_round_walks \
 ///       -- --ignored --nocapture --test-threads=1
 ///
 /// `gc_slabs_before_with_live_refs` lists every slab file under the block-store root and stats each
@@ -5833,7 +5833,7 @@ fn a_page_gc_round_invalidates_only_what_it_reclaimed() {
 /// "does it matter here" is answered with numbers rather than from the shape of the code.
 #[test]
 #[ignore]
-fn what_a_page_gc_round_walks() {
+fn what_a_block_gc_round_walks() {
     const BATCH: usize = 400;
     const ROUNDS: usize = 12;
     const KEYSPACE: usize = 200;
@@ -5913,7 +5913,7 @@ fn what_a_page_gc_round_walks() {
 /// not move it, because the missing piece was neither pacing nor selection but a per-bucket
 /// load-back path: nothing could drop a bucket node and expect to read it again.
 ///
-/// That path exists now -- `release_bucket_pages` / `reload_released_bucket` -- and `evict_cache`
+/// That path exists now -- `release_bucket_blocks` / `reload_released_bucket` -- and `evict_cache`
 /// uses it: a victim is dumped, cleared, and has its page list RELEASED, while the node stays
 /// routable and the next write through it loads the list back from the model maps. The gate counts
 /// the resident bucket index as part of its pressure now, so a round can reduce the thing that
@@ -6711,7 +6711,7 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 ///   1. "every live page is already on the newest slab" -- 14 tests fail. It reads slab
 ///      MEMBERSHIP, so it skips a shard whose single slab is mostly garbage.
 ///   2. "stale_page_estimate == 0 && live_block_slab_count <= 1" -- 3 tests fail, among them
-///      `feature_compaction_rewrites_shared_packed_page_once`. It reads dead space and spread, and
+///      `feature_compaction_rewrites_shared_packed_block_once`. It reads dead space and spread, and
 ///      still misses shards that are fully live, on one slab, and want REPACKING.
 ///
 /// Compaction turns out to do three things, and a skip has to respect all of them:
@@ -6720,7 +6720,7 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 ///   - consolidate so older slabs become dead (`live_block_slab_count`)
 ///   - repack page LAYOUT into shared pages   (neither metric sees this)
 ///
-/// The third is the one that defeats a cheap check: `feature_compaction_rewrites_shared_packed_page_once`
+/// The third is the one that defeats a cheap check: `feature_compaction_rewrites_shared_packed_block_once`
 /// appends feature points that share a packed page and expects compaction to rewrite it once, with
 /// nothing dead and everything on one slab. Any real fix needs a layout signal -- something like the
 /// model layout reports compaction already produces -- not a density number.
@@ -6731,7 +6731,7 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 /// WHERE THE ANSWER ACTUALLY LIVES, found later: the decision is PER OBJECT and belongs to the
 /// MODEL, not to the shard. Their compactor asks one per object and skips on an empty answer:
 ///
-///     auto res = ModelManager::CompactPagesHint(model_id, object_pages[object_id]);
+///     auto res = ModelManager::CompactPagesHint(model_id, object_blocks[object_id]);
 ///     if (page_indexes.empty()) { continue; }   // no need compaction
 ///
 /// and a single-page model answers empty unconditionally -- their string model's whole
@@ -6741,10 +6741,10 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 /// That is why all three global conditions were refused. There is no shard-wide predicate for
 /// "needs compacting", because two objects in the same shard, on the same slab, with the same
 /// staleness, get different answers depending on their model. It also explains why
-/// `feature_compaction_rewrites_shared_packed_page_once` survives a skip that a string would not:
+/// `feature_compaction_rewrites_shared_packed_block_once` survives a skip that a string would not:
 /// feature objects are packed across pages and genuinely have something to consolidate.
 ///
-/// Ours has no such hint. `compact_shard_pages_with_budgets` walks `strings`, `hashes`, `zsets`,
+/// Ours has no such hint. `compact_shard_blocks_with_budgets` walks `strings`, `hashes`, `zsets`,
 /// `lists` and `sets` and relocates every live page, so it rewrites single-page objects that
 /// cannot benefit. Adding the hint is not a small change -- declining to relocate an object leaves
 /// its pages on the old slab, which keeps that slab live and changes what page GC may collect --
@@ -6777,22 +6777,22 @@ fn what_a_compaction_round_costs() {
         let mut converge_rounds = 0usize;
         for _ in 0..64 {
             let report = engine
-                .compact_shard_pages(1)
+                .compact_shard_blocks(1)
                 .expect("compaction should succeed");
             converge_rounds += 1;
-            if report.rewritten_object_pages == 0 {
+            if report.rewritten_object_blocks == 0 {
                 break;
             }
         }
 
         let started = Instant::now();
         let idle = engine
-            .compact_shard_pages(1)
+            .compact_shard_blocks(1)
             .expect("compaction should succeed");
         let idle_ms = started.elapsed().as_millis();
         eprintln!(
             "  {keys:>5}   {converge_rounds:>15}   {idle_ms:>13}   {:>19}",
-            idle.rewritten_object_pages
+            idle.rewritten_object_blocks
         );
     }
 }
@@ -6809,7 +6809,7 @@ fn what_a_compaction_round_costs() {
 ///
 /// Called directly that is merely wasteful. The question that decides whether it matters is
 /// whether the PERIODIC loop keeps reaching it, because that stage only runs under
-/// `stale_page_pressure` -- and rolling a fresh slab is precisely what leaves the previous one
+/// `stale_block_pressure` -- and rolling a fresh slab is precisely what leaves the previous one
 /// stale. If compaction manufactures the pressure that triggers compaction, the loop rewrites the
 /// whole live set every round for ever; if the gate shuts after a round or two, the direct-call
 /// behaviour is a curiosity and not a defect.
@@ -6876,7 +6876,7 @@ fn does_compaction_retrigger_itself() {
         let rewritten = report
             .compaction_report
             .as_ref()
-            .map(|compaction| compaction.rewritten_object_pages)
+            .map(|compaction| compaction.rewritten_object_blocks)
             .unwrap_or(0);
         if ran {
             rounds_that_compacted += 1;
@@ -7051,7 +7051,7 @@ fn does_the_periodic_loop_reach_compaction() {
         let rewritten = report
             .compaction_report
             .as_ref()
-            .map(|compaction| compaction.rewritten_object_pages)
+            .map(|compaction| compaction.rewritten_object_blocks)
             .unwrap_or(0);
         if ran {
             rounds_that_compacted += 1;
@@ -7198,8 +7198,8 @@ fn what_an_index_gc_round_costs() {
             enable_wal_reclaim: false,
             enable_memory_reclaim: false,
             enable_expire: false,
-            enable_page_gc: false,
-            enable_page_compaction: false,
+            enable_block_gc: false,
+            enable_block_compaction: false,
             enable_metrics_reap: false,
             ..StorageManagerOptions::default()
         };
@@ -7226,7 +7226,7 @@ fn what_an_index_gc_round_costs() {
 ///       -- --ignored --nocapture --test-threads=1
 ///
 /// #1563 measured eleven slabs left after ten idle rounds: compaction rolls one a round and page
-/// GC removes none, so `stale_page_pressure` never closes and compaction re-triggers for ever.
+/// GC removes none, so `stale_block_pressure` never closes and compaction re-triggers for ever.
 ///
 /// The floor is the first suspect. The periodic stage computes it as
 ///
@@ -7398,7 +7398,7 @@ fn why_a_stale_slab_below_the_floor_survives() {
             .min()
             .map(|id| id.saturating_add(1))
             .unwrap_or(0);
-        let live_by_page = engine.live_block_slab_ids_all_shards();
+        let live_by_block = engine.live_block_slab_ids_all_shards();
         let manifests = engine.list_bucket_dump_manifests(1);
         let live_by_manifest = manifests
             .iter()
@@ -7416,7 +7416,7 @@ fn why_a_stale_slab_below_the_floor_survives() {
         let ret_live = gc.map(|g| g.block_slabs_retained_live).unwrap_or(0);
         eprintln!(
             "  {round:>5}  {slabs:>5}  {floor:>5}  {:>12}  {:>16}  {:>9}  {removed:>7}  {ret_live:>8}  {:>11}",
-            live_by_page.len(),
+            live_by_block.len(),
             live_by_manifest.len(),
             manifests.len(),
             "-"
@@ -7752,7 +7752,7 @@ fn an_idle_shard_collects_the_slab_compaction_vacated() {
 /// cadence, unbounded. The same fixture with compaction disabled grew by ZERO bytes, which is what
 /// attributes the growth: compaction relocates pages and persists a fresh index record each round,
 /// and it kept re-triggering itself because the slab it had just emptied was still a reclaim
-/// candidate, and `stale_page_pressure` counts candidates.
+/// candidate, and `stale_block_pressure` counts candidates.
 ///
 /// So the index log is the INDEPENDENT witness here, and it is the reason this guard asserts on
 /// bytes rather than on the stage list. A stage list can be made to look right by moving the name
@@ -7803,7 +7803,7 @@ fn an_idle_shard_stops_growing_its_index_log() {
     let options = StorageManagerOptions::default();
 
     // Let compaction do the work it legitimately has: drain the slab the overwrites left holed.
-    // That work is bounded -- a round relocates at most COMPACTION_ROUND_PAGE_REFS refs and this
+    // That work is bounded -- a round relocates at most COMPACTION_ROUND_BLOCK_REFS refs and this
     // fixture's live set fits inside one round -- so the settle window does not have to be
     // generous, only finite.
     let mut settle_compactions = 0_usize;
@@ -7877,7 +7877,7 @@ fn an_idle_shard_stops_growing_its_index_log() {
 ///
 /// It also pins the distinction the whole fix rests on. After compaction has drained the holed
 /// slab, that slab is still a reclaim candidate -- it is nothing but dead space until the
-/// collector destroys it -- so `stale_page_pressure` is still open. The hint is nevertheless
+/// collector destroys it -- so `stale_block_pressure` is still open. The hint is nevertheless
 /// zero, because no object has a page left there. That is the difference between "this shard has
 /// stale pages" and "there is something for compaction to move", and no shard-wide predicate can
 /// express it.
@@ -7917,7 +7917,7 @@ fn the_relocation_hint_agrees_with_the_plan_it_is_taken_from() {
     let options = StorageManagerOptions::default();
 
     let (_pressure, plan) = runtime.storage_manager_pressure_snapshot(1, &options);
-    let from_plan = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
+    let from_plan = crate::engine::compaction_relocatable_block_refs(&plan.reclaim_candidates);
     let hint = engine.compaction_relocation_hint(1, &plan.reclaim_candidates);
     assert!(
         hint.examined_object_count > 0,
@@ -7929,7 +7929,7 @@ fn the_relocation_hint_agrees_with_the_plan_it_is_taken_from() {
          on zero for the wrong reason: {plan:?}"
     );
     assert_eq!(
-        from_plan, hint.relocatable_page_refs,
+        from_plan, hint.relocatable_block_refs,
         "the round's cheap form and the per-object walk disagree: {from_plan} against {hint:?}"
     );
 
@@ -7939,14 +7939,14 @@ fn the_relocation_hint_agrees_with_the_plan_it_is_taken_from() {
     }
     let (pressure_after, plan_after) = runtime.storage_manager_pressure_snapshot(1, &options);
     let from_plan_after =
-        crate::engine::compaction_relocatable_page_refs(&plan_after.reclaim_candidates);
+        crate::engine::compaction_relocatable_block_refs(&plan_after.reclaim_candidates);
     let hint_after = engine.compaction_relocation_hint(1, &plan_after.reclaim_candidates);
     assert_eq!(
-        from_plan_after, hint_after.relocatable_page_refs,
+        from_plan_after, hint_after.relocatable_block_refs,
         "the two forms disagree once the shard is drained: {from_plan_after} against {hint_after:?}"
     );
     assert_eq!(
-        hint_after.relocatable_page_refs, 0,
+        hint_after.relocatable_block_refs, 0,
         "the shard was drained and nobody wrote to it, so no object should have a page on a slab \
          worth emptying: {hint_after:?}"
     );
@@ -7963,7 +7963,7 @@ fn the_relocation_hint_agrees_with_the_plan_it_is_taken_from() {
 ///       -- --ignored --nocapture --test-threads=1
 ///
 /// WHY A SECOND SIZE. At 8,000 records a compaction round relocates the whole live set inside
-/// COMPACTION_ROUND_PAGE_REFS x 4 rounds, so the drain finishes fast and the shard reaches the
+/// COMPACTION_ROUND_BLOCK_REFS x 4 rounds, so the drain finishes fast and the shard reaches the
 /// state where the self-retrigger is visible. At 80,000 it takes about forty rounds, and a run of
 /// thirty-two never gets there: it shows source slab 0 -> destination slab 1 in every round, no
 /// fully-stale slab in any round, nothing collected, and slab bytes climbing 60%.
@@ -7988,7 +7988,7 @@ fn an_idle_shard_settles_at_both_corpus_sizes() {
 }
 
 fn settle_one_corpus(records: usize) {
-    // Enough rounds for the drain (records / COMPACTION_ROUND_PAGE_REFS, about 40 at 80,000) plus
+    // Enough rounds for the drain (records / COMPACTION_ROUND_BLOCK_REFS, about 40 at 80,000) plus
     // a tail. The loop stops early once the tail is established, so the cap only has to be big
     // enough not to cut the drain short.
     let max_rounds = records / 1_024 + 24;
@@ -8057,7 +8057,7 @@ fn settle_one_corpus(records: usize) {
             .as_ref()
             .map(|compaction| {
                 (
-                    compaction.rewritten_object_pages,
+                    compaction.rewritten_object_blocks,
                     compaction.previous_block_slab_id,
                     compaction.compacted_block_slab_id,
                 )
@@ -8071,7 +8071,7 @@ fn settle_one_corpus(records: usize) {
             .iter()
             .map(|(_id, physical_bytes, _count)| *physical_bytes)
             .sum();
-        let relocatable = crate::engine::compaction_relocatable_page_refs(
+        let relocatable = crate::engine::compaction_relocatable_block_refs(
             &report.lifecycle_plan.reclaim_candidates,
         );
         let index_log_bytes = engine.index_log_store().log_len_bytes(1);
@@ -9034,7 +9034,7 @@ fn slabpin_reads_back(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> 
 fn slabpin_restore_counts(
     label: &str,
     dir: &std::path::Path,
-    pages_dir: &std::path::Path,
+    blocks_dir: &std::path::Path,
     manifest: &BucketDumpManifest,
     shard_id: ShardId,
     named_keys: &[String],
@@ -9043,7 +9043,7 @@ fn slabpin_restore_counts(
     let restored = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.join(format!("{label}-cache")),
-        pages_dir,
+        blocks_dir,
         dir.join(format!("{label}-indexes")),
     );
     assert!(
@@ -9073,7 +9073,7 @@ fn slabpin_restore_counts(
 /// only the slabs behind the DUMPED buckets' live page refs.
 ///
 /// `block_slab_ids` is the whole of what the collector holds back -- `run_gc_inner` extends its
-/// live slab set with it, `storage_page_gc_dependency_plan` blocks on it, and the page-GC retain
+/// live slab set with it, `storage_block_gc_dependency_plan` blocks on it, and the page-GC retain
 /// floor steps over it. So a slab holding nothing but UNNAMED-bucket pages was pinned by nothing.
 /// Compaction relocates those pages onto a fresh slab, the old one goes stale, the sweep destroys
 /// it, and the manifest's embedded index still points at it. Neither `validate_bucket_dump_manifest`
@@ -9103,12 +9103,12 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
     const COMPACTION_ROUNDS: usize = 8;
 
     let dir = tempfile::tempdir().unwrap();
-    let pages_dir = dir.path().join("pages");
+    let blocks_dir = dir.path().join("pages");
     let source_index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        &pages_dir,
+        &blocks_dir,
         &source_index_dir,
     );
     slabpin_load(&engine, SHARD);
@@ -9188,7 +9188,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
     let control = slabpin_restore_counts(
         "control",
         dir.path(),
-        &pages_dir,
+        &blocks_dir,
         &manifest,
         SHARD,
         &named_keys,
@@ -9204,7 +9204,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
 
     // COMPACTION, WITH THE ROUNDS COMPUTED FROM THE BUDGET.
     //
-    // A round relocates at most COMPACTION_ROUND_PAGE_REFS (2,048) page refs and
+    // A round relocates at most COMPACTION_ROUND_BLOCK_REFS (2,048) page refs and
     // COMPACTION_ROUND_BYTES (256 MiB), then stops and leaves the rest to the next one. So the
     // rounds this fixture needs is ceil(live_page_refs / 2,048), and at IN_NAMED + OUTSIDE = 13
     // refs that is ONE. This runs COMPACTION_ROUNDS of them -- more than the work needs -- and
@@ -9213,26 +9213,26 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
     // moves every live page onto it, so a settled shard still reports a full round's work. That
     // is what the periodic path's relocation hint is for, and calling compaction directly does
     // not consult it.
-    let live_page_refs = engine
+    let live_block_refs = engine
         .bucket_storage_summaries(SHARD)
         .iter()
-        .map(|summary| summary.page_ref_count)
+        .map(|summary| summary.block_ref_count)
         .sum::<u64>();
-    let rounds_needed = live_page_refs.div_ceil(2_048).max(1) as usize;
+    let rounds_needed = live_block_refs.div_ceil(2_048).max(1) as usize;
     assert!(
         COMPACTION_ROUNDS > rounds_needed,
-        "the fixture holds {live_page_refs} live page refs, which needs {rounds_needed} \
+        "the fixture holds {live_block_refs} live page refs, which needs {rounds_needed} \
          compaction round(s); running only {COMPACTION_ROUNDS} would leave pages behind, and a \
          short run looks exactly like a settled one"
     );
     let mut relocated_total = 0usize;
     for round in 0..COMPACTION_ROUNDS {
         let report = engine
-            .compact_shard_pages(SHARD)
+            .compact_shard_blocks(SHARD)
             .expect("compaction should succeed");
-        relocated_total += report.rewritten_page_refs;
+        relocated_total += report.rewritten_block_refs;
         assert_eq!(
-            report.pages_left_by_budget, 0,
+            report.blocks_left_by_budget, 0,
             "compaction round {round} stopped on its budget, so the shard is half-moved and the \
              sweep below acts on it"
         );
@@ -9276,8 +9276,8 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: Some(u64::MAX),
-            page_gc_delayed_destroy: false,
-            page_gc_invalidate_removed_slabs_only: false,
+            block_gc_delayed_destroy: false,
+            block_gc_invalidate_removed_slabs_only: false,
         },
         RequestController { timeout_ms: 5000 },
     );
@@ -9309,7 +9309,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
     let after = slabpin_restore_counts(
         "after",
         dir.path(),
-        &pages_dir,
+        &blocks_dir,
         &manifest,
         SHARD,
         &named_keys,
@@ -9354,14 +9354,14 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
 // LONG RUN: does any subsystem's footprint grow WITHOUT BOUND on a shard nobody writes to?
 // =================================================================================================
 
-/// Mirrors `engine::compaction::COMPACTION_ROUND_PAGE_REFS`, which is `pub(super)` and so cannot
+/// Mirrors `engine::compaction::COMPACTION_ROUND_BLOCK_REFS`, which is `pub(super)` and so cannot
 /// be named from here.
 ///
 /// It is used for ONE thing: computing how many rounds the relocation still owes before a tail
 /// can be read as a trend. A 32-round run of 40 rounds of work looks exactly like a stall, and
 /// the denominator assertion below turns that mistake into a failure with the arithmetic in the
 /// message instead of a wrong verdict in a report.
-const LONG_RUN_COMPACTION_ROUND_PAGE_REFS: usize = 2_048;
+const LONG_RUN_COMPACTION_ROUND_BLOCK_REFS: usize = 2_048;
 
 /// `StorageManagerRuntimeOptions::default().interval_ms`, the cadence a server actually runs the
 /// storage manager at. Every per-day figure printed below is a per-round figure times this, and
@@ -9510,10 +9510,10 @@ impl LongFootprintRun {
 /// over, once on each slab, and reading that as a trend is the error #1627 documented.
 fn drive_long_footprint_run(records: usize, tail_rounds: usize, inject_age: bool) -> LongFootprintRun {
     // How many rounds does the relocation OWE? One round relocates at most
-    // COMPACTION_ROUND_PAGE_REFS page refs, and the corpus is about one page ref per record, so
+    // COMPACTION_ROUND_BLOCK_REFS page refs, and the corpus is about one page ref per record, so
     // the drain needs at least records / budget rounds. Doubled and padded, because a round that
     // also has to dump, reclaim and prune does not spend its whole ref budget on relocation.
-    let budget_drain_rounds = records.div_ceil(LONG_RUN_COMPACTION_ROUND_PAGE_REFS);
+    let budget_drain_rounds = records.div_ceil(LONG_RUN_COMPACTION_ROUND_BLOCK_REFS);
     let drain_cap = budget_drain_rounds * 2 + 8;
     let max_rounds = drain_cap + tail_rounds;
 
@@ -9557,7 +9557,7 @@ fn drive_long_footprint_run(records: usize, tail_rounds: usize, inject_age: bool
     // grow" verdict below would be about a different experiment.
     eprintln!(
         "  [longrun] {records} records written, then NO further writes. relocation budget \
-{LONG_RUN_COMPACTION_ROUND_PAGE_REFS} refs/round -> the drain owes at least \
+{LONG_RUN_COMPACTION_ROUND_BLOCK_REFS} refs/round -> the drain owes at least \
 {budget_drain_rounds} rounds; drain allowance {drain_cap}; tail {tail_rounds}; \
 cap {max_rounds}"
     );
@@ -9765,7 +9765,7 @@ fn assert_long_run_denominators(run: &LongFootprintRun) {
         run.rounds_run,
     );
     // THE ARITHMETIC THAT KEEPS A DRAIN FROM READING AS A STALL. The relocation owes
-    // ceil(records / COMPACTION_ROUND_PAGE_REFS) rounds at minimum; the tail starts past twice
+    // ceil(records / COMPACTION_ROUND_BLOCK_REFS) rounds at minimum; the tail starts past twice
     // that plus sixteen. If compaction is still firing there, the tail is drain and not trend.
     let last_compacting_round = run
         .last_compacting_round
@@ -9774,7 +9774,7 @@ fn assert_long_run_denominators(run: &LongFootprintRun) {
         last_compacting_round < run.tail_start,
         "compaction was still firing at round {last_compacting_round} at {records} records, and \
          the tail starts at {}. The relocation owes at least {} rounds from the \
-         {LONG_RUN_COMPACTION_ROUND_PAGE_REFS}-ref budget; raise the allowance rather than \
+         {LONG_RUN_COMPACTION_ROUND_BLOCK_REFS}-ref budget; raise the allowance rather than \
          reading this tail, because a run shorter than the work is indistinguishable from a stall",
         run.tail_start,
         run.budget_drain_rounds,
@@ -10166,7 +10166,7 @@ fn drain_fixture(
 /// whether the holed slab actually went stale. A round that moved NOTHING would satisfy "moved no
 /// more than the drain set" perfectly.
 #[test]
-fn a_draining_round_moves_only_the_pages_on_the_slabs_it_was_asked_to_empty() {
+fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
     const BATCHES: usize = 6;
     const KEYS_PER_BATCH: usize = 200;
     const HOLED_KEYS: usize = 20;
@@ -10178,11 +10178,11 @@ fn a_draining_round_moves_only_the_pages_on_the_slabs_it_was_asked_to_empty() {
     let options = StorageManagerOptions::default();
     let (_pressure, plan) = runtime.storage_manager_pressure_snapshot(1, &options);
     let drain_slabs = crate::engine::compaction_drain_block_slab_ids(&plan.reclaim_candidates);
-    let relocatable = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
-    let live_page_refs = engine
+    let relocatable = crate::engine::compaction_relocatable_block_refs(&plan.reclaim_candidates);
+    let live_block_refs = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count)
+        .map(|summary| summary.block_ref_count)
         .sum::<u64>();
 
     // DENOMINATORS. Each of these makes every count below trivially true for a reason that has
@@ -10205,46 +10205,46 @@ fn a_draining_round_moves_only_the_pages_on_the_slabs_it_was_asked_to_empty() {
          {plan:?}"
     );
     assert!(
-        live_page_refs > relocatable * 2,
-        "the shard holds {live_page_refs} live page refs and {relocatable} of them are on the \
+        live_block_refs > relocatable * 2,
+        "the shard holds {live_block_refs} live page refs and {relocatable} of them are on the \
          holed slab; without a wide margin, draining and relocating everything are the same act"
     );
 
     let report = engine
-        .compact_shard_pages_draining(1, drain_slabs.clone())
+        .compact_shard_blocks_draining(1, drain_slabs.clone())
         .expect("a draining round should succeed");
 
     // HALF ONE: it moved the drain set, all of it, and nothing else.
     assert_eq!(
-        report.rewritten_page_refs as u64, relocatable,
+        report.rewritten_block_refs as u64, relocatable,
         "the draining round moved {} page refs where the plan named {relocatable} on the slabs it \
          was asked to empty ({drain_slabs:?})",
-        report.rewritten_page_refs
+        report.rewritten_block_refs
     );
     // HALF TWO: it actually DECLINED pages. Without this, moving the drain set and moving
     // everything are indistinguishable here.
     assert!(
-        report.pages_left_off_drain_set > 0,
+        report.blocks_left_off_drain_set > 0,
         "the round declined no pages at all, so it cannot be shown to have selected anything: it \
-         moved {} of {live_page_refs} live refs",
-        report.rewritten_page_refs
+         moved {} of {live_block_refs} live refs",
+        report.rewritten_block_refs
     );
     assert_eq!(
-        report.pages_left_off_drain_set as u64 + report.rewritten_page_refs as u64,
-        live_page_refs,
+        report.blocks_left_off_drain_set as u64 + report.rewritten_block_refs as u64,
+        live_block_refs,
         "the round moved {} and declined {}, which does not account for the shard's \
-         {live_page_refs} live refs -- some page was neither considered nor moved",
-        report.rewritten_page_refs,
-        report.pages_left_off_drain_set
+         {live_block_refs} live refs -- some page was neither considered nor moved",
+        report.rewritten_block_refs,
+        report.blocks_left_off_drain_set
     );
     // HALF THREE: declining is not "unfinished". A round kept open by pages nobody will ever want
     // moved never closes, which is the termination hazard this ordering exists to avoid.
     assert_eq!(
-        report.pages_left_by_budget, 0,
+        report.blocks_left_by_budget, 0,
         "the round reports {} pages left for want of budget after declining {} off the drain set \
          -- the two are being counted together, and a round that reports unfinished for ever \
          re-runs for ever",
-        report.pages_left_by_budget, report.pages_left_off_drain_set
+        report.blocks_left_by_budget, report.blocks_left_off_drain_set
     );
 
     // HALF FOUR: the point of the whole exercise -- the holed slab is now empty and the dense
@@ -10275,7 +10275,7 @@ fn a_draining_round_moves_only_the_pages_on_the_slabs_it_was_asked_to_empty() {
     // self-retrigger coming back in a new shape.
     let (_pressure_after, plan_after) = runtime.storage_manager_pressure_snapshot(1, &options);
     let relocatable_after =
-        crate::engine::compaction_relocatable_page_refs(&plan_after.reclaim_candidates);
+        crate::engine::compaction_relocatable_block_refs(&plan_after.reclaim_candidates);
     assert_eq!(
         relocatable_after, 0,
         "after draining the only holed slab, {relocatable_after} page refs still sit on a slab \
@@ -10330,7 +10330,7 @@ fn a_draining_round_moves_only_the_pages_on_the_slabs_it_was_asked_to_empty() {
 ///       --test-threads=1
 ///
 /// PER ROUND IS THE WRONG UNIT and measuring it that way reads as no difference at all: a round
-/// relocates at most COMPACTION_ROUND_PAGE_REFS (2,048) refs whichever rule it uses, so at 8,000
+/// relocates at most COMPACTION_ROUND_BLOCK_REFS (2,048) refs whichever rule it uses, so at 8,000
 /// records the direct round reports 2,048 and the draining round 980, and the direct arm looks
 /// only twice as expensive. It is not twice -- it is 2,048 four times over against 980 once.
 /// The comparable quantity is the TOTAL relocated to reach a settled shard, and the round count
@@ -10369,28 +10369,28 @@ fn what_the_two_selection_rules_move_at_both_corpus_sizes() {
         let drain_slabs =
             crate::engine::compaction_drain_block_slab_ids(&direct_plan.reclaim_candidates);
         let relocatable =
-            crate::engine::compaction_relocatable_page_refs(&direct_plan.reclaim_candidates);
-        let live_page_refs = direct_engine
+            crate::engine::compaction_relocatable_block_refs(&direct_plan.reclaim_candidates);
+        let live_block_refs = direct_engine
             .bucket_storage_summaries(1)
             .iter()
-            .map(|summary| summary.page_ref_count)
+            .map(|summary| summary.block_ref_count)
             .sum::<u64>();
-        let direct_rounds_needed = live_page_refs.div_ceil(BUDGET).max(1);
+        let direct_rounds_needed = live_block_refs.div_ceil(BUDGET).max(1);
         let mut direct_refs = 0_u64;
         let mut direct_rounds = 0_u64;
         loop {
             let round = direct_engine
-                .compact_shard_pages(1)
+                .compact_shard_blocks(1)
                 .expect("a direct round should succeed");
-            direct_refs += round.rewritten_page_refs as u64;
+            direct_refs += round.rewritten_block_refs as u64;
             direct_rounds += 1;
-            if round.pages_left_by_budget == 0 {
+            if round.blocks_left_by_budget == 0 {
                 break;
             }
             assert!(
                 direct_rounds <= direct_rounds_needed + 2,
                 "{records}: the direct arm ran {direct_rounds} rounds where the budget predicts \
-                 {direct_rounds_needed} for {live_page_refs} live refs, so it is not converging"
+                 {direct_rounds_needed} for {live_block_refs} live refs, so it is not converging"
             );
         }
 
@@ -10406,15 +10406,15 @@ fn what_the_two_selection_rules_move_at_both_corpus_sizes() {
         let mut draining_rounds = 0_u64;
         loop {
             let (_p2, plan) = draining_runtime.storage_manager_pressure_snapshot(1, &options);
-            let left = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
+            let left = crate::engine::compaction_relocatable_block_refs(&plan.reclaim_candidates);
             if left == 0 {
                 break;
             }
             let set = crate::engine::compaction_drain_block_slab_ids(&plan.reclaim_candidates);
             let round = draining_engine
-                .compact_shard_pages_draining(1, set)
+                .compact_shard_blocks_draining(1, set)
                 .expect("a draining round should succeed");
-            draining_refs += round.rewritten_page_refs as u64;
+            draining_refs += round.rewritten_block_refs as u64;
             draining_rounds += 1;
             assert!(
                 draining_rounds <= draining_rounds_needed + 2,
@@ -10457,8 +10457,8 @@ fn what_the_two_selection_rules_move_at_both_corpus_sizes() {
              {relocatable}"
         );
         assert!(
-            direct_refs >= live_page_refs,
-            "{records}: the direct settlement moved {direct_refs} of {live_page_refs} live \
+            direct_refs >= live_block_refs,
+            "{records}: the direct settlement moved {direct_refs} of {live_block_refs} live \
              refs, so it did not rewrite the whole live set and is not the rule being compared"
         );
         assert_eq!(
@@ -10476,14 +10476,14 @@ fn what_the_two_selection_rules_move_at_both_corpus_sizes() {
 
 /// WHAT A DIRECT ROUND MOVES, MEASURED AGAINST WHAT MOVING IT RECOVERS.
 ///
-/// A relocation recovers space only for the slab it VACATES. `compact_page_addresses` copies a
+/// A relocation recovers space only for the slab it VACATES. `compact_block_addresses` copies a
 /// page's bytes verbatim and appends them elsewhere, so a page moved off a slab with no dead
 /// space comes out byte for byte what it went in as, on a different slab -- and the slab it left
 /// is now entirely dead. Same live bytes, one more emptied slab for the collector to destroy.
 ///
 /// The set worth moving is already named: `compaction_drain_block_slab_ids` is the slabs carrying
-/// dead space that objects still hold pages on, and `compaction_relocatable_page_refs` counts the
-/// pages on them. `compact_shard_pages` -- the operator RPC, the on-demand cycle and the suite --
+/// dead space that objects still hold pages on, and `compaction_relocatable_block_refs` counts the
+/// pages on them. `compact_shard_blocks` -- the operator RPC, the on-demand cycle and the suite --
 /// does not consult it and relocates every live page, BY INSTRUCTION. This records that, and it
 /// is the control for the draining round below.
 ///
@@ -10492,7 +10492,7 @@ fn what_the_two_selection_rules_move_at_both_corpus_sizes() {
 /// pages on the holed slab" are the same set. The fixture rolls between batches so the shard
 /// spans slabs, and holes exactly one of them.
 #[test]
-fn a_direct_round_relocates_every_live_page_not_only_the_pages_on_holed_slabs() {
+fn a_direct_round_relocates_every_live_block_not_only_the_blocks_on_holed_slabs() {
     const BATCHES: usize = 6;
     const KEYS_PER_BATCH: usize = 200;
     const HOLED_KEYS: usize = 20;
@@ -10503,11 +10503,11 @@ fn a_direct_round_relocates_every_live_page_not_only_the_pages_on_holed_slabs() 
     let options = StorageManagerOptions::default();
     let (_pressure, plan) = runtime.storage_manager_pressure_snapshot(1, &options);
     let drain_slabs = crate::engine::compaction_drain_block_slab_ids(&plan.reclaim_candidates);
-    let relocatable = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
-    let live_page_refs = engine
+    let relocatable = crate::engine::compaction_relocatable_block_refs(&plan.reclaim_candidates);
+    let live_block_refs = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count)
+        .map(|summary| summary.block_ref_count)
         .sum::<u64>();
 
     // DENOMINATORS, before any ratio: several slabs, exactly one of them holed, something on it.
@@ -10530,17 +10530,17 @@ fn a_direct_round_relocates_every_live_page_not_only_the_pages_on_holed_slabs() 
          what it reports is about an idle compactor: {plan:?}"
     );
     assert!(
-        live_page_refs > relocatable,
-        "the shard holds {live_page_refs} live page refs and {relocatable} of them are on the \
+        live_block_refs > relocatable,
+        "the shard holds {live_block_refs} live page refs and {relocatable} of them are on the \
          holed slab; with those equal, relocating everything and draining the holed slab are the \
          same act"
     );
 
     let report = engine
-        .compact_shard_pages(1)
+        .compact_shard_blocks(1)
         .expect("a compaction round should succeed");
     assert_eq!(
-        report.pages_left_by_budget, 0,
+        report.blocks_left_by_budget, 0,
         "the round stopped on its budget, so what it moved is a budget artefact rather than its \
          selection rule"
     );
@@ -10549,22 +10549,22 @@ fn a_direct_round_relocates_every_live_page_not_only_the_pages_on_holed_slabs() 
     // set that moving recovers anything for is far smaller. A single ratio would hide either half
     // going to zero.
     assert!(
-        report.rewritten_page_refs as u64 >= live_page_refs,
+        report.rewritten_block_refs as u64 >= live_block_refs,
         "the direct form is documented to relocate every live page: it moved {} of \
-         {live_page_refs}",
-        report.rewritten_page_refs
+         {live_block_refs}",
+        report.rewritten_block_refs
     );
     assert_eq!(
-        report.pages_left_off_drain_set, 0,
+        report.blocks_left_off_drain_set, 0,
         "a direct round declines nothing -- it was given no drain set -- yet it left {} pages \
          off one",
-        report.pages_left_off_drain_set
+        report.blocks_left_off_drain_set
     );
     assert!(
-        report.rewritten_page_refs as u64 > relocatable * 2,
+        report.rewritten_block_refs as u64 > relocatable * 2,
         "the round moved {} page refs where {relocatable} sit on the only slab that carries dead \
          space, across {} slabs. Equal counts would mean it is already moving just the drain set",
-        report.rewritten_page_refs,
+        report.rewritten_block_refs,
         slabs_before.len()
     );
 }
@@ -10591,11 +10591,11 @@ fn the_periodic_round_drains_the_holed_slab_and_leaves_the_dense_ones() {
     let options = StorageManagerOptions::default();
     let (_pressure, plan) = runtime.storage_manager_pressure_snapshot(1, &options);
     let drain_slabs = crate::engine::compaction_drain_block_slab_ids(&plan.reclaim_candidates);
-    let relocatable = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
-    let live_page_refs = engine
+    let relocatable = crate::engine::compaction_relocatable_block_refs(&plan.reclaim_candidates);
+    let live_block_refs = engine
         .bucket_storage_summaries(1)
         .iter()
-        .map(|summary| summary.page_ref_count)
+        .map(|summary| summary.block_ref_count)
         .sum::<u64>();
     assert_eq!(
         drain_slabs.len(),
@@ -10604,8 +10604,8 @@ fn the_periodic_round_drains_the_holed_slab_and_leaves_the_dense_ones() {
         drain_slabs.len()
     );
     assert!(
-        relocatable > 0 && live_page_refs > relocatable * 2,
-        "the fixture left {relocatable} refs on the holed slab of {live_page_refs} live, which is \
+        relocatable > 0 && live_block_refs > relocatable * 2,
+        "the fixture left {relocatable} refs on the holed slab of {live_block_refs} live, which is \
          not a wide enough margin for the counts below to mean anything"
     );
 

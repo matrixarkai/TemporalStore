@@ -48,7 +48,7 @@ def _eval_numeric_expr(expr: str) -> int:
 def extract_rust_defaults(path: pathlib.Path) -> dict[str, object]:
     text = path.read_text(encoding="utf-8")
     constant_map = {
-        "TS_CONTEXT_PAGE_TARGET_BYTES": "DEFAULT_CONTEXT_PAGE_TARGET_BYTES",
+        "TS_CONTEXT_PAGE_TARGET_BYTES": "DEFAULT_CONTEXT_BLOCK_TARGET_BYTES",
         "TS_BLOCK_SLAB_TARGET_BYTES": "DEFAULT_BLOCK_SLAB_TARGET_BYTES",
         "TS_STREAM_MAX_BLOB_SIZE": "DEFAULT_STREAM_MAX_BLOB_SIZE",
         "TS_COMPACTION_WATERMARK_BYTES": "DEFAULT_COMPACTION_WATERMARK_BYTES",

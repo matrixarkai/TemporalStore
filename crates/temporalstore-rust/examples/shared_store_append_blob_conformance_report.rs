@@ -156,11 +156,14 @@ struct MatrixObjectCacheStatsReport {
     hits: u64,
     misses: u64,
     evictions: u64,
-    direct_fill_pages: u64,
+    #[serde(rename = "direct_fill_pages")]
+    direct_fill_blocks: u64,
     direct_fill_bytes: u64,
-    compressed_fill_pages: u64,
+    #[serde(rename = "compressed_fill_pages")]
+    compressed_fill_blocks: u64,
     compressed_fill_bytes: u64,
-    ec_fill_pages: u64,
+    #[serde(rename = "ec_fill_pages")]
+    ec_fill_blocks: u64,
     ec_fill_bytes: u64,
     pressure: bool,
 }
@@ -786,11 +789,11 @@ fn matrixobject_cache_stats(store: &MatrixObjectObjectStore) -> MatrixObjectCach
         hits: stats.hits,
         misses: stats.misses,
         evictions: stats.evictions,
-        direct_fill_pages: stats.direct_fill_pages,
+        direct_fill_blocks: stats.direct_fill_blocks,
         direct_fill_bytes: stats.direct_fill_bytes,
-        compressed_fill_pages: stats.compressed_fill_pages,
+        compressed_fill_blocks: stats.compressed_fill_blocks,
         compressed_fill_bytes: stats.compressed_fill_bytes,
-        ec_fill_pages: stats.ec_fill_pages,
+        ec_fill_blocks: stats.ec_fill_blocks,
         ec_fill_bytes: stats.ec_fill_bytes,
         pressure: stats.pressure,
     }

@@ -462,7 +462,7 @@ impl TemporalEngine {
                 &mut out,
                 "temporalstore_object_manager_page_refs",
                 &[("shard_id", stats.shard_id.to_string())],
-                stats.object_manager.page_ref_count as u64,
+                stats.object_manager.block_ref_count as u64,
             );
             push_metric(
                 &mut out,
@@ -506,7 +506,7 @@ impl TemporalEngine {
                         ("shard_id", stats.shard_id.to_string()),
                         ("slot", summary.routing_bucket.to_string()),
                     ],
-                    summary.page_ref_count,
+                    summary.block_ref_count,
                 );
                 for (kind, value) in [
                     ("logical", summary.logical_bytes),

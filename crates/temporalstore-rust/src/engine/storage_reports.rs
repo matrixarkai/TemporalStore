@@ -80,8 +80,8 @@ impl TemporalEngine {
             blockers: Vec::new(),
         });
 
-        let compaction = if request.compact_pages {
-            match self.compact_shard_pages(request.shard_id) {
+        let compaction = if request.compact_blocks {
+            match self.compact_shard_blocks(request.shard_id) {
                 Ok(report) => Some(report),
                 Err(err) => {
                     phases.push(StorageManagerLoopPhaseReport {
@@ -107,7 +107,7 @@ impl TemporalEngine {
                 evidence: report.model_layout_compaction_evidence.clone(),
                 blockers: report.model_layout_compaction_blockers.clone(),
             });
-        } else if !request.compact_pages {
+        } else if !request.compact_blocks {
             phases.push(StorageManagerLoopPhaseReport {
                 phase: "compact".to_string(),
                 attempted: false,
@@ -197,11 +197,11 @@ impl TemporalEngine {
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
-            page_gc_shared_store_cursors: Vec::new(),
-            page_gc_raft_snapshot_refs: Vec::new(),
-            page_gc_checkpoint_floor_slab_id: None,
-            page_gc_raft_install_floor_slab_id: None,
-            page_gc_delayed_destroy_grace_ms: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            block_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -218,26 +218,26 @@ impl TemporalEngine {
             .map(|stats| stats.page_store.clone())
             .unwrap_or_else(|| self.page_store.stats());
         let log_compatibility = self.storage_log_compatibility_report(shard_id);
-        let page_format_compatibility = self.storage_page_format_compatibility_report(shard_id);
+        let block_format_compatibility = self.storage_block_format_compatibility_report(shard_id);
         let bucket_dump_manifest_count = self.list_bucket_dump_manifests(shard_id).len();
         let interrupted_bucket_dump_install_count = boundary.interrupted_bucket_dump_installs.len();
         let undumped_wal_records = boundary
             .latest_safe_wal_sequence
             .saturating_sub(boundary.latest_dump_wal_sequence);
         let mut blockers = Vec::new();
-        if !boundary.stale_index_page_refs.is_empty() {
+        if !boundary.stale_index_block_refs.is_empty() {
             blockers.push("stale_index_page_refs".to_string());
         }
         if !boundary.corrupt_block_slab_ids.is_empty() {
             blockers.push("corrupt_page_segments".to_string());
         }
-        if boundary.unreadable_page_bytes > 0 || !recovery.all_live_pages_readable {
+        if boundary.unreadable_block_bytes > 0 || !recovery.all_live_blocks_readable {
             blockers.push("unreadable_live_page_refs".to_string());
         }
-        if !boundary.owner_mismatch_page_refs.is_empty() {
+        if !boundary.owner_mismatch_block_refs.is_empty() {
             blockers.push("owner_mismatch_page_refs".to_string());
         }
-        if boundary.object_lifecycle.missing_owner_page_refs > 0 {
+        if boundary.object_lifecycle.missing_owner_block_refs > 0 {
             blockers.push("missing_owner_page_refs".to_string());
         }
         if boundary.object_lifecycle.reused_object_id_conflicts > 0 {
@@ -256,7 +256,7 @@ impl TemporalEngine {
         {
             blockers.push("storage_segment_integrity_failed".to_string());
         }
-        if recovery.feature_page_layout.has_errors() {
+        if recovery.feature_block_layout.has_errors() {
             blockers.push("feature_page_layout_mismatch".to_string());
         }
 
@@ -270,7 +270,7 @@ impl TemporalEngine {
         if !boundary.orphan_block_slab_ids.is_empty() {
             warnings.push("orphan_page_segments_pending_gc".to_string());
         }
-        if bucket_dump_manifest_count == 0 && recovery.total_page_refs > 0 {
+        if bucket_dump_manifest_count == 0 && recovery.total_block_refs > 0 {
             warnings.push("no_slot_dump_manifest_for_live_pages".to_string());
         }
         if policy
@@ -303,7 +303,7 @@ impl TemporalEngine {
         }
         if policy.require_bucket_dump_manifest
             && bucket_dump_manifest_count == 0
-            && recovery.total_page_refs > 0
+            && recovery.total_block_refs > 0
         {
             blockers.push("slot_dump_manifest_required".to_string());
         }
@@ -322,9 +322,9 @@ impl TemporalEngine {
             orphan_block_slab_count: boundary.orphan_block_slab_ids.len(),
             undumped_wal_records,
             corrupt_block_slab_count: boundary.corrupt_block_slab_ids.len(),
-            unreadable_page_ref_count: recovery.unreadable_page_refs.len(),
-            owner_mismatch_page_ref_count: boundary.owner_mismatch_page_refs.len(),
-            missing_owner_page_ref_count: boundary.object_lifecycle.missing_owner_page_refs,
+            unreadable_block_ref_count: recovery.unreadable_block_refs.len(),
+            owner_mismatch_block_ref_count: boundary.owner_mismatch_block_refs.len(),
+            missing_owner_block_ref_count: boundary.object_lifecycle.missing_owner_block_refs,
             reused_object_id_conflict_count: boundary.object_lifecycle.reused_object_id_conflicts,
             interrupted_bucket_dump_install_count,
             prepared_bucket_dump_install_count: boundary.prepared_bucket_dump_install_count,
@@ -339,13 +339,13 @@ impl TemporalEngine {
             object_lifecycle: recovery.object_lifecycle,
             slab_integrity,
             log_compatibility,
-            page_format_compatibility,
-            feature_page_layout_mismatch_count: recovery.feature_page_layout.mismatch_count(),
-            corrupt_feature_page_count: recovery
-                .feature_page_layout
-                .corrupt_packed_feature_pages
+            block_format_compatibility,
+            feature_block_layout_mismatch_count: recovery.feature_block_layout.mismatch_count(),
+            corrupt_feature_block_count: recovery
+                .feature_block_layout
+                .corrupt_packed_feature_blocks
                 .len(),
-            feature_page_layout: recovery.feature_page_layout,
+            feature_block_layout: recovery.feature_block_layout,
         }
     }
 
@@ -388,23 +388,23 @@ impl TemporalEngine {
         }
     }
 
-    pub fn storage_page_format_compatibility_report(
+    pub fn storage_block_format_compatibility_report(
         &self,
         shard_id: ShardId,
-    ) -> StoragePageFormatCompatibilityReport {
+    ) -> StorageBlockFormatCompatibilityReport {
         let stats = self.page_store.stats();
         let summary = self.page_store.slab_summary();
-        StoragePageFormatCompatibilityReport {
+        StorageBlockFormatCompatibilityReport {
             shard_id,
-            page_format: "rust-page-envelope-v6".to_string(),
+            block_format: "rust-page-envelope-v6".to_string(),
             rust_envelope_version: 6,
             compatibility_mode: "rust_envelope_migration_only".to_string(),
             migration_required: true,
-            native_page_header_reader_supported: false,
-            native_page_header_writer_supported: false,
+            native_block_header_reader_supported: false,
+            native_block_header_writer_supported: false,
             golden_conversion_required: true,
             rust_native_read_safe: true,
-            native_page_header_compatible: false,
+            native_block_header_compatible: false,
             checksum_protected: true,
             object_ids_embedded: true,
             routing_buckets_embedded: true,
@@ -428,13 +428,13 @@ impl TemporalEngine {
         }
     }
 
-    pub fn warm_cache_from_page_index(
+    pub fn warm_cache_from_block_index(
         &self,
         shard_id: ShardId,
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> usize {
         self.storage_cache_warmup_report(shard_id, selected_buckets)
-            .warmed_page_refs
+            .warmed_block_refs
     }
 
     pub fn storage_cache_warmup_report(
@@ -457,7 +457,7 @@ impl TemporalEngine {
         // shard is every page in the store. The rest of the maintenance round is among the
         // writers it blocks.
         //
-        // Nothing in the loop needs the shard. `collect_live_page_entries` already MATERIALIZES
+        // Nothing in the loop needs the shard. `collect_live_block_entries` already MATERIALIZES
         // the whole set into a Vec, and after that the body touches only `entry.address` and
         // `entry.object_key`, both owned by the Vec; `routing_bucket_for_key` reads `infos`, a
         // different lock. So the guard was being held for the producer's sake and paid for by
@@ -478,16 +478,16 @@ impl TemporalEngine {
             let Some(shard) = shards.get(&shard_id) else {
                 return report;
             };
-            for entry in collect_live_page_entries(shard) {
+            for entry in collect_live_block_entries(shard) {
                 let routing_bucket = entry
                     .address
                     .routing_bucket()
                     .unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
                 if !selected_buckets.is_empty() && !selected_buckets.contains(&routing_bucket) {
-                    report.skipped_page_refs = report.skipped_page_refs.saturating_add(1);
+                    report.skipped_block_refs = report.skipped_block_refs.saturating_add(1);
                     continue;
                 }
-                report.considered_page_refs = report.considered_page_refs.saturating_add(1);
+                report.considered_block_refs = report.considered_block_refs.saturating_add(1);
                 let key = CacheKey::page_with_slot(
                     shard_id,
                     entry.address.block_slab_id,
@@ -497,7 +497,7 @@ impl TemporalEngine {
                 );
                 plan.push((key, entry.address));
             }
-            // The control arm of `the_cache_warmup_reads_pages_after_the_shard_guard_drops` keeps
+            // The control arm of `the_cache_warmup_reads_blocks_after_the_shard_guard_drops` keeps
             // the guard held across the reads, so the guard has a positive control to compare
             // against rather than an assertion that nothing can fail.
             self.warm_cache_under_shard_guard
@@ -506,23 +506,23 @@ impl TemporalEngine {
         };
         for (key, address) in plan {
             if self.cache.peek_tier(&key).is_some() {
-                report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);
-                report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
-            } else if let Ok(bytes) = self.read_page_counted(&address) {
+                report.already_cached_block_refs = report.already_cached_block_refs.saturating_add(1);
+                report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
+            } else if let Ok(bytes) = self.read_block_counted(&address) {
                 report.page_store_reads = report.page_store_reads.saturating_add(1);
                 report.block_store_reads = report.block_store_reads.saturating_add(1);
                 let byte_len = bytes.len() as u64;
                 match self.cache.put(key, bytes) {
                     Ok(()) => {
-                        report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
+                        report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
                         report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
                     }
                     Err(_) => {
-                        report.failed_page_refs = report.failed_page_refs.saturating_add(1);
+                        report.failed_block_refs = report.failed_block_refs.saturating_add(1);
                     }
                 }
             } else {
-                report.failed_page_refs = report.failed_page_refs.saturating_add(1);
+                report.failed_block_refs = report.failed_block_refs.saturating_add(1);
             }
         }
         drop(held_across_io);
@@ -641,8 +641,8 @@ impl TemporalEngine {
             .filter(|report| report.has_corruption)
             .map(|report| report.block_slab_id)
             .collect::<Vec<_>>();
-        let unreadable_page_bytes = recovery
-            .unreadable_page_refs
+        let unreadable_block_bytes = recovery
+            .unreadable_block_refs
             .iter()
             .map(|error| error.length)
             .sum();
@@ -659,17 +659,17 @@ impl TemporalEngine {
                 .min(latest_safe_index_log_sequence),
             orphan_block_slab_ids,
             missing_dump_bucket_ids,
-            stale_index_page_refs: recovery.unreadable_page_refs,
+            stale_index_block_refs: recovery.unreadable_block_refs,
             interrupted_bucket_dump_installs,
             prepared_bucket_dump_install_count,
             installed_bucket_dump_install_count,
             unknown_bucket_dump_install_count,
             manifest_chain_issues,
-            owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
-            missing_owner_page_refs: recovery.missing_owner_page_refs,
+            owner_mismatch_block_refs: recovery.owner_mismatch_block_refs,
+            missing_owner_block_refs: recovery.missing_owner_block_refs,
             object_lifecycle,
             corrupt_block_slab_ids,
-            unreadable_page_bytes,
+            unreadable_block_bytes,
         }
     }
 }

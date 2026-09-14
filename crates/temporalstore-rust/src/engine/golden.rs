@@ -160,13 +160,13 @@ pub fn native_feature_sequence_golden_corpus_report() -> GoldenCorpusReport {
         "sequence filters reuse the feature predicate semantics",
     );
 
-    let page_layout = engine.storage_recovery_report(1).feature_page_layout;
+    let block_layout = engine.storage_recovery_report(1).feature_block_layout;
     record_golden_case(
         &mut cases,
         "native_timestamped_kv_shared_page_layout",
-        page_layout.packed_feature_pages >= 1
-            && page_layout.unique_feature_page_refs < page_layout.indexed_feature_points
-            && !page_layout.has_errors(),
+        block_layout.packed_feature_blocks >= 1
+            && block_layout.unique_feature_block_refs < block_layout.indexed_feature_points
+            && !block_layout.has_errors(),
         "Timestamped feature/sequence values share packed pages without layout errors",
     );
 
@@ -421,7 +421,7 @@ pub fn native_api_golden_corpus_report() -> GoldenCorpusReport {
         "native_admin_storage_readiness_report",
         storage_readiness.production_ready
             && storage_readiness.page_store_bytes_written > 0
-            && storage_readiness.feature_page_layout.packed_feature_pages >= 1,
+            && storage_readiness.feature_block_layout.packed_feature_blocks >= 1,
         "Admin/storage readiness report is queryable after mixed API corpus writes",
     );
 

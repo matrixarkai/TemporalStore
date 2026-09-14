@@ -696,7 +696,7 @@ pub fn execute_redis_command_with_state(
                             ]
                         })
                         .collect();
-                    redis_cursor_page_response(cursor, count, values)
+                    redis_cursor_block_response(cursor, count, values)
                 }
                 Ok(_) => RespValue::Error("ERR invalid hscan response".to_string()),
                 Err(err) => RespValue::Error(format!("ERR {err}")),
@@ -1198,7 +1198,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             match sorted_set_members(&string_arg(&args[1]), &mut execute) {
-                Ok(members) => redis_cursor_page_response(
+                Ok(members) => redis_cursor_block_response(
                     cursor,
                     count,
                     members

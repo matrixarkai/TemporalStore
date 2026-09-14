@@ -23,7 +23,7 @@ pub(super) fn load_slab_manifest_at(
     }
     let manifest: BlockStoreSlabManifest =
         serde_json::from_slice(&fs::read(path)?).map_err(|err| {
-            BlockStoreError::CorruptPageEnvelope {
+            BlockStoreError::CorruptBlockEnvelope {
                 block_slab_id: 0,
                 offset: 0,
                 reason: format!("corrupt slab manifest: {err}"),
@@ -61,8 +61,8 @@ pub(super) fn rebuild_slab_manifest_at(
                     .or_else(|| file_modified_unix_ms(&path)),
                 updated_unix_ms: file_modified_unix_ms(&path)
                     .or_else(|| file_created_unix_ms(&path)),
-                first_page_id: report.first_page_id,
-                last_page_id: report.last_page_id,
+                first_block_id: report.first_block_id,
+                last_block_id: report.last_block_id,
                 readable_prefix_physical_bytes: report.readable_prefix_physical_bytes,
                 // This path inspected the slab, so record the identity it was verified against;
                 // leaving it empty makes the next reconcile re-read a slab this one just proved.
@@ -90,8 +90,8 @@ pub(super) fn rebuild_slab_manifest_at(
                 logical_bytes: 0,
                 created_unix_ms: delayed.modified_unix_ms,
                 updated_unix_ms: delayed.modified_unix_ms,
-                first_page_id: None,
-                last_page_id: None,
+                first_block_id: None,
+                last_block_id: None,
                 readable_prefix_physical_bytes: 0,
                 verified_source_mtime_unix_ms: None,
                 has_corruption: false,
@@ -230,8 +230,8 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                     || slab.state != desired_state
                     || slab.physical_bytes != physical_bytes
                     || slab.logical_bytes != report.logical_bytes
-                    || slab.first_page_id != report.first_page_id
-                    || slab.last_page_id != report.last_page_id
+                    || slab.first_block_id != report.first_block_id
+                    || slab.last_block_id != report.last_block_id
                     || slab.readable_prefix_physical_bytes
                         != report.readable_prefix_physical_bytes
                     || slab.has_corruption != report.has_corruption
@@ -246,8 +246,8 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                 if content_changed {
                     slab.updated_unix_ms = updated_unix_ms;
                 }
-                slab.first_page_id = report.first_page_id;
-                slab.last_page_id = report.last_page_id;
+                slab.first_block_id = report.first_block_id;
+                slab.last_block_id = report.last_block_id;
                 slab.readable_prefix_physical_bytes = report.readable_prefix_physical_bytes;
                 slab.has_corruption = report.has_corruption;
                 slab.first_error_offset = report.first_error_offset;
@@ -268,8 +268,8 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                         logical_bytes: report.logical_bytes,
                         created_unix_ms,
                         updated_unix_ms,
-                        first_page_id: report.first_page_id,
-                        last_page_id: report.last_page_id,
+                        first_block_id: report.first_block_id,
+                        last_block_id: report.last_block_id,
                         readable_prefix_physical_bytes: report.readable_prefix_physical_bytes,
                         // Just inspected, so record what it was verified against; otherwise the
                         // next open re-reads and re-hashes a slab this one already proved.
@@ -300,8 +300,8 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                     .and_then(|slab| slab.created_unix_ms)
                     .or(report.modified_unix_ms),
                 updated_unix_ms: report.modified_unix_ms,
-                first_page_id: old.as_ref().and_then(|slab| slab.first_page_id),
-                last_page_id: old.as_ref().and_then(|slab| slab.last_page_id),
+                first_block_id: old.as_ref().and_then(|slab| slab.first_block_id),
+                last_block_id: old.as_ref().and_then(|slab| slab.last_block_id),
                 readable_prefix_physical_bytes: 0,
                 verified_source_mtime_unix_ms: None,
                 has_corruption: false,
@@ -380,7 +380,7 @@ pub(super) fn persist_slab_manifest(
     {
         let mut temp = File::create(&temp_path)?;
         serde_json::to_writer_pretty(&mut temp, &manifest).map_err(|err| {
-            BlockStoreError::CorruptPageEnvelope {
+            BlockStoreError::CorruptBlockEnvelope {
                 block_slab_id: 0,
                 offset: 0,
                 reason: format!("serialize slab manifest: {err}"),
@@ -491,8 +491,8 @@ pub(super) fn ensure_slab_descriptor(
             created_unix_ms: file_created_unix_ms(&slab_path(root, block_slab_id))
                 .or_else(|| file_modified_unix_ms(&slab_path(root, block_slab_id))),
             updated_unix_ms: file_modified_unix_ms(&slab_path(root, block_slab_id)),
-            first_page_id: None,
-            last_page_id: None,
+            first_block_id: None,
+            last_block_id: None,
             readable_prefix_physical_bytes: physical_bytes,
             verified_source_mtime_unix_ms: None,
             has_corruption: false,
@@ -529,8 +529,8 @@ pub(super) fn upsert_slab_after_append(
             logical_bytes: 0,
             created_unix_ms: Some(now_unix_ms()),
             updated_unix_ms: Some(now_unix_ms()),
-            first_page_id: Some(page_id),
-            last_page_id: Some(page_id),
+            first_block_id: Some(page_id),
+            last_block_id: Some(page_id),
             readable_prefix_physical_bytes: 0,
             verified_source_mtime_unix_ms: None,
             has_corruption: false,
@@ -549,14 +549,14 @@ pub(super) fn upsert_slab_after_append(
         slab.created_unix_ms = Some(updated_unix_ms);
     }
     slab.updated_unix_ms = Some(updated_unix_ms);
-    slab.first_page_id = Some(
+    slab.first_block_id = Some(
         slab
-            .first_page_id
+            .first_block_id
             .map_or(page_id, |first| first.min(page_id)),
     );
-    slab.last_page_id = Some(
+    slab.last_block_id = Some(
         slab
-            .last_page_id
+            .last_block_id
             .map_or(page_id, |last| last.max(page_id)),
     );
 }
@@ -580,8 +580,8 @@ pub(super) fn set_slab_state(
             logical_bytes: 0,
             created_unix_ms: Some(now_unix_ms()),
             updated_unix_ms: Some(now_unix_ms()),
-            first_page_id: None,
-            last_page_id: None,
+            first_block_id: None,
+            last_block_id: None,
             readable_prefix_physical_bytes: 0,
             verified_source_mtime_unix_ms: None,
             has_corruption: false,

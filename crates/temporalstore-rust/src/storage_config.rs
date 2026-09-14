@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const TS_CONTEXT_PAGE_TARGET_BYTES: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";
+pub const TS_CONTEXT_BLOCK_TARGET_BYTES: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";
 pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SLAB_TARGET_BYTES";
 pub const TS_STREAM_MAX_BLOB_SIZE: &str = "TS_STREAM_MAX_BLOB_SIZE";
 pub const TS_COMPACTION_WATERMARK_BYTES: &str = "TS_COMPACTION_WATERMARK_BYTES";
@@ -31,7 +31,7 @@ pub const TS_INDEX_GC_MIN_RECLAIMABLE_BYTES: &str = "TS_INDEX_GC_MIN_RECLAIMABLE
 /// `effective_block_slab_target_bytes`, and the field is `block_slab_target_bytes`.
 pub const TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME: &str = "TS_BLOCK_SEGMENT_TARGET_BYTES";
 
-pub const DEFAULT_CONTEXT_PAGE_TARGET_BYTES: usize = 64 * 1024;
+pub const DEFAULT_CONTEXT_BLOCK_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
 pub const DEFAULT_STREAM_MAX_BLOB_SIZE: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
@@ -78,7 +78,8 @@ pub const DEFAULT_INDEX_GC_MIN_RECLAIMABLE_BYTES: u64 = 768 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTuningConfig {
-    pub context_page_target_bytes: usize,
+    #[serde(rename = "context_page_target_bytes")]
+    pub context_block_target_bytes: usize,
     #[serde(alias = "block_segment_target_bytes")]
     pub block_slab_target_bytes: u64,
     pub stream_max_blob_size: u64,
@@ -94,7 +95,7 @@ pub struct StorageTuningConfig {
 impl Default for StorageTuningConfig {
     fn default() -> Self {
         Self {
-            context_page_target_bytes: DEFAULT_CONTEXT_PAGE_TARGET_BYTES,
+            context_block_target_bytes: DEFAULT_CONTEXT_BLOCK_TARGET_BYTES,
             block_slab_target_bytes: DEFAULT_BLOCK_SLAB_TARGET_BYTES,
             stream_max_blob_size: DEFAULT_STREAM_MAX_BLOB_SIZE,
             compaction_watermark_bytes: DEFAULT_COMPACTION_WATERMARK_BYTES,
@@ -116,9 +117,9 @@ impl StorageTuningConfig {
     pub fn from_getter(get: impl Fn(&str) -> Option<String>) -> Self {
         let defaults = Self::default();
         Self {
-            context_page_target_bytes: parse_usize(
-                get(TS_CONTEXT_PAGE_TARGET_BYTES),
-                defaults.context_page_target_bytes,
+            context_block_target_bytes: parse_usize(
+                get(TS_CONTEXT_BLOCK_TARGET_BYTES),
+                defaults.context_block_target_bytes,
             )
             .max(1024),
             block_slab_target_bytes: parse_u64(
@@ -176,7 +177,7 @@ impl StorageTuningConfig {
 
     pub fn env_names() -> [&'static str; 12] {
         [
-            TS_CONTEXT_PAGE_TARGET_BYTES,
+            TS_CONTEXT_BLOCK_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME,
             TS_STREAM_MAX_BLOB_SIZE,
@@ -192,8 +193,8 @@ impl StorageTuningConfig {
     }
 }
 
-pub fn context_page_target_bytes() -> usize {
-    StorageTuningConfig::from_env().context_page_target_bytes
+pub fn context_block_target_bytes() -> usize {
+    StorageTuningConfig::from_env().context_block_target_bytes
 }
 
 pub fn effective_block_slab_target_bytes() -> u64 {
@@ -251,8 +252,8 @@ mod tests {
     fn defaults_match_like_public_surface() {
         let config = StorageTuningConfig::default();
         assert_eq!(
-            config.context_page_target_bytes,
-            DEFAULT_CONTEXT_PAGE_TARGET_BYTES
+            config.context_block_target_bytes,
+            DEFAULT_CONTEXT_BLOCK_TARGET_BYTES
         );
         assert_eq!(
             config.block_slab_target_bytes,
@@ -365,7 +366,7 @@ mod tests {
     // shared-corpus: storage_config_like_public_knobs
     fn parses_public_knobs_from_getter() {
         let env = HashMap::from([
-            (TS_CONTEXT_PAGE_TARGET_BYTES, "32768"),
+            (TS_CONTEXT_BLOCK_TARGET_BYTES, "32768"),
             (TS_BLOCK_SLAB_TARGET_BYTES, "10485760"),
             (TS_STREAM_MAX_BLOB_SIZE, "8388608"),
             (TS_COMPACTION_WATERMARK_BYTES, "4096"),
@@ -375,7 +376,7 @@ mod tests {
             (TS_INDEX_DUMP_WAL_GAP_BYTES, "2097152"),
         ]);
         let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
-        assert_eq!(config.context_page_target_bytes, 32 * 1024);
+        assert_eq!(config.context_block_target_bytes, 32 * 1024);
         assert_eq!(config.block_slab_target_bytes, 10 * 1024 * 1024);
         assert_eq!(config.stream_max_blob_size, 8 * 1024 * 1024);
         // Seal = max(block_slab_target 10MiB, max_blob 8MiB) = 10MiB (blob is a floor).

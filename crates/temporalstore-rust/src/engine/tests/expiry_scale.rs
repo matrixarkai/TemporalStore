@@ -1189,12 +1189,12 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
 
     /// Pages the index holds for one object key, across every bucket. The page half of the
     /// removal, which the key-state blobs say nothing about.
-    fn pages_for(state: &ShardState, key: &str) -> usize {
+    fn blocks_for(state: &ShardState, key: &str) -> usize {
         state
             .bucket_index
             .bucket_map
             .values()
-            .flat_map(|bucket| bucket.page_index.values())
+            .flat_map(|bucket| bucket.block_index.values())
             .filter(|page| page.object_key.as_ref() == key)
             .count()
     }
@@ -1331,7 +1331,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     let control = reader
         .load_index_base_only(1, false)
         .expect("the base index should load");
-    let mut control_pages = 0usize;
+    let mut control_blocks = 0usize;
     for index in 0..DUE_KEYS {
         let key = due_key(index);
         assert!(
@@ -1340,10 +1340,10 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
              Something other than the fold is already removing it, so the treatment below proves \
              nothing -- it would pass with the fold deleted"
         );
-        control_pages += pages_for(&control, &key);
+        control_blocks += blocks_for(&control, &key);
     }
     assert!(
-        control_pages > 0,
+        control_blocks > 0,
         "CONTROL: the unfolded base holds no pages at all for the {DUE_KEYS} removed keys, so the \
          page half of the fold has nothing to wipe and asserting it wiped them is vacuous"
     );
@@ -1371,7 +1371,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     println!(
         "  stale base at anchor {base_anchor} ({} bytes, unchanged by the round), one delta at \
          anchor {record_anchor} with {} items and {} key blobs: unfolded holds {} deadlines and \
-         {control_pages} pages for the removed keys, folded holds {}",
+         {control_blocks} pages for the removed keys, folded holds {}",
         base_before.len(),
         record.items.len(),
         record.key_states.len(),
@@ -1390,14 +1390,14 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
              finds due all over again"
         );
         assert_eq!(
-            pages_for(&folded, &key),
+            blocks_for(&folded, &key),
             0,
             "the fold left {} page(s) of {key} attached. The record carries NO items, and an \
              empty item list against a covered key is how the removal is spelled: every page of \
              every covered key is wiped and only the carried items are restored. Pages left \
              behind are pages the deletes already retained -- dangling entries pointing into \
              reclaimable slabs",
-            pages_for(&folded, &key)
+            blocks_for(&folded, &key)
         );
     }
     assert_eq!(
@@ -1418,7 +1418,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
              on recovery"
         );
         assert!(
-            pages_for(&folded, &key) > 0,
+            blocks_for(&folded, &key) > 0,
             "the fold left {key} with no pages while keeping its deadline -- a key that reads as \
              present and answers nothing"
         );
@@ -2187,7 +2187,7 @@ fn a_with_options_deadline_survives_recovery() {
     fn outcome_was_installed(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id).expect("shard is loaded");
-        shard.control_state_pages.contains_key(key)
+        shard.control_state_blocks.contains_key(key)
     }
 
     // Long enough that nothing under test expires during the round trip.

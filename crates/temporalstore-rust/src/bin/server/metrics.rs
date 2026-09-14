@@ -154,8 +154,8 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
         ("undumped_wal_records", pressure.undumped_wal_records),
         ("wal_bytes", pressure.wal_bytes),
         ("index_log_bytes", pressure.index_log_bytes),
-        ("stale_page_bytes", pressure.stale_page_bytes),
-        ("live_page_bytes", pressure.live_page_bytes),
+        ("stale_page_bytes", pressure.stale_block_bytes),
+        ("live_page_bytes", pressure.live_block_bytes),
         (
             "page_segment_stale_density_basis_points",
             pressure.block_slab_stale_density_basis_points,
@@ -177,7 +177,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
         // 0 debt with this at 1 means it counted none.
         (
             "live_page_summaries_measured",
-            u64::from(pressure.live_page_summaries_measured),
+            u64::from(pressure.live_block_summaries_measured),
         ),
         (
             "expired_slot_object_scan_debt",
@@ -303,11 +303,11 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
                 "page_segments_reclaimed",
                 stage.block_slabs_reclaimed as u64,
             ),
-            ("pages_compacted", stage.pages_compacted as u64),
-            ("rewritten_page_refs", stage.rewritten_page_refs as u64),
+            ("pages_compacted", stage.blocks_compacted as u64),
+            ("rewritten_page_refs", stage.rewritten_block_refs as u64),
             ("manifest_pruned", stage.manifest_pruned_count as u64),
             ("metrics_slots", stage.metrics_bucket_count as u64),
-            ("metrics_page_refs", stage.metrics_page_ref_count),
+            ("metrics_page_refs", stage.metrics_block_ref_count),
         ] {
             append_storage_manager_phase_kind_value(
                 out,
@@ -324,7 +324,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
             ("live", stage.live_bytes),
             ("stale", stage.stale_bytes),
             ("reclaimed", stage.bytes_reclaimed),
-            ("page_reclaimed", stage.page_bytes_reclaimed),
+            ("page_reclaimed", stage.block_bytes_reclaimed),
             ("cache_disk_removed", stage.cache_disk_bytes_removed),
         ] {
             append_storage_manager_phase_kind_value(

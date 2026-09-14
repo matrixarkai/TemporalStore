@@ -14,19 +14,19 @@ impl BlockStore {
     ///
     /// Idempotent, and the last publish wins. Cheap: one map, once per maintenance round, sized
     /// by SLABS rather than by pages.
-    pub fn publish_live_page_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
+    pub fn publish_live_block_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .live_page_bytes = Some(live);
+            .live_block_bytes = Some(live);
     }
 
     /// What was last published, or `None` if nothing ever was.
-    pub fn published_live_page_bytes(&self) -> Option<BTreeMap<u64, BlockStoreSlabLive>> {
+    pub fn published_live_block_bytes(&self) -> Option<BTreeMap<u64, BlockStoreSlabLive>> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .live_page_bytes
+            .live_block_bytes
             .clone()
     }
 
@@ -42,7 +42,7 @@ impl BlockStore {
     /// stand, so a caller can tell "no live pages" from "no tally".
     pub fn slab_live_fractions(&self) -> Result<Vec<BlockStoreSlabLiveFraction>, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let published = inner.live_page_bytes.clone().unwrap_or_default();
+        let published = inner.live_block_bytes.clone().unwrap_or_default();
         let mut out = Vec::new();
         for block_slab_id in slab_ids_at(&inner.root)? {
             let physical_bytes = slab_path(&inner.root, block_slab_id)
@@ -69,7 +69,7 @@ impl BlockStore {
                 block_slab_id,
                 physical_bytes,
                 logical_bytes,
-                live_page_refs: live.live_page_refs,
+                live_block_refs: live.live_block_refs,
                 live_bytes,
                 live_basis_points,
                 garbage_basis_points: 10_000_u64.saturating_sub(live_basis_points),
@@ -302,7 +302,7 @@ impl BlockStore {
     ) -> Result<Vec<BlockStoreGcUtilityCandidate>, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let current_block_slab_id = inner.block_slab_id;
-        let published_live = inner.live_page_bytes.clone();
+        let published_live = inner.live_block_bytes.clone();
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let slab_ids = slab_ids_at(&inner.root)?;
         let mut slab_total_bytes = BTreeMap::<u64, u64>::new();
