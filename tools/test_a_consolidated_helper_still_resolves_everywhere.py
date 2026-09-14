@@ -74,6 +74,10 @@ CONSOLIDATED = {
     # published one is the home.
     "_cloud_resource_bucket": (
         "matrixark_mcp_core_resource_io", ("matrixark_mcp_resources",)),
+    # A HASHING PRIMITIVE, so the consequence of getting it wrong is every identity, scope key and
+    # embedding key derived through it. The two bodies were byte-identical and were checked against
+    # an independent implementation of the algorithm, not merely against each other.
+    "stable_hash": ("matrixark_mcp_identity", ("matrixark_mcp_core_identity",)),
 }
 
 
