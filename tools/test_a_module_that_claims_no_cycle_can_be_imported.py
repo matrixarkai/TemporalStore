@@ -3,9 +3,11 @@
 # Copyright 2026 MatrixArkAI
 """A module that says it has no import cycle must be importable on its own.
 
-Twenty-three modules in tools/ end their docstring with a claim that there is no import-time cycle.
-It was false in five of them, and a false claim of this kind is expensive: it is the first thing a
-reader checks when an import fails and the last thing they doubt, because the module says so.
+Modules in tools/ end their docstring with a claim that there is no import-time cycle -- this
+file derives which ones rather than counting them here, because the figure that used to sit in
+this sentence said twenty-three and had drifted to eighteen with nothing to notice. It was false
+in five of them, and a false claim of this kind is expensive: it is the first thing a reader
+checks when an import fails and the last thing they doubt, because the module says so.
 
 The claim is testable, so it is tested. Importing a module in a fresh interpreter with nothing else
 loaded is exactly what "no import-time cycle" asserts.

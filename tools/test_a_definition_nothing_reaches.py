@@ -88,11 +88,15 @@ def _already_recorded() -> set:
 #: fails too, because a list allowed to go stale describes a tree that no longer exists.
 UNREACHED = {
     # A request-level storage API that is accepted nowhere. `normalize_record_storage_options`
-    # validates a `record_storage_options` object keyed by record kind and nothing calls it;
-    # `normalize_part_storage_options` is a one-line alias of it, and `storage_part_for_record` a
-    # one-line alias of `storage_record_kind`. The ENVELOPE path for the same idea does work --
-    # `storage_options_for_record` reads `envelope["record_storage_options"]` -- so this is a
-    # half-wired feature rather than a dead one, and which half should go is a product call.
+    # validates a `record_storage_options` object keyed by record kind and nothing calls it. The
+    # ENVELOPE path for the same idea does work -- `storage_options_for_record` reads
+    # `envelope["record_storage_options"]` -- so this is a half-wired feature rather than a dead
+    # one, and which half should go is a product call.
+    #
+    # This comment used to name `normalize_part_storage_options` and `storage_part_for_record`
+    # as one-line aliases sitting beside them. Neither name exists anywhere in the repository:
+    # a grep for either returns one hit, this sentence. The only mention of those functions
+    # was the sentence asserting they were there.
     "matrixark_mcp_storage_options.py": ("normalize_record_storage_options",),
     # Two spellings of "the commonest memory layer among these refs", in two modules that both
     # also define `serving_ref_for_pack`. Neither is called.
