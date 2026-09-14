@@ -2495,3 +2495,354 @@ fn a_lapsed_deadline_hides_a_seen_set_and_a_token_bucket_from_their_own_reads() 
         "a bucket with no deadline must still exhaust",
     );
 }
+
+/// A context node whose deadline has passed must read as GONE from every `Context*` arm that
+/// reads it.
+///
+/// WHAT IS BEING DEFENDED. The same rule the seen-set and token-bucket test above defends, on
+/// the arms that hold the largest share of unguarded reads. A deadline is honoured in two
+/// places: the background sweep, and LAZY EXPIRY on the command path (`remove_if_expired`).
+/// The second is a PER-ARM obligation -- each arm has to call it -- and the `Context*` read
+/// arms never did. A context node past its deadline kept answering with its full record, and
+/// its embedding vector, for as long as it took a sweep round to collect it.
+///
+/// FAILURE DIRECTION. These fail OPEN, which is the more severe of the two directions. The
+/// four arms closed by the earlier work failed CLOSED -- a lapsed seen-set answered
+/// "duplicate" and suppressed work, a lapsed bucket answered "denied". These serve the
+/// CONTENT of a record whose deadline has passed: the node body, the canonical name, and the
+/// L0 embedding vector that a retrieval scores against. A tenant who set a TTL to bound how
+/// long a record may be read has that bound quietly not applied.
+///
+/// THE SWEEP IS DELIBERATELY NEVER RUN. Everything below is lazy expiry on the command path.
+///
+/// ONE CLAIM PER ARM, EACH BEHIND ITS OWN DENOMINATOR. Three arms read `ctx:node:` -- a
+/// single read, a batch read, and the embedding read -- and a combined count would report
+/// full from one and empty from another. Each is asserted to answer first, so a later empty
+/// means the record was discarded and not that the arm never worked.
+#[test]
+fn a_lapsed_deadline_hides_a_context_node_from_every_context_read() {
+    const TENANT: u64 = 7;
+    const NODE: u64 = 4242;
+    const PLAIN_NODE: u64 = 4243;
+
+    fn node_key(tenant_hash: u64, node_hash: u64) -> String {
+        format!("ctx:node:{tenant_hash}:{node_hash}")
+    }
+    fn upsert(engine: &TemporalEngine, node_hash: u64) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: Box::new(ContextNode {
+                    node_hash,
+                    parent_hash: 0,
+                    kind: 1,
+                    canonical_name: "n".to_string(),
+                    status: 1,
+                    last_event_time_ms: 0,
+                    raw_metadata_ref: String::new(),
+                    l0: "l0 text".to_string(),
+                    l1_ref: String::new(),
+                    vector: vec![1.0, 0.0, 0.0],
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
+                }),
+            },
+        });
+        assert!(response.status.ok, "upsert failed: {:?}", response.status);
+    }
+    fn get_node(engine: &TemporalEngine, node_hash: u64) -> Option<ContextNode> {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNode {
+                tenant_hash: TENANT,
+                node_hash,
+            },
+        });
+        assert!(response.status.ok, "get failed: {:?}", response.status);
+        match response.response {
+            CommandResponse::ContextNode { node, .. } => node,
+            other => panic!("expected a context node, got {other:?}"),
+        }
+    }
+    fn get_nodes(engine: &TemporalEngine, node_hash: u64) -> usize {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNodes {
+                tenant_hash: TENANT,
+                node_hashes: vec![node_hash],
+            },
+        });
+        assert!(response.status.ok, "batch get failed: {:?}", response.status);
+        match response.response {
+            CommandResponse::ContextNodes { nodes } => nodes.len(),
+            other => panic!("expected context nodes, got {other:?}"),
+        }
+    }
+    fn embeddings(engine: &TemporalEngine, node_hash: u64) -> usize {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryNodeEmbeddings {
+                tenant_hash: TENANT,
+                node_hashes: vec![node_hash],
+            },
+        });
+        assert!(response.status.ok, "embedding read failed: {:?}", response.status);
+        match response.response {
+            CommandResponse::ContextNodeEmbeddings { embeddings } => embeddings.len(),
+            other => panic!("expected context node embeddings, got {other:?}"),
+        }
+    }
+    fn arm(engine: &TemporalEngine, key: &str) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: key.to_string(),
+                ttl_ms: 1,
+            },
+        });
+        assert!(
+            response.status.ok,
+            "EXPIRE on {key} was refused ({:?}) -- if a context node cannot carry a deadline at \
+             all, everything below is vacuous",
+            response.status,
+        );
+    }
+    fn deadline_has_lapsed(engine: &TemporalEngine, key: &str) -> bool {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard
+            .expires_at_ms
+            .get(key)
+            .is_some_and(|expires_at| *expires_at <= now_ms())
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    upsert(&engine, NODE);
+    upsert(&engine, PLAIN_NODE);
+
+    // ---- DENOMINATORS: every arm below really answers for this node --------------------
+    assert!(
+        get_node(&engine, NODE).is_some(),
+        "the node must read back before its deadline, or a later None means it was never stored",
+    );
+    assert_eq!(get_nodes(&engine, NODE), 1, "the batch read must see the node first");
+    assert_eq!(
+        embeddings(&engine, NODE),
+        1,
+        "the node must carry a readable embedding first",
+    );
+
+    // ---- the deadline is set, and it really lapses -------------------------------------
+    arm(&engine, &node_key(TENANT, NODE));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert!(
+        deadline_has_lapsed(&engine, &node_key(TENANT, NODE)),
+        "the node's deadline must have lapsed before anything is claimed about it",
+    );
+
+    // ---- THE THREE CLAIMS, one arm at a time -------------------------------------------
+    assert_eq!(
+        get_node(&engine, NODE),
+        None,
+        "ContextGetNode still serves the body of a node whose deadline has passed",
+    );
+    assert_eq!(
+        get_nodes(&engine, NODE),
+        0,
+        "ContextGetNodes still serves a node whose deadline has passed",
+    );
+    assert_eq!(
+        embeddings(&engine, NODE),
+        0,
+        "ContextQueryNodeEmbeddings still serves the embedding vector of a node whose deadline \
+         has passed, so a retrieval keeps scoring against it",
+    );
+
+    // ---- CONTROL: a node that never carried a deadline is untouched --------------------
+    // Without this, every claim above would also pass if the arms had simply stopped reading.
+    assert!(
+        get_node(&engine, PLAIN_NODE).is_some(),
+        "a node with no deadline must still read back",
+    );
+    assert_eq!(
+        get_nodes(&engine, PLAIN_NODE),
+        1,
+        "a node with no deadline must still appear in a batch read",
+    );
+    assert_eq!(
+        embeddings(&engine, PLAIN_NODE),
+        1,
+        "a node with no deadline must still surface its embedding",
+    );
+}
+
+/// Every command arm that can read a key carrying a deadline must consult that deadline, and
+/// an arm that does not must say why.
+///
+/// WHY A GUARD AND NOT JUST THE FIXES. The read-time half of expiry is a PER-CALL-SITE
+/// obligation. `execute_on_shard` is one `match` with one arm per command, and each arm has to
+/// remember to call `remove_if_expired` (or `drop_if_expired`, which wraps it). Ninety-four
+/// call sites of a rule is ninety-four chances to forget it, and they have been forgotten
+/// twice now: four arms were found by one audit, and thirty-two more by the next. Nothing in
+/// the type system or the compiler notices, because forgetting is spelled as the absence of a
+/// line. So the absence is what this reads.
+///
+/// A CHOKE POINT WOULD BE BETTER, AND IS NOT AVAILABLE HERE. The obvious shape is one
+/// object-read function taking a check-expiry flag that every arm goes through. Ours has no
+/// such funnel: the `Context*` arms index `shard.context_*` directly and then read a page by
+/// ADDRESS, and an address does not know its key, so the page reader cannot consult a
+/// deadline. Hoisting the check above the `match` was considered and rejected for two
+/// reasons, both recorded here so it is not re-proposed:
+///
+///   * It would invert the `if remove_if_expired(...) { ... return }` branch in the arms that
+///     already guard. Those early returns also invalidate the cache entry for the key; a
+///     pre-pass that consumed the removal would send them down the fall-through path instead,
+///     where `cached_response` can answer from the cached copy of the record just removed.
+///   * It would need a key derivation per command in one place, away from the arm that reads
+///     the key -- and a derivation that named the wrong key would leave the arm unguarded
+///     while making THIS guard pass, because every arm would be "covered" by the pre-pass.
+///     The fix would have removed the site the scan watches.
+///
+/// So the call stays in the arm, beside the key it is about, and this counts the arms.
+///
+/// THE EXEMPTIONS ARE HAND-WRITTEN, AND THAT IS THE POINT. They are not derived from the code
+/// being checked -- a guard that built its own exemption list from the arms it found would
+/// pass no matter what the arms did. A new command arm is unguarded and unlisted, so it fails
+/// here until someone decides which it is.
+#[test]
+fn execute_on_shard_guards_every_arm_that_can_hold_a_deadline() {
+    const SOURCE: &str = include_str!("../execute_on_shard.rs");
+
+    // The two spellings that discharge the obligation. `drop_if_expired` wraps
+    // `remove_if_expired` and also drops the cache entry.
+    const GUARDS: [&str; 2] = ["remove_if_expired", "drop_if_expired"];
+
+    // Arms that read no key able to carry a deadline, each with the reason. `EXPIRE` only
+    // records a deadline for a key `record_exists_exact` can see, and only
+    // `delete_record_exact` collects one, so "cannot hold a deadline" means: not in those.
+    const EXEMPT: [(&str, &str); 8] = [
+        ("LeaderEstablish", "touches no object at all; `command_object_keys` gives it none"),
+        (
+            "ContextResourceBlobBegin",
+            "heads the six blob variants, which are dispatched before the shard lock -- blobs \
+             live beside the engine, not in shard record state, and carry no deadline",
+        ),
+        (
+            "CommonDelete",
+            "deletes the record unconditionally and answers Empty either way, so the expired \
+             and the live case are already the same command with the same answer",
+        ),
+        ("CommonTtl", "guards through `ttl_ms`, which calls `remove_if_expired` first"),
+        (
+            "ContextMarkSummaryDirty",
+            "reads only `context_dirty_index`, an ephemeral in-memory map that \
+             `record_exists_exact` cannot see and `delete_record_exact` does not touch",
+        ),
+        ("ContextQuerySummaryDirty", "reads only `context_dirty_index`; see above"),
+        (
+            "ContextMarkEmbeddingDirty",
+            "reads only `context_embedding_dirty_index`, ephemeral in the same way",
+        ),
+        ("ContextQueryEmbeddingDirty", "reads only `context_embedding_dirty_index`; see above"),
+    ];
+
+    // ---- the arms, and their DENOMINATOR ----------------------------------------------
+    let mut arms: Vec<(String, usize)> = Vec::new();
+    for (index, line) in SOURCE.lines().enumerate() {
+        let Some(rest) = line.strip_prefix("        Command::") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            arms.push((name, index + 1));
+        }
+    }
+    assert!(
+        arms.len() > 80,
+        "VACUITY: the arm scan found only {} arms in execute_on_shard.rs. Either the file moved \
+         or the `        Command::` shape changed, and this guard is reading nothing.",
+        arms.len(),
+    );
+
+    // ---- split each arm's body at the next arm ----------------------------------------
+    let lines: Vec<&str> = SOURCE.lines().collect();
+    let starts: Vec<usize> = arms.iter().map(|(_, line)| line - 1).collect();
+    let mut unguarded: Vec<(String, usize)> = Vec::new();
+    let mut guarded = 0usize;
+    for (index, (name, line)) in arms.iter().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(lines.len());
+        let body = lines[starts[index]..end].join("\n");
+        if GUARDS.iter().any(|guard| body.contains(guard)) {
+            guarded += 1;
+        } else {
+            unguarded.push((name.clone(), *line));
+        }
+    }
+    assert!(
+        guarded > 60,
+        "VACUITY: only {guarded} of {} arms were read as guarded. A rewrite that changed how the \
+         check is spelled would blind this guard exactly this way.",
+        arms.len(),
+    );
+
+    // ---- POSITIVE CONTROL: the scan can tell the two apart ----------------------------
+    // Without this, a scan that matched nothing would report every arm unguarded, and a scan
+    // that matched everything would report none -- and either could be mistaken for a result.
+    let exempt_names: Vec<&str> = EXEMPT.iter().map(|(name, _)| *name).collect();
+    for name in &exempt_names {
+        assert!(
+            arms.iter().any(|(arm, _)| arm == name),
+            "the exemption for `{name}` names an arm that no longer exists. A stale exemption \
+             silently excuses nothing and hides the arm that replaced it -- remove it, or point \
+             it at the arm that took its place.",
+        );
+    }
+    assert!(
+        unguarded.iter().any(|(name, _)| name == "LeaderEstablish"),
+        "CONTROL: `LeaderEstablish` contains no expiry check and must be read as unguarded. It \
+         is not, so this scan is matching something other than what it claims.",
+    );
+    assert!(
+        !unguarded.iter().any(|(name, _)| name == "StringGet"),
+        "CONTROL: `StringGet` calls `remove_if_expired` on its first line and must be read as \
+         guarded. It is not, so this scan is missing real checks.",
+    );
+
+    // ---- THE CLAIM --------------------------------------------------------------------
+    let surprises: Vec<String> = unguarded
+        .iter()
+        .filter(|(name, _)| !exempt_names.contains(&name.as_str()))
+        .map(|(name, line)| format!("  Command::{name} at execute_on_shard.rs:{line}"))
+        .collect();
+    assert!(
+        surprises.is_empty(),
+        "{} of {} command arms neither consult a deadline nor are listed as unable to hold \
+         one:\n{}\n\nA key whose deadline has passed must not be visible to a read. Either call \
+         `drop_if_expired(cache, shard_id, shard, &key)` with the key the arm reads, or add the \
+         arm to EXEMPT above WITH THE REASON it cannot hold a deadline -- which means it is in \
+         neither `record_exists_exact` (so EXPIRE cannot record one) nor `delete_record_exact` \
+         (so no sweep collects one).",
+        surprises.len(),
+        arms.len(),
+        surprises.join("\n"),
+    );
+
+    // ---- and the exemptions stay a short, argued list ---------------------------------
+    assert_eq!(
+        unguarded.len(),
+        EXEMPT.len(),
+        "every unguarded arm is accounted for, but the counts disagree: {} unguarded against {} \
+         exemptions. An exemption that excuses nothing should go.",
+        unguarded.len(),
+        EXEMPT.len(),
+    );
+}

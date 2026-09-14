@@ -2026,4 +2026,118 @@ mod tests {
             ])])
         );
     }
+
+    /// A key whose deadline has passed must not appear in KEYS, SCAN, RANDOMKEY or DBSIZE.
+    ///
+    /// WHAT IS BEING DEFENDED. These four commands do not ask the engine anything. They read
+    /// `RedisCommandState::keyspace`, a per-connection `HashSet<String>` that this connection
+    /// appends to as it writes. The set holds names and nothing else -- no deadline, no
+    /// pointer to one -- so nothing in the path that answers KEYS can tell a live key from
+    /// one whose deadline passed an hour ago. The sweep removes the record from the shard but
+    /// has no way to reach into a connection's mirror, so the NAME stays in KEYS output
+    /// indefinitely, for the life of the connection.
+    ///
+    /// FAILURE DIRECTION: OPEN. GET on the same key already answers nil -- StringGet has
+    /// called `remove_if_expired` all along -- so the two reads of one key disagree, and the
+    /// one that keeps answering is the enumerating one. A caller listing a tenant's keys to
+    /// decide what still exists is told a key exists that every other read says is gone.
+    ///
+    /// THE CONTROL IS THE POINT. A key with no deadline must still be listed, still be
+    /// counted, and still be reachable by RANDOMKEY. Filtering the mirror is only correct if
+    /// it filters exactly the lapsed key; a filter that emptied the listing would satisfy
+    /// every claim below without the control.
+    #[test]
+    fn a_lapsed_deadline_hides_a_key_from_keys_scan_randomkey_and_dbsize() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect(),
+                1,
+                state,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        // ---- DENOMINATORS: both keys exist, and all four commands see both -------------
+        assert_eq!(
+            run(&mut state, vec!["SET", "ttlscan:lapsed", "v"]),
+            RespValue::SimpleString("OK".to_string()),
+        );
+        assert_eq!(
+            run(&mut state, vec!["SET", "ttlscan:plain", "v"]),
+            RespValue::SimpleString("OK".to_string()),
+        );
+        assert_eq!(
+            run(&mut state, vec!["KEYS", "ttlscan:*"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"ttlscan:lapsed".to_vec())),
+                RespValue::Bulk(Some(b"ttlscan:plain".to_vec())),
+            ]),
+            "both keys must be listed first, or a later shorter listing proves nothing",
+        );
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(2));
+
+        // ---- the deadline is set, and it really lapses ---------------------------------
+        assert_eq!(
+            run(&mut state, vec!["PEXPIRE", "ttlscan:lapsed", "1"]),
+            RespValue::Integer(1),
+            "PEXPIRE was refused -- if this key cannot carry a deadline, everything below is \
+             vacuous",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            run(&mut state, vec!["GET", "ttlscan:lapsed"]),
+            RespValue::Bulk(None),
+            "GET must already report the key gone -- that is the answer KEYS has to agree with",
+        );
+
+        // ---- THE FOUR CLAIMS ----------------------------------------------------------
+        assert_eq!(
+            run(&mut state, vec!["KEYS", "ttlscan:*"]),
+            RespValue::Array(vec![RespValue::Bulk(Some(b"ttlscan:plain".to_vec()))]),
+            "KEYS still lists a key whose deadline has passed",
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["SCAN", "0", "MATCH", "ttlscan:*", "COUNT", "10"]
+            ),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"0".to_vec())),
+                RespValue::Array(vec![RespValue::Bulk(Some(b"ttlscan:plain".to_vec()))]),
+            ]),
+            "SCAN still returns a key whose deadline has passed",
+        );
+        assert_eq!(
+            run(&mut state, vec!["DBSIZE"]),
+            RespValue::Integer(1),
+            "DBSIZE still counts a key whose deadline has passed",
+        );
+        assert_eq!(
+            run(&mut state, vec!["RANDOMKEY"]),
+            RespValue::Bulk(Some(b"ttlscan:plain".to_vec())),
+            "RANDOMKEY can still hand back a key whose deadline has passed",
+        );
+
+        // ---- CONTROL: the key with no deadline survives all four -----------------------
+        assert_eq!(
+            run(&mut state, vec!["GET", "ttlscan:plain"]),
+            RespValue::Bulk(Some(b"v".to_vec())),
+            "the key with no deadline must still hold its value",
+        );
+    }
 }

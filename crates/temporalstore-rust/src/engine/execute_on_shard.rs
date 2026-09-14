@@ -141,6 +141,40 @@ fn write_context_node(
     wrote
 }
 
+/// The read-time half of a deadline, at the one spelling every arm uses.
+///
+/// A deadline is honoured in two places and both have to agree: the background sweep, which
+/// collects the key eventually, and this, which makes the key read as gone the instant its
+/// deadline passes. Without the second, a key stays visible -- and answers with real data --
+/// for the whole interval between its deadline and whichever sweep round collects it.
+///
+/// It is a PER-CALL-SITE obligation: `execute_on_shard` has one arm per command and each one
+/// has to remember. So it is spelled once here and called, and
+/// `execute_on_shard_guards_every_arm_that_can_hold_a_deadline` fails when an arm appears
+/// that calls neither this nor `remove_if_expired` and is not listed as exempt with a reason.
+///
+/// COST. `remove_if_expired` returns on an `is_empty` when the shard holds no deadlines at
+/// all, and otherwise examines only the key it is given plus the three control-state families
+/// derived from it. It never walks the keyspace, so the O(due) cost of an expiry round is
+/// untouched. The cache sweep below runs only when a record was actually dropped -- once per
+/// expired key, not once per read.
+///
+/// THE CACHE GOES WITH THE RECORD. Dropping the record and leaving its cached copy would let
+/// the very next read answer from the copy, which is the bug this exists to close.
+fn drop_if_expired(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+) -> bool {
+    if remove_if_expired(shard, key) {
+        invalidate_record_all(cache, shard_id, key);
+        true
+    } else {
+        false
+    }
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
@@ -190,6 +224,11 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::CommonExpire { key, ttl_ms } => {
+            // Expired-but-unswept is "missing" here, exactly as `CommonPersist` treats it
+            // and exactly as reads do. Without this, `record_exists_exact` below still sees
+            // the unswept record and the deadline is RE-ARMED, bringing back a key that
+            // every read already answers is gone.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let expires_at = resolve_now_ms().saturating_add(ttl_ms);
             for record_key in associated_record_keys(&key) {
                 if record_exists_exact(shard, &record_key) {
@@ -448,6 +487,7 @@ pub(crate) fn execute_on_shard(
             })
         }
         Command::StringDelete { key } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             stage_meta_outcome(
                 shard_id,
                 "string",
@@ -667,6 +707,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::HashDelete { key, field } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             mutated |=
                 mark_bucket_index_page_deleted(shard, shard_id, "hash", &key, Some(field.as_str()));
             if let Some(fields) = shard.hashes.get_mut(&key) {
@@ -785,6 +826,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::ZSetRemove { key, member } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let removed = shard
                 .zsets
                 .get_mut(&key)
@@ -1312,6 +1354,7 @@ pub(crate) fn execute_on_shard(
             })
         }
         Command::SetRemove { key, member } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let member_component = hex::encode(&member);
             mutated |= mark_bucket_index_page_deleted(
                 shard,
@@ -1633,6 +1676,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::FeatureDelete { key } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             // A removal with no component: the whole series went, not one point.
             stage_meta_outcome(
                 shard_id,
@@ -1644,7 +1688,7 @@ pub(crate) fn execute_on_shard(
                 None,
                 true,
             );
-            mutated = shard.features.remove(&key).is_some();
+            mutated |= shard.features.remove(&key).is_some();
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
@@ -2494,6 +2538,15 @@ pub(crate) fn execute_on_shard(
             tenant_hash,
             node_hashes,
         } => {
+            let node_hashes = dedupe_nonzero_u64_preserve_order(node_hashes);
+            for node_hash in node_hashes.iter().copied() {
+                mutated |= drop_if_expired(
+                    cache,
+                    shard_id,
+                    shard,
+                    &context_node_key(tenant_hash, node_hash),
+                );
+            }
             // One node read per hash, and the vector comes back with it -- where the separate
             // record meant a second lookup per node on top of the node read retrieval does
             // anyway.
@@ -2502,7 +2555,7 @@ pub(crate) fn execute_on_shard(
             // caller already holds, so truncating it drops nodes the caller named, with nothing in
             // the response saying so. The sibling `ContextGetNodes` reads its whole batch, and
             // `command_validation` already declares a key for every hash in this one.
-            let embeddings = dedupe_nonzero_u64_preserve_order(node_hashes)
+            let embeddings = node_hashes
                 .into_iter()
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
@@ -2534,6 +2587,7 @@ pub(crate) fn execute_on_shard(
             // here on, so a reader that has fetched the node has already paid for the vector --
             // no second key, no second block, and no hash to invert.
             let object_key = context_node_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let existing = load_context_node(cache, page_store, shard_id, shard, &object_key);
             match existing {
                 // No node to attach to. Writing a placeholder here would invent a node that
@@ -2567,6 +2621,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
             let object_key = context_node_key(tenant_hash, node.node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             mutated |= write_context_node(
                 cache,
                 page_store,
@@ -2585,6 +2640,7 @@ pub(crate) fn execute_on_shard(
             node_hash,
         } => {
             let object_key = context_node_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let node = shard
                 .hashes
                 .get(&object_key)
@@ -2600,7 +2656,19 @@ pub(crate) fn execute_on_shard(
             tenant_hash,
             node_hashes,
         } => {
-            let nodes = dedupe_nonzero_u64_preserve_order(node_hashes)
+            // The guard runs over the same hashes the read below uses, in a pass of its own:
+            // the read borrows the shard for the whole closure, so the check cannot run
+            // inside it.
+            let node_hashes = dedupe_nonzero_u64_preserve_order(node_hashes);
+            for node_hash in node_hashes.iter().copied() {
+                mutated |= drop_if_expired(
+                    cache,
+                    shard_id,
+                    shard,
+                    &context_node_key(tenant_hash, node_hash),
+                );
+            }
+            let nodes = node_hashes
                 .into_iter()
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
@@ -2625,6 +2693,7 @@ pub(crate) fn execute_on_shard(
             cold_storage,
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             normalize_context_event_storage_keys(node_hash, &mut event);
             // CONTEXT_TIMELINE_FANOUT is applied inside context_timeline_key so
             // multiple ContextEvent writes at the same millisecond map to stable,
@@ -2698,6 +2767,7 @@ pub(crate) fn execute_on_shard(
             cold_storage,
         } => {
             let event_object_key = context_event_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &event_object_key);
             normalize_context_event_storage_keys(node_hash, &mut event);
             let primary_time_ms = event.primary_time_ms();
             // Extracted events use the same CONTEXT_TIMELINE_FANOUT timeline as
@@ -2841,6 +2911,7 @@ pub(crate) fn execute_on_shard(
             min_importance,
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let scan_limit = context_limit(max_scan);
             let events = shard
                 .context_events
@@ -2894,6 +2965,7 @@ pub(crate) fn execute_on_shard(
         } => {
             let object_key =
                 context_index_key(tenant_hash, &index_name, index_value_hash, scope_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let timeline_key = context_timeline_key(event_time_ms, index_ref.event_id_hash);
             let value = context_bytes(&index_ref);
             let routing_bucket =
@@ -2933,6 +3005,7 @@ pub(crate) fn execute_on_shard(
         } => {
             let object_key =
                 context_index_key(tenant_hash, &index_name, index_value_hash, scope_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let refs = shard
                 .context_indexes
                 .get(&object_key)
@@ -2962,6 +3035,19 @@ pub(crate) fn execute_on_shard(
             predicates,
             limit,
         } => {
+            for predicate in &predicates {
+                mutated |= drop_if_expired(
+                    cache,
+                    shard_id,
+                    shard,
+                    &context_index_key(
+                        tenant_hash,
+                        &predicate.index_name,
+                        predicate.index_value_hash,
+                        predicate.scope_hash,
+                    ),
+                );
+            }
             let mut scanned_ref_count = 0usize;
             let mut deduped_ref_count = 0usize;
             let mut candidate_refs: Option<HashMap<(u64, u64, u64), ContextIndexRef>> = None;
@@ -3027,6 +3113,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::ContextWritePackAudit { tenant_hash, audit } => {
             let object_key = context_audit_key(tenant_hash, audit.session_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let timeline_key =
                 context_timeline_key(audit.request_time_ms, stable_object_hash(&audit.query_id));
             let value = context_bytes(&audit);
@@ -3064,6 +3151,7 @@ pub(crate) fn execute_on_shard(
             limit,
         } => {
             let object_key = context_audit_key(tenant_hash, session_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let audits = shard
                 .context_audits
                 .get(&object_key)
@@ -3268,6 +3356,8 @@ pub(crate) fn execute_on_shard(
             // hash, so the entity's own key no longer occupies a map slot of its own.
             let object_key = context_entity_key(tenant_hash, entity.node_hash, entity.entity_hash);
             let collection_key = context_entity_collection_key(tenant_hash, entity.node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &collection_key);
             let collection_key_for_response = collection_key.clone();
             let object_id = stable_page_object_id(shard_id, "context_entity", &object_key, None);
             let routing_bucket =
@@ -3314,6 +3404,7 @@ pub(crate) fn execute_on_shard(
         } => {
             let collection_key = context_entity_collection_key(tenant_hash, node_hash);
             let object_key = collection_key.clone();
+            mutated |= drop_if_expired(cache, shard_id, shard, &collection_key);
             let entity = shard
                 .context_entities
                 .get(&collection_key)
@@ -3331,6 +3422,7 @@ pub(crate) fn execute_on_shard(
             limit,
         } => {
             let object_key = context_entity_collection_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let series = shard.context_entities.get(&object_key);
             let read_entity = |address: &BlockAddress| {
                 read_page_bytes(cache, page_store, shard_id, address)
@@ -3364,6 +3456,7 @@ pub(crate) fn execute_on_shard(
             child_ref,
         } => {
             let object_key = context_child_key(tenant_hash, child_ref.parent_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let existing = load_context_children(cache, page_store, shard_id, shard, &object_key);
             let created = existing
                 .iter()
@@ -3411,6 +3504,7 @@ pub(crate) fn execute_on_shard(
             limit,
         } => {
             let object_key = context_child_key(tenant_hash, parent_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let mut refs = load_context_children(cache, page_store, shard_id, shard, &object_key);
             refs.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             // Keep the NEWEST `limit`, not the oldest. Sorting ascending and truncating handed back
@@ -3441,6 +3535,13 @@ pub(crate) fn execute_on_shard(
             max_candidate_nodes,
             leaf_only,
         } => {
+            // The walk starts at one node and follows the children it finds. Those two keys
+            // are what this arm names; a node dropped further down the walk is the sweep's
+            // job, not a read's.
+            let start_node_key = context_node_key(tenant_hash, start_node_hash);
+            let start_child_key = context_child_key(tenant_hash, start_node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &start_node_key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &start_child_key);
             let nodes = traverse_context_tree(
                 cache,
                 page_store,
@@ -3462,6 +3563,7 @@ pub(crate) fn execute_on_shard(
             summary,
         } => {
             let object_key = context_summary_key(tenant_hash, summary.node_hash, summary.level);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let timeline_key =
                 context_timeline_key(summary.valid_from_ms, u64::from(summary.level));
             let routing_bucket =
@@ -3549,6 +3651,7 @@ pub(crate) fn execute_on_shard(
             limit,
         } => {
             let object_key = context_summary_key(tenant_hash, node_hash, level);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let mut summaries = load_context_summaries(
                 cache,
                 page_store,
@@ -3570,11 +3673,20 @@ pub(crate) fn execute_on_shard(
             level,
             as_of_ms,
         } => {
+            let node_hashes = dedupe_nonzero_u64_preserve_order(node_hashes);
+            for node_hash in node_hashes.iter().copied() {
+                mutated |= drop_if_expired(
+                    cache,
+                    shard_id,
+                    shard,
+                    &context_summary_key(tenant_hash, node_hash, level),
+                );
+            }
             // One summary read per node -- the same per-node cost the separate embedding rows
             // had, minus the second keyspace. Only the newest summary at or before `as_of_ms`
             // is consulted; a summary carrying no vector contributes nothing, so the caller can
             // tell "not embedded" apart from "not summarized" by the node's absence here.
-            let vectors = dedupe_nonzero_u64_preserve_order(node_hashes)
+            let vectors = node_hashes
                 .into_iter()
                 .filter_map(|node_hash| {
                     let object_key = context_summary_key(tenant_hash, node_hash, level);
@@ -3602,6 +3714,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::ContextWriteCompressionEvent { tenant_hash, event } => {
             let object_key = context_compression_key(tenant_hash, event.node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let timeline_key =
                 context_timeline_key(event.compressed_time_ms, event.compression_id_hash);
             let routing_bucket =
@@ -3640,6 +3753,14 @@ pub(crate) fn execute_on_shard(
             end_time_ms,
             limit,
         } => {
+            for node_hash in node_hashes.iter().copied().filter(|node_hash| *node_hash != 0) {
+                mutated |= drop_if_expired(
+                    cache,
+                    shard_id,
+                    shard,
+                    &context_compression_key(tenant_hash, node_hash),
+                );
+            }
             let mut events = load_context_compression_events(
                 cache,
                 page_store,
@@ -3677,6 +3798,9 @@ pub(crate) fn execute_on_shard(
             min_importance,
         } => {
             let object_key = context_compression_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
+            let source_event_key = context_event_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &source_event_key);
             let source_limit = context_limit(max_source_events);
             let mut selected = shard
                 .context_events
@@ -3764,6 +3888,7 @@ pub(crate) fn execute_on_shard(
             compression_limit,
         } => {
             let node_key = context_node_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &node_key);
             let node = shard
                 .hashes
                 .get(&node_key)

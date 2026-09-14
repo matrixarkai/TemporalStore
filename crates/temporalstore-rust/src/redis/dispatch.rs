@@ -75,7 +75,11 @@ pub fn execute_redis_command_with_state(
         "PCLUSTERHASH" if args.len() == 2 => {
             RespValue::Integer(stable_key_hash(String::from_utf8_lossy(&args[1]).as_ref()) as i64)
         }
-        "DBSIZE" if args.len() == 1 => RespValue::Integer(state.keyspace.len() as i64),
+        // Not `state.keyspace.len()`: the mirror holds names, and a name whose deadline has
+        // passed is not a key. See `live_matching_keys`.
+        "DBSIZE" if args.len() == 1 => {
+            RespValue::Integer(live_matching_keys("*", state, &mut execute).len() as i64)
+        }
         "TYPE" if args.len() == 2 => redis_type_response(&args[1], &mut execute),
         "GET" if args.len() == 2 => bytes_response(execute(Command::StringGet {
             key: string_arg(&args[1]),
@@ -340,7 +344,7 @@ pub fn execute_redis_command_with_state(
             }
             RespValue::Integer(touched)
         }
-        "RANDOMKEY" if args.len() == 1 => sorted_matching_keys("*", state)
+        "RANDOMKEY" if args.len() == 1 => live_matching_keys("*", state, &mut execute)
             .into_iter()
             .next()
             .map(|key| RespValue::Bulk(Some(key.into_bytes())))
@@ -1213,8 +1217,8 @@ pub fn execute_redis_command_with_state(
         "SUNION" if args.len() >= 2 => {
             set_algebra_response(&args[1..], SetAlgebraOp::Union, &mut execute)
         }
-        "KEYS" if args.len() == 2 => redis_keys_response(&args[1], state),
-        "SCAN" if args.len() >= 2 => redis_scan_response(&args, state),
+        "KEYS" if args.len() == 2 => redis_keys_response(&args[1], state, &mut execute),
+        "SCAN" if args.len() >= 2 => redis_scan_response(&args, state, &mut execute),
         "FAPPEND" if args.len() == 4 => match parse_u64(&args[2], "timestamp_ms") {
             Ok(timestamp_ms) => status_ok(execute(Command::FeatureAppend {
                 key: string_arg(&args[1]),
