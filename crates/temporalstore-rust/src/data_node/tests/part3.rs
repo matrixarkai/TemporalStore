@@ -254,7 +254,7 @@ fn a_large_log_dumps_on_bytes_while_the_record_count_still_says_wait() {
     // assertion was the BYTE threshold's doing and not the record count quietly being satisfied.
     let without_bytes = StorageManagerOptions {
         min_undumped_wal_bytes: 0,
-        ..options
+        ..options.clone()
     };
     let control = runtime.run_storage_manager_once(1, without_bytes);
     assert!(
@@ -268,7 +268,7 @@ fn a_large_log_dumps_on_bytes_while_the_record_count_still_says_wait() {
     // is exactly how the preallocated segment size passed it before.
     let above_what_was_written = StorageManagerOptions {
         min_undumped_wal_bytes: 64 * 1024,
-        ..options
+        ..options.clone()
     };
     let still_delayed = runtime.run_storage_manager_once(1, above_what_was_written);
     assert!(
@@ -3714,6 +3714,232 @@ fn the_periodic_loop_actually_reclaims_the_write_ahead_log() {
     assert_eq!(
         control_after, control_before,
         "with reclaim_wal disabled nothing may shrink the log: {control_before} -> {control_after}"
+    );
+}
+
+/// A retention cursor handed to the loop a server actually starts must reach all three decisions.
+///
+/// The engine has honoured these cursors for some time, but only as ARGUMENTS.
+/// `StorageManagerCycleRequest` carries the two lists and is reachable over the wire
+/// (`POST /storage_manager/cycle`); `StorageManagerOptions` carried neither, and
+/// `start_storage_manager_scheduler_for_all_shards` -- the loop server.rs starts unconditionally
+/// every 30 s -- takes `StorageManagerOptions`. So the default entry point was the one that could
+/// not be told about a reader, and all four of its lifecycle requests plus both of its plan calls
+/// passed `Vec::new()` because there was nothing else to pass.
+///
+/// THE THREE HALVES ARE ASSERTED SEPARATELY, each behind its own denominator, because they are
+/// three decisions reached in three files and they are not equally reversible. The write-ahead log
+/// floor (`storage_wal_reclaim_plan` -> `gc_before_sequence`) drops records; the index-log floor
+/// (`apply_periodic_index_gc` -> `gc_before_sequence_limited`) drops index-log records; the prune
+/// (`bucket_dump_manifest_prune_plan_at`) deletes DUMPS, and a deleted dump is the thing a node
+/// rebuilt through `POST /server/storage/dumps/install` would have restored from -- unlike a
+/// reclaimed log record, nothing regenerates it.
+///
+/// A count across them reads full on any one, which is exactly the shape that let this sit unfed:
+/// the mechanism was whole and well covered at the engine's own entry. The third half is here
+/// because the mutation run PROVED it was needed -- with two halves this guard passed with
+/// `apply_periodic_index_gc` reverted, one fix live and one silently unguarded.
+///
+/// Each half carries a CONTROL arm with no cursor, so "the cursor held it" cannot be satisfied by
+/// a round that simply did no work.
+#[test]
+fn a_retention_cursor_reaches_the_loop_a_server_actually_starts() {
+    fn build(dir: &std::path::Path, records: usize) -> TemporalEngine {
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.join("cache"),
+            dir.join("pages"),
+            dir.join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("retention-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        engine
+    }
+    fn run(engine: TemporalEngine, options: StorageManagerOptions) -> TemporalEngine {
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        for _ in 0..4 {
+            runtime.run_storage_manager_once(1, options.clone());
+        }
+        runtime.engine()
+    }
+    // Sequence 1 in both logs: behind everything this fixture writes, and still above zero, so the
+    // plan clamps to it rather than refusing outright (a zero floor reclaims nothing and would
+    // make this pass for the wrong reason).
+    fn pinned() -> StorageManagerOptions {
+        StorageManagerOptions {
+            follower_replay_cursors: vec![crate::engine::reports::BucketDumpFollowerReplayCursor {
+                follower_id: "reader-held-behind".to_string(),
+                shard_id: 1,
+                wal_sequence: 1,
+                index_log_sequence: 1,
+            }],
+            ..StorageManagerOptions::default()
+        }
+    }
+
+    let records = StorageManagerOptions::default().min_undumped_wal_records as usize + 256;
+
+    // ---- HALF ONE: the write-ahead log floor. Its own denominator and its own control. ----
+    fn wal_records(engine: &TemporalEngine) -> usize {
+        engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .expect("scan")
+            .len()
+    }
+
+    let wal_control_dir = tempfile::tempdir().unwrap();
+    let wal_control = build(wal_control_dir.path(), records);
+    let wal_before = wal_records(&wal_control);
+    assert!(
+        wal_before > 0,
+        "DENOMINATOR: the fixture must leave write-ahead log records to reclaim, got {wal_before}"
+    );
+    let wal_control = run(wal_control, StorageManagerOptions::default());
+    let wal_control_after = wal_records(&wal_control);
+    assert!(
+        wal_control_after < wal_before,
+        "CONTROL: with no cursor the loop must reclaim this log, or the treatment below proves \
+         nothing: {wal_before} records before, {wal_control_after} after"
+    );
+
+    let wal_pinned_dir = tempfile::tempdir().unwrap();
+    let wal_pinned = build(wal_pinned_dir.path(), records);
+    let wal_pinned_before = wal_records(&wal_pinned);
+    let wal_pinned = run(wal_pinned, pinned());
+    let wal_pinned_after = wal_records(&wal_pinned);
+    assert!(
+        wal_pinned_after > wal_control_after,
+        "a cursor at sequence 1 must hold the log the uncursored arm freed: cursored kept \
+         {wal_pinned_after} of {wal_pinned_before}, uncursored kept {wal_control_after} of \
+         {wal_before}"
+    );
+
+    // ---- HALF TWO: the bucket-dump manifest prune. Its own denominator and its own control. ----
+    //
+    // This half is the one the log counts above cannot see. It is reached through a DIFFERENT
+    // request field on a DIFFERENT stage (`reclaim_index`, the only one of the four carrying
+    // `prune_bucket_dump_manifests: true`), so half one can pass with this still unfed.
+    fn manifest_count(engine: &TemporalEngine) -> usize {
+        engine.list_bucket_dump_manifests(1).len()
+    }
+    fn build_with_dumps(dir: &std::path::Path) -> TemporalEngine {
+        let engine = build(dir, 64);
+        // Several generations, so there are older dumps for a prune to take. Each write dirties
+        // the same bucket again, so each manifest sits above the last.
+        for generation in 0..3 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "retention-anchor".to_string(),
+                    value: format!("generation-{generation}").into_bytes(),
+                },
+            });
+            engine
+                .create_bucket_dump_manifest(1, Vec::new())
+                .expect("fixture dump manifest");
+        }
+        engine
+    }
+
+    let prune_control_dir = tempfile::tempdir().unwrap();
+    let prune_control = build_with_dumps(prune_control_dir.path());
+    let prune_before = manifest_count(&prune_control);
+    assert!(
+        prune_before >= 2,
+        "DENOMINATOR: pruning is vacuous without older dumps to take, got {prune_before}"
+    );
+    let prune_control = run(prune_control, StorageManagerOptions::default());
+    let prune_control_after = manifest_count(&prune_control);
+    assert!(
+        prune_control_after < prune_before,
+        "CONTROL: with no cursor the loop must prune older dumps, or the treatment below proves \
+         nothing: {prune_before} manifests before, {prune_control_after} after"
+    );
+
+    let prune_pinned_dir = tempfile::tempdir().unwrap();
+    let prune_pinned = build_with_dumps(prune_pinned_dir.path());
+    let prune_pinned_before = manifest_count(&prune_pinned);
+    let prune_pinned = run(prune_pinned, pinned());
+    let prune_pinned_after = manifest_count(&prune_pinned);
+    assert!(
+        prune_pinned_after > prune_control_after,
+        "a cursor behind every dump must keep the one it would restore from: cursored kept \
+         {prune_pinned_after} of {prune_pinned_before}, uncursored kept {prune_control_after} of \
+         {prune_before}"
+    );
+
+    // ---- HALF THREE: the index-log floor, which neither count above can see. ----
+    //
+    // `apply_periodic_index_gc` is handed a `StorageLifecycleRequest` that CARRIES both lists and
+    // built its reclaim plan with an empty pair anyway, so a caller that supplied a cursor had it
+    // honoured by the prune in the same request and dropped for the truncation. One request, two
+    // answers, disagreeing about who is still reading.
+    //
+    // Asserted on the FLOOR the report carries rather than on bytes removed. The floor is the
+    // decision -- `storage_index_gc_report` hands it straight to `gc_before_sequence_limited` --
+    // and it is reported even when the shipped 768 KiB byte gate declines, so this needs no
+    // 16,000-record fixture to be meaningful. Halves one and two both passed with this reverted,
+    // which is why it needs its own arm rather than a shared count.
+    let floor_dir = tempfile::tempdir().unwrap();
+    let floor_engine = build_with_dumps(floor_dir.path());
+    fn index_gc_request(
+        cursors: Vec<crate::engine::reports::BucketDumpFollowerReplayCursor>,
+    ) -> crate::engine::reports::StorageLifecycleRequest {
+        crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            purge_delayed_destroy: true,
+            prune_bucket_dump_manifests: true,
+            roll_forward_bucket_dump_installs: true,
+            follower_replay_cursors: cursors,
+            ..crate::engine::reports::StorageLifecycleRequest::default()
+        }
+    }
+    let uncursored_floor = floor_engine
+        .apply_periodic_index_gc(
+            index_gc_request(Vec::new()),
+            None,
+            crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
+        )
+        .retain_from_index_log_sequence;
+    assert!(
+        uncursored_floor > 2,
+        "DENOMINATOR: with no cursor the floor must sit above the sequence the cursor below names, \
+         or clamping to it cannot show: {uncursored_floor}"
+    );
+    let cursored_floor = floor_engine
+        .apply_periodic_index_gc(
+            index_gc_request(vec![
+                crate::engine::reports::BucketDumpFollowerReplayCursor {
+                    follower_id: "reader-held-behind".to_string(),
+                    shard_id: 1,
+                    wal_sequence: 1,
+                    index_log_sequence: 1,
+                },
+            ]),
+            None,
+            crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
+        )
+        .retain_from_index_log_sequence;
+    assert!(
+        cursored_floor < uncursored_floor,
+        "the cursor on the request must clamp the index-log floor it is handed: cursored floor \
+         {cursored_floor}, uncursored floor {uncursored_floor}"
     );
 }
 

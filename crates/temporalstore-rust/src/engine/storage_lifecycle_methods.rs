@@ -1325,8 +1325,25 @@ impl TemporalEngine {
         max_entries_per_round: usize,
     ) -> StorageIndexGcReport {
         let shard_id = request.shard_id;
+        // The cursors the CALLER supplied, not an empty pair.
+        //
+        // This read `Vec::new(), Vec::new()` while holding a request that carries both lists, so a
+        // caller that knew about a reader had it silently dropped for the index-log decision --
+        // and only for that decision, since the prune below this does honour the same request's
+        // cursors. One request, two answers, disagreeing about who is still reading.
+        //
+        // `retain_from_index_log_sequence` off this plan is what `storage_index_gc_report` hands
+        // to `gc_before_sequence_limited`, so the dropped clamp was the difference between keeping
+        // an index-log prefix and unlinking it.
+        //
+        // Cloned before `request` moves into the plan below. `page_gc_raft_snapshot_refs` is where
+        // the cycle puts its `raft_snapshot_refs` when it builds this request
+        // (`storage_manager_cycle.rs`), so it is the same list under the name this struct uses.
+        let follower_replay_cursors = request.follower_replay_cursors.clone();
+        let raft_snapshot_refs = request.page_gc_raft_snapshot_refs.clone();
         let plan = self.storage_lifecycle_plan(request);
-        let wal_plan = self.storage_wal_reclaim_plan(shard_id, Vec::new(), Vec::new());
+        let wal_plan =
+            self.storage_wal_reclaim_plan(shard_id, follower_replay_cursors, raft_snapshot_refs);
         self.storage_index_gc_report(
             &plan,
             &wal_plan,

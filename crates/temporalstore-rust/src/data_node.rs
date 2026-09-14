@@ -36,7 +36,8 @@ use crate::engine::reports::{
     storage_index_snapshot_from_metrics, storage_safety_snapshot_from_metrics,
     storage_topology_snapshot_from_metrics, storage_watermark_snapshot_from_metrics,
     PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
-    ShardCompactionUtilityReport, BucketDumpManifest, StorageContractValue, StorageGcSnapshot,
+    ShardCompactionUtilityReport, BucketDumpFollowerReplayCursor, BucketDumpManifest,
+    BucketDumpRaftSnapshotRef, StorageContractValue, StorageGcSnapshot,
     StorageIndexSnapshot, StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
     StorageManagerCycleReport, StorageManagerCycleRequest, StorageManagerStageReport,
     StorageProductionReadinessPolicy, StorageProductionReadinessReport, StorageReclaimScope,
@@ -956,6 +957,39 @@ pub struct StorageManagerOptions {
     /// behaviour.
     #[serde(default)]
     pub index_gc_max_dump_buckets_per_round: usize,
+    /// What a reader elsewhere has still to consume from this shard's two logs.
+    ///
+    /// THE POINT OF THIS FIELD IS THAT IT EXISTS. The engine has honoured retention cursors for
+    /// some time -- they clamp the reclaim frontier in `storage_wal_reclaim_plan` and they keep a
+    /// lagging reader's anchor manifest in `bucket_dump_manifest_prune_plan_at` -- but they arrive
+    /// as arguments, and this loop had nowhere to receive them. `StorageManagerCycleRequest`
+    /// carries both lists; `StorageManagerOptions` carried neither, and
+    /// `start_storage_manager_scheduler_for_all_shards` is the loop a shipped server actually
+    /// starts (server.rs, unconditionally, every 30 s). So the one entry point that runs by
+    /// default was the one that could not be told about a reader at all, and every call site under
+    /// it passed `Vec::new()` because there was nothing else to pass.
+    ///
+    /// WHAT THE EMPTY LIST COSTS, which is not what the reclaim floor's own safety argument
+    /// covers. That argument (#1648) is about the LOCAL load path: the frontier is a minimum over
+    /// retained manifests and `load_shard_with` replays from a member of that same set, so the
+    /// floor can never pass the local replay point. It says nothing about a reader that is not
+    /// this process. Two ways the difference bites: the frontier can sit ABOVE a cursor and still
+    /// be a legitimate minimum (`storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_release`
+    /// builds exactly that -- frontier at the child manifest, cursor at the parent), and on a shard
+    /// whose buckets are all clean no manifest holds the floor at all, so it falls through to the
+    /// CURRENT log position and the whole prefix below it is reclaimable.
+    ///
+    /// Empty by default, so every existing deployment reclaims exactly what it reclaimed before.
+    /// This makes the knob reachable; it does not decide policy for anyone.
+    #[serde(default)]
+    pub follower_replay_cursors: Vec<BucketDumpFollowerReplayCursor>,
+    /// Raft snapshot refs pinning the same two logs, on the same terms as the cursors above.
+    ///
+    /// A separate list because they are separate objects, but ONE question: both plan and prune
+    /// take their floor as a minimum across the two together, so feeding one and not the other
+    /// would let the fed half advance past the starved one.
+    #[serde(default)]
+    pub raft_snapshot_refs: Vec<BucketDumpRaftSnapshotRef>,
 }
 
 /// Victims one evict stage may take in total, across repeated batches.
@@ -1039,6 +1073,11 @@ impl Default for StorageManagerOptions {
             index_gc_max_entries_per_round:
                 crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
             index_gc_max_dump_buckets_per_round: 0,
+            // Empty, which is what every call site under this loop already passed. The change is
+            // that the value is now the caller's to set rather than a literal in six places --
+            // four lifecycle requests and both reclaim plans in `run_storage_manager_once`.
+            follower_replay_cursors: Vec::new(),
+            raft_snapshot_refs: Vec::new(),
         }
     }
 }

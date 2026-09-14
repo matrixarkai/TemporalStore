@@ -31,9 +31,9 @@ impl DataNodeRuntime {
                 purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: options.enable_index_gc,
                 roll_forward_bucket_dump_installs: options.enable_index_gc,
-                follower_replay_cursors: Vec::new(),
+                follower_replay_cursors: options.follower_replay_cursors.clone(),
                 page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
                 page_gc_checkpoint_floor_slab_id: None,
                 page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
@@ -224,7 +224,11 @@ impl DataNodeRuntime {
                 && self
                     .inner
                     .engine
-                    .storage_wal_reclaim_plan(shard_id, Vec::new(), Vec::new())
+                    .storage_wal_reclaim_plan(
+                        shard_id,
+                        options.follower_replay_cursors.clone(),
+                        options.raft_snapshot_refs.clone(),
+                    )
                     .safe_to_reclaim);
         if options.enable_wal_reclaim && wal_reclaim_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
@@ -237,9 +241,9 @@ impl DataNodeRuntime {
                 purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
-                follower_replay_cursors: Vec::new(),
+                follower_replay_cursors: options.follower_replay_cursors.clone(),
                 page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
                 page_gc_checkpoint_floor_slab_id: None,
                 page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
@@ -300,14 +304,19 @@ impl DataNodeRuntime {
             // fixture: six rounds of this loop freed 0 of 1,512 records, six rounds of the
             // on-demand cycle freed 1,511.
             //
-            // Same plan and same call the cycle applies, with the same empty retention inputs its
-            // default request carries, so this is the cycle's reclaim running on the timer rather
-            // than a second policy. `apply_storage_wal_reclaim` declines unless the plan proves
-            // itself safe, so the floor is the plan's, not this stage's.
-            let wal_reclaim_plan =
-                self.inner
-                    .engine
-                    .storage_wal_reclaim_plan(shard_id, Vec::new(), Vec::new());
+            // Same plan and same call the cycle applies, and now with the same retention inputs
+            // too, so this is the cycle's reclaim running on the timer rather than a second
+            // policy. `apply_storage_wal_reclaim` declines unless the plan proves itself safe, so
+            // the floor is the plan's, not this stage's.
+            //
+            // This is the call whose answer is APPLIED -- `gc_before_sequence` below it is what
+            // unlinks segments -- so it is the one that must see the cursors. The probe further up
+            // only decides whether the stage runs.
+            let wal_reclaim_plan = self.inner.engine.storage_wal_reclaim_plan(
+                shard_id,
+                options.follower_replay_cursors.clone(),
+                options.raft_snapshot_refs.clone(),
+            );
             let wal_reclaim = self.inner.engine.apply_storage_wal_reclaim(wal_reclaim_plan);
             if wal_reclaim.applied {
                 tracing::debug!(
@@ -551,9 +560,9 @@ impl DataNodeRuntime {
                 purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
-                follower_replay_cursors: Vec::new(),
+                follower_replay_cursors: options.follower_replay_cursors.clone(),
                 page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
                 page_gc_checkpoint_floor_slab_id: None,
                 page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
@@ -760,9 +769,18 @@ impl DataNodeRuntime {
                 purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: true,
                 roll_forward_bucket_dump_installs: true,
-                follower_replay_cursors: Vec::new(),
+                // THE SITE THAT MATTERS MOST OF THE FOUR, because this is the one that PRUNES.
+                // Two of the others only ever cost a clamp on the reclaim floor: the pressure
+                // snapshot builds a PLAN and applies nothing, and the `reclaim_wal` stage applies
+                // with `prune_bucket_dump_manifests: false`. Here it costs a dump: with no cursor
+                // to anchor, `bucket_dump_manifest_prune_plan_at` retains only what local coverage
+                // needs and the older manifests go. A reader that was relying on one to restore
+                // from -- `POST /server/storage/dumps/install` is how a node is rebuilt from a
+                // dump -- loses the thing it would have restored from, and unlike a reclaimed log
+                // record nothing regenerates it.
+                follower_replay_cursors: options.follower_replay_cursors.clone(),
                 page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
                 page_gc_checkpoint_floor_slab_id: None,
                 page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
