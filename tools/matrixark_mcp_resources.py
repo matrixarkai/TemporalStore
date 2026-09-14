@@ -196,40 +196,16 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_resource_io import _cloud_resource_bucket  # noqa: F401
 
 
-def _cloud_resource_prefix(args: Json, envelope: Json) -> str:
-    prefix = str(
-        args.get("s3_prefix")
-        or envelope.get("metadata", {}).get("s3_prefix")
-        or os.environ.get("MATRIXARK_RESOURCE_S3_PREFIX")
-        or "matrixark/raw"
-    ).strip().strip("/")
-    scope = envelope.get("scope", {}) if isinstance(envelope.get("scope", {}), dict) else {}
-    parts = [
-        prefix,
-        safe_identifier(str(scope.get("account_id") or "acct"), default="acct"),
-        safe_identifier(str(scope.get("tenant_id") or "tenant"), default="tenant"),
-        safe_identifier(str(scope.get("user_id") or "user"), default="user"),
-    ]
-    session_id = str(scope.get("session_id") or "")
-    if session_id:
-        parts.append(safe_identifier(session_id, default="session"))
-    return "/".join(part for part in parts if part)
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import _cloud_resource_prefix
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import _cloud_resource_prefix  # noqa: F401
 
 
-def _s3_client() -> Any:
-    try:
-        import boto3  # type: ignore
-
-        kwargs: Json = {}
-        endpoint_url = os.environ.get("MATRIXARK_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3")
-        if endpoint_url:
-            kwargs["endpoint_url"] = endpoint_url
-        region_name = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
-        if region_name:
-            kwargs["region_name"] = region_name
-        return boto3.client("s3", **kwargs)
-    except Exception:
-        return None
+try:  # the implementation lives in matrixark_mcp_core_resource_io; this module re-exports it
+    from .matrixark_mcp_core_resource_io import _s3_client
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_resource_io import _s3_client  # noqa: F401
 
 
 # Not defined here: the implementation lives in matrixark_mcp_core_resource_io and this module carried an
