@@ -161,10 +161,25 @@ pub(super) fn bucket_storage_summaries(
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
     let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
     for entry in collect_live_page_entries(shard) {
-        let routing_bucket = entry
-            .address
-            .routing_bucket()
-            .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
+        // The shard's OWN routing range, which is what every other consumer of this fallback
+        // uses -- `rebuild_bucket_first_index`, `refresh_pending_bucket_runtime_flags` and the
+        // dirty-key loop at the foot of this function all reach for
+        // `page_routing_bucket(key, start, end)`. This site reached for `bucket_for_object(key,
+        // 0, u32::MAX)` instead, which is the same answer only while the shard spans the whole
+        // range. Narrow the range -- `TS_SHARD_END_ROUTING_SLOT=1023` is the setting that cuts
+        // resident memory 45% -- and the two place the same page in different buckets: this one
+        // in a bucket id above the shard's own end, no other component in agreement, and so a
+        // summary for a bucket `bucket_map` does not hold while the bucket that does hold the
+        // page reports no pages at all. A dump naming that bucket then carries no slabs for it.
+        //
+        // MEASURED FIRST: on the live write path this branch does not fire. Every one of 2 000
+        // live page entries carried an explicit routing bucket, so the count of summaries
+        // outside the range was 0 before this change as well as after it. What follows is the
+        // latent half -- an address that reaches here without one (a page rebuilt from a source
+        // that did not carry it) is placed where the rest of the engine already places it.
+        let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
+            page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
+        });
         let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
             routing_bucket,
             ..BucketStorageSummary::default()

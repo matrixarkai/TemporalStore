@@ -19944,3 +19944,133 @@ budget each round, not restart at the front",
 budget of {budget}. A bounded probe's cost must not grow with the store.",
     );
 }
+
+/// WHICH BUCKET a live page is summarised under, when its address does not say.
+///
+/// `bucket_storage_summaries` takes the shard's routing range and used it for the dirty-key loop
+/// only. Its live-page loop fell back to `bucket_for_object(key, 0, u32::MAX)` -- a different
+/// placement from the one `rebuild_bucket_first_index` and the flag refresh use, which is
+/// `page_routing_bucket(key, start, end)`. The two agree only while the shard spans the whole
+/// range, and a production shard does not: `TS_SHARD_END_ROUTING_SLOT=1023` is the setting that
+/// cuts resident memory 45%.
+///
+/// HONEST ABOUT THE DENOMINATOR. On the live write path the fallback never fires -- a probe over
+/// 2 000 records found every entry carrying an explicit routing bucket, so simply writing records
+/// and reading summaries CANNOT fail this, before or after the change. The fixture therefore
+/// strips the routing bucket off every page address, which is the state a page rebuilt from a
+/// source that did not carry one arrives in, and asserts that the strip took effect before it
+/// asserts anything about the answer.
+#[test]
+fn a_page_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
+    const RECORDS: usize = 400;
+    const END_ROUTING_BUCKET: u32 = 1023;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "routing-range".to_string(),
+                shard_uri: "local://routing-range/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: END_ROUTING_BUCKET,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("range-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&1).expect("shard 1 loaded");
+
+    // DENOMINATOR ONE: the shard holds pages at all.
+    let pages_before: usize = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .map(|bucket| bucket.page_index.len())
+        .sum();
+    assert!(pages_before > 0, "fixture stored no pages, so this measures nothing");
+
+    // Put the pages into the state this branch exists for.
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
+        for page in bucket.page_index.values_mut() {
+            page.address.set_routing_bucket(None);
+        }
+    }
+
+    // DENOMINATOR TWO: the strip took, so the fallback is what answers below. Without this the
+    // test passes on a fixture where the addresses still carry a bucket and the branch under
+    // test never runs -- which is exactly how the live write path behaves.
+    let stripped = crate::engine::storage_bucket_internals::collect_live_page_entries(shard)
+        .iter()
+        .filter(|entry| entry.address.routing_bucket().is_none())
+        .count();
+    assert_eq!(
+        stripped, pages_before,
+        "the fixture meant to leave {pages_before} pages without a routing bucket and left \
+{stripped}; the fallback under test is not the code answering",
+    );
+
+    let bucket_ids: BTreeSet<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
+    let summaries =
+        crate::engine::storage_reporting::bucket_storage_summaries(shard, 0, END_ROUTING_BUCKET);
+
+    // HALF ONE: nothing is filed outside the range the shard was loaded with.
+    let outside_range: Vec<u32> = summaries
+        .iter()
+        .map(|summary| summary.routing_bucket)
+        .filter(|routing_bucket| *routing_bucket > END_ROUTING_BUCKET)
+        .collect();
+    assert!(
+        outside_range.is_empty(),
+        "{} of {} summaries name a bucket above the shard's end ({END_ROUTING_BUCKET}); the \
+first few are {:?}. A summary for a bucket outside the shard's own range belongs to no bucket \
+the index holds.",
+        outside_range.len(),
+        summaries.len(),
+        &outside_range[..outside_range.len().min(5)],
+    );
+
+    // HALF TWO: and the placement agrees with the index, asserted separately -- a run that
+    // stayed inside the range but still disagreed with `bucket_map` would pass the half above.
+    let absent_from_map: Vec<u32> = summaries
+        .iter()
+        .map(|summary| summary.routing_bucket)
+        .filter(|routing_bucket| !bucket_ids.contains(routing_bucket))
+        .collect();
+    assert!(
+        absent_from_map.is_empty(),
+        "{} of {} summaries name a bucket `bucket_map` does not hold; the first few are {:?}. \
+The live-page loop must place a page where `rebuild_bucket_first_index` places it, or a dump \
+naming the real bucket carries none of its pages.",
+        absent_from_map.len(),
+        summaries.len(),
+        &absent_from_map[..absent_from_map.len().min(5)],
+    );
+
+    // And the page count survived the re-placement: every page is still summarised somewhere.
+    let summarised_pages: u64 = summaries.iter().map(|summary| summary.page_ref_count).sum();
+    assert_eq!(
+        summarised_pages, pages_before as u64,
+        "{pages_before} pages went in and {summarised_pages} came out of the summaries",
+    );
+}
