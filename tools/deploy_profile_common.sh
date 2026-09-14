@@ -31,6 +31,20 @@ TS_PROFILE_LOG="${TS_PROFILE_LOG:-${TS_PROFILE_DATA}/node.log}"
 TS_PROFILE_WAIT_S="${TS_PROFILE_WAIT_S:-20}"
 
 # --- performance flags: live on every profile --------------------------------
+# Value vocabulary, identical to the copy in matrixark_mcp_rust_server.sh,
+# matrixark_claude_hook.sh, matrixark_codex_rust_hook.sh and matrixark_backfill_daemon.sh.
+# Kept as a copy rather than sourced: these five run as standalone scripts in deployments
+# where a missing shared file would be a failure to start, and the function is pure and six
+# lines long. test_every_shell_copy_of_the_flag_vocabulary_agrees.py holds them level.
+matrixark_flag_on() {  # $1 = value, $2 = default ("1" means on)
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    *) [ "${2:-1}" = "1" ] ;;
+  esac
+}
+
+
 ts_profile_perf_flags() {
   # WAL: binary framing. Records are protobuf unconditionally now, so there is no
   # longer a variable for that half of it.
@@ -102,7 +116,7 @@ ts_profile_launch() {
   #
   # The env and the directories are still established above, because that is what the caller
   # asked for; only the launch and its readback are skipped.
-  if [[ "${TS_PROFILE_ENV_ONLY:-0}" == "1" ]]; then
+  if matrixark_flag_on "${TS_PROFILE_ENV_ONLY:-}" 0; then
     echo "[deploy] env-only: profile=${TS_PROFILE_EXPECT} data=${TS_PROFILE_DATA} (no node started)"
     return 0
   fi
