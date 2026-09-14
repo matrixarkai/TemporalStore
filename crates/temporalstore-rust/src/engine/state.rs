@@ -284,7 +284,7 @@ pub(super) struct ShardState {
     #[serde(skip)]
     pub(super) bucket_recency: HashMap<u32, u64>,
     #[serde(skip)]
-    pub(super) dirty_objects: BTreeSet<String>,
+    pub(super) dirty_objects: DirtyObjectIndex,
     /// Phase-1 flat-append fast-skip flag for the per-execute
     /// `promote_model_maps_to_bucket_index_authority` reconciliation. The live write path already
     /// keeps `bucket_index` authoritative in step with the model maps (each mutating command
@@ -1377,6 +1377,139 @@ pub(super) struct BlockLookupRef {
 }
 
 /// Rust-native core index mirroring the shape:
+/// The shard's dirty objects, indexed BY ROUTING BUCKET as well as by key.
+///
+/// A flat `BTreeSet<String>` of keys answers "is this object dirty" and nothing else, so every
+/// consumer that wanted "which buckets are dirty" or "how many dirty objects does this bucket
+/// hold" re-derived the answer by hashing every key in the set. `bucket_storage_summaries` does
+/// it three times in one `apply_storage_lifecycle` and again on each metrics scrape; the dump
+/// drain did it once more. The set grows with the ingest, so all of that grew with the store.
+///
+/// The bucket is not a fact that has to be recomputed. It is computed ONCE, at the moment an
+/// object is marked dirty, by the only two sites that mark one -- and both already held it and
+/// threw it away. Keeping it turns each of those questions into a lookup and makes the drain
+/// visit the cleared buckets' keys instead of the whole set.
+///
+/// The key text is stored once: `by_bucket` holds the same `Arc<str>` as `by_key`, so the second
+/// index costs a pointer and a tree node per dirty object rather than a second copy of the key.
+///
+/// NOT serialized, like the set it replaces. A load clears every dirty flag -- reloaded data is
+/// durable, hence clean -- so a reloaded shard starts with this empty and fills it from live
+/// writes.
+#[derive(Debug, Default, Clone)]
+pub(super) struct DirtyObjectIndex {
+    by_key: BTreeMap<Arc<str>, u32>,
+    by_bucket: BTreeMap<u32, BTreeSet<Arc<str>>>,
+}
+
+impl DirtyObjectIndex {
+    pub(super) fn len(&self) -> usize {
+        self.by_key.len()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.by_key.is_empty()
+    }
+
+    pub(super) fn contains(&self, object_key: &str) -> bool {
+        self.by_key.contains_key(object_key)
+    }
+
+    /// Every dirty object key, in key order -- what iterating the flat set gave.
+    pub(super) fn iter(&self) -> impl Iterator<Item = &str> + '_ {
+        self.by_key.keys().map(|key| &**key)
+    }
+
+    /// Mark `object_key` dirty under `routing_bucket`.
+    ///
+    /// Re-marking a key under a DIFFERENT bucket MOVES it rather than leaving it in both, which
+    /// is the state a shard whose routing range changed under it would otherwise reach. Both
+    /// indexes are updated together, so neither can hold a key the other does not.
+    pub(super) fn insert(&mut self, object_key: &str, routing_bucket: u32) {
+        if let Some(existing) = self.by_key.get_mut(object_key) {
+            if *existing == routing_bucket {
+                return;
+            }
+            let previous = std::mem::replace(existing, routing_bucket);
+            let moved = match self.by_bucket.get_mut(&previous) {
+                Some(keys) => {
+                    let taken = keys.take(object_key);
+                    if keys.is_empty() {
+                        self.by_bucket.remove(&previous);
+                    }
+                    taken
+                }
+                None => None,
+            };
+            let shared = moved.unwrap_or_else(|| Arc::from(object_key));
+            self.by_bucket
+                .entry(routing_bucket)
+                .or_default()
+                .insert(shared);
+            return;
+        }
+        let shared: Arc<str> = Arc::from(object_key);
+        self.by_key.insert(Arc::clone(&shared), routing_bucket);
+        self.by_bucket
+            .entry(routing_bucket)
+            .or_default()
+            .insert(shared);
+    }
+
+    /// Empty both indexes. Used by the resident-memory probe, which measures what a field
+    /// holds by dropping it.
+    pub(super) fn clear(&mut self) {
+        self.by_key.clear();
+        self.by_bucket.clear();
+    }
+
+    /// Drop `object_key`. Returns whether it was dirty.
+    pub(super) fn remove(&mut self, object_key: &str) -> bool {
+        let Some(routing_bucket) = self.by_key.remove(object_key) else {
+            return false;
+        };
+        if let Some(keys) = self.by_bucket.get_mut(&routing_bucket) {
+            keys.remove(object_key);
+            if keys.is_empty() {
+                self.by_bucket.remove(&routing_bucket);
+            }
+        }
+        true
+    }
+
+    /// Drop every dirty object belonging to any of `buckets`, and report how many were dropped.
+    ///
+    /// This is the drain a dump runs once its manifest is durable. It looks at the keys of the
+    /// named buckets and at nothing else, so a round that dumps a slice of the shard pays for
+    /// that slice rather than for the whole set.
+    pub(super) fn drain_buckets(&mut self, buckets: &[u32]) -> usize {
+        let mut dropped = 0;
+        for routing_bucket in buckets {
+            let Some(keys) = self.by_bucket.remove(routing_bucket) else {
+                continue;
+            };
+            for key in keys {
+                self.by_key.remove(&key);
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
+    /// Per-bucket dirty object counts, in bucket order: ONE entry per dirty BUCKET, where the
+    /// flat set gave one per dirty OBJECT.
+    pub(super) fn bucket_counts(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        self.by_bucket
+            .iter()
+            .map(|(routing_bucket, keys)| (*routing_bucket, keys.len() as u64))
+    }
+
+    /// The routing buckets holding at least one dirty object.
+    pub(super) fn bucket_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.by_bucket.keys().copied()
+    }
+}
+
 /// Index -> BucketMap -> BucketNode -> BlockIndex/ObjectIndex.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct BucketNode {

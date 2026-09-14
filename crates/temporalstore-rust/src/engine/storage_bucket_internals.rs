@@ -959,7 +959,9 @@ pub(super) fn mark_async_dirty_object(
     end_routing_bucket: u32,
 ) {
     let routing_bucket = page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-    shard.dirty_objects.insert(object_key.to_string());
+    // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
+    // bucket a dirty object belongs to used to recompute this hash for itself.
+    shard.dirty_objects.insert(object_key, routing_bucket);
     let bucket = shard
         .bucket_index
         .bucket_map
@@ -2538,7 +2540,7 @@ pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u3
 fn refresh_one_bucket_runtime_flags(
     bucket: &mut BucketNode,
     now: u64,
-    dirty_objects: &BTreeSet<String>,
+    dirty_objects: &DirtyObjectIndex,
     expires_at_ms: &BTreeMap<String, u64>,
     rebuild_object_index: bool,
 ) {

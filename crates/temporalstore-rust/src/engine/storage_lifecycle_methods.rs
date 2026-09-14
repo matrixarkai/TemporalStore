@@ -612,7 +612,7 @@ impl TemporalEngine {
         // Nothing in the per-bucket body depends on the dirty set having been cleared, and
         // `current` was captured before any mutation, so hoisting the walk out is the same answer
         // in one pass.
-        let mut cleared_buckets: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut cleared_buckets: Vec<u32> = Vec::new();
         for bucket_id in manifest.bucket_ids.iter().copied() {
             let Some(&captured_generation) = captured.get(&bucket_id) else {
                 continue;
@@ -620,7 +620,7 @@ impl TemporalEngine {
             if current.get(&bucket_id).copied().unwrap_or_default() != captured_generation {
                 continue;
             }
-            cleared_buckets.insert(bucket_id);
+            cleared_buckets.push(bucket_id);
             if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&bucket_id) {
                 // Hold the generation at the captured (derived) value so the reclaim
                 // fingerprint still matches once the dirty objects are cleared.
@@ -638,14 +638,19 @@ impl TemporalEngine {
             }
         }
         if !cleared_buckets.is_empty() {
-            shard.dirty_objects.retain(|key| {
-                DIRTY_DRAIN_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                !cleared_buckets.contains(&page_routing_bucket(
-                    key,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                ))
-            });
+            // STRAIGHT TO THE CLEARED BUCKETS' KEYS.
+            //
+            // The retain this replaces walked the WHOLE dirty set and re-hashed every key to
+            // recompute a routing bucket, whether or not that key belonged to a bucket this dump
+            // cleared. A round that dumps a slice of the shard -- which is what
+            // `max_dump_buckets_per_round` asks for -- paid for the whole set to drop a slice of
+            // it. The dirty index is keyed by bucket, so the keys to drop are addressable and
+            // the rest are not touched.
+            //
+            // The counter still measures what the drain LOOKS AT, which is now exactly what it
+            // removes: it visits the cleared buckets' key sets and nothing else.
+            let dropped = shard.dirty_objects.drain_buckets(&cleared_buckets);
+            DIRTY_DRAIN_VISITS.fetch_add(dropped as u64, std::sync::atomic::Ordering::Relaxed);
         }
     }
 

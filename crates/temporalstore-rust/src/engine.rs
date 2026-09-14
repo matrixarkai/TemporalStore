@@ -877,7 +877,6 @@ impl TemporalEngine {
                 );
             } else {
                 for object_key in object_keys {
-                    shard.dirty_objects.insert(object_key.clone());
                     let start_routing_bucket = info
                         .as_ref()
                         .map(|info| info.start_routing_bucket)
@@ -886,6 +885,17 @@ impl TemporalEngine {
                         .as_ref()
                         .map(|info| info.end_routing_bucket)
                         .unwrap_or(u32::MAX);
+                    // Recorded with its routing bucket. The synchronous branch below does not go
+                    // through `mark_async_dirty_object`, so this is the other of the two sites
+                    // that mark an object dirty and the bucket has to be supplied here too.
+                    shard.dirty_objects.insert(
+                        &object_key,
+                        page_routing_bucket(
+                            &object_key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    );
                     if config.async_storage {
                         mark_async_dirty_object(
                             shard,
@@ -4658,7 +4668,7 @@ fn object_manager_stats(
             // Stopping there is exact, not an approximation.
             let bucket_total = shard.bucket_index.bucket_map.len();
             if dirty_buckets.len() < bucket_total {
-                for object_key in &shard.dirty_objects {
+                for object_key in shard.dirty_objects.iter() {
                     dirty_buckets
                         .extend(bucket_index_target_buckets_for_object_key(shard, object_key));
                     if dirty_buckets.len() >= bucket_total {
@@ -4749,12 +4759,10 @@ fn object_manager_stats(
         .iter()
         .filter_map(|(bucket, node)| node.dirty.then_some(*bucket))
         .collect::<BTreeSet<_>>();
-    dirty_buckets.extend(
-        shard
-            .dirty_objects
-            .iter()
-            .map(|key| bucket_for_object(key, start_routing_bucket, routing_bucket_count)),
-    );
+    // The buckets the dirty index already holds these objects under. This was a hash per dirty
+    // key to recompute `page_routing_bucket(key, start, end)`, which is the same function, with
+    // the same arguments, that recorded them.
+    dirty_buckets.extend(shard.dirty_objects.bucket_ids());
     ObjectManagerStats {
         object_count,
         page_ref_count,
