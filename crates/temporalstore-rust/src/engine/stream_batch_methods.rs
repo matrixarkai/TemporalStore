@@ -290,6 +290,31 @@ impl TemporalEngine {
             // produces (a follower quietly skipping a committed entry) is not one that shows up
             // as an error anywhere.
             if !raft_applying() && !replaying_wal() {
+                // Charged per COMMAND, not per batch. The single-command path spends one token a
+                // command, and a batch is not one unit of work -- a limit that counted it as one
+                // would be escaped by batching, which is how most traffic arrives here.
+                let kind = if write_command {
+                    quota::QuotaKind::Write
+                } else {
+                    quota::QuotaKind::Read
+                };
+                if !self.charge_quota(request.shard_id, kind) {
+                    responses.push(ExecuteResponse {
+                        status: Status::error(
+                            "quota_exhausted",
+                            format!(
+                                "shard {} is over its {} rate limit",
+                                request.shard_id,
+                                match kind {
+                                    quota::QuotaKind::Write => "write",
+                                    quota::QuotaKind::Read => "read",
+                                }
+                            ),
+                        ),
+                        response: CommandResponse::Empty,
+                    });
+                    continue;
+                }
                 if let Err(status) =
                     self.check_admission(request.shard_id, write_command, &config, &info)
                 {

@@ -623,3 +623,123 @@ fn wal_replay_is_not_refused_by_the_storage_ceiling() {
         "the replay was reported as successful but did not bring every record back"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Where the limit has to be charged.
+//
+// The single-command path charges before anything else, including its own read-only fast path,
+// and the comment there gives the rule: a read served without taking the shard lock still costs
+// the shard, and a limit the cheapest reads slip past is not a limit. The batch path is not a
+// cheap read -- it is the path that carries most of the traffic in this engine -- and it charged
+// nothing.
+
+/// A batch of writes is charged against the same limit a sequence of writes is.
+#[test]
+fn a_batch_is_charged_against_the_shard_write_limit() {
+    const COMMANDS: usize = 40;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    engine.set_shard_quota(
+        1,
+        ShardQuotaConfig {
+            write_qps: 10,
+            write_burst: 5,
+            ..Default::default()
+        },
+    );
+
+    let batch = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: (0..COMMANDS)
+            .map(|index| Command::StringSet {
+                key: format!("k{index}"),
+                value: b"v".to_vec(),
+            })
+            .collect(),
+    });
+    // The DENOMINATOR: every command was actually offered to the batch path.
+    assert!(batch.status.ok, "{}", batch.status.message);
+    assert_eq!(
+        batch.responses.len(),
+        COMMANDS,
+        "the batch did not carry every command, so counting refusals below means nothing"
+    );
+
+    let counters = engine
+        .shard_quota_counters(1)
+        .expect("the shard carries a limit");
+    // Both halves, separately. A batch that charged nothing shows zero on BOTH, and a combined
+    // total would hide which of the two was wrong.
+    assert_eq!(
+        counters.write_allowed + counters.write_refused,
+        COMMANDS as u64,
+        "the limit saw {} of {COMMANDS} batched writes (allowed {}, refused {})",
+        counters.write_allowed + counters.write_refused,
+        counters.write_allowed,
+        counters.write_refused
+    );
+    assert!(
+        counters.write_allowed > 0,
+        "the burst should have let some through"
+    );
+    assert!(
+        counters.write_refused > 0,
+        "10 per second with a burst of 5 should have refused most of {COMMANDS} at once"
+    );
+
+    let refused = batch
+        .responses
+        .iter()
+        .filter(|response| response.status.code == "quota_exhausted")
+        .count() as u64;
+    assert_eq!(
+        refused, counters.write_refused,
+        "what the limit counted as refused and what the batch reported as refused disagree"
+    );
+}
+
+/// A batch of reads is charged too, and against the read limit rather than the write one.
+#[test]
+fn a_batch_of_reads_is_charged_against_the_read_limit() {
+    const COMMANDS: usize = 40;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    assert!(write(&engine, "k").ok);
+    engine.set_shard_quota(
+        1,
+        ShardQuotaConfig {
+            read_qps: 10,
+            read_burst: 5,
+            ..Default::default()
+        },
+    );
+
+    let batch = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: (0..COMMANDS)
+            .map(|_| Command::StringGet {
+                key: "k".to_string(),
+            })
+            .collect(),
+    });
+    assert_eq!(batch.responses.len(), COMMANDS);
+
+    let counters = engine
+        .shard_quota_counters(1)
+        .expect("the shard carries a limit");
+    assert_eq!(
+        counters.read_allowed + counters.read_refused,
+        COMMANDS as u64,
+        "the limit saw {} of {COMMANDS} batched reads",
+        counters.read_allowed + counters.read_refused
+    );
+    assert!(counters.read_refused > 0, "the read limit refused none");
+    // The other direction is untouched: a batch of reads must not spend write credit.
+    assert_eq!(
+        counters.write_allowed, 0,
+        "reads were charged against the write side"
+    );
+    assert_eq!(counters.write_refused, 0);
+}
