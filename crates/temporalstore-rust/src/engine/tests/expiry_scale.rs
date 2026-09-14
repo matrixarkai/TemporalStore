@@ -2289,3 +2289,209 @@ fn a_with_options_deadline_survives_recovery() {
         "the two expiry indexes disagree after recovery",
     );
 }
+
+/// A key whose deadline has passed must read as GONE from every kind, including the two whose
+/// state no page backs: the seen-set and the token bucket.
+///
+/// WHAT IS BEING DEFENDED. A deadline is honoured in two places and both have to agree: the
+/// background sweep, which collects the key eventually, and LAZY EXPIRY on the command path
+/// (`remove_if_expired`), which makes the key read as gone the instant its deadline passes.
+/// Without the second, a key stays visible -- and answers with real data -- for the whole
+/// interval between its deadline and whichever sweep round happens to collect it. Collection
+/// being late is a cost question; serving a value whose deadline has passed is a correctness one.
+///
+/// Every other kind's read arms already call `remove_if_expired`. Four did not: `SeenCheck`,
+/// `SeenCard`, `BucketTake` and `BucketPeek`. Both kinds are reachable by `EXPIRE` -- they are in
+/// `record_exists_exact`, so the deadline is accepted -- and both are removed by `delete_record`,
+/// so the sweep does collect them. Only their own reads disagreed.
+///
+/// WHY THESE TWO IN PARTICULAR. They are the deduplication and rate-limiting primitives. A
+/// seen-set past its deadline that still answers "duplicate" suppresses work that should have
+/// run; a token bucket past its deadline that still answers "denied" keeps rejecting a caller
+/// whose limit was meant to have been discarded. Both fail CLOSED, and silently.
+///
+/// THE SWEEP IS DELIBERATELY NEVER RUN HERE. Everything below is about lazy expiry on the
+/// command path alone, which is the half that was missing.
+///
+/// HALVES ASSERTED SEPARATELY. Four arms, four claims, each behind its own denominator -- the
+/// state really existed, and the deadline was really set and really lapsed -- before the claim
+/// that the read reports it gone. A combined count would read full from one arm and zero from
+/// another.
+#[test]
+fn a_lapsed_deadline_hides_a_seen_set_and_a_token_bucket_from_their_own_reads() {
+    fn integer(engine: &TemporalEngine, command: Command) -> i64 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "command failed: {:?}", response.status);
+        match response.response {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected an integer, got {other:?}"),
+        }
+    }
+    /// The bucket answers three strings; the first is "1" allowed / "0" denied.
+    fn bucket_allowed(engine: &TemporalEngine, command: Command) -> String {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "command failed: {:?}", response.status);
+        match response.response {
+            CommandResponse::Members { members } => {
+                String::from_utf8_lossy(members.first().expect("three strings")).into_owned()
+            }
+            other => panic!("expected members, got {other:?}"),
+        }
+    }
+    fn seen_check(key: &str) -> Command {
+        Command::SeenCheck {
+            key: key.to_string(),
+            member: b"m".to_vec(),
+            window_ms: 600_000,
+        }
+    }
+    fn seen_card(key: &str) -> Command {
+        Command::SeenCard {
+            key: key.to_string(),
+        }
+    }
+    // Refill zero and capacity two, so the bucket is exhausted after exactly two takes and
+    // stays exhausted -- no clock enters the answer.
+    fn bucket_take(key: &str) -> Command {
+        Command::BucketTake {
+            key: key.to_string(),
+            tokens: 1.0,
+            capacity: 2.0,
+            refill_per_sec: 0.0,
+        }
+    }
+    fn bucket_peek(key: &str) -> Command {
+        Command::BucketPeek {
+            key: key.to_string(),
+            tokens: 1.0,
+            capacity: 2.0,
+            refill_per_sec: 0.0,
+        }
+    }
+    fn arm(engine: &TemporalEngine, key: &str) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: key.to_string(),
+                ttl_ms: 1,
+            },
+        });
+        assert!(
+            response.status.ok,
+            "EXPIRE on {key} was refused ({:?}) -- if this kind cannot carry a deadline at all, \
+             everything below is vacuous",
+            response.status
+        );
+    }
+    fn deadline_has_lapsed(engine: &TemporalEngine, key: &str) -> bool {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard
+            .expires_at_ms
+            .get(key)
+            .is_some_and(|expires_at| *expires_at <= now_ms())
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    // ---- DENOMINATORS: both kinds really hold state, and it really answers -------------
+    assert_eq!(
+        integer(&engine, seen_check("expiring:seen")),
+        0,
+        "the first check of a fresh member is not a duplicate",
+    );
+    assert_eq!(
+        integer(&engine, seen_check("expiring:seen")),
+        1,
+        "the set really remembers the member, so a later 0 means the set was discarded and not \
+         that it never worked",
+    );
+    assert_eq!(
+        integer(&engine, seen_card("expiring:seen")),
+        1,
+        "the set really holds one member",
+    );
+
+    assert_eq!(bucket_allowed(&engine, bucket_take("expiring:bucket")), "1");
+    assert_eq!(bucket_allowed(&engine, bucket_take("expiring:bucket")), "1");
+    assert_eq!(
+        bucket_allowed(&engine, bucket_take("expiring:bucket")),
+        "0",
+        "the bucket really is exhausted, so a later 1 means it was discarded and not that the \
+         limit never applied",
+    );
+    assert_eq!(
+        bucket_allowed(&engine, bucket_peek("expiring:bucket")),
+        "0",
+        "a peek agrees the bucket is exhausted",
+    );
+
+    arm(&engine, "expiring:seen");
+    arm(&engine, "expiring:bucket");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert!(
+        deadline_has_lapsed(&engine, "expiring:seen"),
+        "the seen-set's deadline must have lapsed before anything is claimed about it",
+    );
+    assert!(
+        deadline_has_lapsed(&engine, "expiring:bucket"),
+        "the token bucket's deadline must have lapsed before anything is claimed about it",
+    );
+
+    // ---- THE FOUR CLAIMS, one arm at a time --------------------------------------------
+    // Ordered so no earlier claim revives the key a later one asks about: the two pure reads
+    // go first, then the two read-modify-writes.
+    assert_eq!(
+        integer(&engine, seen_card("expiring:seen")),
+        0,
+        "SeenCard still counts members of a set whose deadline has passed",
+    );
+    assert_eq!(
+        bucket_allowed(&engine, bucket_peek("expiring:bucket")),
+        "1",
+        "BucketPeek still reports a token bucket whose deadline has passed as exhausted, so a \
+         caller stays rate-limited by a limit that should have been discarded",
+    );
+    assert_eq!(
+        integer(&engine, seen_check("expiring:seen")),
+        0,
+        "SeenCheck still reports a duplicate from a set whose deadline has passed, suppressing \
+         work that should run",
+    );
+
+    // BucketTake starts the bucket over: a full capacity of two, not the exhausted state.
+    assert_eq!(
+        bucket_allowed(&engine, bucket_take("expiring:bucket")),
+        "1",
+        "BucketTake carried the exhausted state across the deadline",
+    );
+    assert_eq!(bucket_allowed(&engine, bucket_take("expiring:bucket")), "1");
+    assert_eq!(
+        bucket_allowed(&engine, bucket_take("expiring:bucket")),
+        "0",
+        "and the restarted bucket must hold exactly its capacity of two, not more",
+    );
+
+    // CONTROL: a key that never carried a deadline is untouched by any of this. Without it,
+    // every assertion above would also pass if the arms had simply stopped reading state.
+    assert_eq!(integer(&engine, seen_check("plain:seen")), 0);
+    assert_eq!(
+        integer(&engine, seen_check("plain:seen")),
+        1,
+        "a seen-set with no deadline must still remember its member",
+    );
+    assert_eq!(bucket_allowed(&engine, bucket_take("plain:bucket")), "1");
+    assert_eq!(bucket_allowed(&engine, bucket_take("plain:bucket")), "1");
+    assert_eq!(
+        bucket_allowed(&engine, bucket_take("plain:bucket")),
+        "0",
+        "a bucket with no deadline must still exhaust",
+    );
+}
