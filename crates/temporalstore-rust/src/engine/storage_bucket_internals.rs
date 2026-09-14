@@ -5,6 +5,92 @@
 use super::*;
 use std::sync::Arc;
 
+
+/// Drift checks run so far, and how many of them found a disagreement.
+///
+/// Process-wide and monotonic, so a soak can ask whether the maintained tally has EVER been wrong
+/// without a report having to be plumbed anywhere. Reset only by the tests that read them.
+pub static BLOCK_SLAB_LIVE_RECONCILES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static BLOCK_SLAB_LIVE_DRIFTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The per-slab live tally AS THE WALK SEES IT. This is the DEFINITION; the maintained counter is
+/// held to it.
+///
+/// Deliberately built from `collect_live_page_entries` and not from the model maps: that walk is
+/// what every existing per-slab live figure is built from -- the bucket index, plus the model-map
+/// supplement for released buckets -- so the two sides of the drift check are the same question
+/// asked twice, not two different questions that happen to be close.
+pub(super) fn recompute_block_slab_live(shard: &ShardState) -> BTreeMap<u64, SlabLiveTally> {
+    let mut tallies: BTreeMap<u64, SlabLiveTally> = BTreeMap::new();
+    for entry in collect_live_page_entries(shard) {
+        let tally = tallies.entry(entry.address.block_slab_id).or_default();
+        tally.page_refs = tally.page_refs.saturating_add(1);
+        tally.bytes = tally.bytes.saturating_add(entry.address.length);
+    }
+    tallies
+}
+
+/// Compare the maintained tally against the walk, CORRECT the maintained one, and REPORT.
+///
+/// Three things in a fixed order, and the order is the design:
+///
+///   1. RECOMPUTE. The walk is the definition.
+///   2. CORRECT. Recomputation wins. A maintained counter that has drifted is worse than one that
+///      was never maintained, because everything downstream believes it; leaving it wrong to
+///      preserve the evidence would be preserving evidence in the serving path.
+///   3. REPORT. The difference is returned and tallied in `BLOCK_SLAB_LIVE_DRIFTS`. Never an
+///      assert: a counting bug must not become an outage.
+///
+/// Called where the index is rebuilt wholesale -- a load, a manifest install, a bucket-ownership
+/// rebuild -- which is where a walk is already being paid for, and on demand by the guard.
+pub(super) fn reconcile_block_slab_live(shard: &mut ShardState) -> BlockSlabLiveDriftReport {
+    let recomputed = recompute_block_slab_live(shard);
+    let was_ready = shard.bucket_index.block_slab_live.is_ready();
+    let mut report = BlockSlabLiveDriftReport {
+        was_ready,
+        ..BlockSlabLiveDriftReport::default()
+    };
+    let mut slabs: BTreeSet<u64> = recomputed.keys().copied().collect();
+    slabs.extend(shard.bucket_index.block_slab_live.iter().map(|(id, _)| id));
+    report.slabs_compared = slabs.len() as u64;
+    if was_ready {
+        let mut worst_bytes = 0_i64;
+        for block_slab_id in slabs {
+            let maintained = shard.bucket_index.block_slab_live.tally(block_slab_id);
+            let walked = recomputed.get(&block_slab_id).copied().unwrap_or_default();
+            let refs = maintained.page_refs as i64 - walked.page_refs as i64;
+            let bytes = maintained.bytes as i64 - walked.bytes as i64;
+            if refs == 0 && bytes == 0 {
+                continue;
+            }
+            report.drifted_slabs = report.drifted_slabs.saturating_add(1);
+            report.page_ref_drift = report.page_ref_drift.saturating_add(refs);
+            report.byte_drift = report.byte_drift.saturating_add(bytes);
+            if bytes.abs() > worst_bytes.abs() || report.worst_block_slab_id.is_none() {
+                worst_bytes = bytes;
+                report.worst_block_slab_id = Some(block_slab_id);
+            }
+        }
+        BLOCK_SLAB_LIVE_RECONCILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !report.is_clean() {
+            BLOCK_SLAB_LIVE_DRIFTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    shard.bucket_index.block_slab_live.reset_from(recomputed);
+    report
+}
+
+/// Seed the maintained tally from the index, without reporting anything.
+///
+/// For the load and rebuild paths, where there is nothing to have drifted from: the index has just
+/// been built or replaced, so a comparison against the walk would compare the walk with itself.
+pub(super) fn seed_block_slab_live(shard: &mut ShardState) {
+    let recomputed = recompute_block_slab_live(shard);
+    shard.bucket_index.block_slab_live.reset_from(recomputed);
+}
+
 pub(super) fn storage_slab_integrity_report(
     shard_id: ShardId,
     recovery: &StorageRecoveryReport,
@@ -999,6 +1085,10 @@ pub(super) fn rebuild_bucket_page_ownership(
         })
         .collect();
     shard.bucket_index.bucket_map.clear();
+    // The tally counts the map that was just emptied. Emptied with it, and re-earned by the
+    // charges the inserts below make -- not by a walk afterwards, which is the walk this whole
+    // change exists to remove and which a compaction round would pay twice.
+    shard.bucket_index.block_slab_live.clear();
     // The rebuild re-derives every bucket from the model maps, which is what a reload does one
     // bucket at a time. Nothing is released afterwards, and a registry that outlived the map it
     // names would make the page walk supplement buckets that are already whole.
@@ -1037,6 +1127,10 @@ pub(super) fn rebuild_bucket_page_ownership(
                 }
             });
         bucket.object_index.insert(object_id);
+        // Charged as it goes, and then replaced wholesale by the `seed_block_slab_live` at the end
+        // of this rebuild. Both, deliberately: the charge keeps this site honest if the shape of
+        // the function changes, and the seed is what makes the result independent of whatever the
+        // tally held before `bucket_map.clear()` above.
         bucket.page_index.insert(
             BlockIndex {
                 object_key: entry.object_key,
@@ -1051,6 +1145,7 @@ pub(super) fn rebuild_bucket_page_ownership(
                 deleted: entry.deleted,
                 log_backed: entry.log_backed,
             },
+            &mut shard.bucket_index.block_slab_live,
         );
     }
     shard.bucket_index.rebuild_object_page_lookup();
@@ -1062,6 +1157,10 @@ pub(super) fn rebuild_bucket_page_ownership(
             !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
         update_bucket_layout(bucket);
     }
+    // Every page above was charged as it was filed, and the tally started empty, so it now
+    // describes exactly what `bucket_map` holds. Declaring that is the last step; confirming it
+    // with a walk would cost a compaction round two whole-shard scans it does not need.
+    shard.bucket_index.block_slab_live.mark_ready();
 }
 
 pub(super) fn promote_model_maps_to_bucket_index_authority(
@@ -1571,7 +1670,10 @@ pub(super) fn reload_released_bucket(
     let mut installed: Vec<(u64, BlockIndex)> = Vec::with_capacity(pages.len());
     for (page, object_id) in pages {
         bucket.object_index.insert(object_id);
-        let handle = bucket.page_index.insert(page.clone());
+        // NOT charged. `release_bucket_pages` did not discharge these -- the pages stayed live
+        // the whole time it held them out of the index -- so counting them here would double
+        // every released bucket the first time anything touched it again.
+        let handle = bucket.page_index.insert_released(page.clone());
         installed.push((handle, page));
     }
     bucket.meta_loaded = true;
@@ -2162,7 +2264,7 @@ pub(super) fn upsert_bucket_index_page_with(
             touched_buckets.push(page_ref.routing_bucket);
             let removed_object_id = bucket
                 .page_index
-                .remove(&page_ref.page_ref_key)
+                .remove(&page_ref.page_ref_key, &mut shard.bucket_index.block_slab_live)
                 .map(|page| page.object_id());
             if let Some(removed_object_id) = removed_object_id {
                 if !bucket
@@ -2176,10 +2278,15 @@ pub(super) fn upsert_bucket_index_page_with(
             }
         }
     } else if !lookup_enabled {
-        for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter_mut() {
+        let CoreIndex {
+            bucket_map,
+            block_slab_live: live,
+            ..
+        } = &mut shard.bucket_index;
+        for (routing_bucket, bucket) in bucket_map.iter_mut() {
             note_site(&bucket_visit_sites::REMOVE_ALL_BUCKETS, bucket.page_index.len());
             touched_buckets.push(*routing_bucket);
-            bucket.page_index.retain(|_, page| {
+            bucket.page_index.retain(&mut *live, |_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
                     && page.component.as_deref() == entry.component.as_deref())
@@ -2228,7 +2335,7 @@ pub(super) fn upsert_bucket_index_page_with(
         bucket.in_memory = true;
         bucket.object_index.insert(object_id);
         // The handle the map assigns is what the lookup records, so the two cannot disagree.
-        page_ref_key = bucket.page_index.insert(page_index.clone());
+        page_ref_key = bucket.page_index.insert(page_index.clone(), &mut shard.bucket_index.block_slab_live);
         classify_bucket_layout_in_place(bucket);
         touched_buckets.push(routing_bucket);
     }
@@ -2329,7 +2436,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
             continue;
         };
         let before = bucket.page_index.len();
-        bucket.page_index.retain(|_, page| {
+        bucket.page_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
             let matches_object = &*page.model_id == kind && &*page.object_key == object_key;
             if matches_object {
                 removed_components.insert(page.component.clone());
@@ -2432,7 +2539,7 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
             log_backed: entry.log_backed,
         };
         // The map assigns the handle; the lookup records the same one.
-        let page_ref_key = bucket.page_index.insert(page.clone());
+        let page_ref_key = bucket.page_index.insert(page.clone(), &mut shard.bucket_index.block_slab_live);
         // `object_index` was just given this object id above, so the set is already correct and only
         // the label needs re-deriving. `update_bucket_layout` would rebuild the set by walking every
         // page in the bucket -- once per address published, which is what made a write cost the
@@ -2777,7 +2884,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
         let mut touched = false;
-        for page in bucket.page_index.values_mut() {
+        for page in bucket.page_index.pages_mut_unaccounted() {
             if &*page.object_key == object_key {
                 page.dirty = false;
                 touched = true;
@@ -2856,6 +2963,7 @@ pub(super) fn rebuild_bucket_first_index(
                 deleted: entry.deleted,
                 log_backed: entry.log_backed,
             },
+            &mut bucket_index.block_slab_live,
         );
         update_bucket_layout(bucket);
     }
@@ -2878,6 +2986,10 @@ pub(super) fn rebuild_bucket_first_index(
     }
     bucket_index.rebuild_object_page_lookup();
     shard.bucket_index = bucket_index;
+    // The local index charged every page it filed, and it arrived empty, so the tally travelled
+    // here with it and is already right. Same reason as `rebuild_bucket_page_ownership`: a walk to
+    // confirm it is the walk being removed.
+    shard.bucket_index.block_slab_live.mark_ready();
 }
 
 /// Merge a page-derived timestamped-series view against the pre-existing (deserialized /

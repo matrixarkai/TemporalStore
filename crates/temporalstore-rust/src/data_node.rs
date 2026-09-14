@@ -730,6 +730,14 @@ pub struct CompactionResponse {
     pub status: Status,
     pub shard_id: ShardId,
     pub compacted_objects: usize,
+    /// Bytes the round copied onto the fresh slab, verbatim.
+    ///
+    /// `compacted_objects` beside it is the round's relocation COUNT (it carries the shard
+    /// report's `rewritten_page_refs`); this is what those relocations moved. Two rounds with
+    /// the same count can differ by orders of magnitude here, which is why the count alone
+    /// cannot say what a round cost.
+    #[serde(default)]
+    pub relocated_bytes: u64,
     #[serde(default)]
     pub rewritten_object_pages: usize,
     #[serde(default)]
@@ -1574,6 +1582,59 @@ pub trait SharedWalSink: std::fmt::Debug + Send + Sync {
     fn record_write(&self, shard_id: ShardId, command: &Command);
 }
 
+/// What this node knows about its own role for one shard. THREE states, not two.
+///
+/// The third one is the point. A maintenance stage that asks "am I the leader" and gets a
+/// `bool` has already lost the distinction that matters: a node with no consensus attached --
+/// standalone, shared-storage, or simply a node whose raft runtime has not been constructed yet
+/// -- is not a follower, it is a node with nobody to follow. Collapsing that onto `false` would
+/// disable the stage on EVERY such deployment, which is the shipped default here, and that is a
+/// far worse outcome than the waste the check exists to remove.
+///
+/// So `Unknown` is a real answer with its own deliberate behaviour, and every caller has to say
+/// what it does with it rather than letting an `Option`'s default decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShardLeadership {
+    /// Consensus is attached and reports this node as the leader for the shard.
+    Leading,
+    /// Consensus is attached and reports some OTHER node as the leader for the shard.
+    NotLeading,
+    /// Nobody can answer: no source attached, no leader elected yet, or the shard is not one
+    /// this node's consensus covers.
+    Unknown,
+}
+
+impl ShardLeadership {
+    /// The name a stage report carries, so an operator reading a skipped stage can see which of
+    /// the three states produced it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShardLeadership::Leading => "leading",
+            ShardLeadership::NotLeading => "not_leading",
+            ShardLeadership::Unknown => "unknown",
+        }
+    }
+
+    /// True only for the one state that is EVIDENCE this node does not lead.
+    ///
+    /// Written as a positive test on `NotLeading` rather than `!= Leading` on purpose: the
+    /// negation would fold `Unknown` in with the followers, which is exactly the mistake this
+    /// enum exists to prevent, and it would do it silently.
+    pub fn is_known_not_leading(self) -> bool {
+        matches!(self, ShardLeadership::NotLeading)
+    }
+}
+
+/// Answers [`ShardLeadership`] for a shard. Attached to a runtime by whoever owns consensus.
+///
+/// The runtime cannot ask raft directly, and deliberately so: the server constructs the storage
+/// maintenance scheduler roughly eighty lines BEFORE it constructs the raft runtime, so at the
+/// moment the scheduler starts there is nothing to ask. A source installed later is picked up by
+/// the next round, and every round before that sees `Unknown`.
+pub trait ShardLeadershipSource: std::fmt::Debug + Send + Sync {
+    fn shard_leadership(&self, shard_id: ShardId) -> ShardLeadership;
+}
+
 #[derive(Debug)]
 struct DataNodeRuntimeInner {
     engine: TemporalEngine,
@@ -1600,6 +1661,9 @@ struct DataNodeRuntimeInner {
     /// Optional durable shared-storage sink; when set, accepted writes are
     /// mirrored to shared storage for cross-restart / local-loss recovery.
     shared_wal_sink: Mutex<Option<Arc<dyn SharedWalSink>>>,
+    /// Who answers "do I lead this shard". `None` means nobody has been told to answer, which
+    /// reads as [`ShardLeadership::Unknown`] and NOT as "not the leader".
+    shard_leadership: Mutex<Option<Arc<dyn ShardLeadershipSource>>>,
 }
 
 #[derive(Debug, Default)]
@@ -1904,6 +1968,7 @@ impl DataNodeRuntime {
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
             shared_wal_sink: Mutex::new(None),
+            shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
         for _ in 0..inner.options.worker_threads {
@@ -1921,6 +1986,37 @@ impl DataNodeRuntime {
     /// local engine accepts is also mirrored to shared storage (see
     /// [`SharedWalSink`]). Opt-in: with no sink attached the runtime behaves
     /// exactly as before.
+    /// Attach the thing that answers "do I lead this shard".
+    ///
+    /// Opt-in and idempotent. Until it is called -- and on every deployment that never calls it
+    /// -- `shard_leadership` answers `Unknown` and every stage that consults it runs exactly as
+    /// it did before.
+    pub fn set_shard_leadership_source(&self, source: Arc<dyn ShardLeadershipSource>) {
+        *self
+            .inner
+            .shard_leadership
+            .lock()
+            .expect("shard leadership lock poisoned") = Some(source);
+    }
+
+    /// What this node knows about its role for `shard_id`, as one of three states.
+    ///
+    /// No source attached -> `Unknown`. That is the answer during the window between the
+    /// maintenance scheduler starting and consensus being constructed, and it is the permanent
+    /// answer for a standalone node, which is the shipped default.
+    pub fn shard_leadership(&self, shard_id: ShardId) -> ShardLeadership {
+        let source = self
+            .inner
+            .shard_leadership
+            .lock()
+            .expect("shard leadership lock poisoned")
+            .clone();
+        match source {
+            Some(source) => source.shard_leadership(shard_id),
+            None => ShardLeadership::Unknown,
+        }
+    }
+
     pub fn set_shared_wal_sink(&self, sink: Arc<dyn SharedWalSink>) {
         // The engine emits deletions of its own -- eviction drops, expiry sweeps -- that never
         // pass through this layer. Give it the same sink, or those deletions reach the local
@@ -2028,6 +2124,7 @@ impl DataNodeRuntime {
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
             shared_wal_sink: Mutex::new(None),
+            shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
         Self { inner }

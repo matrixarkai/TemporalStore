@@ -171,11 +171,34 @@ def benchmark_quality_index_terms(*values: Any) -> list[str]:
 
 # Every priority prefix is exactly "<kind>:", and every index term is exactly f"{kind}:{value}",
 # so priority is decided by the term's kind alone. Built once here rather than rediscovered by a
-# 23-way startswith scan on each of the ~36,000 terms a document emits. This mapping and the
-# function below came from matrixark_mcp_core, which had a second copy of the prefix tuple missing
-# `benchmark:`, `metric:` and `workload:` -- and it was core's copy the live ingest and retrieve
-# paths used, so those three answered the same as an unrecognised term and were the first dropped
-# by `limited_index_terms`.
+# 23-way startswith scan on every term: the ranking is consulted once per candidate term, and a
+# 373 KB document measured 4,996 of them across 500 chunks.
+#
+# This mapping and the function below came from matrixark_mcp_core, which had a second copy of the
+# prefix tuple missing `benchmark:`, `metric:` and `workload:`. That copy is gone, which is worth
+# having -- but the sentence that used to stand here, that those three "were the first dropped by
+# `limited_index_terms`", described a drop that cannot happen, and could not happen at the commit
+# that added them either.
+#
+# `limited_index_terms` has exactly two callers, both resource-chunk ingest paths
+# (`matrixark_local_adapter_ingest` and `matrixark_mcp_ingest_resource_chunk_records`), and both
+# build the same closed list: source_type, resource_type, the three `metadata_index_terms` fields
+# (unit_kind, heading_slug, relative_path), keyword, and for a skill skill_name / skill_trigger /
+# skill_tool. Nine kinds. `benchmark:`, `metric:` and `workload:` come from
+# `benchmark_quality_index_terms`, which feeds `candidate_index_terms` on the READ side and never
+# this cap -- measured: a document producing all three wrote them to the store and none of them
+# reached the ranking. They are also not consultable, so a query cannot ask for them either.
+#
+# Fourteen of the twenty-three entries are unreachable from these two callers for the same reason.
+# Leaving them costs nothing and a kind that later becomes producible finds its rank already here;
+# what would be silent is the opposite, a producible kind MISSING from the tuple, which ranks last
+# and is the first thing the cap drops.
+#
+# That is not hypothetical: the cap really binds. A plain markdown chunk offers at most ten terms
+# against a limit of ten and nothing is dropped, but a SKILL chunk adds skill_name / skill_trigger
+# / skill_tool -- measured fourteen candidates on one chunk, ten kept, and all four dropped were
+# `keyword`, which ranks last of the nine. So the order among the producible kinds decides what
+# survives on every skill import. `test_matrixark_index_consultable_terms` pins both halves.
 _SECONDARY_INDEX_PRIORITY_BY_KIND = {
     prefix[:-1]: index
     for index, prefix in enumerate(SECONDARY_INDEX_PRIORITY_PREFIXES)
@@ -191,6 +214,17 @@ def secondary_index_priority(term: str) -> int:
 
 
 def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:
+    """Keep the `limit` highest-priority terms, ties broken by original position.
+
+    NOT the copy that runs. `matrixark_mcp_core` defines its own, identical but for calling
+    `ordered_unique` where this calls `_ordered_unique`, and both resource-chunk ingest callers
+    resolve THAT one -- checked by identity, not by reading the imports. Mutating this body leaves
+    every guard green, which is how the duplication surfaced.
+
+    Kept and exported because the name is public surface. The ranking itself is shared for real:
+    core imports `secondary_index_priority` and the prefix tuple from here, so the ORDER has one
+    definition even though the capping loop has two.
+    """
     unique_terms = _ordered_unique([term for term in terms if term])
     capped_limit = max(0, int(limit))
     return [

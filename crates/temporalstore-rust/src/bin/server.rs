@@ -17,7 +17,10 @@ use temporalstore_rust::context_workflow::{
     ContextRetrieveRequest,
 };
 use temporalstore_rust::ContextProviderKind;
-use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
+use temporalstore_rust::data_node::{
+    DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport, ShardLeadership,
+    ShardLeadershipSource,
+};
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
@@ -33,7 +36,7 @@ use temporalstore_rust::meta::{
     ShardLoad, ShardSnapshotRef, TableTopologyResponse,
 };
 use temporalstore_rust::raft::{
-    DataRaftReadMode, DataRaftReadPolicy, RaftReplicaBootstrapPlan,
+    DataRaftReadMode, DataRaftReadPolicy, RaftCluster, RaftReplicaBootstrapPlan,
     RaftSnapshotPublishReport, RaftSnapshotTriggerReport, ReadIndexResponse,
 };
 use temporalstore_rust::types::{
@@ -356,6 +359,24 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(3_000);
     let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
+
+    // The maintenance scheduler was started ~80 lines above this, BEFORE consensus existed, and
+    // it re-reads this slot every round -- so the rounds before this point see `Unknown` and
+    // compact, and the rounds after see a real answer. With `TS_SERVER_RAFT` unset (the shipped
+    // default) nothing is installed at all and every round sees `Unknown` for ever, which is
+    // byte-for-byte the behaviour this server had before the check existed.
+    if let Some(state) = raft_state.as_ref() {
+        runtime.set_shard_leadership_source(std::sync::Arc::new(RaftShardLeadership {
+            cluster: state.runtime.cluster(),
+            local_node_id: state.local_node_id,
+            raft_shard_id: state.raft_shard_id,
+        }));
+        info!(
+            raft_shard_id = state.raft_shard_id,
+            local_node_id = state.local_node_id,
+            "storage maintenance will skip page compaction on a shard this node does not lead"
+        );
+    }
 
     // Standalone (no-metaserver) mode is the DEFAULT: run the datanode with no
     // metaserver, skipping server + shard registration and the heartbeat loop and
@@ -2461,9 +2482,61 @@ fn uri_scheme(uri: &str) -> String {
 struct ServerRaftState {
     runtime: ProductionRaftRuntime,
     local_node_id: RaftNodeId,
+    /// The shard this node's raft covers. `TS_RAFT_SHARD_ID` may name a different one from the
+    /// shard the engine serves, and the maintenance scheduler visits EVERY loaded shard -- so a
+    /// role answer has to be scoped, or a shard consensus says nothing about would inherit
+    /// another shard's verdict.
+    raft_shard_id: ShardId,
     read_policy: DataRaftReadPolicy,
     local_admin_enabled: bool,
     blocked_peers: Arc<Mutex<BTreeSet<RaftNodeId>>>,
+}
+
+/// Answers the maintenance scheduler's role question from this node's live raft state.
+///
+/// Every branch below that cannot produce EVIDENCE answers `Unknown`, and `Unknown` compacts.
+/// That is deliberate and it is the whole risk of the change: the cheap version of this returns
+/// a `bool`, a `bool` has to pick a side for "I cannot tell", and picking `false` switches page
+/// compaction off on every deployment where the question is unanswerable -- which is far more
+/// damage than the waste it was meant to save.
+struct RaftShardLeadership {
+    cluster: RaftCluster,
+    local_node_id: RaftNodeId,
+    raft_shard_id: ShardId,
+}
+
+impl std::fmt::Debug for RaftShardLeadership {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RaftShardLeadership")
+            .field("local_node_id", &self.local_node_id)
+            .field("raft_shard_id", &self.raft_shard_id)
+            .finish()
+    }
+}
+
+impl ShardLeadershipSource for RaftShardLeadership {
+    fn shard_leadership(&self, shard_id: ShardId) -> ShardLeadership {
+        // A shard this node's raft does not cover. Consensus has no opinion about it, so
+        // neither do we.
+        if shard_id != self.raft_shard_id {
+            return ShardLeadership::Unknown;
+        }
+        let membership = self.cluster.membership();
+        // No leader elected yet (0 is the unset id), or this node is not a voter consensus
+        // knows about. Either way there is no evidence that someone ELSE leads, which is the
+        // only thing that would justify skipping.
+        if membership.leader_id == 0 || !membership.voters.contains(&self.local_node_id) {
+            return ShardLeadership::Unknown;
+        }
+        // `is_local_leader` wants BOTH the recorded leader id and the held role: a restarted
+        // node initialises `leader_id` to the lowest node id, so the id alone is not evidence.
+        if self.cluster.is_local_leader(self.local_node_id) {
+            ShardLeadership::Leading
+        } else {
+            ShardLeadership::NotLeading
+        }
+    }
 }
 
 fn start_server_raft_from_env(
@@ -2517,6 +2590,7 @@ fn start_server_raft_from_env(
     Some(ServerRaftState {
         runtime,
         local_node_id,
+        raft_shard_id,
         read_policy: data_raft_read_policy_from_env(),
         local_admin_enabled: env_bool("TS_RAFT_ENABLE_LOCAL_ADMIN", false),
         blocked_peers: Arc::new(Mutex::new(BTreeSet::new())),
@@ -3914,6 +3988,8 @@ mod tests {
         ServerRaftState {
             runtime,
             local_node_id,
+            // The shard the runtime above was started for.
+            raft_shard_id: 1,
             read_policy: DataRaftReadPolicy::default(),
             local_admin_enabled,
             blocked_peers: Arc::new(Mutex::new(BTreeSet::new())),
