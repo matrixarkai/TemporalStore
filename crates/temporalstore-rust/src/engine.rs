@@ -793,11 +793,24 @@ impl TemporalEngine {
             }
         }
         let write_command = is_write_command(&command);
-        if let Err(status) = self.check_admission(request.shard_id, write_command, &config, &info) {
-            return ExecuteResponse {
-                status,
-                response: CommandResponse::Empty,
-            };
+        // Exempt for exactly the reason the token-bucket limit at the top of this function is
+        // exempt, and the reason is not symmetry for its own sake. A follower that refuses what
+        // its leader committed diverges from the leader. A replay that refuses a record already
+        // in the log does not degrade the shard, it loses it: replay_wal_into_shard turns any
+        // failed response into wal_replay_failed, and load_shard_with unwinds the shard and
+        // refuses the load on it.
+        //
+        // Measured before this guard existed: a shard configured write_qps=3 applied 0 of 40
+        // committed entries, and a replay of 40 records refused the 4th.
+        if !raft_applying() && !replaying_wal() {
+            if let Err(status) =
+                self.check_admission(request.shard_id, write_command, &config, &info)
+            {
+                return ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                };
+            }
         }
         if write_command
             && config

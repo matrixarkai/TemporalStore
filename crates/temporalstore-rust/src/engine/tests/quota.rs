@@ -328,3 +328,165 @@ fn how_many_keys_are_waiting_to_expire_is_visible() {
         "the gauge should carry the count: {rendered}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// What a limit may refuse, and what it may never refuse.
+//
+// `execute_with_storage_override` already draws this line for the token-bucket limit: a command
+// arriving under `raft_applying()` or `replaying_wal()` is NOT charged, because refusing it is not
+// shedding load. A follower that rejects what its leader committed diverges from the leader, and a
+// replay that rejects a record already in the log cannot rebuild the shard -- the replay loop turns
+// any failed response into `wal_replay_failed` and aborts the whole load.
+//
+// The config-driven limits (`write_qps` / `read_qps` and the table and tenant scopes) and the
+// `maxmemory_bytes` storage ceiling sit in the same function and did not draw it.
+
+/// A shard whose config carries a write limit must still apply every committed entry.
+#[test]
+fn a_committed_entry_is_not_refused_by_the_configured_write_limit() {
+    const ENTRIES: usize = 40;
+    const LIMIT: u64 = 3;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            write_qps: Some(LIMIT),
+            ..Config::default()
+        },
+    });
+    // The DENOMINATOR: the limit is real on the client path, so "nothing was refused below" is
+    // not the vacuous answer of a limit that was never in force.
+    wait_for_fresh_admission_second();
+    let mut client_refused = 0;
+    for index in 0..ENTRIES {
+        let status = engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("client{index}"),
+                    value: b"v".to_vec(),
+                },
+            })
+            .status;
+        if status.code == "admission_rejected" {
+            client_refused += 1;
+        }
+    }
+    assert!(
+        client_refused > 0,
+        "the client path refused none of {ENTRIES} writes, so this test would prove nothing"
+    );
+
+    let mut applied = 0;
+    let mut refused = Vec::new();
+    for index in 0..ENTRIES {
+        let response = engine.execute_raft_apply(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("committed{index}"),
+                value: b"v".to_vec(),
+            },
+        });
+        if response.status.ok {
+            applied += 1;
+        } else {
+            refused.push(response.status.code.clone());
+        }
+    }
+    assert_eq!(
+        applied, ENTRIES,
+        "only {applied} of {ENTRIES} committed entries applied; refused as {refused:?} -- a \
+         follower that refuses a committed entry diverges from its leader"
+    );
+}
+
+
+/// The same shard must still rebuild itself from its own log.
+///
+/// `replay_wal_into_shard` is the production rebuild: `load_shard_with` calls it, and a single
+/// failed response inside it becomes `wal_replay_failed`, which unwinds the shard and REFUSES the
+/// load. A shard that cannot be loaded is not degraded, it is gone.
+///
+/// The records here carry a COMMAND and no recorded outcomes, which is the shape replay
+/// re-executes rather than installs. Records written through the engine carry outcomes under the
+/// default and are installed without executing anything, so the re-execute fallback -- the one
+/// that exists so "a kind that records nothing recovers correctly instead of silently recovering
+/// as nothing" -- has to be written into the log directly to be exercised at all.
+#[test]
+fn wal_replay_is_not_refused_by_the_configured_write_limit() {
+    const RECORDS: usize = 40;
+    const LIMIT: u64 = 3;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    for index in 0..RECORDS {
+        engine
+            .wal_store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: format!("replayed{index}"),
+                    value: b"v".to_vec(),
+                },
+                true,
+            )
+            .expect("the log should accept a record");
+    }
+    // Two DENOMINATORS. The log really holds the records...
+    let last_sequence = engine.wal_store.stats(1).last_sequence;
+    assert!(
+        last_sequence >= RECORDS as u64,
+        "the log holds only {last_sequence} records, so replaying it would prove nothing"
+    );
+    // ...and the shard does NOT, so anything readable afterwards came from the replay.
+    let readable = |engine: &TemporalEngine| {
+        (0..RECORDS)
+            .filter(|index| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet {
+                                key: format!("replayed{index}"),
+                            },
+                        })
+                        .response,
+                    CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count()
+    };
+    assert_eq!(
+        readable(&engine),
+        0,
+        "the records were appended to the log only; the shard should hold none of them yet"
+    );
+
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            write_qps: Some(LIMIT),
+            ..Config::default()
+        },
+    });
+    wait_for_fresh_admission_second();
+
+    // From sequence zero: re-drive every record the log holds, exactly as a load with no usable
+    // checkpoint does.
+    let replayed = engine.replay_wal_into_shard(1, 0);
+    assert!(
+        replayed.is_ok(),
+        "replay was refused: {:?} -- a replay that rejects a record already in the log cannot \
+         rebuild the shard, and the load that called it refuses the shard outright",
+        replayed.err()
+    );
+    assert_eq!(
+        readable(&engine),
+        RECORDS,
+        "the replay was reported as successful but did not bring every record back"
+    );
+}
