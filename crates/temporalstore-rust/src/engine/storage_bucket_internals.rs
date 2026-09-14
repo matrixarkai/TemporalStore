@@ -2409,11 +2409,24 @@ pub(super) fn sync_bucket_index_object_pages_with_mode(
     }
 }
 
+/// The label a bucket wears, from how many objects it holds and how many pages are resident.
+///
+/// EMPTY IS ABOUT OBJECTS, NOT PAGES. A bucket with no resident pages is not thereby empty: a
+/// RELEASED bucket is exactly that shape -- `release_bucket_pages` clears `page_index` and
+/// deliberately keeps `object_index`, which is the only thing distinguishing a released bucket
+/// from one that genuinely holds nothing -- and a bucket whose pages live only in the model maps
+/// is still holding every object it held before.
+///
+/// A zero page count used to answer `Empty` for two or more objects while answering
+/// `SingleObject` for exactly one, so the two halves of the same question disagreed: one
+/// released bucket reported what it held and the next reported nothing. `Empty` is also the
+/// derive default, so the mislabel also made a populated bucket read as one nothing had ever
+/// classified. The page count now only chooses BETWEEN the non-empty labels, and the object
+/// count alone decides whether the bucket is empty at all.
 pub(super) fn classify_bucket_layout(object_count: usize, page_ref_count: usize) -> BucketLayoutState {
     match (object_count, page_ref_count) {
         (0, _) => BucketLayoutState::Empty,
         (1, 0) => BucketLayoutState::SingleObject,
-        (_, 0) => BucketLayoutState::Empty,
         (1, 1) => BucketLayoutState::SinglePageObject,
         (1, _) => BucketLayoutState::MultiPageObject,
         _ => BucketLayoutState::MultiObject,

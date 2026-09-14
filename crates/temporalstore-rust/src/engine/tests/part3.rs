@@ -2656,3 +2656,149 @@ fn control_state_set_and_get_with_options_is_idempotent_on_uuid_replay() {
 }
 
 // shared-corpus: storage_object_page_bucket_parity_surfaces storage_object_hot_cold_reload;
+
+// shared-corpus: storage_object_manager_bucketstore_runtime_authority;
+/// The layout label of a bucket holding NO resident pages, asked once per object-count half.
+///
+/// A released bucket is exactly this shape: release_bucket_pages empties page_index and keeps
+/// object_index, then relabels with a page count of zero. The one-object half answered
+/// single_object; the two-or-more half answered empty -- the same label a bucket holding
+/// nothing gets, and the label a never-classified bucket defaults to. So a released bucket
+/// carrying seven objects was indistinguishable, in every report that reads this field, from a
+/// bucket carrying none.
+///
+/// The halves are asserted separately because a combined count hid it: summing "labelled
+/// correctly" over both halves reads high, since the one-object half was always right.
+#[test]
+fn bucket_layout_label_without_pages_answers_the_object_count_on_both_halves() {
+    // Denominator first: an empty sweep over either half would make every assertion below
+    // vacuous, and both halves must be non-empty for the comparison between them to mean
+    // anything.
+    let single_object_half: Vec<usize> = vec![1];
+    let many_object_half: Vec<usize> = (2..=8).collect();
+    assert_eq!(
+        single_object_half.len(),
+        1,
+        "the one-object half must hold exactly the one case it names"
+    );
+    assert_eq!(
+        many_object_half.len(),
+        7,
+        "the two-or-more half must be non-empty, or its assertions say nothing"
+    );
+
+    // HALF ONE: a single object, no resident page. This half was already right, and it is the
+    // control -- it is what makes the second half's answer a contradiction rather than a policy.
+    let single_object_labels: Vec<BucketLayoutState> = single_object_half
+        .iter()
+        .map(|count| classify_bucket_layout(*count, 0))
+        .collect();
+    assert_eq!(
+        single_object_labels.len(),
+        single_object_half.len(),
+        "every case in the one-object half must produce a label"
+    );
+    for (count, label) in single_object_half.iter().zip(&single_object_labels) {
+        assert_eq!(
+            *label,
+            BucketLayoutState::SingleObject,
+            "a bucket holding {count} object and no resident page is a single-object bucket"
+        );
+    }
+
+    // HALF TWO: two or more objects, no resident page. The objects are still there, so the
+    // label must still say so.
+    let many_object_labels: Vec<BucketLayoutState> = many_object_half
+        .iter()
+        .map(|count| classify_bucket_layout(*count, 0))
+        .collect();
+    assert_eq!(
+        many_object_labels.len(),
+        many_object_half.len(),
+        "every case in the two-or-more half must produce a label"
+    );
+    let labelled_empty = many_object_labels
+        .iter()
+        .filter(|label| **label == BucketLayoutState::Empty)
+        .count();
+    assert_eq!(
+        labelled_empty, 0,
+        "{labelled_empty} of {} buckets holding objects but no resident page were labelled empty",
+        many_object_half.len()
+    );
+    for (count, label) in many_object_half.iter().zip(&many_object_labels) {
+        assert_eq!(
+            *label,
+            BucketLayoutState::MultiObject,
+            "a bucket holding {count} objects and no resident page is a multi-object bucket"
+        );
+    }
+
+    // The boundary that keeps the fix from swallowing the genuinely empty case: zero objects
+    // stays empty at every page count, which is what stops this from being "never say empty".
+    for page_count in 0..4usize {
+        assert_eq!(
+            classify_bucket_layout(0, page_count),
+            BucketLayoutState::Empty,
+            "a bucket holding no objects is empty whatever its page count"
+        );
+    }
+}
+
+// shared-corpus: storage_object_manager_bucketstore_runtime_authority;
+/// What the mislabel cost downstream: the empty-bucket counter of the runtime report.
+///
+/// runtime_report counts a bucket as empty from its stored label alone, so a bucket whose pages
+/// were released reported as empty while still holding its objects. This drives the label
+/// through the same classifier the write path uses and then reads the counter, so the number is
+/// the report's own and not a restatement of the classifier.
+#[test]
+fn released_multi_object_buckets_are_not_counted_as_empty_buckets() {
+    let mut shard = ShardState::default();
+
+    // Three buckets, all with an emptied page index: one genuinely holding nothing, one holding
+    // a single object, one holding three. Only the first is empty.
+    let fixtures: Vec<(u32, Vec<u64>)> =
+        vec![(1, Vec::new()), (2, vec![20]), (3, vec![30, 31, 32])];
+    assert_eq!(
+        fixtures.len(),
+        3,
+        "the fixture must cover all three object-count cases, or the counter below is untested"
+    );
+    for (routing_bucket, object_ids) in &fixtures {
+        let object_index: ObjectIndex = object_ids.iter().copied().collect();
+        shard.bucket_index.bucket_map.insert(
+            *routing_bucket,
+            BucketNode {
+                routing_bucket: *routing_bucket,
+                meta_loaded: true,
+                layout: classify_bucket_layout(object_index.len(), 0),
+                object_index,
+                ..BucketNode::default()
+            },
+        );
+    }
+
+    let report = crate::engine::bucket_store::runtime_report(&shard);
+    assert_eq!(
+        report.bucket_count,
+        fixtures.len(),
+        "the report must have seen every fixture bucket"
+    );
+    assert_eq!(
+        report.page_ref_count, 0,
+        "every fixture bucket has an emptied page index"
+    );
+    assert_eq!(
+        report.empty_buckets, 1,
+        "only the bucket holding no objects is empty"
+    );
+    assert_eq!(
+        report.single_object_buckets, 1,
+        "the bucket holding one object is a single-object bucket"
+    );
+    assert_eq!(
+        report.multi_object_buckets, 1,
+        "the bucket holding three objects is a multi-object bucket"
+    );
+}
