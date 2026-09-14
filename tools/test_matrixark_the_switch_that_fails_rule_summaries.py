@@ -163,15 +163,49 @@ class NothingInPythonReadsItTest(unittest.TestCase):
         self.assertGreater(len(hits), len(NAMED_BUT_NOT_READ), hits)
 
     def test_the_engine_is_where_it_is_read(self) -> None:
-        """The other half of the claim: `enforced_by: engine` has to be true of the engine."""
+        """The other half of the claim: `enforced_by: engine` has to be true of the engine.
+
+        TWO spellings, because the crate has two. This asked only for
+        `std::env::var("NAME")`, so routing the reader through the shared vocabulary helper --
+        `crate::env_flag::env_bool("NAME", default)`, which is what gave the flag its `yes` and
+        `on` back -- read here as "the engine no longer reads it". The fix removing the site of
+        the guard that watches it.
+
+        The claim being checked is "the engine reads this", not "the engine reads it by one
+        particular call", so both spellings satisfy it. `test_the_spelling_this_accepts_is_not
+        _vacuous` below keeps the pair from widening into anything that mentions the name.
+        """
         source = os.path.join(REPO, "crates", "temporalstore-rust", "src",
                               "context_workflow", "model_provider.rs")
         if not os.path.exists(source):
             self.skipTest("the engine source is not in this checkout")
         with io.open(source, encoding="utf-8") as handle:
             text = handle.read()
-        self.assertIn('std::env::var("%s")' % VARIABLE, text,
-                      "the engine no longer reads it, so nothing enforces the switch anywhere")
+        spellings = ('std::env::var("%s")' % VARIABLE,
+                     'env_flag::env_bool("%s"' % VARIABLE)
+        self.assertTrue(
+            any(spelling in text for spelling in spellings),
+            "the engine no longer reads it by any of %s, so nothing enforces the switch anywhere"
+            % (spellings,))
+
+    def test_the_spelling_this_accepts_is_not_vacuous(self) -> None:
+        """The control on the pair above.
+
+        Accepting two spellings is one step from accepting any mention, and a doc comment naming
+        the variable would then satisfy it -- which is exactly how a dead flag elsewhere in this
+        tree stayed looking alive. Both spellings must be CALLS: a name on its own is not enough.
+        """
+        for spelling in ('std::env::var("%s")' % VARIABLE,
+                         'env_flag::env_bool("%s"' % VARIABLE):
+            with self.subTest(spelling=spelling):
+                self.assertIn("(", spelling)
+                self.assertIn(VARIABLE, spelling)
+        commentary = "/// %s is described here and read nowhere\n" % VARIABLE
+        self.assertFalse(
+            any(spelling in commentary
+                for spelling in ('std::env::var("%s")' % VARIABLE,
+                                 'env_flag::env_bool("%s"' % VARIABLE)),
+            "a line that merely NAMES the variable now satisfies the test above")
 
 
 class TheHelpSaysWhereItIsEnforcedTest(unittest.TestCase):

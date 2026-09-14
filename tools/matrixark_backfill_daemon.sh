@@ -55,6 +55,28 @@ CHUNK="${MATRIXARK_BACKFILL_CHUNK:-4000}"
 BATCH_TIMEOUT_SECONDS="${MATRIXARK_BACKFILL_BATCH_TIMEOUT_SECONDS:-300}"
 AGENTS="${MATRIXARK_BACKFILL_AGENTS:-claude codex}"
 SOURCES="${MATRIXARK_BACKFILL_SOURCES:-transcripts,rollouts,dual_hooks,external_memory,resources}"
+# The same boolean vocabulary the two hook wrappers use, and the same one `env_bool` gives the
+# python side: `1 true yes on` / `0 false no off`, any case, and anything else falls back to the
+# flag's own default rather than counting as off. This file is launched detached by the wrappers
+# (`setsid bash tools/matrixark_backfill_daemon.sh`) and sources nothing, which is why the
+# function is copied here rather than shared -- test_one_flag_has_one_boolean_vocabulary runs
+# this copy out of this file and compares it against env_bool, so a copy that drifts fails.
+#
+# It replaced four flags reading in three different vocabularies:
+#
+#   FORCE                  == "1"                              only the literal 1
+#   REEMIT_ON_FRESH        != "0" && != "false" && != "no"      no `off`, lowercase only
+#   SORT_JSONL_BY_SESSION  != "0" && != "false" && != "no"      likewise
+#   CARGO_OFFLINE          == "1" || == "true"                  no `yes`, no `on`, no `TRUE`
+#
+matrixark_flag_on() {  # $1 = value, $2 = default ("1" means on)
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    *) [ "${2:-1}" = "1" ] ;;
+  esac
+}
+
 SORT_JSONL_BY_SESSION="${MATRIXARK_BACKFILL_SORT_JSONL_BY_SESSION:-1}"
 LOCK="$WORK/.lock"
 DONE="$WORK/.done"
@@ -183,7 +205,7 @@ with open(tmp, "w", encoding="utf-8") as fh:
 os.replace(tmp, path)
 ' "$ag" "$root" "$src" "$total" 2>>"$LOG" || true
 }
-if [[ "$FORCE" == "1" ]]; then
+if matrixark_flag_on "$FORCE" 0; then
   # User forced a re-ingest from the AGENTS' own logs (Claude/Codex transcripts,
   # rollouts, resources — not TemporalStore's own logs). Bypass the
   # recover-from-persistence guard and re-read from the start; the engine dedups
@@ -210,7 +232,7 @@ else
     log "stale daemon done marker ignored: at least one agent store lacks a complete backfill marker"
     rm -f "$DONE"
   fi
-  if (( fresh_empty )) && [[ "$REEMIT_ON_FRESH" != "0" && "$REEMIT_ON_FRESH" != "false" && "$REEMIT_ON_FRESH" != "no" ]]; then
+  if (( fresh_empty )) && matrixark_flag_on "$REEMIT_ON_FRESH" 1; then
     log "fresh empty Rust store detected; resetting emitted source snapshot and offsets for a full local-context stream"
     write_status "fresh_start_reset" "" 0 0 "fresh_empty_store_detected"
     rm -f "$WORK/.emitted" "$WORK"/backfill.*.jsonl "$WORK"/.offset.*
@@ -223,7 +245,7 @@ if [[ ! -x "$BATCH" ]]; then
   log "building context_batch_ingest"
   write_status "building_batch_ingester" "" 0 0 "context_batch_ingest_missing"
   CARGO_ARGS=(build --release -q -p temporalstore-rust --bin context_batch_ingest)
-  if [[ "${MATRIXARK_BACKFILL_CARGO_OFFLINE:-0}" == "1" || "${MATRIXARK_BACKFILL_CARGO_OFFLINE:-0}" == "true" ]]; then
+  if matrixark_flag_on "${MATRIXARK_BACKFILL_CARGO_OFFLINE:-0}" 0; then
     CARGO_ARGS=(build --offline --release -q -p temporalstore-rust --bin context_batch_ingest)
   fi
   CARGO_TARGET_DIR="$TARGET_DIR" "$CARGO_BIN" "${CARGO_ARGS[@]}" >>"$LOG" 2>&1 || { log "build failed"; write_status "failed" "" 0 0 "build_failed"; exit 0; }
@@ -239,7 +261,7 @@ if [[ ! -f "$WORK/.emitted" ]]; then
   touch "$WORK/.emitted"
 fi
 
-if [[ "$SORT_JSONL_BY_SESSION" != "0" && "$SORT_JSONL_BY_SESSION" != "false" && "$SORT_JSONL_BY_SESSION" != "no" && ! -f "$WORK/.sorted" ]]; then
+if matrixark_flag_on "$SORT_JSONL_BY_SESSION" 1 && [[ ! -f "$WORK/.sorted" ]]; then
   if compgen -G "$WORK/.offset.*" >/dev/null; then
     log "existing offsets present; preserving committed prefixes and sorting remaining tails by session_id,ts_ms"
     write_status "sorting_jsonl_tails" "" 0 0 "preserve_offsets_session_locality"
@@ -367,7 +389,7 @@ backfill_agent() {
   local SRC="$WORK/backfill.$AG.jsonl"
   local ROOT; ROOT="$(agent_root "$AG")"
   [[ -f "$SRC" ]] || { write_status "agent_skipped" "$AG" 0 0 "source_jsonl_missing"; echo skipped >"$WORK/.status.$AG"; return 0; }
-  if [[ "$FORCE" != "1" ]] && agent_backfill_complete "$ROOT" "$AG"; then
+  if ! matrixark_flag_on "$FORCE" 0 && agent_backfill_complete "$ROOT" "$AG"; then
     log "$AG: local-context backfill marker present ($ROOT); recovering from persistence, skipping local-context backfill"
     write_status "agent_skipped" "$AG" 0 0 "agent_backfill_marker_present"
     echo skipped >"$WORK/.status.$AG"; return 0

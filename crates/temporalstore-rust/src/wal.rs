@@ -295,9 +295,11 @@ pub struct WriteAheadLogRecord {
 /// about what an ack promises, not a tuning change -- but a comment claiming the flag costs
 /// nothing is how it gets treated as one.
 pub fn wal_data_only_enabled() -> bool {
-    std::env::var("TS_WAL_DATA_ONLY")
-        .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
-        .unwrap_or(true)
+    // Default ON; the variable opts OUT. It used to recognise `0` and `false` and nothing else,
+    // so `off` -- and `no`, and a `" 0"` a unit file leaves behind -- kept it on. Its neighbour
+    // `wal_outcome_items_enabled` sixty lines below already took the whole off-set. Given what
+    // the comment above says this flag decides, the two should not have differed.
+    crate::env_flag::env_bool("TS_WAL_DATA_ONLY", true)
 }
 
 /// What a record should carry as its operation, given what it recorded and what is behind it.
