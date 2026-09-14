@@ -402,12 +402,13 @@ impl TemporalEngine {
             let command_for_post_write = command.clone();
             // What the touched keys held before this command, so the capture below can be
             // skipped when nothing was removed. Sizes only -- no allocation.
-            let membership_before: Vec<(String, usize)> =
+            let membership_before: Vec<(String, usize, Option<u64>)> =
                 command_object_keys(&command_for_post_write)
                     .into_iter()
                     .map(|key| {
                         let size = key_membership_size(shard, &key);
-                        (key, size)
+                        let deadline = shard.expires_at_ms.get(&key).copied();
+                        (key, size, deadline)
                     })
                     .collect();
             let outcome = execute_on_shard(
@@ -438,10 +439,11 @@ impl TemporalEngine {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
                 delta_command_keys.extend(object_keys.iter().cloned());
+                // Same question as the single-command path, through the SAME function: a
+                // membership shrink OR a deadline change. Two spellings of this test is how
+                // one of them keeps a bug the other fixed, so there is only one.
                 if !batch_membership_shrank {
-                    batch_membership_shrank = membership_before
-                        .iter()
-                        .any(|(key, before)| key_membership_size(shard, key) < *before);
+                    batch_membership_shrank = delta_key_state_change(shard, &membership_before);
                 }
                 match (
                     &mut batch_upsert_components,

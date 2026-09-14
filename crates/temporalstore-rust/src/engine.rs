@@ -868,12 +868,19 @@ impl TemporalEngine {
             block_in_wal::begin_write();
         }
         // What the touched keys held before this command, so the capture below can be
-        // skipped when nothing was removed. Sizes only -- no allocation.
-        let membership_before: Vec<(String, usize)> = command_object_keys(&command)
+        // skipped when nothing was removed. Sizes and one `u64` -- no allocation.
+        //
+        // THE DEADLINE'S VALUE IS CARRIED SEPARATELY BECAUSE `key_membership_size` ONLY COUNTS
+        // ITS PRESENCE. It adds `expires_at_ms.contains_key(key)` as one unit, which notices a
+        // deadline being removed (a shrink) but not one being ARMED (a growth) or MOVED (no
+        // change at all). Keeping the millisecond itself is what lets those two be seen. See
+        // `delta_key_state_change` below.
+        let membership_before: Vec<(String, usize, Option<u64>)> = command_object_keys(&command)
             .into_iter()
             .map(|key| {
                 let size = key_membership_size(shard, &key);
-                (key, size)
+                let deadline = shard.expires_at_ms.get(&key).copied();
+                (key, size, deadline)
             })
             .collect();
 
@@ -1290,8 +1297,10 @@ impl TemporalEngine {
                         false,
                     ),
                 };
-                // Capture the authoritative membership only when this write could have
-                // removed some.
+                // Capture the authoritative per-key state only when this write produced some
+                // that reconstruction from pages cannot redo: a membership SHRINK, or a
+                // DEADLINE CHANGE. See `delta_key_state_change` for both halves and for why
+                // the second one has to be asked separately.
                 //
                 // The capture exists so a reload after WAL replay does not resurrect an entry
                 // the write evicted or tombstoned -- reconstruction from physical pages would
@@ -1302,10 +1311,8 @@ impl TemporalEngine {
                 // key, so appending to a node that held 850 events serialized all 850 -- 8,647 of
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
-                let membership_shrank = membership_before.iter().any(|(key, before)| {
-                    key_membership_size(shard, key) < *before
-                });
-                let key_states = if membership_shrank {
+                let key_state_changed = delta_key_state_change(shard, &membership_before);
+                let key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
                 } else {
                     Vec::new()
@@ -3026,6 +3033,52 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.context_summaries.get(key).map_or(0, |v| v.len())
         + shard.context_compressions.get(key).map_or(0, |v| v.len())
         + shard.context_entities.get(key).map_or(0, |v| v.len())
+}
+
+/// Did this write produce per-key state that reconstruction from physical pages cannot redo?
+///
+/// TWO REASONS, AND THE SECOND ONE COVERS THE HALF THE FIRST CANNOT SEE.
+///
+/// The first is a MEMBERSHIP SHRINK: an entry was evicted or tombstoned, and rebuilding the
+/// index from the pages on disk would find it again and resurrect it. That is what this used
+/// to ask on its own, and it is still asked first because it is the cheap half.
+///
+/// The second is a DEADLINE CHANGE. `key_membership_size` DOES count the deadline -- but only
+/// as `expires_at_ms.contains_key(key)`, one unit of presence. That is enough to notice a
+/// deadline being REMOVED (1 -> 0 is a shrink, so `CommonPersist` and `SET` without `KEEPTTL`
+/// were always captured) and blind to the other two directions:
+///
+///   * ARMING a deadline where there was none is 0 -> 1, a GROWTH, and the gate only fires on
+///     a shrink;
+///   * MOVING a deadline to a different millisecond leaves `contains_key` true on both sides,
+///     so the size does not move at all.
+///
+/// Either of those left `key_states` empty while the delta record it rode on still advanced
+/// `applied_wal_sequence` to cover the WAL entry that set the deadline. On the legacy-recovery
+/// load path the fold trusts that anchor and replays only the WAL tail BEYOND it, so the
+/// command that armed the deadline is replayed by nobody, and the deadline is recovered from
+/// neither the base, nor the record, nor the log. The anchor advance is what makes this a loss
+/// rather than a slow path.
+///
+/// WHY THIS DOES NOT REINTRODUCE THE CAPTURE COST. Capturing serializes every entry the
+/// per-key maps hold, which is why it is gated at all -- on a real corpus the unconditional
+/// version wrote 3.53 GB of index log against 16 MB for the same 20,001 messages. That cost
+/// came from APPENDS to long postings, and an append does not move a deadline, so it still
+/// takes the cheap path. What newly captures is a write that armed or moved a key's deadline,
+/// which is a deliberate and far rarer act than appending to a node.
+///
+/// The comparison is on `Option<u64>`, so a re-arm to the SAME millisecond correctly is not a
+/// change and does not capture.
+fn delta_key_state_change(
+    shard: &ShardState,
+    membership_before: &[(String, usize, Option<u64>)],
+) -> bool {
+    membership_before
+        .iter()
+        .any(|(key, size_before, deadline_before)| {
+            key_membership_size(shard, key) < *size_before
+                || shard.expires_at_ms.get(key).copied() != *deadline_before
+        })
 }
 
 fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Value> {

@@ -2846,3 +2846,309 @@ fn execute_on_shard_guards_every_arm_that_can_hold_a_deadline() {
         EXEMPT.len(),
     );
 }
+
+
+/// A delta record carries a deadline a write ARMED, and one it MOVED.
+///
+/// WHAT WAS LOST. The key-state capture that rides on a delta record is gated on
+/// `membership_shrank` -- did any per-key collection get SMALLER. `key_membership_size` DOES
+/// count the deadline, but only as `expires_at_ms.contains_key(key)`, one unit of presence.
+/// That sees a deadline being REMOVED, because 1 -> 0 is a shrink. It is blind to the other
+/// two directions:
+///
+///   * ARMING a deadline where there was none is 0 -> 1, a GROWTH, and the gate fires only on
+///     a shrink;
+///   * MOVING a deadline to a different millisecond leaves `contains_key` true on both sides,
+///     so nothing the gate measures changes at all.
+///
+/// WHY AN EMPTY CAPTURE IS A LOSS AND NOT JUST A SLOW PATH. The record still carries an
+/// ANCHOR, and `fold_index_log_deltas` advances `applied_wal_sequence` to it. On the
+/// legacy-recovery load path the WAL is then replayed only BEYOND that anchor, so the
+/// `CommonExpire` that armed the deadline sits at or below it and is replayed by nobody. The
+/// deadline is recovered from neither the base, nor the record, nor the log. That anchor
+/// advance is asserted below rather than assumed, because without it there would be no bug.
+///
+/// LATENT, NOT LIVE, AND ASSERTED RATHER THAN ASSUMED. #1644 established that the fold is
+/// never called on the default load path: `load_shard_with` takes `load_index_base_only` under
+/// the single-barrier default, which passes `fold_deltas = false`. The fold is reached only
+/// through `load_index_checked`, i.e. only under the `TS_WAL_LEGACY_RECOVERY` escape hatch --
+/// which is exactly the entry point this test drives, and the reason it drives that one rather
+/// than a plain reload.
+///
+/// THE TWO HALVES ARE ARM AND MOVE, AND THEY ARE SEPARATE CLAIMS. A fix that captured only
+/// when a deadline APPEARED would satisfy the first and leave the second losing every re-arm.
+///
+/// CLEARING IS A CONTROL HERE, NOT A THIRD CLAIM, AND THE DISTINCTION IS LOAD-BEARING. A
+/// removal already shrinks the membership, so it was captured before this change and is
+/// captured after it; asserting it proves the change did not BREAK the direction that already
+/// worked, and proves nothing about the change itself. It is written down as a control because
+/// a reader who mistook it for a claim would conclude this guard covers more than it does --
+/// and because a mutation that reverts only the arm/move handling leaves it passing, which is
+/// exactly what a vacuous row looks like from the outside.
+#[test]
+fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
+    const LIVE_KEYS: usize = 16;
+    let armed_key = "arm-target";
+    let moved_key = "move-target";
+    let persist_key = "persist-target";
+
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
+    engine.load_shard(1);
+
+    // Background keys, so the base index is a real one rather than a three-row curiosity.
+    let mut seed = Vec::with_capacity(LIVE_KEYS);
+    for index in 0..LIVE_KEYS {
+        seed.push((format!("live-{index:08}"), 3_600_000u64));
+    }
+    write_keys(&engine, 1, seed);
+
+    // THE THREE SUBJECTS, IN THE STATE THE BASE MUST CAPTURE THEM IN.
+    //  * `armed_key` starts with NO deadline -- only the delta can supply one (0 -> 1, growth);
+    //  * `moved_key` starts WITH one, which the write below moves (1 -> 1, no size change);
+    //  * `persist_key` starts WITH one, which the write below removes (1 -> 0, a shrink) --
+    //    the control.
+    let set = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: armed_key.to_string(),
+            value: vec![b'v'; 16],
+        },
+    });
+    assert!(set.status.ok, "seeding {armed_key} failed: {:?}", set.status);
+    write_keys(
+        &engine,
+        1,
+        vec![
+            (moved_key.to_string(), 3_600_000u64),
+            (persist_key.to_string(), 3_600_000u64),
+        ],
+    );
+
+    // THE STALE BASE. Materialized BEFORE any of the deadline writes below.
+    engine.flush_shard_index(1);
+    let base_path = engine.index_path(1);
+    let base_before = std::fs::read(&base_path).expect("the base index should have been written");
+    let base_state = decode_index_bytes(&base_before).expect("the base index should decode");
+    let base_anchor = base_state.applied_wal_sequence.unwrap_or(0);
+    assert!(
+        base_anchor > 0,
+        "the base index carries no WAL anchor. At zero the fold folds the WHOLE log instead of \
+         the suffix beyond the base, which is a different path from the one under test"
+    );
+    assert!(
+        !base_state.expires_at_ms.contains_key(armed_key),
+        "DENOMINATOR: the base already names a deadline for {armed_key}, before anything armed \
+         one. The base is the stale source that has never heard of it -- with it already \
+         present, a fold that applies NOTHING would look exactly like one that works"
+    );
+    let base_moved = base_state.expires_at_ms.get(moved_key).copied();
+    assert!(
+        base_moved.is_some(),
+        "DENOMINATOR: the base does not name a deadline for {moved_key}, so the move half has \
+         no stale value to be corrected away from"
+    );
+    assert!(
+        base_state.expires_at_ms.contains_key(persist_key),
+        "DENOMINATOR for the clearing CONTROL: the base does not name {persist_key}"
+    );
+
+    let records_before = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("the index log should read back")
+        .len();
+
+    // THE THREE WRITES. The first GROWS the deadline membership, the second leaves it flat,
+    // the third SHRINKS it -- and only the third was visible to the gate before this change.
+    let armed = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonExpire {
+            key: armed_key.to_string(),
+            ttl_ms: 3_600_000,
+        },
+    });
+    assert!(armed.status.ok, "arming failed: {:?}", armed.status);
+    // A different duration, so the moved deadline cannot coincide with the one it replaced --
+    // an equal re-arm is deliberately NOT a change, and would make this half vacuous.
+    let moved = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonExpire {
+            key: moved_key.to_string(),
+            ttl_ms: 7_200_000,
+        },
+    });
+    assert!(moved.status.ok, "re-arming failed: {:?}", moved.status);
+    let persisted = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonPersist {
+            key: persist_key.to_string(),
+        },
+    });
+    assert!(persisted.status.ok, "persist failed: {:?}", persisted.status);
+
+    // What the LIVE shard now holds. If it does not match what was asked for, the recovery
+    // assertions below are about the wrong thing entirely.
+    let (live_armed, live_moved, live_wal_sequence) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 is loaded");
+        assert!(
+            shard.expires_at_ms.contains_key(armed_key),
+            "DENOMINATOR: the LIVE shard has no deadline for {armed_key} after CommonExpire, so \
+             there is no deadline for recovery to lose"
+        );
+        assert!(
+            !shard.expires_at_ms.contains_key(persist_key),
+            "DENOMINATOR for the control: the LIVE shard still holds a deadline for \
+             {persist_key} after CommonPersist"
+        );
+        (
+            shard.expires_at_ms.get(armed_key).copied(),
+            shard.expires_at_ms.get(moved_key).copied(),
+            shard.applied_wal_sequence.unwrap_or(0),
+        )
+    };
+    assert_ne!(
+        live_moved, base_moved,
+        "DENOMINATOR: the re-arm left {moved_key} on the SAME millisecond the base already \
+         holds ({base_moved:?}). Then the base and the correct answer agree, and the move half \
+         would pass without the delta carrying anything"
+    );
+
+    // THE RECORDS EXIST AND ANCHOR BEYOND THE BASE. A record at or below the base anchor is
+    // SKIPPED by the fold, which would make every claim below vacuous.
+    let records = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("the index log should read back");
+    let appended = records.len().saturating_sub(records_before);
+    assert!(
+        appended > 0,
+        "the three deadline writes appended no delta records at all"
+    );
+    let max_anchor = records
+        .iter()
+        .filter_map(|record| record.applied_wal_sequence)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_anchor > base_anchor,
+        "the deadline writes left the delta log anchored at {max_anchor}, at or below the \
+         base's {base_anchor}. The fold skips those records, so the load below measures the \
+         base alone"
+    );
+
+    // THE ANCHOR ADVANCE IS THE MECHANISM, SO IT IS ASSERTED, NOT ASSUMED.
+    assert!(
+        max_anchor >= live_wal_sequence,
+        "the delta anchor {max_anchor} is BEHIND the WAL sequence {live_wal_sequence} the \
+         deadline writes reached. That would make the WAL tail replay them and there would be \
+         no loss to fix -- the premise of this test would be gone"
+    );
+
+    // A second engine over the SAME files, so both arms read one set.
+    let reader = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-control"),
+        &pages,
+        &indexes,
+    );
+
+    // CONTROL ARM: the same load with the fold switched OFF -- the stale base and nothing else.
+    // It must disagree with the live shard on all three keys, or the treatment is not what is
+    // producing the agreement.
+    let control = reader
+        .load_index_base_only(1, false)
+        .expect("the base index should load");
+    assert!(
+        !control.expires_at_ms.contains_key(armed_key),
+        "CONTROL: the unfolded base already holds a deadline for {armed_key}. Something other \
+         than the fold supplies it, so the arm half would pass with the capture deleted"
+    );
+    assert_eq!(
+        control.expires_at_ms.get(moved_key).copied(),
+        base_moved,
+        "CONTROL: the unfolded base does not hold {moved_key}'s ORIGINAL deadline, so the move \
+         half cannot tell a corrected value from the stale one"
+    );
+    assert!(
+        control.expires_at_ms.contains_key(persist_key),
+        "CONTROL: the unfolded base has already lost {persist_key}'s deadline"
+    );
+
+    // TREATMENT: the same two files, folded, through the entry point the legacy-recovery path
+    // uses. Everything that differs from the control is the fold's work and nothing else's.
+    let folded = reader
+        .load_index_checked(1, false)
+        .expect("the delta log is intact, so the checked load must not refuse it")
+        .expect("the base index should load");
+
+    println!(
+        "  base at anchor {base_anchor}: denies {armed_key}, holds {moved_key} at {base_moved:?}, \
+         holds {persist_key}; {appended} delta record(s) to anchor {max_anchor} (live WAL \
+         {live_wal_sequence}). Unfolded: {} deadlines, {armed_key}=None, {moved_key}={:?}. \
+         Folded: {} deadlines, {armed_key}={:?}, {moved_key}={:?}",
+        control.expires_at_ms.len(),
+        control.expires_at_ms.get(moved_key).copied(),
+        folded.expires_at_ms.len(),
+        folded.expires_at_ms.get(armed_key).copied(),
+        folded.expires_at_ms.get(moved_key).copied(),
+    );
+
+    // ---- HALF ONE: the ARMED deadline survives (0 -> 1, a growth the gate could not see) ----
+    assert_eq!(
+        folded.expires_at_ms.get(armed_key).copied(),
+        live_armed,
+        "the folded load did not recover the deadline {armed_key} was given. The base never had \
+         one and the delta record is the only other source in this load, so a missing or \
+         different value here means the record did not carry it -- and because the record's \
+         anchor ({max_anchor}) already covers the WAL entry that armed it ({live_wal_sequence}), \
+         replay will not supply it either. The key comes back immortal"
+    );
+
+    // ---- HALF TWO: the MOVED deadline survives (1 -> 1, no size change at all) --------------
+    // Asserted separately and on its own key: a fix that captured only when a deadline
+    // APPEARED would satisfy half one completely and leave this one holding the stale value.
+    assert_eq!(
+        folded.expires_at_ms.get(moved_key).copied(),
+        live_moved,
+        "the folded load came back with the WRONG deadline for {moved_key}. The stale base \
+         holds {base_moved:?} and the live shard holds {live_moved:?}; recovering the base's \
+         value means the record did not carry the move, and the key expires at a moment the \
+         caller replaced"
+    );
+
+    // ---- CONTROL, NOT A CLAIM: a CLEARED deadline stays cleared -----------------------------
+    // A removal shrinks the membership, so this direction was captured before this change too.
+    // It is here to show the change did not break what already worked -- it is NOT evidence
+    // that the change does anything, and a mutation reverting the arm/move handling leaves it
+    // passing.
+    assert!(
+        !folded.expires_at_ms.contains_key(persist_key),
+        "CONTROL: the folded load brought back the deadline PERSIST removed from {persist_key}. \
+         This direction was already covered by the membership shrink, so a failure here is this \
+         change having broken it rather than having missed it"
+    );
+
+    // ---- CONTROL, THE OTHER DIRECTION: the untouched keys are untouched ---------------------
+    // The capture wipes and restores whole per-key maps, so a blob naming more keys than the
+    // write touched deletes live state on recovery.
+    assert_eq!(
+        folded.expires_at_ms.len(),
+        LIVE_KEYS + 2,
+        "the folded index holds {} deadlines, expected the {LIVE_KEYS} background keys plus \
+         {armed_key} and {moved_key}, and not {persist_key}. The unfolded control holds {}",
+        folded.expires_at_ms.len(),
+        control.expires_at_ms.len()
+    );
+    for index in [0usize, LIVE_KEYS / 2, LIVE_KEYS - 1] {
+        let key = format!("live-{index:08}");
+        assert!(
+            folded.expires_at_ms.contains_key(&key),
+            "the fold dropped {key}, which none of the three writes touched"
+        );
+    }
+}
