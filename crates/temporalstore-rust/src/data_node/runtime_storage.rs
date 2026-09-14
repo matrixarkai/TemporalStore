@@ -1029,6 +1029,17 @@ impl DataNodeRuntime {
             // Recorded beside the round counter, so every caller gets it: the per-shard
             // scheduler, the all-shards scheduler, and the cycle endpoint.
             let mut stats = self.inner.stats.lock().expect("runtime stats lock poisoned");
+            // A round here is a run of the storage manager, and has to be counted as one.
+            //
+            // The queued path counts both (`worker.rs`, storage_manager_runs then
+            // storage_manager_loops). This one counted only the round, and
+            // `storage_manager_runs` is the field the scrape exports as
+            // temporalstore_data_node_runtime_jobs_total{kind="storage_manager"} -- while
+            // `storage_manager_loops` is exported nowhere. A server started as shipped drives
+            // maintenance from THIS path and never the queued one, so the only exported sign
+            // that maintenance runs at all sat at zero while it ran every thirty seconds, and
+            // an operator reading it could not tell a working loop from a stopped one.
+            stats.storage_manager_runs += 1;
             stats.storage_manager_loops += 1;
             stats.storage_manager_last_shard_id = Some(shard_id);
         }

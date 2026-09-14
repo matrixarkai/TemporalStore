@@ -10239,3 +10239,119 @@ fn the_periodic_round_drains_the_holed_slab_and_leaves_the_dense_ones() {
         BATCHES - 1
     );
 }
+
+#[test]
+// shared-corpus: storage_dump_load_recovery storage_cache_refill;
+fn a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses() {
+    // The scrape exports ONE number for storage-manager activity:
+    // temporalstore_data_node_runtime_jobs_total{kind="storage_manager"}, which reads
+    // `storage_manager_runs`. Two paths drive maintenance and they disagreed about that field.
+    // The queued path counts a run AND a round; the periodic scheduler counted only a round.
+    //
+    // A server started as shipped drives maintenance from the scheduler and never queues a
+    // storage-manager task, so the exported counter sat at zero while maintenance ran every
+    // thirty seconds -- a number an operator cannot act on, because a working loop and a stopped
+    // one both read zero.
+    //
+    // The two fields are asserted APART. Counting them together hid this: the pair moved, and it
+    // was only ever the unexported one moving.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine.clone(), 8);
+
+    for (key, value) in [
+        ("run-count-a", b"one".to_vec()),
+        ("run-count-a", b"two".to_vec()),
+        ("run-count-b", b"three".to_vec()),
+    ] {
+        let response = runtime.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+
+    // ---- Denominator: nothing has run yet, so a later "it climbed" is not reading a head start.
+    let before = runtime.stats();
+    assert_eq!(
+        before.storage_manager_runs, 0,
+        "premise: no run counted before the first round"
+    );
+    assert_eq!(
+        before.storage_manager_loops, 0,
+        "premise: no round counted before the first round"
+    );
+
+    let options = StorageManagerOptions {
+        max_dump_buckets_per_round: 16,
+        min_undumped_wal_records: 1,
+        dirty_bucket_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let report = runtime.run_storage_manager_once(1, options.clone());
+
+    // ---- Denominator: the round did work, so counting it is counting something.
+    assert!(report.status.ok, "{report:?}");
+    assert!(
+        !report.executed_stages.is_empty(),
+        "premise: the round executed at least one stage, got {:?}",
+        report.executed_stages
+    );
+
+    // ---- Half one: the EXPORTED field. This is the half that stood at zero.
+    let after = runtime.stats();
+    assert_eq!(
+        after.storage_manager_runs, 1,
+        "the scheduler ran a maintenance round and {} runs were counted -- this is the field the \
+         scrape exports, so the only exported sign of maintenance would stay flat while it ran",
+        after.storage_manager_runs
+    );
+
+    // ---- Half two: the UNEXPORTED field. This half was always right, and moving alone is what
+    // made the surface look alive from inside the process and dead from outside it.
+    assert_eq!(
+        after.storage_manager_loops, 1,
+        "the round counter must still count the round, got {}",
+        after.storage_manager_loops
+    );
+
+    // ---- The two must not drift apart again across rounds.
+    runtime.run_storage_manager_once(1, options.clone());
+    runtime.run_storage_manager_once(1, options);
+    let later = runtime.stats();
+    assert_eq!(later.storage_manager_loops, 3, "three rounds were driven");
+    assert_eq!(
+        later.storage_manager_runs, later.storage_manager_loops,
+        "every round on this path is a run of the storage manager: {} runs against {} rounds",
+        later.storage_manager_runs, later.storage_manager_loops
+    );
+
+    // ---- And the export still reads the field this test just moved. The renderer lives in the
+    // server binary, which this suite does not link, so the link is pinned by reading it. Without
+    // this, someone could point the metric at a different field and both halves above would still
+    // pass while the scrape went flat again.
+    let renderer = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("bin")
+        .join("server")
+        .join("metrics.rs");
+    let text = std::fs::read_to_string(&renderer)
+        .unwrap_or_else(|err| panic!("cannot read {}: {err}", renderer.display()));
+    assert!(
+        text.len() > 1000,
+        "premise: read the renderer, not an empty file -- got {} bytes",
+        text.len()
+    );
+    assert!(
+        text.contains("temporalstore_data_node_runtime_jobs_total"),
+        "premise: this is the file that renders the job counters"
+    );
+    assert!(
+        text.contains("(\"storage_manager\", stats.storage_manager_runs)"),
+        "the exported storage_manager job counter must read storage_manager_runs, the field the \
+         scheduler increments; if this moved, the scrape no longer reports what this test proved"
+    );
+}
