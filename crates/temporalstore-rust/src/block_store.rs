@@ -682,6 +682,13 @@ pub struct BlockStorePurgeDelayedDestroyReport {
     /// draining a quarantine loops while this holds. The distinction the `retained_too_young`
     /// list already draws is the one that matters here too -- a slab the round never reached is
     /// not being held back for any reason of its own, it simply was not this round's business.
+    ///
+    /// A ROUND THAT SPENDS ITS BUDGET EXACTLY AS THE WORK RUNS OUT STILL REPORTS `true`, and the
+    /// next round then finds nothing and reports `false`. That costs one extra, empty round, and
+    /// it is deliberate: the only way for the round to know the directory holds nothing more is
+    /// to walk the rest of it, and not walking the rest of it is the entire point of the cap.
+    /// Over-reporting here costs a round that does nothing; under-reporting would stop a caller's
+    /// drain with slabs still in quarantine.
     #[serde(default)]
     pub budget_exhausted: bool,
     /// The budget this round ran under. 0 means uncapped.
@@ -4814,6 +4821,10 @@ mod tests {
             (450, 12),
             "the prediction is arithmetic on the fixture, stated before the run"
         );
+        // The budget must not divide the work exactly: a round that spends its budget as the work
+        // runs out still reports `budget_exhausted`, so an evenly-dividing fixture takes one extra
+        // empty round whose existence depends on `read_dir` order. A partial last round does not.
+        assert_ne!(work % budget, 0, "the last round must be a partial one");
         // Deliberately more rounds than predicted, so "finished" and "stalled" look different.
         let allowed_rounds = predicted_rounds + 8;
 
@@ -4915,14 +4926,21 @@ mod tests {
     /// same blocked slabs and destroy nothing, for ever -- and from the outside that is
     /// indistinguishable from a cap that is merely conservative.
     ///
-    /// Ninety rounds at ten actionable slabs each would be the entry-counted cost; ten rounds is
-    /// the work-counted one. The assertion is on ten.
+    /// A hundred rounds is the entry-counted cost; twelve is the work-counted one. The assertion
+    /// is on twelve.
+    ///
+    /// THE BUDGET DELIBERATELY DOES NOT DIVIDE THE WORK. 100 slabs at 10 a round would finish in
+    /// ten full rounds -- and a round that spends its budget exactly as the work runs out still
+    /// reports `budget_exhausted`, so the drain takes an eleventh, empty round whose existence
+    /// depends on where in directory order the last actionable slab happened to sit. At 9 a round
+    /// the last round is always partial, always walks to the end of the directory, and always
+    /// reports the drain finished: twelve rounds, whatever order `read_dir` returns.
     #[test]
     fn a_capped_purge_is_not_starved_by_the_slabs_it_must_skip() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let slabs = 1_000u64;
-        let budget = 10usize;
+        let budget = 9usize;
         quarantine_fixture(dir.path(), slabs);
 
         // DENOMINATORS, both halves, before anything runs.
@@ -4940,7 +4958,13 @@ mod tests {
         );
 
         let predicted_rounds = selected.len().div_ceil(budget);
-        assert_eq!(predicted_rounds, 10, "stated before the run");
+        assert_eq!(predicted_rounds, 12, "stated before the run");
+        assert_ne!(
+            selected.len() % budget,
+            0,
+            "the budget must not divide the work, or the last round's report depends on where in \
+             directory order the final actionable slab sits"
+        );
         let allowed_rounds = predicted_rounds + 5;
 
         let mut rounds = 0usize;
@@ -5045,6 +5069,105 @@ mod tests {
         assert!(
             store.delayed_destroy_slab_ids().unwrap().is_empty(),
             "with nothing left in quarantine"
+        );
+    }
+
+    /// The collector's victim order is LARGEST SLAB FIRST, not the highest-garbage order its sort
+    /// key is written to express -- and that is why the collector's own per-round budget stays
+    /// OFF while the purge gets one.
+    ///
+    /// `can_the_page_gc_garbage_floor_bind` establishes the premise and asserts it in CI: every
+    /// candidate reports `used_bytes == 0`, so every candidate reports the same zero live
+    /// fraction. This test states the CONSEQUENCE for ordering. With the first sort key uniform
+    /// and the second (`utility_score`) uniform too, the first key that can separate two
+    /// candidates is physical size, descending. The order the comment above the sort describes is
+    /// therefore not the order that happens.
+    ///
+    /// AN UNBOUNDED COLLECTOR DOES NOT CARE -- it takes every candidate, so the order only
+    /// decides what happens first. A BUDGETED ONE DOES: the budget makes the order decide who
+    /// SURVIVES, and here the survivors would be the smallest files, chosen by a rule nobody
+    /// wrote down and unrelated to how much garbage they hold. Worse, it can starve: small slabs
+    /// keep losing to every larger slab that arrives later.
+    ///
+    /// The purge cap has neither problem, which is the asymmetry behind treating the two
+    /// differently. Its budget is spent on work, every slab it charges for LEAVES the trash
+    /// directory, and the set it has left to do strictly shrinks -- so nothing it defers can be
+    /// deferred for ever, whatever order the directory hands it.
+    ///
+    /// If this test starts failing because the order changed, the question of whether to budget
+    /// the collector is open again and should be re-asked rather than assumed.
+    #[test]
+    fn the_collector_victim_order_is_size_while_every_candidate_reports_zero_used_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        // Sizes deliberately disagree with id order, so an assertion about the resulting order
+        // cannot be satisfied by the slabs merely coming back in the order they were made.
+        store.install_slab(0, &vec![b'a'; 200]).unwrap();
+        store.install_slab(1, &vec![b'b'; 800]).unwrap();
+        store.install_slab(2, &vec![b'c'; 400]).unwrap();
+        store.install_slab(3, &vec![b'd'; 100]).unwrap();
+        store.install_slab(4, b"current").unwrap();
+
+        let candidates = store.gc_utility_candidates(4, Vec::<u64>::new()).unwrap();
+        // DENOMINATOR: there really are four candidates to order.
+        assert_eq!(
+            candidates.len(),
+            4,
+            "four slabs are below the retention floor and collectable"
+        );
+        // THE PREMISE, restated where the consequence is drawn, so this test fails on its own
+        // terms if used bytes ever start meaning live page bytes.
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.used_bytes == 0
+                    && candidate.utility_basis_points == 0),
+            "every candidate reports a zero live fraction, so the garbage key carries no \
+             information to sort by: {candidates:?}"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.utility_score == 0),
+            "and the categorical score is uniform too, so it cannot separate them either"
+        );
+
+        let order = candidates
+            .iter()
+            .map(|candidate| candidate.block_slab_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![1, 2, 0, 3],
+            "the order that actually results is descending physical size (800, 400, 200, 100 \
+             bytes of payload), not anything about garbage"
+        );
+
+        // So a budget of two would destroy the two LARGEST and leave the two smallest.
+        let plan = store
+            .gc_policy_plan(
+                4,
+                Vec::<u64>::new(),
+                &BlockStoreGcPolicy::max_slabs(2),
+            )
+            .unwrap();
+        assert_eq!(
+            plan.selected_block_slab_ids,
+            vec![1, 2],
+            "a budgeted collector picks its victims by file size; the survivors are the small \
+             slabs, for no reason connected to how much of them is garbage"
+        );
+
+        // AND THE SHIPPED POLICY LEAVES THAT BUDGET OFF.
+        assert_eq!(
+            BlockStoreGcPolicy::with_slab_garbage_floor(
+                crate::engine::reports::DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+                None,
+            )
+            .max_destroy_slabs,
+            0,
+            "the collector's per-round budget is off, and stays off until used bytes mean live \
+             page bytes within the slab"
         );
     }
 
@@ -5507,10 +5630,17 @@ mod tests {
 
     /// Install, quarantine and purge, timed apart.
     ///
-    /// A purge unlinks every quarantined slab in one round with the store's lock held, so the round
-    /// is unbounded in the amount of work it does. Whether that is the expensive part, or whether
-    /// getting there is, is what this separates -- an earlier attempt timed all three together at
-    /// twenty thousand slabs and did not finish in an hour.
+    /// A purge round used to unlink every quarantined slab with the store's lock held, so the
+    /// round was unbounded in the amount of work it did. Whether that is the expensive part, or
+    /// whether getting there is, is what this separates -- an earlier attempt timed all three
+    /// together at twenty thousand slabs and did not finish in an hour.
+    ///
+    /// THE PURGE IS NOW DRAINED IN ROUNDS, because one call no longer finishes it. The longest
+    /// single round is what the lock hold costs and is printed beside the total; a total alone
+    /// would say the cap had made things slower while hiding that the thing it bounds got
+    /// shorter. The round count is printed too: at 3,200 slabs and a budget of 1,000 it is the
+    /// four that the arithmetic predicts, so a drain that quietly stopped early would show up
+    /// here as a count that is too small rather than as a number nobody checks.
     #[test]
     fn quarantine_and_purge_timed_by_phase() {
         for slabs in [200u64, 800, 3_200] {
@@ -5524,19 +5654,56 @@ mod tests {
             let install = started.elapsed().as_secs_f64() * 1e3;
 
             let started = std::time::Instant::now();
-            store
+            let quarantined = store
                 .gc_slabs_before_with_live_refs_delayed_destroy(slabs - 1, [slabs - 1])
-                .unwrap();
+                .unwrap()
+                .delayed_destroy_block_slab_ids
+                .len();
             let quarantine = started.elapsed().as_secs_f64() * 1e3;
+            // DENOMINATOR: the purge below really has this much to drain.
+            assert_eq!(
+                quarantined as u64,
+                slabs - 1,
+                "the quarantine phase must really have set aside {} slabs",
+                slabs - 1
+            );
 
+            let expected_rounds = quarantined.div_ceil(DELAYED_DESTROY_MAX_SLABS_PER_ROUND);
             let started = std::time::Instant::now();
-            let report = store.purge_delayed_destroy_slabs_older_than(0).unwrap();
+            let mut destroyed = 0usize;
+            let mut rounds = 0usize;
+            let mut longest_round_ms = 0.0f64;
+            loop {
+                let round_started = std::time::Instant::now();
+                let report = store.purge_delayed_destroy_slabs_older_than(0).unwrap();
+                let round_ms = round_started.elapsed().as_secs_f64() * 1e3;
+                longest_round_ms = longest_round_ms.max(round_ms);
+                destroyed += report.purged_block_slab_ids.len();
+                rounds += 1;
+                if !report.budget_exhausted {
+                    break;
+                }
+                assert!(
+                    rounds <= expected_rounds + 4,
+                    "the drain of {quarantined} slabs did not finish in {} rounds",
+                    expected_rounds + 4
+                );
+            }
             let purge = started.elapsed().as_secs_f64() * 1e3;
+            assert_eq!(
+                destroyed, quarantined,
+                "the rounds together must destroy every quarantined slab"
+            );
+            assert_eq!(
+                rounds, expected_rounds,
+                "and must take the number of rounds the budget predicts"
+            );
 
             println!(
-                "  {slabs:>5} slabs: install {install:>9.1} ms ({:>6.3} ms each)   quarantine {quarantine:>9.1} ms   purge {purge:>8.1} ms ({} destroyed)",
+                "  {slabs:>5} slabs: install {install:>9.1} ms ({:>6.3} ms each)   quarantine \
+                 {quarantine:>9.1} ms   purge {purge:>8.1} ms over {rounds} round(s), longest \
+                 round {longest_round_ms:>7.1} ms ({destroyed} destroyed)",
                 install / slabs as f64,
-                report.purged_block_slab_ids.len()
             );
         }
     }
