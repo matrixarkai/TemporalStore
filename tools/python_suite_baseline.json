@@ -92,7 +92,6 @@
     "test_selected_assistant_memory_normalizes_response_formatting",
     "test_session_commit_extraction_options_match_fast_and_boundary_paths",
     "test_static_readiness_checks_cover_public_surface",
-    "test_stop_boundary_finalizes_after_threshold_drained_session_without_reextracting",
     "test_stop_rollout_backfill_only_commits_previous_assistant_profile_memory",
     "test_summary_runtime_refresh_preserves_selection_counts_in_audit_and_result",
     "test_time_compression_preserves_source_lineage_for_budgeting",

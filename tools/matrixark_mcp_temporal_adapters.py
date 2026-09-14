@@ -2744,9 +2744,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         #
         # `_apply_serving_dedup` is deliberately NOT applied here: its summary-dirty
         # coalescing calls read_all(), which on a native backend is a full record-log read on
-        # every append batch. It only removes redundant pending markers -- a size
-        # optimization, not correctness -- and paying an O(store) read per ingest to get it
-        # is the wrong trade on this path.
+        # every append batch, and paying an O(store) read per ingest is the wrong trade on this
+        # path. Not applying it is the SAFE side of the difference: coalescing removes pending
+        # markers, and the refresh pass selects on a marker's `dirty_reason` (the hook sends
+        # `skip_dirty_reasons=["new_event"]`), so dropping one can drop a refresh. This backend
+        # keeps every marker and therefore cannot lose one.
         # The raw half of the dual write. _TemporalDirectBackendMixin.append_many performs it,
         # but this override wins the MRO and did not, so on the default backend the raw records
         # were written NOWHERE: the only other caller, _flush_direct_write_items, runs on the

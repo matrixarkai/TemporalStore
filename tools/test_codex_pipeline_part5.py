@@ -906,9 +906,6 @@ class _CodexPipelinePart5:
                 and record.get("ref_type") == "summary"
             }
             self.assertIn("summary_type:session_final", session_final_index_names)
-            self.assertIn("memory_scope:session", session_final_index_names)
-            self.assertIn("session_continuity:same_session", session_final_index_names)
-            self.assertIn("extraction_phase:final", session_final_index_names)
             self.assertIn("final_session_boundary:true", session_final_index_names)
             self.assertIn("source_role:assistant", session_final_index_names)
             self.assertIn("source_role:user", session_final_index_names)
@@ -916,8 +913,46 @@ class _CodexPipelinePart5:
             self.assertIn("hook_type:before_llm", session_final_index_names)
             self.assertIn("codex_event:stop", session_final_index_names)
             self.assertIn("codex_event:userpromptsubmit", session_final_index_names)
-            self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", session_final_index_names)
-            self.assertIn("memory_selection_policy:selected_user_prompt", session_final_index_names)
+            # `memory_scope`, `session_continuity`, `extraction_phase` and
+            # `memory_selection_policy` are on INTERNAL_INDEX_DIMENSIONS: the summary record
+            # carries all four, and `candidate_index_terms` deliberately drops them before a
+            # posting is materialized. Asserting their PRESENCE is what made this test red, and a
+            # red test stops testing everything below it -- including the marker and refresh
+            # assertions that follow, which is where a real regression was sitting.
+            #
+            # The names are written out rather than read from the constant. A check that asks
+            # "is this posting's dimension in the prune list" passes trivially when a name is
+            # REMOVED from the prune list -- the posting comes back and the check stops looking
+            # for it. So the literal list is the subject, and the assertion below ties it to the
+            # live constant, which is the half that fails when the constant drifts.
+            pruned_dimensions_carried_here = (
+                "memory_scope",
+                "session_continuity",
+                "extraction_phase",
+                "memory_selection_policy",
+            )
+            session_final_summary = next(
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and record.get("summary_type") == "session_final"
+            )
+            # Denominator: the summary really does carry each dimension, so "no posting for it"
+            # is a statement about pruning and not about an absent field.
+            for dimension in pruned_dimensions_carried_here:
+                if dimension == "memory_selection_policy":
+                    self.assertTrue(session_final_summary.get("source_memory_selection_policies"))
+                else:
+                    self.assertTrue(session_final_summary.get(dimension), dimension)
+                self.assertIn(dimension, matrixark_mcp_core.INTERNAL_INDEX_DIMENSIONS)
+            self.assertEqual(
+                set(),
+                {
+                    index_name
+                    for index_name in session_final_index_names
+                    if index_name.split(":", 1)[0] in pruned_dimensions_carried_here
+                },
+            )
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_summary_dirty"

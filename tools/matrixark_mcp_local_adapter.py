@@ -5629,11 +5629,18 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return
         index[dirty_hash] = record
 
-    def _outstanding_dirty_nodes(self) -> set[tuple[str, Any]]:
-        """(scope_key, node_hash) pairs with an uncompleted pending context_summary_dirty marker.
+    def _outstanding_dirty_nodes(self) -> set[tuple[str, Any, str]]:
+        """(scope_key, node_hash, dirty_reason) triples with an uncompleted pending marker.
 
         A node is reported outstanding only if a pending marker is really present, so coalescing can
         never drop the last marker for a node that still needs regeneration.
+
+        The REASON is part of the key because consumers select on it: the hook's pre-retrieval
+        refresh passes ``skip_dirty_reasons=["new_event"]``, so a marker coalesced into an earlier
+        ``new_event`` one is not deduplicated, it is skipped. Keyed on (scope, node) alone, a
+        ``session_finalized`` marker landing on a node that already had a ``new_event`` marker was
+        dropped, the finalized boundary was never folded into a node summary, and ``session_commit``
+        still reported ``summary_refresh: dirty_marked``.
         """
         rows = self._summary_dirty_rows()
         completed: set[Any] = set()
@@ -5641,7 +5648,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             dirty_hash = record.get("dirty_hash")
             if dirty_hash is not None and record.get("status") in ("completed", "refreshed"):
                 completed.add(dirty_hash)
-        pending: set[tuple[str, Any]] = set()
+        pending: set[tuple[str, Any, str]] = set()
         for record in rows:
             if str(record.get("record_type") or "") != "context_summary_dirty":
                 continue
@@ -5652,14 +5659,22 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             if node_hash is None or dirty_hash in completed:
                 continue
             pending.add(
-                (str(record.get("scope_key") or _canonical_scope_key_of(record)), node_hash)
+                (
+                    str(record.get("scope_key") or _canonical_scope_key_of(record)),
+                    node_hash,
+                    str(record.get("dirty_reason") or ""),
+                )
             )
         return pending
 
     def _coalesce_summary_dirty(self, records: list[Json]) -> list[Json]:
-        """Drop redundant pending summary-dirty markers for a (scope, node) that already has an
-        outstanding uncompleted marker. Completion / non-pending markers pass through. No-op when the
-        batch carries no pending markers."""
+        """Drop redundant pending summary-dirty markers for a (scope, node, reason) that already has
+        an outstanding uncompleted marker. Completion / non-pending markers pass through. No-op when
+        the batch carries no pending markers.
+
+        Coalescing is per REASON, not per node -- see `_outstanding_dirty_nodes`. The repeated
+        ``new_event`` markers this exists to collapse still collapse; a marker carrying a DIFFERENT
+        reason is kept, because the reason is what the refresh pass selects on."""
         pending_in_batch = [
             r for r in records
             if isinstance(r, dict) and str(r.get("record_type") or "") == "context_summary_dirty"
@@ -5677,9 +5692,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             ):
                 node_hash = record.get("node_hash")
                 if node_hash is not None:
-                    key = (str(record.get("scope_key") or _canonical_scope_key_of(record)), node_hash)
+                    key = (
+                        str(record.get("scope_key") or _canonical_scope_key_of(record)),
+                        node_hash,
+                        str(record.get("dirty_reason") or ""),
+                    )
                     if key in outstanding:
-                        continue  # a pending marker for this (scope, node) is already durable
+                        continue  # a pending marker for this (scope, node, reason) is already durable
                     outstanding.add(key)  # coalesce duplicates within this same batch too
             kept.append(record)
         return kept
