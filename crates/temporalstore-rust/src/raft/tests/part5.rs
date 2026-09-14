@@ -135,6 +135,7 @@ fn wal_rebases_when_the_log_suffix_is_overwritten() {
     record.entries.truncate(10);
     for index in 11..=15u64 {
         record.entries.push(RaftLogEntry {
+            leader_time_ms: 0,
             term: 9,
             index,
             shard_id: 93,
@@ -645,6 +646,7 @@ fn a_follower_that_stops_converging_cannot_report_zero_lag() {
         prev_log_index: index - 1,
         prev_log_term: if index == 1 { 0 } else { 1 },
         entries: vec![RaftLogEntry {
+            leader_time_ms: 0,
             term: 1,
             index,
             shard_id: 1,
@@ -723,6 +725,7 @@ fn authenticated_route_accepts_a_binary_append() {
         prev_log_index: 0,
         prev_log_term: 0,
         entries: vec![RaftLogEntry {
+            leader_time_ms: 0,
             term: 1,
             index: 1,
             shard_id: 1,
@@ -1733,6 +1736,7 @@ fn a_deployed_followers_in_memory_log_is_bounded_as_the_corpus_grows() {
     let total = 400u64;
     for index in 1..=total {
         let entry = RaftLogEntry {
+            leader_time_ms: 0,
             term: 1,
             index,
             shard_id: 1,

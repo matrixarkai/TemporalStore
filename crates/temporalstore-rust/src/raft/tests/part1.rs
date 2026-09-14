@@ -1006,6 +1006,7 @@ fn append_entry_only_truncates_on_term_conflict_and_never_reapplies() {
         append_entry(
             &mut node,
             RaftLogEntry {
+                leader_time_ms: 0,
                 term: 1,
                 index,
                 shard_id: 7,
@@ -1026,6 +1027,7 @@ fn append_entry_only_truncates_on_term_conflict_and_never_reapplies() {
     append_entry(
         &mut node,
         RaftLogEntry {
+            leader_time_ms: 0,
             term: 1,
             index: 3,
             shard_id: 7,
@@ -1050,6 +1052,7 @@ fn append_entry_only_truncates_on_term_conflict_and_never_reapplies() {
     append_entry(
         &mut node,
         RaftLogEntry {
+            leader_time_ms: 0,
             term: 1,
             index: 6,
             shard_id: 7,
@@ -1063,6 +1066,7 @@ fn append_entry_only_truncates_on_term_conflict_and_never_reapplies() {
     append_entry(
         &mut node,
         RaftLogEntry {
+            leader_time_ms: 0,
             term: 2,
             index: 6,
             shard_id: 7,
@@ -1208,6 +1212,7 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
                 last_included_index: 1,
                 external_snapshot_ref: None,
                 entries: vec![RaftLogEntry {
+                    leader_time_ms: 0,
                     term: 5,
                     index: 1,
                     shard_id: 1,
@@ -1281,6 +1286,7 @@ fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
             .unwrap()
     };
     let entry = |term: u64, index: u64, key: &str| RaftLogEntry {
+        leader_time_ms: 0,
         term,
         index,
         shard_id: 1,
@@ -1356,6 +1362,7 @@ fn append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives() 
             prev_log_index: 2,
             prev_log_term: 1,
             entries: vec![RaftLogEntry {
+                leader_time_ms: 0,
                 term: 1,
                 index: 3,
                 shard_id: 1,
@@ -1470,6 +1477,7 @@ fn replication_pipeline_enforces_inflight_apply_memory_and_oversized_limits() {
             prev_log_index: 0,
             prev_log_term: 0,
             entries: vec![RaftLogEntry {
+                leader_time_ms: 0,
                 term: 1,
                 index: 3,
                 shard_id: 1,
@@ -1566,6 +1574,7 @@ fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
             prev_log_index: 1,
             prev_log_term: 1,
             entries: vec![RaftLogEntry {
+                leader_time_ms: 0,
                 term: 1,
                 index: 2,
                 shard_id: 1,
@@ -1593,6 +1602,7 @@ fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
             prev_log_index: 8,
             prev_log_term: 1,
             entries: vec![RaftLogEntry {
+                leader_time_ms: 0,
                 term: 1,
                 index: 9,
                 shard_id: 1,

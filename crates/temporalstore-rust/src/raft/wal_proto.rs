@@ -369,6 +369,11 @@ fn entry_to_proto(entry: &RaftLogEntry) -> io::Result<v1::WalLogEntry> {
         command: Some(v1::WalCommand {
             kind: Some(command_to_proto(&entry.command)?),
         }),
+        // Carried in BOTH directions here and in `entry_from_proto`. A binary record that dropped
+        // it would restore a log whose entries resolve their deadlines against the restarting
+        // node's clock, which is the divergence the field exists to close -- and it would do so
+        // silently, because every other field round-trips.
+        leader_time_ms: entry.leader_time_ms,
     })
 }
 
@@ -378,6 +383,7 @@ fn entry_from_proto(entry: v1::WalLogEntry) -> io::Result<RaftLogEntry> {
         .and_then(|command| command.kind)
         .ok_or_else(|| io::Error::other("wal log entry is missing its command"))?;
     Ok(RaftLogEntry {
+        leader_time_ms: entry.leader_time_ms,
         term: entry.term,
         index: entry.index,
         shard_id: entry.shard_id,
@@ -722,6 +728,7 @@ mod tests {
                         .into(),
                 },
                 entries: vec![RaftLogEntry {
+                    leader_time_ms: 0,
                     term: 3,
                     index: 42,
                     shard_id: 1,
@@ -890,6 +897,7 @@ mod tests {
     fn replication_body_cost() {
         for payload in [10usize, 1024] {
             let entries = vec![RaftLogEntry {
+                leader_time_ms: 0,
                 term: 3,
                 index: 42,
                 shard_id: 1,
@@ -942,6 +950,7 @@ mod tests {
             prev_log_term: 3,
             entries: vec![
                 RaftLogEntry {
+                    leader_time_ms: 0,
                     term: 3,
                     index: 42,
                     shard_id: 1,
@@ -953,6 +962,7 @@ mod tests {
                     },
                 },
                 RaftLogEntry {
+                    leader_time_ms: 0,
                     term: 3,
                     index: 43,
                     shard_id: 1,

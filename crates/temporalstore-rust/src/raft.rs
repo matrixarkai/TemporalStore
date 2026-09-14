@@ -102,6 +102,24 @@ pub struct RaftLogEntry {
     pub index: u64,
     pub shard_id: ShardId,
     pub command: Command,
+    /// The wall-clock instant, in milliseconds, at which the LEADER admitted this command.
+    ///
+    /// A relative deadline (SETEX, EXPIRE) is resolved to an absolute instant while the command
+    /// executes, and on this path that execution happens once per replica, at whatever moment that
+    /// replica applied. Resolving against the applying node's own clock therefore gives ONE
+    /// committed entry as many different absolute deadlines as there are replicas, drifting by
+    /// exactly how late each one applied -- a follower that was down for a minute stores a
+    /// deadline a minute later than the leader's for the same key.
+    ///
+    /// Stamped once here, by the node that admits the write, and read back by the apply so every
+    /// replica reproduces the leader's instant instead of minting its own. This is the same
+    /// resolve-then-log rule the engine WAL already follows on recovery, where the record's
+    /// metadata timestamp drives the replay clock.
+    ///
+    /// Zero means unstamped -- a record written before this field existed, or a synthetic entry --
+    /// and the apply then falls back to the live clock exactly as it did before.
+    #[serde(default)]
+    pub leader_time_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -4464,6 +4482,7 @@ impl RaftCluster {
             .filter(|node| node.alive && node.role == RaftRole::Leader)
             .ok_or(RaftError::LeaderUnavailable)?;
         let entry = RaftLogEntry {
+            leader_time_ms: current_time_ms(),
             term: leader.current_term,
             index: node_next_log_index(leader),
             shard_id,
@@ -4754,6 +4773,7 @@ impl RaftCluster {
                 .filter(|node| node.alive && node.role == RaftRole::Leader)
                 .ok_or(RaftError::LeaderUnavailable)?;
             let entry = RaftLogEntry {
+                leader_time_ms: current_time_ms(),
                 term: leader.current_term,
                 index: node_next_log_index(leader),
                 shard_id,
@@ -4884,6 +4904,7 @@ impl RaftCluster {
                 .filter(|node| node.alive && node.role == RaftRole::Leader)
                 .ok_or(RaftError::LeaderUnavailable)?;
             let entry = RaftLogEntry {
+                leader_time_ms: current_time_ms(),
                 term: leader.current_term,
                 index: node_next_log_index(leader),
                 shard_id,
@@ -5010,6 +5031,7 @@ impl RaftCluster {
                 .filter(|node| node.alive && node.role == RaftRole::Leader)
                 .ok_or(RaftError::LeaderUnavailable)?;
             let entry = RaftLogEntry {
+                leader_time_ms: current_time_ms(),
                 term: leader.current_term,
                 index: node_next_log_index(leader),
                 shard_id,
@@ -5847,15 +5869,23 @@ fn apply_committed_recording(
             continue;
         }
         if node.applied.insert(entry.index) {
-            batch.push(ExecuteRequest {
-                shard_id: entry.shard_id,
-                command: entry.command.clone(),
-            });
+            // Carry the instant the LEADER admitted this entry alongside the command. The apply is
+            // what turns a relative deadline into an absolute one, and it runs once per replica at
+            // whatever moment that replica reached this entry -- so without the leader's stamp one
+            // committed entry yields one absolute deadline PER NODE, drifting by exactly how late
+            // each node applied.
+            batch.push((
+                ExecuteRequest {
+                    shard_id: entry.shard_id,
+                    command: entry.command.clone(),
+                },
+                Some(entry.leader_time_ms),
+            ));
             batch_indexes.push(entry.index);
         }
     }
     if !batch.is_empty() {
-        let responses = node.engine.execute_raft_apply_batch(batch);
+        let responses = node.engine.execute_raft_apply_batch_at(batch);
         for (index, response) in batch_indexes.into_iter().zip(responses) {
             node.applied_index = index;
             node.max_applied_index = node.max_applied_index.max(index);
@@ -5898,15 +5928,22 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
             continue;
         }
         if node.applied.insert(entry.index) {
-            batch.push(ExecuteRequest {
-                shard_id: entry.shard_id,
-                command: entry.command.clone(),
-            });
+            // The SECOND of the two apply loops in this file, and the one every catch-up and
+            // AppendEntries path reaches. It carries the leader's stamp for the same reason its
+            // sibling does: this is where a relative deadline becomes an absolute one, and it runs
+            // once per replica at whatever moment that replica reached the entry.
+            batch.push((
+                ExecuteRequest {
+                    shard_id: entry.shard_id,
+                    command: entry.command.clone(),
+                },
+                Some(entry.leader_time_ms),
+            ));
             batch_indexes.push(entry.index);
         }
     }
     if !batch.is_empty() {
-        let responses = node.engine.execute_raft_apply_batch(batch);
+        let responses = node.engine.execute_raft_apply_batch_at(batch);
         for (index, response) in batch_indexes.into_iter().zip(responses) {
             node.applied_index = index;
             node.max_applied_index = node.max_applied_index.max(index);
@@ -5933,10 +5970,16 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
     } else {
         engine.load_shard(snapshot.shard_id);
         for entry in &snapshot.entries {
-            engine.execute_raft_apply(ExecuteRequest {
-                shard_id: entry.shard_id,
-                command: entry.command.clone(),
-            });
+            // Same rule as the committed-entry apply: the entries inside a snapshot are replayed
+            // here, long after the leader admitted them, so they resolve against the leader's
+            // stamp rather than install time.
+            engine.execute_raft_apply_at(
+                ExecuteRequest {
+                    shard_id: entry.shard_id,
+                    command: entry.command.clone(),
+                },
+                Some(entry.leader_time_ms),
+            );
         }
     }
     node.engine = engine;

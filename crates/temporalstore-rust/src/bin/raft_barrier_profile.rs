@@ -104,6 +104,7 @@ fn follower_append(per: u64) {
         prev_log_index: index,
         prev_log_term: if index == 0 { 0 } else { 1 },
         entries: vec![RaftLogEntry {
+            leader_time_ms: 0,
             term: 1,
             index: index + 1,
             shard_id: 1,

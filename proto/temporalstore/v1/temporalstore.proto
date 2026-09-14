@@ -440,6 +440,11 @@ message WalLogEntry {
   uint64 index = 2;
   uint64 shard_id = 3;
   WalCommand command = 4;
+  // Wall-clock instant, in milliseconds, at which the leader admitted this command. Read back by
+  // the apply so every replica resolves a relative deadline to the leader's absolute instant
+  // rather than to its own clock. Zero means unstamped, which is what a record written before
+  // this field carried it decodes to, and the apply then uses the live clock as it did before.
+  uint64 leader_time_ms = 5;
 }
 
 // Present on an incremental record, whose entries hold only what was appended since

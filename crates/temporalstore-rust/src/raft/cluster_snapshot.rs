@@ -1060,10 +1060,16 @@ impl RaftCluster {
             } else {
                 engine.load_shard(shard_id);
                 for entry in &snapshot.entries {
-                    engine.execute_raft_apply(ExecuteRequest {
-                        shard_id: entry.shard_id,
-                        command: entry.command.clone(),
-                    });
+                    // The second entry-carrying snapshot installer. It replays the same entries as
+                    // `install_snapshot_state`, so it must resolve deadlines the same way: against
+                    // the leader's stamp, not against whenever this install happened to run.
+                    engine.execute_raft_apply_at(
+                        ExecuteRequest {
+                            shard_id: entry.shard_id,
+                            command: entry.command.clone(),
+                        },
+                        Some(entry.leader_time_ms),
+                    );
                 }
             }
 

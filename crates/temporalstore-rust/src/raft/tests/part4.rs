@@ -305,6 +305,7 @@ fn append_entries_ignores_entries_at_or_below_snapshot_floor() {
         prev_log_term: 1,
         entries: vec![
             RaftLogEntry {
+                leader_time_ms: 0,
                 term: 1,
                 index: 2,
                 shard_id: 1,
@@ -314,6 +315,7 @@ fn append_entries_ignores_entries_at_or_below_snapshot_floor() {
                 },
             },
             RaftLogEntry {
+                leader_time_ms: 0,
                 term: 1,
                 index: 3,
                 shard_id: 1,
@@ -3395,6 +3397,7 @@ fn raft_propose_serialize_commits_concurrent_proposals_in_order() {
 
 fn r8_branch_entry(index: u64, term: u64, value: &str) -> RaftLogEntry {
     RaftLogEntry {
+        leader_time_ms: 0,
         term,
         index,
         shard_id: 1,
@@ -4136,4 +4139,106 @@ fn a_raft_cluster_restores_on_the_legacy_encoding_too() {
     std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
     std::env::remove_var("TS_WAL_DATA_ONLY");
     println!("[raft] legacy encoding: 3 nodes restored and serving");
+}
+
+/// A relative deadline must be resolved ONCE -- by the node that admits the write -- and
+/// replicated as an absolute instant. Re-resolving it inside the apply gives every node that
+/// applies the SAME committed entry its own deadline, drifting by exactly how late that node
+/// applied.
+///
+/// Leader and follower are asserted SEPARATELY throughout; a merged view of "the cluster holds a
+/// deadline" is true in both worlds and proves nothing.
+///
+/// The final invariant is load-proof rather than timing-based: node 1 is read FIRST and node 3
+/// SECOND, so if both hold the SAME absolute deadline the later read can only report LESS
+/// remaining time. More remaining on the later read can only mean the follower minted a deadline
+/// from its own clock at apply time.
+#[test]
+fn a_replicated_relative_deadline_is_resolved_once_not_once_per_node() {
+    const TTL_MS: u64 = 3_600_000;
+    const CATCH_UP_DELAY_MS: u64 = 250;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    // No local node is declared, so every in-process node applies. This test is about WHICH CLOCK
+    // an apply reads, not about which nodes apply -- keeping those separate keeps it honest.
+    cluster.set_alive(3, false).unwrap();
+
+    cluster
+        .propose(Command::StringSetEx {
+            key: "replicated-deadline".to_string(),
+            value: b"v".to_vec(),
+            ttl_ms: TTL_MS,
+        })
+        .unwrap();
+
+    // The follower applies the SAME entry a measurable interval later, exactly as a follower that
+    // was down and caught up does.
+    std::thread::sleep(std::time::Duration::from_millis(CATCH_UP_DELAY_MS));
+    cluster.set_alive(3, true).unwrap();
+    cluster.catch_up(3).unwrap();
+
+    // --- Denominator. Each side separately, before any comparison. ---
+    let status = cluster.status();
+    let node_status = |node_id: RaftNodeId| {
+        status
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .unwrap_or_else(|| panic!("node {node_id} is missing from the cluster status"))
+            .clone()
+    };
+    let leader = node_status(1);
+    let follower = node_status(3);
+    assert!(
+        leader.commit_index > 0,
+        "nothing was committed, so this test would prove nothing"
+    );
+    assert_eq!(
+        leader.applied_index, leader.commit_index,
+        "the leader must have applied the entry ({} of {})",
+        leader.applied_index, leader.commit_index
+    );
+    assert_eq!(
+        follower.commit_index, leader.commit_index,
+        "the follower must hold the same committed frontier ({} vs {})",
+        follower.commit_index, leader.commit_index
+    );
+    assert_eq!(
+        follower.applied_index, follower.commit_index,
+        "the follower must have applied the entry ({} of {})",
+        follower.applied_index, follower.commit_index
+    );
+
+    let remaining = |node_id: RaftNodeId| match cluster
+        .read_local(
+            node_id,
+            Command::CommonTtl {
+                key: "replicated-deadline".to_string(),
+            },
+        )
+        .unwrap()
+    {
+        CommandResponse::Integer { value } => value,
+        other => panic!("unexpected ttl response from node {node_id}: {other:?}"),
+    };
+    // Leader first, follower second. A shared deadline can only shrink between the two reads.
+    let leader_remaining = remaining(1);
+    let follower_remaining = remaining(3);
+    assert!(
+        leader_remaining > 0,
+        "the leader must hold a live deadline for this key, got {leader_remaining}"
+    );
+    assert!(
+        follower_remaining > 0,
+        "the follower must hold a live deadline for this key, got {follower_remaining}"
+    );
+
+    assert!(
+        follower_remaining <= leader_remaining,
+        "one committed entry, two absolute deadlines: the follower reports {follower_remaining} ms remaining on a read taken AFTER the leader read {leader_remaining} ms, a drift of +{} ms. The apply re-resolved the relative deadline against the applying node's own clock.",
+        follower_remaining - leader_remaining
+    );
 }

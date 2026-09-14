@@ -514,7 +514,24 @@ impl TemporalEngine {
     /// snapshot-transfer / backpressure window). A crash that loses the non-fsync'd index-log
     /// tail is safe -- raft-log replay on restart re-applies and rebuilds the served index.
     pub fn execute_raft_apply(&self, request: ExecuteRequest) -> ExecuteResponse {
+        self.execute_raft_apply_at(request, None)
+    }
+
+    /// `execute_raft_apply`, resolving time-dependent values against the instant the LEADER
+    /// admitted the command rather than against this node's clock.
+    ///
+    /// A relative deadline becomes an absolute one while the command executes, and on this path
+    /// the command executes once per replica at whatever moment that replica applied. Without the
+    /// leader's instant, one committed entry produces as many absolute deadlines as there are
+    /// replicas. `None` (or a zero stamp, from an entry written before the log carried one) keeps
+    /// the live clock, which is exactly what this path did before.
+    pub fn execute_raft_apply_at(
+        &self,
+        request: ExecuteRequest,
+        leader_time_ms: Option<u64>,
+    ) -> ExecuteResponse {
         let _guard = RaftApplyGuard::enter();
+        let _clock = ReplayClockGuard::enter(leader_time_ms);
         self.execute_with_storage_override(request, Some(false), Vec::new())
     }
 
@@ -530,6 +547,21 @@ impl TemporalEngine {
     /// so raft replay re-applies it. Gate OFF (or a single-entry batch) -> a plain per-entry
     /// `execute_raft_apply` loop (byte-identical).
     pub fn execute_raft_apply_batch(&self, requests: Vec<ExecuteRequest>) -> Vec<ExecuteResponse> {
+        self.execute_raft_apply_batch_at(
+            requests.into_iter().map(|request| (request, None)).collect(),
+        )
+    }
+
+    /// `execute_raft_apply_batch`, each entry carrying the instant its LEADER admitted it.
+    ///
+    /// The stamp is per ENTRY, not per batch: a batch is whatever run of committed entries this
+    /// node happened to apply together, and those were admitted at different moments. Applying one
+    /// batch-wide timestamp would replace a per-node drift with a per-batch one. The coalesced
+    /// barrier is unaffected -- it is still taken once, after the loop.
+    pub fn execute_raft_apply_batch_at(
+        &self,
+        requests: Vec<(ExecuteRequest, Option<u64>)>,
+    ) -> Vec<ExecuteResponse> {
         if !self
             .raft_apply_coalesce
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -537,13 +569,14 @@ impl TemporalEngine {
         {
             return requests
                 .into_iter()
-                .map(|request| self.execute_raft_apply(request))
+                .map(|(request, leader_time_ms)| self.execute_raft_apply_at(request, leader_time_ms))
                 .collect();
         }
         let _apply_guard = RaftApplyGuard::enter();
         let batch_guard = RaftApplyBatchGuard::enter();
         let mut responses = Vec::with_capacity(requests.len());
-        for request in requests {
+        for (request, leader_time_ms) in requests {
+            let _clock = ReplayClockGuard::enter(leader_time_ms);
             responses.push(self.execute_with_storage_override(request, Some(false), Vec::new()));
         }
         let barrier = batch_guard.take_barrier();
@@ -3295,6 +3328,30 @@ thread_local! {
 
 pub(super) fn set_replay_clock_ms(clock_ms: Option<u64>) {
     REPLAY_CLOCK_MS.with(|cell| cell.set(clock_ms));
+}
+
+/// Holds the replay clock for the span of ONE apply and restores whatever was there before.
+///
+/// The clock is a thread-local, and a raft apply runs on a pooled thread that goes straight back
+/// to serving live commands. Setting it without restoring would leave the NEXT command on that
+/// thread resolving its deadlines against a committed entry's timestamp -- a leak that widens with
+/// every apply and shows up as deadlines in the past. Restoring on drop also survives a panic
+/// inside the apply.
+pub(super) struct ReplayClockGuard(Option<u64>);
+
+impl ReplayClockGuard {
+    /// `None`, and a zero timestamp, both mean "unstamped": leave the live clock in charge.
+    pub(super) fn enter(clock_ms: Option<u64>) -> Self {
+        let previous = REPLAY_CLOCK_MS.with(|cell| cell.get());
+        set_replay_clock_ms(clock_ms.filter(|stamp| *stamp > 0).or(previous));
+        Self(previous)
+    }
+}
+
+impl Drop for ReplayClockGuard {
+    fn drop(&mut self) {
+        set_replay_clock_ms(self.0);
+    }
 }
 
 /// Wall-clock time for deadline / event-time stamping. Returns the replay clock (the
