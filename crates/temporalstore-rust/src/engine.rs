@@ -50,7 +50,9 @@ pub use storage_bucket_internals::{
     bucket_page_index_visits, bucket_visit_sites, layout_by_caller, live_page_scan_entries,
     live_page_scan_sites_snapshot, reset_bucket_page_index_visits,
     reset_live_page_scan_entries, reset_live_page_scan_sites,
+    BLOCK_SLAB_LIVE_DRIFTS, BLOCK_SLAB_LIVE_RECONCILES,
 };
+pub use state::{block_slab_live_charges, reset_block_slab_live_charges};
 pub use shard_write_guard::{
     index_encode_counts, maintenance_mirror_sink_lookups, maintenance_page_read_counts,
     reset_index_encode_counts, reset_maintenance_mirror_sink_lookups,
@@ -100,7 +102,7 @@ use crate::control::{
     UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
-use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions};
+use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
@@ -3187,17 +3189,22 @@ fn fold_delta_page_items(
             let Some(bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
                 continue;
             };
-            bucket.page_index.retain(|_, page| {
+            bucket.page_index.retain(&mut bucket_index.block_slab_live, |_, page| {
                 !(page.model_id.as_ref() == item.model_id
                     && page.object_key.as_ref() == item.object_key.as_str()
                     && page.component.as_deref() == item.component.as_deref())
             });
         }
     } else if !covered_keys.is_empty() {
-        for bucket in bucket_index.bucket_map.values_mut() {
+        let CoreIndex {
+            bucket_map,
+            block_slab_live: live,
+            ..
+        } = &mut *bucket_index;
+        for bucket in bucket_map.values_mut() {
             bucket
                 .page_index
-                .retain(|_, page| !covered_keys.contains(page.object_key.as_ref()));
+                .retain(live, |_, page| !covered_keys.contains(page.object_key.as_ref()));
         }
     }
     for item in items {
@@ -3234,6 +3241,7 @@ fn fold_delta_page_items(
                 deleted: false,
                 log_backed: item.in_log,
             },
+            &mut bucket_index.block_slab_live,
         );
     }
 }
@@ -4013,7 +4021,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             continue;
         };
         let mut deleted_object_ids = BTreeSet::new();
-        bucket.page_index.retain(|_, page| {
+        bucket.page_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
             if &*page.object_key == key {
                 deleted_object_ids.insert(page.object_id());
                 removed = true;
@@ -4137,7 +4145,7 @@ fn mark_bucket_index_page_deleted_with(
         };
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
-        bucket.page_index.retain(|_, page| {
+        bucket.page_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
             let matches = page.model_id.as_ref() == model_id
                 && &*page.object_key == key
                 && page.component.as_deref() == component;

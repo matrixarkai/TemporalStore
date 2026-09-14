@@ -127,10 +127,34 @@ impl TemporalEngine {
         // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
         let block_slab_counts = self.page_store.slab_block_counts().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
-        let addresses = shards
+        // THE MAINTAINED TALLY FIRST, AND THE WALK ONLY IF THERE ISN'T ONE.
+        //
+        // Everything below builds a per-slab live/stale view out of `live_page_refs` and
+        // `live_physical_bytes`, and those two are exactly what the shard now keeps a running
+        // total of. Taking them from the tally makes this round cost the number of SLABS; walking
+        // for them costs the number of live PAGES, on a loop that ticks every thirty seconds per
+        // shard for the life of the process.
+        //
+        // The fallback is not decoration. A shard whose tally has never been derived reports
+        // `is_ready() == false`, and an empty tally is indistinguishable from a shard holding no
+        // live pages at all -- which would make every slab look like pure garbage. So an
+        // underived tally costs the old cost rather than producing a confident wrong answer.
+        //
+        // `live_object_count` and `live_routing_bucket_count` are left at zero on the maintained
+        // path, joining the read-dependent fields already documented above:
+        // `storage_reclaim_candidates_from_slab_reports` reads neither, and
+        // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
+        let maintained = shards
             .get(&shard_id)
-            .map(collect_live_page_addresses)
-            .unwrap_or_default();
+            .filter(|shard| shard.bucket_index.block_slab_live.is_ready())
+            .map(|shard| shard.bucket_index.block_slab_live.iter().collect::<Vec<_>>());
+        let addresses = match maintained {
+            Some(_) => Vec::new(),
+            None => shards
+                .get(&shard_id)
+                .map(collect_live_page_addresses)
+                .unwrap_or_default(),
+        };
         let mut reports = block_slab_counts
             .iter()
             .map(|(block_slab_id, physical_bytes, block_count)| {
@@ -145,6 +169,19 @@ impl TemporalEngine {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        if let Some(maintained) = maintained {
+            for (block_slab_id, tally) in maintained {
+                let slab_report =
+                    reports
+                        .entry(block_slab_id)
+                        .or_insert(StorageRecoverySlabLiveReport {
+                            block_slab_id,
+                            ..StorageRecoverySlabLiveReport::default()
+                        });
+                slab_report.live_page_refs = tally.page_refs;
+                slab_report.live_physical_bytes = tally.bytes;
+            }
+        }
         let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
         let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
         for address in &addresses {
@@ -572,6 +609,96 @@ impl TemporalEngine {
             slab_integrity: StorageSlabIntegrityReport::default(),
             feature_page_layout,
         }
+    }
+
+    /// Hand the block store the per-slab live tally this engine's shards maintain.
+    ///
+    /// ONE ENGINE, ONE PAGE STORE, MANY SHARDS -- and two shards' pages can land in the same
+    /// slab, so the figure the store needs is the UNION. Returns how many shards contributed.
+    ///
+    /// Publishes only when EVERY loaded shard has a derived tally. A partial union would
+    /// understate the live bytes of any slab a not-yet-derived shard points into, and while that
+    /// direction cannot delete anything (the live slab id set gates deletion and is computed
+    /// fresh), a figure that is wrong for a reason nobody can see is not worth publishing.
+    ///
+    /// Costs SLABS, not pages -- which is the whole point of maintaining the tally.
+    pub fn publish_block_slab_live_bytes(&self) -> usize {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        if shards.is_empty() {
+            return 0;
+        }
+        let mut live: BTreeMap<u64, BlockStoreSlabLive> = BTreeMap::new();
+        let mut ready_shards = 0_usize;
+        for shard in shards.values() {
+            if !shard.bucket_index.block_slab_live.is_ready() {
+                continue;
+            }
+            ready_shards = ready_shards.saturating_add(1);
+            for (block_slab_id, tally) in shard.bucket_index.block_slab_live.iter() {
+                let entry = live.entry(block_slab_id).or_default();
+                entry.live_page_refs = entry.live_page_refs.saturating_add(tally.page_refs);
+                entry.live_bytes = entry.live_bytes.saturating_add(tally.bytes);
+            }
+        }
+        if ready_shards != shards.len() {
+            return ready_shards;
+        }
+        drop(shards);
+        self.page_store.publish_live_page_bytes(live);
+        ready_shards
+    }
+
+    /// Withhold this shard's maintained tally, so the next consumer takes its walk fallback.
+    ///
+    /// For the A arm of the measurement only. Nothing repairs it except a reconcile or a seed.
+    #[cfg(test)]
+    pub(crate) fn forget_block_slab_live_for_test(&self, shard_id: ShardId) {
+        let mut shards = self.shards_write_marked();
+        if let Some(shard) = shards.get_mut(&shard_id) {
+            shard.bucket_index.block_slab_live.forget_for_test();
+        }
+    }
+
+    /// The per-slab live/stale tally the reclaim planner reads, exposed for the measurement.
+    #[cfg(test)]
+    pub(crate) fn storage_reclaim_slab_reports_for_test(
+        &self,
+        shard_id: ShardId,
+    ) -> Vec<StorageRecoverySlabLiveReport> {
+        self.storage_reclaim_slab_reports(shard_id)
+    }
+
+    /// Compare the maintained per-slab live tally against the walk, correct it, and report.
+    ///
+    /// The guard's entry point, and an operator's. Running it costs the walk it exists to
+    /// replace, so nothing on the serving path calls it; the wholesale-rebuild paths seed instead.
+    pub fn block_slab_live_drift_check(&self, shard_id: ShardId) -> BlockSlabLiveDriftReport {
+        let mut shards = self.shards_write_marked();
+        match shards.get_mut(&shard_id) {
+            Some(shard) => crate::engine::storage_bucket_internals::reconcile_block_slab_live(shard),
+            None => BlockSlabLiveDriftReport::default(),
+        }
+    }
+
+    /// The maintained tally as this shard holds it: `(block_slab_id, live page refs, live bytes)`.
+    ///
+    /// For the guards and the measurements. `None` when the shard is absent or its tally has
+    /// never been derived -- the second is not the same as "no live pages" and must not read as
+    /// it.
+    pub fn block_slab_live_tallies(&self, shard_id: ShardId) -> Option<Vec<(u64, u64, u64)>> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id)?;
+        if !shard.bucket_index.block_slab_live.is_ready() {
+            return None;
+        }
+        Some(
+            shard
+                .bucket_index
+                .block_slab_live
+                .iter()
+                .map(|(block_slab_id, tally)| (block_slab_id, tally.page_refs, tally.bytes))
+                .collect(),
+        )
     }
 
     pub fn live_block_slab_ids(&self, shard_id: ShardId) -> Vec<u64> {

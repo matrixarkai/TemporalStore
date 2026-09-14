@@ -5390,8 +5390,9 @@ fn installing_the_same_page_twice_replaces_it() {
     };
 
     let mut map = crate::engine::state::BlockIndexMap::default();
-    let first = map.insert(page());
-    let second = map.insert(page());
+    let mut live = crate::engine::state::BlockSlabLiveIndex::default();
+    let first = map.insert(page(), &mut live);
+    let second = map.insert(page(), &mut live);
 
     assert_eq!(first, second, "the same page must land on the same handle");
     assert_eq!(map.len(), 1, "installing it twice must not add a second entry");
@@ -5399,9 +5400,21 @@ fn installing_the_same_page_twice_replaces_it() {
     // A page differing in one identity field is a different page and keeps its own slot.
     let mut moved = page();
     moved.address = BlockAddress::from_parts(1, 64, 4, Some(1), Some(30), Some(3), Some(1));
-    let third = map.insert(moved);
+    let third = map.insert(moved, &mut live);
     assert_ne!(first, third, "a page at another offset is not the same page");
     assert_eq!(map.len(), 2);
+
+    // The tally follows the same rule the map does. Installing the same page twice charges it
+    // once, because the second install discharges the address it displaced; a page at another
+    // offset is a second page and is charged as one.
+    assert_eq!(
+        live.tally(1),
+        crate::engine::state::SlabLiveTally {
+            page_refs: 2,
+            bytes: 8
+        },
+        "two distinct 4-byte pages on slab 1"
+    );
 }
 
 /// Writing the page index does not build a second copy of it first.
@@ -18229,6 +18242,191 @@ fn what_a_delete_leaves_claimed() {
 // through it unchanged the whole time.
 // ---------------------------------------------------------------------------
 
+
+/// THE DRIFT CHECK: the MAINTAINED per-slab live tally against the walk that defines it.
+///
+/// A maintained counter that drifts is WORSE than a recomputed one, because everything downstream
+/// believes it. So the tally is held to `collect_live_page_entries` -- the same walk every other
+/// per-slab live figure is built from -- after each kind of mutation that can move a page, one at
+/// a time, so a failure names the stage that broke it instead of a total.
+///
+/// The five stages are the five ways a page can enter or leave the live set:
+///
+///   1. APPEND     -- a page arrives on a slab.
+///   2. OVERWRITE  -- a page replaces one already filed. Both ends have to be charged: the new
+///                    address is added AND the displaced one discharged, and they are usually on
+///                    different slabs. Written at a DIFFERENT length from the first pass so a
+///                    byte drift cannot cancel itself out.
+///   3. DELETE     -- a page leaves with no replacement.
+///   4. COMPACTION -- every live page is rewritten onto a fresh slab, which is the one mutation
+///                    that moves bytes BETWEEN slabs without changing how many are live.
+///   5. RELEASE + RELOAD -- a bucket's page entries are dropped from the index while its pages
+///                    stay live, and then brought back. The pair is counter-NEUTRAL by design:
+///                    release does not discharge and reload does not charge. That is a claim
+///                    about two functions agreeing, which is exactly the kind of claim that is
+///                    wrong later, so it is checked on both sides of the pair and not just after.
+///
+/// `is_clean()` is the assertion; `slabs_compared` is the denominator beside it, because a
+/// reconcile over a shard with nothing on it agrees trivially and would satisfy every line here
+/// while measuring nothing.
+///
+/// MUTATION-VERIFIED, and the result named a branch this workload does NOT reach. Each mutation
+/// was applied alone, run, and reverted:
+///
+/// | mutation | caught by | drift reported |
+/// |---|---|---|
+/// | `insert` charges nothing | stage 1 here | -240 page refs / -25,920 bytes |
+/// | `retain` discharges nothing, BOTH arms | stage 3 here | +80 page refs / +13,760 bytes |
+/// | `reload_released_bucket` charges what release never discharged | stage 5 here | +160 page refs / +27,520 bytes |
+/// | `insert` does not discharge the address it REPLACES | `installing_the_same_page_twice_replaces_it` | 3 page refs where 2 are live |
+///
+/// THE LAST ROW IS THE INTERESTING ONE. This test still passes with that discharge removed, and
+/// it is not a weak assertion: the engine's overwrite path drops the superseded page through the
+/// explicit `remove` in `upsert_bucket_index_page_with` BEFORE the insert runs, so `insert` never
+/// sees a displacement on this workload. The branch is real on other paths and is guarded where it
+/// can be reached, by the unit test named above. Stated here rather than left to be discovered,
+/// because "the drift check covers every mutation site" is the kind of claim that is quietly
+/// wrong.
+///
+/// A first attempt at the `retain` mutation touched only its MAP arm and was not caught at all: at
+/// the default routing range every key gets a bucket of its own, so a bucket holds ONE page and
+/// `retain` takes its inline arm. Recorded because a mutation aimed at unreached code reassures
+/// without testing anything, and it looked exactly like a passing result.
+#[test]
+fn the_maintained_slab_live_tally_matches_the_walk() {
+    const KEYS: usize = 240;
+    let (_dir, engine) = dumped_shard_with_keys(KEYS, 96);
+
+    // 1. APPEND. The fixture wrote KEYS pages and dumped them.
+    let after_append = engine.block_slab_live_drift_check(1);
+    assert!(
+        after_append.was_ready,
+        "the tally was never derived, so this compared a seed against itself: {after_append:?}"
+    );
+    assert!(
+        after_append.slabs_compared > 0,
+        "no slabs to compare, so this stage measures nothing: {after_append:?}"
+    );
+    assert!(
+        after_append.is_clean(),
+        "the tally drifted over plain appends: {after_append:?}"
+    );
+    // The positive control for the denominator: the tally really is counting the shard's pages.
+    let maintained_refs: u64 = engine
+        .block_slab_live_tallies(1)
+        .expect("a derived tally")
+        .iter()
+        .map(|(_, page_refs, _)| page_refs)
+        .sum();
+    assert_eq!(
+        maintained_refs,
+        engine.live_page_count_for_test(1) as u64,
+        "the maintained page-ref total disagrees with the live page count"
+    );
+    assert!(maintained_refs >= KEYS as u64, "{maintained_refs} pages counted for {KEYS} keys");
+
+    // 2. OVERWRITE, at a different length so a byte drift cannot cancel.
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("released-{index:06}"),
+                value: released_value(index, 160),
+            },
+        });
+        assert!(response.status.ok, "overwrite {index}: {:?}", response.status);
+    }
+    let after_overwrite = engine.block_slab_live_drift_check(1);
+    assert!(after_overwrite.slabs_compared > 0, "{after_overwrite:?}");
+    assert!(
+        after_overwrite.is_clean(),
+        "the tally drifted over overwrites -- a replacement charges the new address and must \
+         discharge the one it displaced: {after_overwrite:?}"
+    );
+
+    // 3. DELETE.
+    let deletes = KEYS / 3;
+    for index in 0..deletes {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringDelete {
+                key: format!("released-{index:06}"),
+            },
+        });
+    }
+    let after_delete = engine.block_slab_live_drift_check(1);
+    assert!(after_delete.slabs_compared > 0, "{after_delete:?}");
+    assert!(
+        after_delete.is_clean(),
+        "the tally drifted over deletes: {after_delete:?}"
+    );
+    assert_eq!(
+        engine.live_page_count_for_test(1) as u64,
+        engine
+            .block_slab_live_tallies(1)
+            .expect("a derived tally")
+            .iter()
+            .map(|(_, page_refs, _)| page_refs)
+            .sum::<u64>(),
+        "the deletes left the tally and the walk disagreeing about how many pages are live"
+    );
+
+    // 4. COMPACTION RELOCATIONS.
+    let compaction = engine
+        .compact_shard_pages(1)
+        .expect("a loaded shard can be compacted");
+    assert!(
+        compaction.rewritten_page_refs > 0,
+        "compaction relocated nothing, so this stage measures nothing: {compaction:?}"
+    );
+    let after_compaction = engine.block_slab_live_drift_check(1);
+    assert!(after_compaction.slabs_compared > 0, "{after_compaction:?}");
+    assert!(
+        after_compaction.is_clean(),
+        "the tally drifted over {} relocated pages: {after_compaction:?}",
+        compaction.rewritten_page_refs
+    );
+
+    // 5. RELEASE + RELOAD. A release is refused for a dirty bucket, so dump first -- which is
+    // also what makes the release durable.
+    let manifest = engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("a loaded shard can be dumped");
+    engine.clear_dumped_bucket_dirty_state(1, &manifest);
+    let (released_buckets, released_pages, _refused) =
+        engine.release_all_releasable_bucket_index_pages(1);
+    assert!(
+        released_buckets > 0 && released_pages > 0,
+        "nothing was released, so the counter-neutral claim is untested: \
+         {released_buckets} buckets / {released_pages} pages"
+    );
+    let after_release = engine.block_slab_live_drift_check(1);
+    assert!(after_release.slabs_compared > 0, "{after_release:?}");
+    assert!(
+        after_release.is_clean(),
+        "a release discharged pages that are still live -- the model maps still hold them and \
+         the walk still counts them: {after_release:?}"
+    );
+
+    let mut reloaded = 0_usize;
+    for routing_bucket in engine.released_bucket_index_buckets(1) {
+        if engine.reload_released_bucket_index_pages(1, routing_bucket) {
+            reloaded = reloaded.saturating_add(1);
+        }
+    }
+    assert!(
+        reloaded > 0,
+        "nothing was reloaded, so the other half of the pair is untested"
+    );
+    let after_reload = engine.block_slab_live_drift_check(1);
+    assert!(after_reload.slabs_compared > 0, "{after_reload:?}");
+    assert!(
+        after_reload.is_clean(),
+        "a reload charged pages that were never discharged, double-counting {reloaded} buckets: \
+         {after_reload:?}"
+    );
+}
+
 /// Build a shard whose buckets are clean, so a release is not refused for being dirty.
 ///
 /// Every write marks its bucket dirty, and release refuses a dirty bucket -- the model maps carry
@@ -20412,7 +20610,9 @@ fn a_page_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
 
     // Put the pages into the state this branch exists for.
     for bucket in shard.bucket_index.bucket_map.values_mut() {
-        for page in bucket.page_index.values_mut() {
+        // Unaccounted on purpose: the routing bucket is not one of the two fields the live
+        // tally reads, so stripping it moves no bytes between slabs.
+        for page in bucket.page_index.pages_mut_unaccounted() {
             page.address.set_routing_bucket(None);
         }
     }

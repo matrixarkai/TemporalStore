@@ -672,7 +672,7 @@ impl TemporalEngine {
                 // log until it is written to again.
                 bucket.first_dirty_wal_sequence = 0;
                 bucket.first_dirty_index_log_sequence = 0;
-                for page in bucket.page_index.values_mut() {
+                for page in bucket.page_index.pages_mut_unaccounted() {
                     page.dirty = false;
                 }
             }

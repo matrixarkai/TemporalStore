@@ -2179,7 +2179,7 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
             .bucket_index
             .bucket_map
             .values_mut()
-            .flat_map(|bucket| bucket.page_index.values_mut())
+            .flat_map(|bucket| bucket.page_index.pages_mut_unaccounted())
             .find(|page| page.object_key == Arc::from("owned"))
             .expect("owned slot page");
         page.address.set_object_id(Some(page.object_id().wrapping_add(1)));
@@ -2241,7 +2241,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .bucket_index
             .bucket_map
             .values_mut()
-            .flat_map(|bucket| bucket.page_index.values_mut())
+            .flat_map(|bucket| bucket.page_index.pages_mut_unaccounted())
             .find(|page| page.object_key == Arc::from("second"))
             .expect("second slot page");
         second.address.set_object_id(Some(first_object_id));
@@ -8940,15 +8940,21 @@ before the dump.",
 ///   1  the dump's lifecycle report       IRREDUCIBLE. It walks the DECODED MANIFEST INDEX
 ///                                        (`&dump_index_state`), not the live shard -- different
 ///                                        data, so it cannot share a live-shard walk.
-///   1  collect_live_page_addresses       via storage_reclaim_slab_reports. The remaining
-///                                        candidate.
+///
+/// THE SEVENTH IS GONE, AND IT WAS THE ONE NAMED AS THE REMAINING CANDIDATE:
+/// `collect_live_page_addresses` via `storage_reclaim_slab_reports`. That function builds the
+/// per-slab live/stale tally the reclaim planner reads, and it read `live_page_refs` and
+/// `live_physical_bytes` by materializing every live page in the shard. Both are now maintained on
+/// the index's own mutation path and read in O(slabs). The walk is not shared, deferred or
+/// sampled -- it is not performed. See `the_maintained_slab_live_tally_matches_the_walk` for the
+/// drift check that holds the maintained figure to the walk it replaced.
 ///
 /// If this fails HIGH, a new walk was added: give it the existing slice. If it fails LOW, a walk
 /// was removed -- lower the constant and say which one, in the commit.
 #[test]
 fn one_call_walks_the_live_pages_a_known_number_of_times() {
     const RECORDS: usize = 1_000;
-    const EXPECTED_MULTIPLE: u64 = 7;
+    const EXPECTED_MULTIPLE: u64 = 6;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -10618,8 +10624,16 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
 /// shard with ONE dirty bucket. Set from measurement by
 /// `an_idle_round_does_not_walk_the_live_pages_to_populate_a_report`, which prints the per-site
 /// breakdown when either moves.
-const EXPECTED_IDLE_MULTIPLE: u64 = 3;
-const EXPECTED_DIRTY_MULTIPLE: u64 = 7;
+///
+/// BOTH FELL BY ONE, and it is the same walk in each: `collect_live_page_addresses` via
+/// `storage_reclaim_slab_reports`. That function builds the per-slab live/stale tally the reclaim
+/// planner reads, and it filled `live_page_refs` and `live_physical_bytes` by materialising every
+/// live page in the shard. Both are now maintained on the index's own mutation path and read in
+/// O(slabs), so the walk is not shared or deferred -- it is not performed. It fell on BOTH halves
+/// because that report is taken whether or not the round has work, which is exactly why the idle
+/// half is measured separately.
+const EXPECTED_IDLE_MULTIPLE: u64 = 2;
+const EXPECTED_DIRTY_MULTIPLE: u64 = 6;
 
 /// What one round walked, at one corpus size.
 struct RoundWalkMeasurement {

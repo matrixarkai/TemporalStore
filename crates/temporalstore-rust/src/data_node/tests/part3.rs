@@ -5102,29 +5102,170 @@ fn what_the_stage_order_buys() {
     );
 }
 
-/// Can the page-GC garbage floor ever exclude a slab? It cannot, and this now SAYS so.
+
+/// WHAT THE MAINTAINED TALLY REMOVES, AND WHAT IT COSTS. Counts first.
+///
+///   cargo test -p temporalstore-rust --lib what_the_maintained_slab_tally_removes_and_costs \
+///       -- --nocapture --test-threads=1
+///
+/// THE COST REMOVED is a whole-shard live-page walk per maintenance round per shard.
+/// `storage_reclaim_slab_reports` builds the per-slab live/stale tally the reclaim planner reads,
+/// and it built it by materializing every live page in the shard -- on a loop that ticks every
+/// thirty seconds per shard for the life of the process. Both arms are measured HERE, in ONE
+/// process against ONE corpus, by withholding the tally and asking the same question again:
+/// anything else would be comparing two corpora.
+///
+/// THE COST ADDED is one map update per page charged or discharged, on the write path. Counted by
+/// `BLOCK_SLAB_LIVE_CHARGES` rather than timed, because a count is what survives a busy box.
+///
+/// Durations are deliberately NOT asserted. This box cannot resolve a 15% effect and routinely
+/// runs at a load average where a round-number timeout means saturation, not slowness. The counts
+/// below are the measurement; a run with `--nocapture` prints them.
+#[test]
+fn what_the_maintained_slab_tally_removes_and_costs() {
+    const RECORDS: usize = 8_000;
+    const KEYSPACE: usize = 2_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    crate::engine::reset_block_slab_live_charges();
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("scale-{:06}", index % KEYSPACE),
+                value: vec![b'v'; 96],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let charges = crate::engine::block_slab_live_charges();
+    let live_pages = engine.live_page_count_for_test(1) as u64;
+    let slabs = engine
+        .block_slab_live_tallies(1)
+        .expect("a derived tally")
+        .len() as u64;
+
+    // THE DENOMINATORS, before any ratio is taken.
+    assert!(live_pages > 0, "no live pages, so nothing below measures anything");
+    assert!(slabs > 0, "no slabs in the tally: {slabs}");
+
+    // ARM A: the tally withheld, so the report falls back to the walk.
+    engine.forget_block_slab_live_for_test(1);
+    crate::engine::reset_live_page_scan_entries();
+    let walked_reports = engine.storage_reclaim_slab_reports_for_test(1);
+    let walked_entries = crate::engine::live_page_scan_entries();
+
+    // ARM B: the tally restored, same shard, same question.
+    let drift = engine.block_slab_live_drift_check(1);
+    assert!(
+        drift.is_clean(),
+        "the tally had drifted before the measurement, so arm B is not the same answer: {drift:?}"
+    );
+    crate::engine::reset_live_page_scan_entries();
+    let tallied_reports = engine.storage_reclaim_slab_reports_for_test(1);
+    let tallied_entries = crate::engine::live_page_scan_entries();
+
+    eprintln!("  records={RECORDS} keyspace={KEYSPACE} live_pages={live_pages} slabs={slabs}");
+    eprintln!("  REMOVED: live page entries materialized by one reclaim report");
+    eprintln!("    walked  = {walked_entries}");
+    eprintln!("    tallied = {tallied_entries}");
+    eprintln!("  ADDED: tally charges over the whole ingest");
+    eprintln!(
+        "    charges = {charges}  ({:.2} per record, {:.2} per live page)",
+        charges as f64 / RECORDS as f64,
+        charges as f64 / live_pages as f64
+    );
+
+    // THE SAME ANSWER. A cheaper round that reports something else is not a saving.
+    let walked_live: Vec<(u64, u64, u64)> = walked_reports
+        .iter()
+        .filter(|report| report.live_page_refs > 0 || report.live_physical_bytes > 0)
+        .map(|report| {
+            (
+                report.block_slab_id,
+                report.live_page_refs,
+                report.live_physical_bytes,
+            )
+        })
+        .collect();
+    let tallied_live: Vec<(u64, u64, u64)> = tallied_reports
+        .iter()
+        .filter(|report| report.live_page_refs > 0 || report.live_physical_bytes > 0)
+        .map(|report| {
+            (
+                report.block_slab_id,
+                report.live_page_refs,
+                report.live_physical_bytes,
+            )
+        })
+        .collect();
+    assert!(
+        !tallied_live.is_empty(),
+        "the tallied arm reported no live slabs at all, so the comparison is vacuous"
+    );
+    assert_eq!(
+        walked_live, tallied_live,
+        "the tally and the walk disagree about the shard's live slabs"
+    );
+
+    // AND IT IS THE WALK THAT WENT. This is the whole claim, and it is the one that can regress
+    // silently: a fallback that fires on every round costs the old cost and changes nothing.
+    assert_eq!(
+        tallied_entries, 0,
+        "the tallied arm still walked {tallied_entries} live page entries -- the fallback fired"
+    );
+    assert!(
+        walked_entries >= live_pages,
+        "the walked arm materialized {walked_entries} entries for {live_pages} live pages, which \
+         is fewer than one walk: this arm is not measuring the walk"
+    );
+    // The charge is per page written, not per page in the shard: a bounded cost on the write
+    // path, against an unbounded one on the maintenance loop.
+    assert!(
+        charges <= (RECORDS as u64).saturating_mul(4),
+        "{charges} charges for {RECORDS} records is more than four per write, which is not a \
+         constant-per-write cost any more"
+    );
+}
+
+/// Can the page-GC garbage floor ever exclude a slab IN A RUNNING STORE? It still cannot -- and
+/// the reason has moved, which is the whole content of this update.
 ///
 ///   cargo test -p temporalstore-rust --lib can_the_page_gc_garbage_floor_bind \
 ///       -- --nocapture --test-threads=1
 ///
-/// It asked the question and printed the answer, but it was `#[ignore]`d, so CI never ran it and
-/// the answer was never recorded anywhere that could fail. A shipped default of 4,000 basis
-/// points that cannot exclude anything is exactly the shape that gets "fixed" by being raised,
-/// which changes nothing and costs someone an afternoon.
+/// THE OLD REASON, now gone. `used_bytes` summed the file sizes of the slabs grouped under a
+/// candidate's stored id that are NOT collectable. A stored id names exactly one slab and the
+/// candidate filter is the exact negation of that test, so a candidate could not contribute to
+/// its own used bytes. Every candidate read zero because two filters contradicted each other, not
+/// because anything had been counted.
 ///
-/// So it still prints the table -- that is the useful part when this eventually changes -- and it
-/// now ASSERTS the invariant behind it: every candidate reports 0 used bytes and therefore 10,000
-/// basis points of garbage, and the floor excludes none of them. The reason is structural. The
-/// floor is compared against a slab's live fraction; a slab's used bytes sum the slabs grouped
-/// under its stored id that are NOT collectable; that group is always the slab itself; and
-/// a candidate is by definition not current and not live. The candidate filter is the exact
-/// negation of the used-bytes filter, so a candidate can never contribute to its own used
-/// bytes.
+/// THE NEW REASON, which is a measurement. `used_bytes` is now the live page bytes on the slab
+/// itself, from the tally the index maintains on its own mutation path and publishes into the
+/// block store. A collector candidate is a slab that NO LIVE PAGE POINTS AT -- `is_live` gates
+/// candidacy, and gates removal again independently -- so its maintained live bytes are genuinely
+/// zero. The figure is real, it is really zero, and the floor still excludes nothing.
 ///
-/// This is NOT waiting for a stored id to group several slabs. It is waiting for used bytes to mean
-/// live PAGE bytes within the slab instead of whole file sizes of neighbouring slabs. When that
-/// lands, this test fails -- and that failure is the signal that the knob has become real, which
-/// is why the assertions name what they depend on.
+/// SO THE OBSTACLE IS THE CANDIDATE PREDICATE, NOT THE ARITHMETIC. Nothing offers this floor a
+/// partially-live slab, because a slab holding one live page is not a candidate at all. That is
+/// the same all-or-nothing rule that lets one live page pin a whole slab, and widening it means
+/// relocating the survivors first -- a compaction decision with its own measurement.
+/// `a_published_live_tally_makes_used_bytes_mean_live_page_bytes` (block_store.rs) is the other
+/// half: given a 90%-live candidate, the shipped 4,000 bp floor DOES exclude it. The knob is real
+/// machinery now; what it is waiting for is a caller that presents it with a partially-live slab.
+///
+/// AND `utility_basis_points` IS NO LONGER UNIFORMLY ZERO ACROSS THE STORE, which is the change a
+/// reader of the old note would most want to know. It is uniformly zero across the CANDIDATES,
+/// necessarily. `slab_live_fractions` asks the same question of every slab, and the table below
+/// prints the answer; the assertion under it is that the figure discriminates.
 #[test]
 fn can_the_page_gc_garbage_floor_bind() {
     const BATCH: usize = 400;
@@ -5159,6 +5300,14 @@ fn can_the_page_gc_garbage_floor_bind() {
     }
 
     let engine = runtime.engine();
+    // Hand the store the tally before asking it anything. The maintenance rounds above publish on
+    // their own; this makes the test say so rather than depend on it.
+    let ready_shards = engine.publish_block_slab_live_bytes();
+    assert_eq!(
+        ready_shards, 1,
+        "the shard's tally was never derived, so `used_bytes` would fall back to the old figure \
+         and this test would measure the thing it used to measure"
+    );
     let live = engine.live_block_slab_ids_all_shards();
     let plan = engine
         .block_store()
@@ -5213,8 +5362,8 @@ fn can_the_page_gc_garbage_floor_bind() {
     for candidate in plan.candidates.iter() {
         assert_eq!(
             candidate.used_bytes, 0,
-            "a candidate's band cannot contribute to its own used bytes -- the candidate filter \
-             is the exact negation of the used-bytes filter, and a band holds one slab: \
+            "a collector candidate is a slab no live page points at, so its MAINTAINED live bytes \
+             are zero -- counted, not inferred from two filters contradicting each other: \
              {candidate:?}"
         );
         assert_eq!(
@@ -5224,14 +5373,57 @@ fn can_the_page_gc_garbage_floor_bind() {
     }
     assert_eq!(
         plan.skipped_by_policy_count, 0,
-        "every candidate is 10,000 bp garbage, so the shipped floor excludes none of them; if \
-         this now fails, used bytes have started to mean live page bytes within the slab and the \
-         knob has become real: {plan:?}"
+        "every candidate is 10,000 bp garbage, so the shipped floor excludes none of them. If \
+         this now fails, something has started offering the collector a PARTIALLY LIVE slab, and \
+         the per-round budget question (PR #1719) is open again: {plan:?}"
     );
     assert_eq!(
         plan.selected_block_slab_ids.len(),
         plan.candidate_count,
         "and every candidate is selected: {plan:?}"
+    );
+
+    // THE OTHER HALF: the same question asked of EVERY slab, not just the collectable ones.
+    let fractions = engine.block_store().slab_live_fractions().expect("fractions");
+    eprintln!("     slab   physical   logical      live_b   live_bp   garbage_bp");
+    for fraction in fractions.iter() {
+        eprintln!(
+            "  {:>7}  {:>9}  {:>8}  {:>10}  {:>8}  {:>11}",
+            fraction.block_slab_id,
+            fraction.physical_bytes,
+            fraction.logical_bytes,
+            fraction.live_bytes,
+            fraction.live_basis_points,
+            fraction.garbage_basis_points
+        );
+    }
+    // DENOMINATOR FIRST, again. One slab cannot show a spread.
+    assert!(
+        fractions.len() > 1,
+        "one slab in the store, so nothing here could discriminate: {fractions:?}"
+    );
+    let distinct = fractions
+        .iter()
+        .map(|fraction| fraction.live_basis_points)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        distinct.iter().any(|points| *points > 0),
+        "every slab in the store reads zero live bytes, which cannot be true of a store that is \
+         serving reads -- the tally is not reaching the block store: {fractions:?}"
+    );
+    assert!(
+        distinct.len() > 1,
+        "the live fraction is the same for every slab, so it still carries no information; it is \
+         supposed to separate the slabs holding live pages from the ones that do not: \
+         {fractions:?}"
+    );
+    eprintln!(
+        "  VERDICT: the floor excluded {} of {} CANDIDATES, and the store holds {} distinct live \
+         fractions over {} slabs",
+        plan.skipped_by_policy_count,
+        plan.candidate_count,
+        distinct.len(),
+        fractions.len()
     );
 }
 
