@@ -370,19 +370,17 @@ fn every_dispatched_command_is_advertised_or_named_as_unadvertised() {
         unadvertised,
     );
 
-    // ---- CLAIM TWO: nothing is advertised that the dispatcher would reject ---------------
-    let phantom: Vec<&String> = advertised
-        .iter()
-        .filter(|name| !arms.contains(name))
-        .collect();
-    assert!(
-        phantom.is_empty(),
-        "{} of {} advertised command(s) have no dispatch arm: {:?}. COMMAND is telling clients \
-         this server speaks something it answers with an error.",
-        phantom.len(),
-        advertised.len(),
-        phantom,
-    );
+    // ---- THE OTHER DIRECTION IS DELIBERATELY NOT CLAIMED HERE ---------------------------
+    // "nothing is advertised that the dispatcher would reject" is already asserted, and
+    // asserted more strongly, by `advertised_redis_commands_have_dispatch_paths` in
+    // `redis.rs`: it RUNS a sample invocation of every descriptor against a live engine and
+    // fails if the answer is a syntax error. A source scan for the same thing would be a
+    // second, weaker reader of one rule -- two places to update, and the weaker one able to
+    // pass while the real behaviour is broken. Adding a descriptor here without a sample
+    // there fails that test, which is how the four rows in this change were caught.
+    //
+    // Only the direction it does NOT cover is claimed above: it iterates the TABLE, so a
+    // command the dispatcher has and the table does not is invisible to it.
 
     // ---- The exemption list must not rot ------------------------------------------------
     // An exemption for a command that no longer exists is a name nobody will ever remove, and
