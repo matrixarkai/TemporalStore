@@ -592,3 +592,273 @@ fn a_deadline_already_in_the_past_removes_the_key_now() {
         "CONTROL: a non-numeric expiry is still refused",
     );
 }
+
+/// Read the deadline the SHARD actually stored for a key, in absolute milliseconds.
+///
+/// Every command-level way of asking this question adds a clock read of its own --
+/// `PTTL` subtracts the shard's clock, `PEXPIRETIME` then adds the RESP layer's back -- so
+/// none of them can be used to measure how faithfully a deadline was stored. This reads the
+/// map.
+fn stored_deadline_ms(engine: &TemporalEngine, key: &str) -> Option<u64> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    shard.expires_at_ms.get(key).copied()
+}
+
+/// `SET key value KEEPTTL` replaces the value and leaves the deadline running.
+///
+/// WHAT WAS MISSING. A value-replacing write can do three things to the deadline it
+/// overwrites -- arm a new one, discard the old one, or leave it alone -- and this surface
+/// could only spell the first two. `KEEPTTL` did not exist at all (zero occurrences in the
+/// tree), so `SET k v KEEPTTL` was refused as a syntax error and a caller who wanted the
+/// value changed and the countdown kept had to read the remaining time and write it back --
+/// which races the countdown it is trying to preserve and silently loses however long the
+/// round trip took.
+///
+/// HALVES ASSERTED SEPARATELY, AND THE SECOND HALF IS THE ONE THAT CATCHES THE LAZY FIX.
+/// "KEEPTTL keeps the deadline" and "SET without KEEPTTL still clears it" are two claims.
+/// The wrong fix -- making the no-TTL branch stop clearing -- satisfies the first completely
+/// while turning plain `SET` into a deadline-preserving write, which is the exact bug #1713
+/// closed for `GETSET` and `MSET`. So the clearing half is asserted on its own key, after
+/// the keeping half, and neither is folded into a combined count.
+///
+/// THE DEADLINE IS COMPARED BY ITS ABSOLUTE VALUE, NOT BY "IS IT STILL POSITIVE".
+/// A `PTTL > 0` after `KEEPTTL` would also be produced by the write ARMING a fresh deadline
+/// of its own from some default, which is a different behaviour that happens to look alive.
+/// The shard's stored millisecond is read before and after and must be the SAME number.
+#[test]
+fn keepttl_replaces_the_value_and_leaves_the_deadline_running() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    // ---- DENOMINATOR: the option is accepted at all -------------------------------------
+    // Before this change every assertion below would also be satisfied by `SET ... KEEPTTL`
+    // failing as a syntax error and leaving the key untouched -- the value would be the old
+    // one and the deadline would indeed be unchanged, for entirely the wrong reason. So the
+    // reply is pinned first, and the new VALUE is pinned separately from the deadline.
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "keep:ttl", "v1", "PX", HOUR_MS]),
+    );
+    let armed = stored_deadline_ms(&engine, "keep:ttl");
+    assert!(
+        armed.is_some(),
+        "DENOMINATOR: `SET k v PX {HOUR_MS}` must arm a deadline; the shard stored {armed:?}",
+    );
+
+    // ---- HALF ONE: KEEPTTL keeps the EXACT deadline, and really writes the value ---------
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "keep:ttl", "v2", "KEEPTTL"]),
+        "`SET k v KEEPTTL` is accepted. A syntax error here is the state before this change, \
+         and it would leave every other assertion in this half trivially satisfied.",
+    );
+    assert_eq!(
+        Some(b"v2".to_vec()),
+        get(&engine, "keep:ttl"),
+        "KEEPTTL still REPLACES the value -- it is an option on SET, not a way to skip it",
+    );
+    assert_eq!(
+        armed,
+        stored_deadline_ms(&engine, "keep:ttl"),
+        "KEEPTTL must leave the deadline exactly where it was. A different number here is a \
+         fresh deadline armed by the write, which reads as alive but is not the countdown \
+         the caller asked to keep; None is the clearing branch still running.",
+    );
+
+    // ---- HALF TWO, THE CONTROL: SET without KEEPTTL still clears -------------------------
+    // This is what stops the fix from being "stop clearing", which would satisfy half one
+    // and silently make every plain SET preserve a deadline it was asked to discard.
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "cleared:plain", "v1", "PX", HOUR_MS]),
+    );
+    assert!(
+        stored_deadline_ms(&engine, "cleared:plain").is_some(),
+        "DENOMINATOR for the clearing control: a deadline has to be there to be cleared",
+    );
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "cleared:plain", "v2"]),
+    );
+    assert_eq!(
+        None,
+        stored_deadline_ms(&engine, "cleared:plain"),
+        "SET WITHOUT KEEPTTL STILL DISCARDS THE DEADLINE. If this ever reads Some, the \
+         KEEPTTL branch has leaked into the default one and every plain SET now preserves a \
+         countdown the caller replaced away -- the bug #1713 closed for GETSET and MSET.",
+    );
+    assert_eq!(
+        -1,
+        pttl(&engine, "cleared:plain"),
+        "and the same answer through the command surface, not just the map",
+    );
+
+    // ---- HALF THREE: KEEPTTL on a key with NO deadline leaves it with none ---------------
+    // "Keep" has to mean keep, including keeping the absence. Arming anything here would be
+    // inventing a deadline the caller never named.
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "keep:none", "v1"]),
+    );
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "keep:none", "v2", "KEEPTTL"]),
+    );
+    assert_eq!(
+        None,
+        stored_deadline_ms(&engine, "keep:none"),
+        "KEEPTTL on a key that had no deadline must not invent one",
+    );
+    assert_eq!(
+        Some(b"v2".to_vec()),
+        get(&engine, "keep:none"),
+        "and the value is still replaced",
+    );
+
+    // ---- HALF FOUR: KEEPTTL composes with NX / XX / GET ----------------------------------
+    // KEEPTTL is a deadline option, so it must not disturb the condition or the old-value
+    // return. `XX` also proves the option is parsed in either order.
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "keep:xx", "v1", "PX", HOUR_MS]),
+    );
+    let armed_xx = stored_deadline_ms(&engine, "keep:xx");
+    assert!(armed_xx.is_some(), "DENOMINATOR for the XX half");
+    assert_eq!(
+        RespValue::Bulk(Some(b"v1".to_vec())),
+        resp(&engine, &["SET", "keep:xx", "v2", "KEEPTTL", "XX", "GET"]),
+        "KEEPTTL beside XX and GET still answers the old value",
+    );
+    assert_eq!(
+        armed_xx,
+        stored_deadline_ms(&engine, "keep:xx"),
+        "and still keeps the deadline when combined with XX and GET",
+    );
+
+    // ---- CONTROLS: the contradictions are refused, and only those ------------------------
+    // KEEPTTL and an arming TTL ask for opposite things. Both orders are refused, so the
+    // rejection is a rule rather than an artifact of which word the parser met first.
+    for args in [
+        vec!["SET", "bad:1", "v", "KEEPTTL", "EX", "10"],
+        vec!["SET", "bad:2", "v", "EX", "10", "KEEPTTL"],
+        vec!["SET", "bad:3", "v", "KEEPTTL", "PX", "10000"],
+        vec!["SET", "bad:4", "v", "PX", "10000", "KEEPTTL"],
+        vec!["SET", "bad:5", "v", "KEEPTTL", "KEEPTTL"],
+    ] {
+        let spelling = args.join(" ");
+        assert!(
+            matches!(resp(&engine, &args), RespValue::Error(_)),
+            "CONTROL: `{spelling}` asks for two contradictory things about one deadline and \
+             must be refused, not silently resolved by a precedence rule nobody wrote down",
+        );
+        assert_eq!(
+            None,
+            get(&engine, args[1]),
+            "CONTROL: a refused `{spelling}` must not have written the key either",
+        );
+    }
+    // ...and the option word is not simply being swallowed: an unknown one still fails.
+    assert!(
+        matches!(
+            resp(&engine, &["SET", "bad:6", "v", "KEEPTTLX"]),
+            RespValue::Error(_)
+        ),
+        "CONTROL: the parser matches KEEPTTL exactly, not as a prefix",
+    );
+}
+
+/// `EXPIREAT` does not store the deadline it was given, and the direction is never early.
+///
+/// THE MECHANISM. An absolute deadline is converted to a RELATIVE one at the RESP layer
+/// (`deadline - unix_time_ms()`) and then converted back to absolute at the shard
+/// (`resolve_now_ms() + ttl`). Two readings of the clock, taken at different moments, so what
+/// is stored is `named + (t_shard - t_resp)` -- the caller's deadline plus however long the
+/// command took to travel. `PEXPIRETIME` then adds a THIRD reading on the way back out, so
+/// even reading the value back cannot see the stored number.
+///
+/// WHAT IS PINNED HERE, AND WHAT IS NOT. The drift's SIZE is a timing measurement and would
+/// be a flaky assertion -- on an idle box both clock reads land in the same millisecond and
+/// it is zero, under load it is not. The drift's DIRECTION is not a timing measurement: the
+/// shard's clock is read strictly after the RESP layer's, so the stored deadline is never
+/// BEFORE the one the caller named. That is the safety-relevant half -- this lossiness can
+/// only ever let a key live slightly too long, never kill it early -- and it is what is
+/// asserted. The magnitude is reported by the ignored measurement test below it.
+///
+/// Closing the lossiness itself means an absolute-deadline path that does not round-trip
+/// through relative, which is a new engine command and a wire change, not a RESP patch.
+#[test]
+fn an_absolute_deadline_is_stored_no_earlier_than_it_was_named() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    // A deadline far enough out that nothing here can pass by the key expiring.
+    let named_ms = unix_time_ms() + 3_600_000;
+
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "drift:key", "v"]),
+    );
+    assert_eq!(
+        RespValue::Integer(1),
+        resp(&engine, &["PEXPIREAT", "drift:key", &named_ms.to_string()]),
+        "DENOMINATOR: PEXPIREAT has to report that it armed something",
+    );
+
+    let stored = stored_deadline_ms(&engine, "drift:key")
+        .expect("DENOMINATOR: PEXPIREAT must leave a deadline in the shard");
+
+    assert!(
+        stored >= named_ms,
+        "the round trip through a relative TTL reads the RESP clock first and the shard clock \
+         second, so the stored deadline can only be at or after the named one. A stored \
+         deadline BEFORE the named one ({stored} < {named_ms}) would mean a key dying earlier \
+         than the caller asked, which is the direction that loses data.",
+    );
+
+    // The drift is real but bounded by how long one command takes; a whole second would mean
+    // something other than the two clock reads is moving the deadline.
+    let drift = stored - named_ms;
+    assert!(
+        drift < 1_000,
+        "stored deadline drifted {drift} ms past the named one. Two clock reads around one \
+         command cannot account for a whole second -- that is a different bug.",
+    );
+}
+
+/// The measured size of the `EXPIREAT` drift. Reported, not gated.
+///
+/// Ignored on purpose: the number is a property of how loaded the box is, so asserting a
+/// threshold would be asserting the machine. Run it to get the figure:
+/// `cargo test -p temporalstore-rust --lib -- --ignored expireat_drift --nocapture`.
+#[test]
+#[ignore]
+fn expireat_drift_measured() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    resp(&engine, &["SET", "drift:measure", "v"]);
+
+    const ROUNDS: usize = 500;
+    let mut drifts: Vec<u64> = Vec::with_capacity(ROUNDS);
+    for _ in 0..ROUNDS {
+        let named_ms = unix_time_ms() + 3_600_000;
+        resp(
+            &engine,
+            &["PEXPIREAT", "drift:measure", &named_ms.to_string()],
+        );
+        let stored = stored_deadline_ms(&engine, "drift:measure").expect("a deadline is armed");
+        drifts.push(stored.saturating_sub(named_ms));
+    }
+    drifts.sort_unstable();
+    let nonzero = drifts.iter().filter(|drift| **drift > 0).count();
+    let total: u64 = drifts.iter().sum();
+    println!(
+        "EXPIREAT drift over {ROUNDS} rounds: min {} ms, median {} ms, p99 {} ms, max {} ms, \
+         mean {:.3} ms; {nonzero}/{ROUNDS} rounds stored a deadline LATER than the one named",
+        drifts[0],
+        drifts[ROUNDS / 2],
+        drifts[(ROUNDS * 99) / 100],
+        drifts[ROUNDS - 1],
+        total as f64 / ROUNDS as f64,
+    );
+}

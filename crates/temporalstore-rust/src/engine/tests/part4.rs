@@ -10221,6 +10221,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
                 ttl_ms: Some(600_000),
                 condition: crate::types::StringSetCondition::IfExists,
                 return_old: false,
+                keep_ttl: false,
             },
         ),
         (
@@ -10236,6 +10237,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
                 ttl_ms: None,
                 condition: crate::types::StringSetCondition::IfExists,
                 return_old: false,
+                keep_ttl: false,
             },
         ),
         (

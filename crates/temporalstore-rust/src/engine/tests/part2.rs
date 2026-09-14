@@ -1765,6 +1765,7 @@ fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() 
                 ttl_ms: Some(2 * 60 * 60 * 1000),
                 condition: StringSetCondition::IfExists,
                 return_old: false,
+                keep_ttl: false,
             },
         });
         assert_eq!(

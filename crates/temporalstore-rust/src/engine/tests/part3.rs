@@ -449,6 +449,7 @@ fn string_set_conditional_supports_nx_xx_and_get() {
             ttl_ms: None,
             condition: StringSetCondition::IfNotExists,
             return_old: false,
+            keep_ttl: false,
         },
     });
     assert_eq!(first.response, CommandResponse::Integer { value: 1 });
@@ -461,6 +462,7 @@ fn string_set_conditional_supports_nx_xx_and_get() {
             ttl_ms: None,
             condition: StringSetCondition::IfNotExists,
             return_old: false,
+            keep_ttl: false,
         },
     });
     assert_eq!(rejected.response, CommandResponse::Integer { value: 0 });
@@ -473,6 +475,7 @@ fn string_set_conditional_supports_nx_xx_and_get() {
             ttl_ms: None,
             condition: StringSetCondition::IfExists,
             return_old: true,
+            keep_ttl: false,
         },
     });
     assert_eq!(

@@ -1314,6 +1314,27 @@ pub enum Command {
         ttl_ms: Option<u64>,
         condition: StringSetCondition,
         return_old: bool,
+        /// `SET key value KEEPTTL`: replace the value and leave the deadline where it is.
+        ///
+        /// THE THIRD OUTCOME. A value-replacing write can do one of three things to the
+        /// deadline it overwrites -- arm a new one (`ttl_ms: Some`), discard the old one
+        /// (`ttl_ms: None`), or leave it alone -- and `Option<u64>` can only spell two. That
+        /// is the same shape that made `GETEX key PERSIST` a no-op until #1665: two of the
+        /// three outcomes shared a `None` and the code read that `None` as the wrong one.
+        ///
+        /// It is a SEPARATE FIELD rather than a three-way enum replacing `ttl_ms` on purpose.
+        /// `Command` is serde-serialized into the WAL, and a replayed record written before
+        /// this field existed must keep meaning exactly what it meant when it was written.
+        /// `#[serde(default)]` gives those records `false` -- the clearing behaviour they were
+        /// recorded with. Retyping `ttl_ms` instead would default an old `{"ttl_ms": 5000}`
+        /// record to "no deadline" on replay and silently drop a deadline that was durable.
+        ///
+        /// `ttl_ms: Some(_)` together with `keep_ttl: true` is contradictory and unreachable:
+        /// `parse_set_options` refuses `EX`/`PX` beside `KEEPTTL` with a syntax error, as
+        /// Redis does. The shard treats an arming TTL as the winner if one is ever built by
+        /// hand, and says so where it does.
+        #[serde(default)]
+        keep_ttl: bool,
     },
     StringGet {
         key: String,

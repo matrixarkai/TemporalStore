@@ -864,6 +864,7 @@ fn run_shared_string_set_with_flags(
         ttl_ms: None,
         condition,
         return_old: false,
+        keep_ttl: false,
     };
     let response = execute(command);
     match response.response {

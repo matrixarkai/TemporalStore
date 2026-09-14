@@ -390,6 +390,7 @@ pub(crate) fn execute_on_shard(
             ttl_ms,
             condition,
             return_old,
+            keep_ttl,
         } => {
             remove_if_expired(shard, &key);
             let old_value = shard
@@ -440,6 +441,29 @@ pub(crate) fn execute_on_shard(
                             end_routing_bucket,
                             None,
                             Some(expires_at),
+                            false,
+                        );
+                    } else if keep_ttl {
+                        // KEEPTTL: THE DEADLINE IS NOT TOUCHED, AND THAT IS A RESULT TOO.
+                        //
+                        // `remove_if_expired` at the top of this arm has already taken the key
+                        // away if its deadline had lapsed, so whatever is in `expires_at_ms`
+                        // here is a LIVE deadline -- this cannot preserve a dead one.
+                        //
+                        // What is staged is the deadline the key ALREADY HOLDS, not `None`.
+                        // Staging `None` would spell "this key has no deadline" to a replay,
+                        // and the replay would install the new value over a cleared deadline --
+                        // turning the one option whose whole purpose is to keep the countdown
+                        // into the one that loses it, but only after a restart.
+                        let kept = shard.expires_at_ms.get(&key).copied();
+                        stage_meta_outcome(
+                            shard_id,
+                            "object",
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            None,
+                            kept,
                             false,
                         );
                     } else {

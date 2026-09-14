@@ -11,6 +11,13 @@ pub(crate) struct SetOptions {
     pub(crate) ttl_ms: Option<u64>,
     pub(crate) condition: StringSetCondition,
     pub(crate) return_old: bool,
+    /// `KEEPTTL`: replace the value, leave the deadline alone.
+    ///
+    /// Without it, `SET` has only two answers for the deadline on the key it is replacing --
+    /// arm this new one, or throw the old one away -- and a caller who wanted the value
+    /// changed and the countdown kept had to read the remaining time and write it back, which
+    /// races the countdown it is trying to preserve and loses whatever elapsed in between.
+    pub(crate) keep_ttl: bool,
 }
 
 pub(crate) fn parse_set_options(args: &[Vec<u8>]) -> Result<SetOptions, String> {
@@ -18,11 +25,19 @@ pub(crate) fn parse_set_options(args: &[Vec<u8>]) -> Result<SetOptions, String> 
         ttl_ms: None,
         condition: StringSetCondition::Always,
         return_old: false,
+        keep_ttl: false,
     };
     let mut index = 0;
     while index < args.len() {
         match upper(&args[index]).as_str() {
             "EX" => {
+                // `KEEPTTL` and an arming TTL are contradictory requests, so the pair is a
+                // syntax error rather than a silent precedence rule. Checked BEFORE the
+                // number is parsed so `SET k v KEEPTTL EX 0` is refused for the reason it is
+                // actually wrong, not for the expire time.
+                if options.keep_ttl {
+                    return Err("ERR syntax error".to_string());
+                }
                 let Some(value) = args.get(index + 1) else {
                     return Err("ERR syntax error".to_string());
                 };
@@ -37,6 +52,9 @@ pub(crate) fn parse_set_options(args: &[Vec<u8>]) -> Result<SetOptions, String> 
                 index += 2;
             }
             "PX" => {
+                if options.keep_ttl {
+                    return Err("ERR syntax error".to_string());
+                }
                 let Some(value) = args.get(index + 1) else {
                     return Err("ERR syntax error".to_string());
                 };
@@ -48,6 +66,17 @@ pub(crate) fn parse_set_options(args: &[Vec<u8>]) -> Result<SetOptions, String> 
                     return Err("ERR syntax error".to_string());
                 }
                 index += 2;
+            }
+            "KEEPTTL" => {
+                // Both directions of the contradiction are refused: `EX`/`PX` beside
+                // `KEEPTTL` (checked in those arms) and `KEEPTTL` beside one already parsed
+                // (checked here). A repeat of `KEEPTTL` alone is a syntax error too, matching
+                // how `EX`, `NX` and `GET` each refuse their own repetition above and below.
+                if options.ttl_ms.is_some() || options.keep_ttl {
+                    return Err("ERR syntax error".to_string());
+                }
+                options.keep_ttl = true;
+                index += 1;
             }
             "NX" => {
                 if options.condition != StringSetCondition::Always {
