@@ -2802,3 +2802,174 @@ fn released_multi_object_buckets_are_not_counted_as_empty_buckets() {
         "the bucket holding three objects is a multi-object bucket"
     );
 }
+
+#[test]
+fn a_scan_with_no_budget_named_advances_on_every_stream_kind() {
+    // scan_stream clamps its window to max_bytes. An unset budget is zero, so the clamp made the
+    // window zero bytes wide -- and the response was OK, with no records and end_of_stream FALSE,
+    // because the end of the window had not been reached. A caller walking `while !end_of_stream`
+    // asked again at the same offset and got the same answer, for ever.
+    //
+    // The halves disagreed, which is why this asserts them apart. The record-framed kinds (Wal,
+    // IndexLog) keep their first record whatever the budget says, so they advanced; the
+    // byte-addressed kinds (Block, Index) returned nothing. A count over both read one and would
+    // have looked like a surface that works.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..8 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{i}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    // ---- Denominator first: each half must have something to return, or passing means nothing.
+    let wal_all = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: u64::MAX,
+        max_bytes: u64::MAX,
+    });
+    assert!(wal_all.status.ok);
+    assert!(
+        wal_all.records.len() >= 4,
+        "premise: the log holds several records to walk, got {}",
+        wal_all.records.len()
+    );
+
+    let block_all = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(block_all.status.ok);
+    assert_eq!(
+        block_all.records.len(),
+        1,
+        "premise: the block range holds bytes to return"
+    );
+    let block_bytes = block_all.records[0].data.len();
+    assert!(
+        block_bytes > 0,
+        "premise: the block range is not empty, got {block_bytes} bytes"
+    );
+
+    let index_all = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Index,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(index_all.status.ok);
+    assert_eq!(
+        index_all.records.len(),
+        1,
+        "premise: the index range holds bytes to return"
+    );
+
+    // ---- Half one: record-framed kinds. An unset budget must not cap the walk at one record.
+    let wal_zero = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: u64::MAX,
+        max_bytes: 0,
+    });
+    assert!(wal_zero.status.ok);
+    assert_eq!(
+        wal_zero.records.len(),
+        wal_all.records.len(),
+        "an unset budget must read the window, not one record of it: got {} of {}",
+        wal_zero.records.len(),
+        wal_all.records.len()
+    );
+    assert!(
+        wal_zero.end_of_stream,
+        "an unset budget cannot have run out, so this walk reached the end of its window"
+    );
+
+    // ---- Half two: byte-addressed kinds. These are the ones that could not advance at all.
+    let block_zero = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 64,
+        max_bytes: 0,
+    });
+    assert!(block_zero.status.ok);
+    assert_eq!(
+        block_zero.records.len(),
+        1,
+        "an unset budget returned {} records on a block range holding {block_bytes} bytes, so a \
+         caller walking this stream could never advance",
+        block_zero.records.len()
+    );
+    assert_eq!(
+        block_zero.records[0].data.len(),
+        block_bytes,
+        "an unset budget must read the whole window it was given"
+    );
+    assert!(
+        block_zero.end_of_stream,
+        "the walk read to the end of its window, so it must say so"
+    );
+
+    let index_zero = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Index,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 64,
+        max_bytes: 0,
+    });
+    assert!(index_zero.status.ok);
+    assert_eq!(
+        index_zero.records.len(),
+        1,
+        "an unset budget returned {} records on an index range that holds bytes, so a caller \
+         walking this stream could never advance",
+        index_zero.records.len()
+    );
+    assert!(
+        index_zero.end_of_stream,
+        "the walk read to the end of its window, so it must say so"
+    );
+
+    // ---- A budget that is genuinely small is still a budget, and still truncates.
+    let block_one = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 64,
+        max_bytes: 1,
+    });
+    assert!(block_one.status.ok);
+    assert_eq!(
+        block_one.records[0].data.len(),
+        1,
+        "a budget of one byte is not the same as no budget"
+    );
+    assert!(
+        !block_one.end_of_stream,
+        "one byte of a 64-byte window is not the end of that window"
+    );
+}

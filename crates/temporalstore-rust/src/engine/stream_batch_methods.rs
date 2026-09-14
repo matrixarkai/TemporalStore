@@ -56,10 +56,27 @@ impl TemporalEngine {
                 end_of_stream: true,
             };
         }
+        // A zero budget means "no budget named", not "a budget of zero bytes".
+        //
+        // The byte-addressed kinds below clamp the window to `max_bytes`, so zero clamped the
+        // read to nothing: no records, and `end_of_stream` FALSE, because the end of the window
+        // had not been reached. A caller walking `while !end_of_stream` then asked again at the
+        // same offset, for ever -- a walk that cannot advance.
+        //
+        // The record-framed kinds never had this. `scan_collect` keeps its first record whatever
+        // the budget says (`total > 0 &&`), for exactly this reason, and its comment says so. That
+        // rule belongs to the whole surface rather than one half of it: the two halves answered
+        // one and zero records to the same zero budget. The rest of this tree already reads an
+        // unset budget as no limit rather than as a limit of nothing.
+        let max_bytes = if request.max_bytes == 0 {
+            u64::MAX
+        } else {
+            request.max_bytes
+        };
         let size = request
             .end_offset
             .saturating_sub(request.start_offset)
-            .min(request.max_bytes);
+            .min(max_bytes);
         if request.stream_kind == StreamKind::Wal || request.stream_kind == StreamKind::IndexLog {
             let records = match request.stream_kind {
                 StreamKind::Wal => self
@@ -68,7 +85,7 @@ impl TemporalEngine {
                         request.shard_id,
                         request.start_offset,
                         request.end_offset,
-                        request.max_bytes,
+                        max_bytes,
                     )
                     .map_err(|err| err.to_string()),
                 StreamKind::IndexLog => self
@@ -77,7 +94,7 @@ impl TemporalEngine {
                         request.shard_id,
                         request.start_offset,
                         request.end_offset,
-                        request.max_bytes,
+                        max_bytes,
                     )
                     .map_err(|err| err.to_string()),
                 StreamKind::Index | StreamKind::Block | StreamKind::Page => unreachable!(),
