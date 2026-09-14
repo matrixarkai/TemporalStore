@@ -367,7 +367,7 @@ temporalstore_raft_gate_snapshot_snapshot_file_count_after_restart
 8. Watch hot storage/repl/cmd classes
 
 ```promql
-sum by (source) ({__name__=~".*(index|slot|page|replicator|gc|oplogger).*"})
+sum by (source) ({__name__=~".*(index|slot|page|replicator|gc|wal).*"})
 ```
 
 If these series stay empty, re-check:

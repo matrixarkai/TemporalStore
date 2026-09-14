@@ -141,7 +141,7 @@ def diagram_write():
         ("Metaserver", "partition"),
         ("Primary Node", "mutate"),
         ("Memory Object\n+ Index", "update"),
-        ("Oplog", "append"),
+        ("WAL", "append"),
         ("Shared Store", "dump"),
         ("Secondary", "replay"),
     ]
@@ -163,7 +163,7 @@ def diagram_write():
         arrow(d, (x1, arrow_y), (x2, arrow_y))
         label(d, (x1 + 10, arrow_y - 35), steps[i][1])
         arrow_y += 55 if i % 2 == 0 else -55
-    box(d, (520, 650, 1180, 760), "Replica becomes queryable after loading dumped state and replaying oplog\nReplica reads should be gated by lag and consistency policy.", "#fff7ed", "#f97316", FONT_B)
+    box(d, (520, 650, 1180, 760), "Replica becomes queryable after loading dumped state and replaying the WAL\nReplica reads should be gated by lag and consistency policy.", "#fff7ed", "#f97316", FONT_B)
     return save(img, "02_write_replication.png")
 
 

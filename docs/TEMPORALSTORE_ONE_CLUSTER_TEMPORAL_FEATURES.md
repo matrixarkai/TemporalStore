@@ -72,7 +72,7 @@ flowchart TB
         S2["Secondary partition<br/>async replay and replica reads"]
     end
 
-    Shared["Shared persistent streams<br/>oplog, page, index, snapshots"]
+    Shared["Shared persistent streams<br/>WAL, page, index, snapshots"]
     Cache["Local hot tiers<br/>DRAM object cache + block cache + optional SSD cache"]
 
     SDK --> Proxy

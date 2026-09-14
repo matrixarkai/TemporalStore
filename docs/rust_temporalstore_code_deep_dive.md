@@ -26,7 +26,7 @@ The main Rust crate exposes the following public modules from
 | `lock_store` | Page envelopes, page addresses, packed timestamp/value page records, slot dump/load and recovery helpers. |
 | `cache` | Memory and disk block cache accounting, admission/eviction stats, cache refill behavior. |
 | `index_log` | Durable index-log append/replay path used by engine recovery. |
-| `oplog` | Durable operation-log append/replay path. |
+| `wal` | Durable write-ahead log append/replay path. |
 | `shared_store` | Local file/shared-store checkpoint, replay, cursor, and retention logic. |
 | `replica_replay` | Secondary replay and async/sync replica validation helpers. |
 | `raft` | Rust-native Raft abstractions, OpenRaft production evidence model, local test fixtures, snapshot/failover reports. |
@@ -62,7 +62,7 @@ flowchart LR
     Engine --> Cache["Memory/disk cache"]
     Engine --> BlockStore["Block store / packed pages"]
     Engine --> IndexLog["Index log"]
-    Engine --> OpLog["Oplog"]
+    Engine --> Wal["WAL"]
     Engine --> SharedStore["Local shared-store replay"]
     DataNode --> Raft["OpenRaft production path / Raft reports"]
     Meta["Metaserver topology and scheduler"] --> Proxy
@@ -76,7 +76,7 @@ The common request path is:
 3. The data-node runtime checks lifecycle state and request admission.
 4. `TemporalEngine` dispatches a `Command` to the target shard.
 5. Mutating commands update in-memory indexes and append durable state through
-   index-log, oplog, block store, shared-store, and Raft evidence paths where
+   index-log, WAL, block store, shared-store, and Raft evidence paths where
    enabled.
 6. Reads use index state first, then cache/block-store/shared-store refill paths.
 7. Admin/readiness endpoints expose the current evidence and blockers.
@@ -108,7 +108,7 @@ Key responsibilities:
 - Product command dispatch in `execute_on_shard`.
 - Durable mutation handling in `execute_durable` and checked execution paths.
 - Packed timestamp/value storage integration for timeline-like data.
-- Index-log and oplog append/replay.
+- Index-log and WAL append/replay.
 - Cache invalidation and refill accounting.
 - Storage lifecycle reports, slot summaries, dump/load reports, and readiness
   inputs.
@@ -135,7 +135,7 @@ Important files:
 - `shared_store.rs`: local shared-store checkpoints, replay cursors, follower
   retention, sync/async replay evidence.
 - `replica_replay.rs`: secondary replay reports and async/sync replica checks.
-- `index_log.rs` and `oplog.rs`: durable replay order inputs.
+- `index_log.rs` and `wal.rs`: durable replay order inputs.
 
 Storage recovery is designed around the order:
 
@@ -143,13 +143,13 @@ Storage recovery is designed around the order:
 2. page segment inspection
 3. checkpoint or slot dump manifest
 4. index-log tail
-5. oplog tail
+5. WAL tail
 
 The current readiness posture emphasizes:
 
 - orphan page detection
 - missing and stale page references
-- corrupt page/index/oplog/snapshot evidence
+- corrupt page/index/WAL/snapshot evidence
 - follower-cursor safe GC
 - cache pressure and refill
 - shared-store sync/async replay

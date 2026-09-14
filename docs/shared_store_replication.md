@@ -1,6 +1,6 @@
 # Shared Store Replication
 
-The Rust code now has a first shared-store replication path for oplog, index, and page segment replication. It is implemented in `crates/temporalstore-rust/src/shared_store.rs` and uses the existing `ObjectStore` abstraction from `temporalstore-snapshot`, so the same path can be backed by local files in tests and S3-compatible storage later.
+The Rust code now has a first shared-store replication path for WAL, index, and page segment replication. It is implemented in `crates/temporalstore-rust/src/shared_store.rs` and uses the existing `ObjectStore` abstraction from `temporalstore-snapshot`, so the same path can be backed by local files in tests and S3-compatible storage later.
 
 ## Object Layout
 
@@ -10,8 +10,8 @@ The Rust code now has a first shared-store replication path for oplog, index, an
     shard.index.json
   page_segments/
     page_segment_<page_segment_id>.seg
-  oplog/
-    oplog_<oplog_index>.json
+  wal/
+    wal_<wal_index>.json
   checkpoints/
     <checkpoint_id>/
       index/
@@ -21,12 +21,12 @@ The Rust code now has a first shared-store replication path for oplog, index, an
       manifest.json
 ```
 
-The replicated index is the engine's persisted shard index JSON. Page segments are copied as immutable segment files. Oplog entries are ordered JSON records:
+The replicated index is the engine's persisted shard index JSON. Page segments are copied as immutable segment files. WAL entries are ordered JSON records:
 
 ```json
 {
   "shard_id": 1,
-  "oplog_index": 2,
+  "wal_index": 2,
   "command": { "kind": "string_set", "key": "k", "value": [118] }
 }
 ```
@@ -35,8 +35,8 @@ The replicated index is the engine's persisted shard index JSON. Page segments a
 
 Rust follows the operational default here: shared-store writes use async storage by default.
 `SharedStoreStorageMode::default()` is `Async`, and `SharedStoreReplicator::default_storage_writer`
-queues oplog entries for background flush. Callers that need request-path durability can explicitly
-select `SharedStoreStorageMode::Sync`, which publishes the oplog object before returning.
+queues WAL entries for background flush. Callers that need request-path durability can explicitly
+select `SharedStoreStorageMode::Sync`, which publishes the WAL object before returning.
 
 Rust and also expose a request/event-level replication selector so services do not need a
 restart to switch a specific write between `async_storage`, `sync_storage`, and `raft`. In Rust,
@@ -101,13 +101,13 @@ Callers can also mutate an existing options object with `UseAsyncStorage()`,
 
 The primary can publish:
 
-1. `publish_oplog_entry` for each committed mutation command.
+1. `publish_wal_entry` for each committed mutation command.
 2. `publish_index` after the shard index is durable locally.
 3. `publish_page_segments` for local page segment files.
 
 For production, this should become stricter:
 
-- publish committed oplog entries only after Raft commit
+- publish committed WAL entries only after Raft commit
 - checkpoint index/page segments at a consistent log index
 - publish a manifest last, or reuse the S3 snapshot manifest path, so followers never install mixed generations
 - include checksums and page/index generation ids
@@ -117,40 +117,40 @@ For production, this should become stricter:
 The implemented restore flow is:
 
 ```text
-new replica -> restore_latest_checkpoint -> load_shard -> replay_oplog(checkpoint_oplog_index) -> serve reads
+new replica -> restore_latest_checkpoint -> load_shard -> replay_wal(checkpoint_wal_index) -> serve reads
 ```
 
 `restore_latest_checkpoint` downloads the latest visible checkpoint manifest, verifies the index and
 page segment checksums, installs the index/page files locally, and returns the checkpoint's
-`checkpoint_oplog_index`. The engine then loads the restored index from local disk. `replay_oplog`
-scans ordered oplog objects after the checkpoint and applies each command to the local engine.
+`checkpoint_wal_index`. The engine then loads the restored index from local disk. `replay_wal`
+scans ordered WAL objects after the checkpoint and applies each command to the local engine.
 
 This directly supports the desired path:
 
 ```text
 shared store index -> local engine index
 shared store pages -> local page store
-shared store oplog -> command replay -> catch up after checkpoint
+shared store wal -> command replay -> catch up after checkpoint
 ```
 
 ## Current Guarantees
 
 - Object-store abstraction is shared with the snapshot crate.
 - Checkpoint manifest is written after index/page objects, so followers only restore visible checkpoints.
-- Checkpoint manifest records the durable oplog sequence covered by the index/page generation.
+- Checkpoint manifest records the durable WAL sequence covered by the index/page generation.
 - Index and page segment byte size plus SHA-256 are verified before install.
 - Follower restores page bytes and index bytes from shared store.
 - Follower can read restored data by following `BlockAddress` into local page files.
-- Follower can replay oplog entries after the restored checkpoint.
-- Unit tests validate checkpoint restore, later oplog replay, and corrupt page rejection.
+- Follower can replay WAL entries after the restored checkpoint.
+- Unit tests validate checkpoint restore, later WAL replay, and corrupt page rejection.
 - A standard compatibility test validates shared-store bootstrap plus catch-up across string, hash,
   and feature data.
 - Shared-store storage supports sync publish, async queued publish, bounded flush, and persisted
   replay cursor resume.
-- Oplog objects are checksum-enveloped and replay rejects corrupt entries.
+- WAL objects are checksum-enveloped and replay rejects corrupt entries.
 - Object-store writes support a bounded retry policy; async flush requeues entries after publish
   failure.
-- Shared-store GC can delete oplog objects before a replay-safe index. Cursor-safe oplog GC refuses
+- Shared-store GC can delete WAL objects before a replay-safe index. Cursor-safe WAL GC refuses
   deletion past a known follower cursor, and cursor-safe checkpoint GC keeps both the newest N
   checkpoints and the checkpoint generation needed by the persisted follower replay cursor.
 
@@ -166,7 +166,7 @@ cargo run -p temporalstore-rust --bin storage_modes_harness -- \
 
 The harness validates three local paths in one run:
 
-- sync shared-store storage publishes oplog entries immediately and a follower can replay them
+- sync shared-store storage publishes WAL entries immediately and a follower can replay them
 - async shared-store storage queues entries, flushes them with a bounded limit, then replays them
 - Raft writes committed entries to local WAL segment files and restores the shard from those files
 - dynamic event replication selects sync storage, async storage, and Raft for different events in
@@ -189,7 +189,7 @@ files used by each Raft replica.
 ## What Is Still Missing For Production
 
 - integration with real Raft commit index
-- lifecycle scheduling around oplog/checkpoint GC tied to Raft snapshot/install state
+- lifecycle scheduling around WAL/checkpoint GC tied to Raft snapshot/install state
 - S3 multipart upload and range-read optimization for large page segment sets
 - concurrency control so followers do not install a partially uploaded generation
 

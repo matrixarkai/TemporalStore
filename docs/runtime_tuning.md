@@ -13,7 +13,7 @@ The shared defaults live in `tools/temporalstore_runtime_env.sh`.
 | `TEMPORALSTORE_STORAGE_EXTENT_SIZE` | `10485760` | `268435456` | Extent size for storage streams. Larger values reduce extent/blob switching under high write QPS. |
 | `TEMPORALSTORE_STREAM_MAX_BLOB_SIZE` | `10485760` | `268435456` | Maximum stream blob size. Larger values reduce frequent blob freeze/open overhead. |
 | `TEMPORALSTORE_STORAGE_ASYNC` | `false` | `false` | Whether storage writes use async mode. |
-| `TEMPORALSTORE_STORAGE_OPLOG_DELAY_DUMP_LENGTH` | `0` | `0` | Oplog bytes to buffer before dump/replay visibility. Use carefully because it directly affects secondary lag. |
+| `TEMPORALSTORE_STORAGE_OPLOG_DELAY_DUMP_LENGTH` | `0` | `0` | WAL bytes to buffer before dump/replay visibility. Use carefully because it directly affects secondary lag. |
 
 For AWS scale runs, start with 256 MB:
 
@@ -37,7 +37,7 @@ bash tools/run_shared_file_3node_scale_ubuntu22.sh
 | --- | ---: | --- |
 | `TEMPORALSTORE_REPLICATOR_OUT_OF_SYNC_S` | `10` smoke, `120` scale | Maximum tolerated replay lag before reads are marked out of sync. |
 | `TEMPORALSTORE_REPLICATOR_LOOP_INTERVAL_US` | `1000` | Sleep between replay loops. Lower values reduce lag but spend more CPU. |
-| `TEMPORALSTORE_REPLICATOR_MAX_OPLOG_PER_LOOP` | `20000` | Oplog records replayed per loop. |
+| `TEMPORALSTORE_REPLICATOR_MAX_OPLOG_PER_LOOP` | `20000` | WAL records replayed per loop. |
 | `TEMPORALSTORE_REPLICATOR_MAX_INDEXLOG_PER_LOOP` | `20000` | Index-log records replayed per loop. |
 | `TEMPORALSTORE_REPLICATOR_UPDATE_REMOTE_INTERVAL_MS` | `20` | Remote metadata refresh interval. Lower values improve freshness but add overhead. |
 

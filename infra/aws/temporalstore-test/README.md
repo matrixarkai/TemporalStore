@@ -7,7 +7,7 @@ Small EC2-first deployment for validating TemporalStore on AWS.
 - 2 data nodes: `c7i.large`, 2 vCPU, 4 GiB memory, 20 GiB root gp3
 - 1 metaserver node: `t3.small`, 2 vCPU, 2 GiB memory, 20 GiB root gp3
 - 2 extra data-node cache volumes: 10 GiB gp3 each
-- 1 EFS filesystem for shared page/index/oplog/snapshot testing
+- 1 EFS filesystem for shared page/index/WAL/snapshot testing
 - SSM Session Manager access; SSH is closed by default
 - Monitoring UI on metaserver port `8088`; public access is closed unless `allowed_monitoring_cidr` is set
 

@@ -742,3 +742,705 @@ fn an_address_is_fifty_six_bytes_and_twenty_eight_of_them_are_optional() {
     assert_eq!(std::mem::size_of_val(&bare), std::mem::size_of_val(&full));
     assert!(bare.page_id().is_none() && full.page_id().is_some());
 }
+
+// ---------------------------------------------------------------------------------------------
+// Is the same descriptor stored more than once? (the interning premise)
+// ---------------------------------------------------------------------------------------------
+
+/// Every live address, grouped by the physical location it names and by its exact value.
+///
+/// INTERNING'S PREMISE, stated as something that can be false. A handle table only pays if the
+/// same descriptor is STORED more than once -- if the bucket index's address for a page and the
+/// model map's address for that same page are equal. They are both built on the write path from
+/// the same parts, so they look like they must be. They are not obliged to be: the two are
+/// written by different call sites, and a page rewritten in place keeps one entry in the bucket
+/// index while every point that landed in it keeps whatever it was given.
+///
+/// So this counts MATCHING against DIFFERING with a denominator, and when they differ it says
+/// which field moved. A census that reported only "120,080 addresses" would make interning look
+/// like a 2x saving whether or not a single pair actually matches.
+#[derive(Default)]
+struct DuplicationCensus {
+    /// How many times each distinct address VALUE is stored anywhere on the shard.
+    stores_per_value: std::collections::HashMap<BlockAddress, usize>,
+    /// The distinct address values a model map holds for one physical location.
+    model_values_at: std::collections::HashMap<(u64, u64), std::collections::HashSet<BlockAddress>>,
+    /// The address the bucket index holds for one physical location.
+    bucket_value_at: std::collections::HashMap<(u64, u64), BlockAddress>,
+    /// How many physical locations the bucket index named twice with different values. Nonzero
+    /// would mean "the bucket-index address" is not well defined and the pairing below is wrong.
+    bucket_location_collisions: usize,
+    model_total: usize,
+    bucket_total: usize,
+}
+
+impl DuplicationCensus {
+    fn observe_model(&mut self, address: &BlockAddress) {
+        self.model_total += 1;
+        *self.stores_per_value.entry(address.clone()).or_default() += 1;
+        self.model_values_at
+            .entry((address.block_slab_id, address.offset))
+            .or_default()
+            .insert(address.clone());
+    }
+
+    fn observe_bucket(&mut self, address: &BlockAddress) {
+        self.bucket_total += 1;
+        *self.stores_per_value.entry(address.clone()).or_default() += 1;
+        let key = (address.block_slab_id, address.offset);
+        if let Some(existing) = self.bucket_value_at.get(&key) {
+            if existing != address {
+                self.bucket_location_collisions += 1;
+            }
+        }
+        self.bucket_value_at.insert(key, address.clone());
+    }
+
+    fn total(&self) -> usize {
+        self.model_total + self.bucket_total
+    }
+
+    fn distinct_values(&self) -> usize {
+        self.stores_per_value.len()
+    }
+}
+
+/// Which fields two addresses for the same physical location disagree on.
+fn differing_fields(a: &BlockAddress, b: &BlockAddress) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if a.length != b.length {
+        out.push("length");
+    }
+    if a.page_id() != b.page_id() {
+        out.push("page_id");
+    }
+    if a.object_id() != b.object_id() {
+        out.push("object_id");
+    }
+    if a.generation() != b.generation() {
+        out.push("generation");
+    }
+    if a.routing_bucket() != b.routing_bucket() {
+        out.push("routing_bucket");
+    }
+    out
+}
+
+/// The same walk `census` does, but tagging each address with whether a MODEL map or the BUCKET
+/// INDEX holds it, because the pairing between those two is the whole question.
+fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> DuplicationCensus {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&shard_id).expect("shard is loaded");
+    let mut d = DuplicationCensus::default();
+
+    for map in [&shard.strings, &shard.control_state_pages, &shard.context_nodes] {
+        for address in map.values() {
+            d.observe_model(address);
+        }
+    }
+    for fields in shard.hashes.values() {
+        for address in fields.values() {
+            d.observe_model(address);
+        }
+    }
+    for members in shard.sets.values() {
+        for address in members.values() {
+            d.observe_model(address);
+        }
+    }
+    for members in shard.zsets.values() {
+        for (_, address) in members.values() {
+            d.observe_model(address);
+        }
+    }
+    for elements in shard.lists.values() {
+        for address in elements.values() {
+            d.observe_model(address);
+        }
+    }
+    for map in [
+        &shard.features,
+        &shard.sequences,
+        &shard.context_events,
+        &shard.context_indexes,
+        &shard.context_audits,
+        &shard.context_entities,
+        &shard.context_children,
+        &shard.context_summaries,
+        &shard.context_compressions,
+    ] {
+        for series in map.values() {
+            for address in series.values() {
+                d.observe_model(address);
+            }
+        }
+    }
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_, page) in bucket.page_index.iter() {
+            d.observe_bucket(&page.address);
+        }
+    }
+    d
+}
+
+/// THE NUMBER CANDIDATE A TURNS ON: matching against differing, with a denominator.
+#[test]
+#[ignore = "seeds 80,000 records; run by name"]
+fn a_model_map_address_and_the_bucket_index_address_for_one_page_are_not_the_same_value() {
+    for (label, strings_n, series_keys, series_points) in [
+        ("8,000 records", 4_000usize, 4usize, 1_000usize),
+        ("80,000 records", 40_000usize, 40usize, 1_000usize),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = new_engine(dir.path());
+        let (strings_written, points_written) = seed(&engine, strings_n, series_keys, series_points);
+
+        let d = duplication_census(&engine, 1);
+
+        // NON-VACUITY FIRST. A pairing over an empty bucket index reports "0 differing", which
+        // reads exactly like "they all match" -- the answer that would justify interning.
+        assert!(
+            d.model_total >= strings_written + points_written,
+            "{label}: denominator -- model maps must hold at least the {} addresses seeded, hold {}",
+            strings_written + points_written,
+            d.model_total
+        );
+        assert!(
+            d.bucket_total > 0,
+            "{label}: denominator -- the bucket index must hold addresses, holds {}",
+            d.bucket_total
+        );
+        assert_eq!(
+            0, d.bucket_location_collisions,
+            "{label}: the bucket index named one physical location with two different addresses \
+             {} times; 'the bucket-index address for a page' would not be well defined and the \
+             pairing below would be meaningless",
+            d.bucket_location_collisions
+        );
+
+        // Pair every location the bucket index knows against the model addresses at that same
+        // location. Three outcomes, and the denominator is printed for each.
+        let mut paired = 0usize;
+        let mut matching = 0usize;
+        let mut differing = 0usize;
+        let mut bucket_only = 0usize;
+        let mut field_tally: std::collections::BTreeMap<String, usize> = Default::default();
+        for (location, bucket_address) in &d.bucket_value_at {
+            match d.model_values_at.get(location) {
+                None => bucket_only += 1,
+                Some(model_values) => {
+                    paired += 1;
+                    if model_values.len() == 1 && model_values.contains(bucket_address) {
+                        matching += 1;
+                    } else {
+                        differing += 1;
+                        let sample = model_values.iter().next().expect("non-empty");
+                        let fields = differing_fields(bucket_address, sample);
+                        let key = if fields.is_empty() {
+                            "(equal to the sampled one; the location holds several values)".to_string()
+                        } else {
+                            fields.join("+")
+                        };
+                        *field_tally.entry(key).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let model_only = d
+            .model_values_at
+            .keys()
+            .filter(|location| !d.bucket_value_at.contains_key(*location))
+            .count();
+
+        println!("--- descriptor duplication: {label} ---");
+        println!(
+            "  live addresses: {} total = {} in model maps + {} in the bucket index",
+            d.total(),
+            d.model_total,
+            d.bucket_total
+        );
+        println!(
+            "  DISTINCT address values: {} of {} stores ({:.1}% of stores are a repeat of a value \
+             already stored elsewhere)",
+            d.distinct_values(),
+            d.total(),
+            100.0 * (d.total() - d.distinct_values()) as f64 / d.total() as f64,
+        );
+        println!(
+            "  physical locations (slab, offset): {} named by a model map, {} named by the bucket index",
+            d.model_values_at.len(),
+            d.bucket_value_at.len()
+        );
+        println!(
+            "  PAIRED locations (named by both): {paired} of {} bucket-index locations",
+            d.bucket_value_at.len()
+        );
+        println!(
+            "    MATCHING (model value identical to the bucket-index value): {matching} of {paired} ({:.1}%)",
+            if paired == 0 { 0.0 } else { 100.0 * matching as f64 / paired as f64 },
+        );
+        println!(
+            "    DIFFERING: {differing} of {paired} ({:.1}%)",
+            if paired == 0 { 0.0 } else { 100.0 * differing as f64 / paired as f64 },
+        );
+        for (fields, count) in &field_tally {
+            println!("      differ on {fields}: {count}");
+        }
+        println!("  bucket-index locations no model map names: {bucket_only}");
+        println!("  model-map locations the bucket index does not name: {model_only}");
+
+        // What interning would actually buy, priced off the distinct count rather than off the
+        // total. One table slot per distinct value (56 B) plus one handle per store.
+        for handle_width in [4usize, 8usize] {
+            let now = d.total() * 56;
+            let interned = d.distinct_values() * 56 + d.total() * handle_width;
+            println!(
+                "  a {handle_width}-byte handle over a dense table: {} B -> {} B ({:+.1}%)",
+                now,
+                interned,
+                100.0 * (interned as f64 - now as f64) / now as f64,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the CONTAINER would buy (the other candidate)
+// ---------------------------------------------------------------------------------------------
+
+/// How long the timestamped series on a shard actually are.
+///
+/// WHY THE SHAPE OF THIS MATTERS. `BlockIndexMap::Empty`/`One`/`Many` pays exactly once: on a map
+/// holding ONE entry, where a `BTreeMap` node sized for eleven is allocated to carry a single
+/// value. It buys nothing at all on a map holding a thousand. So "apply the `One` shape to the
+/// model maps" is only a saving if the model maps are mostly short, and that is a fact about the
+/// workload rather than about the type.
+///
+/// The fixture is seeded in two arms on purpose: long series (the feature workload #1730
+/// measured) and single-point series. Reporting the histogram off long series alone would say
+/// "no series is short, `One` buys nothing" -- which is a property of the seed, not of the store.
+#[derive(Default)]
+struct SeriesLengthCensus {
+    /// series length -> how many series have it, for lengths 1..=4; everything longer is `long`.
+    exactly: [usize; 5],
+    long: usize,
+    series: usize,
+    entries: usize,
+}
+
+impl SeriesLengthCensus {
+    fn observe(&mut self, len: usize) {
+        self.series += 1;
+        self.entries += len;
+        if len <= 4 {
+            self.exactly[len] += 1;
+        } else {
+            self.long += 1;
+        }
+    }
+
+    fn report(&self, label: &str) {
+        println!(
+            "  {label}: {} series holding {} entries",
+            self.series, self.entries
+        );
+        if self.series == 0 {
+            return;
+        }
+        for len in 1..=4usize {
+            println!(
+                "    exactly {len} entry/entries: {} of {} series ({:.1}%)",
+                self.exactly[len],
+                self.series,
+                100.0 * self.exactly[len] as f64 / self.series as f64
+            );
+        }
+        println!(
+            "    5 or more: {} of {} series ({:.1}%)",
+            self.long,
+            self.series,
+            100.0 * self.long as f64 / self.series as f64
+        );
+    }
+}
+
+fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCensus {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&shard_id).expect("shard is loaded");
+    let mut c = SeriesLengthCensus::default();
+    for map in [
+        &shard.features,
+        &shard.sequences,
+        &shard.context_events,
+        &shard.context_indexes,
+        &shard.context_audits,
+        &shard.context_entities,
+        &shard.context_children,
+        &shard.context_summaries,
+        &shard.context_compressions,
+    ] {
+        for series in map.values() {
+            c.observe(series.len());
+        }
+    }
+    c
+}
+
+/// The `Empty`/`One`/`Many` shape, written out here so it can be PRICED before it is adopted.
+/// This is the same three-way split `BlockIndexMap` already uses in the bucket index.
+enum PricedSeries {
+    #[allow(dead_code)]
+    Empty,
+    One(u64, BlockAddress),
+    Many(BTreeMap<u64, BlockAddress>),
+}
+
+impl PricedSeries {
+    fn insert(&mut self, key: u64, value: BlockAddress) {
+        match self {
+            PricedSeries::Empty => *self = PricedSeries::One(key, value),
+            PricedSeries::One(existing, _) if *existing == key => {
+                *self = PricedSeries::One(key, value)
+            }
+            PricedSeries::One(..) => {
+                let mut map = BTreeMap::new();
+                if let PricedSeries::One(first_key, first) =
+                    std::mem::replace(self, PricedSeries::Empty)
+                {
+                    map.insert(first_key, first);
+                }
+                map.insert(key, value);
+                *self = PricedSeries::Many(map);
+            }
+            PricedSeries::Many(map) => {
+                map.insert(key, value);
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            PricedSeries::Empty => 0,
+            PricedSeries::One(..) => 1,
+            PricedSeries::Many(map) => map.len(),
+        }
+    }
+}
+
+/// THE PRICE OF BOTH CONTAINER SHAPES, measured by RSS delta with every arm held alive.
+///
+/// Two populations, because the two shapes pay in different ones:
+///
+///   SHORT: 200,000 series of one entry. This is where `Empty`/`One`/`Many` pays -- a `BTreeMap`
+///   node sized for eleven, allocated to carry one value.
+///
+///   LONG: 200 series of 1,000 entries. This is the feature workload, where the node is full and
+///   `One` buys nothing -- so the only lever left is the WIDTH of the value, priced here as a
+///   per-series page table: `BTreeMap<u64, u32>` beside a `Vec<BlockAddress>` the series owns.
+///
+/// The `Vec` arm is the POSITIVE CONTROL for the harness, as in the sibling probe: if it cannot
+/// see a container with a known footprint, no number below means anything.
+#[test]
+#[ignore = "reads process RSS; run alone"]
+fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
+    const SHORT_SERIES: usize = 200_000;
+    const LONG_SERIES: usize = 200;
+    const LONG_POINTS: usize = 1_000;
+
+    fn address(i: u64) -> BlockAddress {
+        BlockAddress::from_parts(1, i * 64, 64, Some(i), Some(i), Some(7), Some(i))
+    }
+
+    // POSITIVE CONTROL first.
+    let control_before = resident_bytes();
+    let control: Vec<(u64, BlockAddress)> = (0..SHORT_SERIES as u64).map(|i| (i, address(i))).collect();
+    let control_after = resident_bytes();
+    let control_per = (control_after - control_before) as f64 / SHORT_SERIES as f64;
+    assert_eq!(SHORT_SERIES, control.len(), "denominator: the control holds every element");
+    assert!(
+        control_per > 40.0,
+        "positive control must see the Vec it just built: {control_per:.1} bytes/entry -- \
+         if this reads near zero the RSS harness is blind and every arm below is noise"
+    );
+    println!("CONTROL Vec<(u64, BlockAddress)>: {control_per:.1} bytes/entry");
+
+    // --- SHORT: one entry per series, which is the population `One` pays in. ---
+    let short_btree_before = resident_bytes();
+    let short_btree: Vec<BTreeMap<u64, BlockAddress>> = (0..SHORT_SERIES as u64)
+        .map(|i| {
+            let mut map = BTreeMap::new();
+            map.insert(i, address(i));
+            map
+        })
+        .collect();
+    let short_btree_after = resident_bytes();
+    let short_btree_per = (short_btree_after - short_btree_before) as f64 / SHORT_SERIES as f64;
+    assert!(
+        short_btree.iter().all(|map| map.len() == 1),
+        "denominator: every short BTreeMap arm really holds one entry"
+    );
+
+    let short_split_before = resident_bytes();
+    let short_split: Vec<PricedSeries> = (0..SHORT_SERIES as u64)
+        .map(|i| {
+            let mut series = PricedSeries::Empty;
+            series.insert(i, address(i));
+            series
+        })
+        .collect();
+    let short_split_after = resident_bytes();
+    let short_split_per = (short_split_after - short_split_before) as f64 / SHORT_SERIES as f64;
+    assert!(
+        short_split.iter().all(|series| series.len() == 1),
+        "denominator: every split arm really holds one entry"
+    );
+
+    // --- LONG: 1,000 entries per series, which is the feature workload. ---
+    let long_entries = LONG_SERIES * LONG_POINTS;
+
+    let long_btree_before = resident_bytes();
+    let long_btree: Vec<BTreeMap<u64, BlockAddress>> = (0..LONG_SERIES as u64)
+        .map(|s| {
+            let mut map = BTreeMap::new();
+            for t in 0..LONG_POINTS as u64 {
+                // The real shape: MANY consecutive timestamps naming ONE page. A feature series
+                // coalesces, so the same address value is stored for a run of points.
+                map.insert(t, address(s * 16 + t / 500));
+            }
+            map
+        })
+        .collect();
+    let long_btree_after = resident_bytes();
+    let long_btree_per = (long_btree_after - long_btree_before) as f64 / long_entries as f64;
+    assert!(
+        long_btree.iter().all(|map| map.len() == LONG_POINTS),
+        "denominator: every long BTreeMap arm really holds {LONG_POINTS} entries"
+    );
+
+    // The per-series page table: the series owns its addresses, the map holds an index into them.
+    // NOTE the lifetime: the table is owned BY the series, so an index cannot outlive the table
+    // that gives it meaning -- there is no shard-wide handle here and nothing to free separately.
+    let long_table_before = resident_bytes();
+    let long_table: Vec<(BTreeMap<u64, u32>, Vec<BlockAddress>)> = (0..LONG_SERIES as u64)
+        .map(|s| {
+            let mut pages: Vec<BlockAddress> = Vec::new();
+            let mut map = BTreeMap::new();
+            for t in 0..LONG_POINTS as u64 {
+                let wanted = address(s * 16 + t / 500);
+                let slot = match pages.iter().position(|held| *held == wanted) {
+                    Some(slot) => slot,
+                    None => {
+                        pages.push(wanted);
+                        pages.len() - 1
+                    }
+                };
+                map.insert(t, slot as u32);
+            }
+            (map, pages)
+        })
+        .collect();
+    let long_table_after = resident_bytes();
+    let long_table_per = (long_table_after - long_table_before) as f64 / long_entries as f64;
+    assert!(
+        long_table.iter().all(|(map, _)| map.len() == LONG_POINTS),
+        "denominator: every table arm really holds {LONG_POINTS} entries"
+    );
+    let distinct_pages: usize = long_table.iter().map(|(_, pages)| pages.len()).sum();
+    assert!(
+        distinct_pages < long_entries,
+        "denominator: the table arm must actually be sharing -- {distinct_pages} distinct pages \
+         over {long_entries} entries"
+    );
+
+    // Every arm still live, which is what makes the deltas independent rather than the
+    // allocator handing the next arm pages the last one just freed.
+    std::hint::black_box((&control, &short_btree, &short_split, &long_btree, &long_table));
+
+    println!("--- SHORT population: {SHORT_SERIES} series of ONE entry ---");
+    println!("  BTreeMap<u64, BlockAddress>: {short_btree_per:.1} bytes/entry");
+    println!("  Empty/One/Many split:        {short_split_per:.1} bytes/entry");
+    println!(
+        "  the One shape saves {:.1} bytes/entry ({:.1}%) on a single-entry series",
+        short_btree_per - short_split_per,
+        100.0 * (short_btree_per - short_split_per) / short_btree_per,
+    );
+
+    println!("--- LONG population: {LONG_SERIES} series of {LONG_POINTS} entries ---");
+    println!("  BTreeMap<u64, BlockAddress>:          {long_btree_per:.1} bytes/entry");
+    println!(
+        "  BTreeMap<u64, u32> + per-series pages: {long_table_per:.1} bytes/entry \
+         ({distinct_pages} distinct pages over {long_entries} entries)"
+    );
+    println!(
+        "  the per-series page table saves {:.1} bytes/entry ({:.1}%) on a coalescing series",
+        long_btree_per - long_table_per,
+        100.0 * (long_btree_per - long_table_per) / long_btree_per,
+    );
+
+    // No arm may read as free, or its zero is the allocator talking and not the container.
+    assert!(
+        short_btree_per > 40.0 && short_split_per > 20.0,
+        "no short arm may read as free: btree {short_btree_per:.1}, split {short_split_per:.1}"
+    );
+    assert!(
+        long_btree_per > 60.0 && long_table_per > 10.0,
+        "no long arm may read as free: btree {long_btree_per:.1}, table {long_table_per:.1}"
+    );
+}
+
+/// Where the fixture's series lengths actually fall -- the fact that decides whether the `One`
+/// shape is worth adopting for the model maps at all.
+#[test]
+#[ignore = "seeds two shards; run by name"]
+fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
+    // ARM 1: the workload #1730 measured -- long, coalescing series.
+    let long_dir = tempfile::tempdir().expect("tempdir");
+    let long_engine = new_engine(long_dir.path());
+    let (_, long_points) = seed(&long_engine, 0, 40, 1_000);
+    let long = series_lengths(&long_engine, 1);
+    assert!(
+        long.series > 0 && long.entries >= long_points,
+        "denominator: the long arm must hold series -- {} series, {} entries, {long_points} seeded",
+        long.series,
+        long.entries
+    );
+
+    // ARM 2: single-point series, so the `One` population is NOT empty and the histogram is not
+    // reporting a property of the seed as a property of the store.
+    let short_dir = tempfile::tempdir().expect("tempdir");
+    let short_engine = new_engine(short_dir.path());
+    let (_, short_points) = seed(&short_engine, 0, 4_000, 1);
+    let short = series_lengths(&short_engine, 1);
+    assert!(
+        short.series > 0 && short.entries >= short_points,
+        "denominator: the short arm must hold series -- {} series, {} entries, {short_points} seeded",
+        short.series,
+        short.entries
+    );
+
+    println!("--- timestamped series lengths ---");
+    long.report("40 feature series of 1,000 points");
+    short.report("4,000 feature series of 1 point");
+
+    // The control on the two arms: they must land in DIFFERENT halves of the histogram, or the
+    // seed is not producing the two populations this is supposed to tell apart.
+    assert_eq!(
+        0, long.exactly[1],
+        "the long arm must produce no single-entry series; it produced {}",
+        long.exactly[1]
+    );
+    assert!(
+        short.exactly[1] > 0,
+        "the short arm must produce single-entry series; it produced {} of {}",
+        short.exactly[1],
+        short.series
+    );
+    println!(
+        "  so the One shape helps {} of {} series in the short arm and {} of {} in the long one",
+        short.exactly[1], short.series, long.exactly[1], long.series,
+    );
+}
+
+/// THE FREE GUARD over the decision above: the bucket index holds ONE page inline, and the
+/// timestamped series maps do not.
+///
+/// WHY THIS IS THE THING TO PIN. The probes in this module are `#[ignore]`d -- they read process
+/// RSS and seed tens of thousands of records -- so on a normal run nothing here executes. This
+/// one is free and always runs, and it pins the two structural facts the recommendation rests on:
+///
+///   1. `BlockIndexMap` carries its single-page case INLINE. That is what makes it cost 73.0
+///      bytes for a one-entry index where a `BTreeMap<u64, BlockAddress>` costs 764.3 -- a
+///      `BTreeMap` leaf is allocated whole and sized for eleven entries whether one is filed in
+///      it or eleven are. If the `One` variant is ever boxed or removed, this enum stops being
+///      wider than the map it replaces and the 90.4% saving is silently gone.
+///
+///   2. All six timestamped series maps are still the SAME container. `timestamped_series_mut`
+///      hands out one type for six kinds, so the shape cannot be adopted for one of them alone --
+///      which is exactly why the recommendation is stated for the six together. The binding
+///      below is a compile-time proof of that: if any one of the six is narrowed and the others
+///      are not, this stops compiling rather than passing on a stale assumption.
+///
+/// MUTATION. Boxing `BlockIndexMap::One`'s page (`One(u64, Box<BlockIndex>)`) collapses the enum
+/// to a pointer and fires the first assert. Changing any one of the six map types fires the
+/// second as a compile error rather than a failure.
+#[test]
+fn the_bucket_index_holds_one_page_inline_and_the_series_maps_hold_none() {
+    use crate::engine::state::{BlockIndex, BlockIndexMap};
+
+    // (1) The split shape is wider INLINE than the map it replaces, because it carries a whole
+    // page in the `One` variant instead of a pointer to a node.
+    let split = std::mem::size_of::<BlockIndexMap>();
+    let map = std::mem::size_of::<BTreeMap<u64, BlockAddress>>();
+    let page = std::mem::size_of::<BlockIndex>();
+    println!(
+        "BlockIndexMap is {split} B inline, BTreeMap<u64, BlockAddress> is {map} B, \
+         BlockIndex is {page} B"
+    );
+    assert!(
+        split > map,
+        "BlockIndexMap must be WIDER inline than the map it replaces -- it is {split} B against \
+         {map} B. A split shape no wider than a BTreeMap is not holding its page inline, which is \
+         the entire reason it costs 73.0 bytes for a single-entry index where a BTreeMap costs \
+         764.3 (measured in the_container_shapes_priced_against_the_population_each_one_pays_in)"
+    );
+    assert!(
+        split >= page,
+        "BlockIndexMap must be able to hold a whole {page}-byte BlockIndex inline; it is {split} B"
+    );
+
+    // POSITIVE CONTROL for the predicate above, so a passing assert is not just a wide enum.
+    // This is exactly what the mutation would produce -- the `One` variant boxed, so the page is
+    // behind a pointer instead of inline -- and it must FAIL the same test the real shape passes.
+    // Without this, `split > map` would keep passing on any enum that happened to be wide for an
+    // unrelated reason, and the guard would stop watching the thing it names.
+    enum BoxedShape {
+        #[allow(dead_code)]
+        Empty,
+        #[allow(dead_code)]
+        One(u64, Box<BlockIndex>),
+        #[allow(dead_code)]
+        Many(BTreeMap<u64, BlockIndex>),
+    }
+    let boxed = std::mem::size_of::<BoxedShape>();
+    println!("  positive control: the same shape with One boxed is {boxed} B inline");
+    assert!(
+        boxed < page,
+        "the control must NOT hold a page inline: a boxed One is {boxed} B against a {page}-byte          page. If this ever reads as wide, the predicate below it cannot tell an inline page from          a pointer to one and the guard is vacuous"
+    );
+    assert!(
+        !(boxed > map && boxed >= page),
+        "the control must FAIL the predicate the real shape passes ({boxed} B boxed, {map} B map,          {page} B page)"
+    );
+
+    // (2) All six timestamped series maps are one container. This binding is the guard: it is a
+    // compile-time proof, and the count below is its denominator.
+    fn one_container(_: &std::collections::HashMap<String, BTreeMap<u64, BlockAddress>>) {}
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = new_engine(dir.path());
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let six = [
+        "features",
+        "context_indexes",
+        "context_audits",
+        "context_children",
+        "context_summaries",
+        "context_compressions",
+    ];
+    one_container(&shard.features);
+    one_container(&shard.context_indexes);
+    one_container(&shard.context_audits);
+    one_container(&shard.context_children);
+    one_container(&shard.context_summaries);
+    one_container(&shard.context_compressions);
+    assert_eq!(
+        6,
+        six.len(),
+        "denominator: the six kinds timestamped_series_mut dispatches over are {six:?}"
+    );
+    println!(
+        "  {} timestamped series maps share one container type, so the split shape has to be \
+         adopted for all of them or none",
+        six.len()
+    );
+}

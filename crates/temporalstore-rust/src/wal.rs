@@ -9940,10 +9940,10 @@ mod tests {
     ///   cargo test -p temporalstore-rust --lib what_per_command_records_cost \
     ///       -- --ignored --nocapture --test-threads=1
     ///
-    /// `append_batch_as_one_record` puts N commands in ONE record, and the design being followed
-    /// works that way for every write: items accumulate into one oplog and `Commit` serialises the
-    /// batch as a single stream append. Ours reaches the batch entries only from the explicit
-    /// stream-batch API -- an ordinary write takes `append_with_sync` and gets a record to itself.
+    /// `append_batch_as_one_record` puts N commands in ONE record: the items accumulate into one
+    /// WAL record and the flush serialises that batch as a single append. This engine reaches that
+    /// path only from the explicit stream-batch API -- an ordinary write takes `append_with_sync`
+    /// and gets a record to itself.
     ///
     /// The difference is per-record framing, paid once per command instead of once per batch. This
     /// measures it directly: the same commands down both paths, same store settings, comparing

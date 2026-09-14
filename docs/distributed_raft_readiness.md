@@ -137,7 +137,7 @@ The Rust code currently has:
   RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, applied-log-byte snapshot
   triggers, durable apply/snapshot fencing, snapshot-floor log matching, snapshot-tail catch-up, and
   compacted-entry rejection, metaserver snapshot-floor election, and operator control routes
-- strict shared-store oplog gap rejection
+- strict shared-store WAL gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
 

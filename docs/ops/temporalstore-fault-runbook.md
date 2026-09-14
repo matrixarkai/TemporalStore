@@ -95,14 +95,14 @@ Immediate actions:
 - Run lifecycle planning in dry-run mode first; apply dump, compaction, GC, and
   cache invalidation only when the report shows no follower-cursor retention
   conflict.
-- Refuse page GC while checkpoint, page, or oplog data is still needed by a
+- Refuse page GC while checkpoint, page, or WAL data is still needed by a
   known follower cursor.
 
 Recovery checks:
 - `storage_cache` readiness blockers decrease.
 - Stale-extent and dirty-slot counts return below policy thresholds.
 - `all_live_pages_readable` is true in the storage recovery report.
-- Follower replay cursors still resume without oplog gaps.
+- Follower replay cursors still resume without WAL gaps.
 
 ## Production Readiness Blocked
 

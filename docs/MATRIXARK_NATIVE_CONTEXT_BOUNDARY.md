@@ -62,7 +62,7 @@ The production hot path now has a named MatrixArk append boundary:
 
 Python still owns MCP envelopes, extraction, parsing, and record materialization.
 After materialization, Python sends one batch to TemporalStore. The native
-backend handles routing, sync/async storage behavior, oplog/persistence, and
+backend handles routing, sync/async storage behavior, WAL persistence, and
 backpressure. The existing compact record-log layout remains compatible because
 the batch contains the same sharded record fields plus the optional count update.
 
@@ -140,7 +140,7 @@ The intended production split is now explicit in code:
 - Python MCP: API envelopes, auth/access checks, model/extraction glue, resource
   parsing, request shaping, and benchmark orchestration.
 - conformance TemporalStore: append queue entry point, batch append boundary,
-  WAL/oplog persistence, shared-store or Raft routing, prefix reads/scans,
+  WAL persistence, shared-store or Raft routing, prefix reads/scans,
   secondary-index filtering targets, cache/persistence/eviction behavior, and
   backend metrics.
 

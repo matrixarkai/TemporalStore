@@ -269,7 +269,7 @@ Required behavior per step:
 | choose page | Pick or allocate a writable page using the same target page/block sizing policy and generation semantics. |
 | append to page buffer | Append without mutating old page bytes in place; produce a new or updated `PageAddress` with offset, length, and generation. |
 | update page index | Update `PageIndex` so logical object/timestamp lookups can find the new `PageAddress`. |
-| flush page/block | Persist according to write mode: async may acknowledge after durable queue/oplog admission, sync must wait for configured durability. |
+| flush page/block | Persist according to write mode: async may acknowledge after durable queue/WAL admission, sync must wait for configured durability. |
 | update block index | Update `BlockIndex` with durable physical location, checksum, and generation. |
 | publish append watermark | Advance and publish `append_watermark` after index state and durability requirements are satisfied. |
 

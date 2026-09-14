@@ -335,7 +335,7 @@
         status: 'ok', account_id: 'acct_local', tenant_id: 'tenant_codex', cloud_api_url: 'https://api.matrixark.ai', local_api_url: 'http://127.0.0.1:8081',
         metrics: {message_count: 4, resource_count: 3, skill_count: 2, context_node_count: 7, context_summary_count: 9, context_embedding_count: 18, dirty_summary_count: 1, api_key_count: 2, user_count: 1, event_count: 6, entity_count: 4, context_pack_count: 2, audit_count: 5, used_context_tokens: 28437, selected_tokens: 21140, dropped_tokens: 7297, dropped_over_budget_tokens: 2910, prompt_budget_p95: 10000, retrieval_p95_ms: 287, ingest_qps: 42, retrieve_qps: 18, metadata_backend: {backend:'record_log', table:'matrixark_metadata_records', sql_compatible_with:'record_log'}},
         observability: {
-          backend_identity: {backend:'temporalstore-direct', storage_mode:'async-oplog / local single-node', metrics_format:'prometheus', readiness_status:'ready', health_ok:true},
+          backend_identity: {backend:'temporalstore-direct', storage_mode:'async-wal / local single-node', metrics_format:'prometheus', readiness_status:'ready', health_ok:true},
           prometheus_source: 'matrixark_backend_metrics.prometheus plus MatrixArk record-log counters',
           prometheus_panels: [
             {name:'Ingest QPS', metric:'matrixark_ingest_qps', native_value:42, rust_value:39, unit:'ops/s'},
