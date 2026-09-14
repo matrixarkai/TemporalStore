@@ -281,8 +281,22 @@ def _readers_all_unreachable(reads):
         return set()
     if not reached or not library:
         return set()
+    # The engine is production, and this group's whole claim is that its members can be retired
+    # without removing a capability from anybody. A flag the Rust engine reads has a reader whether
+    # or not any reachable Python module names it, so it cannot belong here.
+    #
+    # `_read_only_by_tooling` already skips engine-read flags, and its docstring records what that
+    # cost to learn: four of seventy-seven were wrong before it consulted the engine. This rule
+    # makes a claim of the same kind from the same Python-only corpus and did not. Asked directly
+    # with a synthetic reader, it placed TS_API_AUTH_TOKEN -- an engine auth token -- in the
+    # retirable group, while the sibling rule handed the same flag correctly declined.
+    #
+    # The group is empty today, so this changes no classification now. It stops one arriving.
+    engine = _engine_reads()
     out = set()
     for name, modules in reads.items():
+        if name in engine:
+            continue
         stems = {m[:-3] if m.endswith(".py") else m for m in modules}
         if not stems:
             continue
@@ -1273,6 +1287,63 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             len(self.reads), counted,
             "the groups hold %d of %d flags, so the classification is not a partition and the "
             "candidate count below cannot be read" % (counted, len(self.reads)))
+
+    def test_a_flag_the_engine_reads_is_never_called_retirable(self) -> None:
+        """The retirable group must consult the engine, as `_read_only_by_tooling` does.
+
+        That group's stated property is that its members "could be retired without removing a
+        capability from anybody". The reachability corpus it reasons over is `tools/*.py`, so a
+        flag whose only Python reader is unreachable looks unread -- even when the Rust engine
+        reads it on every request.
+
+        Asked directly, the rule used to place `TS_API_AUTH_TOKEN` there. The group is empty, so
+        no live flag was affected; the point is that nothing stopped one arriving. The sibling
+        rule learned this the expensive way (`_engine_reads` records four of seventy-seven wrong
+        before it consulted the engine) and this one had not.
+
+        Asked with a SYNTHETIC reader rather than by looking for a live instance, because the
+        group being empty is the good outcome and a test that needs a live member would only start
+        working once the bug had already happened.
+        """
+        engine = _engine_reads()
+        self.assertGreater(len(engine), 100,
+                           "the engine scan found %d flags, too few to build the case with"
+                           % len(engine))
+        try:
+            import test_a_module_only_tests_reach_is_not_live as reachability
+            library, reached = reachability.reachable_from_production()
+        except Exception:  # pragma: no cover - the guard next door is absent
+            self.skipTest("the reachability guard is unavailable")
+        unreachable = sorted(library - reached)
+        self.assertTrue(unreachable,
+                        "every module is reachable, so this case cannot be constructed")
+
+        engine_flag = sorted(f for f in engine if f.startswith("TS_"))[0]
+        synthetic = {engine_flag: {unreachable[0] + ".py"}}
+        self.assertNotIn(
+            engine_flag, _readers_all_unreachable(synthetic),
+            "%s is read by the Rust engine and the rule still calls it retirable when its only "
+            "Python reader is unreachable. The engine is production: a flag it reads has a reader "
+            "whether or not reachable Python names it." % engine_flag)
+
+    def test_the_two_product_wide_rules_agree_about_the_engine(self) -> None:
+        """Both rules conclude something about the whole product from a Python-only corpus, so
+        both have to consult the engine. Pinning them together stops one being taught and the
+        other left behind -- which is exactly what had happened."""
+        engine = _engine_reads()
+        engine_flag = sorted(f for f in engine if f.startswith("TS_"))[0]
+        self.assertNotIn(engine_flag, _read_only_by_tooling(
+            {engine_flag: {"run_something_benchmark.py"}}))
+        try:
+            import test_a_module_only_tests_reach_is_not_live as reachability
+            library, reached = reachability.reachable_from_production()
+        except Exception:  # pragma: no cover
+            self.skipTest("the reachability guard is unavailable")
+        unreachable = sorted(library - reached)
+        if not unreachable:
+            self.skipTest("every module is reachable")
+        self.assertNotIn(engine_flag, _readers_all_unreachable(
+            {engine_flag: {unreachable[0] + ".py"}}))
 
     def test_this_file_does_not_credit_its_own_examples(self) -> None:
         """The rule a guard that lists names has to follow, checked rather than remembered.
