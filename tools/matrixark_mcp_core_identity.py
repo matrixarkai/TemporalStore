@@ -54,18 +54,15 @@ try:
         json_text,
         role_allows_scopes,
         session_scope_mode,
+        stable_hash,
     )
 except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_identity import (
+    from matrixark_mcp_identity import (  # noqa: F401
         json_text,
         role_allows_scopes,
         session_scope_mode,
+        stable_hash,
     )
-
-
-def stable_hash(value: str) -> int:
-    digest = hashlib.sha256(value.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
 
 
 def secret_hash(value: str) -> str:
