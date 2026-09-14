@@ -56,6 +56,16 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: READ,
         },
         RedisCommandDescriptor {
+            name: "DECR",
+            arity: 2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "DECRBY",
+            arity: 3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "DEL",
             arity: -2,
             flags: WRITE,
@@ -199,6 +209,16 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             name: "INFO",
             arity: -1,
             flags: ADMIN,
+        },
+        RedisCommandDescriptor {
+            name: "INCR",
+            arity: 2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "INCRBY",
+            arity: 3,
+            flags: WRITE,
         },
         RedisCommandDescriptor {
             name: "INCRBYFLOAT",

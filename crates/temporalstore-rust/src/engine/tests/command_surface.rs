@@ -182,3 +182,199 @@ fn a_value_replacing_write_discards_the_deadline_it_overwrote() {
         );
     }
 }
+
+/// Every command the dispatcher accepts is either advertised by `COMMAND`, or named here as
+/// deliberately unadvertised -- and everything `COMMAND` advertises really is accepted.
+///
+/// WHY A GUARD AND NOT JUST THE FOUR MISSING ROWS. `redis_supported_commands()` is a
+/// hand-written array in `command_table.rs`; the dispatcher is a `match` in `dispatch.rs`.
+/// Nothing connects them. Adding a command arm is one edit in one file, and the table is a
+/// second file the author has no reason to open, so the table drifts in exactly one direction:
+/// it under-reports, quietly. That is how `INCR`, `DECR`, `INCRBY` and `DECRBY` came to be
+/// implemented and unadvertised while `INCRBYFLOAT`, `HINCRBY` and `HINCRBYFLOAT` -- the rest
+/// of the same family -- were listed. The omission is not a policy; it is four forgotten rows.
+///
+/// WHAT THE MISREPORT COSTS. `COMMAND INFO INCR` answers a null, which is the wire spelling of
+/// "this server does not have that command", while `INCR k` works. `COMMAND COUNT` undercounts
+/// by the same four. A client that introspects before it dispatches -- which is how cluster-
+/// aware clients learn where the key sits in each command's argument list -- is being told the
+/// wrong thing by the server itself, and the answer it gets is confidently wrong rather than
+/// an error it could retry.
+///
+/// THE OTHER DIRECTION MATTERS TOO, AND IS CURRENTLY CLEAN. A table row with no arm behind it
+/// advertises a command the dispatcher will reject. There are none today; this asserts it
+/// stays that way, because removing an arm is exactly as one-sided an edit as adding one.
+///
+/// THE EXEMPTIONS ARE HAND-WRITTEN AND EXACT, NOT PREFIXES. A prefix rule would read
+/// "everything starting with F is ours" and would silently swallow a future standard verb that
+/// happens to start with F. Spelling each name means a new arm is unlisted AND unexempt, so it
+/// fails here until someone decides which it is.
+///
+/// THIS SCAN'S OWN CONTROLS. The first version of it matched any capitalised string literal at
+/// any indentation and reported `WITHSCORES`, `REV`, `FIRST` and `LAST` as commands -- they are
+/// option words inside the sorted-set arms, not arms. The negative controls below are those
+/// words, and they are what caught it.
+#[test]
+fn every_dispatched_command_is_advertised_or_named_as_unadvertised() {
+    const DISPATCH: &str = include_str!("../../redis/dispatch.rs");
+    const TABLE: &str = include_str!("../../redis/command_table.rs");
+
+    /// The control-state families. Three storage shapes (counter, distinct-count, selection)
+    /// reachable under both their historical verbs and their descriptive ones; they are a
+    /// TemporalStore surface with no Redis counterpart, so `COMMAND` -- whose whole audience
+    /// is clients asking what Redis commands this server speaks -- does not claim them.
+    const CONTROL_STATE_VERBS: [&str; 33] = [
+        "CONTROLSTATECHANGE", "CONTROLSTATECOUNT", "CONTROLSTATEDEBUG", "CONTROLSTATEDETAIL",
+        "CONTROLSTATEHSET", "CONTROLSTATEINCR", "CONTROLSTATEINCROPT", "CONTROLSTATEMANAGER",
+        "CONTROLSTATEQUERY",
+        "COUNTERQUERY", "COUNTERSET", "COUNTERSETANDGET", "COUNTERSETANDGETOPT",
+        "CPCQUERY", "CPCSET", "CPCSETANDGET", "CPCSETANDGETOPT",
+        "DISTINCTQUERY", "DISTINCTSET", "DISTINCTSETANDGET", "DISTINCTSETANDGETOPT",
+        "FOLQUERY", "FOLSET", "FOLSETANDGET", "FOLSETANDGETOPT",
+        "HCHANGE", "HQUERY", "HSETANDGET", "HSETANDGETOPT",
+        "SELECTIONQUERY", "SELECTIONSET", "SELECTIONSETANDGET", "SELECTIONSETANDGETOPT",
+    ];
+
+    /// The feature/sequence verbs: timestamped point series with filtering and aggregation.
+    /// Same reason -- no Redis command means any of this, so advertising them would not help
+    /// the clients `COMMAND` exists for.
+    const FEATURE_VERBS: [&str; 8] = [
+        "FAGG", "FAPPEND", "FAPPENDPOLICY", "FDEL",
+        "FQUERY", "FQUERYFILTER", "FQUERYFILTERSTR", "FREPLACE",
+    ];
+
+    /// Routing introspection: which bucket a key lands in, and its stable hash. Diagnostics
+    /// for operators reading a cluster's placement, not part of the data surface.
+    const ROUTING_VERBS: [&str; 3] = ["PCLUSTERHASH", "PCLUSTERKEYSLOT", "PSLOTHASHKEY"];
+
+    let exempt: Vec<&str> = CONTROL_STATE_VERBS
+        .iter()
+        .chain(FEATURE_VERBS.iter())
+        .chain(ROUTING_VERBS.iter())
+        .copied()
+        .collect();
+
+    // ---- the arms, and their DENOMINATOR ----------------------------------------------
+    // A top-level arm of the dispatcher's `match command.as_str()` sits at exactly eight
+    // spaces and opens with a string literal. Anything deeper is inside some arm's own
+    // `match` over its option words -- see the negative controls.
+    fn names_on(line: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut rest = line;
+        while let Some(open) = rest.find('"') {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('"') else { break };
+            let token = &after[..close];
+            if !token.is_empty()
+                && token.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && token.starts_with(|c: char| c.is_ascii_uppercase())
+            {
+                names.push(token.to_string());
+            }
+            rest = &after[close + 1..];
+        }
+        names
+    }
+
+    let mut arms: Vec<String> = Vec::new();
+    for line in DISPATCH.lines() {
+        let Some(rest) = line.strip_prefix("        \"") else {
+            continue;
+        };
+        // Re-prepend the quote the prefix test consumed so `names_on` sees a balanced line.
+        for name in names_on(&format!("\"{rest}")) {
+            if !arms.contains(&name) {
+                arms.push(name);
+            }
+        }
+    }
+
+    let mut advertised: Vec<String> = Vec::new();
+    for line in TABLE.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("name: \"") else {
+            continue;
+        };
+        let Some(close) = rest.find('"') else { continue };
+        advertised.push(rest[..close].to_string());
+    }
+
+    assert!(
+        arms.len() > 80,
+        "VACUITY: the arm scan found only {} dispatch arms. Either the file moved or the arm \
+         shape changed, and this guard is reading nothing.",
+        arms.len(),
+    );
+    assert!(
+        advertised.len() > 80,
+        "VACUITY: the table scan found only {} descriptors. The `name: \"...\"` shape must have \
+         changed, and this guard is reading nothing.",
+        advertised.len(),
+    );
+
+    // ---- POSITIVE CONTROL: both scans really find a command everyone agrees exists -------
+    assert!(
+        arms.iter().any(|name| name == "GET"),
+        "POSITIVE CONTROL: the arm scan cannot even find GET, so it is not reading arms",
+    );
+    assert!(
+        advertised.iter().any(|name| name == "GET"),
+        "POSITIVE CONTROL: the table scan cannot even find GET, so it is not reading the table",
+    );
+
+    // ---- NEGATIVE CONTROLS: option words are not commands -------------------------------
+    // These four live inside the sorted-set arms as `match upper(..)` cases. A scan that
+    // counted them would report a pile of phantom "unadvertised commands" and the real four
+    // would be lost in the noise -- which is what the first version of this scan did.
+    for option_word in ["WITHSCORES", "REV", "FIRST", "LAST"] {
+        assert!(
+            !arms.iter().any(|name| name == option_word),
+            "NEGATIVE CONTROL: the arm scan counted the option word {option_word} as a command, \
+             so it is matching literals nested inside arms rather than the arms themselves",
+        );
+    }
+
+    // ---- CLAIM ONE: nothing is dispatched without being advertised or named --------------
+    let unadvertised: Vec<&String> = arms
+        .iter()
+        .filter(|name| !advertised.contains(name) && !exempt.contains(&name.as_str()))
+        .collect();
+    assert!(
+        unadvertised.is_empty(),
+        "{} of {} dispatched command(s) are neither in the COMMAND table nor named above as \
+         deliberately unadvertised: {:?}. Add a descriptor to `command_table.rs` if it is a \
+         Redis command clients should be able to discover, or add it to one of the exemption \
+         lists in this test with the reason it is not.",
+        unadvertised.len(),
+        arms.len(),
+        unadvertised,
+    );
+
+    // ---- CLAIM TWO: nothing is advertised that the dispatcher would reject ---------------
+    let phantom: Vec<&String> = advertised
+        .iter()
+        .filter(|name| !arms.contains(name))
+        .collect();
+    assert!(
+        phantom.is_empty(),
+        "{} of {} advertised command(s) have no dispatch arm: {:?}. COMMAND is telling clients \
+         this server speaks something it answers with an error.",
+        phantom.len(),
+        advertised.len(),
+        phantom,
+    );
+
+    // ---- The exemption list must not rot ------------------------------------------------
+    // An exemption for a command that no longer exists is a name nobody will ever remove, and
+    // it silently widens what the next author can forget to advertise.
+    let stale: Vec<&&str> = exempt
+        .iter()
+        .filter(|name| !arms.contains(&name.to_string()))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "{} exemption(s) name a command the dispatcher no longer has: {:?}. Remove them.",
+        stale.len(),
+        stale,
+    );
+}
