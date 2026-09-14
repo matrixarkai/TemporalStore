@@ -490,3 +490,136 @@ fn wal_replay_is_not_refused_by_the_configured_write_limit() {
         "the replay was reported as successful but did not bring every record back"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The storage ceiling is the other gate in this function that refuses a write, and what it reads
+// is a shared number: the known physical bytes of the whole store, not of this shard. Once it is
+// over it stays over until something reclaims -- and a shard that cannot replay cannot be loaded,
+// so it never reaches the maintenance that would bring it back under.
+
+/// A shard over its `maxmemory_bytes` must still apply every committed entry.
+#[test]
+fn a_committed_entry_is_not_refused_by_the_storage_ceiling() {
+    const ENTRIES: usize = 20;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    // Something has to be stored before the ceiling has anything to be over.
+    for index in 0..10 {
+        assert!(write(&engine, &format!("seed{index}")).ok);
+    }
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            maxmemory_bytes: Some(1),
+            ..Config::default()
+        },
+    });
+    // The DENOMINATOR: the ceiling is genuinely over on the client path.
+    let client = write(&engine, "client");
+    assert_eq!(
+        client.code, "storage_quota_exceeded",
+        "the ceiling did not refuse a client write, so this test would prove nothing"
+    );
+
+    let mut applied = 0;
+    let mut refused = Vec::new();
+    for index in 0..ENTRIES {
+        let response = engine.execute_raft_apply(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("committed{index}"),
+                value: b"v".to_vec(),
+            },
+        });
+        if response.status.ok {
+            applied += 1;
+        } else {
+            refused.push(response.status.code.clone());
+        }
+    }
+    assert_eq!(
+        applied, ENTRIES,
+        "only {applied} of {ENTRIES} committed entries applied; refused as {refused:?} -- a \
+         follower that refuses a committed entry diverges from its leader, and the ceiling it \
+         refused on is not something the follower can act on"
+    );
+}
+
+/// And it must still rebuild itself from its own log.
+#[test]
+fn wal_replay_is_not_refused_by_the_storage_ceiling() {
+    const RECORDS: usize = 20;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    for index in 0..10 {
+        assert!(write(&engine, &format!("seed{index}")).ok);
+    }
+    for index in 0..RECORDS {
+        engine
+            .wal_store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: format!("replayed{index}"),
+                    value: b"v".to_vec(),
+                },
+                true,
+            )
+            .expect("the log should accept a record");
+    }
+    let readable = |engine: &TemporalEngine| {
+        (0..RECORDS)
+            .filter(|index| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet {
+                                key: format!("replayed{index}"),
+                            },
+                        })
+                        .response,
+                    CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count()
+    };
+    // The DENOMINATOR: the shard holds none of these yet, so anything readable after the replay
+    // came from the replay.
+    assert_eq!(
+        readable(&engine),
+        0,
+        "the records were appended to the log only; the shard should hold none of them yet"
+    );
+
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            maxmemory_bytes: Some(1),
+            ..Config::default()
+        },
+    });
+    // ...and the ceiling really is over.
+    assert_eq!(
+        write(&engine, "client").code,
+        "storage_quota_exceeded",
+        "the ceiling did not refuse a client write, so this test would prove nothing"
+    );
+
+    let replayed = engine.replay_wal_into_shard(1, 0);
+    assert!(
+        replayed.is_ok(),
+        "replay was refused: {:?} -- a shard that cannot replay cannot be loaded, and cannot \
+         reach the maintenance that would bring it back under the ceiling",
+        replayed.err()
+    );
+    assert_eq!(
+        readable(&engine),
+        RECORDS,
+        "the replay was reported as successful but did not bring every record back"
+    );
+}

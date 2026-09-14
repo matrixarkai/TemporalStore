@@ -812,7 +812,14 @@ impl TemporalEngine {
                 };
             }
         }
-        if write_command
+        // Exempt under raft apply and under replay, with the admission limits just above. The
+        // ceiling reads the known physical bytes of the WHOLE store, which is not a number a
+        // follower applying a committed entry, or a load rebuilding a shard, can do anything
+        // about -- and a shard that cannot replay is not a shard held under a ceiling, it is a
+        // shard that will not load, so it never reaches the reclamation that would clear it.
+        if !raft_applying()
+            && !replaying_wal()
+            && write_command
             && config
                 .maxmemory_bytes
                 // Gate on the CURRENT on-disk footprint (decremented by GC/compaction/

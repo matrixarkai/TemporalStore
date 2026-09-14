@@ -300,7 +300,12 @@ impl TemporalEngine {
                     continue;
                 }
             }
-            if write_command
+            // Exempt under raft apply and under replay, as the single-command path is and for
+            // the same reason. Symmetry here, on the same footing as the admission guard above:
+            // neither reaches this function today.
+            if !raft_applying()
+                && !replaying_wal()
+                && write_command
                 && config
                     .maxmemory_bytes
                     // Current on-disk footprint (GC-decremented), not cumulative-ever
