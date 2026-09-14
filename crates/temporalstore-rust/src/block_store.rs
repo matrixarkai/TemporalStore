@@ -2378,8 +2378,29 @@ mod tests {
         "zones",
         ];
 
+        // The list above lives inside the tree this walk reads, so every entry would match its
+        // own literal and the check would verify nothing. Excise the declaration from the text
+        // before searching: a name must be found because some OTHER site spells it.
+        let marker = concat!("const ", "DURABLE_NAMES", ": &[&str] = &[");
+        let strip_list_literal = |text: &str| -> (String, usize) {
+            let Some(open) = text.find(marker) else {
+                return (text.to_string(), 0);
+            };
+            let Some(close_rel) = text[open..].find("];") else {
+                return (text.to_string(), 0);
+            };
+            let close = open + close_rel + "];".len();
+            let mut kept = String::with_capacity(text.len());
+            kept.push_str(&text[..open]);
+            kept.push_str(&text[close..]);
+            (kept, close - open)
+        };
+
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut sources = String::new();
+        let mut files_read = 0_usize;
+        let mut excised_bytes = 0_usize;
+        let mut files_excised = 0_usize;
         let mut pending = vec![root];
         while let Some(path) = pending.pop() {
             let Ok(entries) = std::fs::read_dir(&path) else {
@@ -2391,7 +2412,13 @@ mod tests {
                     pending.push(entry_path);
                 } else if entry_path.extension().and_then(|e| e.to_str()) == Some("rs") {
                     if let Ok(text) = std::fs::read_to_string(&entry_path) {
-                        sources.push_str(&text);
+                        files_read += 1;
+                        let (kept, removed) = strip_list_literal(&text);
+                        if removed > 0 {
+                            files_excised += 1;
+                            excised_bytes += removed;
+                        }
+                        sources.push_str(&kept);
                         sources.push('\n');
                     }
                 }
@@ -2399,23 +2426,59 @@ mod tests {
         }
         assert!(
             sources.len() > 100_000,
-            "the source walk found almost nothing ({} bytes); the guard would pass vacuously",
+            "the source walk found almost nothing ({} bytes over {files_read} files); the guard \
+             would pass vacuously",
             sources.len()
+        );
+        // Vacuity, part one: the excision must have happened, exactly once, and must have taken
+        // the whole list with it. If the declaration is ever reshaped so the marker stops
+        // matching, this fails instead of quietly restoring the self-matching haystack.
+        assert_eq!(
+            files_excised, 1,
+            "expected exactly one file to hold the durable-name list; excised it from \
+             {files_excised} of {files_read} files"
+        );
+        assert!(
+            excised_bytes > 1_000,
+            "the list excision removed only {excised_bytes} bytes from {files_excised} file(s); \
+             the list holds {} names and cannot be that small -- the haystack would still match \
+             each name against its own list entry",
+            DURABLE_NAMES.len()
+        );
+        assert!(
+            !DURABLE_NAMES.is_empty(),
+            "DURABLE_NAMES is empty; there is nothing to check"
         );
 
         let mut missing = Vec::new();
+        let mut found = 0_usize;
         for name in DURABLE_NAMES {
             let quoted = format!("\"{name}\"");
-            if !sources.contains(&quoted) {
+            if sources.contains(&quoted) {
+                found += 1;
+            } else {
                 missing.push(*name);
             }
         }
+        // Vacuity, part two: if the haystack ever loses its content, every name goes missing and
+        // the assertion below fires -- but a haystack that matched nothing at all would be a
+        // broken walk, not 260 real regressions, so say which it is.
+        assert!(
+            found > 0,
+            "not one of the {} durable names was found outside the list itself across \
+             {files_read} files ({} bytes searched, {excised_bytes} excised); the walk is broken, \
+             not the vocabulary",
+            DURABLE_NAMES.len(),
+            sources.len()
+        );
         assert!(
             missing.is_empty(),
-            "durable name(s) no longer written anywhere: {missing:?}\n\
+            "durable name(s) no longer written anywhere outside the list itself: {missing:?}\n\
+             ({found} of {} names still have a real site, across {files_read} files.)\n\
              A store written by an older build still carries these. If a rename is intended, keep \
              the old spelling as a `serde(alias = ...)` rather than replacing it; if the name is \
-             genuinely dead, remove it from DURABLE_NAMES in the same change."
+             genuinely dead, remove it from DURABLE_NAMES in the same change.",
+            DURABLE_NAMES.len()
         );
     }
 
