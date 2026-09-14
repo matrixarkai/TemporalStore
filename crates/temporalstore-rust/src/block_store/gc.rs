@@ -6,6 +6,78 @@
 use super::*;
 
 impl LocalBlockStore {
+    /// Take the per-slab live tally the INDEX maintains.
+    ///
+    /// Publishing rather than deriving, because the store has no way to derive it: a page dies
+    /// when an index entry stops naming it, and that event never reaches here. The index keeps a
+    /// running tally on its own mutation path and hands a snapshot over; this only reads it.
+    ///
+    /// Idempotent, and the last publish wins. Cheap: one map, once per maintenance round, sized
+    /// by SLABS rather than by pages.
+    pub fn publish_live_page_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .live_page_bytes = Some(live);
+    }
+
+    /// What was last published, or `None` if nothing ever was.
+    pub fn published_live_page_bytes(&self) -> Option<BTreeMap<u64, BlockStoreSlabLive>> {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .live_page_bytes
+            .clone()
+    }
+
+    /// How much of each slab is still live, for EVERY slab -- not just the collectable ones.
+    ///
+    /// This is the answer to "does `utility_basis_points` stop being uniformly zero", and it has
+    /// to be asked of every slab to be worth asking. The GC candidate list cannot answer it: a
+    /// candidate is a slab that no live page points at, so its live fraction is zero by
+    /// construction and will stay zero however the figure is computed. The slabs with an
+    /// interesting fraction are exactly the ones the collector is not allowed to touch.
+    ///
+    /// Empty live figures when nothing has published; the physical and logical columns still
+    /// stand, so a caller can tell "no live pages" from "no tally".
+    pub fn slab_live_fractions(&self) -> Result<Vec<BlockStoreSlabLiveFraction>, BlockStoreError> {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        let published = inner.live_page_bytes.clone().unwrap_or_default();
+        let mut out = Vec::new();
+        for block_slab_id in slab_ids_at(&inner.root)? {
+            let physical_bytes = slab_path(&inner.root, block_slab_id)
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+            let logical_bytes = inner
+                .slabs
+                .get(&block_slab_id)
+                .map(|slab| slab.logical_bytes)
+                .filter(|bytes| *bytes > 0)
+                .unwrap_or(physical_bytes);
+            let live = published.get(&block_slab_id).copied().unwrap_or_default();
+            // Capped at the denominator. A live page can be counted at its logical length while
+            // the slab total was written before that page was rewritten in place, and a fraction
+            // above 1 is never a useful reading.
+            let live_bytes = live.live_bytes.min(logical_bytes);
+            let live_basis_points = if logical_bytes == 0 {
+                0
+            } else {
+                live_bytes.saturating_mul(10_000) / logical_bytes
+            };
+            out.push(BlockStoreSlabLiveFraction {
+                block_slab_id,
+                physical_bytes,
+                logical_bytes,
+                live_page_refs: live.live_page_refs,
+                live_bytes,
+                live_basis_points,
+                garbage_basis_points: 10_000_u64.saturating_sub(live_basis_points),
+            });
+        }
+        Ok(out)
+    }
+
     pub fn gc_slabs_before(
         &self,
         retain_from_block_slab_id: u64,
@@ -230,6 +302,7 @@ impl LocalBlockStore {
     ) -> Result<Vec<BlockStoreGcUtilityCandidate>, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let current_block_slab_id = inner.block_slab_id;
+        let published_live = inner.live_page_bytes.clone();
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let slab_ids = slab_ids_at(&inner.root)?;
         let mut slab_total_bytes = BTreeMap::<u64, u64>::new();
@@ -280,8 +353,42 @@ impl LocalBlockStore {
                 let stored_slab_id = slab
                     .map(|slab| slab.stored_slab_id)
                     .unwrap_or(block_slab_id);
-                let total_bytes = slab_total_bytes.get(&stored_slab_id).copied().unwrap_or(bytes);
-                let used_bytes = slab_used_bytes.get(&stored_slab_id).copied().unwrap_or_default();
+                // USED BYTES MEANS LIVE PAGE BYTES IN THIS SLAB, once an index has published a
+                // tally. Before that it means what it always meant, which is a different
+                // quantity and a much worse one: the file sizes of the slabs grouped under the
+                // same stored id that are NOT collectable. Since the candidate filter is the
+                // exact negation of that test, and a stored id names exactly one slab, a
+                // candidate could never contribute to its own used bytes -- so every candidate
+                // reported zero, and reported it by accident rather than by measurement.
+                //
+                // The denominator changes with it. A live page is counted at its LOGICAL length,
+                // so the total it is a fraction of has to be logical too: the slab descriptor
+                // carries exactly that, `logical_bytes`, summed over every page ever appended
+                // here. That field only ever grows -- which is a BUG when it is read as a live
+                // figure, and is precisely right for a denominator.
+                //
+                // The numbers for a CANDIDATE do not move, and that is the point: a candidate is
+                // a slab no live page points at, so its maintained live bytes are zero. It now
+                // reads zero because it was counted, not because two filters happened to
+                // contradict each other. `slab_live_fractions` is where the slabs with a fraction
+                // between the two extremes are visible.
+                let (total_bytes, used_bytes) = match published_live.as_ref() {
+                    Some(published) => {
+                        let logical_bytes = slab
+                            .map(|slab| slab.logical_bytes)
+                            .filter(|logical| *logical > 0)
+                            .unwrap_or(bytes);
+                        let live_bytes = published
+                            .get(&block_slab_id)
+                            .map(|live| live.live_bytes)
+                            .unwrap_or_default();
+                        (logical_bytes, live_bytes.min(logical_bytes))
+                    }
+                    None => (
+                        slab_total_bytes.get(&stored_slab_id).copied().unwrap_or(bytes),
+                        slab_used_bytes.get(&stored_slab_id).copied().unwrap_or_default(),
+                    ),
+                };
                 let stale_bytes = total_bytes.saturating_sub(used_bytes);
                 let utility_basis_points = if total_bytes == 0 {
                     0

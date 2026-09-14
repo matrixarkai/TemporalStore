@@ -5102,29 +5102,170 @@ fn what_the_stage_order_buys() {
     );
 }
 
-/// Can the page-GC garbage floor ever exclude a slab? It cannot, and this now SAYS so.
+
+/// WHAT THE MAINTAINED TALLY REMOVES, AND WHAT IT COSTS. Counts first.
+///
+///   cargo test -p temporalstore-rust --lib what_the_maintained_slab_tally_removes_and_costs \
+///       -- --nocapture --test-threads=1
+///
+/// THE COST REMOVED is a whole-shard live-page walk per maintenance round per shard.
+/// `storage_reclaim_slab_reports` builds the per-slab live/stale tally the reclaim planner reads,
+/// and it built it by materializing every live page in the shard -- on a loop that ticks every
+/// thirty seconds per shard for the life of the process. Both arms are measured HERE, in ONE
+/// process against ONE corpus, by withholding the tally and asking the same question again:
+/// anything else would be comparing two corpora.
+///
+/// THE COST ADDED is one map update per page charged or discharged, on the write path. Counted by
+/// `BLOCK_SLAB_LIVE_CHARGES` rather than timed, because a count is what survives a busy box.
+///
+/// Durations are deliberately NOT asserted. This box cannot resolve a 15% effect and routinely
+/// runs at a load average where a round-number timeout means saturation, not slowness. The counts
+/// below are the measurement; a run with `--nocapture` prints them.
+#[test]
+fn what_the_maintained_slab_tally_removes_and_costs() {
+    const RECORDS: usize = 8_000;
+    const KEYSPACE: usize = 2_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    crate::engine::reset_block_slab_live_charges();
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("scale-{:06}", index % KEYSPACE),
+                value: vec![b'v'; 96],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let charges = crate::engine::block_slab_live_charges();
+    let live_pages = engine.live_page_count_for_test(1) as u64;
+    let slabs = engine
+        .block_slab_live_tallies(1)
+        .expect("a derived tally")
+        .len() as u64;
+
+    // THE DENOMINATORS, before any ratio is taken.
+    assert!(live_pages > 0, "no live pages, so nothing below measures anything");
+    assert!(slabs > 0, "no slabs in the tally: {slabs}");
+
+    // ARM A: the tally withheld, so the report falls back to the walk.
+    engine.forget_block_slab_live_for_test(1);
+    crate::engine::reset_live_page_scan_entries();
+    let walked_reports = engine.storage_reclaim_slab_reports_for_test(1);
+    let walked_entries = crate::engine::live_page_scan_entries();
+
+    // ARM B: the tally restored, same shard, same question.
+    let drift = engine.block_slab_live_drift_check(1);
+    assert!(
+        drift.is_clean(),
+        "the tally had drifted before the measurement, so arm B is not the same answer: {drift:?}"
+    );
+    crate::engine::reset_live_page_scan_entries();
+    let tallied_reports = engine.storage_reclaim_slab_reports_for_test(1);
+    let tallied_entries = crate::engine::live_page_scan_entries();
+
+    eprintln!("  records={RECORDS} keyspace={KEYSPACE} live_pages={live_pages} slabs={slabs}");
+    eprintln!("  REMOVED: live page entries materialized by one reclaim report");
+    eprintln!("    walked  = {walked_entries}");
+    eprintln!("    tallied = {tallied_entries}");
+    eprintln!("  ADDED: tally charges over the whole ingest");
+    eprintln!(
+        "    charges = {charges}  ({:.2} per record, {:.2} per live page)",
+        charges as f64 / RECORDS as f64,
+        charges as f64 / live_pages as f64
+    );
+
+    // THE SAME ANSWER. A cheaper round that reports something else is not a saving.
+    let walked_live: Vec<(u64, u64, u64)> = walked_reports
+        .iter()
+        .filter(|report| report.live_page_refs > 0 || report.live_physical_bytes > 0)
+        .map(|report| {
+            (
+                report.block_slab_id,
+                report.live_page_refs,
+                report.live_physical_bytes,
+            )
+        })
+        .collect();
+    let tallied_live: Vec<(u64, u64, u64)> = tallied_reports
+        .iter()
+        .filter(|report| report.live_page_refs > 0 || report.live_physical_bytes > 0)
+        .map(|report| {
+            (
+                report.block_slab_id,
+                report.live_page_refs,
+                report.live_physical_bytes,
+            )
+        })
+        .collect();
+    assert!(
+        !tallied_live.is_empty(),
+        "the tallied arm reported no live slabs at all, so the comparison is vacuous"
+    );
+    assert_eq!(
+        walked_live, tallied_live,
+        "the tally and the walk disagree about the shard's live slabs"
+    );
+
+    // AND IT IS THE WALK THAT WENT. This is the whole claim, and it is the one that can regress
+    // silently: a fallback that fires on every round costs the old cost and changes nothing.
+    assert_eq!(
+        tallied_entries, 0,
+        "the tallied arm still walked {tallied_entries} live page entries -- the fallback fired"
+    );
+    assert!(
+        walked_entries >= live_pages,
+        "the walked arm materialized {walked_entries} entries for {live_pages} live pages, which \
+         is fewer than one walk: this arm is not measuring the walk"
+    );
+    // The charge is per page written, not per page in the shard: a bounded cost on the write
+    // path, against an unbounded one on the maintenance loop.
+    assert!(
+        charges <= (RECORDS as u64).saturating_mul(4),
+        "{charges} charges for {RECORDS} records is more than four per write, which is not a \
+         constant-per-write cost any more"
+    );
+}
+
+/// Can the page-GC garbage floor ever exclude a slab IN A RUNNING STORE? It still cannot -- and
+/// the reason has moved, which is the whole content of this update.
 ///
 ///   cargo test -p temporalstore-rust --lib can_the_page_gc_garbage_floor_bind \
 ///       -- --nocapture --test-threads=1
 ///
-/// It asked the question and printed the answer, but it was `#[ignore]`d, so CI never ran it and
-/// the answer was never recorded anywhere that could fail. A shipped default of 4,000 basis
-/// points that cannot exclude anything is exactly the shape that gets "fixed" by being raised,
-/// which changes nothing and costs someone an afternoon.
+/// THE OLD REASON, now gone. `used_bytes` summed the file sizes of the slabs grouped under a
+/// candidate's stored id that are NOT collectable. A stored id names exactly one slab and the
+/// candidate filter is the exact negation of that test, so a candidate could not contribute to
+/// its own used bytes. Every candidate read zero because two filters contradicted each other, not
+/// because anything had been counted.
 ///
-/// So it still prints the table -- that is the useful part when this eventually changes -- and it
-/// now ASSERTS the invariant behind it: every candidate reports 0 used bytes and therefore 10,000
-/// basis points of garbage, and the floor excludes none of them. The reason is structural. The
-/// floor is compared against a slab's live fraction; a slab's used bytes sum the slabs grouped
-/// under its stored id that are NOT collectable; that group is always the slab itself; and
-/// a candidate is by definition not current and not live. The candidate filter is the exact
-/// negation of the used-bytes filter, so a candidate can never contribute to its own used
-/// bytes.
+/// THE NEW REASON, which is a measurement. `used_bytes` is now the live page bytes on the slab
+/// itself, from the tally the index maintains on its own mutation path and publishes into the
+/// block store. A collector candidate is a slab that NO LIVE PAGE POINTS AT -- `is_live` gates
+/// candidacy, and gates removal again independently -- so its maintained live bytes are genuinely
+/// zero. The figure is real, it is really zero, and the floor still excludes nothing.
 ///
-/// This is NOT waiting for a stored id to group several slabs. It is waiting for used bytes to mean
-/// live PAGE bytes within the slab instead of whole file sizes of neighbouring slabs. When that
-/// lands, this test fails -- and that failure is the signal that the knob has become real, which
-/// is why the assertions name what they depend on.
+/// SO THE OBSTACLE IS THE CANDIDATE PREDICATE, NOT THE ARITHMETIC. Nothing offers this floor a
+/// partially-live slab, because a slab holding one live page is not a candidate at all. That is
+/// the same all-or-nothing rule that lets one live page pin a whole slab, and widening it means
+/// relocating the survivors first -- a compaction decision with its own measurement.
+/// `a_published_live_tally_makes_used_bytes_mean_live_page_bytes` (block_store.rs) is the other
+/// half: given a 90%-live candidate, the shipped 4,000 bp floor DOES exclude it. The knob is real
+/// machinery now; what it is waiting for is a caller that presents it with a partially-live slab.
+///
+/// AND `utility_basis_points` IS NO LONGER UNIFORMLY ZERO ACROSS THE STORE, which is the change a
+/// reader of the old note would most want to know. It is uniformly zero across the CANDIDATES,
+/// necessarily. `slab_live_fractions` asks the same question of every slab, and the table below
+/// prints the answer; the assertion under it is that the figure discriminates.
 #[test]
 fn can_the_page_gc_garbage_floor_bind() {
     const BATCH: usize = 400;
@@ -5159,6 +5300,14 @@ fn can_the_page_gc_garbage_floor_bind() {
     }
 
     let engine = runtime.engine();
+    // Hand the store the tally before asking it anything. The maintenance rounds above publish on
+    // their own; this makes the test say so rather than depend on it.
+    let ready_shards = engine.publish_block_slab_live_bytes();
+    assert_eq!(
+        ready_shards, 1,
+        "the shard's tally was never derived, so `used_bytes` would fall back to the old figure \
+         and this test would measure the thing it used to measure"
+    );
     let live = engine.live_block_slab_ids_all_shards();
     let plan = engine
         .block_store()
@@ -5213,8 +5362,8 @@ fn can_the_page_gc_garbage_floor_bind() {
     for candidate in plan.candidates.iter() {
         assert_eq!(
             candidate.used_bytes, 0,
-            "a candidate's band cannot contribute to its own used bytes -- the candidate filter \
-             is the exact negation of the used-bytes filter, and a band holds one slab: \
+            "a collector candidate is a slab no live page points at, so its MAINTAINED live bytes \
+             are zero -- counted, not inferred from two filters contradicting each other: \
              {candidate:?}"
         );
         assert_eq!(
@@ -5224,14 +5373,57 @@ fn can_the_page_gc_garbage_floor_bind() {
     }
     assert_eq!(
         plan.skipped_by_policy_count, 0,
-        "every candidate is 10,000 bp garbage, so the shipped floor excludes none of them; if \
-         this now fails, used bytes have started to mean live page bytes within the slab and the \
-         knob has become real: {plan:?}"
+        "every candidate is 10,000 bp garbage, so the shipped floor excludes none of them. If \
+         this now fails, something has started offering the collector a PARTIALLY LIVE slab, and \
+         the per-round budget question (PR #1719) is open again: {plan:?}"
     );
     assert_eq!(
         plan.selected_block_slab_ids.len(),
         plan.candidate_count,
         "and every candidate is selected: {plan:?}"
+    );
+
+    // THE OTHER HALF: the same question asked of EVERY slab, not just the collectable ones.
+    let fractions = engine.block_store().slab_live_fractions().expect("fractions");
+    eprintln!("     slab   physical   logical      live_b   live_bp   garbage_bp");
+    for fraction in fractions.iter() {
+        eprintln!(
+            "  {:>7}  {:>9}  {:>8}  {:>10}  {:>8}  {:>11}",
+            fraction.block_slab_id,
+            fraction.physical_bytes,
+            fraction.logical_bytes,
+            fraction.live_bytes,
+            fraction.live_basis_points,
+            fraction.garbage_basis_points
+        );
+    }
+    // DENOMINATOR FIRST, again. One slab cannot show a spread.
+    assert!(
+        fractions.len() > 1,
+        "one slab in the store, so nothing here could discriminate: {fractions:?}"
+    );
+    let distinct = fractions
+        .iter()
+        .map(|fraction| fraction.live_basis_points)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        distinct.iter().any(|points| *points > 0),
+        "every slab in the store reads zero live bytes, which cannot be true of a store that is \
+         serving reads -- the tally is not reaching the block store: {fractions:?}"
+    );
+    assert!(
+        distinct.len() > 1,
+        "the live fraction is the same for every slab, so it still carries no information; it is \
+         supposed to separate the slabs holding live pages from the ones that do not: \
+         {fractions:?}"
+    );
+    eprintln!(
+        "  VERDICT: the floor excluded {} of {} CANDIDATES, and the store holds {} distinct live \
+         fractions over {} slabs",
+        plan.skipped_by_policy_count,
+        plan.candidate_count,
+        distinct.len(),
+        fractions.len()
     );
 }
 
@@ -10580,4 +10772,287 @@ fn a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses() {
         "the exported storage_manager job counter must read storage_manager_runs, the field the \
          scheduler increments; if this moved, the scrape no longer reports what this test proved"
     );
+}
+
+/// A stub role source, so a test can put the node in any one of the three states by hand.
+#[derive(Debug)]
+struct FixedShardLeadership(ShardLeadership);
+
+impl ShardLeadershipSource for FixedShardLeadership {
+    fn shard_leadership(&self, _shard_id: ShardId) -> ShardLeadership {
+        self.0
+    }
+}
+
+/// One arm of the role guard: a fixture that genuinely compacts, run under one leadership state.
+///
+/// Returns (rounds, rounds that ran `compact_pages`, page refs relocated, bytes relocated,
+/// rounds whose skip list names the role). The denominators are returned rather than folded in,
+/// because the two halves of this guard fail in opposite directions and a single combined count
+/// can read full for one while the other is zero.
+fn run_compaction_rounds_under_role(
+    role: Option<ShardLeadership>,
+    batch: usize,
+    keyspace: usize,
+    rounds: usize,
+) -> (usize, usize, usize, u64, usize) {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    if let Some(role) = role {
+        runtime.set_shard_leadership_source(Arc::new(FixedShardLeadership(role)));
+    }
+    let options = StorageManagerOptions::default();
+    let mut written = 0usize;
+    let mut compacted_rounds = 0usize;
+    let mut relocated_refs = 0usize;
+    let mut relocated_bytes = 0u64;
+    let mut role_skipped_rounds = 0usize;
+    for _ in 0..rounds {
+        let engine = runtime.engine();
+        for index in 0..batch {
+            // Overwrites a fixed key space, so earlier versions become dead pages. An
+            // insert-only load leaves nothing stale and compaction never fires, which would
+            // make every number below a measurement of nothing.
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("role-{:08}", (written + index) % keyspace),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += batch;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages")
+        {
+            compacted_rounds += 1;
+        }
+        if report
+            .skipped_stages
+            .iter()
+            .any(|stage| stage == "compact_pages_not_leading")
+        {
+            role_skipped_rounds += 1;
+        }
+        if let Some(compaction) = report.compaction_report.as_ref() {
+            // compacted_objects carries the shard report rewritten_page_refs.
+            relocated_refs += compaction.compacted_objects;
+            relocated_bytes += compaction.relocated_bytes;
+        }
+    }
+    (
+        rounds,
+        compacted_rounds,
+        relocated_refs,
+        relocated_bytes,
+        role_skipped_rounds,
+    )
+}
+
+/// A node that does not lead a shard must not rewrite that shard's live set.
+///
+/// THREE STATES, ASSERTED SEPARATELY, EACH WITH ITS OWN DENOMINATOR. A guard that only checks
+/// the follower half cannot tell "skipped because this node follows" from "compaction never ran
+/// in this fixture at all" -- both read as zero -- so the leading half is what makes the zero
+/// mean something, and the unknown half is what stops the fix from being worse than the waste
+/// it removes.
+///
+///   leading      -> compacts. The positive control.
+///   not leading  -> skips, and SAYS why. The behaviour being bought.
+///   unknown      -> compacts. The failure mode this change risks: the storage maintenance
+///                   scheduler is constructed before consensus is, and on a standalone node
+///                   consensus is never constructed at all. A check that read "I cannot tell"
+///                   as "I am a follower" would switch page compaction off everywhere, which is
+///                   far more damage than the waste.
+///
+/// Mutation-verified, one mutation per half:
+///   * gate loses `leadership_permits_compaction`  -> the not-leading half fails (compacted 8/8).
+///   * gate becomes an unconditional skip           -> the leading half fails (compacted 0/8).
+///   * `is_known_not_leading` also matches Unknown  -> the unknown half fails (compacted 0/8).
+#[test]
+fn a_node_that_does_not_lead_a_shard_does_not_rewrite_its_live_set() {
+    const BATCH: usize = 2_000;
+    const ROUNDS: usize = 8;
+    // Smaller than BATCH, so every round overwrites keys earlier rounds wrote.
+    const KEYSPACE: usize = 500;
+
+    // No source attached at all is the same state the scheduler sees before consensus exists.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let bare = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    assert_eq!(
+        bare.shard_leadership(1),
+        ShardLeadership::Unknown,
+        "a runtime with no leadership source must answer Unknown, never NotLeading"
+    );
+
+    let (leading_rounds, leading_compacted, leading_refs, leading_bytes, leading_role_skips) =
+        run_compaction_rounds_under_role(Some(ShardLeadership::Leading), BATCH, KEYSPACE, ROUNDS);
+    let (
+        follower_rounds,
+        follower_compacted,
+        follower_refs,
+        follower_bytes,
+        follower_role_skips,
+    ) = run_compaction_rounds_under_role(
+        Some(ShardLeadership::NotLeading),
+        BATCH,
+        KEYSPACE,
+        ROUNDS,
+    );
+    let (unknown_rounds, unknown_compacted, unknown_refs, unknown_bytes, unknown_role_skips) =
+        run_compaction_rounds_under_role(None, BATCH, KEYSPACE, ROUNDS);
+
+    eprintln!(
+        "  leading      compacted={leading_compacted}/{leading_rounds} refs={leading_refs} \
+         bytes={leading_bytes} role_skips={leading_role_skips}"
+    );
+    eprintln!(
+        "  not_leading  compacted={follower_compacted}/{follower_rounds} refs={follower_refs} \
+         bytes={follower_bytes} role_skips={follower_role_skips}"
+    );
+    eprintln!(
+        "  unknown      compacted={unknown_compacted}/{unknown_rounds} refs={unknown_refs} \
+         bytes={unknown_bytes} role_skips={unknown_role_skips}"
+    );
+
+    // HALF ONE: leading. Without this the follower's zero below is unattributable.
+    assert!(
+        leading_compacted > 0,
+        "a leading node must still compact: ran {leading_compacted} of {leading_rounds} rounds"
+    );
+    assert!(
+        leading_refs > 0 && leading_bytes > 0,
+        "a leading node must relocate something: refs={leading_refs} bytes={leading_bytes} over \
+         {leading_rounds} rounds"
+    );
+    assert_eq!(
+        leading_role_skips, 0,
+        "a leading node must never record the role skip: {leading_role_skips} of \
+         {leading_rounds} rounds did"
+    );
+
+    // HALF TWO: not leading. Zero work, and a named reason for it.
+    assert_eq!(
+        follower_compacted, 0,
+        "a node that does not lead must not compact: ran {follower_compacted} of \
+         {follower_rounds} rounds"
+    );
+    assert_eq!(
+        (follower_refs, follower_bytes),
+        (0, 0),
+        "a node that does not lead must relocate nothing: refs={follower_refs} \
+         bytes={follower_bytes} over {follower_rounds} rounds"
+    );
+    assert_eq!(
+        follower_role_skips, follower_rounds,
+        "every round on a non-leading node must name the role as the skip reason: \
+         {follower_role_skips} of {follower_rounds} did"
+    );
+
+    // HALF THREE: unknown. The state the scheduler is in before consensus exists, and the state
+    // every standalone node stays in for ever.
+    assert!(
+        unknown_compacted > 0,
+        "an UNKNOWN role must not disable compaction -- the scheduler starts before consensus \
+         does, and a standalone node has none at all: ran {unknown_compacted} of \
+         {unknown_rounds} rounds"
+    );
+    assert!(
+        unknown_refs > 0 && unknown_bytes > 0,
+        "an UNKNOWN role must still relocate: refs={unknown_refs} bytes={unknown_bytes} over \
+         {unknown_rounds} rounds"
+    );
+    assert_eq!(
+        unknown_role_skips, 0,
+        "an UNKNOWN role must never record the role skip: {unknown_role_skips} of \
+         {unknown_rounds} rounds did"
+    );
+}
+
+/// What does a node that leads nothing throw away per round? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_a_follower_rewrites_per_round \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// Measured against TODAY's compaction, not the one that rewrote the whole live set every round:
+/// since #1687 a round relocates only the pages sitting on the slabs the reclaim plan picked, so
+/// these are the post-fix numbers and they are still entirely wasted on a node whose clients
+/// cannot see the layout.
+///
+/// MEASURED, 16-core WSL box, load average under 5 throughout, a 500-key live set overwritten
+/// by 2,000 writes a round:
+///
+///     records   rounds   compacted   page refs   bytes relocated   bytes/round
+///      8,000       4        4/4         2,000         216,000         54,000
+///     80,000      40       40/40       20,000       2,160,000         54,000
+///
+/// The not-leading arm is the control and reads ZERO on every column at both scales, over
+/// denominators of 4 and 40 rounds; without it a zero here would be indistinguishable from a
+/// fixture that never generated compaction pressure.
+///
+/// READ THE THIRD COLUMN FIRST. Compaction fired in EVERY round of both runs, on a shard whose
+/// only activity is overwriting the same 500 keys. Since #1687 a round is bounded by the live
+/// pages on the slabs the reclaim plan picked, so its cost is flat in the record count -- but
+/// it recurs for ever, once per scheduler tick, and at the shipped thirty-second interval that
+/// is 54 KB relocated and 500 pages rewritten per shard per tick, about 155 MB a day per idle
+/// shard, plus the index record each round persists. None of it is visible to a client of a
+/// node that leads nothing.
+#[test]
+#[ignore]
+fn what_a_follower_rewrites_per_round() {
+    const BATCH: usize = 2_000;
+
+    // TWO AXES, because one of them alone says the wrong thing.
+    //
+    // A fixed live set shows the RECURRENCE: the round costs the same every thirty seconds for
+    // ever, on a shard nobody is even writing to unusually hard. Growing the record count under
+    // a fixed live set does NOT make a round more expensive, and a table that only did that
+    // would suggest the waste is bounded -- it is not, it is unbounded in TIME.
+    //
+    // A live set proportional to the shard shows the other half: what one round costs is the
+    // live set sitting on the slabs the reclaim plan picked, so a bigger shard pays more PER
+    // ROUND as well as for ever.
+    const KEYSPACE: usize = 500;
+
+    eprintln!(
+        "  records  role         rounds  compacted  page_refs  relocated_bytes  bytes_per_round"
+    );
+    for rounds in [4usize, 40usize] {
+        let records = BATCH * rounds;
+        for (label, role) in [
+            ("leading", Some(ShardLeadership::Leading)),
+            ("not_leading", Some(ShardLeadership::NotLeading)),
+        ] {
+            let (denominator, compacted, refs, bytes, _) =
+                run_compaction_rounds_under_role(role, BATCH, KEYSPACE, rounds);
+            let per_round = if denominator == 0 {
+                0
+            } else {
+                bytes / denominator as u64
+            };
+            eprintln!(
+                "  {records:>7}  {label:<11}  {denominator:>6}  {compacted:>9}  {refs:>9}  \
+                 {bytes:>15}  {per_round:>15}"
+            );
+        }
+    }
 }

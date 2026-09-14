@@ -461,6 +461,10 @@ impl TemporalEngine {
             request.start_routing_bucket,
             request.end_routing_bucket,
         );
+        // A promote that found the index already in agreement returns without rebuilding, so it
+        // is not on its own a seed. This is: every shard entering the engine gets its maintained
+        // per-slab live tally derived once, here, before anything can read it.
+        crate::engine::storage_bucket_internals::seed_block_slab_live(&mut state);
         // Publish the info row WITH recovering:true BEFORE inserting into `shards`. A
         // concurrent execute() acquires shards.write() first, so if it observes the shard
         // present it is guaranteed (happens-before via the shards lock) to also observe

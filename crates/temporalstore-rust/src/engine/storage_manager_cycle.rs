@@ -415,6 +415,16 @@ impl TemporalEngine {
         // the whole trash directory, would destroy exactly the quarantined slabs the plan had
         // blocked. That is a loss path, not an inefficiency, which is why the collector's
         // selection and the purge's selection move in the same commit.
+        // HAND THE COLLECTOR THE TALLY BEFORE IT PLANS.
+        //
+        // Without a publish the block store falls back to its older `used_bytes` figure, which
+        // sums the file sizes of the NEIGHBOURING slabs that are not collectable -- a quantity
+        // that is zero for every candidate by construction and would be wrong rather than zero if
+        // it ever were not. Published, `used_bytes` is the live page bytes on the slab itself.
+        //
+        // Costs the number of slabs, not the number of pages: the shards keep the tally running
+        // on their own mutation path and this only sums them.
+        self.publish_block_slab_live_bytes();
         let reclaimable_block_slab_ids = page_gc_dependency_plan
             .reclaimable_block_slab_ids
             .iter()
@@ -477,7 +487,13 @@ impl TemporalEngine {
                 && !reclaimable_block_slab_ids.is_empty();
             lifecycle_request.purge_delayed_destroy_slab_ids =
                 Some(reclaimable_block_slab_ids.iter().copied().collect());
-            Some(self.apply_storage_lifecycle(lifecycle_request))
+            let report = Some(self.apply_storage_lifecycle(lifecycle_request));
+            // AND AGAIN AFTERWARDS. The round just relocated pages onto a fresh slab and
+            // destroyed others; the tally published above describes the state before it. A caller
+            // that inspects the store after the round -- which is what every reclaim assertion
+            // does -- should read what the round left, not what it found.
+            self.publish_block_slab_live_bytes();
+            report
         };
         // apply_storage_lifecycle's warm phase brings freshly-dumped pages into DRAM.
         // The pressure snapshot above was captured during prepare (pre-warm), so

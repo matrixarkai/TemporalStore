@@ -143,7 +143,9 @@ _matrixark_backfill_enabled() {
 
 _matrixark_start_backfill_daemon() {
   _matrixark_backfill_enabled || return 0
-  [[ "$EVENT" == "SessionStart" || "${MATRIXARK_BACKFILL_ON_EVERY_HOOK:-0}" == "1" ]] || return 0
+  [[ "$EVENT" == "SessionStart" ]] \
+    || matrixark_flag_on "${MATRIXARK_BACKFILL_ON_EVERY_HOOK:-0}" 0 \
+    || return 0
   setsid bash "$REPO_ROOT/tools/matrixark_backfill_daemon.sh" >/dev/null 2>&1 </dev/null &
   disown 2>/dev/null || true
 }
@@ -159,7 +161,13 @@ _matrixark_start_backfill_daemon
 # to the same ingest/extract/retrieve pipeline Codex uses. Until then, and whenever
 # the proxy is unavailable, fall back to the self-contained offline rust engine.
 if [[ "$BACKEND" == "auto" ]]; then
-  if [[ ! -x "$RUST_PROXY" && "$EVENT" == "SessionStart" && "${MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD:-1}" == "1" ]]; then
+  # Default ON at this site and OFF at the one near the end of the file. That is not a
+  # mistake being preserved blindly: here the flag answers "may I build the proxy during
+  # the long SessionStart budget", and there it answers "may I build OUTSIDE SessionStart".
+  # One name, two questions, opposite safe answers -- recorded rather than unified, because
+  # unifying them changes what a hook does on a cold checkout.
+  if [[ ! -x "$RUST_PROXY" && "$EVENT" == "SessionStart" ]] \
+     && matrixark_flag_on "${MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD:-1}" 1; then
     setsid bash -c "CARGO_TARGET_DIR='$REPO_ROOT/target' cargo build -q -p temporalstore-rust --bin matrixark_rust_proxy" \
       >/dev/null 2>&1 </dev/null &
     disown 2>/dev/null || true
@@ -198,7 +206,7 @@ if [[ "$BACKEND" == "python" ]]; then
   # MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON (default on). Fail-safe: if the daemon cannot
   # be made reachable we UNSET the socket so the adapter falls back to the prior
   # ephemeral-spawn path (default behavior fully preserved).
-  if [[ "${MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON:-1}" == "1" && -x "$RUST_PROXY" ]]; then
+  if matrixark_flag_on "${MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON:-1}" 1 && [[ -x "$RUST_PROXY" ]]; then
     # Codex and Claude now share the same durable Rust hook root, so they also
     # share the warm proxy socket. Override MATRIXARK_RUST_PROXY_SOCKET for
     # isolated test roots.
@@ -210,7 +218,7 @@ if [[ "$BACKEND" == "python" ]]; then
         --log "$_MATRIXARK_CLAUDE_DAEMON_LOG" --ping >/dev/null 2>&1
     }
     if ! _matrixark_claude_daemon_ping; then
-      if [[ "${MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON_AUTOSTART:-1}" == "1" ]]; then
+      if matrixark_flag_on "${MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON_AUTOSTART:-1}" 1; then
         (
           flock -n 8 || exit 0
           if _matrixark_claude_daemon_ping; then exit 0; fi
@@ -266,7 +274,10 @@ SRC="crates/temporalstore-rust/src/bin/codex_context_hook.rs"
 # cold cargo build never lands inside the 30s UserPromptSubmit budget. A stale but
 # present binary is still used (better a slightly old engine than no context); only a
 # fully missing binary fails the hot path open.
-if [[ "$EVENT" == "SessionStart" || "${MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD:-0}" == "1" ]]; then
+# The other half of the pair noted above: OFF by default, because this build can land in the
+# 30s UserPromptSubmit budget rather than the SessionStart one.
+if [[ "$EVENT" == "SessionStart" ]] \
+   || matrixark_flag_on "${MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD:-0}" 0; then
   if [[ ! -x "$BIN" || "$SRC" -nt "$BIN" ]]; then
     CARGO_TARGET_DIR="$TARGET_DIR" cargo build -q -p temporalstore-rust --bin codex_context_hook \
       >/dev/null 2>&1 || fail_open "hook binary build failed"

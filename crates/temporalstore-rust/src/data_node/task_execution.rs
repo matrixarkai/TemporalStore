@@ -32,6 +32,7 @@ pub(super) fn run_compaction_inner_draining(
     let (
         status,
         compacted_objects,
+        relocated_bytes,
         rewritten_object_pages,
         delete_marked_object_ids_before,
         delete_marked_object_ids_after,
@@ -45,6 +46,7 @@ pub(super) fn run_compaction_inner_draining(
         Ok(report) => (
             Status::ok(),
             report.rewritten_page_refs,
+            report.relocated_bytes,
             report.rewritten_object_pages,
             report.delete_marked_object_ids_before,
             report.delete_marked_object_ids_after,
@@ -57,6 +59,7 @@ pub(super) fn run_compaction_inner_draining(
         ),
         Err(status) => (
             status,
+            0,
             0,
             0,
             0,
@@ -78,6 +81,7 @@ pub(super) fn run_compaction_inner_draining(
         status,
         shard_id: request.shard_id,
         compacted_objects,
+        relocated_bytes,
         rewritten_object_pages,
         delete_marked_object_ids_before,
         delete_marked_object_ids_after,

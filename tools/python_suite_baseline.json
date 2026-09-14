@@ -71,7 +71,6 @@
     "test_pending_async_event_serving_pack_uses_live_memory_layer_without_lineage",
     "test_post_tool_rollout_backfill_only_commits_tool_evidence_profile_memory",
     "test_pottery_plate_uses_plate_event_anchor",
-    "test_pre_retrieval_refresh_can_skip_pending_new_event_dirty_markers",
     "test_pre_retrieval_summary_refresh_derives_balanced_layer_budget",
     "test_profile_current_entities_emit_and_query_current_index_terms",
     "test_profile_memory_query_defaults_to_bounded_auto_memory_budgets",

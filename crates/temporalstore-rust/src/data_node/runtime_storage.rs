@@ -923,7 +923,30 @@ impl DataNodeRuntime {
         // started for a slab it then had no particular interest in draining.
         let compaction_drain_block_slab_ids =
             crate::engine::compaction_drain_block_slab_ids(&lifecycle_plan.reclaim_candidates);
-        if options.enable_page_compaction && stale_page_pressure && compaction_has_work {
+        // AND WHO IS ASKING? A node that does not lead this shard rewrites its full live set
+        // onto a fresh slab, copying every byte verbatim, for a layout its clients cannot see.
+        //
+        // The rewrite is node-local and it is NOT divergent -- compaction emits no replicated
+        // record and does not advance `applied_wal_sequence` (#1620), so the relocated addresses
+        // exist only in this node's durable index; replication ships commands, and a snapshot
+        // install builds a FRESH engine and replaces this one wholesale, so a follower's slab
+        // ids can neither collide with nor leak into the leader's. It is pure waste, and it
+        // scales with the shard rather than with the traffic.
+        //
+        // THREE states, and the third is the one that could break this. The server constructs
+        // this scheduler about eighty lines before it constructs raft, so for the first rounds
+        // -- and for ever on a standalone node, which is the shipped default -- there is nothing
+        // to ask. `is_known_not_leading` is therefore a POSITIVE test on the one state that is
+        // evidence: `Unknown` compacts, exactly as every deployment did before this existed. The
+        // negation (`!= Leading`) would have read "unknown" as "follower" and switched
+        // compaction off on every single-node store in the world, silently.
+        let leadership = self.shard_leadership(shard_id);
+        let leadership_permits_compaction = !leadership.is_known_not_leading();
+        if options.enable_page_compaction
+            && leadership_permits_compaction
+            && stale_page_pressure
+            && compaction_has_work
+        {
             let response = run_compaction_inner_draining(
                 &self.inner,
                 CompactionRequest { shard_id },
@@ -941,6 +964,8 @@ impl DataNodeRuntime {
             executed_stages.push("compact_pages".to_string());
         } else if !options.enable_page_compaction {
             skipped_stages.push("compact_pages_disabled".to_string());
+        } else if !leadership_permits_compaction {
+            skipped_stages.push("compact_pages_not_leading".to_string());
         } else if !stale_page_pressure {
             skipped_stages.push("compact_pages_no_pressure".to_string());
         } else {
@@ -948,13 +973,24 @@ impl DataNodeRuntime {
         }
         pressure_decisions.push(storage_manager_pressure_decision(
             "compact_pages",
-            options.enable_page_compaction,
+            options.enable_page_compaction && leadership_permits_compaction,
             stale_page_pressure,
-            options.enable_page_compaction && stale_page_pressure && compaction_has_work,
+            options.enable_page_compaction
+                && leadership_permits_compaction
+                && stale_page_pressure
+                && compaction_has_work,
             vec![
                 storage_manager_pressure_signal(
                     "relocatable_page_refs",
                     compaction_relocatable_page_refs,
+                    1,
+                ),
+                // 1 for the two states that compact, 0 for the one that does not. Carried so an
+                // operator can tell "skipped because this node follows" from the three other
+                // reasons a round skips, without correlating against raft's own report.
+                storage_manager_pressure_signal(
+                    "leadership_permits_compaction",
+                    u64::from(leadership_permits_compaction),
                     1,
                 ),
                 storage_manager_pressure_signal(
@@ -993,6 +1029,11 @@ impl DataNodeRuntime {
                 stale_page_pressure,
                 "compact_pages",
             )
+            .or_else(|| {
+                (!leadership_permits_compaction).then(|| {
+                    format!("compact_pages_not_leading (role={})", leadership.as_str())
+                })
+            })
             .or_else(|| {
                 (!compaction_has_work)
                     .then(|| "compact_pages_nothing_to_relocate".to_string())
@@ -1368,8 +1409,20 @@ impl DataNodeRuntime {
                     report.rounds_skipped_pending = report.rounds_skipped_pending.saturating_add(1);
                     continue;
                 }
-                let submitted = runtime
-                    .submit_storage_manager_cycle(options.request.clone(), options.controller);
+                // Same question, the other periodic driver. This one does not call
+                // `run_storage_manager_once`; it posts a cycle to the worker, and the engine
+                // that runs it has no way to ask about leadership. Masking the request here is
+                // the only place in this path that can see both. An on-demand cycle posted by
+                // an operator is untouched -- that is an instruction, not a background round.
+                let mut cycle_request = options.request.clone();
+                if runtime
+                    .shard_leadership(cycle_request.shard_id)
+                    .is_known_not_leading()
+                {
+                    cycle_request.enable_page_compaction = false;
+                }
+                let submitted =
+                    runtime.submit_storage_manager_cycle(cycle_request, options.controller);
                 let mut report = thread_report
                     .lock()
                     .expect("storage manager runtime report lock poisoned");

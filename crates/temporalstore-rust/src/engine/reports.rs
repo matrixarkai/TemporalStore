@@ -63,6 +63,14 @@ pub struct ShardCompactionReport {
     #[serde(rename = "compacted_page_slab_id")]
     pub compacted_block_slab_id: u64,
     pub rewritten_page_refs: usize,
+    /// Bytes this round copied onto the fresh slab, verbatim.
+    ///
+    /// The round's real cost, and the figure that says how much a round on a node leading
+    /// nothing would have thrown away. `rewritten_page_refs` beside it counts the relocations;
+    /// this counts what they moved, and two rounds with the same ref count can differ by orders
+    /// of magnitude here.
+    #[serde(default)]
+    pub relocated_bytes: u64,
     /// Pages this round left where they were because it spent a budget -- bytes OR page refs,
     /// whichever ran out first. In practice it is the ref budget: the byte one is 256 MiB and a
     /// store that large is rare, while the ref budget is sized to bound the shard write lock.
@@ -464,6 +472,39 @@ pub struct StorageRecoverySlabLiveReport {
     #[serde(rename = "live_routing_slot_count")]
     pub live_routing_bucket_count: u64,
     pub live_ref_density_basis_points: u64,
+}
+
+
+/// What a drift check found between the MAINTAINED per-slab live tally and the walk.
+///
+/// Produced by `reconcile_block_slab_live`, which corrects the maintained tally from the walk and
+/// hands this back. It is a REPORT and never a panic: a maintained counter that has drifted is a
+/// counting bug, and turning a counting bug into an outage is a worse trade than serving a figure
+/// that was just corrected.
+///
+/// `slabs_compared` is the DENOMINATOR. A reconcile over a shard with no live pages agrees
+/// trivially, and a zero drift is only evidence when something was compared.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockSlabLiveDriftReport {
+    /// False when the maintained tally had never been derived, so this reconcile SEEDED it rather
+    /// than checked it. A seed is not agreement and must not be counted as any.
+    pub was_ready: bool,
+    /// Slabs named by either side. The denominator for every count below.
+    pub slabs_compared: u64,
+    /// Slabs where the two sides disagreed about page refs, bytes, or both.
+    pub drifted_slabs: u64,
+    /// Maintained minus recomputed, summed over every slab. Signed on purpose: an over-count and
+    /// an under-count are different bugs, and a sum of absolute values hides which one happened.
+    pub page_ref_drift: i64,
+    pub byte_drift: i64,
+    /// The slab with the largest absolute byte disagreement, when there was one.
+    pub worst_block_slab_id: Option<u64>,
+}
+
+impl BlockSlabLiveDriftReport {
+    pub fn is_clean(&self) -> bool {
+        self.drifted_slabs == 0 && self.page_ref_drift == 0 && self.byte_drift == 0
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -469,6 +469,41 @@ pub struct BlockStoreGcReport {
     pub retained_current_physical_bytes: u64,
 }
 
+/// Live pages on ONE slab, as the INDEX counts them.
+///
+/// The block store cannot derive this. It sees appends, and it sees whole slabs arrive and leave;
+/// an index entry that stopped pointing at an offset reaches it nowhere. So this arrives from the
+/// outside, through [`LocalBlockStore::publish_live_page_bytes`], and the store only reads it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreSlabLive {
+    pub live_page_refs: u64,
+    /// Sum of the lengths of the live pages on the slab. LOGICAL bytes -- the same quantity the
+    /// slab descriptor's `logical_bytes` totals over every page ever appended to it, which is why
+    /// that, and not the file size, is the denominator of the fraction below.
+    pub live_bytes: u64,
+}
+
+/// How much of one slab is still live, for every slab the store holds.
+///
+/// The read side of the published tally, and the answer to "is `utility_basis_points` uniformly
+/// zero". It is, for GC CANDIDATES, and necessarily so -- a candidate is a slab no live page
+/// points at. Across the whole store it is not, and this is where that shows.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreSlabLiveFraction {
+    #[serde(rename = "page_segment_id")]
+    pub block_slab_id: u64,
+    pub physical_bytes: u64,
+    /// Total logical bytes ever appended to this slab. Only ever grows, which is correct FOR A
+    /// DENOMINATOR and was the bug when the same field was read as a live figure.
+    pub logical_bytes: u64,
+    pub live_page_refs: u64,
+    pub live_bytes: u64,
+    /// `live_bytes * 10_000 / logical_bytes`, or 0 when the slab has no logical bytes.
+    pub live_basis_points: u64,
+    /// `10_000 - live_basis_points`. What the page-GC garbage floor compares against.
+    pub garbage_basis_points: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcUtilityCandidate {
     #[serde(rename = "page_segment_id")]
@@ -526,37 +561,43 @@ impl BlockStoreGcPolicy {
     /// `min_slab_garbage_basis_points` (on the wire, `min_band_garbage_basis_points`),
     /// highest-garbage first, optionally bounded by a
     /// minimum slab age. Mirrors selecting the maximum-garbage-rate zone under GC.
-    /// A garbage floor that CANNOT currently exclude anything. Measured, not assumed.
+    /// A garbage floor that now MEASURES THE RIGHT QUANTITY, and still excludes nothing in a
+    /// running store. Both halves measured, neither assumed.
     ///
-    /// The floor is compared against a slab's live fraction, and a slab's used bytes sum only the
-    /// slabs grouped under its stored id that are not collectable. That group is always the slab
-    /// itself -- and a candidate is by definition below the retention floor, not current and not
-    /// live, so its own used bytes are zero. Utility is therefore 0, garbage is 10,000 basis
-    /// points, and every candidate clears every possible floor.
+    /// WHAT CHANGED. `used_bytes` used to sum the file sizes of the slabs grouped under a
+    /// candidate's stored id that are NOT collectable. A stored id names exactly one slab, and the
+    /// candidate filter is the exact negation of that test, so a candidate could never contribute
+    /// to its own used bytes: every candidate reported 0, 10,000 bp of garbage, and the floor
+    /// cleared everything at every setting. It was not merely degenerate, it was answering "is
+    /// this whole slab collectable" (always yes, by construction) instead of "how much of this
+    /// slab is still live".
     ///
-    /// `can_the_page_gc_garbage_floor_bind` asserts this: the floor excludes 0 of N candidates,
-    /// every one at 10,000 bp garbage with 0 used bytes. Setting this to a larger number changes
-    /// nothing today.
+    /// It now sums the LIVE PAGE BYTES on the slab itself, taken from the per-slab tally the index
+    /// maintains on its own mutation path and publishes through
+    /// `LocalBlockStore::publish_live_page_bytes`. The denominator moved with it, from the file
+    /// size to the slab descriptor's `logical_bytes` -- the total ever appended there -- because a
+    /// live page is counted at its logical length. `a_published_live_tally_makes_used_bytes_mean_
+    /// live_page_bytes` shows the floor excluding a 90%-live slab, which is the first time this
+    /// knob has excluded anything.
     ///
-    /// WAITING FOR A STORED ID TO GROUP SEVERAL SLABS IS THE WRONG FIX, and an earlier reading of
-    /// this said otherwise. The stored id IS the slab id -- the only grouping key ever used was
-    /// the slab's own address, and
-    /// `a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load` shows even a
-    /// manifest cannot introduce a grouping -- so that moment does not arrive, and the design this
-    /// floor was drawn from does not group either: one unit, one backing file, exactly as here.
+    /// WHAT DID NOT CHANGE. In a running store the floor still excludes none of the COLLECTOR's
+    /// candidates, and `can_the_page_gc_garbage_floor_bind` still asserts that. The reason has
+    /// moved, and the new one is the useful one: a collector candidate is a slab that no live page
+    /// points at -- `is_live` is checked before candidacy and again before removal -- so its
+    /// maintained live bytes are genuinely zero. The floor is now measured against a real figure
+    /// that is really zero, rather than against an artefact of two filters contradicting each
+    /// other.
     ///
-    /// Its floor binds anyway, because its per-unit used-bytes counter sums the LIVE PAGE BYTES
-    /// inside the unit, maintained incrementally as pages are appended and deleted. A slab 30%
-    /// live reports 3,000 bp utility, and a 4,000 bp garbage floor is then a real question with a
-    /// real answer. Ours sums whole slab FILE SIZES of the slabs that are not collectable -- and
-    /// since the candidate filter is the exact negation of that test, a candidate contributes
-    /// nothing and every candidate reports 0 used bytes.
+    /// So the remaining obstacle is the CANDIDATE PREDICATE, not the accounting: nothing offers
+    /// this floor a partially-live slab, because a slab with one live page is not a candidate at
+    /// all. That is the same all-or-nothing rule that lets one live page pin a whole slab, and
+    /// widening it means relocating the survivors first -- a compaction decision with its own
+    /// measurement, not a change to this constructor.
     ///
-    /// So the floor is not merely degenerate, it is measuring the wrong quantity: "is this whole
-    /// slab collectable" (always yes, by construction) instead of "how much of this slab is still
-    /// live". That is the same missing per-slab live-byte accounting that makes ONE live page pin
-    /// a whole slab, and the floor starts to bind the moment that exists -- not before, and not
-    /// for any amount of grouping. It is left in place and documented rather than removed.
+    /// (An earlier reading of this blamed the stored id for not grouping several slabs. It does
+    /// not group, and it was never going to: the only grouping key ever used was the slab's own
+    /// address, and `a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load`
+    /// shows even a manifest cannot introduce one. Grouping was not the missing piece.)
     pub fn with_slab_garbage_floor(
         min_slab_garbage_basis_points: u64,
         min_age_ms: Option<u64>,
@@ -1117,6 +1158,20 @@ struct BlockStoreInner {
     /// Sealed slabs this open kept from the manifest WITHOUT re-reading them. Not part of any
     /// report wire shape; it exists so a guard aimed at that route can prove the route ran.
     slabs_skipped_reinspection_on_open: usize,
+    /// Per-slab live page tallies, PUBLISHED by the index that maintains them.
+    ///
+    /// `None` until an index has published once, and the difference matters: an empty map means
+    /// "an index looked and found no live pages anywhere", while `None` means "nobody has told
+    /// this store anything" -- and only the second may fall back to the older neighbour-sum
+    /// figure.
+    ///
+    /// A snapshot, so it can be stale -- and staleness here is safe in ONE DIRECTION ONLY, which
+    /// is why it is allowed. `used_bytes` feeds the garbage floor, and the floor only ever KEEPS a
+    /// slab; it never grants permission to delete one. Deletion is gated by the live slab id set,
+    /// computed fresh at the call. So a stale tally that overstates live bytes costs a round of
+    /// collection, and one that understates them cannot reach anything the live-set test would
+    /// have retained.
+    live_page_bytes: Option<BTreeMap<u64, BlockStoreSlabLive>>,
     stats: BlockStoreStats,
     // Optional shared-storage read-through (on-demand lazy recovery): set by
     // attach_shared_slab_source() after a metadata-only restore. When present, a
@@ -1223,6 +1278,7 @@ impl LocalBlockStore {
                 slabs_unwritten: 0,
                 slab_manifest_reconciled_on_open,
                 slabs_skipped_reinspection_on_open,
+                live_page_bytes: None,
                 stats: BlockStoreStats::default(),
                 shared_slab_source: None,
                 scratch: None,
@@ -5083,6 +5139,12 @@ mod tests {
     /// candidates is physical size, descending. The order the comment above the sort describes is
     /// therefore not the order that happens.
     ///
+    /// NOTHING IS PUBLISHED HERE, AND THAT IS THE POINT. `used_bytes` now means live page bytes
+    /// on the slab whenever an index has published a tally, and
+    /// `a_published_live_tally_makes_used_bytes_mean_live_page_bytes` shows that ordering coming
+    /// out highest-garbage first. This store has no publisher, so it exercises the unpublished
+    /// arm -- which is still what a bare `LocalBlockStore` does, and still orders by size.
+    ///
     /// AN UNBOUNDED COLLECTOR DOES NOT CARE -- it takes every candidate, so the order only
     /// decides what happens first. A BUDGETED ONE DOES: the budget makes the order decide who
     /// SURVIVES, and here the survivors would be the smallest files, chosen by a rule nobody
@@ -5406,6 +5468,131 @@ mod tests {
         assert!(store.delayed_destroy_slab_ids().unwrap().is_empty());
         assert!(store.delayed_destroy_slab_reports().unwrap().is_empty());
         assert_eq!(store.slab_ids().unwrap(), vec![2, 3]);
+    }
+
+    /// A PUBLISHED LIVE TALLY MAKES `used_bytes` MEAN LIVE PAGE BYTES, AND THE FLOOR THEN BINDS.
+    ///
+    /// The arithmetic on its own, with the tally supplied directly rather than earned by a
+    /// workload, because the question here is whether the MACHINERY works: given a slab that is
+    /// 90% live, does the shipped 4,000 basis-point garbage floor exclude it?
+    ///
+    /// It does, and that is new. The figure `used_bytes` used to carry summed the file sizes of
+    /// the slabs grouped under the same stored id that are NOT collectable -- and since the
+    /// candidate filter is the exact negation of that test, and a stored id names exactly one
+    /// slab, no candidate could ever contribute to its own used bytes. Every candidate read 0,
+    /// 10,000 bp of garbage, and the floor excluded nothing at any setting.
+    ///
+    /// WHAT THIS DOES NOT SAY. It does not say the floor starts excluding slabs in a running
+    /// store. `can_the_page_gc_garbage_floor_bind` is where that is measured, and the answer
+    /// there is still no -- for a reason that lives in the CANDIDATE PREDICATE and not in this
+    /// arithmetic: a collector candidate is a slab that no live page points at, so its maintained
+    /// live bytes are genuinely zero. The two tests answer different halves of the same question,
+    /// and both are needed: this one that the knob is real, that one that nothing in a running
+    /// store currently presents it with a partially-live candidate.
+    #[test]
+    fn a_published_live_tally_makes_used_bytes_mean_live_page_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        // Equal sizes, so nothing below can be satisfied by the slabs merely differing in size --
+        // which is the key the order actually used to fall through to.
+        store.install_slab(0, &vec![b'a'; 1_000]).unwrap();
+        store.install_slab(1, &vec![b'b'; 1_000]).unwrap();
+        store.install_slab(2, &vec![b'c'; 1_000]).unwrap();
+        store.install_slab(3, b"current").unwrap();
+
+        // THE PREMISE, restated where it is about to be overturned.
+        let before = store.gc_utility_candidates(3, Vec::<u64>::new()).unwrap();
+        assert_eq!(
+            before.len(),
+            3,
+            "three slabs are below the retention floor and collectable"
+        );
+        assert!(
+            before
+                .iter()
+                .all(|candidate| candidate.used_bytes == 0
+                    && candidate.utility_basis_points == 0),
+            "with nothing published, every candidate reports the old zero: {before:?}"
+        );
+
+        store.publish_live_page_bytes(BTreeMap::from([
+            (
+                0_u64,
+                BlockStoreSlabLive {
+                    live_page_refs: 2,
+                    live_bytes: 200,
+                },
+            ),
+            (
+                1_u64,
+                BlockStoreSlabLive {
+                    live_page_refs: 9,
+                    live_bytes: 900,
+                },
+            ),
+        ]));
+
+        let after = store.gc_utility_candidates(3, Vec::<u64>::new()).unwrap();
+        assert_eq!(after.len(), 3, "the same three candidates: {after:?}");
+        let by_id = |block_slab_id: u64| {
+            after
+                .iter()
+                .find(|candidate| candidate.block_slab_id == block_slab_id)
+                .unwrap_or_else(|| panic!("candidate {block_slab_id} missing from {after:?}"))
+        };
+        assert_eq!(by_id(0).used_bytes, 200);
+        assert_eq!(by_id(0).total_bytes, 1_000);
+        assert_eq!(by_id(0).stale_bytes, 800);
+        assert_eq!(by_id(0).utility_basis_points, 2_000);
+        assert_eq!(by_id(1).used_bytes, 900);
+        assert_eq!(by_id(1).utility_basis_points, 9_000);
+        // Absent from the published tally is ZERO LIVE BYTES, not "unknown": the publisher walks
+        // its whole index, so a slab it did not name holds nothing live.
+        assert_eq!(by_id(2).used_bytes, 0);
+        assert_eq!(by_id(2).utility_basis_points, 0);
+
+        // HIGHEST GARBAGE FIRST, which is what the sort comment has always claimed and what a
+        // uniformly zero first key could never deliver.
+        assert_eq!(
+            after
+                .iter()
+                .map(|candidate| candidate.block_slab_id)
+                .collect::<Vec<_>>(),
+            vec![2, 0, 1],
+            "ascending live fraction is descending garbage: {after:?}"
+        );
+
+        let plan = store
+            .gc_policy_plan(
+                3,
+                Vec::<u64>::new(),
+                &BlockStoreGcPolicy::with_slab_garbage_floor(4_000, None),
+            )
+            .unwrap();
+        // THE DENOMINATOR: three candidates were offered to the floor.
+        assert_eq!(plan.candidate_count, 3, "{plan:?}");
+        assert_eq!(
+            plan.skipped_by_policy_count, 1,
+            "the 90%-live slab is 1,000 bp of garbage and the floor is 4,000, so the floor \
+             excludes it -- which it could not do for any slab, at any setting, before a tally \
+             was published: {plan:?}"
+        );
+        assert_eq!(
+            plan.selected_block_slab_ids,
+            vec![2, 0],
+            "and the two above the floor are selected, most-garbage first: {plan:?}"
+        );
+        assert_eq!(plan.candidate_used_bytes, 1_100);
+        assert_eq!(plan.candidate_total_bytes, 3_000);
+
+        // The read-only whole-store view agrees with what the plan was handed.
+        let fractions = store.slab_live_fractions().unwrap();
+        assert_eq!(fractions.len(), 4, "every slab, not just the candidates");
+        let live_points = fractions
+            .iter()
+            .map(|fraction| fraction.live_basis_points)
+            .collect::<Vec<_>>();
+        assert_eq!(live_points, vec![2_000, 9_000, 0, 0], "{fractions:?}");
     }
 
     #[test]

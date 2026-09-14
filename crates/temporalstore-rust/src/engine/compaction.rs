@@ -279,6 +279,13 @@ pub(super) struct CompactionRewriteStats {
     budget_page_refs: usize,
     pub(super) skipped_by_budget: usize,
     pub(super) skipped_by_budget_bytes: u64,
+    /// Bytes this round committed to copying, charged at the same point the byte budget is.
+    ///
+    /// This is the cost of the round stated in the unit that matters. `rewritten_page_refs`
+    /// counts relocations; a relocation reads a page and appends it verbatim somewhere else, so
+    /// what it actually spends is its LENGTH, and two rounds with the same ref count can differ
+    /// by orders of magnitude in what they moved.
+    pub(super) relocated_bytes: u64,
     /// The slabs the caller asked this round to empty, or `None` for every live page.
     ///
     /// `None` is what a DIRECT compaction has always meant and still means: the operator RPC
@@ -371,6 +378,7 @@ impl CompactionRewriteStats {
         }
         self.budget_bytes = self.budget_bytes.saturating_sub(address.length);
         self.budget_page_refs = self.budget_page_refs.saturating_sub(1);
+        self.relocated_bytes = self.relocated_bytes.saturating_add(address.length);
         true
     }
 

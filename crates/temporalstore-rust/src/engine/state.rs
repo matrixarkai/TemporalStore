@@ -307,6 +307,19 @@ pub(super) struct CoreIndex {
     #[serde(default, alias = "slots")]
     #[serde(rename = "slot_map")]
     pub(super) bucket_map: BucketMap,
+    /// Per-slab live page refs and live bytes, maintained by every mutation of the map above.
+    ///
+    /// HERE, and not one level up on `ShardState`, for two reasons. `fold_delta_page_items` files
+    /// pages through a bare `&mut CoreIndex` and has no shard to reach for -- a tally it could not
+    /// see would be a hole in the mutation surface, which is the one thing this must not have. And
+    /// two fields of ONE struct are what make the borrows work at every other site:
+    /// `bucket_map.get_mut(..)` loans one field while `&mut ..block_slab_live` takes the other,
+    /// which the borrow checker accepts because the two places are disjoint.
+    ///
+    /// Derived, never persisted. Seeded by `seed_block_slab_live` wherever the index is rebuilt
+    /// wholesale; until then `is_ready` is false and every consumer falls back to the walk.
+    #[serde(skip)]
+    pub(super) block_slab_live: BlockSlabLiveIndex,
     // Derived lookup tables rebuilt from the bucket map on load. Persisting them duplicates
     // page references already carried by the bucket index and made large context backfill
     // checkpoints tens of MB larger without adding authoritative recovery state.
@@ -647,6 +660,150 @@ impl<'a> Iterator for BlockIndexValuesMut<'a> {
     }
 }
 
+/// Live pages sitting on ONE slab: how many, and how many logical bytes of them.
+///
+/// `bytes` sums `BlockAddress::length`, which is what every existing per-slab live figure sums --
+/// `storage_reclaim_slab_reports` fills `live_physical_bytes` from exactly that. Page refs and
+/// bytes are both kept because they answer different questions and neither derives the other: the
+/// compaction drain set asks whether ANY page is still there, a garbage fraction asks how MUCH.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SlabLiveTally {
+    pub(super) page_refs: u64,
+    pub(super) bytes: u64,
+}
+
+/// Per-slab live-page tally, MAINTAINED on every index mutation rather than recomputed by a
+/// whole-shard walk.
+///
+/// WHAT IT COUNTS. Exactly the page set `collect_live_page_entries` returns: every page held in
+/// the bucket index, plus -- for a RELEASED bucket -- the pages that bucket held when it was
+/// released. Delete-marked pages are included, because that walk includes them; a page leaves
+/// this tally when its index entry does, not when a flag on it changes.
+///
+/// WHY THE INDEX AND NOT THE BLOCK STORE. The block store never learns that a page died. It sees
+/// appends, and it sees whole slabs arrive and leave; the fact that an index entry stopped
+/// pointing at an offset reaches it nowhere. A live-byte figure maintained there could only be
+/// recomputed from the index anyway, which is the walk this exists to remove.
+///
+/// RELEASE IS COUNTER-NEUTRAL, DELIBERATELY. `release_bucket_pages` empties a bucket page index
+/// while its pages stay live -- they are still in the model maps, and
+/// `collect_bucket_index_live_page_entries` supplements them back into the walk. So release does
+/// NOT decrement, and `reload_released_bucket` does NOT increment: it re-files the same pages
+/// through `insert_released`. The pair cancels, which is why a released-then-reloaded bucket is
+/// one of the workloads the drift check is required to cover rather than one it may assume.
+///
+/// ON DRIFT, RECOMPUTATION WINS. `reconcile_block_slab_live` compares this against the walk,
+/// corrects THIS one, and reports the difference. There is no production assert: a counting bug
+/// must not become an outage.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct BlockSlabLiveIndex {
+    by_slab: BTreeMap<u64, SlabLiveTally>,
+    /// False until something has derived this from the index it counts.
+    ///
+    /// A ShardState arrives from serde with this empty, and an empty tally is indistinguishable
+    /// from a shard holding no live pages at all. Every consumer checks this before believing a
+    /// zero, and the fallback is the walk -- so a load path that forgets to seed it costs the old
+    /// cost rather than reporting a store made entirely of garbage.
+    ready: bool,
+}
+
+/// Every charge and discharge this process has made against a live tally.
+///
+/// THE COST ADDED, as a count rather than as a duration: one map lookup apiece, on the write path.
+/// A count is what can be compared against the scan it replaces without a clock, and it is what
+/// stays true on a box that is busy.
+pub static BLOCK_SLAB_LIVE_CHARGES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub fn block_slab_live_charges() -> u64 {
+    BLOCK_SLAB_LIVE_CHARGES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn reset_block_slab_live_charges() {
+    BLOCK_SLAB_LIVE_CHARGES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl BlockSlabLiveIndex {
+    pub(super) fn is_ready(&self) -> bool {
+        self.ready
+    }
+
+    /// Make the tally read as never-derived, so a consumer takes its fallback.
+    ///
+    /// The A side of the measurement: the same process, the same shard, the same round, with the
+    /// maintained tally withheld -- which is the only way to compare the walk against the tally
+    /// without also comparing two different corpora.
+    #[cfg(test)]
+    pub(super) fn forget_for_test(&mut self) {
+        self.ready = false;
+    }
+
+    pub(super) fn add_address(&mut self, address: &BlockAddress) {
+        BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tally = self.by_slab.entry(address.block_slab_id).or_default();
+        tally.page_refs = tally.page_refs.saturating_add(1);
+        tally.bytes = tally.bytes.saturating_add(address.length);
+    }
+
+    pub(super) fn remove_address(&mut self, address: &BlockAddress) {
+        BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(tally) = self.by_slab.get_mut(&address.block_slab_id) else {
+            return;
+        };
+        tally.page_refs = tally.page_refs.saturating_sub(1);
+        tally.bytes = tally.bytes.saturating_sub(address.length);
+        if tally.page_refs == 0 && tally.bytes == 0 {
+            // A slab nothing points at any more is ABSENT, not zero. Keeping the entry would grow
+            // this map with every slab the store ever rolled, and the caller that wants a zero for
+            // a slab it can name gets one from `tally` regardless.
+            self.by_slab.remove(&address.block_slab_id);
+        }
+    }
+
+    pub(super) fn tally(&self, block_slab_id: u64) -> SlabLiveTally {
+        self.by_slab.get(&block_slab_id).copied().unwrap_or_default()
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = (u64, SlabLiveTally)> + '_ {
+        self.by_slab.iter().map(|(id, tally)| (*id, *tally))
+    }
+
+    pub(super) fn slab_count(&self) -> usize {
+        self.by_slab.len()
+    }
+
+    pub(super) fn total_page_refs(&self) -> u64 {
+        self.by_slab
+            .values()
+            .fold(0_u64, |sum, tally| sum.saturating_add(tally.page_refs))
+    }
+
+    /// Declare the tally derived, without replacing it.
+    ///
+    /// For a rebuild that CHARGED every page as it filed it: the tally is already correct and a
+    /// walk to confirm that would be the walk this type exists to remove. Callers must have
+    /// emptied it first -- `rebuild_bucket_page_ownership` does, right where it clears the map it
+    /// counts.
+    pub(super) fn mark_ready(&mut self) {
+        self.ready = true;
+    }
+
+    /// Empty the tally and un-derive it. Pairs with `mark_ready` around a rebuild.
+    pub(super) fn clear(&mut self) {
+        self.by_slab.clear();
+        self.ready = false;
+    }
+
+    /// Replace the whole tally and declare it derived.
+    ///
+    /// For the paths that rebuild the index this counts -- a load, a manifest install, a
+    /// bucket-ownership rebuild -- and for the drift check correcting itself.
+    pub(super) fn reset_from(&mut self, tallies: BTreeMap<u64, SlabLiveTally>) {
+        self.by_slab = tallies;
+        self.ready = true;
+    }
+}
+
 impl BlockIndexMap {
     pub(super) fn get(&self, key: &u64) -> Option<&BlockIndex> {
         match self {
@@ -664,7 +821,20 @@ impl BlockIndexMap {
         }
     }
 
-    pub(super) fn remove(&mut self, key: &u64) -> Option<BlockIndex> {
+    /// Drop a page and charge the removal to the live tally.
+    pub(super) fn remove(
+        &mut self,
+        key: &u64,
+        live: &mut BlockSlabLiveIndex,
+    ) -> Option<BlockIndex> {
+        let removed = self.remove_unaccounted(key);
+        if let Some(page) = removed.as_ref() {
+            live.remove_address(&page.address);
+        }
+        removed
+    }
+
+    fn remove_unaccounted(&mut self, key: &u64) -> Option<BlockIndex> {
         match self {
             BlockIndexMap::Empty => None,
             BlockIndexMap::One(handle, _) => {
@@ -684,17 +854,43 @@ impl BlockIndexMap {
         }
     }
 
-    /// Install a page and return its handle.
+    /// Install a page, charge it to the live tally, and return its handle.
     ///
     /// A page with the same identity replaces the one already there rather than adding beside it,
-    /// which is what the rendered string key used to do by being the key.
-    pub(super) fn insert(&mut self, page: BlockIndex) -> u64 {
+    /// which is what the rendered string key used to do by being the key -- so an OVERWRITE both
+    /// discharges the address it displaced and charges the new one. Those are different slabs
+    /// whenever a rewrite rolled, which is the whole reason a counter has to see the displaced
+    /// address rather than assume a replacement is byte-neutral.
+    pub(super) fn insert(&mut self, page: BlockIndex, live: &mut BlockSlabLiveIndex) -> u64 {
+        let address = page.address.clone();
+        let (handle, displaced) = self.insert_unaccounted(page);
+        if let Some(displaced) = displaced {
+            live.remove_address(&displaced);
+        }
+        live.add_address(&address);
+        handle
+    }
+
+    /// Install a page that is ALREADY counted.
+    ///
+    /// One caller, and it must stay that way: `reload_released_bucket` re-files the pages a
+    /// release took out of the index, and release never discharged them. Counting them here would
+    /// double every released bucket the moment it was touched again.
+    pub(super) fn insert_released(&mut self, page: BlockIndex) -> u64 {
+        self.insert_unaccounted(page).0
+    }
+
+    /// The mechanism, with no accounting: the handle assigned, and the address it displaced.
+    fn insert_unaccounted(&mut self, page: BlockIndex) -> (u64, Option<BlockAddress>) {
         let handle = block_index_handle(&page);
-        match self {
-            BlockIndexMap::Empty => *self = BlockIndexMap::One(handle, page),
+        let displaced = match self {
+            BlockIndexMap::Empty => {
+                *self = BlockIndexMap::One(handle, page);
+                None
+            }
             BlockIndexMap::One(existing, held) => {
                 if *existing == handle {
-                    *held = page;
+                    Some(std::mem::replace(held, page).address)
                 } else {
                     // A second page: this bucket has earned a map.
                     let (first_handle, first) = match std::mem::replace(self, BlockIndexMap::Empty) {
@@ -705,13 +901,12 @@ impl BlockIndexMap {
                     map.insert(first_handle, first);
                     map.insert(handle, page);
                     *self = BlockIndexMap::Many(map);
+                    None
                 }
             }
-            BlockIndexMap::Many(map) => {
-                map.insert(handle, page);
-            }
-        }
-        handle
+            BlockIndexMap::Many(map) => map.insert(handle, page).map(|previous| previous.address),
+        };
+        (handle, displaced)
     }
 
     /// Return to an inline shape once a map no longer needs to be one.
@@ -761,7 +956,22 @@ impl BlockIndexMap {
         self.iter().map(|(_handle, page)| page)
     }
 
-    pub(super) fn values_mut(&mut self) -> BlockIndexValuesMut<'_> {
+    /// Mutable pages, UNACCOUNTED.
+    ///
+    /// Named for the contract rather than for the shape, because the shape cannot express it: a
+    /// holder of `&mut BlockIndex` can rewrite `address`, and the live tally keys on
+    /// `address.block_slab_id` and sums `address.length`. A mutation through here must change
+    /// NEITHER. Everything else is fair game -- today's callers set `dirty`, and two tests
+    /// deliberately corrupt `object_id` and `routing_bucket`, none of which the tally reads.
+    ///
+    /// A page that needs to MOVE goes through `insert`, which discharges the address it displaces
+    /// and charges the new one.
+    ///
+    /// This is a NAMED boundary, not a compiler-enforced one: enforcing it would mean making
+    /// `BlockIndex::address` private, and it is read in three figures of places.
+    /// `the_maintained_slab_live_tally_matches_the_walk` is what fails if the name stops being
+    /// obeyed.
+    pub(super) fn pages_mut_unaccounted(&mut self) -> BlockIndexValuesMut<'_> {
         match self {
             BlockIndexMap::Empty => BlockIndexValuesMut::Empty,
             BlockIndexMap::One(_, page) => BlockIndexValuesMut::One(std::iter::once(page)),
@@ -769,17 +979,31 @@ impl BlockIndexMap {
         }
     }
 
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&u64, &mut BlockIndex) -> bool) {
+    /// Drop the pages a predicate rejects, discharging each from the live tally as it goes.
+    ///
+    /// `live` comes first so the predicate stays the trailing argument it was.
+    pub(super) fn retain(
+        &mut self,
+        live: &mut BlockSlabLiveIndex,
+        mut keep: impl FnMut(&u64, &mut BlockIndex) -> bool,
+    ) {
         match self {
             BlockIndexMap::Empty => {}
             BlockIndexMap::One(handle, page) => {
                 let handle = *handle;
                 if !keep(&handle, page) {
+                    live.remove_address(&page.address);
                     *self = BlockIndexMap::Empty;
                 }
             }
             BlockIndexMap::Many(map) => {
-                map.retain(|handle, page| keep(handle, page));
+                map.retain(|handle, page| {
+                    let kept = keep(handle, page);
+                    if !kept {
+                        live.remove_address(&page.address);
+                    }
+                    kept
+                });
                 self.shrink();
             }
         }
@@ -797,9 +1021,12 @@ impl<'a> IntoIterator for &'a BlockIndexMap {
 /// Collecting pages assigns handles, the same as inserting them one at a time.
 impl FromIterator<BlockIndex> for BlockIndexMap {
     fn from_iter<I: IntoIterator<Item = BlockIndex>>(pages: I) -> Self {
+        // Unaccounted: this is how a ShardState arrives from serde, and the tally is derived
+        // AFTER a load by `reconcile_block_slab_live`. Charging pages here would count a loaded
+        // index twice over -- once on the way in, once when the load seeds the tally.
         let mut map = Self::default();
         for page in pages {
-            map.insert(page);
+            map.insert_unaccounted(page);
         }
         map
     }
