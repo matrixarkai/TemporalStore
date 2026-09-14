@@ -279,6 +279,23 @@ pub struct StorageRecoveryReport {
     pub block_slab_live_reports: Vec<StorageRecoverySlabLiveReport>,
     pub total_page_refs: usize,
     pub readable_page_refs: usize,
+    /// How many live pages this call actually READ, as opposed to tallied.
+    ///
+    /// `readable_page_refs` counts the ones that read back, and `all_live_pages_readable`
+    /// compares the two -- so without this number a reader cannot tell a call that read
+    /// everything from a call that read a sample, and "all readable" means different things in
+    /// the two cases. Equal to `total_page_refs` for an unbounded call.
+    #[serde(default)]
+    pub probed_page_refs: usize,
+    /// The index into this shard's live-page vector where this call STARTED reading.
+    ///
+    /// A bounded probe reads a window rather than the whole shard, and successive rounds move
+    /// the window along and wrap. Reporting where the window sat is what lets a reader tell
+    /// "this round covered a different part of the store" from "this round repeated the last
+    /// one" -- the second is what the probe used to do, silently. Always 0 for an unbounded
+    /// call, which starts at the beginning and reads everything.
+    #[serde(default)]
+    pub readable_probe_cursor: usize,
     #[serde(default)]
     pub unreadable_page_refs: Vec<StorageRecoveryPageError>,
     #[serde(default)]

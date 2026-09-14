@@ -74,6 +74,7 @@ impl TemporalEngine {
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             compaction_rounds: Arc::default(),
+            recovery_probe_cursors: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             expiry_index_flush_under_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             warm_cache_under_shard_guard: Arc::new(std::sync::atomic::AtomicBool::new(false)),

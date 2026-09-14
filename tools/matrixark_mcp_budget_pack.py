@@ -254,38 +254,16 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_mcp_core_packing import local_context_budget
 
 
-def compact_local_context_refs(local_budget: Json) -> list[Json]:
-    refs: list[Json] = []
-    for item in local_budget.get("items", []):
-        if not isinstance(item, dict):
-            continue
-        refs.append(
-            {
-                "ref_type": item.get("ref_type", "local_context"),
-                "source": item.get("source", ""),
-                "token_estimate": item.get("token_estimate", 0),
-                "text_hash": item.get("text_hash"),
-            }
-        )
-    return refs
-
-
-def local_context_refs_for_pack(local_budget: Json) -> list[Json]:
-    refs: list[Json] = []
-    for item in local_budget.get("items", []):
-        if not isinstance(item, dict):
-            continue
-        refs.append(
-            {
-                "ref_type": item.get("ref_type", "local_context"),
-                "source": item.get("source", ""),
-                "token_estimate": item.get("token_estimate", 0),
-                "text_hash": item.get("text_hash"),
-                "text": item.get("text", ""),
-                "selection_reason": "provided by agent-visible local context before MatrixArk remote retrieval",
-            }
-        )
-    return refs
+try:  # the implementation lives in matrixark_mcp_core_packing; this module re-exports it
+    from tools.matrixark_mcp_core_packing import (
+        compact_local_context_refs,
+        local_context_refs_for_pack,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_packing import (  # noqa: F401
+        compact_local_context_refs,
+        local_context_refs_for_pack,
+    )
 
 
 def select_token_budgeted_refs(

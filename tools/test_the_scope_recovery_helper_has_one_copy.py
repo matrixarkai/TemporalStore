@@ -78,14 +78,17 @@ because a difference that turned out to be somewhere else would make the record 
 
 WHY NOTHING CAUGHT IT, which is the part worth keeping.
 
-`test_a_nested_helper_has_one_copy_too` exists for exactly this shape and ALREADY records this
-module pair. It groups functions by the exact unparsed text of their bodies, so it finds copies
-that are still IDENTICAL -- for this pair it reports `profile_summary_path_matches` and
-`profile_summary_scope_matches`, byte for byte the same under two different names. It used to
-report `scope_from_node_path` as well, until that one was consolidated to a single
-implementation.
-`recovered_record_scope` sits in the same two enclosing functions, three lines from one of them,
-and does not group at all, because the copies have stopped agreeing.
+`test_a_nested_helper_has_one_copy_too` exists for exactly this shape. It groups functions by the
+exact unparsed text of their bodies, so it finds copies that are still IDENTICAL and cannot find
+copies that have drifted. It used to report two duplicates in this very module pair --
+`scope_from_node_path`, and the same body under the two names `profile_summary_path_matches` and
+`profile_summary_scope_matches` -- and both have since been consolidated to one implementation
+each.
+
+`recovered_record_scope` sat in the same two enclosing functions, three lines from one of them,
+the whole time, and never grouped at all, because its copies had stopped agreeing. The guard that
+exists for duplicated nested helpers found the two that were harmless and not the one that
+changed an access scope.
 
 That is the inverse of what you want from a duplicate guard: it catches the copies that still
 agree, and goes blind at the moment one of them changes. It is the same blind spot recorded for
@@ -96,6 +99,13 @@ older guard ever grows drift matching, this record is told to move.
 
 The module-level guards cannot see it either: `test_there_is_one_copy_of_each_helper` walks
 `tree.body`, and both copies are nested.
+
+ONE OBSERVATION CARRIED OVER, because the record that held it has been struck. When the older
+guard recorded this module pair it noted that a THIRD copy of the same node-path loop is embedded
+inside `matrixark_mcp_core.candidate_access_scope`, and that body-level matching cannot group it
+because the surrounding function differs. Consolidating the two helpers did not touch that third
+copy, and nothing here claims it is identical -- only that a scan keyed on whole-body sameness
+would not tell you either way.
 
 THIS FILE DOES NOT ASSERT THAT THE COPIES AGREE. Giving the shorter copy the block widens which
 records a query on that path can resolve a scope for, and an access scope that resolves where it
@@ -124,8 +134,11 @@ COPIES = (
 )
 LONGER, SHORTER = COPIES[0][0], COPIES[1][0]
 
-#: Deduplicated: defined once, in SHORTER, and imported by LONGER.
-NODE_PATH_HELPER = "scope_from_node_path"
+#: Deduplicated: defined once each, in SHORTER, and imported by LONGER. Both were a second
+#: byte-identical copy nested inside a method of the retrieval module; the published
+#: spelling is the one that survived, because that spelling is what anything outside this
+#: repository imports.
+CONSOLIDATED_HELPERS = ("scope_from_node_path", "profile_summary_scope_matches")
 
 #: The embedding-to-owner direction: built and consulted only by the longer module.
 OWNER_MAP = "embedding_scope_by_ref"
@@ -455,7 +468,7 @@ class TheScopeRecoveryHelperHasOneCopy(unittest.TestCase):
             "%s" % (result.stderr.strip()[-800:] or result.stdout.strip()[-800:]))
         self.assertIn("OK", result.stdout, "the subprocess did not reach its assertions")
 
-    def test_the_node_path_helper_has_exactly_one_definition(self) -> None:
+    def test_each_consolidated_helper_has_exactly_one_definition(self) -> None:
         """It was defined twice, byte for byte, and now it is defined once.
 
         `matrixark_local_adapter_retrieve` publishes it at module scope; the retrieval module
@@ -467,26 +480,28 @@ class TheScopeRecoveryHelperHasOneCopy(unittest.TestCase):
         Both spellings of the import are required. One spelling is what broke this file across
         five branches; see the import-order test above.
         """
-        definitions = [stem for stem in (LONGER, SHORTER)
-                       if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                              and node.name == NODE_PATH_HELPER
-                              for node in ast.walk(ast.parse(_source(stem))))]
-        self.assertEqual(
-            [SHORTER], definitions,
-            "%s should be defined in %s alone and is defined in %s. If a second copy came back, "
-            "the two will drift again -- that is what this pair did before"
-            % (NODE_PATH_HELPER, SHORTER, ", ".join(definitions) or "nothing"))
-
         retrieval = _source(LONGER)
-        for spelling in ("from tools.matrixark_local_adapter_retrieve import %s"
-                         % NODE_PATH_HELPER,
-                         "from matrixark_local_adapter_retrieve import %s" % NODE_PATH_HELPER):
-            with self.subTest(spelling=spelling.split(" import ")[0]):
-                self.assertIn(
-                    spelling, retrieval,
-                    "%s no longer reaches the published helper through this spelling. Both are "
-                    "needed: which one resolves depends on how the process was started"
-                    % LONGER)
+        for helper in CONSOLIDATED_HELPERS:
+            with self.subTest(helper=helper):
+                definitions = [stem for stem in (LONGER, SHORTER)
+                               if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                                      and node.name == helper
+                                      for node in ast.walk(ast.parse(_source(stem))))]
+                self.assertEqual(
+                    [SHORTER], definitions,
+                    "%s should be defined in %s alone and is defined in %s. If a second copy came "
+                    "back, the two will drift again -- that is what this pair did before"
+                    % (helper, SHORTER, ", ".join(definitions) or "nothing"))
+
+                for spelling in (
+                        "from tools.matrixark_local_adapter_retrieve import %s" % helper,
+                        "from matrixark_local_adapter_retrieve import %s" % helper):
+                    with self.subTest(spelling=spelling.split(" import ")[0]):
+                        self.assertIn(
+                            spelling, retrieval,
+                            "%s no longer reaches %s through this spelling. Both are needed: "
+                            "which one resolves depends on how the process was started"
+                            % (LONGER, helper))
 
     def test_the_older_nested_guard_structurally_cannot_see_this(self) -> None:
         """The reason this needed its own file, asserted instead of described.
@@ -502,25 +517,35 @@ class TheScopeRecoveryHelperHasOneCopy(unittest.TestCase):
         except ImportError:  # Direct script execution from tools/.
             older = importlib.import_module("test_a_nested_helper_has_one_copy_too")
 
-        pairs = older.nested_duplicate_pairs()
-        mine = frozenset({LONGER, SHORTER})
-        self.assertIn(
-            mine, pairs,
-            "the older guard no longer groups anything for %s, so the comparison this test makes "
-            "is vacuous" % " + ".join(sorted(mine)))
-        names = pairs[mine]
+        # The claim: the older guard cannot see THIS pair, because the bodies differ.
+        reported = {name for names in older.nested_duplicate_pairs().values() for name in names}
         self.assertNotIn(
-            HELPER, names,
+            HELPER, reported,
             "the older guard now sees %s. If it grew drift matching, this record belongs there "
             "and this file should go" % HELPER)
-        # The witness only has to be SOME still-identical helper in this module pair. It used to
-        # be `scope_from_node_path`, which has since been consolidated to one implementation --
-        # and this assertion failing is how that consolidation announced itself, which is the
-        # behaviour wanted: a fix that removes the site a scan watches should not pass quietly.
-        self.assertIn(
-            "profile_summary_path_matches", names,
-            "the older guard no longer reports an IDENTICAL helper in the same two functions, so "
-            "it is not the sameness-keyed scan this file is contrasting itself with")
+
+        # And the reason: its matcher is keyed on the bodies being IDENTICAL. Exercised directly
+        # on synthetic input rather than by naming a real duplicate as a witness.
+        #
+        # It used to name one -- first `scope_from_node_path`, then
+        # `profile_summary_path_matches` -- and each was consolidated in turn, failing this test
+        # both times. That failure was correct each time, but a witness drawn from the set of
+        # things being deduplicated needs repointing on every consolidation, and a test that is
+        # edited that often stops being read. Synthetic input cannot be consolidated away.
+        same = ast.parse(
+            "def a():\n x = 1\n y = 2\n z = 3\n return x + y + z\n"
+            "def b():\n x = 1\n y = 2\n z = 3\n return x + y + z\n")
+        differs = ast.parse(
+            "def a():\n x = 1\n y = 2\n z = 3\n return x + y + z\n"
+            "def b():\n x = 1\n y = 2\n z = 4\n return x + y + z\n")
+        self.assertEqual(
+            1, len(older.duplicate_groups({"same": same})),
+            "the older guard stopped grouping two IDENTICAL bodies, so it is not the "
+            "sameness-keyed scan this file contrasts itself with")
+        self.assertEqual(
+            {}, older.duplicate_groups({"differs": differs}),
+            "the older guard now groups two bodies that differ by one statement -- if it grew "
+            "drift matching, the divergence recorded here belongs there and this file should go")
 
 
 if __name__ == "__main__":

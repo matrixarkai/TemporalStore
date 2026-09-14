@@ -47,6 +47,23 @@ if [[ -z "$RUST_PROXY" ]]; then
 fi
 FAIL_OPEN="${MATRIXARK_HOOK_FAIL_OPEN:-1}"
 
+# Same vocabulary as the shared Python `env_bool`, because MATRIXARK_HOOK_FAIL_OPEN is read on both
+# sides: matrixark_codex_hook reads it with env_bool, this wrapper reads it here. Testing for the
+# literal "1" made `=true` mean fail-open to Python and fail-CLOSED here -- a hook error then blocks
+# the turn this wrapper's own header promises it will never block.
+#
+# An UNRECOGNISED value falls back to the default rather than counting as off, which is
+# what env_bool does and matters more than it looks: a typo -- FAIL_OPEN=ture -- would
+# otherwise start blocking turns. env_bool's sets are narrow on purpose; `y` and `n` are
+# not in either, and fall back too.
+matrixark_flag_on() {  # $1 = value, $2 = default ("1" means on)
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    *) [ "${2:-1}" = "1" ] ;;
+  esac
+}
+
 EVENT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -75,7 +92,7 @@ if b[:3]==b"\xef\xbb\xbf":
 fi
 
 fail_open() {
-  if [[ "$FAIL_OPEN" == "1" ]]; then printf '{}\n'; exit 0; fi
+  if matrixark_flag_on "$FAIL_OPEN"; then printf '{}\n'; exit 0; fi
   "$PYTHON" -c 'import json,sys; print(json.dumps({"status":"error","reason":sys.argv[1]}))' "${1:-error}" 2>/dev/null \
     || printf '{"status":"error"}\n'
   exit 0

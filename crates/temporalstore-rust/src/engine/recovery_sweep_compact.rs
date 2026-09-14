@@ -315,6 +315,14 @@ impl TemporalEngine {
     /// Sampling is the honest version: corruption is still found, over rounds rather than all in
     /// one, and `readable_probe_limit` says how much of the store this particular call looked at.
     ///
+    /// "Over rounds" needs the sample to MOVE, which is the part that was missing. A bounded
+    /// call read `addresses[0 .. limit]` and began at the front again next round, so the pages
+    /// past the first window were never read by the periodic loop -- on a shard with more live
+    /// pages than the budget, corruption outside that prefix was undiscoverable, in any number
+    /// of rounds, while the report kept saying the pages it had read were fine. A bounded call
+    /// now resumes at `recovery_probe_cursors` and wraps, so the rounds together cover the whole
+    /// shard; `readable_probe_cursor` on the report says where this one started.
+    ///
     /// 0 means no bound, matching every other round bound here. The diagnostic endpoint and the
     /// harnesses keep passing 0 and so keep scanning everything.
     pub(super) fn storage_recovery_report_without_boundary_sampled(
@@ -352,6 +360,54 @@ impl TemporalEngine {
             .map(collect_live_page_addresses)
             .unwrap_or_default();
         let total_page_refs = addresses.len();
+        // WHERE this call reads, not just how much.
+        //
+        // A bounded call used to read `addresses[0 .. limit]` and nothing else, every round. The
+        // budget made the cost constant; starting from the front every time made the COVERAGE
+        // constant too, so a live page at an index past the budget was never read by the
+        // periodic loop at all. The doc above promises corruption is "still found, over rounds
+        // rather than all in one", and that promise needs the window to MOVE.
+        //
+        // So a bounded call resumes where the last one stopped and wraps at the end. Unbounded
+        // calls (`readable_probe_limit == 0`) read everything, so they start at 0 and leave the
+        // stored position untouched -- a diagnostic call must not shift the loop's window.
+        //
+        // The position is clamped rather than trusted: the live-page vector is rebuilt each
+        // round and can shrink (compaction, eviction, expiry), and a stale index past its end
+        // would otherwise skip the whole round.
+        let probe_window_start = if readable_probe_limit > 0 && total_page_refs > 0 {
+            self.recovery_probe_cursors
+                .read()
+                .expect("recovery probe cursor lock poisoned")
+                .get(&shard_id)
+                .copied()
+                .filter(|start| *start < total_page_refs)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let probe_window_len = if readable_probe_limit == 0 {
+            total_page_refs
+        } else {
+            readable_probe_limit.min(total_page_refs)
+        };
+        // Whether index `position` falls in the window `[start, start + len)` taken modulo the
+        // live-page count. Written as a distance from the start so the wrap needs no second
+        // range and no branch on whether the window crosses the end.
+        let in_probe_window = |position: usize| -> bool {
+            if probe_window_len == 0 {
+                return false;
+            }
+            if probe_window_len >= total_page_refs {
+                return true;
+            }
+            let distance = if position >= probe_window_start {
+                position - probe_window_start
+            } else {
+                position + total_page_refs - probe_window_start
+            };
+            distance < probe_window_len
+        };
         let mut readable_page_refs = 0usize;
         let mut probed_page_refs = 0usize;
         let mut unreadable_page_refs = Vec::new();
@@ -376,7 +432,7 @@ impl TemporalEngine {
             .collect::<BTreeMap<_, _>>();
         let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
         let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
-        for address in &addresses {
+        for (position, address) in addresses.iter().enumerate() {
             let slab_report = block_slab_live_reports
                 .entry(address.block_slab_id)
                 .or_insert(StorageRecoverySlabLiveReport {
@@ -399,10 +455,16 @@ impl TemporalEngine {
                 buckets.insert(routing_bucket);
                 slab_report.live_routing_bucket_count = buckets.len() as u64;
             }
-            // Past the sample budget this call stops READING, and keeps everything above that
-            // does not need a read -- the per-slab live tallies are what the reclaim planner and
-            // the object-lifecycle report are built from, and they must stay complete.
-            if readable_probe_limit > 0 && probed_page_refs >= readable_probe_limit {
+            // Outside this call's window it stops READING, and keeps everything above that does
+            // not need a read -- the per-slab live tallies are what the reclaim planner and the
+            // object-lifecycle report are built from, and they must stay complete whatever the
+            // window is. Only the reads below are sampled.
+            //
+            // This used to test `probed_page_refs >= readable_probe_limit`, which is the same
+            // budget but anchored at the front: it always admitted the first `limit` entries and
+            // never any other. The window test admits `limit` entries too -- so the per-round
+            // cost is unchanged -- but a different `limit` of them each round.
+            if !in_probe_window(position) {
                 continue;
             }
             probed_page_refs += 1;
@@ -465,6 +527,23 @@ impl TemporalEngine {
             .into_iter()
             .collect::<Vec<_>>();
         live_block_slab_ids.sort_unstable();
+        // Hand the next round the position after this window, wrapping at the end.
+        //
+        // Advanced by the window LENGTH rather than by `probed_page_refs` so a round that found
+        // fewer readable pages than it looked at still moves on. Those are the same number today
+        // -- every entry in the window is probed -- but tying the advance to a success count is
+        // how a sampler gets stuck re-reading the region it is failing on.
+        //
+        // Only bounded callers write it, for the reason on the field itself: an unbounded call
+        // has already read the whole shard, and moving the position would make the periodic
+        // loop skip a window it had not covered.
+        if readable_probe_limit > 0 && total_page_refs > 0 {
+            let next = (probe_window_start + probe_window_len) % total_page_refs;
+            self.recovery_probe_cursors
+                .write()
+                .expect("recovery probe cursor lock poisoned")
+                .insert(shard_id, next);
+        }
         StorageRecoveryReport {
             shard_id,
             index_bytes,
@@ -479,6 +558,8 @@ impl TemporalEngine {
             block_slab_live_reports,
             total_page_refs,
             readable_page_refs,
+            probed_page_refs,
+            readable_probe_cursor: probe_window_start,
             unreadable_page_refs,
             owner_mismatch_page_refs,
             missing_owner_page_refs,

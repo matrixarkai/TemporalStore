@@ -28,7 +28,13 @@ permissions:
 jobs:
   ratchet:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A clean run is one pass over the suite; a run with a new failure is TWO, because the script
+    # confirms every new name on a second full pass before failing on it. So the expensive case is
+    # exactly the case that has something to report -- and at 45 minutes the job was cancelled
+    # partway through that second pass. A cancelled job reports a bare red with no names in it,
+    # which is the one output this gate exists to produce. The ceiling has to clear two passes,
+    # not one. Observed: ~20 minutes clean, 42-45 red, and the suite only grows.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

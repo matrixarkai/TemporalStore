@@ -152,6 +152,29 @@ pub struct TemporalEngine {
     /// Not durable: a restart loses at most the knowledge that a round was open, and the next
     /// round then rolls, which is correct if wasteful once.
     compaction_rounds: Arc<RwLock<HashMap<ShardId, (u64, u64)>>>,
+    /// Where the bounded readability probe should START reading on this shard's next round.
+    ///
+    /// The probe reads at most `RECOVERY_READABLE_PROBE_PER_ROUND` live pages per round so its
+    /// cost does not grow with the store. Without a resume position it began at the FIRST live
+    /// page every round, so it re-read the same prefix forever and a page past that prefix was
+    /// never read at all -- on a shard holding more live pages than the budget, the periodic
+    /// loop could not discover an unreadable page outside the first window in any number of
+    /// rounds, while the report it returned said the pages it HAD read were fine.
+    ///
+    /// Holding the index the next round resumes from turns that fixed prefix into a window that
+    /// sweeps the whole shard and wraps, which is what makes a bounded round make PROGRESS
+    /// rather than repeat itself -- the same reason `compaction_rounds` above is carried.
+    ///
+    /// An INDEX into the live-page vector, not a page identity: the vector is rebuilt each round
+    /// and entries move, so a resumed round is not promised the exact page the previous one
+    /// stopped before. That is acceptable for a sampler whose job is to cover the store over
+    /// time; nothing durable depends on this position.
+    ///
+    /// Not durable, for the same reason `compaction_rounds` is not: a restart costs one repeated
+    /// window, not correctness. Only BOUNDED callers advance it -- an unbounded call
+    /// (`readable_probe_limit == 0`) reads every page anyway and leaves the position alone, so a
+    /// diagnostic call cannot move the periodic loop's window out from under it.
+    recovery_probe_cursors: Arc<RwLock<HashMap<ShardId, usize>>>,
     concurrent_commit: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the expiry sweep encodes and writes its served-index checkpoint while still
     /// holding the shard-table write guard.

@@ -520,7 +520,8 @@ SETTINGS: List[Setting] = [
             "MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT",
             "Children scored per parent", "int", "100000", "restart",
             "How many children of one node a traversal will score. Scoring a child costs a page "
-            "read, so this is the ceiling on what one branch can cost."),
+            "read, so this is the ceiling on what one branch can cost."
+            " Applies to the PYTHON retrieval path. The native path returns its pack before these are read, and its request does not carry them, so on a deployment using a temporalstore backend this does not bind."),
     Setting("retrieval.shared_context_min_score", "retrieval",
             "MATRIXARK_SHARED_CONTEXT_MIN_SCORE",
             "Shared content score floor", "float", "0.20", "restart",
@@ -1059,6 +1060,12 @@ _EXPLICIT_BUILD_DEFAULT = {
     # to be misconfigured -- a cloud provider selected, endpoint never filled in -- was described
     # as having no endpoint at all rather than as pointed at a local port.
     "extraction.base_url": ("EXTRACTION_LLM_BASE_URL", "matrixark_mcp_extraction_provider"),
+    # The declared 128 was the value chunking STOPPED using. matrixark_resource_parser now sizes
+    # both the chunk and the embedded window from the encoder -- its comment records that they
+    # "used to disagree -- chunks were 240 tokens and only 128 were embedded" -- so the literal
+    # here resolved to 128 through `_effective` while the ingest path ran the encoder's 512. This
+    # is not only a display: `setting.default` is what the resolver returns when nothing is set.
+    "embedding.text_max_tokens": ("DEFAULT_EMBEDDING_TEXT_MAX_TOKENS", "matrixark_resource_parser"),
 }
 
 
