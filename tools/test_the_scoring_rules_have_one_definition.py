@@ -22,6 +22,15 @@ compression and 0.06 for a segment, adds +0.04 to an entity whose `memory_scope`
 and counts `profile_memory` alongside `broad_exploration` in the summary branch. The access_scope
 copy has none of it, so the same candidate scores 0.0 there and up to 0.16 through the adapters.
 
+`question_type_ref_boost` was the fifth entry here and is gone, because one of its two copies was
+never called. `matrixark_mcp_recall_scoring` defined it in 18 statements, called it nowhere,
+declared no `__all__` and was not imported for it by any module; `matrixark_mcp_core_candidate_policy`
+defines it in 30, exports it, and `matrixark_mcp_core_packing` binds and calls that one. Measured
+before removing it: the two disagreed on 77 of 1512 candidate shapes, every one a `profile_memory`
+question, by up to 0.42 -- several returning 0.0 against 0.38 or 0.42. So the copy that went was
+the poorer answer to a serving-path question, reachable only by a future importer. The four that
+remain are about which copy a module IMPORTS, which is a different thing and still a decision.
+
 THIS FILE DOES NOT ASSERT THAT THEY AGREE, because they do not, and a guard that fails on the day
 it is written tells nobody anything. It RECORDS the divergence exactly, so a new one fails here and
 a resolved one fails here too -- the same shape as the orphan and cross-import records. Choosing
@@ -60,10 +69,6 @@ RECORDED = {
     ("candidate_access_scope",
      ("matrixark_mcp_access_scope", "matrixark_mcp_core")):
         "core reads two more fields off the record when building the scope",
-    ("question_type_ref_boost",
-     ("matrixark_mcp_core_candidate_policy", "matrixark_mcp_recall_scoring")):
-        "core_candidate_policy names profile_memory 15 times and codex_outcome 11; "
-        "recall_scoring names them 5 and 1, and has no is_feature_profile_memory at all",
     ("score_recall_candidate",
      ("matrixark_mcp_core_candidate_policy", "matrixark_mcp_recall_scoring")):
         "a DIFFERENT drift, recorded so this list is the whole truth about the family: 12 "
