@@ -92,9 +92,21 @@ def _exported_default(filename, variable):
 
 
 def _run(probe, env_extra):
-    env = dict(os.environ)
-    for key in ("MATRIXARK_EMBEDDING_PROVIDER", "MATRIXARK_REQUIRE_OSS_EMBEDDINGS"):
-        env.pop(key, None)
+    """Run a probe under the launcher's configuration and nothing else.
+
+    Every MATRIXARK_* variable is dropped from the inherited environment before `env_extra` is
+    applied. Stripping the two the launchers export is not enough: `embedding_model_name()` also
+    reads MATRIXARK_EMBEDDING_MODEL_PATH and MATRIXARK_EMBEDDING_MODEL, eight tests in this suite
+    assign MATRIXARK_EMBEDDING_MODEL directly into os.environ, and a subprocess inherits whatever
+    is left set. That made this file pass on its own and fail in the full suite, reporting the box
+    it ran on rather than the launcher it is about.
+
+    Dropping the whole prefix rather than a list: a list has to be extended every time the code
+    under test reads one more variable, and the failure mode of forgetting is a green test that
+    measured something else.
+    """
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("MATRIXARK_")}
     env.update(env_extra)
     res = subprocess.run([sys.executable, "-c", probe % str(TOOLS)],
                          capture_output=True, text=True, cwd=str(TOOLS), env=env)
@@ -137,6 +149,35 @@ class TwoLaunchersTwoEncoderWidthsTest(unittest.TestCase):
                         "say so and update the table -- it changes which encoder writes the "
                         "vectors for everyone launching that way."
                         % (filename, variable, found, value))
+
+    def test_the_probe_ignores_the_environment_it_runs_in(self):
+        """The probe must answer for the launcher, not for the box.
+
+        This sets the variables that decide the answer and asserts the answer does not move. It
+        fails on a probe that inherits the process environment -- which is what this file did, so
+        it passed alone and failed in the full suite where an earlier test had left
+        MATRIXARK_EMBEDDING_MODEL set.
+        """
+        polluted = {
+            "MATRIXARK_EMBEDDING_MODEL": "leaked-from-another-test",
+            "MATRIXARK_EMBEDDING_MODEL_PATH": "/nonexistent/leaked",
+            "MATRIXARK_EMBEDDING_PROVIDER": "hash",
+            "MATRIXARK_REQUIRE_OSS_EMBEDDINGS": "0",
+        }
+        for key, value in polluted.items():
+            previous = os.environ.get(key)
+            os.environ[key] = value
+            self.addCleanup(
+                lambda name=key, old=previous: os.environ.pop(name, None) if old is None
+                else os.environ.__setitem__(name, old))
+
+        wide = _selected(LAUNCHERS["matrixark_mcp_rust_server.sh"])
+        self.assertEqual(
+            RECORDED_MODEL["oss"], wide["model"],
+            "the probe reported %r with MATRIXARK_EMBEDDING_MODEL set in the environment, so it "
+            "is answering for the process it runs in rather than for the launcher."
+            % wide["model"])
+        self.assertEqual("oss", wide["provider"])
 
     def test_the_two_launchers_select_different_models(self):
         """The protection that runs everywhere: no encoder needs to be on disk to ask this."""
