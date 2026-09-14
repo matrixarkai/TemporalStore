@@ -273,5 +273,77 @@ class TheDaemonCanBridgeOverHttp(unittest.TestCase):
             )
 
 
+class AClientFindsThePublishedAddress(unittest.TestCase):
+    """A client configured for the socket upgrades itself to the direct transport.
+
+    This is the piece that removes the relay from the path. `MATRIXARK_RUST_PROXY_HTTP` has
+    selected the direct transport since #1364, but the port is chosen at daemon start, so no
+    deployment could set it -- the capability was complete and unreachable. Reading the published
+    address closes that, and a client that was going to use the socket goes direct instead.
+
+    The connect check is the part that makes it safe to turn on: a daemon killed rather than
+    stopped leaves the file, and believing it would turn one stale entry into a hard failure on
+    every call where the socket would have worked.
+    """
+
+    def _addr_fn(self):
+        import matrixark_mcp_temporal_adapters as adapters
+
+        return adapters._published_proxy_http_addr
+
+    def test_no_file_means_use_the_socket(self) -> None:
+        self.assertEqual("", self._addr_fn()("/tmp/matrixark-no-such-daemon.sock"))
+
+    def test_a_stale_address_is_refused(self) -> None:
+        """The safety property: a dead port must read as 'no address', not as an address."""
+        root = tempfile.mkdtemp(prefix="staleaddr")
+        sock = os.path.join(root, "d.sock")
+        with open(sock + ".http", "w", encoding="utf-8") as handle:
+            handle.write("127.0.0.1:1")
+        self.assertEqual("", self._addr_fn()(sock),
+                         "a client believed an address nothing is serving")
+
+    def test_garbage_is_refused(self) -> None:
+        root = tempfile.mkdtemp(prefix="junkaddr")
+        sock = os.path.join(root, "d.sock")
+        for junk in ("nonsense", "", "127.0.0.1:notaport", ":", "127.0.0.1"):
+            with open(sock + ".http", "w", encoding="utf-8") as handle:
+                handle.write(junk)
+            self.assertEqual("", self._addr_fn()(sock), "accepted %r as an address" % junk)
+
+    def test_a_live_address_is_taken(self) -> None:
+        """Positive control: if nothing is ever accepted, the refusals above prove nothing."""
+        root = tempfile.mkdtemp(prefix="liveaddr")
+        sock = os.path.join(root, "d.sock")
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        try:
+            port = server.getsockname()[1]
+            with open(sock + ".http", "w", encoding="utf-8") as handle:
+                handle.write("127.0.0.1:%d" % port)
+            self.assertEqual("127.0.0.1:%d" % port, self._addr_fn()(sock))
+        finally:
+            server.close()
+
+    @unittest.skipUnless(os.path.exists(PROXY), "no proxy binary at %s" % PROXY)
+    def test_a_socket_client_goes_direct_when_the_daemon_publishes(self) -> None:
+        """End to end: daemon in HTTP mode, client configured for the SOCKET, ends up on HTTP."""
+        import matrixark_mcp_temporal_adapters as adapters
+
+        with _Daemon(http=True) as http:
+            found = adapters._published_proxy_http_addr(str(http.socket_path))
+            self.assertTrue(found, "the client found no address beside a publishing daemon")
+            self.assertEqual("%s:%d" % http.daemon._http_addr, found)
+
+    @unittest.skipUnless(os.path.exists(PROXY), "no proxy binary at %s" % PROXY)
+    def test_a_stdio_daemon_leaves_the_client_on_the_socket(self) -> None:
+        """The other half: no publication, no upgrade, and the socket path is untouched."""
+        import matrixark_mcp_temporal_adapters as adapters
+
+        with _Daemon(http=False) as pipe:
+            self.assertEqual("", adapters._published_proxy_http_addr(str(pipe.socket_path)))
+
+
 if __name__ == "__main__":
     unittest.main()
