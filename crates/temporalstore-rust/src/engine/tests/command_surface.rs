@@ -17,7 +17,7 @@
 #![allow(clippy::all)]
 use super::*;
 
-use crate::redis::{execute_redis_command, RespValue};
+use crate::redis::{execute_redis_command, unix_time_ms, RespValue};
 
 /// Drive one RESP command against a live engine on shard 1.
 fn resp(engine: &TemporalEngine, args: &[&str]) -> RespValue {
@@ -42,6 +42,26 @@ fn pttl(engine: &TemporalEngine, key: &str) -> i64 {
         RespValue::Integer(value) => value,
         other => panic!("PTTL {key} answered {other:?}"),
     }
+}
+
+/// What the SHARD itself holds for a key: (the record is still there, a deadline is still
+/// recorded against it). Read directly, not through a command.
+///
+/// WHY THIS EXISTS AND `GET` IS NOT ENOUGH. `GET` cannot tell "the key was deleted" apart from
+/// "the key was given a deadline one millisecond out, and that millisecond has since passed":
+/// lazy expiry removes it either way before the next command runs, so the assertion is
+/// satisfied by the CLOCK rather than by the behaviour under test. That is not hypothetical --
+/// both mutations restoring the old `.max(1)` clamp left every `GET` answering nil and this
+/// whole test PASSING, which is how they were found. The shard has no such ambiguity: a
+/// clamped deadline is an entry in `expires_at_ms` with the record still sitting in `strings`,
+/// and a deletion is neither of those, whatever the clock has done in between.
+fn shard_state(engine: &TemporalEngine, key: &str) -> (bool, bool) {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    (
+        shard.strings.contains_key(key),
+        shard.expires_at_ms.contains_key(key),
+    )
 }
 
 fn get(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
@@ -376,5 +396,201 @@ fn every_dispatched_command_is_advertised_or_named_as_unadvertised() {
         "{} exemption(s) name a command the dispatcher no longer has: {:?}. Remove them.",
         stale.len(),
         stale,
+    );
+}
+
+/// A deadline that has already passed removes the key NOW, on all six spellings.
+///
+/// SIX SPELLINGS, ONE MEANING. `EXPIRE` / `PEXPIRE` take a relative time, so "already past" is
+/// spelled as a negative (or zero) number. `EXPIREAT` / `PEXPIREAT` and `GETEX EXAT` / `PXAT`
+/// take an absolute moment, so it is spelled as a timestamp behind the clock. There is no such
+/// thing as a key that expires in the past: every one of them means "this key is finished",
+/// and the integer reply is about whether there WAS a key, the same as when the deadline is
+/// ahead.
+///
+/// WHAT THE TWO KINDS ANSWERED BEFORE, AND THE TWO DIFFERENT WAYS THEY WERE WRONG.
+///
+///   * The ABSOLUTE four clamped the computed remaining time with `.max(1)` and armed a
+///     deadline one millisecond out. That is not a rounding difference, it is a live key: the
+///     caller's next command could arrive inside that millisecond and be handed the value they
+///     had just asked to be rid of. Whether it did depended on scheduling, which is the worst
+///     property a correctness answer can have -- it passes in a test and fails under load.
+///   * The RELATIVE two never got that far. A negative number failed `parse_u64`, so
+///     `EXPIRE key -1` came back as a syntax error. The caller was told their command was
+///     malformed, and the key stayed exactly where it was.
+///
+/// HALVES ASSERTED SEPARATELY, AND HERE THAT IS SIX. Two different root causes across three
+/// helper functions -- a parse that refused the input, and a clamp that rewrote it -- so a
+/// single "no key survives a past deadline" count would read full from the four that share the
+/// clamp while both of the others stayed broken. Each spelling gets its own claim, behind its
+/// own denominator that the key really was there first.
+///
+/// CONTROLS IN THE OTHER DIRECTION. A deadline in the FUTURE must still arm rather than delete,
+/// and a past deadline on a key that is not there must answer 0 rather than erroring. Without
+/// those, "delete on anything that is not clearly in the future" would satisfy all six claims
+/// above while turning every ordinary `EXPIRE key 60` into a deletion.
+#[test]
+fn a_deadline_already_in_the_past_removes_the_key_now() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    fn seed(engine: &TemporalEngine, key: &str) {
+        assert_eq!(
+            RespValue::SimpleString("OK".to_string()),
+            resp(engine, &["SET", key, "v"]),
+            "DENOMINATOR: the key has to be there before a past deadline can remove it",
+        );
+        assert_eq!(
+            Some(b"v".to_vec()),
+            get(engine, key),
+            "DENOMINATOR: and it has to read back",
+        );
+    }
+
+    // Timestamps comfortably in the past, in the two units. 1_000_000_000 seconds is 2001.
+    const PAST_SECONDS: &str = "1000000000";
+    const PAST_MILLIS: &str = "1000000000000";
+
+    // ---- THE SIX HALVES ---------------------------------------------------------------
+    // Each: seed, apply a past deadline, and the key must be gone in the very next command --
+    // no sleep anywhere, because "gone in a millisecond" is exactly the answer being rejected.
+    for (label, key, command) in [
+        ("EXPIRE with a negative time", "past:expire",
+         vec!["EXPIRE", "past:expire", "-1"]),
+        ("PEXPIRE with a negative time", "past:pexpire",
+         vec!["PEXPIRE", "past:pexpire", "-1"]),
+        ("EXPIREAT with a past timestamp", "past:expireat",
+         vec!["EXPIREAT", "past:expireat", PAST_SECONDS]),
+        ("PEXPIREAT with a past timestamp", "past:pexpireat",
+         vec!["PEXPIREAT", "past:pexpireat", PAST_MILLIS]),
+    ] {
+        seed(&engine, key);
+        assert_eq!(
+            RespValue::Integer(1),
+            resp(&engine, &command),
+            "{label}: the key was there, so the reply is 1. An error here means the command was \
+             refused outright; a 0 means it was not seen.",
+        );
+        // THE SHARD IS ASKED FIRST, AND THE ORDER IS LOAD-BEARING. `get` and `pttl` both call
+        // `remove_if_expired`, so either of them would DO the deletion this is trying to
+        // observe -- the clamped record would be gone by the time the shard was asked, and
+        // the claim would hold for the wrong reason. That is not hypothetical either: with
+        // the shard check written after the reads, both clamp mutations still passed.
+        let (record, deadline) = shard_state(&engine, key);
+        assert!(
+            !record,
+            "{label}: the RECORD must be gone from the shard, not merely unreadable. A record \
+             still sitting there under a deadline a millisecond out answers nil to the next \
+             GET too, so GET alone cannot tell the two apart -- this asks the shard, and asks \
+             it before anything has had a chance to expire the key lazily.",
+        );
+        assert!(
+            !deadline,
+            "{label}: and no deadline may be left recorded against it",
+        );
+        assert_eq!(
+            None,
+            get(&engine, key),
+            "{label}: the key must be gone in the NEXT command, not a millisecond from now. A \
+             value here is the key the caller just discarded being handed back to them.",
+        );
+        assert_eq!(
+            -2,
+            pttl(&engine, key),
+            "{label}: PTTL on a key that is gone is -2. A positive number is a key still \
+             counting down; a -1 is a key that will now never expire at all.",
+        );
+    }
+
+    // GETEX carries the value back as well, so its two spellings are asserted on both halves
+    // of their answer: the value the caller reads, and the key that must not survive it.
+    for (label, key, command) in [
+        ("GETEX EXAT with a past timestamp", "past:getexat",
+         vec!["GETEX", "past:getexat", "EXAT", PAST_SECONDS]),
+        ("GETEX PXAT with a past timestamp", "past:getpxat",
+         vec!["GETEX", "past:getpxat", "PXAT", PAST_MILLIS]),
+    ] {
+        seed(&engine, key);
+        assert_eq!(
+            RespValue::Bulk(Some(b"v".to_vec())),
+            resp(&engine, &command),
+            "{label}: GETEX still answers the value it read",
+        );
+        // Same ordering rule as above: the shard, then the reads.
+        let (record, deadline) = shard_state(&engine, key);
+        assert!(
+            !record,
+            "{label}: the record is gone from the shard, not armed a millisecond out",
+        );
+        assert!(!deadline, "{label}: and no deadline is left recorded");
+        assert_eq!(
+            None,
+            get(&engine, key),
+            "{label}: and the key is gone immediately afterwards",
+        );
+    }
+
+    // ---- CONTROL: a deadline in the FUTURE arms, and does not delete --------------------
+    let future_seconds = (unix_time_ms() / 1000 + 3_600).to_string();
+    let future_millis = (unix_time_ms() + 3_600_000).to_string();
+    for (label, key, command) in [
+        ("EXPIRE", "future:expire", vec!["EXPIRE", "future:expire", "3600"]),
+        ("PEXPIRE", "future:pexpire", vec!["PEXPIRE", "future:pexpire", "3600000"]),
+        ("EXPIREAT", "future:expireat",
+         vec!["EXPIREAT", "future:expireat", future_seconds.as_str()]),
+        ("PEXPIREAT", "future:pexpireat",
+         vec!["PEXPIREAT", "future:pexpireat", future_millis.as_str()]),
+        ("GETEX EXAT", "future:getexat",
+         vec!["GETEX", "future:getexat", "EXAT", future_seconds.as_str()]),
+    ] {
+        seed(&engine, key);
+        let answer = resp(&engine, &command);
+        assert!(
+            !matches!(answer, RespValue::Error(_)),
+            "CONTROL {label}: a future deadline must be accepted, and it answered {answer:?}",
+        );
+        assert_eq!(
+            Some(b"v".to_vec()),
+            get(&engine, key),
+            "CONTROL {label}: a deadline an hour out must NOT delete the key. This is what \
+             stops the fix from being 'delete unless the time is obviously ahead'.",
+        );
+        let remaining = pttl(&engine, key);
+        assert!(
+            remaining > 0,
+            "CONTROL {label}: the deadline must really be armed; PTTL reported {remaining}",
+        );
+        let (record, deadline) = shard_state(&engine, key);
+        assert!(
+            record,
+            "CONTROL {label}: the record must still be in the shard",
+        );
+        assert!(
+            deadline,
+            "CONTROL {label}: and a deadline must really be RECORDED in `expires_at_ms`. This \
+             is the denominator for every `!deadline` claim above: without it they would all \
+             also hold if the index never recorded anything at all.",
+        );
+    }
+
+    // ---- CONTROL: a past deadline on a key that is not there answers 0, not an error -----
+    // Asking to discard something already gone is a no-op that succeeded, which is what every
+    // other deletion on this surface answers.
+    assert_eq!(
+        RespValue::Integer(0),
+        resp(&engine, &["EXPIRE", "past:absent", "-1"]),
+        "CONTROL: a past deadline on a missing key is 0",
+    );
+    assert_eq!(
+        RespValue::Integer(0),
+        resp(&engine, &["EXPIREAT", "past:absent", PAST_SECONDS]),
+        "CONTROL: same for the absolute spelling",
+    );
+
+    // ---- CONTROL: a genuinely malformed time is still an error --------------------------
+    // Accepting negatives must not turn into accepting anything at all.
+    assert!(
+        matches!(resp(&engine, &["EXPIRE", "past:absent", "soon"]), RespValue::Error(_)),
+        "CONTROL: a non-numeric expiry is still refused",
     );
 }

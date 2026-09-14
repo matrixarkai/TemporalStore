@@ -259,6 +259,16 @@ pub fn execute_redis_command_with_state(
                                     return RespValue::Error(format!("ERR {err}"));
                                 }
                             }
+                            // The value was already read above and is still returned; what
+                            // the caller asked for is a key that is gone by the time they
+                            // get it, so it goes now rather than in a millisecond.
+                            GetExDeadline::Discard => {
+                                if let Err(err) = execute(Command::CommonDelete { key: key.clone() })
+                                {
+                                    return RespValue::Error(format!("ERR {err}"));
+                                }
+                                state.keyspace.remove(&key);
+                            }
                         }
                     }
                     RespValue::Bulk(value)
@@ -390,10 +400,10 @@ pub fn execute_redis_command_with_state(
         "RENAMENX" if args.len() == 3 => {
             copy_or_rename_key_response(&args[1], &args[2], true, false, state, &mut execute)
         }
-        "EXPIRE" if args.len() == 3 => expire_response(&args, 1000, execute),
-        "PEXPIRE" if args.len() == 3 => expire_response(&args, 1, execute),
-        "EXPIREAT" if args.len() == 3 => expire_at_response(&args, 1000, execute),
-        "PEXPIREAT" if args.len() == 3 => expire_at_response(&args, 1, execute),
+        "EXPIRE" if args.len() == 3 => expire_response(&args, 1000, state, &mut execute),
+        "PEXPIRE" if args.len() == 3 => expire_response(&args, 1, state, &mut execute),
+        "EXPIREAT" if args.len() == 3 => expire_at_response(&args, 1000, state, &mut execute),
+        "PEXPIREAT" if args.len() == 3 => expire_at_response(&args, 1, state, &mut execute),
         "PERSIST" if args.len() == 2 => match execute(Command::CommonPersist {
             key: string_arg(&args[1]),
         }) {
