@@ -142,7 +142,11 @@ UNHELD = {
     # `test_engine_settings_offer_the_engine_default` compares against the engine -- against
     # storage_config.rs for the const family, and against the read site for the rest. Removing the
     # field removes the comparison, which is the opposite of what that file is for.
-    "TS_INDEX_DUMP_WAL_GAP_BYTES": "compared against storage_config.rs by the engine mirror",
+    # TS_INDEX_DUMP_WAL_GAP_BYTES was here, recorded as held by nothing but the engine
+    # mirror's comparison. test_one_flag_has_one_config_key now names its portal key --
+    # it is the flag that file exists to pin, the one whose config key kept the older
+    # spelling -- so "a test names its portal key" holds it and the record no longer
+    # applies. The field itself is untouched and still on the page.
     "TS_MAX_RETAINED_FINISHED_JOBS": "compared against its read site by the engine mirror",
     "TS_METRICS_MAX_SLOT_SERIES": "compared against its read site by the engine mirror",
     "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT":
