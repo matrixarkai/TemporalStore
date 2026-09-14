@@ -4,8 +4,13 @@
 `context_event` and skip everything else. This path used to read the WHOLE store to find them. The
 sibling implementation in `matrixark_local_adapter_session_commit` stopped doing that, and recorded
 why on `_commit_records_of_types`: 13 of 20 active samples on a 250-memory store fell inside that
-read and its compaction, 893 ms per call with the proxy idle, growing with the store. Only one of
-the two commit paths was changed.
+read and its compaction, 893 ms per call with the proxy idle, growing with the store.
+
+The copy tested HERE is not the one a request reaches: `matrixark_mcp_session_runtime` is on the
+recorded unreachable-from-production list in `test_a_module_only_tests_reach_is_not_live`. The
+commit path that runs is the sibling mixin, and `test_the_live_commit_path_asks_for_what_it_keeps`
+is what pins its two reads. These tests stay because the module does, and because the reasoning
+below is the reasoning that path needs.
 
 These tests pin the three things that make narrowing the read safe:
 
@@ -45,7 +50,13 @@ def _store():
 
 
 class _FullReadOnly:
-    """The plain local adapter: no type scan at all."""
+    """Something with no type scan at all.
+
+    NOT the plain local adapter, though this said so and so did the docstring on the function under
+    test: `MatrixArkLocalAdapter` inherits `_commit_records_of_types` from the sibling commit mixin,
+    as do all three backend adapters -- six of six classes in tools/ that answer `session_commit`
+    have it. What the local adapter lacks is `_scan_records_of_types`, one level further down.
+    """
 
     def __init__(self, records):
         self._records = records

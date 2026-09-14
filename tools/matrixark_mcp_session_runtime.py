@@ -729,12 +729,24 @@ def _overlap_records(adapter: object) -> list:
     measurement is recorded on `_commit_records_of_types` there: sampling a commit on a 250-memory
     store put 13 of 20 active samples inside that read and its compaction, at 893 ms per call with
     the proxy idle. The cost is reading everything in order to look at almost nothing, and it grows
-    with the store. Only one of the two commit paths was changed.
+    with the store.
 
-    Asked for rather than assumed. `_commit_records_of_types` belongs to the TemporalStore-backed
-    adapter; the plain local adapter commits sessions too and does not have it, and an adapter that
-    cannot answer must produce the full read rather than an empty list -- "could not ask" is not
-    "nothing of these types". That is the same fallback rule the sibling states.
+    The measurement belongs to the sibling and stays there. This module is on the recorded
+    unreachable-from-production list in `test_a_module_only_tests_reach_is_not_live`, so what this
+    narrowing saves is not saved for any request -- and the finalize branch of the `session_commit`
+    below still calls `read_all()`, left alone for the same reason. The commit read that RUNS is
+    the sibling's, and what guards it is `test_the_live_commit_path_asks_for_what_it_keeps`, not
+    the test that sits next to this function.
+
+    Asked for rather than assumed -- but the name asked for matters, and this named the wrong one.
+    EVERY adapter has `_commit_records_of_types`. Counted by importing tools/ and keeping the
+    classes that answer `session_commit`, rather than by assuming the hierarchy: six of six have
+    it, `MatrixArkLocalAdapter` among them, because it inherits it from the sibling mixin. Three of
+    the six have `_scan_records_of_types` -- that is the absence the plain local adapter really
+    has, and it is already handled inside `_commit_records_of_types`. So the `getattr` below guards
+    against being handed something that is not an adapter at all, not against the local adapter. An
+    object that cannot answer must still produce the full read rather than an empty list -- "could
+    not ask" is not "nothing of these types".
     """
     scan = getattr(adapter, "_commit_records_of_types", None)
     if scan is None:
