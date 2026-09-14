@@ -66,15 +66,12 @@ RECORDED_DEPARTURES = {
         "1024", "256",
         "raw-event retention is kept wider than the build constant so compression has a window "
         "to work over"),
-    "MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS": (
-        "500000", "",
-        "NOT the file's departure -- the file and the build both say 500000 and the PORTAL is the "
-        "one declaring nothing. Its read site in matrixark_http falls back to "
-        "str(_BACKEND_DEFAULT_MAX_CONTEXT_TOKENS), a name rather than a literal, which the "
-        "portal-default sweep in test_matrixark_the_portal_declares_the_budget_the_build_runs "
-        "cannot resolve, so the setting cannot join _EXPLICIT_BUILD_DEFAULT until that sweep "
-        "learns to follow an aliased module constant. Recorded here so the one place the three "
-        "registries are compared says which of them is the odd one out."),
+    # MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS was recorded here as the one departure
+    # pointing the other way -- the file and the build both said 500000 and the PORTAL was
+    # blank -- pending a sweep that could follow a name through an import fallback. That is
+    # done, the setting is in _EXPLICIT_BUILD_DEFAULT, and all three registries now agree,
+    # so the entry is struck. This guard asserts its record in both directions, which is
+    # what required striking it rather than leaving a true-sounding line behind.
     "TS_COLD_SCAN_NO_CACHE_FILL": (
         "0", "1",
         "UNEXPLAINED. The engine default is true -- cold scans bypass cache fill to avoid "

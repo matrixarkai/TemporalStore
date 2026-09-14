@@ -86,7 +86,34 @@ def read_shapes() -> tuple:
                 tree = ast.parse(handle.read(), filename=name)
         except SyntaxError:  # pragma: no cover - a module this build cannot parse
             continue
-        for node in tree.body:
+        # Module-level statements, and one level inside a module-level try/except. That second
+        # place is not an edge case: it is the idiom this tree uses to import a constant with a
+        # literal fallback --
+        #
+        #     try:
+        #         from tools.X import DEFAULT_MAX_CONTEXT_TOKENS as _BACKEND_DEFAULT
+        #     except ImportError:
+        #         _BACKEND_DEFAULT = 500000
+        #
+        # Reading only `tree.body` misses the assignment entirely, so a read site falling back to
+        # `str(_BACKEND_DEFAULT)` resolved to nothing and its setting dropped out of `compared`.
+        # Only Assign nodes are taken, and only one level down, so nothing inside a function or a
+        # class is mistaken for a module constant.
+        def _module_level(body):
+            # Recursive through try/except, because the fallback idiom nests: the package import
+            # is tried, then the bare one inside the handler, and only the innermost handler
+            # assigns the literal. A one-level walk finds the outer try and stops one statement
+            # short of the assignment it was written to reach. Recursion is over Try only, so a
+            # function or class body is still never entered.
+            for node in body:
+                yield node
+                if isinstance(node, ast.Try):
+                    yield from _module_level(node.body)
+                    for handler in node.handlers:
+                        yield from _module_level(handler.body)
+                    yield from _module_level(node.orelse + node.finalbody)
+
+        for node in _module_level(tree.body):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
                 continue
             target, value = node.targets[0], node.value
@@ -146,6 +173,14 @@ def read_shapes() -> tuple:
                 resolved = _call_module_level(name[:-3], called.func.id)
                 if resolved is not None:
                     literals.setdefault(reads[0], set()).add(resolved)
+            # ...or a plain NAME, once the str()/int() wrapper above is off it. The loop below
+            # already resolves a bare name against `constants`; an or-chain tail was the one place
+            # that did not, so `or str(_BACKEND_DEFAULT_MAX_CONTEXT_TOKENS)` recorded nothing and
+            # the gateway's context-budget field stayed uncompared with a blank declared default.
+            # Only a name this parser has actually seen assigned a literal is resolved; anything
+            # computed is still left alone rather than guessed at.
+            elif isinstance(called, ast.Name) and called.id in constants:
+                literals.setdefault(reads[0], set()).update(constants[called.id])
             if (isinstance(tail, ast.Constant) and isinstance(tail.value, (str, int, float))
                     and not isinstance(tail.value, bool)):
                 literals.setdefault(primary, set()).add(str(tail.value))

@@ -1054,6 +1054,14 @@ _EXPLICIT_BUILD_DEFAULT = {
     "retrieval.cross_session_max_sessions": "DEFAULT_CROSS_SESSION_MAX_SESSIONS",
     "skills.shared_resource_budget_ratio": "DEFAULT_SHARED_RESOURCE_BUDGET_RATIO",
     "ingestion.time_compression_window_events": "TIME_COMPRESSION_WINDOW_EVENTS",
+    # Declared blank, which reads as "nothing is in force" on a deployment running 500000.
+    # matrixark_http falls back to `str(_BACKEND_DEFAULT_MAX_CONTEXT_TOKENS)`, which is this
+    # same constant imported under another name, and the shipped config pins 500000 on the
+    # matching key -- so the file and the build already agreed and the portal was the only
+    # one of the three saying otherwise. The sweep could not see it until it learned to
+    # follow a name through an import fallback; now it compares this setting like any other.
+    "retrieval.gateway_default_max_context_tokens": (
+        "DEFAULT_MAX_CONTEXT_TOKENS", "matrixark_mcp_runtime_config"),
     # The extraction call has no guard: with nothing set it posts to
     # http://127.0.0.1:8000/v1/chat/completions asking for qwen2.5:1.5b. The portal showed both
     # fields empty and the connection test refused to run, so the one deployment shape most likely
