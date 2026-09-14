@@ -18236,6 +18236,20 @@ fn what_a_delete_leaves_claimed() {
 /// and it is also what makes the release durable: the pages are on disk and the manifest names
 /// them before anything is dropped.
 fn dumped_shard_with_keys(keys: usize, value_len: usize) -> (tempfile::TempDir, TemporalEngine) {
+    dumped_shard_with_keys_in_range(keys, value_len, 0, u32::MAX)
+}
+
+/// The same fixture over a chosen routing range.
+///
+/// At the default range every key gets a bucket of its own, so a bucket holding more than one
+/// object never occurs -- and a bucket holding several is exactly the shape a delete has to be
+/// asked about, because that is where dropping ONE object id differs from clearing the set.
+fn dumped_shard_with_keys_in_range(
+    keys: usize,
+    value_len: usize,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> (tempfile::TempDir, TemporalEngine) {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
@@ -18243,7 +18257,16 @@ fn dumped_shard_with_keys(keys: usize, value_len: usize) -> (tempfile::TempDir, 
         dir.path().join("pages"),
         dir.path().join("indexes"),
     );
-    engine.load_shard(1);
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket,
+        end_routing_bucket,
+        readonly: false,
+        table_name: String::new(),
+    });
     for index in 0..keys {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -18544,6 +18567,383 @@ fn a_write_into_a_released_bucket_loads_it_back_first() {
             "key {index} stopped reading back after a neighbour's write"
         );
     }
+}
+
+/// The object id the write path filed a `released-NNNNNN` key under.
+///
+/// Derived the same way `Command::StringSet` derived it, so the set membership this asks about is
+/// the one the index actually holds rather than one the test invented.
+fn released_object_id(index: usize) -> u64 {
+    stable_page_object_id(1, "string", &format!("released-{index:06}"), None)
+}
+
+/// Every object id any bucket node still claims, across the whole shard.
+fn released_object_ids_claimed(engine: &TemporalEngine) -> std::collections::BTreeSet<u64> {
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    shards
+        .get(&1)
+        .expect("loaded shard")
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.object_index.iter().copied())
+        .collect()
+}
+
+fn released_bucket_store_report(engine: &TemporalEngine) -> crate::engine::bucket_store::BucketStoreRuntimeReport {
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    crate::engine::bucket_store::runtime_report(shards.get(&1).expect("loaded shard"))
+}
+
+fn released_delete(engine: &TemporalEngine, index: usize) {
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonDelete {
+            key: format!("released-{index:06}"),
+        },
+    });
+    assert!(response.status.ok, "delete {index}: {:?}", response.status);
+}
+
+/// A delete against a RELEASED bucket settles that bucket's object count at the delete.
+///
+/// Releasing clears `page_index` and KEEPS `object_index` -- the keeping is the only thing that
+/// tells a released bucket from one holding nothing, and since the layout classifier was
+/// corrected the object count is also the sole authority for whether a bucket is empty at all.
+/// Both delete paths remove an object by walking `page_index`, which a release has already
+/// emptied, so a delete arriving while the bucket is released removed the page from the model map
+/// and left the id in the object index: the node went on claiming an object that no longer
+/// existed. `reload_released_bucket` re-derives the set and would settle it, but only whenever a
+/// reload happens, and a released bucket may go a long time without one.
+///
+/// The two halves are asserted SEPARATELY. A combined count hides the cheap wrong fix -- clearing
+/// a released bucket's object index outright -- which settles the deleted half perfectly and
+/// destroys the surviving half.
+#[test]
+fn a_delete_against_a_released_bucket_settles_its_object_count() {
+    const KEYS: usize = 120;
+    const VALUE_LEN: usize = 64;
+    const DELETED: usize = 40;
+    let (_dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
+
+    let (released_buckets, released_pages, _refused) =
+        engine.release_all_releasable_bucket_index_pages(1);
+    assert!(
+        released_buckets > 0 && released_pages > 0,
+        "nothing was released ({released_buckets} buckets / {released_pages} pages), so every \
+         delete below takes the resident path and this test measures nothing"
+    );
+
+    // THE DENOMINATOR. Every key deleted below has to land in a bucket that is really released.
+    let released: std::collections::BTreeSet<u32> =
+        engine.released_bucket_index_buckets(1).into_iter().collect();
+    let targeted = (0..DELETED)
+        .filter(|index| {
+            released.contains(&engine.routing_bucket_for_key(1, &format!("released-{index:06}")))
+        })
+        .count();
+    assert_eq!(
+        targeted, DELETED,
+        "only {targeted} of {DELETED} keys to be deleted live in one of the {} released buckets",
+        released.len()
+    );
+
+    let claimed_before = released_object_ids_claimed(&engine);
+    assert_eq!(
+        claimed_before.len(),
+        KEYS,
+        "the released buckets claim {} objects, not the {KEYS} the fixture wrote",
+        claimed_before.len()
+    );
+    let report_before = released_bucket_store_report(&engine);
+    assert_eq!(
+        report_before.empty_buckets, 0,
+        "a released bucket still holding its objects is not empty; {} of {} read as empty before \
+         a single delete",
+        report_before.empty_buckets, report_before.bucket_count
+    );
+
+    // The buckets that hold NOTHING but keys this test deletes. Those, and only those, are the
+    // ones whose label may move -- computing it from the fixture rather than assuming one key per
+    // bucket keeps the assertion exact whatever the routing fan-out is.
+    let doomed_ids: std::collections::BTreeSet<u64> = (0..DELETED).map(released_object_id).collect();
+    let doomed_buckets = report_before
+        .buckets
+        .iter()
+        .filter(|bucket| {
+            !bucket.object_ids.is_empty()
+                && bucket.object_ids.iter().all(|id| doomed_ids.contains(id))
+        })
+        .count();
+    assert!(
+        doomed_buckets > 0,
+        "no bucket is emptied by these {DELETED} deletes, so the empty-bucket counter below cannot \
+         move and asserting on it would prove nothing ({} buckets in the report)",
+        report_before.bucket_count
+    );
+
+    for index in 0..DELETED {
+        released_delete(&engine, index);
+    }
+
+    let claimed_after = released_object_ids_claimed(&engine);
+    let report_after = released_bucket_store_report(&engine);
+
+    // HALF ONE -- the deleted keys. Not one of their ids may still be claimed.
+    let stale = (0..DELETED)
+        .filter(|index| claimed_after.contains(&released_object_id(*index)))
+        .count();
+    assert_eq!(
+        stale, 0,
+        "{stale} of {DELETED} deleted keys are still claimed by a released bucket's object index"
+    );
+
+    // HALF TWO -- the survivors, asserted on its own. Clearing the object index of every released
+    // bucket passes the half above and fails here.
+    let survivors = (DELETED..KEYS)
+        .filter(|index| claimed_after.contains(&released_object_id(*index)))
+        .count();
+    assert_eq!(
+        survivors,
+        KEYS - DELETED,
+        "{survivors} of {} surviving keys are still claimed; a delete may not take a neighbour's \
+         object with it",
+        KEYS - DELETED
+    );
+
+    // Settling the count must not UNDO the release. Asserted against the released registry and
+    // not against the node count: the delete path files a node of its own for the key's routing
+    // bucket, so the map both grows and re-creates anything removed from it, and a node-identity
+    // check cannot fail here (a mutation that dropped the emptied node passed it). The registry
+    // is the state only `release_bucket_pages` writes and only a reload clears, so it is the one
+    // that answers.
+    let still_released = engine.released_bucket_index_buckets(1);
+    let kept_released = released
+        .iter()
+        .filter(|routing_bucket| still_released.contains(routing_bucket))
+        .count();
+    assert_eq!(
+        kept_released,
+        released.len(),
+        "{kept_released} of {} released buckets are still registered as released; settling an \
+         object count must not reload or forget the bucket",
+        released.len()
+    );
+    assert_eq!(
+        report_after.empty_buckets,
+        doomed_buckets + (report_after.bucket_count - report_before.bucket_count),
+        "{} of {} buckets read as empty, where {doomed_buckets} held nothing but deleted keys and \
+         {} empty nodes were added by the delete path itself",
+        report_after.empty_buckets,
+        report_after.bucket_count,
+        report_after.bucket_count - report_before.bucket_count
+    );
+
+    // And the store still answers the way the deletes say it should, on both halves.
+    let readable = (DELETED..KEYS)
+        .filter(|index| released_read(&engine, *index) == Some(released_value(*index, VALUE_LEN)))
+        .count();
+    assert_eq!(
+        readable,
+        KEYS - DELETED,
+        "{readable} of {} surviving keys read back their own bytes",
+        KEYS - DELETED
+    );
+    let gone = (0..DELETED)
+        .filter(|index| released_read(&engine, *index).is_none())
+        .count();
+    assert_eq!(
+        gone, DELETED,
+        "{gone} of {DELETED} deleted keys actually read as gone"
+    );
+}
+
+/// How far the count can drift: one stale object per delete, to the whole released population.
+///
+/// The companion above bounds the drift from below -- forty deletes, forty stale ids. This one
+/// takes it to the ceiling, because "at most one" and "every delete until a reload" are different
+/// defects and only the second is worth a change. With every key of every released bucket
+/// deleted, the shard must claim no objects at all, and every bucket must read empty.
+#[test]
+fn every_delete_against_a_released_bucket_settles_its_own_object() {
+    const KEYS: usize = 60;
+    const VALUE_LEN: usize = 48;
+    let (_dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
+
+    let (released_buckets, released_pages, _refused) =
+        engine.release_all_releasable_bucket_index_pages(1);
+    assert!(
+        released_buckets > 0 && released_pages > 0,
+        "nothing was released ({released_buckets} buckets / {released_pages} pages)"
+    );
+    let released: std::collections::BTreeSet<u32> =
+        engine.released_bucket_index_buckets(1).into_iter().collect();
+    let targeted = (0..KEYS)
+        .filter(|index| {
+            released.contains(&engine.routing_bucket_for_key(1, &format!("released-{index:06}")))
+        })
+        .count();
+    assert_eq!(
+        targeted, KEYS,
+        "only {targeted} of {KEYS} keys live in one of the {} released buckets",
+        released.len()
+    );
+    assert_eq!(
+        released_object_ids_claimed(&engine).len(),
+        KEYS,
+        "the fixture's released buckets do not claim all {KEYS} objects"
+    );
+
+    for index in 0..KEYS {
+        released_delete(&engine, index);
+    }
+
+    let claimed = released_object_ids_claimed(&engine);
+    assert_eq!(
+        claimed.len(),
+        0,
+        "{} of {KEYS} object ids are still claimed after every one of their keys was deleted",
+        claimed.len()
+    );
+    let report = released_bucket_store_report(&engine);
+    assert_eq!(
+        report.empty_buckets, report.bucket_count,
+        "{} of {} buckets read as empty once every object they held was deleted",
+        report.empty_buckets, report.bucket_count
+    );
+    assert!(
+        report.bucket_count > 0,
+        "every node left the map, so the counter above compared zero with zero"
+    );
+}
+
+/// Every object id one named bucket claims.
+fn released_bucket_object_ids(
+    engine: &TemporalEngine,
+    routing_bucket: u32,
+) -> std::collections::BTreeSet<u64> {
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    shards
+        .get(&1)
+        .expect("loaded shard")
+        .bucket_index
+        .bucket_map
+        .get(&routing_bucket)
+        .map(|bucket| bucket.object_index.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+/// The same settling, asked of a bucket that holds MORE THAN ONE object.
+///
+/// At the default routing range every key gets a bucket to itself, so "drop this object's id" and
+/// "clear this bucket's object index" are the same operation and the two guards above cannot tell
+/// them apart -- mutating the fix into the second PASSED both of them, because every survivor
+/// lived in a different bucket. A narrow routing range puts several objects in one bucket, which
+/// is also the shape the layout classifier was corrected for, and there the difference is the
+/// whole point: one object goes and its bucket-mates stay.
+#[test]
+fn a_delete_against_a_released_bucket_leaves_its_bucket_mates() {
+    const KEYS: usize = 64;
+    const VALUE_LEN: usize = 48;
+    let (_dir, engine) = dumped_shard_with_keys_in_range(KEYS, VALUE_LEN, 0, 4);
+
+    let (released_buckets, released_pages, _refused) =
+        engine.release_all_releasable_bucket_index_pages(1);
+    assert!(
+        released_buckets > 0 && released_pages > 0,
+        "nothing was released ({released_buckets} buckets / {released_pages} pages)"
+    );
+
+    let mut by_bucket: std::collections::BTreeMap<u32, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for index in 0..KEYS {
+        by_bucket
+            .entry(engine.routing_bucket_for_key(1, &format!("released-{index:06}")))
+            .or_default()
+            .push(index);
+    }
+    let released: std::collections::BTreeSet<u32> =
+        engine.released_bucket_index_buckets(1).into_iter().collect();
+    let multi_object_buckets = by_bucket
+        .iter()
+        .filter(|(routing_bucket, members)| {
+            released.contains(routing_bucket) && members.len() >= 2
+        })
+        .count();
+    assert!(
+        multi_object_buckets > 0,
+        "not one of the {} released buckets holds two objects, so nothing here can tell dropping \
+         one id from clearing the set ({} buckets hold the {KEYS} keys)",
+        released.len(),
+        by_bucket.len()
+    );
+
+    let (target, members) = by_bucket
+        .iter()
+        .find(|(routing_bucket, members)| {
+            released.contains(routing_bucket) && members.len() >= 2
+        })
+        .map(|(routing_bucket, members)| (*routing_bucket, members.clone()))
+        .expect("a released bucket holding two objects, just counted");
+    let victim = members[0];
+    let mates = &members[1..];
+    assert!(!mates.is_empty(), "the chosen bucket has no mates to leave");
+
+    let claimed_before = released_bucket_object_ids(&engine, target);
+    assert_eq!(
+        claimed_before.len(),
+        members.len(),
+        "bucket {target} claims {} objects where {} keys route to it",
+        claimed_before.len(),
+        members.len()
+    );
+
+    released_delete(&engine, victim);
+    let claimed_after = released_bucket_object_ids(&engine, target);
+
+    // HALF ONE -- the deleted key, in this bucket.
+    assert!(
+        !claimed_after.contains(&released_object_id(victim)),
+        "bucket {target} still claims the object of the key that was deleted ({} ids held)",
+        claimed_after.len()
+    );
+
+    // HALF TWO -- its bucket-mates, in the SAME bucket. This is the half that a fix clearing the
+    // whole object index destroys, and the half the single-object fixture cannot see.
+    let kept = mates
+        .iter()
+        .filter(|index| claimed_after.contains(&released_object_id(**index)))
+        .count();
+    assert_eq!(
+        kept,
+        mates.len(),
+        "{kept} of {} bucket-mates survived a neighbour's delete in bucket {target}",
+        mates.len()
+    );
+
+    // And the bucket is not empty, because it still holds them.
+    let report = released_bucket_store_report(&engine);
+    let state = report
+        .buckets
+        .iter()
+        .find(|bucket| bucket.routing_bucket == target)
+        .expect("the target bucket is still in the map");
+    assert_ne!(
+        state.layout, "empty",
+        "bucket {target} reads empty while still claiming {kept} objects"
+    );
+
+    // The mates still read their own bytes, which is what the claim is about.
+    let readable = mates
+        .iter()
+        .filter(|index| released_read(&engine, **index) == Some(released_value(**index, VALUE_LEN)))
+        .count();
+    assert_eq!(
+        readable,
+        mates.len(),
+        "{readable} of {} bucket-mates read back after a neighbour was deleted",
+        mates.len()
+    );
 }
 
 /// Eviction releases the index it used to leave resident.

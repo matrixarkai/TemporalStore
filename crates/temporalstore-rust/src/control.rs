@@ -449,3 +449,100 @@ pub struct ScanStreamResponse {
     pub records: Vec<StreamRecord>,
     pub end_of_stream: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two stream requests still write, and still read, their durable field name.
+    ///
+    /// `a_durable_name_is_never_quietly_dropped` watches the NAME `page_segment_id`, and that name
+    /// is not what is at risk here: seven other structs in the crate spell it, so the list would
+    /// go on finding it even if both of these stopped. What a list of names structurally cannot
+    /// say is that a PARTICULAR struct still carries one -- and these two are the ones on the
+    /// wire, parsed straight out of a request body by `/read_stream` and `/scan_stream`, where
+    /// losing the rename means an existing client's body quietly stops binding the field it names
+    /// and the read starts at slab zero.
+    ///
+    /// The two are asserted SEPARATELY. They are separate structs carrying separate attributes,
+    /// and one round trip over both passes while one of them is wrong.
+    #[test]
+    fn the_stream_requests_keep_their_durable_field_name() {
+        // NON-VACUITY: the bodies below are the only place the durable name appears, so a decode
+        // that ignored it would leave the slab id at its default rather than at this value.
+        const SLAB: u64 = 7;
+        assert_ne!(SLAB, 0, "the durable name must carry a value a default cannot produce");
+
+        // --- StreamReadRequest, on its own.
+        let read = StreamReadRequest {
+            shard_id: 1,
+            stream_kind: StreamKind::Wal,
+            block_slab_id: SLAB,
+            offset: 64,
+            size: 128,
+        };
+        let read_json = serde_json::to_value(&read).expect("a request serializes");
+        assert_eq!(
+            read_json["page_segment_id"], SLAB,
+            "StreamReadRequest no longer writes its durable field name: {read_json}"
+        );
+        assert!(
+            read_json.get("block_slab_id").is_none(),
+            "StreamReadRequest wrote the in-memory spelling, which no client sends: {read_json}"
+        );
+        let read_body = serde_json::json!({
+            "shard_id": 1,
+            "stream_kind": "wal",
+            "page_segment_id": SLAB,
+            "offset": 64,
+            "size": 128,
+        });
+        assert!(
+            read_body.get("block_slab_id").is_none(),
+            "the body under test must name the field only the durable way"
+        );
+        let read_back: StreamReadRequest =
+            serde_json::from_value(read_body).expect("a client body parses");
+        assert_eq!(
+            read_back, read,
+            "a /read_stream body naming page_segment_id no longer binds the slab id"
+        );
+
+        // --- ScanStreamRequest, asserted on its own.
+        let scan = ScanStreamRequest {
+            shard_id: 1,
+            stream_kind: StreamKind::Wal,
+            block_slab_id: SLAB,
+            start_offset: 0,
+            end_offset: 4096,
+            max_bytes: 1024,
+        };
+        let scan_json = serde_json::to_value(&scan).expect("a request serializes");
+        assert_eq!(
+            scan_json["page_segment_id"], SLAB,
+            "ScanStreamRequest no longer writes its durable field name: {scan_json}"
+        );
+        assert!(
+            scan_json.get("block_slab_id").is_none(),
+            "ScanStreamRequest wrote the in-memory spelling, which no client sends: {scan_json}"
+        );
+        let scan_body = serde_json::json!({
+            "shard_id": 1,
+            "stream_kind": "wal",
+            "page_segment_id": SLAB,
+            "start_offset": 0,
+            "end_offset": 4096,
+            "max_bytes": 1024,
+        });
+        assert!(
+            scan_body.get("block_slab_id").is_none(),
+            "the body under test must name the field only the durable way"
+        );
+        let scan_back: ScanStreamRequest =
+            serde_json::from_value(scan_body).expect("a client body parses");
+        assert_eq!(
+            scan_back, scan,
+            "a /scan_stream body naming page_segment_id no longer binds the slab id"
+        );
+    }
+}

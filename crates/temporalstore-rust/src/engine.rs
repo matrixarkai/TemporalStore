@@ -3996,6 +3996,16 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
+    // A RELEASED bucket holds no page entries, so the walk below finds nothing to remove and the
+    // object id would stay claimed until some later reload re-derived the set. Settle it here,
+    // while the model map this reads the address out of still holds the page.
+    //
+    // Kept out of `removed`: that flag also decides whether the object-page lookup is corrected,
+    // and a released bucket's lookup entries were dropped by the release itself. There is nothing
+    // there to correct, and establishing the lookup as a side effect of a delete is not this
+    // change's to make.
+    let settled_released =
+        crate::engine::storage_bucket_internals::settle_released_bucket_object_delete(shard, key);
     let mut removed = false;
     let target_buckets = bucket_index_target_buckets_for_object_key(shard, key);
     for routing_bucket in target_buckets {
@@ -4045,7 +4055,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             }
         }
     }
-    removed
+    removed || settled_released
 }
 
 fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {

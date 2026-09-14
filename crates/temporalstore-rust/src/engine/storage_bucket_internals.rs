@@ -1294,6 +1294,75 @@ pub(super) fn released_bucket_page_address(
         .then_some(address)
 }
 
+/// The model kinds a released bucket may hold, in the form the delete path needs them.
+///
+/// `released_model_kind_is_addressable` answers the question one kind at a time, which is what the
+/// read path asks. A whole-object delete names a key and no kind at all, so settling the released
+/// side of it means asking each releasable kind whether this key is one of its pages. Same list,
+/// same reasons, stated once.
+pub(super) const RELEASABLE_MODEL_KINDS: [&str; 2] = ["string", "context_node"];
+
+/// Drop a deleted object's id from its RELEASED bucket's object index.
+///
+/// `release_bucket_pages` empties `page_index` and KEEPS `object_index`; the keeping is the only
+/// thing that tells a released bucket from one legitimately holding nothing, and since
+/// `classify_bucket_layout` was corrected the object count is the sole authority for whether a
+/// bucket is empty at all. Both delete paths remove an object by walking `page_index` -- which a
+/// release has already emptied -- so a delete arriving while the bucket is released dropped the
+/// page from the model map and left the id claimed. The node then reported an object that no
+/// longer existed, and reported it as LIVE: the resident path tombstones what it removes in
+/// `deleted_object_index`, and none of that ran either.
+///
+/// `reload_released_bucket` re-derives the set from the model maps and settles it -- but only
+/// whenever a reload happens, and the point of a release is that one may not for a long time. So
+/// this is that same re-derivation, for the one id, performed at the delete. It must run BEFORE
+/// the model map entry goes, which is the order every delete path already uses, because the map
+/// is where the page's address -- and with it the routing bucket and the object id -- is read.
+///
+/// TWO THINGS ARE DELIBERATELY NOT DONE HERE.
+///
+///   * The node is left in the map when its last object goes. `reload_released_bucket` removes a
+///     node it finds no pages for, and bringing that removal forward would take a bucket out of
+///     the reclaim plan's view earlier than anything has asked for. Leaving it costs one node and
+///     the bucket now reports `empty`, which is true.
+///   * No tombstone is written. The resident path keeps the id and records it in
+///     `deleted_object_index` because the id stays; here the id goes, and a tombstone for an
+///     absent id is an entry nothing would ever read. A reload derives no tombstone either, which
+///     is the state this is bringing forward.
+pub(super) fn settle_released_bucket_object_delete(
+    shard: &mut ShardState,
+    object_key: &str,
+) -> bool {
+    if shard.bucket_index.released_buckets.is_empty() {
+        return false;
+    }
+    let mut settled = false;
+    for model_id in RELEASABLE_MODEL_KINDS {
+        // Answers only for a page whose bucket really is released -- a resident bucket with a
+        // missing index entry is a disagreement for the promote reconcile, not for a delete.
+        let Some(address) = released_bucket_page_address(shard, model_id, object_key, None) else {
+            continue;
+        };
+        // A release refuses any page whose address does not name its own bucket, so the first of
+        // these holds by construction and is checked rather than assumed. The second may not: an
+        // address that carries no object id names no member to drop, and recomputing one needs a
+        // shard id this path does not carry. Skipping leaves exactly today's behaviour.
+        let (Some(routing_bucket), Some(object_id)) =
+            (address.routing_bucket(), address.object_id())
+        else {
+            continue;
+        };
+        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+            continue;
+        };
+        if bucket.object_index.remove(&object_id) {
+            classify_bucket_layout_in_place(bucket);
+            settled = true;
+        }
+    }
+    settled
+}
+
 /// What one call to [`release_bucket_pages`] managed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct BucketReleaseOutcome {
