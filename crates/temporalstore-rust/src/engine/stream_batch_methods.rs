@@ -127,8 +127,30 @@ impl TemporalEngine {
             size,
         });
         // A byte-addressed read is capped the same way -- `size` above is the window clamped to
-        // max_bytes -- so it ends the stream only when it reached the offset that was asked for.
+        // max_bytes -- so it ends the stream when it reached the offset that was asked for.
+        //
+        // It also ends when the read came back with NOTHING. That case used to fall through to
+        // the arithmetic below, where zero bytes can never reach `end_offset`, so a scan that
+        // found nothing answered end_of_stream FALSE. A caller walking `while !end_of_stream`
+        // advances by the bytes it was handed, is handed none, asks again at the same offset and
+        // is told the same thing -- a walk that cannot terminate.
+        //
+        // All three byte-addressed kinds can land here. `Index` returns an empty window for a
+        // start at or past the end of the served index, and `logical_range_from_slab` does the
+        // same for `Block` and `Page` on both its raw and its framed path.
+        //
+        // An empty answer means the stream ended inside the window rather than that nothing was
+        // asked for. A window of zero width (`start_offset == end_offset`, which the check above
+        // permits) is the one case where nothing WAS asked for, and it already answered true by
+        // the arithmetic below -- `start + 0 >= end` holds when the two are equal -- so the new
+        // clause agrees with it rather than changing it. Everywhere else `size` is at least one
+        // byte, because a zero budget has already been read as no budget.
+        //
+        // This is the rule the record-framed half already follows: `scan_bounded` reports
+        // `truncated` only when the BUDGET cut the walk short, so a walk that simply ran out of
+        // records reports the end of the stream. The two halves now answer alike.
         let end_of_stream = !read.status.ok
+            || read.data.is_empty()
             || request
                 .start_offset
                 .saturating_add(read.data.len() as u64)

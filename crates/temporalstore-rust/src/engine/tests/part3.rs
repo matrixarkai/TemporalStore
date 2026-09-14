@@ -2973,3 +2973,211 @@ fn a_scan_with_no_budget_named_advances_on_every_stream_kind() {
         "one byte of a 64-byte window is not the end of that window"
     );
 }
+
+#[test]
+fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
+    // A byte-addressed scan that finds nothing at the offset it was asked for used to answer
+    // status OK, no records, and end_of_stream FALSE -- because `end_of_stream` was computed
+    // only as "did the bytes I returned reach end_offset", and zero bytes never reach it. A
+    // caller walking `while !end_of_stream` advances by the bytes it got, gets none, asks again
+    // at the same offset and is told the same thing, for ever.
+    //
+    // This is the same non-advancing walk that `a_scan_with_no_budget_named_advances_on_every_
+    // stream_kind` closed for an unset budget, arriving from the other direction: there the
+    // window was clamped to nothing, here the window is real and the stream has ended inside it.
+    //
+    // The two halves of the surface disagreed and so they are asserted APART. The record-framed
+    // kinds (Wal, IndexLog) go through `scan_bounded`, which reports an explicit `truncated`
+    // flag and so already said "done" when the walk ran out of records. Only the byte-addressed
+    // kinds (Block, Page, Index) were wrong. A single assertion over all five would have read
+    // two correct answers and looked like a surface that works.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..8 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{i}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    // Far beyond anything eight small records could have written, so every kind below is being
+    // asked for a window that exists in the request and not in the stream.
+    const PAST: u64 = 1 << 30;
+
+    // ---- Denominator first. Each kind must return bytes at offset zero, or "no bytes at PAST"
+    // says nothing about the offset and everything about an empty store.
+    let block_here = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(block_here.status.ok);
+    assert_eq!(
+        block_here.records.len(),
+        1,
+        "premise: the block stream holds bytes at offset zero"
+    );
+    assert!(
+        !block_here.records[0].data.is_empty(),
+        "premise: the block stream returns a non-empty window at offset zero"
+    );
+
+    let page_here = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(page_here.status.ok);
+    assert_eq!(
+        page_here.records.len(),
+        1,
+        "premise: the page stream holds bytes at offset zero"
+    );
+
+    let index_here = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Index,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(index_here.status.ok);
+    assert_eq!(
+        index_here.records.len(),
+        1,
+        "premise: the index stream holds bytes at offset zero"
+    );
+
+    // ---- Half one: the byte-addressed kinds, asserted one at a time.
+    let block_past = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        block_slab_id: 0,
+        start_offset: PAST,
+        end_offset: PAST + 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(block_past.status.ok, "a read past the end is not an error");
+    assert_eq!(
+        block_past.records.len(),
+        0,
+        "premise: nothing lives at {PAST} in the block stream"
+    );
+    assert!(
+        block_past.end_of_stream,
+        "a block scan returned {} records at offset {PAST} and said end_of_stream={}, so a \
+         caller walking `while !end_of_stream` could never advance past it",
+        block_past.records.len(),
+        block_past.end_of_stream
+    );
+
+    let page_past = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        block_slab_id: 0,
+        start_offset: PAST,
+        end_offset: PAST + 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(page_past.status.ok, "a read past the end is not an error");
+    assert_eq!(
+        page_past.records.len(),
+        0,
+        "premise: nothing lives at {PAST} in the page stream"
+    );
+    assert!(
+        page_past.end_of_stream,
+        "a page scan returned {} records at offset {PAST} and said end_of_stream={}, so a \
+         caller walking `while !end_of_stream` could never advance past it",
+        page_past.records.len(),
+        page_past.end_of_stream
+    );
+
+    let index_past = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Index,
+        block_slab_id: 0,
+        start_offset: PAST,
+        end_offset: PAST + 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(index_past.status.ok, "a read past the end is not an error");
+    assert_eq!(
+        index_past.records.len(),
+        0,
+        "premise: nothing lives at {PAST} in the index stream"
+    );
+    assert!(
+        index_past.end_of_stream,
+        "an index scan returned {} records at offset {PAST} and said end_of_stream={}, so a \
+         caller walking `while !end_of_stream` could never advance past it",
+        index_past.records.len(),
+        index_past.end_of_stream
+    );
+
+    // ---- Half two: the record-framed kinds were already right, and must stay right.
+    let wal_past = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        block_slab_id: 0,
+        start_offset: PAST,
+        end_offset: PAST + 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(wal_past.status.ok);
+    assert!(
+        wal_past.end_of_stream,
+        "the wal walk ran out of records, which is the end of the stream"
+    );
+
+    let index_log_past = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::IndexLog,
+        block_slab_id: 0,
+        start_offset: PAST,
+        end_offset: PAST + 64,
+        max_bytes: u64::MAX,
+    });
+    assert!(index_log_past.status.ok);
+    assert!(
+        index_log_past.end_of_stream,
+        "the index-log walk ran out of records, which is the end of the stream"
+    );
+
+    // ---- A window the stream only PARTLY covers still reports the cut honestly: bytes came
+    // back and they did not reach end_offset, so the walk has more to do.
+    let partial = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        block_slab_id: 0,
+        start_offset: 0,
+        end_offset: 8,
+        max_bytes: 4,
+    });
+    assert!(partial.status.ok);
+    assert_eq!(
+        partial.records[0].data.len(),
+        4,
+        "premise: a four-byte budget over an eight-byte window returns four bytes"
+    );
+    assert!(
+        !partial.end_of_stream,
+        "four bytes of an eight-byte window is not the end of that window"
+    );
+}
