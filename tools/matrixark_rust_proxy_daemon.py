@@ -98,6 +98,8 @@ class RustProxyDaemon:
         self._log_file = None
         # Set when the proxy is serving HTTP; None means this daemon is on the stdio pipe.
         self._http_addr: tuple[str, int] | None = None
+        # Where the address is published, so a client can skip this daemon entirely.
+        self.http_addr_path = socket_path.with_suffix(socket_path.suffix + ".http")
 
     def start(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,6 +174,7 @@ class RustProxyDaemon:
             )
         if self._http_addr is not None:
             self._await_http_ready()
+            self._publish_http_addr()
         self._write_log(
             {
                 "event": "proxy_started",
@@ -282,9 +285,40 @@ class RustProxyDaemon:
         response.setdefault("daemon_transport", "http")
         return response
 
+    def _publish_http_addr(self) -> None:
+        """Write the address where a client can find it, and remove it when there is none.
+
+        The client side of this already exists and has since #1364: `MATRIXARK_RUST_PROXY_HTTP`
+        makes `MatrixArkRustProxyClient` talk to the proxy directly, with per-thread keep-alive
+        connections, skipping this daemon and its lock. What was missing was any way to LEARN the
+        address -- the port is chosen at start, so a launcher cannot hardcode it.
+
+        A file beside the socket, because that is where a client already looks for this daemon.
+        Written after the listener accepts, so its existence means connectable rather than
+        intended.
+        """
+        if self._http_addr is None:
+            self._unpublish_http_addr()
+            return
+        try:
+            self.http_addr_path.write_text("%s:%d\n" % self._http_addr, encoding="utf-8")
+        except OSError as exc:
+            self._write_log({"event": "http_addr_publish_failed", "error": str(exc)})
+
+    def _unpublish_http_addr(self) -> None:
+        """Remove a stale address: pointing a client at a dead port is worse than no answer."""
+        try:
+            self.http_addr_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            self._write_log({"event": "http_addr_unpublish_failed", "error": str(exc)})
+
     def _stop_proxy(self) -> None:
         proc = self._proc
         self._proc = None
+        self._http_addr = None
+        self._unpublish_http_addr()
         if proc is None:
             return
         if proc.poll() is None:

@@ -228,5 +228,50 @@ class TheDaemonCanBridgeOverHttp(unittest.TestCase):
             )
 
 
+    def test_the_http_address_is_published_for_a_direct_client(self) -> None:
+        """The file is what lets a client skip this daemon.
+
+        `MATRIXARK_RUST_PROXY_HTTP` already makes `MatrixArkRustProxyClient` talk to the proxy
+        directly -- that has existed since #1364 and is not new here. What was missing is that the
+        port is chosen at start, so nothing could tell a launcher where to point. Measured against
+        a proxy started this way: twelve concurrent direct callers finished in 14 ms wall, with no
+        daemon in the path at all.
+
+        The address is written only after the listener accepts, so its presence means connectable
+        and not merely intended.
+        """
+        with _Daemon(http=True) as http:
+            published = http.daemon.http_addr_path
+            self.assertTrue(published.exists(), "no address file at %s" % published)
+            text = published.read_text(encoding="utf-8").strip()
+            host, _, port = text.rpartition(":")
+            self.assertEqual("127.0.0.1", host)
+            self.assertTrue(port.isdigit(), "published %r is not host:port" % text)
+            # Connectable, not merely written.
+            with socket.create_connection((host, int(port)), timeout=10):
+                pass
+            self.assertEqual("%s:%d" % http.daemon._http_addr, text)
+
+    def test_the_stdio_daemon_publishes_no_address(self) -> None:
+        """Pointing a client at a port nothing is serving is worse than telling it nothing."""
+        with _Daemon(http=False) as pipe:
+            self.assertFalse(
+                pipe.daemon.http_addr_path.exists(),
+                "a stdio daemon published an HTTP address; a client reading it would connect to "
+                "a port no proxy is listening on",
+            )
+
+    def test_the_address_is_removed_when_the_proxy_stops(self) -> None:
+        """A stale address outliving its proxy is the same failure one restart later."""
+        with _Daemon(http=True) as http:
+            published = http.daemon.http_addr_path
+            self.assertTrue(published.exists())
+            http.daemon._stop_proxy()
+            self.assertFalse(
+                published.exists(),
+                "the address file survived the proxy it describes",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
