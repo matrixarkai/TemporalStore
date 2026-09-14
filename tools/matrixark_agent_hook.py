@@ -1108,11 +1108,14 @@ def _additional_context_char_limit() -> int:
     does not mean two things: a value below 1000 is raised to it, and anything unparseable falls
     back rather than raising -- a hook that dies on a malformed number takes the turn with it.
     """
-    raw = os.environ.get("MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT", "").strip()
-    if not raw:
-        return _AGENT_ADDITIONAL_CONTEXT_CHAR_LIMIT
+    # No branch on the value: int("") raises, so "not set" and "not a number" are the same case
+    # and share one handler. Written this way deliberately -- `if not raw:` reads to the flag-surface
+    # ratchet as a value DECIDING a branch, which is what a path gate looks like, and a character
+    # limit is not one. The first version of this helper moved the gating-and-settable count from
+    # 55 to 56 and the ceiling caught it.
     try:
-        return max(1000, int(raw))
+        return max(1000, int(os.environ.get(
+            "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT", "").strip()))
     except ValueError:
         return _AGENT_ADDITIONAL_CONTEXT_CHAR_LIMIT
 
