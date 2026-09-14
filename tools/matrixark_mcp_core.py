@@ -546,15 +546,15 @@ def node_id_ref(node_hash: int) -> Json:
 
 
 try:  # the implementation lives in matrixark_mcp_models; this module re-exports it
-    from .matrixark_mcp_models import compact_model_slug
+    from .matrixark_mcp_models import (
+        compact_model_slug,
+        embedding_model_ref_for_name,
+    )
 except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_models import compact_model_slug
-
-
-def embedding_model_ref_for_name(model_name: str) -> str:
-    slug = compact_model_slug(model_name)
-    suffix = stable_hash(f"embedding_model:{model_name}") % 10000
-    return f"emb:{slug}:{suffix:04d}"
+    from matrixark_mcp_models import (  # noqa: F401
+        compact_model_slug,
+        embedding_model_ref_for_name,
+    )
 
 
 def same_embedding_model(left: str, right: str) -> bool:

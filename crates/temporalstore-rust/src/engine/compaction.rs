@@ -279,6 +279,24 @@ pub(super) struct CompactionRewriteStats {
     budget_page_refs: usize,
     pub(super) skipped_by_budget: usize,
     pub(super) skipped_by_budget_bytes: u64,
+    /// The slabs the caller asked this round to empty, or `None` for every live page.
+    ///
+    /// `None` is what a DIRECT compaction has always meant and still means: the operator RPC
+    /// and the on-demand cycle are instructions, not suggestions. `Some` is what the PERIODIC
+    /// loop issues, and it names the only slabs a relocation can recover anything for -- the ones
+    /// carrying dead space that objects still hold pages on. A page on any OTHER slab comes out
+    /// of a relocation byte for byte what it went in as, on a slab that is now the one carrying
+    /// the dead space, so moving it recovers nothing and costs a read, an append and a share of
+    /// an index record.
+    drain_block_slab_ids: Option<BTreeSet<u64>>,
+    /// Pages left where they are because emptying their slab was not asked for.
+    ///
+    /// NOT work left behind, and the distinction is the termination argument: a later round will
+    /// not want these either, so this must never keep the round open. That is why
+    /// `should_relocate` tests the drain set BEFORE the budget -- charging these to
+    /// `skipped_by_budget` would make `left_work_behind` true for ever on any shard with a
+    /// page outside the drain set, and the round would never close.
+    pub(super) skipped_off_drain_set: usize,
 }
 
 #[derive(Debug, Default)]
@@ -303,14 +321,46 @@ impl CompactionRewriteStats {
         }
     }
 
+    /// The same round, restricted to the pages sitting on `drain_block_slab_ids`.
+    ///
+    /// The set comes off the reclaim plan the maintenance round has already built, so asking for
+    /// it costs no walk of the shard -- see `compaction_drain_block_slab_ids`. A round built
+    /// this way moves exactly the pages the relocation hint names: the ones whose movement
+    /// empties a slab, and nothing else.
+    pub(super) fn for_drain_round(
+        target_block_slab_id: u64,
+        budget_bytes: u64,
+        budget_page_refs: usize,
+        drain_block_slab_ids: BTreeSet<u64>,
+    ) -> Self {
+        Self {
+            drain_block_slab_ids: Some(drain_block_slab_ids),
+            ..Self::for_round(target_block_slab_id, budget_bytes, budget_page_refs)
+        }
+    }
+
     /// Whether this address should move, charging the budget when it should.
     ///
-    /// Two reasons not to move one: it is already on the slab this round is filling, which is
-    /// how a resumed round avoids redoing its predecessor's work; or the round has spent its
-    /// budget, which is how it stays bounded. Charged BEFORE the page is read, since reading is
-    /// the expensive half and the length is known from the address.
+    /// Three reasons not to move one: it is already on the slab this round is filling, which is
+    /// how a resumed round avoids redoing its predecessor's work; its slab is not one this round
+    /// was asked to empty, so moving it would recover nothing; or the round has spent its budget,
+    /// which is how it stays bounded. The budget is charged BEFORE the page is read, since
+    /// reading is the expensive half and the length is known from the address.
+    ///
+    /// ORDER MATTERS between the last two. A page outside the drain set must not be charged to
+    /// `skipped_by_budget`, because that is what `left_work_behind` reads to keep a round
+    /// open for the next one -- and a round kept open by pages nobody will ever want moved never
+    /// closes.
     pub(super) fn should_relocate(&mut self, address: &BlockAddress) -> bool {
         if address.block_slab_id == self.target_block_slab_id {
+            return false;
+        }
+        if self
+            .drain_block_slab_ids
+            .as_ref()
+            .is_some_and(|drain| !drain.contains(&address.block_slab_id))
+        {
+            self.skipped_off_drain_set = self.skipped_off_drain_set.saturating_add(1);
             return false;
         }
         if address.length > self.budget_bytes || self.budget_page_refs == 0 {
@@ -695,7 +745,7 @@ pub(super) fn compact_feature_page_addresses(
 /// No threshold here, and no shard-wide question about staleness or density: the three predicates
 /// of that shape were each refused by the suite. This is the drain SET, and what makes a slab a
 /// member of it is that some object still has a page there.
-pub(super) fn compaction_drain_block_slab_ids(
+pub fn compaction_drain_block_slab_ids(
     reclaim_candidates: &[StorageReclaimCandidate],
 ) -> BTreeSet<u64> {
     reclaim_candidates

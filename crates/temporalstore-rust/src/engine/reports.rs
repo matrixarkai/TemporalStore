@@ -74,6 +74,17 @@ pub struct ShardCompactionReport {
     pub pages_left_by_budget: usize,
     #[serde(default)]
     pub bytes_left_by_budget: u64,
+    /// Pages this round left where they were because emptying their slab was not asked for.
+    ///
+    /// Zero for a DIRECT compaction, which relocates every live page by instruction. Non-zero for
+    /// the PERIODIC one, which is told which slabs it is draining and leaves the rest alone --
+    /// relocating a page off a slab that carries no dead space recovers nothing, because the page
+    /// is copied verbatim and the slab it left becomes the one carrying the dead space.
+    ///
+    /// Unlike `pages_left_by_budget` this does NOT mean the round is unfinished: a later round
+    /// will not want these pages either.
+    #[serde(default)]
+    pub pages_left_off_drain_set: usize,
     #[serde(default)]
     pub cold_page_rewrite_refs: usize,
     #[serde(default)]
