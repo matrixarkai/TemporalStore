@@ -958,6 +958,39 @@ fn expiry_scan_budget(limit: usize) -> usize {
         )
     }
 
+    /// Compact, relocating ONLY the pages that sit on `drain_block_slab_ids`.
+    ///
+    /// This is what the PERIODIC loop issues, and it is the round the relocation hint describes.
+    /// `compact_shard_pages` above relocates every live page, which is what a direct
+    /// instruction has always meant -- but for the loop that is far more work than the result
+    /// needs. A relocation recovers space only for the slab it VACATES:
+    /// `compact_page_addresses` copies a page's bytes verbatim and appends them elsewhere, so
+    /// a page moved off a slab with no dead space comes out byte for byte what it went in as, on
+    /// a slab that is now the one carrying the dead space. The live bytes are unchanged and there
+    /// is one more emptied slab for the collector to destroy.
+    ///
+    /// So a single overwritten record anywhere in the shard used to cost a rewrite of the WHOLE
+    /// live set, spread over `live_page_refs / COMPACTION_ROUND_PAGE_REFS` rounds of shard
+    /// write lock, to recover one page. Naming the drain set bounds the work by the size of the
+    /// holed slabs instead of by the size of the store.
+    ///
+    /// The set costs no walk: `compaction_drain_block_slab_ids` reads it off the reclaim plan
+    /// the maintenance round has already built, and it is the SAME plan the round's gate consults
+    /// -- so what the round is allowed to move and what it was started for now come from one
+    /// snapshot instead of two.
+    pub fn compact_shard_pages_draining(
+        &self,
+        shard_id: ShardId,
+        drain_block_slab_ids: BTreeSet<u64>,
+    ) -> Result<ShardCompactionReport, Status> {
+        self.compact_shard_pages_relocating(
+            shard_id,
+            COMPACTION_ROUND_BYTES,
+            COMPACTION_ROUND_PAGE_REFS,
+            Some(drain_block_slab_ids),
+        )
+    }
+
     /// Compact, relocating at most `budget_bytes` of pages this round.
     ///
     /// The budget is a parameter and not only a constant so a test can force MANY rounds over a
@@ -982,6 +1015,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
         shard_id: ShardId,
         budget_bytes: u64,
         budget_page_refs: usize,
+    ) -> Result<ShardCompactionReport, Status> {
+        self.compact_shard_pages_relocating(shard_id, budget_bytes, budget_page_refs, None)
+    }
+
+    /// The round itself. `drain_block_slab_ids` is `None` for "every live page" -- a
+    /// direct instruction -- and `Some` for "only the slabs named", which is what the
+    /// periodic loop asks for. Everything else about a round is identical either way, so the two
+    /// share one body and one set of rules about resuming, budgets and the write guard.
+    fn compact_shard_pages_relocating(
+        &self,
+        shard_id: ShardId,
+        budget_bytes: u64,
+        budget_page_refs: usize,
+        drain_block_slab_ids: Option<BTreeSet<u64>>,
     ) -> Result<ShardCompactionReport, Status> {
         let (start_routing_bucket, end_routing_bucket) = self
             .infos
@@ -1065,8 +1112,19 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 (roll.previous_block_slab_id, roll.new_block_slab_id)
             }
         };
-        let mut rewrite_stats =
-            CompactionRewriteStats::for_round(target_block_slab_id, budget_bytes, budget_page_refs);
+        let mut rewrite_stats = match drain_block_slab_ids {
+            Some(drain_block_slab_ids) => CompactionRewriteStats::for_drain_round(
+                target_block_slab_id,
+                budget_bytes,
+                budget_page_refs,
+                drain_block_slab_ids,
+            ),
+            None => CompactionRewriteStats::for_round(
+                target_block_slab_id,
+                budget_bytes,
+                budget_page_refs,
+            ),
+        };
 
         // Relocate every model's live pages onto the freshly rolled slab. A mid-way failure
         // (append ENOSPC / an unreadable torn page) is caught below so we can durably commit the
@@ -1392,6 +1450,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             compacted_block_slab_id: target_block_slab_id,
             pages_left_by_budget: rewrite_stats.skipped_by_budget,
             bytes_left_by_budget: rewrite_stats.skipped_by_budget_bytes,
+            pages_left_off_drain_set: rewrite_stats.skipped_off_drain_set,
             rewritten_page_refs: rewrite_stats.rewritten_page_refs,
             cold_page_rewrite_refs: rewrite_stats.cold_page_rewrite_refs,
             object_page_pack_group_count: before

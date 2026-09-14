@@ -875,8 +875,32 @@ impl DataNodeRuntime {
         let compaction_relocatable_page_refs =
             crate::engine::compaction_relocatable_page_refs(&lifecycle_plan.reclaim_candidates);
         let compaction_has_work = compaction_relocatable_page_refs > 0;
+        // AND THE ROUND MOVES THAT, AND NOT THE REST OF THE SHARD.
+        //
+        // The count above and the set below are the same answer read two ways off the same plan:
+        // the count is what makes this round worth starting, the set is what the round is then
+        // allowed to touch. They were not always the same answer. The gate has asked the
+        // per-object question since the self-retrigger fix, but the round it issued relocated
+        // every live page in the shard -- so one overwritten record anywhere cost a rewrite of
+        // the WHOLE live set, over as many rounds of shard write lock as the ref budget needed,
+        // to recover that one page.
+        //
+        // Relocating a page off a slab that carries no dead space recovers nothing.
+        // `compact_page_addresses` copies its bytes verbatim, so it lands byte for byte what
+        // it was, on a slab that is now the one carrying the dead space -- same live bytes, one
+        // more emptied slab for the collector, one more share of an index record.
+        //
+        // Taking both off ONE plan snapshot also removes a smaller divergence: the gate and the
+        // selection used to be computed from different views of the shard, so a round could be
+        // started for a slab it then had no particular interest in draining.
+        let compaction_drain_block_slab_ids =
+            crate::engine::compaction_drain_block_slab_ids(&lifecycle_plan.reclaim_candidates);
         if options.enable_page_compaction && stale_page_pressure && compaction_has_work {
-            let response = run_compaction_inner(&self.inner, CompactionRequest { shard_id });
+            let response = run_compaction_inner_draining(
+                &self.inner,
+                CompactionRequest { shard_id },
+                Some(compaction_drain_block_slab_ids),
+            );
             if !response.status.ok {
                 status = response.status.clone();
             }
