@@ -7,11 +7,27 @@ The Rust proxy binary speaks newline-delimited JSON on stdio in ``--serve``
 mode. Hooks are short-lived, so spawning that binary from every hook loses warm
 engine/cache state. This daemon keeps one Rust proxy process alive and exposes a
 small Unix-socket JSON-lines bridge for hook/client processes.
+
+A pipe has ONE reader, so that bridge must serialize every caller behind one lock --
+and on a live one-box deployment that is the dominant cost of a request, not the
+work:
+
+    queue wait   n=44,200   p50 6,352 ms   p90 434,871 ms   p99 1,167,374 ms
+    actual work  n=34,290   p50    44 ms   p90   2,554 ms   p99    24,280 ms
+
+The median caller waits 6.4 s to do 44 ms of work. 9,910 requests spent their whole
+budget queueing and were abandoned without being started.
+
+``MATRIXARK_PROXY_DAEMON_HTTP=1`` starts the proxy in ``--serve-http`` mode instead
+and bridges over HTTP, which removes the lock: the proxy serves concurrent callers
+itself. The Unix socket stays exactly where it is, so no client changes and either
+transport can be run on the same box for comparison.
 """
 
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import signal
@@ -80,6 +96,8 @@ class RustProxyDaemon:
         self._stop = threading.Event()
         self._proc: subprocess.Popen[str] | None = None
         self._log_file = None
+        # Set when the proxy is serving HTTP; None means this daemon is on the stdio pipe.
+        self._http_addr: tuple[str, int] | None = None
 
     def start(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,24 +143,144 @@ class RustProxyDaemon:
             # Local hook mode should not block first serving on page-cache warming.
             # The daemon starts a background warmup immediately after the proxy is live.
             env.setdefault("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0")
-        self._proc = subprocess.Popen(
-            [str(self.proxy_path), "--serve"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=self._log_file or subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-            env=env,
-        )
+        http_addr = self._http_listen_addr()
+        if http_addr is not None:
+            host, port = http_addr
+            # Concurrency is the POINT, and it is a separate switch on the engine: HTTP mode
+            # starts `concurrent=false` by default, which reproduces the pipe's serialization
+            # on a different transport and would move the queue rather than remove it.
+            env.setdefault("MATRIXARK_RUST_PROXY_HTTP_CONCURRENT", "1")
+            self._proc = subprocess.Popen(
+                [str(self.proxy_path), "--serve-http", f"{host}:{port}"],
+                stdin=subprocess.DEVNULL,
+                stdout=self._log_file or subprocess.DEVNULL,
+                stderr=self._log_file or subprocess.DEVNULL,
+                text=True,
+                env=env,
+            )
+            self._http_addr = (host, port)
+        else:
+            self._http_addr = None
+            self._proc = subprocess.Popen(
+                [str(self.proxy_path), "--serve"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self._log_file or subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+        if self._http_addr is not None:
+            self._await_http_ready()
         self._write_log(
             {
                 "event": "proxy_started",
+                "transport": "http" if self._http_addr else "stdio",
+                "http_addr": None if self._http_addr is None else "%s:%d" % self._http_addr,
                 "pid": self._proc.pid,
                 "startup_warmup_allowed": startup_warmup_allowed,
                 "eager_cache_warm_on_load": env.get("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD"),
             }
         )
         self._maybe_start_startup_warmup()
+
+    @staticmethod
+    def _http_listen_addr() -> "tuple[str, int] | None":
+        """Where to serve HTTP, or None to stay on the stdio pipe.
+
+        Off by default. The transport is well covered on its own
+        (`test_the_gateway_talks_to_the_proxy_over_http` runs every case down BOTH transports and
+        compares), but flipping the default changes how a live deployment is reached, and that is
+        a deployment decision rather than a code one. `MATRIXARK_PROXY_DAEMON_HTTP=1` turns it on;
+        `MATRIXARK_PROXY_DAEMON_HTTP_ADDR` overrides host:port.
+
+        Port 0 asks the OS for a free one, which is the right default for a daemon that may share
+        a box with other instances -- a fixed port turns a second daemon into a silent failure to
+        bind.
+        """
+        if not RustProxyDaemon._env_enabled(os.environ.get("MATRIXARK_PROXY_DAEMON_HTTP")):
+            return None
+        raw = (os.environ.get("MATRIXARK_PROXY_DAEMON_HTTP_ADDR") or "127.0.0.1:0").strip()
+        host, _, port = raw.rpartition(":")
+        host = host or "127.0.0.1"
+        try:
+            port_number = int(port)
+        except ValueError:
+            port_number = 0
+        if port_number == 0:
+            probe = socket.socket()
+            try:
+                probe.bind((host, 0))
+                port_number = probe.getsockname()[1]
+            finally:
+                probe.close()
+        return (host, port_number)
+
+    def _await_http_ready(self, timeout_s: float = 30.0) -> bool:
+        """Block until the listener accepts, so the first caller does not race the bind.
+
+        A connection refused here is not "the proxy is broken" -- it is "the proxy has not bound
+        yet", and the two are indistinguishable to a caller. Waiting once at start is cheaper than
+        making every caller handle a startup race.
+        """
+        if self._http_addr is None:
+            return True
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            proc = self._proc
+            if proc is not None and proc.poll() is not None:
+                self._write_log({"event": "proxy_http_exited_before_ready", "rc": proc.returncode})
+                return False
+            probe = socket.socket()
+            probe.settimeout(0.5)
+            try:
+                probe.connect(self._http_addr)
+                return True
+            except OSError:
+                time.sleep(0.05)
+            finally:
+                probe.close()
+        self._write_log({"event": "proxy_http_never_bound", "addr": "%s:%d" % self._http_addr})
+        return False
+
+    def _call_proxy_http(self, request: Json, started: float) -> Json:
+        """One HTTP round trip, with NO daemon lock held.
+
+        This is the whole point of the transport. The stdio path below takes `self._lock` because
+        a pipe has one reader and one writer; HTTP does not, so concurrent callers reach the
+        engine concurrently and the queue that dominated every request disappears. The engine's
+        own `MATRIXARK_RUST_PROXY_HTTP_CONCURRENT` is what makes that true on its side, and
+        `_start_proxy` sets it.
+        """
+        assert self._http_addr is not None
+        budget_s = max(2.0, float(request.get("request_timeout_ms") or 60000) / 1000.0 + 2.0)
+        body = json.dumps(request, separators=(",", ":")).encode("utf-8")
+        conn = http.client.HTTPConnection(self._http_addr[0], self._http_addr[1], timeout=budget_s)
+        try:
+            conn.request("POST", "/", body=body,
+                         headers={"Content-Type": "application/json",
+                                  "Content-Length": str(len(body))})
+            raw = conn.getresponse().read()
+        except Exception as exc:  # noqa: BLE001 - bridge must fail closed into JSON
+            self._write_log({"event": "proxy_http_call_error", "error": str(exc)})
+            return {"ok": False, "error": str(exc)}
+        finally:
+            conn.close()
+        try:
+            response = json.loads(raw)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": "proxy returned non-JSON over http: %s" % exc}
+        if not isinstance(response, dict):
+            return {"ok": False, "error": "proxy returned a non-object over http"}
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        response.setdefault("rust_proxy_daemon", True)
+        response.setdefault("daemon_elapsed_ms", elapsed_ms)
+        # Reported as zero rather than omitted: a reader charting queue wait across a transport
+        # change needs the series to keep its shape, and "no queue" is the result, not missing data.
+        response.setdefault("daemon_queue_wait_ms", 0)
+        response.setdefault("daemon_work_ms", elapsed_ms)
+        response.setdefault("daemon_transport", "http")
+        return response
 
     def _stop_proxy(self) -> None:
         proc = self._proc
@@ -324,6 +462,11 @@ class RustProxyDaemon:
 
     def _call_proxy(self, request: Json) -> Json:
         started = time.monotonic()
+        if self._http_addr is not None:
+            # No lock: see `_call_proxy_http`.
+            self._ensure_proxy()
+            if self._http_addr is not None:
+                return self._call_proxy_http(request, started)
         with self._lock:
             lock_acquired = time.monotonic()
             waited_ms = int((lock_acquired - started) * 1000)
