@@ -4876,17 +4876,30 @@ fn what_the_stage_order_buys() {
     );
 }
 
-/// Can the page-GC garbage floor ever exclude a slab? Prints.
+/// Can the page-GC garbage floor ever exclude a slab? It cannot, and this now SAYS so.
 ///
 ///   cargo test -p temporalstore-rust --lib can_the_page_gc_garbage_floor_bind \
-///       -- --ignored --nocapture --test-threads=1
+///       -- --nocapture --test-threads=1
 ///
-/// The floor keeps a slab whose band is less than `min_slab_garbage_basis_points` garbage, and the
-/// band's live fraction is summed over the slabs in that band which are NOT collectable. So the
-/// floor can only bind where a band holds a MIX -- some collectable slabs, some not. This prints
-/// each candidate's band id against its own id, and the utility the floor is compared against.
+/// It asked the question and printed the answer, but it was `#[ignore]`d, so CI never ran it and
+/// the answer was never recorded anywhere that could fail. A shipped default of 4,000 basis
+/// points that cannot exclude anything is exactly the shape that gets "fixed" by being raised,
+/// which changes nothing and costs someone an afternoon.
+///
+/// So it still prints the table -- that is the useful part when this eventually changes -- and it
+/// now ASSERTS the invariant behind it: every candidate reports 0 used bytes and therefore 10,000
+/// basis points of garbage, and the floor excludes none of them. The reason is structural. The
+/// floor is compared against a band's live fraction; a band's used bytes sum the slabs in it that
+/// are NOT collectable; `band_id_for_slab` is the identity so a band holds exactly one slab; and
+/// a candidate is by definition not current and not live. The candidate filter is the exact
+/// negation of the used-bytes filter, so a candidate's band can never contribute to its own used
+/// bytes.
+///
+/// This is NOT waiting for a band to hold several slabs. It is waiting for used bytes to mean
+/// live PAGE bytes within the slab instead of whole file sizes of neighbouring slabs. When that
+/// lands, this test fails -- and that failure is the signal that the knob has become real, which
+/// is why the assertions name what they depend on.
 #[test]
-#[ignore]
 fn can_the_page_gc_garbage_floor_bind() {
     const BATCH: usize = 400;
     const ROUNDS: usize = 6;
@@ -4956,6 +4969,43 @@ fn can_the_page_gc_garbage_floor_bind() {
     eprintln!(
         "  VERDICT: the floor excluded {} of {} candidates",
         plan.skipped_by_policy_count, plan.candidate_count
+    );
+
+    // THE DENOMINATOR FIRST. A floor that excluded nothing because there was nothing to exclude
+    // would satisfy every assertion below while saying nothing at all, and that is the failure
+    // mode this test spent its whole life in: ignored, so zero candidates and zero exclusions
+    // were indistinguishable from a working floor.
+    assert!(
+        plan.candidate_count > 0,
+        "no candidates, so this measures nothing about the floor: {plan:?}"
+    );
+    assert!(
+        crate::engine::reports::DEFAULT_PAGE_GC_MIN_BAND_GARBAGE_BASIS_POINTS > 0,
+        "a floor of zero excludes nothing by definition and would make this vacuous"
+    );
+
+    for candidate in plan.candidates.iter() {
+        assert_eq!(
+            candidate.used_bytes, 0,
+            "a candidate's band cannot contribute to its own used bytes -- the candidate filter \
+             is the exact negation of the used-bytes filter, and a band holds one slab: \
+             {candidate:?}"
+        );
+        assert_eq!(
+            candidate.utility_basis_points, 0,
+            "so its live fraction is zero: {candidate:?}"
+        );
+    }
+    assert_eq!(
+        plan.skipped_by_policy_count, 0,
+        "every candidate is 10,000 bp garbage, so the shipped floor excludes none of them; if \
+         this now fails, used bytes have started to mean live page bytes within the slab and the \
+         knob has become real: {plan:?}"
+    );
+    assert_eq!(
+        plan.selected_block_slab_ids.len(),
+        plan.candidate_count,
+        "and every candidate is selected: {plan:?}"
     );
 }
 

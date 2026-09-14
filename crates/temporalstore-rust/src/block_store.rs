@@ -533,10 +533,28 @@ impl BlockStoreGcPolicy {
     /// not current and not live, so its band's used bytes are zero. Utility is therefore 0, garbage
     /// is 10,000 basis points, and every candidate clears every possible floor.
     ///
-    /// `can_the_page_gc_garbage_floor_bind` prints this: the floor excluded 0 of 2 candidates, both
-    /// at 10,000 bp garbage with 0 used bytes. Setting this to a larger number changes nothing
-    /// today, and it will start to bite the moment a band holds more than one slab -- which is what
-    /// the knob was built for. It is left in place and documented rather than removed.
+    /// `can_the_page_gc_garbage_floor_bind` asserts this: the floor excludes 0 of N candidates,
+    /// every one at 10,000 bp garbage with 0 used bytes. Setting this to a larger number changes
+    /// nothing today.
+    ///
+    /// WAITING FOR A BAND TO HOLD SEVERAL SLABS IS THE WRONG FIX, and an earlier reading of this
+    /// said otherwise. A band IS a slab -- `band_id_for_slab` is the identity, and
+    /// `a_stored_band_id_that_disagrees_with_its_slab_is_normalised_on_load` shows even a manifest
+    /// cannot introduce a grouping -- so that moment does not arrive, and the design this floor
+    /// was drawn from does not group either: one unit, one backing file, exactly as here.
+    ///
+    /// Its floor binds anyway, because its per-unit used-bytes counter sums the LIVE PAGE BYTES
+    /// inside the unit, maintained incrementally as pages are appended and deleted. A slab 30%
+    /// live reports 3,000 bp utility, and a 4,000 bp garbage floor is then a real question with a
+    /// real answer. Ours sums whole slab FILE SIZES of the slabs in the band that are not
+    /// collectable -- and since the candidate filter is the exact negation of that test, a
+    /// candidate's band contributes nothing and every candidate reports 0 used bytes.
+    ///
+    /// So the floor is not merely degenerate, it is measuring the wrong quantity: "is this whole
+    /// slab collectable" (always yes, by construction) instead of "how much of this slab is still
+    /// live". That is the same missing per-slab live-byte accounting that makes ONE live page pin
+    /// a whole slab, and the floor starts to bind the moment that exists -- not before, and not
+    /// for any amount of grouping. It is left in place and documented rather than removed.
     pub fn with_slab_garbage_floor(
         min_slab_garbage_basis_points: u64,
         min_age_ms: Option<u64>,
