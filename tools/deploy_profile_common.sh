@@ -37,7 +37,11 @@ TS_PROFILE_WAIT_S="${TS_PROFILE_WAIT_S:-20}"
 # where a missing shared file would be a failure to start, and the function is pure and six
 # lines long. test_every_shell_copy_of_the_flag_vocabulary_agrees.py holds them level.
 matrixark_flag_on() {  # $1 = value, $2 = default ("1" means on)
-  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+  # Whitespace is deleted before the match, not merely case-folded. A shell export, a systemd
+  # Environment= line and a heredoc all leave it behind, and `1 ` matched none of the words below,
+  # so it fell through to the default -- writing a flag ON left it OFF, and writing one OFF left it
+  # ON. No value this accepts contains whitespace, so deleting it cannot hide one.
+  case "$(printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on) return 0 ;;
     0|false|no|off) return 1 ;;
     *) [ "${2:-1}" = "1" ] ;;

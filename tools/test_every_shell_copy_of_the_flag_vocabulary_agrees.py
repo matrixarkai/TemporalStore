@@ -31,7 +31,25 @@ TOOLS = ROOT / "tools"
 #: Every spelling worth asking about, plus the shapes that must fall through to the default.
 VALUES = ("1", "true", "TRUE", "True", "yes", "YES", "on", "On", "ON",
           "0", "false", "FALSE", "no", "NO", "off", "OFF",
+          # The same words carrying whitespace. A shell export, a systemd Environment= line and a
+          # heredoc all leave it behind, and the helper matched none of them until it trimmed --
+          # so every one of these fell through to the DEFAULT, which is the opposite of what the
+          # operator wrote whenever the default disagreed with them.
+          "1 ", " 1", "  1  ", "true ", " true", "yes ", "ON ",
+          "0 ", " 0", "  0  ", "false ", " off", "off ", "NO ",
           "", "   ", "2", "garbage", "y", "n", "enabled")
+
+#: value -> the answer it must give, whatever the default is. Whitespace-only and unrecognised
+#: values are deliberately absent: those fall back to the default, which is the point of the
+#: `*)` branch and is checked by the agreement test rather than here.
+TRIMMED_MEANING = {
+    "1": True, "true": True, "TRUE": True, "yes": True, "on": True, "ON": True,
+    "1 ": True, " 1": True, "  1  ": True, "true ": True, " true": True, "yes ": True,
+    "ON ": True,
+    "0": False, "false": False, "FALSE": False, "no": False, "off": False, "OFF": False,
+    "0 ": False, " 0": False, "  0  ": False, "false ": False, " off": False, "off ": False,
+    "NO ": False,
+}
 
 _DEF = re.compile(r"^matrixark_flag_on\(\)\s*\{.*?^\}", re.MULTILINE | re.DOTALL)
 
@@ -112,6 +130,28 @@ class EveryShellCopyOfTheFlagVocabularyAgreesTest(unittest.TestCase):
                         % (name, baseline_name, default,
                            ", ".join("%r: %s vs %s" % (v, a, b)
                                      for v, (a, b) in sorted(differing.items()))))
+
+    def test_a_value_carrying_whitespace_still_means_what_it_says(self) -> None:
+        """The agreement test cannot see this: five copies agreeing on the wrong answer agree.
+
+        Every one of these fell through to the `*)` branch before the helper trimmed, so the
+        answer was the DEFAULT rather than the word the operator wrote -- `0 ` left a default-on
+        flag ON, and `1 ` left a default-off flag OFF.
+        """
+        found = _copies()
+        self.assertTrue(found, "no copies to check")
+        for name, body in sorted(found.items()):
+            for default in ("0", "1"):
+                verdicts, err = _verdicts(body, default)
+                self.assertIsNone(err, "%s could not be run: %s" % (name, err))
+                for value, expected in sorted(TRIMMED_MEANING.items()):
+                    with self.subTest(copy=name, default=default, value=value):
+                        self.assertEqual(
+                            "on" if expected else "off", verdicts[value],
+                            "%s reads %r as %s with default %s. Whitespace survives a shell "
+                            "export, a systemd Environment= line and a heredoc, and the value "
+                            "means the opposite of what it was read as."
+                            % (name, value, verdicts[value], default))
 
     def test_the_env_only_switch_goes_through_the_vocabulary(self) -> None:
         """The read that prompted this. `TS_PROFILE_ENV_ONLY` decides whether sourcing the profile
