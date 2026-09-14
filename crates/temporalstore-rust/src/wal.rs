@@ -746,6 +746,11 @@ pub struct WriteAheadLogGcReport {
     /// The pass was declined because the copy it required bought too little space. The records
     /// are untouched and a later pass, once the prefix has grown, will take them.
     pub skipped_not_worth_rewrite: bool,
+    /// The bytes this pass would have kept contain a closed block's footer, which cannot survive
+    /// the copy -- see the site that computes it for why. Reports the CONDITION, not the
+    /// decision, so a test can tell "the case was reached" from "the case was handled".
+    #[serde(default)]
+    pub retained_bytes_carry_a_block_footer: bool,
     /// Whole pieces of the log that went without being copied, because everything in them was
     /// below the floor.
     #[serde(default)]
@@ -2157,6 +2162,14 @@ impl LocalWriteAheadLogStore {
         //
         // Below the copy floor the ratio is meaningless and the rewrite is cheap either way, so
         // small logs reclaim exactly as they did before.
+        // Whether the bytes this pass keeps contain a closed block's footer. Reported, not acted
+        // on: the copy has to stay verbatim, and `block_is_closed` is what handles the footer it
+        // displaces. This is here so a test can say "the case was reached".
+        let retained_carries_a_block_footer = retained_bytes > 0 && {
+            let block = block_of(split.saturating_sub(header_len));
+            let slot = header_len + block_footer_at(block);
+            split <= slot && slot + WAL_BLOCK_FOOTER_BYTES <= record_end
+        };
         let worth_rewriting = reclaim_is_worth_rewriting(
             removed_bytes,
             retained_bytes,
@@ -2178,6 +2191,7 @@ impl LocalWriteAheadLogStore {
                 base_offset,
                 bytes_copied: 0,
                 skipped_not_worth_rewrite: true,
+                retained_bytes_carry_a_block_footer: retained_carries_a_block_footer,
                 dropped_segments,
                 dropped_segment_bytes: dropped_bytes,
             });
@@ -2230,6 +2244,7 @@ impl LocalWriteAheadLogStore {
             clamped_by_durable_index: false,
             bytes_copied: retained_bytes,
             skipped_not_worth_rewrite: false,
+            retained_bytes_carry_a_block_footer: retained_carries_a_block_footer,
             dropped_segments,
             dropped_segment_bytes: dropped_bytes,
         })
@@ -3685,18 +3700,74 @@ fn block_is_closed<R: std::io::BufRead + std::io::Seek>(
     }
     let index = block_of(at - header_len);
     let slot_at = header_len + block_footer_at(index);
-    if slot_at + WAL_BLOCK_FOOTER_BYTES > len {
+    if slot_at + WAL_BLOCK_FOOTER_BYTES <= len {
+        reader.seek(SeekFrom::Start(slot_at))?;
+        let mut slot = vec![0u8; WAL_BLOCK_FOOTER_BYTES as usize];
+        if reader.read_exact(&mut slot).is_ok() && decode_block_footer(&slot).is_some() {
+            let next = header_len + (index + 1) * WAL_BLOCK_BYTES;
+            if next >= len {
+                return Ok(None);
+            }
+            reader.seek(SeekFrom::Start(next))?;
+            return Ok(Some(next));
+        }
+    }
+    // Nothing on the grid. That is usually the truth -- the block never closed, and this is the
+    // end of the records -- but it is also what a RECLAIMED log looks like, and there the answer
+    // is wrong in the direction that loses data.
+    displaced_block_footer_end(reader, at, len)
+}
+
+/// A footer that a past reclaim moved off the grid: where the records resume after it, if it is
+/// there at all.
+///
+/// Reclaim copies the bytes it keeps VERBATIM, which is what moves every survivor down by the
+/// same amount and so keeps its log id stable. A footer inside those bytes is copied along with
+/// them -- but a block boundary is measured from the file's own header, and the rewritten file's
+/// header is a different length: a never-reclaimed file has none at all, and a reclaimed one
+/// carries a base written as decimal digits. So the copied footer lands where the new grid has
+/// no boundary, `block_is_closed` looks at the grid slot, finds record bytes, and correctly says
+/// "not closed" -- and the walk stops at the footer instead of stepping over it.
+///
+/// Measured before this existed, on a 300-record log reclaimed from sequence 10: the tail walk
+/// reported 123 as the highest sequence in a file that still held all 300. That number is what
+/// the next append seeds from, so it is sequence REUSE on the next restart, which replay's
+/// `sequence > watermark` filter then drops silently -- the failure the tail-continuity clamp in
+/// `gc_before_sequence_unchecked` exists to prevent, arriving by another door.
+///
+/// Only ever used to say YES, and only on the magic: the writer leaves the bytes between the last
+/// record and the footer slot unwritten, so they read as zeros, and the search is for the first
+/// NON-zero byte within one block of here. A zeros run with no footer after it -- a preallocated
+/// tail, or simply the end -- finds nothing and the caller stops exactly as it did before. A
+/// footer is only believed when `decode_block_footer` finds its magic, so record bytes cannot be
+/// mistaken for one.
+///
+/// This does not cover a block whose records end FLUSH against the footer slot, leaving no zeros
+/// to find: there the walk reads the footer as a record and reports corruption, which is loud
+/// rather than silent and is the safer of the two ways to be wrong.
+fn displaced_block_footer_end<R: std::io::BufRead + std::io::Seek>(
+    reader: &mut R,
+    at: u64,
+    len: u64,
+) -> Result<Option<u64>, WriteAheadLogError> {
+    // Padding before a footer cannot exceed the block that holds it, so neither can the search.
+    let window = WAL_BLOCK_BYTES.min(len.saturating_sub(at));
+    if window < WAL_BLOCK_FOOTER_BYTES {
         return Ok(None);
     }
-    reader.seek(SeekFrom::Start(slot_at))?;
-    let mut slot = vec![0u8; WAL_BLOCK_FOOTER_BYTES as usize];
-    if reader.read_exact(&mut slot).is_err() {
+    reader.seek(SeekFrom::Start(at))?;
+    let mut bytes = vec![0u8; window as usize];
+    if reader.read_exact(&mut bytes).is_err() {
         return Ok(None);
     }
-    if decode_block_footer(&slot).is_none() {
+    let Some(start) = bytes.iter().position(|byte| *byte != 0) else {
+        return Ok(None);
+    };
+    let end = start + WAL_BLOCK_FOOTER_BYTES as usize;
+    if end > bytes.len() || decode_block_footer(&bytes[start..end]).is_none() {
         return Ok(None);
     }
-    let next = header_len + (index + 1) * WAL_BLOCK_BYTES;
+    let next = at + end as u64;
     if next >= len {
         return Ok(None);
     }
@@ -5214,6 +5285,75 @@ mod tests {
             .collect();
         assert_eq!(sequences.first().copied(), Some(1));
         assert_eq!(sequences.last().copied(), Some(records as u64));
+    }
+
+    /// A reclaim copies the retained bytes VERBATIM, so any block footer inside them is copied
+    /// too -- and the rewritten file's block grid is recomputed from its own header, which puts
+    /// the copied footer at an offset that is no longer a block boundary. The walk then meets it
+    /// where a record should be, and stops.
+    #[test]
+    fn a_reclaim_that_crosses_a_block_boundary_keeps_every_record_it_retained() {
+        // rolling is off for this test: these assertions are about blocks within one piece.
+        set_wal_segment_bytes_for_test(Some(0));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let records = 300usize;
+        for index in 0..records {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: incompressible(1024),
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let path = write_ahead_log_path(dir.path(), 1);
+        let (last_before, record_end) = last_wal_sequence_in(&path).unwrap();
+        // Denominator. Without a CLOSED block in the retained range this proves nothing: the
+        // footer has to be inside the bytes the reclaim copies.
+        assert_eq!(last_before, records as u64, "every record must be readable first");
+        assert!(
+            record_end > WAL_BLOCK_BYTES,
+            "the workload must close at least one block: {record_end} <= {WAL_BLOCK_BYTES}"
+        );
+
+        // Retain from sequence 10, whose record sits in block 0 -- so the retained suffix spans
+        // block 0's footer.
+        let retain_from = 10u64;
+        let report = store.gc_before_sequence_unchecked(1, retain_from).unwrap();
+        // The denominator for the assertions below: the pass had a footer in the range it would
+        // have kept. Without that this test is exercising the ordinary reclaim and proves nothing.
+        assert!(
+            report.retained_bytes_carry_a_block_footer,
+            "this workload must reach the footer case: {report:?}"
+        );
+
+        // Whatever the pass decided, every record at or above the floor has to still be there.
+        // The tail sequence is the sharp half: the next append seeds from it, so a walk that
+        // stops short hands out sequences that are already in use.
+        let (last_after, _) = last_wal_sequence_in(&path).unwrap();
+        assert_eq!(
+            last_after, records as u64,
+            "the tail walk must still reach the highest retained sequence"
+        );
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        let sequences: std::collections::BTreeSet<u64> = scanned
+            .iter()
+            .map(|(_, line)| decode_wal_line(line).unwrap().sequence)
+            .collect();
+        let missing: Vec<u64> = (retain_from..=records as u64)
+            .filter(|sequence| !sequences.contains(sequence))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "every record at or above the floor must still read: {} of {} missing, first {:?}",
+            missing.len(),
+            records as u64 - retain_from + 1,
+            missing.first()
+        );
     }
 
     /// Not an assertion about behaviour -- a look at what the writer actually did, because the
