@@ -690,28 +690,26 @@ class _TemporalDirectReadMixin:
         )
 
     def _record_primary_hash(self, record: Json) -> int:
-        """Delegates: the single definition lives in matrixark_mcp_direct_cache.
-
-        That module already held `record_primary_hash` with this exact body, and nothing called it
-        -- an extracted helper that was never adopted, while this copy did the work. The field
-        ORDER is the record's identity precedence, so two copies of it are two chances to disagree
-        about which hash identifies a record.
-
-        Verified equivalent before the swap by calling both on 95 records -- each field alone, with
-        an int, a string, None and zero, and every adjacent pair so precedence was exercised rather
-        than presence. Zero disagreements.
-
-        Deferred rather than imported at module scope, and for the reason this module already
-        states above `lane_record_payload`: matrixark_mcp_direct_cache imports
-        matrixark_mcp_local_adapter and matrixark_mcp_core, either of which reaches back here, so
-        binding the name at import would close a cycle. Both spellings, because this module loads
-        as `tools.X` and as bare `X`.
-        """
-        try:  # package path
-            from tools.matrixark_mcp_direct_cache import record_primary_hash as _impl
-        except ImportError:  # Direct script execution from tools/.
-            from matrixark_mcp_direct_cache import record_primary_hash as _impl
-        return _impl(record)
+        for field in (
+            "event_id_hash",
+            "entity_hash",
+            "segment_hash",
+            "compression_id_hash",
+            "summary_hash",
+            "chunk_hash",
+            "section_hash",
+            "skill_hash",
+            "resource_hash",
+            "batch_id_hash",
+            "ref_hash",
+        ):
+            value = record.get(field)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    break
+        return stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))
 
     def _placement_candidate_records_from_cache_or_load(
         self,

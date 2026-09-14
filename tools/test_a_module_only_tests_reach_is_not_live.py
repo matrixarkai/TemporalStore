@@ -150,14 +150,10 @@ UNREACHABLE = {
         "matrixark_mcp_retrieve_entity_scan",
         "matrixark_mcp_retrieve_summary_scan",
     ),
-    # `direct_cache` was here -- matrixark_mcp_direct_cache and its state module, which nothing in
-    # production reached. That is why `record_primary_hash` sat there with no callers while
-    # `_TemporalDirectReadMixin._record_primary_hash` carried the same body and did the work: an
-    # extracted helper whose whole module was unreachable. The method now delegates to it, so both
-    # modules are wired up and neither belongs in a list of what production cannot reach.
-    #
-    # This entry leaving the list is the point of that change rather than a side effect of it, and
-    # this guard is what made it visible -- the modules were adopted, not deleted.
+    "direct_cache": (
+        "matrixark_mcp_direct_cache",
+        "matrixark_mcp_direct_cache_state",
+    ),
     # Two packers, ~1,639 lines, and the reason the docstring rule exists: both were held OUT of
     # this list by a sentence. `matrixark_mcp_budget_pack` defines `select_token_budgeted_refs`,
     # which production does import -- from `matrixark_mcp_core_ref_selection`, by way of
