@@ -20,6 +20,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+# probe_reader lives in run_live_oss_reader_validation, which defines it and guards its own entry
+# point behind `if __name__ == "__main__"`, so importing it runs nothing.
+try:  # package path
+    from tools.run_live_oss_reader_validation import probe_reader
+except ImportError:  # Direct script execution from tools/.
+    from run_live_oss_reader_validation import probe_reader
+
 
 WORD_RE = re.compile(r"[A-Za-z0-9]+")
 
@@ -114,7 +121,7 @@ def main() -> int:
     if not archive_path.exists():
         report["blockers"].append(f"missing_archive:{args.archive}")
         return finish(report, args.report, started, 2)
-    if not probe_reader(args.reader_base_url):
+    if not probe_reader(args.reader_base_url)["ok"]:
         report["blockers"].append("reader_endpoint_unreachable")
         return finish(report, args.report, started, 2)
 

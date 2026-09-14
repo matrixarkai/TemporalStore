@@ -1133,7 +1133,9 @@ class _LocalAdapterSummariesMixin:
                         "dirty_hash": dirty.get("dirty_hash"),
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "summary_version_hash": version_hash,
+                        "summary_version_hash": stable_hash(
+                            f"summary_refresh:{node_hash}:{dirty.get('dirty_hash')}:{refreshed_at_ms}"
+                        ),
                         "source_event_ids": source_event_ids,
                         "source_summary_hashes": source_summary_hashes,
                         "source_event_count": len(source_event_ids),

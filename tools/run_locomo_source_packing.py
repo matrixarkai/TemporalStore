@@ -3,6 +3,7 @@
 """Rust-TemporalStore source packing/splitting helpers, extracted from run_locomo_ingest_once.py."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any

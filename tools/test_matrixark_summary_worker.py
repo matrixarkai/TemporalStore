@@ -162,9 +162,22 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
             dirty_globals = adapter.node_summary_dirty_records.__globals__
-            old_debug = dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"]
-            dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"] = False
-            self.addCleanup(lambda: dirty_globals.__setitem__("ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS", old_debug))
+            # All three, not one. The compact marker is produced only when every one of these is
+            # off -- the writer reads them as a single `or` -- so pinning the first and inheriting
+            # the rest made this describe the environment rather than the default it is named for.
+            compact_knobs = (
+                "ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS",
+                "ENABLE_SUMMARY_REFRESH_AUDIT",
+                "ENABLE_CONTEXT_DEBUG_RECORDS",
+            )
+            for knob in compact_knobs:
+                self.assertIn(knob, dirty_globals,
+                              "%s is not a global of the dirty-marker writer; pinning it here "
+                              "would do nothing" % knob)
+                previous = dirty_globals[knob]
+                dirty_globals[knob] = False
+                self.addCleanup(
+                    lambda name=knob, value=previous: dirty_globals.__setitem__(name, value))
             scope = {
                 "account_id": "acct_local",
                 "tenant_id": "tenant_summary_compact",
@@ -240,6 +253,16 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
     def test_background_worker_refreshes_dirty_nodes_and_embeddings(self) -> None:
         mcp.SUMMARY_REFRESH_INTERVAL_MS = 100
         mcp.SUMMARY_REFRESH_LIMIT = 64
+        # Pinned rather than inherited: `assertFalse(audits)` at the end is a statement about the
+        # DEFAULT configuration, and with MATRIXARK_SUMMARY_REFRESH_AUDIT=1 in the environment it
+        # asserted the opposite of what that configuration produces. It passed anyway, because the
+        # audit write raised and the worker swallowed it, so "no audits" was true for the wrong
+        # reason. test_the_summary_refresh_audit_record_can_be_written covers the knob turned on.
+        refresh_globals = mcp.MatrixArkLocalAdapter.refresh_dirty_node_summaries.__globals__
+        old_audit = refresh_globals["ENABLE_SUMMARY_REFRESH_AUDIT"]
+        refresh_globals["ENABLE_SUMMARY_REFRESH_AUDIT"] = False
+        self.addCleanup(
+            lambda: refresh_globals.__setitem__("ENABLE_SUMMARY_REFRESH_AUDIT", old_audit))
         # Not a `with` block: the worker started below writes into tmpdir on its own thread,
         # and a `with` removes the directory as soon as the block exits -- before `addCleanup`
         # gets to stop the worker -- so teardown raced it and died with "Directory not empty".
@@ -310,7 +333,10 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         dirty_markers = [r for r in records if r.get("record_type") == "context_summary_dirty"]
         self.assertTrue(any(r.get("status") == "completed" for r in dirty_markers))
         audits = [r for r in records if r.get("record_type") == "context_summary_refresh_audit"]
-        self.assertFalse(audits)
+        self.assertFalse(
+            audits,
+            "the refresh audit is pinned off for this test and %d audit record(s) were written"
+            % len(audits))
 
     def test_refresh_summaries_uses_openai_compatible_model_for_l1_when_required(self) -> None:
         old_provider = os.environ.get("MATRIXARK_SUMMARY_PROVIDER")

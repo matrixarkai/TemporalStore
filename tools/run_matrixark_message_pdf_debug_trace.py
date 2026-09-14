@@ -31,6 +31,11 @@ from tools.matrixark_mcp_server import (  # noqa: E402
 )
 from tools import matrixark_mcp_core as mcp_core  # noqa: E402
 
+try:  # package path
+    from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_serving_records import compact_latest_context_state_records
+
 
 Json = dict[str, Any]
 HIDDEN_COMPACT_REPORT_RECORD_TYPES = {
