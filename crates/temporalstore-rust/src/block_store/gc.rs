@@ -380,7 +380,7 @@ impl LocalBlockStore {
             if below_retention_floor && !is_current && !is_live && is_selected {
                 removed_physical_bytes += slab_physical_bytes;
                 if delayed_destroy {
-                    move_slab_to_delayed_destroy(&inner.root, block_slab_id)?;
+                    move_slab_to_delayed_destroy_unsynced(&inner.root, block_slab_id)?;
                     set_slab_state(
                         &mut inner.slabs,
                         block_slab_id,
@@ -420,6 +420,22 @@ impl LocalBlockStore {
         //
         // Measured on a fixture where the store settles at three slabs and a round reclaims
         // nothing: 4.0 ms per round before, and the round does no other durable work.
+        //
+        // TWO DIRECTORY FSYNCS FOR THE WHOLE ROUND, and they must land HERE: after every rename,
+        // before the manifest that records them.
+        //
+        // The loop above used to fsync the store root and the trash directory once per
+        // quarantined slab -- the SAME two directories every iteration. Measured with
+        // `strace -y -e trace=fsync` on the unmodified loop: quarantining 199 slabs issued 199
+        // fsyncs of the trash directory and 199 of the root, and 799 slabs issued 799 and 799.
+        // Two per slab, so 160,000 at eighty thousand slabs, to commit one directory entry each.
+        // A directory fsync commits every pending entry in that directory, so one pair after the
+        // loop makes the same renames durable. See `sync_delayed_destroy_dirs` for why widening
+        // the crash window reaches no state the manifest-written-once shape did not already
+        // reach.
+        if !delayed_destroy_ids.is_empty() {
+            sync_delayed_destroy_dirs(&inner.root)?;
+        }
         if !removed.is_empty() {
             persist_slab_manifest(&inner.root, &inner.slabs)?;
         }

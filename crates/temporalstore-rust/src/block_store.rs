@@ -620,6 +620,28 @@ pub struct BlockStoreDelayedDestroySlabReport {
 /// measured capacity wall. Long enough for all three, short enough not to hoard a day of garbage.
 pub(crate) const DELAYED_DESTROY_MIN_AGE_MS: u64 = 60 * 60 * 1000;
 
+/// How many quarantined slabs one purge round may act on before it stops and leaves the rest for
+/// the next round.
+///
+/// THE PURGE HOLDS THE STORE-WIDE LOCK FOR THE WHOLE ROUND, and before this the round was
+/// unbounded in the amount of work it did: it read the trash directory and acted on every slab it
+/// found. Measured on this box with the re-checked, list-narrowed purge, and linear in the
+/// quarantine size:
+///
+///   quarantined   purge duration   destroyed / restored / held
+///         8,000        5,194.7 ms      6,400 /   800 /   800
+///        80,000       58,661.7 ms     64,000 / 8,000 / 8,000
+///
+/// Nothing else can touch the store for that whole time. A thousand slabs is the largest round
+/// that keeps the hold under a second at the per-slab cost measured here, which is the number
+/// that matters: the bound is on the LOCK HOLD, not on the reclaim rate, and a caller that wants
+/// the quarantine drained faster runs more rounds rather than one longer one.
+///
+/// THE BUDGET IS SPENT ON WORK DONE, NOT ON ENTRIES LOOKED AT -- see
+/// [`LocalBlockStore::purge_delayed_destroy_slabs_capped`], where the difference is what makes
+/// the cap advance instead of stalling.
+pub(crate) const DELAYED_DESTROY_MAX_SLABS_PER_ROUND: usize = 1_000;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStorePurgeDelayedDestroyReport {
     #[serde(alias = "purged_page_segment_ids")]
@@ -646,6 +668,28 @@ pub struct BlockStorePurgeDelayedDestroyReport {
     /// id. They stay in quarantine: not destroyed, not restored.
     #[serde(default)]
     pub restore_blocked_block_slab_ids: Vec<u64>,
+    /// Slabs this round destroyed or restored -- what the round's budget was spent on.
+    ///
+    /// NOT the same as `purged + restored` being nonzero, and not derivable from the lists a
+    /// caller can already see once a round can stop early: this is the number compared against
+    /// `max_slabs_per_round`, and a caller checking that the cap advances needs the two side by
+    /// side.
+    #[serde(default)]
+    pub processed_block_slabs: usize,
+    /// The round stopped on its budget with quarantined slabs still unexamined.
+    ///
+    /// `true` is NOT an error and NOT a decline: it says the work continues next round. A caller
+    /// draining a quarantine loops while this holds. The distinction the `retained_too_young`
+    /// list already draws is the one that matters here too -- a slab the round never reached is
+    /// not being held back for any reason of its own, it simply was not this round's business.
+    #[serde(default)]
+    pub budget_exhausted: bool,
+    /// The budget this round ran under. 0 means uncapped.
+    ///
+    /// Reported so a round that did less than a caller expected can be told apart from a round
+    /// that ran under a smaller cap than the caller thought.
+    #[serde(default)]
+    pub max_slabs_per_round: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1552,6 +1596,48 @@ impl LocalBlockStore {
         live_block_slab_ids: impl IntoIterator<Item = u64>,
         selected_block_slab_ids: Option<BTreeSet<u64>>,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        self.purge_delayed_destroy_slabs_capped(
+            min_age_ms,
+            live_block_slab_ids,
+            selected_block_slab_ids,
+            DELAYED_DESTROY_MAX_SLABS_PER_ROUND,
+        )
+    }
+
+    /// The purge, bounded to `max_slabs_per_round` slabs of work. 0 means unbounded.
+    ///
+    /// THE BOUND IS ON THE LOCK HOLD. Everything above funnels into this function, and this
+    /// function takes the store-wide lock and keeps it until it returns, so the round's length is
+    /// the length of time nothing else can touch the store. Unbounded, that was 58.7 seconds at
+    /// eighty thousand quarantined slabs, measured, and linear -- the quarantine has no ceiling of
+    /// its own, so neither did the hold. The cap is the shipped default rather than an opt-in
+    /// because a caller that forgets it does not get a slower purge, it gets a minute-long stall.
+    ///
+    /// THE BUDGET IS SPENT ON WORK DONE -- a destroy or a restore -- AND NOT ON ENTRIES EXAMINED.
+    /// That is the whole reason this advances rather than stalling, and getting it the other way
+    /// round is the failure this has to avoid: a slab that is skipped (not named by the caller's
+    /// list, not old enough yet, or live-but-blocked) STAYS IN THE DIRECTORY, so if a skip cost
+    /// budget, a quarantine whose first thousand entries were all blocked would spend every
+    /// round's whole budget re-skipping the same thousand and destroy nothing, for ever. Spending
+    /// budget only on work makes progress unconditional: every slab this round charges to the
+    /// budget LEAVES the trash directory -- unlinked, or renamed back into the store -- so the
+    /// actionable set is strictly smaller next round, and the skipped prefix the loop walks past
+    /// is bounded by the number of slabs that are being skipped for a reason of their own.
+    ///
+    /// THE RE-CHECK IS NOT WHAT GETS CAPPED. Every slab the round reaches goes through the full
+    /// liveness re-check and the un-quarantining restore before anything irreversible happens to
+    /// it; the budget decides HOW MANY slabs a round reaches, never what happens to one it did.
+    /// A round that stops early leaves no slab half-processed: each iteration destroys or
+    /// restores one slab completely, and the manifest written after the loop records exactly the
+    /// slabs whose state actually changed. A slab the round never reached is still quarantined,
+    /// which is the state it was already in.
+    pub fn purge_delayed_destroy_slabs_capped(
+        &self,
+        min_age_ms: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+        selected_block_slab_ids: Option<BTreeSet<u64>>,
+        max_slabs_per_round: usize,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let trash_dir = delayed_destroy_dir(&inner.root);
@@ -1562,11 +1648,25 @@ impl LocalBlockStore {
         let mut restored = Vec::new();
         let mut restored_physical_bytes = 0;
         let mut restore_blocked = Vec::new();
+        let mut processed = 0usize;
+        let mut budget_exhausted = false;
         if !trash_dir.exists() {
-            return Ok(BlockStorePurgeDelayedDestroyReport::default());
+            return Ok(BlockStorePurgeDelayedDestroyReport {
+                max_slabs_per_round,
+                ..Default::default()
+            });
         }
         let root = inner.root.clone();
         for entry in fs::read_dir(&trash_dir)? {
+            // THE BUDGET IS CHECKED BEFORE THE ENTRY IS EVEN NAMED, and it stops the round rather
+            // than skipping to the next entry. Continuing would walk the remaining eighty
+            // thousand directory entries to do no work; stopping is what makes a capped round
+            // cost the budget rather than the directory. The unexamined entries stay exactly as
+            // they are, and `budget_exhausted` tells the caller there are more.
+            if max_slabs_per_round > 0 && processed >= max_slabs_per_round {
+                budget_exhausted = true;
+                break;
+            }
             let entry = entry?;
             let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) else {
                 continue;
@@ -1591,10 +1691,16 @@ impl LocalBlockStore {
             // make it safe. It also must not be left where it is -- quarantine is a rename out
             // of the store, so the reader that needs it cannot reach it until the file is back.
             if live_block_slab_ids.contains(&id) {
-                if restore_slab_from_delayed_destroy(&root, id, &entry.path())? {
+                if restore_slab_from_delayed_destroy_unsynced(&root, id, &entry.path())? {
                     set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Sealed);
                     restored.push(id);
                     restored_physical_bytes += bytes;
+                    // A restore is WORK: it renamed a file and changed a descriptor, and it is
+                    // the expensive half of the measured round. A blocked restore is not -- it
+                    // moved nothing, and charging budget for it would let a directory full of
+                    // blocked slabs starve the destroys, which is the stall this cap must not
+                    // have.
+                    processed += 1;
                 } else {
                     restore_blocked.push(id);
                 }
@@ -1628,11 +1734,23 @@ impl LocalBlockStore {
             fs::remove_file(entry.path())?;
             set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Purged);
             purged.push(id);
+            processed += 1;
         }
         purged.sort_unstable();
         restored.sort_unstable();
         restore_blocked.sort_unstable();
-        sync_dir(&trash_dir)?;
+        // BOTH directories, once, and before the manifest.
+        //
+        // The unlinks always needed the trash directory synced and always got it here -- one
+        // fsync for the round, which is the shape the quarantine side has now been moved to. What
+        // is new is the store ROOT: a restore renames a slab out of quarantine and back into the
+        // store, and that rename used to be made durable by two fsyncs inside
+        // `restore_slab_from_delayed_destroy`, once per restored slab. Syncing the root here
+        // instead commits every one of this round's restores together. It was in fact already
+        // reaching disk, as a side effect of `persist_slab_manifest` fsyncing the root to commit
+        // its own rename -- which is exactly the kind of accident that survives until someone
+        // reorders the two calls. It is stated here instead of relied upon there.
+        sync_delayed_destroy_dirs(&root)?;
         persist_slab_manifest(&inner.root, &inner.slabs)?;
         retained_too_young.sort_unstable();
         Ok(BlockStorePurgeDelayedDestroyReport {
@@ -1643,6 +1761,9 @@ impl LocalBlockStore {
             restored_block_slab_ids: restored,
             restored_physical_bytes,
             restore_blocked_block_slab_ids: restore_blocked,
+            processed_block_slabs: processed,
+            budget_exhausted,
+            max_slabs_per_round,
         })
     }
 
@@ -4474,98 +4595,646 @@ mod tests {
         );
     }
 
-    /// The re-checked, list-narrowed purge at 8,000 and 80,000 slabs. Prints.
+    /// One uncapped purge round against `slabs` quarantined slabs, timed, then one capped round
+    /// against the same fixture. Prints; returns nothing. The body of the two scale tests below.
+    ///
+    /// Split out of the loop it used to be so each size is a test of its own and can be RUN on
+    /// its own. The 80,000 arm writes eighty thousand files and is the expensive half; on a box
+    /// short of disk, running the 8,000 arm alone is a real measurement, whereas running neither
+    /// and scaling the other is not a measurement at all.
+    fn purge_at_scale_arm(slabs: u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+
+        // The quarantine state is built DIRECTLY rather than by installing and collecting
+        // N slabs. Installing is the harness, not the subject: it summarises every slab and
+        // periodically rewrites the manifest. What is being measured is the purge -- the round
+        // that the re-check and the slab list changed, and the one that holds the store lock
+        // while it unlinks.
+        let started = std::time::Instant::now();
+        let trash = delayed_destroy_dir(dir.path());
+        fs::create_dir_all(&trash).unwrap();
+        for id in 0..slabs {
+            fs::write(
+                trash.join(format!("page_segment_{id:020}.seg.deleted.{id}")),
+                b"slab",
+            )
+            .unwrap();
+        }
+        let setup_ms = started.elapsed().as_secs_f64() * 1e3;
+
+        // DENOMINATOR: the quarantine really is the size claimed, so the counts below are
+        // about a purge that had that much to decide.
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len() as u64,
+            slabs,
+            "every slab must really be in quarantine before the purge runs"
+        );
+
+        // A tenth are live again; a further tenth are blocked upstream. Disjoint, so each
+        // outcome has its own denominator and one cannot cover for another.
+        let live = (0..slabs).filter(|id| id % 10 == 0).collect::<Vec<_>>();
+        let blocked = (0..slabs).filter(|id| id % 10 == 1).collect::<Vec<_>>();
+        let selected = (0..slabs).filter(|id| id % 10 != 1).collect::<BTreeSet<_>>();
+        assert!(!live.is_empty() && !blocked.is_empty());
+
+        // ONE ROUND WITH THE CAP OFF -- the shape this change is about, kept runnable so the
+        // number it replaces can still be produced rather than only quoted.
+        let started = std::time::Instant::now();
+        let report = store
+            .purge_delayed_destroy_slabs_capped(0, live.clone(), Some(selected.clone()), 0)
+            .unwrap();
+        let purge_ms = started.elapsed().as_secs_f64() * 1e3;
+
+        let expected_purged = slabs - live.len() as u64 - blocked.len() as u64;
+        // THREE HALVES, SEPARATELY.
+        assert_eq!(
+            report.restored_block_slab_ids.len(),
+            live.len(),
+            "every live slab was restored"
+        );
+        assert_eq!(
+            report.purged_block_slab_ids.len() as u64,
+            expected_purged,
+            "every slab that was neither live nor blocked was destroyed"
+        );
+        assert!(
+            !report.budget_exhausted,
+            "an uncapped round must not report a budget it did not have"
+        );
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len(),
+            blocked.len(),
+            "and exactly the blocked slabs are still in quarantine"
+        );
+        // The restored slabs are back in the store, readable by path.
+        let present = store.slab_ids().unwrap().into_iter().collect::<BTreeSet<_>>();
+        assert!(
+            live.iter().all(|id| present.contains(id)),
+            "every restored slab is readable by path again"
+        );
+
+        println!(
+            "  {slabs:>6} quarantined: setup {setup_ms:>9.1} ms   UNCAPPED purge {purge_ms:>9.1} ms \
+             ({:>6} destroyed, {:>5} restored, {:>5} held)   per slab {:.4} ms",
+            report.purged_block_slab_ids.len(),
+            report.restored_block_slab_ids.len(),
+            blocked.len(),
+            purge_ms / slabs as f64,
+        );
+
+        // And now ONE ROUND UNDER THE SHIPPED CAP, on a freshly rebuilt quarantine of the same
+        // size. This is the number that matters: how long the store lock is held by a round the
+        // scheduler actually runs.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let trash = delayed_destroy_dir(dir.path());
+        fs::create_dir_all(&trash).unwrap();
+        for id in 0..slabs {
+            fs::write(
+                trash.join(format!("page_segment_{id:020}.seg.deleted.{id}")),
+                b"slab",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len() as u64,
+            slabs,
+            "the capped round must face the same size quarantine as the uncapped one"
+        );
+        let started = std::time::Instant::now();
+        let capped = store
+            .purge_delayed_destroy_slabs_selected(0, live.clone(), Some(selected))
+            .unwrap();
+        let capped_ms = started.elapsed().as_secs_f64() * 1e3;
+        assert_eq!(
+            capped.processed_block_slabs, DELAYED_DESTROY_MAX_SLABS_PER_ROUND,
+            "a capped round against a quarantine far larger than its budget spends all of it"
+        );
+        assert!(
+            capped.budget_exhausted,
+            "and says there is more to do -- otherwise a caller stops draining"
+        );
+        println!(
+            "  {slabs:>6} quarantined:                    CAPPED purge {capped_ms:>9.1} ms \
+             ({:>6} destroyed, {:>5} restored) at a budget of {}",
+            capped.purged_block_slab_ids.len(),
+            capped.restored_block_slab_ids.len(),
+            DELAYED_DESTROY_MAX_SLABS_PER_ROUND,
+        );
+    }
+
+    /// The re-checked, list-narrowed purge at 8,000 slabs, capped and uncapped. Prints.
     ///
     ///   cargo test -p temporalstore-rust --lib the_purge_at_scale \
     ///       -- --ignored --nocapture --test-threads=1
     ///
-    /// Ignored because it creates eighty thousand files and takes minutes; the correctness guards
-    /// run in CI, and this answers the questions correctness cannot: does the re-check still
-    /// separate live from dead when the sets are large, and what does ONE unbounded purge round
-    /// cost while it holds the store lock?
+    /// Ignored because it creates eight thousand files; the correctness guards run in CI, and
+    /// this answers the question correctness cannot -- what ONE purge round costs while it holds
+    /// the store lock, with the cap off and with the cap on.
     ///
-    /// Every count is asserted as a separate half. Today five defects in this area each presented
-    /// as one half full and the other zero, and a combined total hid all of them.
+    /// Every count is asserted as a separate half. Five defects in this area each presented as
+    /// one half full and the other zero, and a combined total hid all of them.
     #[test]
     #[ignore]
     fn the_purge_at_scale() {
-        for slabs in [8_000u64, 80_000] {
-            let dir = tempfile::tempdir().unwrap();
-            let store = LocalBlockStore::new(dir.path());
+        purge_at_scale_arm(8_000);
+    }
 
-            // The quarantine state is built DIRECTLY rather than by installing and collecting
-            // N slabs. Installing is the harness, not the subject: it summarises every slab and
-            // periodically rewrites the manifest, and collecting then costs two directory fsyncs
-            // per slab. Measured on this box, that setup ran at roughly thirty installs a second
-            // at 80,000 and would have dominated the number this test exists to produce. What is
-            // being measured is the purge -- the round that the re-check and the slab list
-            // changed, and the one that holds the store lock while it unlinks.
-            let started = std::time::Instant::now();
-            let trash = delayed_destroy_dir(dir.path());
-            fs::create_dir_all(&trash).unwrap();
-            for id in 0..slabs {
-                fs::write(
-                    trash.join(format!("page_segment_{id:020}.seg.deleted.{id}")),
-                    b"slab",
+    /// The same measurement at 80,000 slabs, where the unbounded round was measured at 58.7 s.
+    ///
+    ///   cargo test -p temporalstore-rust --lib the_purge_at_eighty_thousand_slabs \
+    ///       -- --ignored --nocapture --test-threads=1
+    ///
+    /// SEPARATE FROM THE 8,000 ARM BECAUSE IT IS THE EXPENSIVE ONE. It writes eighty thousand
+    /// files twice over and wants real disk headroom; on a box that cannot spare it, the 8,000
+    /// arm above still produces a measurement, and this one should be reported as not run rather
+    /// than scaled up from the other.
+    #[test]
+    #[ignore]
+    fn the_purge_at_eighty_thousand_slabs() {
+        purge_at_scale_arm(80_000);
+    }
+
+    /// Build a quarantine of `slabs` files directly, without installing or collecting anything.
+    ///
+    /// The collector is not the subject of the purge guards below, and going through it would
+    /// make each of them pay for a full install of every slab.
+    fn quarantine_fixture(root: &std::path::Path, slabs: u64) {
+        let trash = delayed_destroy_dir(root);
+        fs::create_dir_all(&trash).unwrap();
+        for id in 0..slabs {
+            fs::write(
+                trash.join(format!("page_segment_{id:020}.seg.deleted.{id}")),
+                b"slab",
+            )
+            .unwrap();
+        }
+    }
+
+    /// A capped purge must ADVANCE: each round must move to slabs the last one did not touch, and
+    /// the whole quarantine must be drained in the number of rounds the budget predicts.
+    ///
+    /// THE ROUND COUNT IS COMPUTED BEFORE THE RUN AND THE RUN IS GIVEN MORE ROUNDS THAN IT NEEDS.
+    /// A loop that stops at exactly the predicted number cannot tell a cap that finished from a
+    /// cap that stalled on its last round and was cut off -- both end with the loop exhausted.
+    /// Running past the prediction and asserting there was nothing left to do makes those two
+    /// outcomes different.
+    ///
+    /// The per-round sets are asserted DISJOINT as well as exhaustive. Exhaustive alone would be
+    /// satisfied by a cap that re-walked the same slabs and happened to get through them; disjoint
+    /// alone would be satisfied by a cap that destroyed three slabs and then stopped for ever.
+    #[test]
+    fn a_capped_purge_advances_and_drains_in_the_rounds_its_budget_predicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let slabs = 500u64;
+        let budget = 40usize;
+        quarantine_fixture(dir.path(), slabs);
+
+        // DENOMINATOR: the quarantine really holds what the arithmetic below assumes.
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len() as u64,
+            slabs,
+            "every slab must really be in quarantine before the first round"
+        );
+
+        let live = (0..slabs).filter(|id| id % 10 == 0).collect::<Vec<_>>();
+        let blocked = (0..slabs).filter(|id| id % 10 == 1).collect::<BTreeSet<_>>();
+        let selected = (0..slabs).filter(|id| id % 10 != 1).collect::<BTreeSet<_>>();
+        let expected_destroyed = (0..slabs)
+            .filter(|id| id % 10 != 0 && id % 10 != 1)
+            .collect::<BTreeSet<_>>();
+        // Work is a destroy or a restore. The blocked slabs are named by nobody, so they are
+        // never work, and a budget spent on them would be a budget spent on nothing.
+        let work = expected_destroyed.len() + live.len();
+        let predicted_rounds = work.div_ceil(budget);
+        assert_eq!(
+            (work, predicted_rounds),
+            (450, 12),
+            "the prediction is arithmetic on the fixture, stated before the run"
+        );
+        // Deliberately more rounds than predicted, so "finished" and "stalled" look different.
+        let allowed_rounds = predicted_rounds + 8;
+
+        let mut rounds = 0usize;
+        let mut per_round_touched: Vec<BTreeSet<u64>> = Vec::new();
+        let mut all_destroyed = BTreeSet::new();
+        let mut all_restored = BTreeSet::new();
+        loop {
+            let report = store
+                .purge_delayed_destroy_slabs_capped(
+                    0,
+                    live.clone(),
+                    Some(selected.clone()),
+                    budget,
                 )
                 .unwrap();
+            let touched = report
+                .purged_block_slab_ids
+                .iter()
+                .chain(report.restored_block_slab_ids.iter())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                touched.len(),
+                report.processed_block_slabs,
+                "the round's own count of what it did must match what it reported doing"
+            );
+            all_destroyed.extend(report.purged_block_slab_ids.iter().copied());
+            all_restored.extend(report.restored_block_slab_ids.iter().copied());
+            per_round_touched.push(touched);
+            rounds += 1;
+            if !report.budget_exhausted {
+                break;
             }
-            let setup_ms = started.elapsed().as_secs_f64() * 1e3;
+            assert_eq!(
+                report.processed_block_slabs, budget,
+                "a round that says it ran out of budget must have SPENT the budget; anything \
+                 less means it stopped for some other reason and is calling it a budget"
+            );
+            assert!(
+                rounds <= allowed_rounds,
+                "the drain did not finish in {allowed_rounds} rounds, which is {} more than the \
+                 {predicted_rounds} its budget predicts -- that is a stall, not a slow cap",
+                allowed_rounds - predicted_rounds
+            );
+        }
 
-            // DENOMINATOR: the quarantine really is the size claimed, so the counts below are
-            // about a purge that had that much to decide.
+        // IT ADVANCED: no round revisited a slab an earlier round had already dealt with.
+        let mut seen = BTreeSet::new();
+        for (index, touched) in per_round_touched.iter().enumerate() {
+            assert!(
+                touched.is_disjoint(&seen),
+                "round {index} acted on a slab an earlier round had already finished with; the \
+                 set the cap processes must MOVE"
+            );
+            seen.extend(touched.iter().copied());
+        }
+        // AND IT FINISHED, in exactly the rounds the budget predicted.
+        assert_eq!(
+            rounds, predicted_rounds,
+            "draining {work} slabs at {budget} a round must take {predicted_rounds} rounds"
+        );
+        assert_eq!(
+            all_destroyed, expected_destroyed,
+            "every slab that was neither live nor blocked was destroyed, across the rounds"
+        );
+        assert_eq!(
+            all_restored,
+            live.iter().copied().collect::<BTreeSet<_>>(),
+            "and every live slab was restored, across the rounds"
+        );
+        assert_eq!(
+            store
+                .delayed_destroy_slab_ids()
+                .unwrap()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            blocked,
+            "exactly the blocked slabs are left in quarantine"
+        );
+        // One more round finds nothing to do -- the drain is over, not merely paused.
+        let after = store
+            .purge_delayed_destroy_slabs_capped(0, live.clone(), Some(selected), budget)
+            .unwrap();
+        assert_eq!(
+            (after.processed_block_slabs, after.budget_exhausted),
+            (0, false),
+            "a round after the drain must do nothing and must not claim there is more"
+        );
+    }
+
+    /// A quarantine that is almost entirely slabs the caller has NOT named must still drain the
+    /// few it has.
+    ///
+    /// THIS IS THE STALL THE CAP HAS TO NOT HAVE. Nine hundred of these thousand slabs are
+    /// blocked upstream; they are skipped every round and they stay in the directory, so they are
+    /// in front of the loop again next round. A budget charged for every ENTRY THE LOOP LOOKS AT
+    /// rather than for every slab it ACTS ON would spend all ten of each round's units on the
+    /// same blocked slabs and destroy nothing, for ever -- and from the outside that is
+    /// indistinguishable from a cap that is merely conservative.
+    ///
+    /// Ninety rounds at ten actionable slabs each would be the entry-counted cost; ten rounds is
+    /// the work-counted one. The assertion is on ten.
+    #[test]
+    fn a_capped_purge_is_not_starved_by_the_slabs_it_must_skip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let slabs = 1_000u64;
+        let budget = 10usize;
+        quarantine_fixture(dir.path(), slabs);
+
+        // DENOMINATORS, both halves, before anything runs.
+        let selected = (0..slabs).filter(|id| id % 10 == 0).collect::<BTreeSet<_>>();
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len() as u64,
+            slabs,
+            "a thousand slabs really are in quarantine"
+        );
+        assert_eq!(
+            selected.len(),
+            100,
+            "and only a hundred of them are this caller's business -- the other nine hundred are \
+             what the loop has to walk past"
+        );
+
+        let predicted_rounds = selected.len().div_ceil(budget);
+        assert_eq!(predicted_rounds, 10, "stated before the run");
+        let allowed_rounds = predicted_rounds + 5;
+
+        let mut rounds = 0usize;
+        let mut destroyed = BTreeSet::new();
+        loop {
+            let report = store
+                .purge_delayed_destroy_slabs_capped(
+                    0,
+                    Vec::<u64>::new(),
+                    Some(selected.clone()),
+                    budget,
+                )
+                .unwrap();
+            destroyed.extend(report.purged_block_slab_ids.iter().copied());
+            rounds += 1;
+            if !report.budget_exhausted {
+                break;
+            }
+            assert!(
+                rounds <= allowed_rounds,
+                "after {rounds} rounds the drain has destroyed {} of {}; a budget spent on \
+                 entries examined instead of work done would look exactly like this",
+                destroyed.len(),
+                selected.len()
+            );
+        }
+        assert_eq!(
+            rounds, predicted_rounds,
+            "the skipped slabs must cost the loop a walk, never a unit of budget"
+        );
+        assert_eq!(
+            destroyed, selected,
+            "and every slab the caller did name was destroyed"
+        );
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len(),
+            900,
+            "with the nine hundred it did not name still in quarantine"
+        );
+    }
+
+    /// The cap must bound HOW MANY slabs a round reaches, never what happens to one it reached.
+    ///
+    /// Every slab here is live, so every slab the round touches must go through the last-chance
+    /// re-check and come back OUT of quarantine, readable by path again. A cap that reached a
+    /// slab and skipped the re-check to save time would destroy live data, which is the one
+    /// failure this whole path exists to prevent.
+    #[test]
+    fn a_capped_purge_re_checks_liveness_for_every_slab_it_reaches() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let slabs = 60u64;
+        let budget = 7usize;
+        quarantine_fixture(dir.path(), slabs);
+        let live = (0..slabs).collect::<Vec<_>>();
+
+        // DENOMINATOR: the store holds none of these yet, so "readable by path" below is the
+        // restore's doing and not a file that was already there.
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len() as u64,
+            slabs,
+            "every slab is in quarantine"
+        );
+        assert!(
+            store.slab_ids().unwrap().is_empty(),
+            "and none of them is in the store"
+        );
+
+        let mut restored = BTreeSet::new();
+        let mut rounds = 0usize;
+        loop {
+            let report = store
+                .purge_delayed_destroy_slabs_capped(0, live.clone(), None, budget)
+                .unwrap();
+            assert!(
+                report.purged_block_slab_ids.is_empty(),
+                "a live slab must never be destroyed, capped round or not"
+            );
+            restored.extend(report.restored_block_slab_ids.iter().copied());
+            rounds += 1;
+            if !report.budget_exhausted {
+                break;
+            }
+            assert_eq!(
+                report.restored_block_slab_ids.len(),
+                budget,
+                "a full round restores exactly its budget -- the cap limits the count, not the \
+                 treatment"
+            );
+            assert!(rounds <= 20, "60 slabs at 7 a round must not take 20 rounds");
+        }
+        assert_eq!(
+            restored.len() as u64,
+            slabs,
+            "every live slab came back out of quarantine"
+        );
+        assert_eq!(
+            store.slab_ids().unwrap().len() as u64,
+            slabs,
+            "and every one of them is readable by path again"
+        );
+        assert!(
+            store.delayed_destroy_slab_ids().unwrap().is_empty(),
+            "with nothing left in quarantine"
+        );
+    }
+
+    /// Quarantining N slabs must cost a FIXED number of directory fsyncs, not two per slab.
+    ///
+    /// RUN AT TWO SIZES AND COMPARED, because a single size cannot tell a constant from a
+    /// coefficient. Measured on the unhoisted loop with `strace -y -e trace=fsync`: quarantining
+    /// 199 slabs issued 199 fsyncs of the trash directory and 199 of the store root; 799 slabs
+    /// issued 799 and 799. Hoisted, both sizes must issue the same small number.
+    ///
+    /// THE NON-ZERO ASSERTION IS NOT DECORATION. Deleting every fsync in the module makes both
+    /// counts zero, which satisfies "the count does not grow with the slab count" perfectly --
+    /// a mutation that removes the durability this test is standing next to would PASS on the
+    /// equality alone. The floor is what makes the guard about hoisting the fsyncs rather than
+    /// about having none.
+    #[test]
+    fn quarantining_a_round_of_slabs_fsyncs_its_directories_once_not_once_per_slab() {
+        let mut measured: Vec<(u64, usize, u64)> = Vec::new();
+        for slabs in [16u64, 64] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalBlockStore::new(dir.path());
+            for id in 0..slabs {
+                store.install_slab(id, b"slab-contents").unwrap();
+            }
+            let before = super::paths::directory_fsyncs();
+            let report = store
+                .gc_slabs_before_with_live_refs_delayed_destroy(slabs - 1, [slabs - 1])
+                .unwrap();
+            let fsyncs = super::paths::directory_fsyncs() - before;
+            // DENOMINATOR: the round really quarantined nearly every slab, so a small fsync
+            // count is a hoist and not an empty round.
+            assert_eq!(
+                report.delayed_destroy_block_slab_ids.len() as u64,
+                slabs - 1,
+                "the round must really have quarantined {} slabs",
+                slabs - 1
+            );
+            measured.push((slabs, report.delayed_destroy_block_slab_ids.len(), fsyncs));
+        }
+
+        let (small, small_quarantined, small_fsyncs) = measured[0];
+        let (large, large_quarantined, large_fsyncs) = measured[1];
+        assert!(
+            large_quarantined > small_quarantined * 3,
+            "the two sizes must really differ, or 'the count did not grow' says nothing"
+        );
+        assert_eq!(
+            small_fsyncs, large_fsyncs,
+            "quarantining {small_quarantined} slabs cost {small_fsyncs} directory fsyncs and \
+             {large_quarantined} cost {large_fsyncs}; a count that tracks the slab count is the \
+             per-slab fsync back again"
+        );
+        // Two for the round's renames, one for the manifest that records them.
+        assert_eq!(
+            small_fsyncs, 3,
+            "a quarantine round syncs the store root and the trash directory once each, and the \
+             manifest write syncs the root once more"
+        );
+        assert!(
+            small_fsyncs >= 2,
+            "and it must still sync BOTH directories -- a round that syncs nothing would satisfy \
+             the equality above while making the renames undurable"
+        );
+    }
+
+    /// A purge round's directory fsyncs must not track the number of slabs it RESTORES.
+    ///
+    /// The unlinks were already batched to one trash-directory fsync per round. The restores were
+    /// not: each one fsynced the trash directory and the store root, so a round that restored
+    /// eight thousand slabs issued sixteen thousand fsyncs to commit renames that travel between
+    /// the same two directories.
+    ///
+    /// Compared against a round that restores NOTHING, on the same fixture size, so the number
+    /// being held constant is the restore count and not the round.
+    #[test]
+    fn a_purge_round_fsyncs_its_directories_once_however_many_slabs_it_restores() {
+        let mut measured: Vec<(usize, usize, u64)> = Vec::new();
+        for live_count in [0u64, 48] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalBlockStore::new(dir.path());
+            let slabs = 64u64;
+            quarantine_fixture(dir.path(), slabs);
             assert_eq!(
                 store.delayed_destroy_slab_ids().unwrap().len() as u64,
                 slabs,
-                "every slab must really be in quarantine before the purge runs"
+                "the fixture is the same size in both arms"
             );
-
-            // A tenth are live again; a further tenth are blocked upstream. Disjoint, so each
-            // outcome has its own denominator and one cannot cover for another.
-            let live = (0..slabs).filter(|id| id % 10 == 0).collect::<Vec<_>>();
-            let blocked = (0..slabs).filter(|id| id % 10 == 1).collect::<Vec<_>>();
-            let selected = (0..slabs).filter(|id| id % 10 != 1).collect::<BTreeSet<_>>();
-            assert!(!live.is_empty() && !blocked.is_empty());
-
-            let started = std::time::Instant::now();
+            let live = (0..live_count).collect::<Vec<_>>();
+            let before = super::paths::directory_fsyncs();
             let report = store
-                .purge_delayed_destroy_slabs_selected(0, live.clone(), Some(selected))
+                .purge_delayed_destroy_slabs_capped(0, live, None, 0)
                 .unwrap();
-            let purge_ms = started.elapsed().as_secs_f64() * 1e3;
-
-            let expected_purged = slabs - live.len() as u64 - blocked.len() as u64;
-            // THREE HALVES, SEPARATELY.
+            let fsyncs = super::paths::directory_fsyncs() - before;
+            // DENOMINATORS: both halves of the round really happened.
             assert_eq!(
-                report.restored_block_slab_ids.len(),
-                live.len(),
-                "every live slab was restored"
+                report.restored_block_slab_ids.len() as u64,
+                live_count,
+                "the round restored what this arm asked it to"
             );
             assert_eq!(
                 report.purged_block_slab_ids.len() as u64,
-                expected_purged,
-                "every slab that was neither live nor blocked was destroyed"
+                slabs - live_count,
+                "and destroyed the rest"
             );
-            assert_eq!(
-                store.delayed_destroy_slab_ids().unwrap().len(),
-                blocked.len(),
-                "and exactly the blocked slabs are still in quarantine"
-            );
-            // The restored slabs are back in the store, readable by path.
-            let present = store.slab_ids().unwrap().into_iter().collect::<BTreeSet<_>>();
-            assert!(
-                live.iter().all(|id| present.contains(id)),
-                "every restored slab is readable by path again"
-            );
-
-            println!(
-                "  {slabs:>6} quarantined: setup {setup_ms:>9.1} ms   purge {purge_ms:>9.1} ms \
-                 ({:>6} destroyed, {:>5} restored, {:>5} held)   purge per slab {:.4} ms",
-                report.purged_block_slab_ids.len(),
+            measured.push((
                 report.restored_block_slab_ids.len(),
-                blocked.len(),
-                purge_ms / slabs as f64,
-            );
+                report.purged_block_slab_ids.len(),
+                fsyncs,
+            ));
         }
+
+        let (no_restores, _, no_restore_fsyncs) = measured[0];
+        let (many_restores, _, many_restore_fsyncs) = measured[1];
+        assert_eq!(no_restores, 0);
+        assert_eq!(many_restores, 48);
+        assert_eq!(
+            no_restore_fsyncs, many_restore_fsyncs,
+            "a round restoring 48 slabs cost {many_restore_fsyncs} directory fsyncs against \
+             {no_restore_fsyncs} for a round restoring none; the difference is the per-restore \
+             fsync"
+        );
+        assert!(
+            no_restore_fsyncs >= 2,
+            "and the round must still sync both directories -- zero would satisfy the equality \
+             while leaving every rename undurable"
+        );
+    }
+
+    /// What a quarantine round leaves on disk must not change when the fsyncs move.
+    ///
+    /// The hoist widens the window in which a crash can leave the batch half-applied; it must not
+    /// change the outcome of the round that COMPLETES. A store reopened from the same root has to
+    /// see the same thing either way: every quarantined slab gone from the store, every one of
+    /// them in the trash directory, and the manifest agreeing.
+    #[test]
+    fn a_quarantine_round_is_durable_as_a_whole_after_the_fsyncs_are_hoisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let slabs = 32u64;
+        for id in 0..slabs {
+            store.install_slab(id, b"slab-contents").unwrap();
+        }
+        // DENOMINATOR: everything is in the store before the round.
+        assert_eq!(store.slab_ids().unwrap().len() as u64, slabs);
+        assert!(store.delayed_destroy_slab_ids().unwrap().is_empty());
+
+        let report = store
+            .gc_slabs_before_with_live_refs_delayed_destroy(slabs - 1, [slabs - 1])
+            .unwrap();
+        assert_eq!(report.delayed_destroy_block_slab_ids.len() as u64, slabs - 1);
+        drop(store);
+
+        let reopened = LocalBlockStore::new(dir.path());
+        assert_eq!(
+            reopened.slab_ids().unwrap(),
+            vec![slabs - 1],
+            "only the current slab is left in the store after a reopen"
+        );
+        assert_eq!(
+            reopened.delayed_destroy_slab_ids().unwrap().len() as u64,
+            slabs - 1,
+            "and every quarantined slab is still in the trash directory"
+        );
+        // The manifest agrees with the directory: each quarantined slab reads as DelayedDestroy.
+        let quarantined = reopened
+            .delayed_destroy_slab_ids()
+            .unwrap()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let states = reopened
+            .inner
+            .lock()
+            .unwrap()
+            .slabs
+            .iter()
+            .filter(|(id, _)| quarantined.contains(id))
+            .map(|(_, slab)| slab.state)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states.len() as u64,
+            slabs - 1,
+            "every quarantined slab has a descriptor after the reopen"
+        );
+        assert!(
+            states
+                .iter()
+                .all(|state| matches!(state, BlockStoreSlabState::DelayedDestroy)),
+            "and each one reads as DelayedDestroy -- the manifest written after the renames \
+             agrees with the directory the renames produced"
+        );
     }
 
     #[test]
