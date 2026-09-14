@@ -78,6 +78,14 @@ CONSOLIDATED = {
     # embedding key derived through it. The two bodies were byte-identical and were checked against
     # an independent implementation of the algorithm, not merely against each other.
     "stable_hash": ("matrixark_mcp_identity", ("matrixark_mcp_core_identity",)),
+    # THE KEY STORED VECTORS ARE FILED UNDER. Consolidated only after stable_hash was, because the
+    # two copies resolved different stable_hash objects and routing core onto an unconsolidated
+    # duplicate would have widened a later drift from one module to every embedding core files.
+    # The output was proved unchanged against an independent implementation of the composition.
+    "embedding_model_ref_for_name": (
+        "matrixark_mcp_models",
+        ("matrixark_mcp_core", "matrixark_mcp_core_compact", "matrixark_mcp_model_registry",
+         "matrixark_mcp_server")),
 }
 
 
