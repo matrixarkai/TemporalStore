@@ -37,8 +37,13 @@ ts_profile_perf_flags() {
   export TS_WAL_BINARY_FRAME="${TS_WAL_BINARY_FRAME:-1}"
   export TS_WAL_OUTCOME_ITEMS="${TS_WAL_OUTCOME_ITEMS:-1}"
   export TS_WAL_DATA_ONLY="${TS_WAL_DATA_ONLY:-1}"
-  # One fsync barrier per commit instead of the historical three.
-  export TS_WAL_SINGLE_BARRIER="${TS_WAL_SINGLE_BARRIER:-1}"
+  # One fsync barrier per commit instead of the historical three. There is no variable to
+  # export for it: TS_WAL_SINGLE_BARRIER is read by nothing, so setting it did nothing, and
+  # this profile exported it anyway. Single-barrier is the DEFAULT -- engine::wal_single_barrier
+  # is `!wal_legacy_recovery()` -- so the behaviour this line promised is what you already get.
+  # The live escape hatch, if you ever want the historical three barriers back, is
+  # TS_WAL_LEGACY_RECOVERY=1. Kept as a comment rather than deleted so the name stays greppable
+  # for anyone who set it in a fork and wondered why nothing changed.
   # Grow the WAL in chunks rather than a syscall per append.
   export TS_WAL_PREALLOCATE="${TS_WAL_PREALLOCATE:-1}"
 

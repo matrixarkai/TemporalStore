@@ -1889,9 +1889,14 @@ def _embeddings_enabled_for(record: Json) -> bool:
     behaviour rather than silently storing nothing, which would be a worse failure than the one
     this setting exists to allow.
 
-    Gated here rather than at `embedding_for_text` because that producer has 57 callers and most
-    are on the READ path embedding a query. Gating it would stop retrieval working for a tenant who
-    only asked not to STORE vectors, which is a different setting entirely.
+    Gated here rather than at `embedding_for_text` because that producer is called from across the
+    tree and most of those calls are on the READ path embedding a query. Gating it would stop
+    retrieval working for a tenant who only asked not to STORE vectors, which is a different
+    setting entirely. (A figure stood here -- 57 callers -- and matched no way of counting them:
+    measured when this note was written, 54 bare calls across tools/ and 42 outside the tests,
+    and no rule gave 57 at the commit that introduced the sentence either. Those two numbers
+    will drift as well, which is why they are not the argument. The argument is that MOST of
+    those calls READ.)
     """
     try:
         from matrixark_index_growth_bound import generate_embeddings_enabled
@@ -1956,8 +1961,9 @@ def apply_storage_policy(records: list[Json]) -> list[Json]:
     Three knobs, one place:
 
     * `generate_embeddings` (default ON) -- drop the separate embedding record and strip an inline
-      vector. Not gated at `embedding_for_text`, which has 57 callers and is shared with the READ
-      path: gating there would stop a query being embedded for a tenant who only declined to STORE.
+      vector. Not gated at `embedding_for_text`, which is called from across the tree and is shared
+      with the READ path: gating there would stop a query being embedded for a tenant who only
+      declined to STORE.
     * `node_path_embeddings` (default ON) -- drop just the `context_node` embeddings, which vectorise
       a synthetic path string rather than anything a customer wrote.
     * `store_event_summary_text` (default OFF) -- strip `summary_text` from an event. Under the

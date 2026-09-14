@@ -12,9 +12,11 @@ question and this is a different one, because two things get past it:
     modules; the other nine hide behind it.
 
 Both matter for the same reason the orphan check exists: a copy that is wrong and unreachable cannot
-fail today, and is exactly what somebody reaches for tomorrow. Of the 41 modules below, six hold
+fail today, and is exactly what somebody reaches for tomorrow. Among the modules below, six hold
 between them 27 top-level functions whose name is also defined in a REACHABLE module with a
-different body -- `matrixark_mcp_extraction_normalization` alone has 10.
+different body -- `matrixark_mcp_extraction_normalization` alone has 10. The count of modules is
+not restated here: it said 41 while the table held 43, and four other files in the tree that
+IMPORT this table already said forty-three.
 
 It is also how a description of "the live path" goes wrong. Twice in one session I named a module
 here as the live one: `matrixark_mcp_retrieve_entity_scan` and its two siblings (the live scorer is

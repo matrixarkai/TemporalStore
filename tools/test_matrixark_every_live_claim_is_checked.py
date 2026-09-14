@@ -69,7 +69,18 @@ def _rust_per_call_env_names() -> set:
     names = set()
     if not os.path.isdir(RUST_SRC):
         return names
-    pattern = re.compile(r'std::env::var\(\s*"([A-Z0-9_]+)"')
+    # Two spellings, because the crate has two. `std::env::var("NAME")` is the direct read;
+    # `env_flag::env_bool("NAME", default)` is the shared vocabulary helper, and a reader that
+    # adopts it disappears from a scan that only knows the first. Measured on the crate: 118
+    # names are read directly and 47 ONLY through the helper -- among them TS_RAFT_ALLOW_PLAINTEXT,
+    # TS_SERVER_READONLY, TS_META_RAFT and TS_CACHE_DISK_TIER. Those pass today because another
+    # classifier happens to cover them; the engine arm of this test could not see one of them.
+    #
+    # The bare `env_bool("NAME", ...)` form is here too: two modules define a local `env_bool`
+    # that delegates to the crate one, so the call site is spelled without the path.
+    pattern = re.compile(
+        r'(?:std::env::var|(?:[A-Za-z_]+::)*env_flag::env_bool|(?<![:\w])env_bool)'
+        r'\(\s*&?"([A-Z0-9_]+)"')
     for root, _dirs, files in os.walk(RUST_SRC):
         for entry in files:
             if not entry.endswith(".rs"):
@@ -154,6 +165,26 @@ class EveryLiveClaimIsCheckedTest(unittest.TestCase):
                          "the audit can see, not owned by the tenant-policy registry, and not read per "
                          "call by the engine: %s"
                          % ", ".join(unchecked))
+
+    def test_the_engine_scan_sees_both_ways_the_crate_reads_a_flag(self) -> None:
+        """A floor on the engine arm, and a positive control for the second spelling.
+
+        `test_every_live_setting_is_classified_by_something` passes when a setting is classified
+        by ANY of the three arms, so the engine arm going blind does not fail it -- it just stops
+        contributing. A named flag that is read ONLY through `env_flag::env_bool` is asserted
+        here, so a scan that regresses to the direct spelling fails by name rather than quietly.
+        """
+        engine = _rust_per_call_env_names()
+        self.assertGreaterEqual(
+            len(engine), 120,
+            "the engine scan found only %d names; it has stopped reaching the crate" % len(engine))
+        for name in ("TS_RAFT_ALLOW_PLAINTEXT", "TS_CACHE_DISK_TIER", "TS_SERVER_READONLY"):
+            with self.subTest(flag=name):
+                self.assertIn(
+                    name, engine,
+                    "%s is read through env_flag::env_bool and nothing else. The engine arm of "
+                    "this file cannot see it, so a reader that adopts the shared vocabulary "
+                    "helper disappears from the scan that watches it." % name)
 
     def test_the_audit_still_reaches_the_tree(self) -> None:
         """Both label tests skip a setting with no sites, so shrinking coverage reads as success."""

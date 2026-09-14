@@ -64,8 +64,9 @@ def ordered_unique(values: list[str]) -> list[str]:
     returned `[""]`. An index name of "" is not a name -- every record that produced one would post
     under the same key.
 
-    Two of the five callers below already worked around this with `if term`, which is the shape of
-    a helper that does not do what its callers need.
+    Two of the callers below already worked around this with `if term`, which is the shape of a
+    helper that does not do what its callers need. (How many callers there are is left to the
+    reader to see: this sentence said five when there were four, and nothing could tell.)
     """
     seen: set[str] = set()
     output: list[str] = []

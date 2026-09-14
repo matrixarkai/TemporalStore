@@ -3633,6 +3633,10 @@ fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
         min_undumped_wal_records: 0,
         min_undumped_wal_bytes: 0,
         purge_delayed_destroy: true,
+        // `None` is "every quarantined slab old enough", which is what this corpus asserted
+        // before the field existed. The scheduled cycle fills it from the dependency plan; a
+        // corpus that drives the round itself has no plan to narrow it with.
+        purge_delayed_destroy_slab_ids: None,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: true,
         follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {

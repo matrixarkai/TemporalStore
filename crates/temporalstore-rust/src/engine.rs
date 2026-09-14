@@ -3441,7 +3441,7 @@ pub(super) fn wal_only_sync() -> bool {
     wal_single_barrier()
 }
 
-/// TS_WAL_SINGLE_BARRIER: the true SINGLE write-path durability barrier. Only the WAL takes a
+/// The true SINGLE write-path durability barrier. Only the WAL takes a
 /// synchronous fdatasync per write (1.00/write); the data-page fdatasync, the served-index
 /// delta-log fdatasync, the slab-manifest persist, and the base-index sync are all deferred.
 /// Correctness rests on the WAL + the durable dump checkpoint being a COMPLETE source of truth:
@@ -3461,6 +3461,13 @@ pub(super) fn wal_only_sync() -> bool {
 ///    than left dangling -- no page loss, no double-apply.
 /// Default ON (the productionized write/recovery path). Set TS_WAL_LEGACY_RECOVERY=1 to fall
 /// back to the legacy multi-barrier write path + delta-fold recovery.
+///
+/// This block used to open by naming `TS_WAL_SINGLE_BARRIER`, which is read by nothing -- the
+/// only variable in it is TS_WAL_LEGACY_RECOVERY, two lines up. The two halves of one comment
+/// named two different variables, and `tools/deploy_profile_common.sh` exported the dead one on
+/// every deploy profile. Same shape as the two notes below about `TS_ENGINE_CONCURRENT_COMMIT`
+/// and `TS_RAFT_APPLY_COALESCE`: the name is recorded rather than removed, so setting it still
+/// finds an explanation.
 pub(super) fn wal_single_barrier() -> bool {
     !wal_legacy_recovery()
 }

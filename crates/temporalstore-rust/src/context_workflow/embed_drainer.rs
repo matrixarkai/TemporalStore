@@ -80,11 +80,11 @@ pub struct EmbedDrainReport {
     pub failed: usize,
 }
 
+// A local name for the crate vocabulary, not a second one. See the twin of this shadow in
+// engine/context.rs: spelled out, it took `1` and `true` and answered `false` for everything
+// else, including the default it was handed.
 fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(default)
+    crate::env_flag::env_bool(name, default)
 }
 
 fn env_usize(name: &str, default: usize) -> usize {

@@ -433,10 +433,27 @@ def _load_file_policies() -> tuple[Json, dict[str, Json]]:
             with open(path, encoding="utf-8") as handle:
                 raw = json.load(handle)
         except (OSError, ValueError) as error:
-            # A broken edit must not silently revert everyone to defaults mid-flight.
-            LOGGER.warning("tenant_policy_file_invalid path=%s error=%s (keeping last good policy)",
-                           path, error)
-            return _FILE_CACHE["defaults"], _FILE_CACHE["tenants"]
+            # A broken edit must not silently revert everyone to defaults mid-flight -- but the
+            # cache is keyed by PATH, and this branch used to hand back its contents without
+            # looking at the key. The unreadable-file branch above asks `_FILE_CACHE["path"] ==
+            # path` first; this one did not, and the two answered the same question differently:
+            #
+            #   policy path repointed A -> B, B corrupt   A's tenant overrides applied, under B
+            #   policy path repointed A -> B, B missing    no overrides (the branch above)
+            #
+            # So a tenant named only in A kept its override while the configured file was B, which
+            # has never mentioned it, and the log said "keeping last good policy" about B. On a
+            # cold process the same line printed when there was no policy to keep at all: the
+            # cache starts empty, so the message was the only thing asserting otherwise.
+            if _FILE_CACHE["path"] == path:
+                LOGGER.warning(
+                    "tenant_policy_file_invalid path=%s error=%s (keeping last good policy)",
+                    path, error)
+                return _FILE_CACHE["defaults"], _FILE_CACHE["tenants"]
+            LOGGER.warning(
+                "tenant_policy_file_invalid path=%s error=%s (no previously loaded policy for "
+                "this path; no overrides are in force)", path, error)
+            return {}, {}
         defaults = _validated(raw.get("defaults", {}), source=path, tenant="*")
         tenants: dict[str, Json] = {}
         for tenant, policy in (raw.get("tenants", {}) or {}).items():

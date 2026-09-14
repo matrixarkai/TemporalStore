@@ -4378,11 +4378,26 @@ def summarize_text(text: str, *, limit: int = 220) -> str:
     #     summarize_text("abcdefghij", limit=0)  ->  "abcdefg..."    ten characters for a limit of 0
     #     summarize_text("abcdefghij", limit=2)  ->  "abcdefghi..."  and it GROWS as the limit falls
     #
-    # Not reachable today -- every call site passes a literal of 96 or more, and the one
-    # caller-supplied budget is floored before it arrives -- so this changes no output any path
-    # currently produces. It is here because the inversion is indefensible whatever the
-    # reachability, and because `preview_text` in matrixark_mcp_resources is a second copy of this
-    # function that already guards it: the extracted copy got the fix and the original never did.
+    # Not reachable today, but NOT for the reason first recorded here. It said every call site
+    # passes a literal of 96 or more and that a caller-supplied budget was floored before it
+    # arrived. Measured over every non-test module and every call site -- the counts below are
+    # the ones `test_a_smaller_limit_never_gives_a_longer_string` asserts, so they cannot rot
+    # the way the sentence they replace did:
+    #
+    #     smallest literal limit        80, at three sites in this module
+    #     calls with a non-literal      2, both `limit=max_chars` in synthesize_context_node_summary
+    #     what max_chars is bound to    220 or 1200, literals at all four of its call sites
+    #
+    # So there is no floor and no caller-supplied budget: `max_chars` is a parameter that only ever
+    # receives a literal. The margin is 80 against the 3 below which the slice inverts -- wider than
+    # the sentence claimed, and resting on nothing that would hold a smaller value back. A premise
+    # that names a guard which does not exist is worse than no premise, because it tells the next
+    # reader the case is already handled somewhere else.
+    # `test_a_smaller_limit_never_gives_a_longer_string` pins both the property and that 80.
+    #
+    # The guard is here because the inversion is indefensible whatever the reachability, and
+    # because `preview_text` in matrixark_mcp_resources is a second copy of this function that
+    # already guards it: the extracted copy got the fix and the original never did.
     return compact[: max(0, limit - 3)] + "..."
 
 

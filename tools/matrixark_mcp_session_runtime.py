@@ -715,6 +715,36 @@ def _source_lineage_summary(records: list[Json]) -> Json:
     return {key: value for key, value in lineage.items() if value not in (None, "", [], {})}
 
 
+# The two record types the overlap loops below keep, and nothing else. Named here because the read
+# and the filters have to agree: asking the type index for a narrower set than the loops consume
+# would silently drop overlap rows.
+_OVERLAP_RECORD_TYPES = ["context_batch_commit", "context_event"]
+
+
+def _overlap_records(adapter: object) -> list:
+    """The records the overlap scan needs, without reading the whole store to find them.
+
+    This path used `adapter.read_all()` and then kept two record types out of it. The sibling
+    implementation in matrixark_local_adapter_session_commit stopped doing that, and the
+    measurement is recorded on `_commit_records_of_types` there: sampling a commit on a 250-memory
+    store put 13 of 20 active samples inside that read and its compaction, at 893 ms per call with
+    the proxy idle. The cost is reading everything in order to look at almost nothing, and it grows
+    with the store. Only one of the two commit paths was changed.
+
+    Asked for rather than assumed. `_commit_records_of_types` belongs to the TemporalStore-backed
+    adapter; the plain local adapter commits sessions too and does not have it, and an adapter that
+    cannot answer must produce the full read rather than an empty list -- "could not ask" is not
+    "nothing of these types". That is the same fallback rule the sibling states.
+    """
+    scan = getattr(adapter, "_commit_records_of_types", None)
+    if scan is None:
+        return adapter.read_all()
+    records = scan(list(_OVERLAP_RECORD_TYPES))
+    if records is None:  # the scan could not answer
+        return adapter.read_all()
+    return records
+
+
 def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> Json:
     scope = optional_object(args, "scope")
     threshold = args.get("threshold_messages", 20)
@@ -1037,7 +1067,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
     current_source_event_ids = {int(event_id) for event_id in source_event_ids}
     committed_event_ids: set[int] = set()
     session_key = session_buffer_key_from_scope(scope)
-    records_for_overlap = adapter.read_all() if overlap_limit else []
+    records_for_overlap = _overlap_records(adapter) if overlap_limit else []
     for record in records_for_overlap:
         if record.get("record_type") != "context_batch_commit" or session_buffer_key_from_scope(record.get("scope", {})) != session_key:
             continue
