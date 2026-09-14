@@ -1175,6 +1175,10 @@ pub struct StorageManagerPressureSnapshot {
     pub eviction_memory_pressure_bytes: u64,
     #[serde(default)]
     pub memory_cache_pressure_score: u64,
+    /// See `engine::reports::StorageManagerPressureSnapshot::live_page_summaries_measured`:
+    /// false means the debt beside it was never counted this round, not that it is zero.
+    #[serde(default)]
+    pub live_page_summaries_measured: bool,
     #[serde(default)]
     #[serde(rename = "expired_slot_object_scan_debt")]
     pub expired_bucket_object_scan_debt: usize,

@@ -8902,18 +8902,39 @@ before the dump.",
 /// scan; where a walk is irreducible, this test records WHY so the number is not filed down by
 /// someone who has not read the reason.
 ///
-/// `apply_storage_lifecycle` is the worst case in the engine and sits at SEVEN:
+/// `apply_storage_lifecycle` on a shard WITH WORK TO DO is the worst case in the engine and sits
+/// at SEVEN:
 ///
-///   3  bucket_storage_summaries          IRREDUCIBLE. The plan's, the manifest's, and the
-///                                        dirty-state clear's. #1607 proves the third must stay
-///                                        FRESH -- it compares current generations against what
-///                                        the manifest captured, so a shared snapshot makes both
-///                                        sides equal by construction, clears a bucket holding
-///                                        undumped writes, and reclaim may then advance past
-///                                        records still needed. Sharing the other two is SAFE but
-///                                        a bad trade: the manifest would record generations older
-///                                        than the index it embeds, so the bucket is re-dumped
-///                                        next round -- a whole-shard dump to save one walk.
+///   3  bucket_storage_summaries          IRREDUCIBLE ON A ROUND WITH WORK, and this fixture is
+///                                        one: it writes 1,000 records and every slot is dirty.
+///                                        The plan's, the manifest's, and the dirty-state clear's.
+///                                        #1607 proves the third must stay FRESH -- it compares
+///                                        current generations against what the manifest captured,
+///                                        so a shared snapshot makes both sides equal by
+///                                        construction, clears a bucket holding undumped writes,
+///                                        and reclaim may then advance past records still needed.
+///                                        Sharing the other two is SAFE but a bad trade: the
+///                                        manifest would record generations older than the index
+///                                        it embeds, so the bucket is re-dumped next round -- a
+///                                        whole-shard dump to save one walk.
+///
+///                                        A FOURTH reason kept the PLAN's walk alive and was not
+///                                        written here until now: `StorageLifecyclePlan`
+///                                        .bucket_summaries is an OUTPUT field, so the plan walked
+///                                        the shard to populate a report even when it needed
+///                                        nothing from it. That reason is now spent. The walk is
+///                                        CONDITIONAL on the dirty index being non-empty, the
+///                                        field is an `Option` so a round that skipped it is
+///                                        distinguishable from one that found nothing, and an
+///                                        IDLE round takes none of these three.
+///
+///                                        So SEVEN is the worst case, not the only case. An idle
+///                                        round is THREE, pinned separately by
+///                                        `an_idle_round_does_not_walk_the_live_pages_to_populate_a_report`
+///                                        at 8,000 and 80,000 records. Do not raise this number to
+///                                        cover an idle regression -- that test is where an idle
+///                                        round is measured, and it asserts the dirty half at
+///                                        SEVEN too, so the two cannot drift apart silently.
 ///   1  storage_object_lifecycle_snapshot ALREADY SHARED by three consumers (#1586).
 ///   1  the four sampling snapshots       ALREADY SHARED by four consumers (#1609).
 ///   1  the dump's lifecycle report       IRREDUCIBLE. It walks the DECODED MANIFEST INDEX
@@ -10591,4 +10612,229 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
             .and_then(|stage| stage.prepared_block_slab_id),
         None,
     );
+}
+
+/// Walks of the shard's live-page set per maintenance round, on a SETTLED shard and on the same
+/// shard with ONE dirty bucket. Set from measurement by
+/// `an_idle_round_does_not_walk_the_live_pages_to_populate_a_report`, which prints the per-site
+/// breakdown when either moves.
+const EXPECTED_IDLE_MULTIPLE: u64 = 3;
+const EXPECTED_DIRTY_MULTIPLE: u64 = 7;
+
+/// What one round walked, at one corpus size.
+struct RoundWalkMeasurement {
+    records: usize,
+    live_pages: u64,
+    idle_multiple: u64,
+    dirty_multiple: u64,
+    idle_breakdown: String,
+    dirty_breakdown: String,
+}
+
+/// An IDLE round must not walk the shard's live pages to populate a report field.
+///
+/// `storage_lifecycle_plan` opened with `bucket_storage_summaries`, which materialises every live
+/// page in the shard. Until #1709 that walk was load-bearing for dump selection. It is not any
+/// more: `dirty_object_count` on a summary is populated from exactly one place --
+/// `shard.dirty_objects.bucket_counts()` -- so "no bucket has a dirty object" and "the dirty index
+/// is empty" are the SAME predicate, and the second is answered without touching the live set.
+///
+/// What kept the walk alive was the report: `StorageLifecyclePlan.bucket_summaries` is an OUTPUT
+/// field, so the shard was walked every round to fill a vector that every consumer reduces to a
+/// count or a sum.
+///
+/// Measured at TWO scales, and each half asserted SEPARATELY -- a combined assertion lets one
+/// scale or one half carry the other. The dirty half is what shows the conditional does NOT fire
+/// when there is work; without it, "never walks" would pass this test just as well as
+/// "walks only when it must".
+#[test]
+fn an_idle_round_does_not_walk_the_live_pages_to_populate_a_report() {
+    let small = measure_round_walks(8_000);
+    let large = measure_round_walks(80_000);
+
+    for measurement in [&small, &large] {
+        eprintln!(
+            "{} records ({} live pages): idle {}x, one dirty bucket {}x",
+            measurement.records,
+            measurement.live_pages,
+            measurement.idle_multiple,
+            measurement.dirty_multiple,
+        );
+    }
+
+    // Each half, at each scale, asserted on its own.
+    for measurement in [&small, &large] {
+        assert_eq!(
+            measurement.idle_multiple, EXPECTED_IDLE_MULTIPLE,
+            "{} records, IDLE round: walked the live pages {}x, expected {EXPECTED_IDLE_MULTIPLE}x \
+({} live pages). Per site:{}\n  An idle round must not walk the shard to fill a report field. \
+Higher means a walk came back; lower means one more was removed -- lower the constant and name it.",
+            measurement.records,
+            measurement.idle_multiple,
+            measurement.live_pages,
+            measurement.idle_breakdown,
+        );
+    }
+    for measurement in [&small, &large] {
+        assert_eq!(
+            measurement.dirty_multiple, EXPECTED_DIRTY_MULTIPLE,
+            "{} records, ONE DIRTY BUCKET: walked the live pages {}x, expected \
+{EXPECTED_DIRTY_MULTIPLE}x ({} live pages). Per site:{}\n  A round with work must still take its \
+walks. If this fell to the idle number, the conditional is firing when it must not, and a plan \
+that did not look is being reported as a plan that found nothing.",
+            measurement.records,
+            measurement.dirty_multiple,
+            measurement.live_pages,
+            measurement.dirty_breakdown,
+        );
+    }
+
+    // The two halves must DIFFER. Both constants could be set to the same number and every
+    // assertion above would still pass while the conditional never fired at all.
+    for measurement in [&small, &large] {
+        assert!(
+            measurement.dirty_multiple > measurement.idle_multiple,
+            "{} records: the idle round and the dirty round walked the shard the same number of \
+times ({}x), so nothing here distinguishes a conditional that fires from one that does not.",
+            measurement.records,
+            measurement.idle_multiple,
+        );
+    }
+}
+
+/// Settle a shard of `records`, then measure one idle round and one round with a single dirty
+/// bucket. Every denominator this measurement rests on is asserted here, before the numbers are
+/// returned.
+fn measure_round_walks(records: usize) -> RoundWalkMeasurement {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..records {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("idle-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let request = || crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    };
+
+    // SETTLE. The first round dumps the dirty buckets; a LATER round can still select a dump with
+    // no bucket dirty at all, because `dump_refreshes_a_vacated_slab` asks for one while the
+    // newest manifest still names a slab compaction has emptied. That is deliberate and
+    // terminating -- but it means "wrote records, ran one round" is NOT an idle shard, and a
+    // conditional tested there would never fire while appearing to pass.
+    let mut settled = false;
+    for _ in 0..16 {
+        let plan = engine.storage_lifecycle_plan(request());
+        if plan.selected_dump_buckets.is_empty() && plan.dirty_buckets.is_empty() {
+            settled = true;
+            break;
+        }
+        let _ = engine.apply_storage_lifecycle(request());
+    }
+    assert!(
+        settled,
+        "{records} records: the shard never settled in 16 rounds, so the idle measurement would be \
+taken on a shard that still has work to do. Nothing below is evidence until this holds."
+    );
+
+    // ---- DENOMINATORS ----
+    let summaries = engine.bucket_storage_summaries(1);
+    assert!(
+        !summaries.is_empty(),
+        "{records} records: no bucket summaries at all -- the fixture stored nothing"
+    );
+    let live_pages: u64 = summaries
+        .iter()
+        .map(|summary| summary.page_ref_count as u64)
+        .sum();
+    assert!(
+        live_pages > 0,
+        "{records} records: the shard holds no live pages, so every walk materialises nothing and \
+any walk count holds vacuously"
+    );
+    let dirty_now: u64 = summaries
+        .iter()
+        .map(|summary| summary.dirty_object_count)
+        .sum();
+    assert_eq!(
+        dirty_now, 0,
+        "{records} records: the dirty index is NOT empty after settling, so the idle branch under \
+test is not the branch that runs"
+    );
+
+    let breakdown = |label: &str, sites: &std::collections::BTreeMap<String, u64>| {
+        let mut rows: Vec<(&String, &u64)> = sites.iter().collect();
+        rows.sort_by(|left, right| right.1.cmp(left.1));
+        rows.iter()
+            .map(|(site, entries)| {
+                format!(
+                    "\n    {label}  {:>5.1}x  {site}",
+                    **entries as f64 / live_pages as f64
+                )
+            })
+            .collect::<String>()
+    };
+
+    // ---- IDLE ROUND ----
+    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_page_scan_sites();
+    let (plan_builds_before, _) = crate::engine::storage_plan_build_counts();
+    let idle_report = engine.apply_storage_lifecycle(request());
+    let idle_walked = crate::engine::live_page_scan_entries();
+    let idle_sites = crate::engine::live_page_scan_sites_snapshot();
+    let (plan_builds_after, _) = crate::engine::storage_plan_build_counts();
+    assert!(
+        plan_builds_after > plan_builds_before,
+        "{records} records: no plan was built, so the idle round did not run and a walk count of \
+zero would mean nothing"
+    );
+    assert_eq!(idle_report.shard_id, 1);
+
+    // ---- ONE DIRTY BUCKET. The conditional must NOT fire. ----
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "idle-dirty-one".to_string(),
+            value: vec![b'v'; 64],
+        },
+    });
+    assert!(response.status.ok, "dirty write: {:?}", response.status);
+    let dirty_buckets_now = engine.storage_lifecycle_plan(request()).dirty_buckets.len();
+    assert_eq!(
+        dirty_buckets_now, 1,
+        "{records} records: expected exactly one dirty bucket for the not-idle half; got \
+{dirty_buckets_now}. The halves must differ in the dirty index and in nothing else."
+    );
+
+    crate::engine::reset_live_page_scan_entries();
+    crate::engine::reset_live_page_scan_sites();
+    let dirty_report = engine.apply_storage_lifecycle(request());
+    let dirty_walked = crate::engine::live_page_scan_entries();
+    let dirty_sites = crate::engine::live_page_scan_sites_snapshot();
+    assert_eq!(dirty_report.shard_id, 1);
+
+    RoundWalkMeasurement {
+        records,
+        live_pages,
+        idle_multiple: idle_walked / live_pages.max(1),
+        dirty_multiple: dirty_walked / live_pages.max(1),
+        idle_breakdown: breakdown("idle ", &idle_sites),
+        dirty_breakdown: breakdown("dirty", &dirty_sites),
+    }
 }

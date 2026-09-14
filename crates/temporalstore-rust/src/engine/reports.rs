@@ -1031,8 +1031,25 @@ pub struct StorageLifecyclePlan {
     pub undumped_wal_records: u64,
     #[serde(default)]
     pub dump_delayed: bool,
-    #[serde(rename = "slot_summaries")]
-    pub bucket_summaries: Vec<BucketStorageSummary>,
+    /// Every bucket's storage summary, or `None` when this round did not look.
+    ///
+    /// AN EMPTY VECTOR AND "I DID NOT LOOK" ARE DIFFERENT ANSWERS, and before this field became
+    /// an `Option` they were the same value. Populating it means walking every live page in the
+    /// shard, which the plan did unconditionally because this is an OUTPUT field -- so an idle
+    /// shard paid a whole-shard walk every maintenance round to fill a vector that every consumer
+    /// reduces to a count or a sum.
+    ///
+    /// The walk is now conditional (see `storage_lifecycle_plan`), and `None` is what a round
+    /// that skipped it reports. It is NOT "the shard has no buckets": a settled shard holding
+    /// millions of live pages reports `None` here on every round. Consumers must not paper over
+    /// it with `unwrap_or_default()` -- a zero derived that way is indistinguishable from a
+    /// measured zero, and publishing one as a metric is how an idle shard comes to look empty.
+    #[serde(
+        rename = "slot_summaries",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bucket_summaries: Option<Vec<BucketStorageSummary>>,
     #[serde(alias = "live_page_segment_ids")]
     #[serde(rename = "live_page_slab_ids")]
     pub live_block_slab_ids: Vec<u64>,
@@ -1595,13 +1612,19 @@ impl StorageLifecycleReport {
             "slot_owner_mismatch_count",
             object_lifecycle.owner_mismatch_page_refs,
         );
-        put(
-            &mut metrics,
-            "slot_index_entry_count",
-            plan.bucket_summaries
-                .len()
-                .max(plan.selected_dump_buckets.len()) as u64,
-        );
+        // OMITTED, not zeroed, when the round did not walk the live pages. In a metrics map an
+        // absent key is "not measured" and a present 0 is "measured none" -- publishing the
+        // second for the first is how a settled shard comes to look like an empty one on a graph.
+        // `selected_dump_buckets` alone cannot stand in: it is empty on exactly these rounds.
+        if let Some(bucket_summaries) = plan.bucket_summaries.as_ref() {
+            put(
+                &mut metrics,
+                "slot_index_entry_count",
+                bucket_summaries
+                    .len()
+                    .max(plan.selected_dump_buckets.len()) as u64,
+            );
+        }
         put(
             &mut metrics,
             "slot_object_ref_count",
@@ -3603,6 +3626,20 @@ pub struct StorageManagerPressureSignals {
     #[serde(default)]
     pub bucket_index_resident_bytes: u64,
     pub memory_cache_pressure_score: u64,
+    /// Whether the round that produced this snapshot walked the shard's live pages.
+    ///
+    /// The walk is conditional: a round with no dirty slot skips it (see
+    /// `StorageLifecyclePlan::bucket_summaries`). Every figure in this snapshot that is derived
+    /// from it then reads 0 WITHOUT ANYTHING HAVING BEEN COUNTED, and a 0 of that kind is not a
+    /// measurement of zero. This flag is what separates the two, and it is exported beside them.
+    ///
+    /// It matters most for `expired_bucket_object_scan_debt`, which has two producers that do not
+    /// mean the same thing: the data_node runtime fills it from the walk's slot count, while the
+    /// engine's own cycle fills it from `shard.expires_at_ms.len()` and never touched the walk.
+    /// On the first path a 0 with this flag false means "not counted"; on the second the flag says
+    /// nothing about that field and only qualifies the slot and page figures.
+    #[serde(default)]
+    pub live_page_summaries_measured: bool,
     #[serde(rename = "expired_slot_object_scan_debt")]
     pub expired_bucket_object_scan_debt: usize,
     #[serde(alias = "delayed_destroy_segment_count")]

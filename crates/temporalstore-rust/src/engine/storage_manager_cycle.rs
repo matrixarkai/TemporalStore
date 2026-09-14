@@ -123,16 +123,44 @@ impl TemporalEngine {
             request.page_gc_raft_install_floor_slab_id,
             request.page_gc_delayed_destroy_grace_ms,
         );
-        let bucket_logical_bytes = plan
-            .bucket_summaries
-            .iter()
-            .map(|summary| summary.logical_bytes)
-            .sum::<u64>();
-        let bucket_physical_bytes = plan
-            .bucket_summaries
-            .iter()
-            .map(|summary| summary.physical_bytes)
-            .sum::<u64>();
+        // THE ONE PLACE "did not look" COLLAPSES TO A ZERO IN THIS FUNCTION.
+        //
+        // `plan.bucket_summaries` is `None` when the round skipped the whole-shard walk because
+        // no bucket was dirty. That is NOT "the shard holds nothing": a settled shard with
+        // millions of live pages reports `None` every round. The stage figures below are derived
+        // from it and therefore read 0 on such a round.
+        //
+        // What keeps that 0 honest is that the plan travels WITH them:
+        // `StorageManagerCycleReport.plan.bucket_summaries` is the same `Option`, so a reader of
+        // any of these byte or count figures can tell an unmeasured 0 from a measured one without
+        // a second source. `live_page_summaries_measured` below is that test, named once.
+        let bucket_summaries = plan.bucket_summaries.as_deref();
+        let live_page_summaries_measured = bucket_summaries.is_some();
+        let bucket_logical_bytes = bucket_summaries
+            .map(|summaries| {
+                summaries
+                    .iter()
+                    .map(|summary| summary.logical_bytes)
+                    .sum::<u64>()
+            })
+            .unwrap_or(0);
+        let bucket_physical_bytes = bucket_summaries
+            .map(|summaries| {
+                summaries
+                    .iter()
+                    .map(|summary| summary.physical_bytes)
+                    .sum::<u64>()
+            })
+            .unwrap_or(0);
+        let bucket_page_ref_count = bucket_summaries
+            .map(|summaries| {
+                summaries
+                    .iter()
+                    .map(|summary| summary.page_ref_count)
+                    .sum::<u64>()
+            })
+            .unwrap_or(0);
+        let bucket_count = bucket_summaries.map(|summaries| summaries.len()).unwrap_or(0);
         let reclaim_live_bytes = plan
             .reclaim_candidates
             .iter()
@@ -238,6 +266,7 @@ impl TemporalEngine {
             + manifest_retention_blockers as u64
             + compaction_debt_score;
         let mut pressure_signals = StorageManagerPressureSignals {
+            live_page_summaries_measured,
             dirty_bucket_count: plan.dirty_buckets.len(),
             undumped_wal_records: plan.undumped_wal_records,
             wal_bytes: log_pressure.wal_bytes,
@@ -352,12 +381,8 @@ impl TemporalEngine {
             stale_bytes: reclaim_stale_bytes,
             dirty_bucket_count: plan.dirty_buckets.len(),
             undumped_wal_records: plan.undumped_wal_records,
-            metrics_bucket_count: plan.bucket_summaries.len(),
-            metrics_page_ref_count: plan
-                .bucket_summaries
-                .iter()
-                .map(|summary| summary.page_ref_count)
-                .sum(),
+            metrics_bucket_count: bucket_count,
+            metrics_page_ref_count: bucket_page_ref_count,
             ..StorageManagerStageReport::default()
         });
 
@@ -1138,27 +1163,28 @@ impl TemporalEngine {
             stage: "reap_metrics".to_string(),
             enabled: true,
             applied: !request.dry_run,
-            skipped: false,
-            reason: "reported slot/page/cache pressure metrics for the completed cycle".to_string(),
+            // An unmeasured round says so HERE, in the stage an operator reads for these
+            // numbers, rather than leaving them to be read as a shard that emptied itself.
+            reason: if live_page_summaries_measured {
+                "reported slot/page/cache pressure metrics for the completed cycle".to_string()
+            } else {
+                "no slot was dirty, so the round did not walk the live pages: the slot and page \
+counts on this stage are NOT MEASURED and read 0, they are not a measurement of zero"
+                    .to_string()
+            },
+            skipped: !live_page_summaries_measured,
             pressure_signal: "slot_page_cache_metrics".to_string(),
-            pressure_score: plan.bucket_summaries.len() as u64
-                + plan
-                    .bucket_summaries
-                    .iter()
-                    .map(|summary| summary.page_ref_count)
-                    .sum::<u64>(),
+            pressure_score: bucket_count as u64 + bucket_page_ref_count,
             pressure_threshold: 1,
-            pressure_triggered: !plan.bucket_summaries.is_empty(),
+            pressure_triggered: bucket_summaries
+                .map(|summaries| !summaries.is_empty())
+                .unwrap_or(false),
             before_bytes: bucket_physical_bytes,
             after_bytes: bucket_physical_bytes,
             live_bytes: bucket_logical_bytes,
             stale_bytes: reclaim_stale_bytes,
-            metrics_bucket_count: plan.bucket_summaries.len(),
-            metrics_page_ref_count: plan
-                .bucket_summaries
-                .iter()
-                .map(|summary| summary.page_ref_count)
-                .sum(),
+            metrics_bucket_count: bucket_count,
+            metrics_page_ref_count: bucket_page_ref_count,
             ..StorageManagerStageReport::default()
         });
         let phase_executor =

@@ -43,7 +43,37 @@ pub fn reset_storage_plan_build_counts() {
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let bucket_summaries = self.bucket_storage_summaries(request.shard_id);
+        // DO NOT WALK THE SHARD TO FIND OUT THERE IS NOTHING TO DO.
+        //
+        // `bucket_storage_summaries` materialises every live page in the shard. This call sat at
+        // the top of the plan unconditionally, so a settled shard that nobody had written to paid
+        // a whole-shard walk on every maintenance round, for ever.
+        //
+        // It used to be load-bearing: dump selection read `dirty_object_count` off the summaries.
+        // #1709 ended that. `dirty_object_count` is now populated from exactly ONE place --
+        // `shard.dirty_objects.bucket_counts()`, the last loop in `bucket_storage_summaries` --
+        // and every other loop in that function leaves it at its `Default` of 0. So
+        //
+        //     "some summary has dirty_object_count > 0"   IFF   "the dirty index is non-empty"
+        //
+        // exactly, and the right-hand side is a `BTreeMap::is_empty` that touches no pages. When
+        // the index is empty the filter below selects nothing, `dirty_buckets` is empty, and the
+        // walk's only remaining product is the report field -- which is why it survived, and why
+        // that field is now an `Option` rather than a vector that reads as a measured zero.
+        //
+        // The walk is NOT deleted, and one caller can still demand it below:
+        // `dump_refreshes_a_vacated_slab` selects a dump with no bucket dirty, and needs the full
+        // bucket list to do it. That branch takes the walk itself, so skipping here cannot starve
+        // it -- see the `get_or_insert_with` at its site.
+        let shard_has_dirty_objects = self
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .get(&request.shard_id)
+            .map(|shard| !shard.dirty_objects.is_empty())
+            .unwrap_or(false);
+        let mut bucket_summaries: Option<Vec<BucketStorageSummary>> = shard_has_dirty_objects
+            .then(|| self.bucket_storage_summaries(request.shard_id));
         // Select the least-recently-dumped (most overdue) dirty buckets first, matching the
         // WAL-reclaim routine's oldest-first-dirty ordering (dirty buckets are consumed
         // in non-decreasing first-dirty-log-id order).
@@ -54,7 +84,11 @@ impl TemporalEngine {
         // sequence at the bucket's last dump; 0 = never dumped) ascending makes an overdue bucket
         // rise to the top and guarantees every dirty bucket is eventually selected; routing_bucket
         // is a stable tiebreaker.
-        let mut dirty_bucket_summaries = bucket_summaries
+        // Empty EXACTLY when the dirty index is empty, which is the case that skipped the walk
+        // above -- so this selects the same buckets it always did, without a fallback that could
+        // mistake "did not look" for "looked and found none".
+        let dirty_bucket_source: &[BucketStorageSummary] = bucket_summaries.as_deref().unwrap_or(&[]);
+        let mut dirty_bucket_summaries = dirty_bucket_source
             .iter()
             .filter(|summary| summary.dirty_object_count > 0)
             .collect::<Vec<_>>();
@@ -217,7 +251,13 @@ impl TemporalEngine {
             // cap costs nothing to skip here -- `create_bucket_dump_manifest` exports the whole
             // index whatever the selection is, so a narrower one would be the same work for a
             // result that releases nothing.
+            //
+            // THIS BRANCH FIRES ON AN IDLE SHARD BY DESIGN -- no bucket is dirty, which is
+            // precisely the state that skipped the walk at the top of this function. So take it
+            // here. `get_or_insert_with` walks only if the plan has not already, which keeps a
+            // dirty round at one walk and makes this the only round that pays for a second.
             selected_dump_buckets = bucket_summaries
+                .get_or_insert_with(|| self.bucket_storage_summaries(request.shard_id))
                 .iter()
                 .map(|summary| summary.routing_bucket)
                 .collect::<Vec<_>>();

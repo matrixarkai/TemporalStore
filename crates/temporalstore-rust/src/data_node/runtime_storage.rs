@@ -80,7 +80,13 @@ impl DataNodeRuntime {
                 bucket_index_resident_bytes,
                 eviction_memory_pressure_bytes,
                 memory_cache_pressure_score: eviction_memory_pressure_bytes,
-                expired_bucket_object_scan_debt: plan.bucket_summaries.len(),
+                live_page_summaries_measured: plan.bucket_summaries.is_some(),
+                // 0 when the round did not walk. The flag above is what says which 0 this is.
+                expired_bucket_object_scan_debt: plan
+                    .bucket_summaries
+                    .as_ref()
+                    .map(|summaries| summaries.len())
+                    .unwrap_or(0),
                 delayed_destroy_slab_count: plan.delayed_destroy_block_slab_ids.len(),
                 delayed_destroy_bytes: plan.reclaimable_physical_bytes,
                 follower_cursor_retention_blockers: 0,

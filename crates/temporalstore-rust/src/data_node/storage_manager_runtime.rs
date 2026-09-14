@@ -122,6 +122,7 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
             .saturating_add(cycle.pressure_snapshot.disk_cache_bytes)
             .saturating_add(cycle.pressure_snapshot.bucket_index_resident_bytes),
         memory_cache_pressure_score: cycle.pressure_snapshot.memory_cache_pressure_score,
+        live_page_summaries_measured: cycle.pressure_snapshot.live_page_summaries_measured,
         expired_bucket_object_scan_debt: cycle.pressure_snapshot.expired_bucket_object_scan_debt,
         delayed_destroy_slab_count: cycle.pressure_snapshot.delayed_destroy_slab_count,
         delayed_destroy_bytes: cycle.pressure_snapshot.delayed_destroy_bytes,

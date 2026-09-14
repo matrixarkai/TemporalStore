@@ -173,6 +173,12 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
             "bucket_index_resident_bytes",
             pressure.bucket_index_resident_bytes,
         ),
+        // Published BESIDE the debt: 0 debt with this at 0 means the round never counted, and
+        // 0 debt with this at 1 means it counted none.
+        (
+            "live_page_summaries_measured",
+            u64::from(pressure.live_page_summaries_measured),
+        ),
         (
             "expired_slot_object_scan_debt",
             pressure.expired_bucket_object_scan_debt as u64,

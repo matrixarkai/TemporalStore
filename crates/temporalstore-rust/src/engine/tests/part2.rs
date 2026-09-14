@@ -2344,16 +2344,45 @@ fn planning_a_maintenance_round_reads_no_pages() {
     );
 
     let before = engine.block_store().stats().reads;
+    crate::engine::reset_live_page_scan_entries();
     let plan = engine.storage_lifecycle_plan(lifecycle.clone());
     let planned = engine.block_store().stats().reads.saturating_sub(before);
+    let surveyed = crate::engine::live_page_scan_entries();
     assert_eq!(
         planned, 0,
         "planning read {planned} pages with {live_pages} live -- it is scanning the store"
     );
+    // NON-VACUITY: the plan must have inspected the shard, or "it read 0 pages" is the report of
+    // a call that did nothing.
+    //
+    // This used to ask `!plan.bucket_summaries.is_empty()`. That anchor no longer holds here, and
+    // the reason is the thing under test one line up: the fixture SETTLES first, a settled shard
+    // has no dirty bucket, and the plan now skips the whole-shard walk that fills
+    // `bucket_summaries` in exactly that case. `None` there means "did not look" -- so keeping
+    // the old assertion would have failed, and weakening it to `is_none()` would have removed the
+    // non-vacuity guard altogether and left `planned == 0` proving nothing.
+    //
+    // Count the live-page entries the plan materialised instead. The plan still surveys the live
+    // set for its reclaim and slab stages, so this is the same claim -- the plan inspects the
+    // shard without reading the block store -- anchored to a source the conditional does not
+    // remove.
     assert!(
-        !plan.bucket_summaries.is_empty(),
-        "the plan must have surveyed something, or the count above proves nothing"
+        surveyed > 0,
+        "the plan materialised no live-page entries at all with {live_pages} live pages, so the \
+zero-read count above proves nothing"
     );
+    // DELIBERATELY NOT ASSERTED EITHER WAY: whether this plan skipped the summary walk.
+    //
+    // One `apply_storage_lifecycle` is not enough to settle a shard. A round with no dirty slot
+    // can still select a dump, because `dump_refreshes_a_vacated_slab` asks for one while the
+    // newest manifest still names a slab compaction has emptied -- and that branch takes the walk
+    // itself. Measured: on this fixture the plan DOES walk, so `bucket_summaries` is `Some(..)`
+    // here even though no slot is dirty.
+    //
+    // That is the conditional working, not failing, and it is why the idle measurement in
+    // `an_idle_round_does_not_walk_the_live_pages_to_populate_a_report` settles in a bounded LOOP
+    // rather than a single round. Pinning a value here would pin the vacated-slab refresh instead
+    // of the thing this test measures.
 
     let before = engine.block_store().stats().reads;
     engine.apply_storage_lifecycle(lifecycle);
