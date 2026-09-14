@@ -808,6 +808,34 @@ def _usage_rows_visible_to(record: Optional[Json], rows: list, tenant: Optional[
 _AUDIT_READ_SCOPES = {"admin:audit"}
 
 
+def _scope_set_denied(record, required: set) -> Optional[Json]:
+    """403 payload when the key carries none of ``required``, else ``None``.
+
+    The admission posture the three scope-set gates share, in one place. Two callers are let
+    through before scopes are consulted at all:
+
+      * ``record is None`` -- a dev key, or enforced mode with no matched key;
+      * ``scopes is None`` -- a legacy/unrestricted keystore entry.
+
+    It was written three times, once per gate. That is the part worth having once: tightening it --
+    deciding a legacy key should no longer be admitted, say -- is a change to who can reach an
+    endpoint, and it should not depend on finding all three copies. Which scope set opens which
+    gate is the part that differs, so it stays with the gate and keeps its reasoning.
+
+    ``intersection`` takes any iterable, so a list of scopes needs no conversion; one of the three
+    wrapped it in ``set()`` and two did not, which is drift of the harmless kind and the kind that
+    shows the copies were being edited apart.
+    """
+    if record is None:
+        return None
+    scopes = record.get("scopes")
+    if scopes is None:  # legacy/unrestricted key
+        return None
+    if required.intersection(scopes):
+        return None
+    return {"error": "insufficient_scope", "required": sorted(required)}
+
+
 def _audit_read_denied(record: Optional[Json]) -> Optional[Json]:
     """403 payload when the key may not read the audit log, else ``None``.
 
@@ -817,14 +845,7 @@ def _audit_read_denied(record: Optional[Json]) -> Optional[Json]:
     ``admin:audit`` as "Read the audit log", and a scope that names one thing should be the thing
     that opens it. Same dev/legacy posture as its neighbours.
     """
-    if record is None:
-        return None
-    scopes = record.get("scopes")
-    if scopes is None:
-        return None
-    if _AUDIT_READ_SCOPES.intersection(set(scopes)):
-        return None
-    return {"error": "insufficient_scope", "required": sorted(_AUDIT_READ_SCOPES)}
+    return _scope_set_denied(record, _AUDIT_READ_SCOPES)
 
 
 def _audit_recording_mode() -> str:
@@ -849,14 +870,7 @@ def _admin_write_denied(record: Optional[Json]) -> Optional[Json]:
     authorising configuration writes and ingestion. A scope presented as read-only has to be
     read-only, or the label is the lie.
     """
-    if record is None:
-        return None
-    scopes = record.get("scopes")
-    if scopes is None:  # legacy/unrestricted key
-        return None
-    if _ADMIN_WRITE_SCOPES.intersection(scopes):
-        return None
-    return {"error": "insufficient_scope", "required": sorted(_ADMIN_WRITE_SCOPES)}
+    return _scope_set_denied(record, _ADMIN_WRITE_SCOPES)
 
 
 def _usage_read_denied(record: Optional[Json]) -> Optional[Json]:
@@ -866,14 +880,7 @@ def _usage_read_denied(record: Optional[Json]) -> Optional[Json]:
     (``scopes is None``) is allowed; a scoped enforced-mode key must carry ``admin:api_key`` or
     ``admin:audit``.
     """
-    if record is None:
-        return None
-    scopes = record.get("scopes")
-    if scopes is None:  # legacy/unrestricted key
-        return None
-    if _USAGE_READ_SCOPES.intersection(scopes):
-        return None
-    return {"error": "insufficient_scope", "required": sorted(_USAGE_READ_SCOPES)}
+    return _scope_set_denied(record, _USAGE_READ_SCOPES)
 
 
 # ================================================================================================
