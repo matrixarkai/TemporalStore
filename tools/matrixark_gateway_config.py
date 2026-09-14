@@ -75,9 +75,40 @@ _ENGINE_MINIMUMS: Dict[str, int] = {
 }
 
 
-def engine_minimum(env_name: str) -> Optional[int]:
-    """The floor the engine raises this variable to, if it has one."""
-    return _ENGINE_MINIMUMS.get(env_name)
+# A SECOND floor, which a map of constants cannot hold because it is not one. Further down the
+# engine, `effective_slab_target_bytes()` returns `block_slab_target_bytes.max(stream_max_blob_size)`
+# -- a slab has to be able to hold the largest blob it stores -- and that is the number the write
+# path uses. So the floor under TS_BLOCK_SLAB_TARGET_BYTES is whatever TS_STREAM_MAX_BLOB_SIZE is,
+# and its default alone is 10 MiB: 10,240 times the literal 1024 above.
+#
+# Measured against the engine source built on its own, before this was here: a customer writing 512
+# was told "raised to 1024" and the write path used 10,485,760. A customer writing 1,048,576 was
+# told nothing at all, and the write path used 10,485,760 for that too.
+_ENGINE_FLOOR_FROM_SETTING: Dict[str, str] = {
+    "TS_BLOCK_SLAB_TARGET_BYTES": "TS_STREAM_MAX_BLOB_SIZE",
+}
+
+
+def engine_minimum(env_name: str, values: Optional[Dict[str, str]] = None) -> Optional[int]:
+    """The floor the engine raises this variable to, if it has one.
+
+    `values` is the settings document as it will stand AFTER the write being reported, so a write
+    that moves the blob ceiling and the slab target together is measured against the new ceiling
+    rather than the one still in the environment.
+    """
+    floor = _ENGINE_MINIMUMS.get(env_name)
+    other = _ENGINE_FLOOR_FROM_SETTING.get(env_name)
+    if other is None:
+        return floor
+    setting = SETTINGS_BY_ENV.get(other)
+    if setting is None:
+        return floor
+    raw = _effective(setting, values or {})[0]
+    try:
+        from_other = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return floor
+    return from_other if floor is None else max(floor, from_other)
 
 DEFAULT_CONFIG_FILENAME = "runtime_config.json"
 
@@ -706,12 +737,17 @@ SETTINGS: List[Setting] = [
             "Target size of a block segment", "int", "1073741824", "live",
             "The unit page-slab reclaim works in. A slab is retained while any loaded shard still "
             "references it, so larger slabs mean fewer, coarser reclaims. Values below 1 KiB are "
-            "raised to it."),
+            "raised to it -- and then raised again to TS_STREAM_MAX_BLOB_SIZE, because a slab has "
+            "to be able to hold the largest blob it stores. That second floor is the one that "
+            "decides: at the shipped 10 MiB blob ceiling, every value from 1 KiB to 10 MiB reaches "
+            "the write path as 10 MiB."),
     Setting("storage_engine.stream_max_blob_size", "storage_engine",
             "TS_STREAM_MAX_BLOB_SIZE",
             "Largest streamed blob", "int", "10485760", "live",
             "The ceiling on a single streamed payload. Raising it admits larger objects and raises "
-            "the peak memory a single request can hold. Values below 1 KiB are raised to it."),
+            "the peak memory a single request can hold. Values below 1 KiB are raised to it. It "
+            "is also a FLOOR on TS_BLOCK_SLAB_TARGET_BYTES -- a slab has to be able to hold the "
+            "largest blob it stores -- so raising this raises the reclaim unit with it."),
     Setting("storage_engine.compaction_watermark_bytes", "storage_engine",
             "TS_COMPACTION_WATERMARK_BYTES",
             "Compaction watermark", "int", "268435456", "live",
@@ -1224,6 +1260,7 @@ SETTINGS.extend([
 
 SETTINGS.extend(_knob_settings())
 SETTINGS_BY_KEY: Dict[str, Setting] = {s.key: s for s in SETTINGS}
+SETTINGS_BY_ENV: Dict[str, Setting] = {s.env: s for s in SETTINGS if s.env}
 
 
 # ================================================================================================
@@ -2122,7 +2159,7 @@ def update(patch: Json, actor: Optional[str] = None) -> Json:
         # write is still accepted -- the engine takes it and raises it, and refusing here would be
         # this file inventing a stricter rule than the thing it configures.
         raised_to = None
-        floor = engine_minimum(name) if name else None
+        floor = engine_minimum(name, values) if name else None
         if floor is not None and value not in ("", None):
             try:
                 if int(str(value).strip()) < floor:

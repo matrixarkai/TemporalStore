@@ -362,6 +362,54 @@ mod tests {
     }
 
     #[test]
+    fn a_slab_target_under_the_blob_ceiling_does_not_reach_the_write_path() {
+        // The case `parses_public_knobs_from_getter` cannot see. It sets slab 10 MiB against blob
+        // 8 MiB -- the slab wins, so the floor below never fires and that assertion holds whether
+        // or not this clamp exists at all.
+        //
+        // `block_store/append.rs` and `block_store.rs` seal at
+        // `effective_block_slab_target_bytes()`, so this, not the field, is what an operator's
+        // value has to survive.
+        for written in ["1024", "65536", "1048576", "10485759"] {
+            let config = StorageTuningConfig::from_getter(|name| {
+                if name == TS_BLOCK_SLAB_TARGET_BYTES {
+                    Some(written.to_string())
+                } else {
+                    None
+                }
+            });
+            assert_eq!(
+                written.parse::<u64>().unwrap(),
+                config.block_slab_target_bytes,
+                "the field should hold what was written"
+            );
+            assert_eq!(
+                DEFAULT_STREAM_MAX_BLOB_SIZE,
+                config.effective_slab_target_bytes(),
+                "{written} is under the blob ceiling, so the write path must use the ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn the_blob_ceiling_moves_the_slab_target_with_it() {
+        // The other direction, and the reason neither page entry could be written without naming
+        // the other: TS_STREAM_MAX_BLOB_SIZE calls itself a ceiling on a payload, and is also a
+        // floor on the reclaim unit.
+        let config = StorageTuningConfig::from_getter(|name| {
+            if name == TS_BLOCK_SLAB_TARGET_BYTES {
+                Some("1073741824".to_string())
+            } else if name == TS_STREAM_MAX_BLOB_SIZE {
+                Some("2147483648".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(1_073_741_824, config.block_slab_target_bytes);
+        assert_eq!(2_147_483_648, config.effective_slab_target_bytes());
+    }
+
+    #[test]
     // shared-corpus: storage_config_like_public_knobs
     fn parses_public_knobs_from_getter() {
         let env = HashMap::from([
