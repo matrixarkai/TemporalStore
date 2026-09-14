@@ -504,7 +504,13 @@ def numeric_default_of_statement(lines, read_line, consts):
 #: way the engine states a number and the only one it could see. A helper call states it as an
 #: argument instead, and a hundred flags showed an em dash on the page an operator consults to
 #: decide what to change.
-_NUMERIC_HELPER = re.compile(r"\benv_(?:u8|u16|u32|u64|i8|i16|i32|i64|usize|isize|f32|f64)\s*\(")
+#:
+#: `env_number` is the crate's own reader, and it is named for what it returns rather than for a
+#: width, so a list of widths could not see it. It has to be here or adopting the shared numeric
+#: vocabulary BLANKS a default that was on the page the day before -- which is the one direction
+#: this document must not move in, since a blank means "go and look".
+_NUMERIC_HELPER = re.compile(
+    r"\benv_(?:number|u8|u16|u32|u64|i8|i16|i32|i64|usize|isize|f32|f64)\s*\(")
 
 
 def numeric_helper_default(lines, read_line, consts):
