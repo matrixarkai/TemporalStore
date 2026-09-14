@@ -92,17 +92,34 @@ class _LocalAdapterSessionCommitMixin:
         for the tombstones too and applies them, which is what `read_all()` was doing for us.
 
         Falls back to the full read when the scan cannot answer -- `None` means "could not ask",
-        which is not the same as "nothing of these types".
+        which is not the same as "nothing of these types". But `None` covers two different things,
+        and the difference decides whether that read can work at all. "No scanner on this client"
+        is the ordinary full read. A scan that FAILED is not: with no Python hot cache and no disk
+        fallback, `read_all()` goes back to the client that just refused, so it is guaranteed to
+        fail too. `_read_all_after_scoped_scan` is where that is decided, and six readers in
+        `matrixark_mcp_temporal_adapters` already ask it. This one did not, so a refused scan cost
+        a whole-store read per call -- up to two per commit -- and then raised the FULL READ's
+        error, reporting a refused connection as a failed read of everything. It was also counted
+        nowhere, and the counter exists so that a scan path which has stopped working does not look
+        like one that was never taken.
         """
         # The scan belongs to the TemporalStore-backed adapter; the plain local adapter commits
-        # sessions too and does not have it. A missing scanner is the same answer as a scanner
-        # that cannot answer -- do the full read -- so ask for it rather than assuming the mixin.
+        # sessions too and does not have it, so ask for it rather than assuming the mixin. A
+        # MISSING scanner is not the same answer as one that was asked and could not answer: no
+        # scan was attempted here, so nothing has failed and the full read is the whole answer.
+        # Telling a refusal from an absence is the branch further down.
         scanner = getattr(self, "_scan_records_of_types", None)
         if not callable(scanner):
             return self.read_all()
         subset = scanner(list(wanted) + [MEMORY_TOMBSTONE_RECORD_TYPE])
         if subset is None:
-            return self.read_all()
+            # Asked for rather than assumed, and called from HERE rather than wrapped in a helper:
+            # the label it records is the name of its caller's frame, so a wrapper would name the
+            # wrapper. The helper travels with the scanner -- measured, every class in tools/ that
+            # answers `session_commit` either has both or neither -- so the plain local adapter,
+            # which has no scanner and never reaches this line, keeps the plain full read.
+            after_scan = getattr(self, "_read_all_after_scoped_scan", None)
+            return after_scan() if callable(after_scan) else self.read_all()
         return filter_live_memory_records(compact_and_apply_tombstones(list(subset)))
 
     def session_commit(self, args: Json, *, hook: Json | None = None) -> Json:

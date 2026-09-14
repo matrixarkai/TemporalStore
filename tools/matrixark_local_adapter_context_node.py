@@ -235,14 +235,20 @@ class _LocalAdapterContextNodeMixin:
     def _embedding_pass_records(self) -> list[Json]:
         """Records the embedding pass can act on, from one typed scan where possible."""
         scan = getattr(self, "_scan_records_of_types", None)
-        if callable(scan):
-            try:
-                subset = scan(list(self.EMBEDDING_PASS_RECORD_TYPES))
-            except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
-                subset = None
-            if subset is not None:
-                return subset
-        return self.read_all()
+        if not callable(scan):
+            return self.read_all()  # nothing to ask; the full read is the whole answer
+        try:
+            subset = scan(list(self.EMBEDDING_PASS_RECORD_TYPES))
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            subset = None
+        if subset is not None:
+            return subset
+        # The scan was ASKED and could not answer. If it FAILED, `read_all()` goes back to the same
+        # client and cannot answer either -- `_read_all_after_scoped_scan` is what decides that,
+        # and it counts the fallback so a scan path that has stopped working does not look like one
+        # that was never taken. Same rule as the sibling in matrixark_local_adapter_session_commit.
+        after_scan = getattr(self, "_read_all_after_scoped_scan", None)
+        return after_scan() if callable(after_scan) else self.read_all()
 
     def _embedding_target_for_context_record(self, record: Json) -> Json | None:
         record_type = str(record.get("record_type") or "")
@@ -332,9 +338,10 @@ class _LocalAdapterContextNodeMixin:
         # rather than walking the log.
         #
         # `_scan_records_of_types` returns None when it cannot ask (no client, an older signature,
-        # a backend that does not support it). None is not "nothing matched" -- it means the
-        # question could not be put -- so that case falls back to the full read rather than
-        # silently embedding against an empty view.
+        # a backend that does not support it) AND when the scan failed. None is not "nothing
+        # matched" -- it means the question could not be answered -- so that case falls back to the
+        # full read rather than silently embedding against an empty view. Which of the two it was
+        # decides whether that read can work: see `_embedding_pass_records`.
         if records is None:
             records = self._embedding_pass_records()
         for record in records:
