@@ -63,6 +63,14 @@ pub struct ShardCompactionReport {
     #[serde(rename = "compacted_page_slab_id")]
     pub compacted_block_slab_id: u64,
     pub rewritten_page_refs: usize,
+    /// Bytes this round copied onto the fresh slab, verbatim.
+    ///
+    /// The round's real cost, and the figure that says how much a round on a node leading
+    /// nothing would have thrown away. `rewritten_page_refs` beside it counts the relocations;
+    /// this counts what they moved, and two rounds with the same ref count can differ by orders
+    /// of magnitude here.
+    #[serde(default)]
+    pub relocated_bytes: u64,
     /// Pages this round left where they were because it spent a budget -- bytes OR page refs,
     /// whichever ran out first. In practice it is the ref budget: the byte one is 256 MiB and a
     /// store that large is rare, while the ref budget is sized to bound the shard write lock.

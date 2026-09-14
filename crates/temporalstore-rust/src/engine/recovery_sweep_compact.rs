@@ -1452,6 +1452,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             bytes_left_by_budget: rewrite_stats.skipped_by_budget_bytes,
             pages_left_off_drain_set: rewrite_stats.skipped_off_drain_set,
             rewritten_page_refs: rewrite_stats.rewritten_page_refs,
+            relocated_bytes: rewrite_stats.relocated_bytes,
             cold_page_rewrite_refs: rewrite_stats.cold_page_rewrite_refs,
             object_page_pack_group_count: before
                 .model_policies

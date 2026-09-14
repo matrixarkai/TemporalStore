@@ -10581,3 +10581,286 @@ fn a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses() {
          scheduler increments; if this moved, the scrape no longer reports what this test proved"
     );
 }
+
+/// A stub role source, so a test can put the node in any one of the three states by hand.
+#[derive(Debug)]
+struct FixedShardLeadership(ShardLeadership);
+
+impl ShardLeadershipSource for FixedShardLeadership {
+    fn shard_leadership(&self, _shard_id: ShardId) -> ShardLeadership {
+        self.0
+    }
+}
+
+/// One arm of the role guard: a fixture that genuinely compacts, run under one leadership state.
+///
+/// Returns (rounds, rounds that ran `compact_pages`, page refs relocated, bytes relocated,
+/// rounds whose skip list names the role). The denominators are returned rather than folded in,
+/// because the two halves of this guard fail in opposite directions and a single combined count
+/// can read full for one while the other is zero.
+fn run_compaction_rounds_under_role(
+    role: Option<ShardLeadership>,
+    batch: usize,
+    keyspace: usize,
+    rounds: usize,
+) -> (usize, usize, usize, u64, usize) {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    if let Some(role) = role {
+        runtime.set_shard_leadership_source(Arc::new(FixedShardLeadership(role)));
+    }
+    let options = StorageManagerOptions::default();
+    let mut written = 0usize;
+    let mut compacted_rounds = 0usize;
+    let mut relocated_refs = 0usize;
+    let mut relocated_bytes = 0u64;
+    let mut role_skipped_rounds = 0usize;
+    for _ in 0..rounds {
+        let engine = runtime.engine();
+        for index in 0..batch {
+            // Overwrites a fixed key space, so earlier versions become dead pages. An
+            // insert-only load leaves nothing stale and compaction never fires, which would
+            // make every number below a measurement of nothing.
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("role-{:08}", (written + index) % keyspace),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += batch;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages")
+        {
+            compacted_rounds += 1;
+        }
+        if report
+            .skipped_stages
+            .iter()
+            .any(|stage| stage == "compact_pages_not_leading")
+        {
+            role_skipped_rounds += 1;
+        }
+        if let Some(compaction) = report.compaction_report.as_ref() {
+            // compacted_objects carries the shard report rewritten_page_refs.
+            relocated_refs += compaction.compacted_objects;
+            relocated_bytes += compaction.relocated_bytes;
+        }
+    }
+    (
+        rounds,
+        compacted_rounds,
+        relocated_refs,
+        relocated_bytes,
+        role_skipped_rounds,
+    )
+}
+
+/// A node that does not lead a shard must not rewrite that shard's live set.
+///
+/// THREE STATES, ASSERTED SEPARATELY, EACH WITH ITS OWN DENOMINATOR. A guard that only checks
+/// the follower half cannot tell "skipped because this node follows" from "compaction never ran
+/// in this fixture at all" -- both read as zero -- so the leading half is what makes the zero
+/// mean something, and the unknown half is what stops the fix from being worse than the waste
+/// it removes.
+///
+///   leading      -> compacts. The positive control.
+///   not leading  -> skips, and SAYS why. The behaviour being bought.
+///   unknown      -> compacts. The failure mode this change risks: the storage maintenance
+///                   scheduler is constructed before consensus is, and on a standalone node
+///                   consensus is never constructed at all. A check that read "I cannot tell"
+///                   as "I am a follower" would switch page compaction off everywhere, which is
+///                   far more damage than the waste.
+///
+/// Mutation-verified, one mutation per half:
+///   * gate loses `leadership_permits_compaction`  -> the not-leading half fails (compacted 8/8).
+///   * gate becomes an unconditional skip           -> the leading half fails (compacted 0/8).
+///   * `is_known_not_leading` also matches Unknown  -> the unknown half fails (compacted 0/8).
+#[test]
+fn a_node_that_does_not_lead_a_shard_does_not_rewrite_its_live_set() {
+    const BATCH: usize = 2_000;
+    const ROUNDS: usize = 8;
+    // Smaller than BATCH, so every round overwrites keys earlier rounds wrote.
+    const KEYSPACE: usize = 500;
+
+    // No source attached at all is the same state the scheduler sees before consensus exists.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let bare = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    assert_eq!(
+        bare.shard_leadership(1),
+        ShardLeadership::Unknown,
+        "a runtime with no leadership source must answer Unknown, never NotLeading"
+    );
+
+    let (leading_rounds, leading_compacted, leading_refs, leading_bytes, leading_role_skips) =
+        run_compaction_rounds_under_role(Some(ShardLeadership::Leading), BATCH, KEYSPACE, ROUNDS);
+    let (
+        follower_rounds,
+        follower_compacted,
+        follower_refs,
+        follower_bytes,
+        follower_role_skips,
+    ) = run_compaction_rounds_under_role(
+        Some(ShardLeadership::NotLeading),
+        BATCH,
+        KEYSPACE,
+        ROUNDS,
+    );
+    let (unknown_rounds, unknown_compacted, unknown_refs, unknown_bytes, unknown_role_skips) =
+        run_compaction_rounds_under_role(None, BATCH, KEYSPACE, ROUNDS);
+
+    eprintln!(
+        "  leading      compacted={leading_compacted}/{leading_rounds} refs={leading_refs} \
+         bytes={leading_bytes} role_skips={leading_role_skips}"
+    );
+    eprintln!(
+        "  not_leading  compacted={follower_compacted}/{follower_rounds} refs={follower_refs} \
+         bytes={follower_bytes} role_skips={follower_role_skips}"
+    );
+    eprintln!(
+        "  unknown      compacted={unknown_compacted}/{unknown_rounds} refs={unknown_refs} \
+         bytes={unknown_bytes} role_skips={unknown_role_skips}"
+    );
+
+    // HALF ONE: leading. Without this the follower's zero below is unattributable.
+    assert!(
+        leading_compacted > 0,
+        "a leading node must still compact: ran {leading_compacted} of {leading_rounds} rounds"
+    );
+    assert!(
+        leading_refs > 0 && leading_bytes > 0,
+        "a leading node must relocate something: refs={leading_refs} bytes={leading_bytes} over \
+         {leading_rounds} rounds"
+    );
+    assert_eq!(
+        leading_role_skips, 0,
+        "a leading node must never record the role skip: {leading_role_skips} of \
+         {leading_rounds} rounds did"
+    );
+
+    // HALF TWO: not leading. Zero work, and a named reason for it.
+    assert_eq!(
+        follower_compacted, 0,
+        "a node that does not lead must not compact: ran {follower_compacted} of \
+         {follower_rounds} rounds"
+    );
+    assert_eq!(
+        (follower_refs, follower_bytes),
+        (0, 0),
+        "a node that does not lead must relocate nothing: refs={follower_refs} \
+         bytes={follower_bytes} over {follower_rounds} rounds"
+    );
+    assert_eq!(
+        follower_role_skips, follower_rounds,
+        "every round on a non-leading node must name the role as the skip reason: \
+         {follower_role_skips} of {follower_rounds} did"
+    );
+
+    // HALF THREE: unknown. The state the scheduler is in before consensus exists, and the state
+    // every standalone node stays in for ever.
+    assert!(
+        unknown_compacted > 0,
+        "an UNKNOWN role must not disable compaction -- the scheduler starts before consensus \
+         does, and a standalone node has none at all: ran {unknown_compacted} of \
+         {unknown_rounds} rounds"
+    );
+    assert!(
+        unknown_refs > 0 && unknown_bytes > 0,
+        "an UNKNOWN role must still relocate: refs={unknown_refs} bytes={unknown_bytes} over \
+         {unknown_rounds} rounds"
+    );
+    assert_eq!(
+        unknown_role_skips, 0,
+        "an UNKNOWN role must never record the role skip: {unknown_role_skips} of \
+         {unknown_rounds} rounds did"
+    );
+}
+
+/// What does a node that leads nothing throw away per round? Prints.
+///
+///   cargo test -p temporalstore-rust --lib what_a_follower_rewrites_per_round \
+///       -- --ignored --nocapture --test-threads=1
+///
+/// Measured against TODAY's compaction, not the one that rewrote the whole live set every round:
+/// since #1687 a round relocates only the pages sitting on the slabs the reclaim plan picked, so
+/// these are the post-fix numbers and they are still entirely wasted on a node whose clients
+/// cannot see the layout.
+///
+/// MEASURED, 16-core WSL box, load average under 5 throughout, a 500-key live set overwritten
+/// by 2,000 writes a round:
+///
+///     records   rounds   compacted   page refs   bytes relocated   bytes/round
+///      8,000       4        4/4         2,000         216,000         54,000
+///     80,000      40       40/40       20,000       2,160,000         54,000
+///
+/// The not-leading arm is the control and reads ZERO on every column at both scales, over
+/// denominators of 4 and 40 rounds; without it a zero here would be indistinguishable from a
+/// fixture that never generated compaction pressure.
+///
+/// READ THE THIRD COLUMN FIRST. Compaction fired in EVERY round of both runs, on a shard whose
+/// only activity is overwriting the same 500 keys. Since #1687 a round is bounded by the live
+/// pages on the slabs the reclaim plan picked, so its cost is flat in the record count -- but
+/// it recurs for ever, once per scheduler tick, and at the shipped thirty-second interval that
+/// is 54 KB relocated and 500 pages rewritten per shard per tick, about 155 MB a day per idle
+/// shard, plus the index record each round persists. None of it is visible to a client of a
+/// node that leads nothing.
+#[test]
+#[ignore]
+fn what_a_follower_rewrites_per_round() {
+    const BATCH: usize = 2_000;
+
+    // TWO AXES, because one of them alone says the wrong thing.
+    //
+    // A fixed live set shows the RECURRENCE: the round costs the same every thirty seconds for
+    // ever, on a shard nobody is even writing to unusually hard. Growing the record count under
+    // a fixed live set does NOT make a round more expensive, and a table that only did that
+    // would suggest the waste is bounded -- it is not, it is unbounded in TIME.
+    //
+    // A live set proportional to the shard shows the other half: what one round costs is the
+    // live set sitting on the slabs the reclaim plan picked, so a bigger shard pays more PER
+    // ROUND as well as for ever.
+    const KEYSPACE: usize = 500;
+
+    eprintln!(
+        "  records  role         rounds  compacted  page_refs  relocated_bytes  bytes_per_round"
+    );
+    for rounds in [4usize, 40usize] {
+        let records = BATCH * rounds;
+        for (label, role) in [
+            ("leading", Some(ShardLeadership::Leading)),
+            ("not_leading", Some(ShardLeadership::NotLeading)),
+        ] {
+            let (denominator, compacted, refs, bytes, _) =
+                run_compaction_rounds_under_role(role, BATCH, KEYSPACE, rounds);
+            let per_round = if denominator == 0 {
+                0
+            } else {
+                bytes / denominator as u64
+            };
+            eprintln!(
+                "  {records:>7}  {label:<11}  {denominator:>6}  {compacted:>9}  {refs:>9}  \
+                 {bytes:>15}  {per_round:>15}"
+            );
+        }
+    }
+}
