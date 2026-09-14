@@ -9615,3 +9615,574 @@ fn the_footprint_columns_stay_bounded_on_an_idle_shard() {
          purged by the round, {directly} purged directly",
     );
 }
+
+/// The fixture the two rounds above and below are measured on: a shard spanning several slabs
+/// with dead space on exactly ONE of them.
+///
+/// Returned as a runtime because every caller wants the maintenance round's plan, which is where
+/// the drain set comes from. `holed_batch` names which batch gets overwritten.
+#[cfg(test)]
+fn drain_fixture(
+    dir: &std::path::Path,
+    batches: usize,
+    keys_per_batch: usize,
+    holed_keys: usize,
+) -> (DataNodeRuntime, BTreeSet<u64>) {
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.join("cache"),
+        dir.join("pages"),
+        dir.join("indexes"),
+    );
+    engine.load_shard(1);
+    for batch in 0..batches {
+        for index in 0..keys_per_batch {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("drain-{batch}-{index:05}"),
+                    value: vec![b'v'; 256],
+                },
+            });
+            assert!(
+                response.status.ok,
+                "write {batch}/{index}: {:?}",
+                response.status
+            );
+        }
+        // An explicit target rather than the process-wide one: no env var is touched, so no other
+        // test in this process inherits a small slab.
+        engine
+            .page_store()
+            .prepare_next_slab_with_target(1)
+            .expect("rolling a slab between batches should succeed");
+    }
+    let slabs = engine
+        .live_block_slab_ids(1)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    // Hole ONE slab: an overwrite writes a fresh page on the CURRENT slab and leaves the old page
+    // on batch 0's slab dead. Nothing else in the shard acquires dead space.
+    for index in 0..holed_keys {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("drain-0-{index:05}"),
+                value: vec![b'w'; 320],
+            },
+        });
+        assert!(response.status.ok, "overwrite {index}: {:?}", response.status);
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    (runtime, slabs)
+}
+
+/// A DRAINING round moves the pages on the slabs it was asked to empty, and leaves the rest.
+///
+/// This is the round the periodic loop now issues. The direct form above still relocates
+/// everything -- an operator instruction is not a suggestion -- and the two are measured on the
+/// SAME fixture so the difference is the selection rule and nothing else.
+///
+/// FOUR HALVES, ASSERTED SEPARATELY, because each of them going to zero looks like success in a
+/// combined count: what the round moved, what it declined, what it left for want of budget, and
+/// whether the holed slab actually went stale. A round that moved NOTHING would satisfy "moved no
+/// more than the drain set" perfectly.
+#[test]
+fn a_draining_round_moves_only_the_pages_on_the_slabs_it_was_asked_to_empty() {
+    const BATCHES: usize = 6;
+    const KEYS_PER_BATCH: usize = 200;
+    const HOLED_KEYS: usize = 20;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (runtime, slabs_before) =
+        drain_fixture(dir.path(), BATCHES, KEYS_PER_BATCH, HOLED_KEYS);
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+    let (_pressure, plan) = runtime.storage_manager_pressure_snapshot(1, &options);
+    let drain_slabs = crate::engine::compaction_drain_block_slab_ids(&plan.reclaim_candidates);
+    let relocatable = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
+    let live_page_refs = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count)
+        .sum::<u64>();
+
+    // DENOMINATORS. Each of these makes every count below trivially true for a reason that has
+    // nothing to do with the selection rule.
+    assert!(
+        slabs_before.len() >= BATCHES,
+        "the fixture rolled {} slab(s) for {BATCHES} batches ({slabs_before:?}); with one slab \
+         the drain set IS the live set and there is nothing to select",
+        slabs_before.len()
+    );
+    assert_eq!(
+        drain_slabs.len(),
+        1,
+        "the overwrites holed {} slabs ({drain_slabs:?}) rather than one",
+        drain_slabs.len()
+    );
+    assert!(
+        relocatable > 0,
+        "no object holds a page on the holed slab, so the round below has nothing to drain: \
+         {plan:?}"
+    );
+    assert!(
+        live_page_refs > relocatable * 2,
+        "the shard holds {live_page_refs} live page refs and {relocatable} of them are on the \
+         holed slab; without a wide margin, draining and relocating everything are the same act"
+    );
+
+    let report = engine
+        .compact_shard_pages_draining(1, drain_slabs.clone())
+        .expect("a draining round should succeed");
+
+    // HALF ONE: it moved the drain set, all of it, and nothing else.
+    assert_eq!(
+        report.rewritten_page_refs as u64, relocatable,
+        "the draining round moved {} page refs where the plan named {relocatable} on the slabs it \
+         was asked to empty ({drain_slabs:?})",
+        report.rewritten_page_refs
+    );
+    // HALF TWO: it actually DECLINED pages. Without this, moving the drain set and moving
+    // everything are indistinguishable here.
+    assert!(
+        report.pages_left_off_drain_set > 0,
+        "the round declined no pages at all, so it cannot be shown to have selected anything: it \
+         moved {} of {live_page_refs} live refs",
+        report.rewritten_page_refs
+    );
+    assert_eq!(
+        report.pages_left_off_drain_set as u64 + report.rewritten_page_refs as u64,
+        live_page_refs,
+        "the round moved {} and declined {}, which does not account for the shard's \
+         {live_page_refs} live refs -- some page was neither considered nor moved",
+        report.rewritten_page_refs,
+        report.pages_left_off_drain_set
+    );
+    // HALF THREE: declining is not "unfinished". A round kept open by pages nobody will ever want
+    // moved never closes, which is the termination hazard this ordering exists to avoid.
+    assert_eq!(
+        report.pages_left_by_budget, 0,
+        "the round reports {} pages left for want of budget after declining {} off the drain set \
+         -- the two are being counted together, and a round that reports unfinished for ever \
+         re-runs for ever",
+        report.pages_left_by_budget, report.pages_left_off_drain_set
+    );
+
+    // HALF FOUR: the point of the whole exercise -- the holed slab is now empty and the dense
+    // ones are untouched.
+    let slabs_after = engine
+        .live_block_slab_ids(1)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    for drained in &drain_slabs {
+        assert!(
+            !slabs_after.contains(drained),
+            "slab {drained} was drained but still holds live pages ({slabs_after:?})"
+        );
+    }
+    let untouched = slabs_before
+        .iter()
+        .filter(|slab| !drain_slabs.contains(slab))
+        .filter(|slab| slabs_after.contains(slab))
+        .count();
+    assert!(
+        untouched > 0,
+        "every slab of the fixture was vacated, so the round did not leave the dense ones alone: \
+         before {slabs_before:?}, drained {drain_slabs:?}, after {slabs_after:?}"
+    );
+
+    // AND IT TERMINATES. Nobody wrote to the shard, so a second plan must find nothing left to
+    // relocate -- that is the gate the periodic loop reads, and a non-zero here is the
+    // self-retrigger coming back in a new shape.
+    let (_pressure_after, plan_after) = runtime.storage_manager_pressure_snapshot(1, &options);
+    let relocatable_after =
+        crate::engine::compaction_relocatable_page_refs(&plan_after.reclaim_candidates);
+    assert_eq!(
+        relocatable_after, 0,
+        "after draining the only holed slab, {relocatable_after} page refs still sit on a slab \
+         someone wants emptied, so the loop would compact again on an idle shard: {plan_after:?}"
+    );
+
+    // EVERY VALUE STILL READS, on both sides of the selection: the moved half and the declined
+    // half. A selection rule that drops a page reads exactly like one that is simply cheaper.
+    for index in 0..KEYS_PER_BATCH {
+        let expected = if index < HOLED_KEYS {
+            vec![b'w'; 320]
+        } else {
+            vec![b'v'; 256]
+        };
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("drain-0-{index:05}"),
+            },
+        });
+        assert_eq!(
+            response.response,
+            CommandResponse::Bytes {
+                value: Some(expected)
+            },
+            "drain-0-{index:05} did not read back after the draining round"
+        );
+    }
+    for batch in 1..BATCHES {
+        for index in 0..KEYS_PER_BATCH {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("drain-{batch}-{index:05}"),
+                },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes {
+                    value: Some(vec![b'v'; 256])
+                },
+                "drain-{batch}-{index:05} did not read back after the draining round"
+            );
+        }
+    }
+}
+
+/// The two selection rules driven to SETTLEMENT at both corpus sizes, in columns. Release only.
+///
+///   cargo test --release -p temporalstore-rust --lib \
+///       what_the_two_selection_rules_move_at_both_corpus_sizes -- --ignored --nocapture \
+///       --test-threads=1
+///
+/// PER ROUND IS THE WRONG UNIT and measuring it that way reads as no difference at all: a round
+/// relocates at most COMPACTION_ROUND_PAGE_REFS (2,048) refs whichever rule it uses, so at 8,000
+/// records the direct round reports 2,048 and the draining round 980, and the direct arm looks
+/// only twice as expensive. It is not twice -- it is 2,048 four times over against 980 once.
+/// The comparable quantity is the TOTAL relocated to reach a settled shard, and the round count
+/// each needs is arithmetic off the budget, not something to discover by watching for a zero.
+///
+/// WHY A SECOND SIZE. The amplification grows with the LIVE SET and not with the garbage: a
+/// direct settlement rewrites every live page whatever the hole cost, so ten times the corpus is
+/// ten times the work to recover the same twenty pages, while the draining settlement is the size
+/// of the holed slab either way. An 8,000-record reading would not have generalised.
+///
+/// Both arms build their OWN fixture, so the direct arm is never measuring a shard the draining
+/// arm already drained.
+#[test]
+#[ignore]
+fn what_the_two_selection_rules_move_at_both_corpus_sizes() {
+    const BATCHES: usize = 8;
+    const HOLED_KEYS: usize = 20;
+    const BUDGET: u64 = 2_048;
+
+    println!(
+        "{:>8} {:>6} {:>6} {:>8} {:>9} {:>7} {:>9} {:>7} {:>7}",
+        "records", "slabs", "drain", "onslab", "directref", "rounds", "drainref", "rounds", "ratio"
+    );
+    for records in [8_000_usize, 80_000_usize] {
+        let keys_per_batch = records / BATCHES;
+        let options = StorageManagerOptions::default();
+
+        // ARM ONE: the direct rule, run until a round leaves nothing for want of budget. The
+        // rounds it needs is ceil(live refs / budget), computed BEFORE the loop so a short run
+        // cannot be mistaken for a settled one.
+        let direct_dir = tempfile::tempdir().unwrap();
+        let (direct_runtime, direct_slabs) =
+            drain_fixture(direct_dir.path(), BATCHES, keys_per_batch, HOLED_KEYS);
+        let direct_engine = direct_runtime.engine();
+        let (_p, direct_plan) = direct_runtime.storage_manager_pressure_snapshot(1, &options);
+        let drain_slabs =
+            crate::engine::compaction_drain_block_slab_ids(&direct_plan.reclaim_candidates);
+        let relocatable =
+            crate::engine::compaction_relocatable_page_refs(&direct_plan.reclaim_candidates);
+        let live_page_refs = direct_engine
+            .bucket_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.page_ref_count)
+            .sum::<u64>();
+        let direct_rounds_needed = live_page_refs.div_ceil(BUDGET).max(1);
+        let mut direct_refs = 0_u64;
+        let mut direct_rounds = 0_u64;
+        loop {
+            let round = direct_engine
+                .compact_shard_pages(1)
+                .expect("a direct round should succeed");
+            direct_refs += round.rewritten_page_refs as u64;
+            direct_rounds += 1;
+            if round.pages_left_by_budget == 0 {
+                break;
+            }
+            assert!(
+                direct_rounds <= direct_rounds_needed + 2,
+                "{records}: the direct arm ran {direct_rounds} rounds where the budget predicts \
+                 {direct_rounds_needed} for {live_page_refs} live refs, so it is not converging"
+            );
+        }
+
+        // ARM TWO: the draining rule, run until the plan has nothing left on a slab anyone wants
+        // emptied. That zero is the gate the periodic loop reads, so reaching it IS settlement --
+        // unlike the direct arm, which reports a full round's work on a settled shard for ever.
+        let draining_dir = tempfile::tempdir().unwrap();
+        let (draining_runtime, _) =
+            drain_fixture(draining_dir.path(), BATCHES, keys_per_batch, HOLED_KEYS);
+        let draining_engine = draining_runtime.engine();
+        let draining_rounds_needed = relocatable.div_ceil(BUDGET).max(1);
+        let mut draining_refs = 0_u64;
+        let mut draining_rounds = 0_u64;
+        loop {
+            let (_p2, plan) = draining_runtime.storage_manager_pressure_snapshot(1, &options);
+            let left = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
+            if left == 0 {
+                break;
+            }
+            let set = crate::engine::compaction_drain_block_slab_ids(&plan.reclaim_candidates);
+            let round = draining_engine
+                .compact_shard_pages_draining(1, set)
+                .expect("a draining round should succeed");
+            draining_refs += round.rewritten_page_refs as u64;
+            draining_rounds += 1;
+            assert!(
+                draining_rounds <= draining_rounds_needed + 2,
+                "{records}: the draining arm ran {draining_rounds} rounds where the budget \
+                 predicts {draining_rounds_needed} for {relocatable} refs on the holed slab, so \
+                 it is not converging"
+            );
+        }
+
+        println!(
+            "{:>8} {:>6} {:>6} {:>8} {:>9} {:>7} {:>9} {:>7} {:>6.1}x",
+            records,
+            direct_slabs.len(),
+            drain_slabs.len(),
+            relocatable,
+            direct_refs,
+            direct_rounds,
+            draining_refs,
+            draining_rounds,
+            direct_refs as f64 / (draining_refs.max(1) as f64),
+        );
+
+        // DENOMINATORS at each size, so a column of zeroes cannot read as a clean result.
+        assert_eq!(
+            drain_slabs.len(),
+            1,
+            "{records}: the fixture holed {} slabs rather than one",
+            drain_slabs.len()
+        );
+        assert!(
+            relocatable > 0 && direct_refs > 0 && draining_refs > 0,
+            "{records}: an arm moved nothing -- on-slab {relocatable}, direct {direct_refs}, \
+             draining {draining_refs}"
+        );
+        // THE CLAIM, at BOTH sizes and asserted as separate halves: the draining settlement costs
+        // the size of the HOLE, and the direct settlement costs the size of the STORE.
+        assert_eq!(
+            draining_refs, relocatable,
+            "{records}: draining settled at {draining_refs} refs where the holed slab carried \
+             {relocatable}"
+        );
+        assert!(
+            direct_refs >= live_page_refs,
+            "{records}: the direct settlement moved {direct_refs} of {live_page_refs} live \
+             refs, so it did not rewrite the whole live set and is not the rule being compared"
+        );
+        assert_eq!(
+            direct_rounds, direct_rounds_needed,
+            "{records}: the direct arm took {direct_rounds} rounds where the budget predicts \
+             {direct_rounds_needed}"
+        );
+        assert_eq!(
+            draining_rounds, draining_rounds_needed,
+            "{records}: the draining arm took {draining_rounds} rounds where the budget \
+             predicts {draining_rounds_needed}"
+        );
+    }
+}
+
+/// WHAT A DIRECT ROUND MOVES, MEASURED AGAINST WHAT MOVING IT RECOVERS.
+///
+/// A relocation recovers space only for the slab it VACATES. `compact_page_addresses` copies a
+/// page's bytes verbatim and appends them elsewhere, so a page moved off a slab with no dead
+/// space comes out byte for byte what it went in as, on a different slab -- and the slab it left
+/// is now entirely dead. Same live bytes, one more emptied slab for the collector to destroy.
+///
+/// The set worth moving is already named: `compaction_drain_block_slab_ids` is the slabs carrying
+/// dead space that objects still hold pages on, and `compaction_relocatable_page_refs` counts the
+/// pages on them. `compact_shard_pages` -- the operator RPC, the on-demand cycle and the suite --
+/// does not consult it and relocates every live page, BY INSTRUCTION. This records that, and it
+/// is the control for the draining round below.
+///
+/// At suite scale the distinction has been invisible, which is why it was never measured: a few
+/// thousand small records fit in ONE slab against the 1 GiB target, so "every live page" and "the
+/// pages on the holed slab" are the same set. The fixture rolls between batches so the shard
+/// spans slabs, and holes exactly one of them.
+#[test]
+fn a_direct_round_relocates_every_live_page_not_only_the_pages_on_holed_slabs() {
+    const BATCHES: usize = 6;
+    const KEYS_PER_BATCH: usize = 200;
+    const HOLED_KEYS: usize = 20;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (runtime, slabs_before) = drain_fixture(dir.path(), BATCHES, KEYS_PER_BATCH, HOLED_KEYS);
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+    let (_pressure, plan) = runtime.storage_manager_pressure_snapshot(1, &options);
+    let drain_slabs = crate::engine::compaction_drain_block_slab_ids(&plan.reclaim_candidates);
+    let relocatable = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
+    let live_page_refs = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count)
+        .sum::<u64>();
+
+    // DENOMINATORS, before any ratio: several slabs, exactly one of them holed, something on it.
+    assert!(
+        slabs_before.len() >= BATCHES,
+        "the fixture rolled {} slab(s) for {BATCHES} batches ({slabs_before:?}), so the shard \
+         does not span slabs and the two counts below cannot differ",
+        slabs_before.len()
+    );
+    assert_eq!(
+        drain_slabs.len(),
+        1,
+        "the overwrites holed {} slabs ({drain_slabs:?}) rather than one, so the ratio below is \
+         not the one this test is about",
+        drain_slabs.len()
+    );
+    assert!(
+        relocatable > 0,
+        "no object holds a page on the holed slab, so the round below has nothing to drain and \
+         what it reports is about an idle compactor: {plan:?}"
+    );
+    assert!(
+        live_page_refs > relocatable,
+        "the shard holds {live_page_refs} live page refs and {relocatable} of them are on the \
+         holed slab; with those equal, relocating everything and draining the holed slab are the \
+         same act"
+    );
+
+    let report = engine
+        .compact_shard_pages(1)
+        .expect("a compaction round should succeed");
+    assert_eq!(
+        report.pages_left_by_budget, 0,
+        "the round stopped on its budget, so what it moved is a budget artefact rather than its \
+         selection rule"
+    );
+
+    // THE TWO HALVES, SEPARATELY. One says the round moved the whole live set; the other says the
+    // set that moving recovers anything for is far smaller. A single ratio would hide either half
+    // going to zero.
+    assert!(
+        report.rewritten_page_refs as u64 >= live_page_refs,
+        "the direct form is documented to relocate every live page: it moved {} of \
+         {live_page_refs}",
+        report.rewritten_page_refs
+    );
+    assert_eq!(
+        report.pages_left_off_drain_set, 0,
+        "a direct round declines nothing -- it was given no drain set -- yet it left {} pages \
+         off one",
+        report.pages_left_off_drain_set
+    );
+    assert!(
+        report.rewritten_page_refs as u64 > relocatable * 2,
+        "the round moved {} page refs where {relocatable} sit on the only slab that carries dead \
+         space, across {} slabs. Equal counts would mean it is already moving just the drain set",
+        report.rewritten_page_refs,
+        slabs_before.len()
+    );
+}
+
+/// The PERIODIC round is the one that drains. Without this the wiring is untested: both
+/// selection rules exist and compile, and nothing says which one the loop actually issues.
+///
+/// The fixture is the one the two rounds above use, so the expected numbers are the same, and
+/// the round here is driven through `run_storage_manager_once` -- the real maintenance path,
+/// gate and all -- rather than by calling a compaction entry point directly.
+///
+/// HALVES SEPARATELY: that compaction RAN (a loop which skipped the stage leaves the dense slabs
+/// alone for the wrong reason, and that is exactly what this would otherwise read as success),
+/// that the holed slab was drained, and that the dense slabs were left where they were.
+#[test]
+fn the_periodic_round_drains_the_holed_slab_and_leaves_the_dense_ones() {
+    const BATCHES: usize = 6;
+    const KEYS_PER_BATCH: usize = 200;
+    const HOLED_KEYS: usize = 20;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (runtime, slabs_before) = drain_fixture(dir.path(), BATCHES, KEYS_PER_BATCH, HOLED_KEYS);
+    let engine = runtime.engine();
+    let options = StorageManagerOptions::default();
+    let (_pressure, plan) = runtime.storage_manager_pressure_snapshot(1, &options);
+    let drain_slabs = crate::engine::compaction_drain_block_slab_ids(&plan.reclaim_candidates);
+    let relocatable = crate::engine::compaction_relocatable_page_refs(&plan.reclaim_candidates);
+    let live_page_refs = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.page_ref_count)
+        .sum::<u64>();
+    assert_eq!(
+        drain_slabs.len(),
+        1,
+        "the fixture holed {} slabs ({drain_slabs:?}) rather than one",
+        drain_slabs.len()
+    );
+    assert!(
+        relocatable > 0 && live_page_refs > relocatable * 2,
+        "the fixture left {relocatable} refs on the holed slab of {live_page_refs} live, which is \
+         not a wide enough margin for the counts below to mean anything"
+    );
+
+    let report = runtime.run_storage_manager_once(1, options.clone());
+
+    // DENOMINATOR: the stage ran. A loop that skipped compaction leaves every dense slab alone
+    // too, and would satisfy the second half below perfectly.
+    assert!(
+        report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "compact_pages"),
+        "the maintenance round did not compact, so nothing below is about the selection rule: \
+         executed {:?}, skipped {:?}",
+        report.executed_stages,
+        report.skipped_stages
+    );
+    let compaction = report
+        .compaction_report
+        .as_ref()
+        .expect("the round reported running compaction, so it must carry its report");
+    assert_eq!(
+        compaction.compacted_objects as u64, relocatable,
+        "the periodic round moved {} page refs where the plan named {relocatable} on the slab it \
+         wanted emptied -- the loop is still issuing a whole-shard relocation",
+        compaction.compacted_objects
+    );
+
+    // The dense slabs are still live; the holed one is not.
+    let slabs_after = engine
+        .live_block_slab_ids(1)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    for drained in &drain_slabs {
+        assert!(
+            !slabs_after.contains(drained),
+            "the periodic round left slab {drained} holding live pages ({slabs_after:?})"
+        );
+    }
+    let untouched = slabs_before
+        .iter()
+        .filter(|slab| !drain_slabs.contains(slab))
+        .filter(|slab| slabs_after.contains(slab))
+        .count();
+    assert!(
+        untouched >= BATCHES - 1,
+        "the periodic round vacated slabs it had no reason to: {untouched} of the {} dense slabs \
+         are still live (before {slabs_before:?}, drained {drain_slabs:?}, after {slabs_after:?})",
+        BATCHES - 1
+    );
+}

@@ -345,7 +345,7 @@ fn a_batch_written_shard_reclaims_the_way_a_single_command_one_does() {
 fn a_batch_written_corpus_anchors_every_bucket_it_dirties() {
     let keys_count = std::env::var("TS_RECLAIM_DUMP_SCALE")
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or(8_000);
     const BATCH: usize = 500;
 
