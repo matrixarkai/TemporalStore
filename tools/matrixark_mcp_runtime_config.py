@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_env import env_bool
+    from tools.matrixark_mcp_env import TRUE_VALUES, env_bool
 except ImportError:  # Direct script execution from tools/.
-    from matrixark_mcp_env import env_bool
+    from matrixark_mcp_env import TRUE_VALUES, env_bool
 
 
 import os
@@ -81,13 +81,13 @@ def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
     batch_update 7782->3144 ms, search 710->510 ms, with all 15 APIs still correct on both arms.
     """
     if MATRIXARK_ALLOW_PYTHON_HOT_CACHE:
-        return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in {"1", "true", "yes"}
+        return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in TRUE_VALUES
     return backend_label == "local"
 
 
 def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
     if MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER:
-        return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
+        return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in TRUE_VALUES
     return backend_label != "local"
 
 DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "").strip() or "500000")
