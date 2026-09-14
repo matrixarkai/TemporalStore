@@ -100,7 +100,7 @@ if [[ "$MATRIXARK_LOCAL_MODE" == "no-metaserver" || "$MATRIXARK_LOCAL_MODE" == "
   export MATRIXARK_TEMPORALSTORE_METASERVER="local"
 fi
 
-if [[ "$MATRIXARK_HOOK_AUTOSTART_NATIVE" == "1" ]]; then
+if matrixark_flag_on "$MATRIXARK_HOOK_AUTOSTART_NATIVE" 0; then
   host="${MATRIXARK_TEMPORALSTORE_METASERVER%%:*}"
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 1 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
@@ -113,7 +113,9 @@ _matrixark_start_rust_temporalstore_service() {
     production|parity|service|cluster) ;;
     *) return ;;
   esac
-  if [[ "$MATRIXARK_RUST_SERVICE_AUTOSTART" != "1" ]]; then
+  # Default ON, so the literal test was the dangerous direction: writing `true` to KEEP the
+  # service autostarting turned it off.
+  if ! matrixark_flag_on "$MATRIXARK_RUST_SERVICE_AUTOSTART" 1; then
     return
   fi
   MATRIXARK_RUST_SERVICE_META_ADDR="$MATRIXARK_RUST_SERVICE_META_ADDR" \
@@ -139,7 +141,8 @@ _matrixark_start_rust_proxy_daemon() {
       return
       ;;
   esac
-  if [[ "$MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART" != "1" ]]; then
+  # Default ON; same shape as MATRIXARK_RUST_SERVICE_AUTOSTART above.
+  if ! matrixark_flag_on "$MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART" 1; then
     return
   fi
   if python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
