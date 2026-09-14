@@ -36,6 +36,23 @@ impl LocalBlockStore {
             .collect()
     }
 
+    /// How many sealed slabs this open kept from the manifest WITHOUT re-reading them.
+    ///
+    /// The skip is the default (`TS_REVERIFY_ALL_SLABS` unset) and it is where a descriptor is
+    /// carried across an open untouched -- so it is the route worth guarding, and the one easiest
+    /// to guard vacuously. Arming it takes THREE opens: the open that inspects a slab stamps
+    /// `verified_source_mtime_unix_ms` on its descriptor and only then writes the manifest out,
+    /// so the second open is the first that can read a stamped descriptor back and the third is
+    /// the first where the stamp is already on disk when a test edits the manifest around it.
+    /// A guard that asserts a property of the skip route without first asserting this count is
+    /// non-zero is asserting it of a route that never ran.
+    pub fn slabs_skipped_reinspection_on_open(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .slabs_skipped_reinspection_on_open
+    }
+
     /// MANIFEST-CONFORMANCE FOLD: project the in-memory band catalog into the DURABLE `SlabCatalogEntry`
     /// subset kept in the index-log band catalog. Only the durable fields ride in
     /// the fold; the band descriptor's diagnostic fields (readable_prefix / corruption / errors)

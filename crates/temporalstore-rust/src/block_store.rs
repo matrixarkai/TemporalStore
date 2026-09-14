@@ -1052,6 +1052,9 @@ struct BlockStoreInner {
     /// when what it reads does not match them.
     slabs_unwritten: usize,
     slab_manifest_reconciled_on_open: bool,
+    /// Sealed slabs this open kept from the manifest WITHOUT re-reading them. Not part of any
+    /// report wire shape; it exists so a guard aimed at that route can prove the route ran.
+    slabs_skipped_reinspection_on_open: usize,
     stats: BlockStoreStats,
     // Optional shared-storage read-through (on-demand lazy recovery): set by
     // attach_shared_slab_source() after a metadata-only restore. When present, a
@@ -1101,8 +1104,9 @@ impl LocalBlockStore {
         // counter here used to mean reading every block header in every slab to work out one
         // integer -- on a live-store copy, the bulk of a steady-state open.
         let next_page_id = 0;
-        let slab_manifest_reconciled_on_open =
-            reconcile_slab_manifest_with_disk(&root, &mut bands).unwrap_or_default();
+        let reconciled = reconcile_slab_manifest_with_disk(&root, &mut bands).unwrap_or_default();
+        let slab_manifest_reconciled_on_open = reconciled.changed;
+        let slabs_skipped_reinspection_on_open = reconciled.slabs_skipped_reinspection;
         manifest_rebuilt |= slab_manifest_reconciled_on_open;
         ensure_slab_descriptor(
             &mut bands,
@@ -1156,6 +1160,7 @@ impl LocalBlockStore {
                 bands,
                 slabs_unwritten: 0,
                 slab_manifest_reconciled_on_open,
+                slabs_skipped_reinspection_on_open,
                 stats: BlockStoreStats::default(),
                 shared_slab_source: None,
                 scratch: None,
@@ -3087,30 +3092,53 @@ mod tests {
         }
     }
 
-    /// A band IS a slab -- but across DESERIALIZATION that is trusted, not enforced.
+    /// A band IS a slab -- but across DESERIALIZATION that is trusted, not enforced, and the
+    /// route where it is trusted hardest is the one an open deliberately does not look at.
     ///
     /// `a_slab_descriptor_carries_the_same_number_twice` pins the invariant on the paths that
     /// COMPUTE a band id: every one of them calls `band_id_for_slab`, which is the identity, so
     /// a descriptor this process builds cannot diverge. The manifest is the hole. `band_id`
-    /// serializes, `load_slab_manifest_at` keeps whatever number the file carried, and
-    /// `gc_utility_candidates` is the one consumer that reads the STORED value instead of
-    /// recomputing it -- it groups slabs into bands by `band.band_id` and falls back to
-    /// `band_id_for_slab` only when no descriptor exists.
+    /// serializes and `load_slab_manifest_at` keeps whatever number the file carried.
     ///
-    /// So a manifest carrying a grouping band id -- which is what the field meant when a band
-    /// size and a slab size were configured separately -- would be honoured, and two slabs would
-    /// share a band. No manifest is believed to carry one: the two sizes were never configured
-    /// differently, so the historical value was the identity too. This pins the consequence
-    /// rather than the belief, and it is the guard to keep pointed at whatever the consolidation
-    /// of these two names leaves behind.
+    /// Consumers then read that stored number instead of recomputing it: `gc_utility_candidates`
+    /// groups slabs into bands by it in two places, and `compute_slab_usage` keys its per-slab
+    /// usage rows by it. Two slabs carrying one id are summed together there, so each one's GC
+    /// utility is scored against the other one's bytes.
+    ///
+    /// THE ROUTE THIS GUARD EXISTS FOR IS THE SKIP. Re-inspecting a sealed slab whose size and
+    /// mtime still match what it was verified against is the bulk of a cold open, so by default
+    /// (`TS_REVERIFY_ALL_SLABS` unset) it is not done, and the descriptor is carried over from
+    /// the manifest untouched. An earlier shape of this test opened the store TWICE and asserted
+    /// the property. That reads as a guard and is not one: the stamp that arms the skip is
+    /// written by the second open and only persisted afterwards, so that test skipped ZERO slabs
+    /// and proved nothing about the route its own comment named. It takes THREE opens, and the
+    /// skipped count is asserted non-zero HERE, as a denominator, before any property is.
+    ///
+    /// No manifest is believed to carry a divergent id today -- the historical grouping value
+    /// was the identity too, because a band size and a slab size were never configured
+    /// differently. This pins the consequence rather than the belief, and it is the guard to
+    /// keep pointed at whatever the consolidation of these two names leaves behind.
     #[test]
     fn a_stored_band_id_that_disagrees_with_its_slab_is_normalised_on_load() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         store.append(b"first").unwrap();
         store.roll_slab().unwrap();
-        store.append(b"second").unwrap();
+        store.append(b"second-is-a-little-longer").unwrap();
+        store.roll_slab().unwrap();
+        store.append(b"third").unwrap();
         drop(store);
+
+        // OPEN TWO. The one that inspects the sealed slabs, stamps
+        // `verified_source_mtime_unix_ms` onto their descriptors and writes the manifest out.
+        // It skips nothing -- which is exactly why a two-open test exercises nothing.
+        let warm = LocalBlockStore::new(dir.path());
+        assert_eq!(
+            warm.slabs_skipped_reinspection_on_open(),
+            0,
+            "the second open cannot skip anything yet: it is the one doing the stamping"
+        );
+        drop(warm);
 
         let manifest_path = slab_manifest_path(dir.path());
         let raw = fs::read(&manifest_path).unwrap();
@@ -3119,7 +3147,7 @@ mod tests {
         // DENOMINATOR: the manifest really has descriptors, and they really agree to begin with.
         let bands = manifest["bands"].as_array_mut().expect("bands array");
         assert!(
-            bands.len() >= 2,
+            bands.len() >= 3,
             "the manifest must really carry descriptors: {bands:?}"
         );
         for band in bands.iter() {
@@ -3130,20 +3158,30 @@ mod tests {
             );
         }
 
-        // Make EVERY descriptor disagree, exactly as a grouping band id would have. Both the
-        // active slab and the sealed one, because they take different routes through the open:
-        // the active slab is always inspected, while a sealed slab whose size and mtime still
-        // match what it was verified against is kept from the manifest WITHOUT being re-read --
-        // and that skip is the route on which a stale field could survive.
+        // Make EVERY descriptor disagree, exactly as a grouping band id would have. The active
+        // slab is always inspected and would be rewritten whatever this file said; the two
+        // sealed ones are the point.
         for band in bands.iter_mut() {
             band["band_id"] = serde_json::json!(999_u64);
         }
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
+        // OPEN THREE. Editing the manifest does not touch the slab files, so every sealed slab
+        // still matches what its descriptor was verified against and takes the skip.
         let reopened = LocalBlockStore::new(dir.path());
+
+        // THE DENOMINATOR FOR THE ROUTE, asserted BEFORE the property. Without it, a change that
+        // quietly stopped skipping -- or a default that went back to re-verifying everything --
+        // would leave everything below passing while covering nothing at all.
+        let skipped = reopened.slabs_skipped_reinspection_on_open();
+        assert!(
+            skipped > 0,
+            "this guard must actually exercise the skip route, and it skipped {skipped} slabs"
+        );
+
         let descriptors = reopened.slab_descriptors();
         assert!(
-            descriptors.len() >= 2,
+            descriptors.len() >= 3,
             "the reopened store must really have loaded the descriptors: {descriptors:?}"
         );
         let divergent = descriptors
@@ -3151,20 +3189,32 @@ mod tests {
             .filter(|descriptor| descriptor.band_id != descriptor.block_slab_id)
             .collect::<Vec<_>>();
 
-        // THE ANSWER: the open NORMALISES it. `reconcile_slab_manifest_with_disk` rewrites
-        // `band_id` from `band_id_for_slab` for every slab it finds on disk, so a manifest
-        // cannot smuggle in a grouping the rest of the code would then honour -- including on
-        // the skip route, where the descriptor is otherwise kept as it was.
-        //
-        // That matters beyond this file. `gc_utility_candidates` is the one consumer that reads
-        // the STORED band id rather than recomputing it, and it groups slabs into bands by that
-        // value; if a divergent one could survive an open, two slabs would share a band there
-        // and nowhere else. They cannot. A band is a slab on every path into this store, not
-        // merely on the paths that compute one.
+        // THE ANSWER: the open NORMALISES it. `reconcile_slab_manifest_with_disk` ends with a
+        // sweep over EVERY descriptor, not merely the ones it re-read, so a manifest cannot
+        // smuggle in a grouping the rest of the code would then honour.
         assert!(
             divergent.is_empty(),
-            "a divergent stored band id must not survive the load: {divergent:?}"
+            "a divergent stored band id must not survive the load, and {skipped} slabs took the \
+             skip route on this open: {divergent:?}"
         );
+
+        // AND THE CONSEQUENCE, at the consumer that groups by the stored value. Each slab is its
+        // own band, so each candidate's band bytes are its own bytes and no one else's. Under a
+        // shared id the two collectable slabs report each other's bytes as their band total and
+        // their GC utility is scored against the wrong denominator.
+        let candidates = reopened
+            .gc_utility_candidates(2, Vec::<u64>::new())
+            .unwrap();
+        assert!(
+            candidates.len() >= 2,
+            "the consequence needs at least two collectable slabs: {candidates:?}"
+        );
+        for candidate in &candidates {
+            assert_eq!(
+                candidate.total_bytes, candidate.bytes,
+                "each slab is its own band, so its band's bytes are its own: {candidate:?}"
+            );
+        }
     }
 
     #[test]

@@ -112,10 +112,24 @@ fn reverify_all_slabs() -> bool {
         .unwrap_or(false)
 }
 
+/// What one reconcile did, beyond whether it changed anything.
+///
+/// `slabs_skipped_reinspection` is the DENOMINATOR for the skip route. The skip is on by default
+/// (`TS_REVERIFY_ALL_SLABS` unset) but needs a slab that is sealed AND already carries a
+/// `verified_source_mtime_unix_ms` matching the file -- which the open that stamped it only wrote
+/// out afterwards. A guard that opens the store twice therefore skips NOTHING and tests nothing;
+/// it takes a third open. Reporting the count is what lets such a guard prove the route ran
+/// before it asserts anything about it.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct SlabManifestReconcileOutcome {
+    pub changed: bool,
+    pub slabs_skipped_reinspection: usize,
+}
+
 pub(super) fn reconcile_slab_manifest_with_disk(
     root: &Path,
     bands: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
-) -> Result<bool, BlockStoreError> {
+) -> Result<SlabManifestReconcileOutcome, BlockStoreError> {
     let mut changed = false;
     let live_slab_ids = slab_ids_at(root)?.into_iter().collect::<BTreeSet<_>>();
     let delayed_slabs = delayed_destroy_slab_reports_at(root)?
@@ -169,6 +183,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
             file_modified_unix_ms(&path) != Some(verified_mtime)
         });
     }
+    let slabs_skipped_reinspection = live_slab_ids.len().saturating_sub(ordered_slab_ids.len());
     let workers = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1)
@@ -313,7 +328,35 @@ pub(super) fn reconcile_slab_manifest_with_disk(
         }
     }
 
-    Ok(changed)
+    // NORMALISE THE GROUPING ID ON EVERY DESCRIPTOR, not only on the ones this open re-read.
+    //
+    // `band_id_for_slab` is the identity -- a band IS a slab -- and every path that COMPUTES a
+    // band id calls it, so a descriptor this process builds cannot diverge. The manifest is the
+    // one way a different number enters: `band_id` serializes and `load_slab_manifest_at` keeps
+    // whatever the file carried. The inspect loop above rewrites it, but only for the slabs it
+    // actually inspected, and by default this open deliberately SKIPS every sealed slab whose
+    // size and mtime still match what it was verified against. A descriptor on that skip route,
+    // and one for a slab no longer on disk at all, never reached that write.
+    //
+    // It matters because consumers read the STORED value instead of recomputing it:
+    // `gc_utility_candidates` groups slabs into bands by it in two places, and `compute_slab_usage`
+    // keys its per-slab usage rows by it. Two slabs carrying one id there are summed together, so
+    // each slab's GC utility is scored against the other slab's bytes. Enforcing the invariant
+    // once, here, at the only point a stored id enters the process, is what makes every consumer
+    // -- including the next one written -- correct without having to know about this.
+    for (block_slab_id, band) in bands.iter_mut() {
+        let normalised_band_id = band_id_for_slab(*block_slab_id);
+        if band.band_id != normalised_band_id || band.block_slab_id != *block_slab_id {
+            band.band_id = normalised_band_id;
+            band.block_slab_id = *block_slab_id;
+            changed = true;
+        }
+    }
+
+    Ok(SlabManifestReconcileOutcome {
+        changed,
+        slabs_skipped_reinspection,
+    })
 }
 
 pub(super) fn persist_slab_manifest(
