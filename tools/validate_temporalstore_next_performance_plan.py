@@ -14,24 +14,29 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from audit_temporalstore_rust_performance_artifacts import (
-    DEFAULT_ARTIFACT_ROOT,
-    DEFAULT_MATRIX,
-    GOAL_VALIDATOR,
-    NINE_PHASE_VALIDATOR,
-    PHASE_SCALE_COVERAGE,
-    RUNNER,
-    audit_artifacts,
-)
-from run_temporalstore_rust_next_performance_workflow import (
-    DEFAULT_WSL_DISTRO,
-    WORKSPACE_ROOT_WSL_PLACEHOLDER,
-    build_execution_plan,
-)
-from validate_temporalstore_rust_performance_parity import (
-    REQUIRED_SAME_CONFIG_COMMAND_ARGS,
-    SAME_CONFIG_KEYS,
-)
+try:
+    from audit_temporalstore_rust_performance_artifacts import (
+        DEFAULT_ARTIFACT_ROOT,
+        DEFAULT_MATRIX,
+        GOAL_VALIDATOR,
+        NINE_PHASE_VALIDATOR,
+        PHASE_SCALE_COVERAGE,
+        RUNNER,
+        audit_artifacts,
+    )
+    from run_temporalstore_rust_next_performance_workflow import (
+        DEFAULT_WSL_DISTRO,
+        WORKSPACE_ROOT_WSL_PLACEHOLDER,
+        build_execution_plan,
+    )
+    from validate_temporalstore_rust_performance_parity import (
+        REQUIRED_SAME_CONFIG_COMMAND_ARGS,
+        SAME_CONFIG_KEYS,
+    )
+except ImportError as exc:  # a module this repository does not contain
+    _ABSENT_DEPENDENCY = exc.name
+else:
+    _ABSENT_DEPENDENCY = None
 
 
 SCHEMA = "temporalstore_rust_next_performance_workflow_v1"
@@ -39,7 +44,9 @@ REQUIRED_RUN_FLAGS = {
     "--require-perf-parity",
     "--require-phase-scale-matrix",
 }
-REQUIRED_POST_VALIDATORS = {
+# Built only when the imports above succeeded. main() reports the absent module and returns
+# before anything reads this, so an empty set here is never the set a check runs against.
+REQUIRED_POST_VALIDATORS: set = set() if _ABSENT_DEPENDENCY else {
     ("python", GOAL_VALIDATOR),
     ("python", NINE_PHASE_VALIDATOR, "--loops", "9"),
 }
@@ -190,7 +197,29 @@ def validate_plan(plan: dict[str, Any]) -> list[str]:
     return failures
 
 
+def _absent_dependency_message() -> str:
+    """Why this validator cannot run here, in one line an operator can act on.
+
+    It imports the module that publishes the artifact roots and phase-scale matrix this plan is
+    checked against, and that module is not in this repository. With it
+    missing there is nothing to check, so the honest outcome is a stated failure rather than a
+    traceback -- which reads as a bug in this file -- or a zero exit, which would read as the check
+    having passed.
+
+    Resolving it is a decision, not a fix: either the module belongs in this repository, or this
+    validator describes a check this repository cannot make.
+    """
+    return (
+        "cannot run: %s is absent from this repository, and this validator imports it. "
+        "Either that module belongs here, or this gate describes a check this repository "
+        "cannot make." % _ABSENT_DEPENDENCY
+    )
+
+
 def main() -> int:
+    if _ABSENT_DEPENDENCY is not None:
+        print(_absent_dependency_message())
+        return 1
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     parser.add_argument("--matrix", type=Path, default=DEFAULT_MATRIX)

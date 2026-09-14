@@ -16,10 +16,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from validate_temporalstore_rust_performance_parity import (
-    REQUIRED_SAME_CONFIG_COMMAND_ARGS,
-    SAME_CONFIG_KEYS,
-)
+try:
+    from validate_temporalstore_rust_performance_parity import (
+        REQUIRED_SAME_CONFIG_COMMAND_ARGS,
+        SAME_CONFIG_KEYS,
+    )
+except ImportError as exc:  # a module this repository does not contain
+    _ABSENT_DEPENDENCY = exc.name
+else:
+    _ABSENT_DEPENDENCY = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,7 +210,29 @@ def validate_artifact(path: Path) -> list[str]:
     return failures
 
 
+def _absent_dependency_message() -> str:
+    """Why this validator cannot run here, in one line an operator can act on.
+
+    It imports the module that defines the same-config keys and required command arguments this scan
+    checks artifacts against, and that module is not in this repository. With it
+    missing there is nothing to check, so the honest outcome is a stated failure rather than a
+    traceback -- which reads as a bug in this file -- or a zero exit, which would read as the check
+    having passed.
+
+    Resolving it is a decision, not a fix: either the module belongs in this repository, or this
+    validator describes a check this repository cannot make.
+    """
+    return (
+        "cannot run: %s is absent from this repository, and this validator imports it. "
+        "Either that module belongs here, or this gate describes a check this repository "
+        "cannot make." % _ABSENT_DEPENDENCY
+    )
+
+
 def main() -> int:
+    if _ABSENT_DEPENDENCY is not None:
+        print(_absent_dependency_message())
+        return 1
     artifacts = sorted(DEFAULT_ARTIFACT_ROOT.glob("parity_*/execution*.json"))
     failures: list[str] = []
     for artifact in artifacts:
