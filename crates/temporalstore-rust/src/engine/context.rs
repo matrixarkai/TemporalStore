@@ -198,11 +198,11 @@ pub(super) fn context_compression_policy_from_env() -> ContextCompressionPolicy 
     fn env_u64(name: &str, default: u64) -> u64 {
         std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
     }
+    // A local name for the crate vocabulary, not a second one. Spelled out here it accepted
+    // `1` and `true` only, and -- worse than the missing words -- it answered `false` for
+    // anything it did not recognise instead of falling back to the default it was handed.
     fn env_bool(name: &str, default: bool) -> bool {
-        std::env::var(name)
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(default)
+        crate::env_flag::env_bool(name, default)
     }
     let d = ContextCompressionPolicy::default();
     ContextCompressionPolicy {

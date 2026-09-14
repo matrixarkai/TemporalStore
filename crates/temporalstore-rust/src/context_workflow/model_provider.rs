@@ -37,19 +37,18 @@ pub(crate) struct OpenAiEmbeddingRequest<'a> {
 /// l0/l1, the model's own output is used rather than the title/body string heuristic.
 /// Off by default so CI/dev without credentials still runs deterministically.
 pub(crate) fn context_require_model_summaries() -> bool {
-    std::env::var("MATRIXARK_REQUIRE_MODEL_SUMMARIES")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    // `1` and `true` were the only words that reached this; `yes` and `on` read as off, and so
+    // did a value with a stray space. An operator who asks for a real model and silently gets
+    // the heuristic has no way to tell from the outside.
+    crate::env_flag::env_bool("MATRIXARK_REQUIRE_MODEL_SUMMARIES", false)
 }
 
 /// When set (`MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1`), embeddings must come from a real
 /// model: a mock/deterministic provider is rejected loudly instead of emitting hash vectors.
 pub(crate) fn context_require_model_embeddings() -> bool {
-    std::env::var("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    // Same shape as its neighbour above, and the same silent answer: asking for a real model
+    // with `on` left the mock provider emitting hash vectors.
+    crate::env_flag::env_bool("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS", false)
 }
 
 pub(crate) fn context_summaries_for_extract(
