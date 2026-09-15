@@ -1462,6 +1462,78 @@ pub(super) fn settle_released_bucket_object_delete(
     settled
 }
 
+/// WHICH precondition a refusal failed, at the granularity of the term that decided it.
+///
+/// `refused_buckets` is one number for eleven different answers, and that is not enough to
+/// assert on: a test that pins it to 1 passes when the WRONG term fired, so every term was
+/// verifiable only by however pure the scenario a test happened to build was. Each term counts
+/// itself here, and each has a guard that fails on its own number.
+///
+/// Refusal is attributed to the FIRST failing term, in the order the function tests them. A
+/// bucket that is both dirty and deleted is one refusal, counted as dirty, and the totals stay
+/// equal to `refused_buckets` -- which is the invariant `refusals_total_matches_refused_buckets`
+/// pins.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct BucketReleaseRefusals {
+    /// Not resident, so there is no resident block list to drop.
+    pub(super) not_in_memory: usize,
+    /// A load is in flight and the block list is not settled.
+    pub(super) loading: usize,
+    /// The bucket still pins the log. Releasing it while `eviction_dump_before_evict` is false
+    /// would strand undumped writes with nothing to rebuild them from.
+    pub(super) bucket_dirty: usize,
+    /// Deleted: its blocks are not a set a reload should rebuild.
+    pub(super) bucket_deleted: usize,
+    /// Nothing resident to release.
+    pub(super) empty_block_index: usize,
+    /// A block carries an unwritten change the model maps do not record.
+    pub(super) block_dirty: usize,
+    /// A block is delete-marked, which the model maps do not record either.
+    pub(super) block_deleted: usize,
+    /// A block's address does not name THIS bucket, so which entries are this bucket's could
+    /// only be answered by a hash fallback.
+    pub(super) block_routing_mismatch: usize,
+    /// A block's kind is not one `released_model_kind_is_addressable` admits.
+    pub(super) block_kind_not_addressable: usize,
+    /// A block's lookup refs are held by some other bucket.
+    pub(super) lookup_not_local: usize,
+    /// The model maps would not rebuild what is resident.
+    pub(super) model_map_disagreement: usize,
+}
+
+impl BucketReleaseRefusals {
+    /// Every refusal counted, whatever the reason. Equal to `refused_buckets` by construction.
+    pub(super) fn total(&self) -> usize {
+        self.not_in_memory
+            + self.loading
+            + self.bucket_dirty
+            + self.bucket_deleted
+            + self.empty_block_index
+            + self.block_dirty
+            + self.block_deleted
+            + self.block_routing_mismatch
+            + self.block_kind_not_addressable
+            + self.lookup_not_local
+            + self.model_map_disagreement
+    }
+}
+
+/// The term a refusal failed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BucketReleaseRefusal {
+    NotInMemory,
+    Loading,
+    BucketDirty,
+    BucketDeleted,
+    EmptyBlockIndex,
+    BlockDirty,
+    BlockDeleted,
+    BlockRoutingMismatch,
+    BlockKindNotAddressable,
+    LookupNotLocal,
+    ModelMapDisagreement,
+}
+
 /// What one call to [`release_bucket_blocks`] managed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct BucketReleaseOutcome {
@@ -1470,6 +1542,35 @@ pub(super) struct BucketReleaseOutcome {
     /// Candidates that failed a precondition. A release that quietly did nothing and a release
     /// that was refused are different answers, and the eviction report publishes both.
     pub(super) refused_buckets: usize,
+    /// The same number, broken out by the term that decided it.
+    pub(super) refusals: BucketReleaseRefusals,
+}
+
+impl BucketReleaseOutcome {
+    /// Record one refusal against the term that caused it.
+    fn refuse(&mut self, reason: BucketReleaseRefusal) {
+        self.refused_buckets = self.refused_buckets.saturating_add(1);
+        let counter = match reason {
+            BucketReleaseRefusal::NotInMemory => &mut self.refusals.not_in_memory,
+            BucketReleaseRefusal::Loading => &mut self.refusals.loading,
+            BucketReleaseRefusal::BucketDirty => &mut self.refusals.bucket_dirty,
+            BucketReleaseRefusal::BucketDeleted => &mut self.refusals.bucket_deleted,
+            BucketReleaseRefusal::EmptyBlockIndex => &mut self.refusals.empty_block_index,
+            BucketReleaseRefusal::BlockDirty => &mut self.refusals.block_dirty,
+            BucketReleaseRefusal::BlockDeleted => &mut self.refusals.block_deleted,
+            BucketReleaseRefusal::BlockRoutingMismatch => {
+                &mut self.refusals.block_routing_mismatch
+            }
+            BucketReleaseRefusal::BlockKindNotAddressable => {
+                &mut self.refusals.block_kind_not_addressable
+            }
+            BucketReleaseRefusal::LookupNotLocal => &mut self.refusals.lookup_not_local,
+            BucketReleaseRefusal::ModelMapDisagreement => {
+                &mut self.refusals.model_map_disagreement
+            }
+        };
+        *counter = counter.saturating_add(1);
+    }
 }
 
 /// Dump-and-release: drop the named buckets' resident page lists, keeping the nodes routable.
@@ -1518,23 +1619,44 @@ pub(super) fn release_bucket_blocks(
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
-        if !bucket.in_memory
-            || bucket.loading
-            || bucket.dirty
-            || bucket.deleted
-            || bucket.block_index.is_empty()
-        {
-            outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
+        // The residency terms, tested in order so a refusal can name the one that decided it.
+        // Same set, same order, same answer as the `||` chain this replaces -- what is new is
+        // that the outcome can say WHICH, which is what makes one guard per term possible.
+        let residency_refusal = if !bucket.in_memory {
+            Some(BucketReleaseRefusal::NotInMemory)
+        } else if bucket.loading {
+            Some(BucketReleaseRefusal::Loading)
+        } else if bucket.dirty {
+            Some(BucketReleaseRefusal::BucketDirty)
+        } else if bucket.deleted {
+            Some(BucketReleaseRefusal::BucketDeleted)
+        } else if bucket.block_index.is_empty() {
+            Some(BucketReleaseRefusal::EmptyBlockIndex)
+        } else {
+            None
+        };
+        if let Some(reason) = residency_refusal {
+            outcome.refuse(reason);
             continue;
         }
-        let block_shape_allows_release = bucket.block_index.values().all(|page| {
-            !page.dirty
-                && !page.deleted
-                && page.address.routing_bucket() == Some(routing_bucket)
-                && released_model_kind_is_addressable(&page.model_id)
+        // The per-block terms, likewise. `find_map` stops at the first block that fails, which
+        // is the same set as the `all` it replaces: `all` is false exactly when `find_map` is
+        // Some.
+        let block_refusal = bucket.block_index.values().find_map(|block| {
+            if block.dirty {
+                Some(BucketReleaseRefusal::BlockDirty)
+            } else if block.deleted {
+                Some(BucketReleaseRefusal::BlockDeleted)
+            } else if block.address.routing_bucket() != Some(routing_bucket) {
+                Some(BucketReleaseRefusal::BlockRoutingMismatch)
+            } else if !released_model_kind_is_addressable(&block.model_id) {
+                Some(BucketReleaseRefusal::BlockKindNotAddressable)
+            } else {
+                None
+            }
         });
-        if !block_shape_allows_release {
-            outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
+        if let Some(reason) = block_refusal {
+            outcome.refuse(reason);
             continue;
         }
         // The lookup refs for each page must point at THIS bucket, or dropping the page's lookup
@@ -1548,7 +1670,7 @@ pub(super) fn release_bucket_blocks(
                     .unwrap_or(false)
             });
         if !lookup_is_local {
-            outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
+            outcome.refuse(BucketReleaseRefusal::LookupNotLocal);
             continue;
         }
         let resident: BTreeSet<ReleasedBlockIdentity> = bucket
@@ -1566,7 +1688,7 @@ pub(super) fn release_bucket_blocks(
         if derived.get(&routing_bucket) != Some(&resident) {
             // The model maps would not rebuild what is resident. Whatever the disagreement is,
             // it is not this function's to resolve -- and releasing across it would lose pages.
-            outcome.refused_buckets = outcome.refused_buckets.saturating_add(1);
+            outcome.refuse(BucketReleaseRefusal::ModelMapDisagreement);
             continue;
         }
         let dropped: Vec<(Arc<str>, Arc<str>, Option<Arc<str>>)> = bucket
@@ -3567,4 +3689,338 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
         }
     }
     validation
+}
+
+
+/// Guards for the preconditions [`release_bucket_blocks`] refuses on.
+///
+/// WHY THESE EXIST. The refusal outcome was produced and never checked. Across the whole crate
+/// `bucket_index_release_refused` occurred exactly once outside its own definition and
+/// assignment -- as a format argument inside another assertion's failure message -- so every
+/// precondition in this function could be deleted with the suite still green. Four were: the
+/// dirty-bucket term, the dirty-block term, the addressable-kind term and the model-map
+/// agreement term.
+///
+/// HOW THEY ARE BUILT. Every guard starts from `releasable_bucket`, which satisfies EVERY
+/// precondition and is released -- asserted by `a_bucket_that_satisfies_every_precondition_is_released`,
+/// which is this module's denominator. A guard then breaks exactly ONE term and asserts both
+/// halves: that the release did NOT happen, and that the refusal is attributed to ITS term and
+/// to no other. Asserting only "a refusal happened" would pass when the wrong term fired, which
+/// is how eleven conditions came to share one unassertable number.
+#[cfg(test)]
+mod release_refusal_guards {
+    use super::{
+        release_bucket_blocks, released_model_kind_is_addressable, BucketReleaseRefusals,
+    };
+    use crate::block_store::BlockAddress;
+    use crate::engine::state::{BlockIndex, BlockIndexMap, BucketNode, ObjectIndex, ShardState};
+    use std::sync::Arc;
+
+    const OBJECT_ID: u64 = 22;
+
+    fn address(routing_bucket: u32, length: u64) -> BlockAddress {
+        BlockAddress::from_parts(
+            3,
+            128,
+            length,
+            Some(11),
+            Some(OBJECT_ID),
+            Some(routing_bucket),
+            Some(1),
+        )
+    }
+
+    fn block(key: &str, model_id: &str, component: Option<&str>, address: BlockAddress) -> BlockIndex {
+        BlockIndex {
+            object_key: Arc::from(key),
+            model_id: Arc::from(model_id),
+            component: component.map(Arc::from),
+            address,
+            dirty: false,
+            deleted: false,
+            log_backed: false,
+        }
+    }
+
+    fn node(routing_bucket: u32, held: BlockIndex) -> BucketNode {
+        BucketNode {
+            routing_bucket,
+            dirty: false,
+            deleted: false,
+            meta_loaded: true,
+            loading: false,
+            in_memory: true,
+            object_index: ObjectIndex::One(OBJECT_ID),
+            block_index: BlockIndexMap::One(1, held),
+            ..BucketNode::default()
+        }
+    }
+
+    /// One bucket that satisfies every precondition: resident, not loading, clean, undeleted,
+    /// holding one clean, undeleted, correctly routed `string` block that the model maps derive
+    /// exactly. Anything a guard changes is a change from THIS.
+    fn releasable_bucket(shard: &mut ShardState, routing_bucket: u32, key: &str) {
+        let held = address(routing_bucket, 64);
+        shard.strings.insert(key.to_string(), held.clone());
+        shard
+            .bucket_index
+            .bucket_map
+            .insert(routing_bucket, node(routing_bucket, block(key, "string", None, held)));
+    }
+
+    fn releasable_shard(routing_bucket: u32, key: &str) -> ShardState {
+        let mut shard = ShardState::default();
+        releasable_bucket(&mut shard, routing_bucket, key);
+        shard
+    }
+
+    /// The same bucket, whose one block carries an unwritten change. The model maps still derive
+    /// it -- `dirty` is not part of a block's identity -- so the map-agreement term is satisfied
+    /// and the dirty-block term is the only one left to refuse on.
+    fn bucket_holding_a_dirty_block(shard: &mut ShardState, routing_bucket: u32, key: &str) {
+        let held = address(routing_bucket, 64);
+        shard.strings.insert(key.to_string(), held.clone());
+        let dirty = BlockIndex {
+            dirty: true,
+            ..block(key, "string", None, held)
+        };
+        shard
+            .bucket_index
+            .bucket_map
+            .insert(routing_bucket, node(routing_bucket, dirty));
+    }
+
+    /// THE DENOMINATOR. Without this every guard below could pass because the fixture never
+    /// released anything, which is the shape that makes a refusal guard worthless.
+    #[test]
+    fn a_bucket_that_satisfies_every_precondition_is_released() {
+        let mut shard = releasable_shard(7, "denominator-key");
+        let outcome = release_bucket_blocks(&mut shard, &[7]);
+
+        assert_eq!(outcome.released_buckets, vec![7], "{outcome:?}");
+        assert_eq!(outcome.released_blocks, 1, "{outcome:?}");
+        assert_eq!(outcome.refused_buckets, 0, "{outcome:?}");
+        assert_eq!(outcome.refusals, BucketReleaseRefusals::default(), "{outcome:?}");
+
+        // What release is FOR, and what makes a released bucket ineligible for re-selection.
+        let bucket = shard.bucket_index.bucket_map.get(&7).expect("node kept");
+        assert!(bucket.block_index.is_empty(), "the block index was not cleared");
+        assert!(!bucket.in_memory, "a released bucket must not read as resident");
+        assert_eq!(
+            bucket.object_index.len(),
+            1,
+            "object_index is what keeps a released bucket countable and must survive",
+        );
+        assert!(shard.bucket_index.released_buckets.contains(&7));
+    }
+
+    /// TERM: `bucket.dirty`. A dirty bucket still pins the log, and releasing it while
+    /// `eviction_dump_before_evict` is false leaves undumped writes with nothing to rebuild
+    /// them from.
+    #[test]
+    fn a_dirty_bucket_is_refused_and_the_refusal_names_the_dirty_bucket_term() {
+        let mut shard = releasable_shard(7, "dirty-bucket-key");
+        shard
+            .bucket_index
+            .bucket_map
+            .get_mut(&7)
+            .expect("fixture bucket")
+            .dirty = true;
+
+        let outcome = release_bucket_blocks(&mut shard, &[7]);
+
+        assert!(outcome.released_buckets.is_empty(), "a dirty bucket was released: {outcome:?}");
+        assert_eq!(outcome.released_blocks, 0, "{outcome:?}");
+        assert_eq!(outcome.refused_buckets, 1, "{outcome:?}");
+        assert_eq!(
+            outcome.refusals,
+            BucketReleaseRefusals { bucket_dirty: 1, ..BucketReleaseRefusals::default() },
+            "the refusal was not attributed to the dirty-bucket term",
+        );
+        assert!(
+            shard.bucket_index.bucket_map.get(&7).expect("node kept").in_memory,
+            "a refused bucket must stay resident and re-selectable",
+        );
+    }
+
+    /// TERM: `!block.dirty`. The model maps carry no per-block dirty bit, so a release that had
+    /// to restore one could not.
+    #[test]
+    fn a_dirty_block_is_refused_and_the_refusal_names_the_dirty_block_term() {
+        let mut shard = ShardState::default();
+        bucket_holding_a_dirty_block(&mut shard, 7, "dirty-block-key");
+
+        let outcome = release_bucket_blocks(&mut shard, &[7]);
+
+        assert!(
+            outcome.released_buckets.is_empty(),
+            "a bucket holding a dirty block was released: {outcome:?}",
+        );
+        assert_eq!(outcome.released_blocks, 0, "{outcome:?}");
+        assert_eq!(outcome.refused_buckets, 1, "{outcome:?}");
+        assert_eq!(
+            outcome.refusals,
+            BucketReleaseRefusals { block_dirty: 1, ..BucketReleaseRefusals::default() },
+            "the refusal was not attributed to the dirty-block term",
+        );
+    }
+
+    /// TERM: `released_model_kind_is_addressable`. A `hash` block is derivable by the model walk
+    /// -- so the map-agreement term is SATISFIED here, and the kind term is the only thing left
+    /// to refuse on. `hashes` is `skip_serializing` and is rebuilt FROM the bucket index on
+    /// load, so a released bucket holding one would have nothing to rebuild from.
+    #[test]
+    fn an_unaddressable_kind_is_refused_and_the_refusal_names_the_kind_term() {
+        let mut shard = ShardState::default();
+        let held = address(7, 64);
+        shard
+            .hashes
+            .entry("hash-kind-key".to_string())
+            .or_default()
+            .insert("field".to_string(), held.clone());
+        shard.bucket_index.bucket_map.insert(
+            7,
+            node(7, block("hash-kind-key", "hash", Some("field"), held)),
+        );
+
+        let outcome = release_bucket_blocks(&mut shard, &[7]);
+
+        assert!(
+            outcome.released_buckets.is_empty(),
+            "a bucket holding an unaddressable kind was released: {outcome:?}",
+        );
+        assert_eq!(outcome.released_blocks, 0, "{outcome:?}");
+        assert_eq!(outcome.refused_buckets, 1, "{outcome:?}");
+        assert_eq!(
+            outcome.refusals,
+            BucketReleaseRefusals {
+                block_kind_not_addressable: 1,
+                ..BucketReleaseRefusals::default()
+            },
+            "the refusal was not attributed to the kind term -- if this says \
+             model_map_disagreement instead, the fixture stopped being derivable and the guard \
+             would pass for the wrong reason",
+        );
+    }
+
+    /// The allow-list itself, on a NUMBER. Widening it to every kind -- which is what deleting
+    /// the term amounts to -- changes 2 to 8.
+    #[test]
+    fn exactly_two_of_the_probed_model_kinds_are_releasable() {
+        let probes = [
+            "string",
+            "context_node",
+            "hash",
+            "set",
+            "zset",
+            "list",
+            "feature",
+            "context_event",
+        ];
+        let admitted = probes
+            .iter()
+            .filter(|kind| released_model_kind_is_addressable(kind))
+            .count();
+        assert_eq!(
+            admitted,
+            2,
+            "expected 2 releasable kinds of {} probed, got {}: {:?}",
+            probes.len(),
+            admitted,
+            probes
+                .iter()
+                .filter(|kind| released_model_kind_is_addressable(kind))
+                .collect::<Vec<_>>(),
+        );
+        assert!(released_model_kind_is_addressable("string"));
+        assert!(released_model_kind_is_addressable("context_node"));
+    }
+
+    /// TERM: the resident set must EQUAL what the model maps derive. Here the map holds the same
+    /// block at a different length, so a reload would rebuild a different address than the one
+    /// released -- the disagreement this term exists to refuse across.
+    #[test]
+    fn a_model_map_disagreement_is_refused_and_the_refusal_names_the_map_term() {
+        let mut shard = releasable_shard(7, "disagreement-key");
+        shard
+            .strings
+            .insert("disagreement-key".to_string(), address(7, 4_096));
+
+        let outcome = release_bucket_blocks(&mut shard, &[7]);
+
+        assert!(
+            outcome.released_buckets.is_empty(),
+            "released across a model-map disagreement: {outcome:?}",
+        );
+        assert_eq!(outcome.released_blocks, 0, "{outcome:?}");
+        assert_eq!(outcome.refused_buckets, 1, "{outcome:?}");
+        assert_eq!(
+            outcome.refusals,
+            BucketReleaseRefusals {
+                model_map_disagreement: 1,
+                ..BucketReleaseRefusals::default()
+            },
+            "the refusal was not attributed to the model-map term",
+        );
+    }
+
+    /// All four in ONE batch beside a releasable bucket. This is the guard that the four terms
+    /// are distinguishable from each other rather than four names for whichever fired first,
+    /// and it pins the totals: 5 candidates in, 1 released, 4 refused, 4 attributed.
+    #[test]
+    fn four_refusal_terms_and_one_release_are_counted_separately_in_one_batch() {
+        let mut shard = ShardState::default();
+        releasable_bucket(&mut shard, 1, "batch-releasable");
+        releasable_bucket(&mut shard, 2, "batch-dirty-bucket");
+        bucket_holding_a_dirty_block(&mut shard, 3, "batch-dirty-block");
+        releasable_bucket(&mut shard, 5, "batch-disagreement");
+
+        shard.bucket_index.bucket_map.get_mut(&2).expect("fixture").dirty = true;
+        let held = address(4, 64);
+        shard
+            .hashes
+            .entry("batch-kind".to_string())
+            .or_default()
+            .insert("field".to_string(), held.clone());
+        shard
+            .bucket_index
+            .bucket_map
+            .insert(4, node(4, block("batch-kind", "hash", Some("field"), held)));
+        shard
+            .strings
+            .insert("batch-disagreement".to_string(), address(5, 4_096));
+
+        let candidates = [1u32, 2, 3, 4, 5];
+        let outcome = release_bucket_blocks(&mut shard, &candidates);
+
+        assert_eq!(
+            outcome.released_buckets,
+            vec![1],
+            "expected exactly the releasable bucket of {} candidates: {outcome:?}",
+            candidates.len(),
+        );
+        assert_eq!(outcome.released_blocks, 1, "{outcome:?}");
+        assert_eq!(
+            outcome.refused_buckets,
+            4,
+            "expected 4 refusals of {} candidates: {outcome:?}",
+            candidates.len(),
+        );
+        assert_eq!(
+            outcome.refusals,
+            BucketReleaseRefusals {
+                bucket_dirty: 1,
+                block_dirty: 1,
+                block_kind_not_addressable: 1,
+                model_map_disagreement: 1,
+                ..BucketReleaseRefusals::default()
+            },
+            "the four refusals were not attributed one to each term",
+        );
+        assert_eq!(
+            outcome.refusals.total(),
+            outcome.refused_buckets,
+            "the breakdown and the total disagree, so one of them is not counting refusals",
+        );
+    }
 }
