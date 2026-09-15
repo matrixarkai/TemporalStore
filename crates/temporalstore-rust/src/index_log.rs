@@ -2815,7 +2815,7 @@ mod tests {
         out
     }
 
-    fn page_item(bucket: u32, key: &str, deleted: bool) -> IndexItem {
+    fn block_item(bucket: u32, key: &str, deleted: bool) -> IndexItem {
         IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
@@ -2840,7 +2840,7 @@ mod tests {
     #[test]
     fn a_row_does_not_write_the_object_id_it_can_derive() {
         let shard_id: ShardId = 7;
-        let mut derivable = page_item(3, "tenant/1/object/9", false);
+        let mut derivable = block_item(3, "tenant/1/object/9", false);
         derivable.object_id = crate::engine::hashing::stable_block_object_id(
             shard_id,
             &derivable.model_id,
@@ -2898,7 +2898,7 @@ mod tests {
         let record = IndexDeltaRecord {
             shard_id: 7,
             sequence: 1,
-            items: vec![page_item(1, "a", false)],
+            items: vec![block_item(1, "a", false)],
             meta: None,
             applied_wal_sequence: Some(2),
             upsert: true,
@@ -2922,11 +2922,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let seq1 = store
-            .append_delta(7, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
+            .append_delta(7, vec![block_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         assert_eq!(seq1, 1);
         let seq2 = store
-            .append_delta(7, vec![page_item(1, "b", false)], Vec::new(), None, None, false, true)
+            .append_delta(7, vec![block_item(1, "b", false)], Vec::new(), None, None, false, true)
             .unwrap();
         assert_eq!(seq2, 2);
         // The two single-item deltas together are far smaller than a whole-index blob
@@ -2994,7 +2994,7 @@ mod tests {
             .unwrap();
         // And a record with no meta at all.
         store
-            .append_delta(4, vec![page_item(1, "later", false)], Vec::new(), None, None, false, true)
+            .append_delta(4, vec![block_item(1, "later", false)], Vec::new(), None, None, false, true)
             .unwrap();
 
         let found = store.latest_slab_catalog(4).unwrap().expect("a catalog");
@@ -3023,10 +3023,10 @@ mod tests {
         // A legacy whole-index record and a delta record share the log file.
         store.append_json(9, b"{\"value\":1}").unwrap();
         let anchor_seq = store
-            .append_delta(9, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
+            .append_delta(9, vec![block_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         store
-            .append_delta(9, vec![page_item(1, "b", false)], Vec::new(), None, None, false, true)
+            .append_delta(9, vec![block_item(1, "b", false)], Vec::new(), None, None, false, true)
             .unwrap();
         // Only delta records are returned; the whole-index line is ignored.
         let all = store.read_delta_records(9, 0).unwrap();
@@ -3042,7 +3042,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(3, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
+            .append_delta(3, vec![block_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         let meta = MetaItem {
             version: 1,
@@ -3075,7 +3075,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for key in ["a", "b", "c"] {
             store
-                .append_delta(9, vec![page_item(1, key, false)], Vec::new(), Some(2), None, false, true)
+                .append_delta(9, vec![block_item(1, key, false)], Vec::new(), Some(2), None, false, true)
                 .unwrap();
         }
         let meta_sequence = store
@@ -3153,11 +3153,11 @@ mod tests {
         store.append_json(7, b"{\"value\":1}").unwrap();
         // seq 2: delta reflected by the dump (WAL anchor 2 <= dump anchor 2).
         store
-            .append_delta(7, vec![page_item(1, "covered", false)], Vec::new(), Some(2), None, false, true)
+            .append_delta(7, vec![block_item(1, "covered", false)], Vec::new(), Some(2), None, false, true)
             .unwrap();
         // seq 3: concurrent delta landed after the dump serialized (WAL anchor 5 > 2).
         store
-            .append_delta(7, vec![page_item(1, "racing", false)], Vec::new(), Some(5), None, false, true)
+            .append_delta(7, vec![block_item(1, "racing", false)], Vec::new(), Some(5), None, false, true)
             .unwrap();
         // seq 4: the dump's folded catalog anchor.
         let meta = MetaItem {
@@ -3187,7 +3187,7 @@ mod tests {
         );
         // Sequence continuity: the next append lands above the anchor record.
         let next = store
-            .append_delta(7, vec![page_item(1, "later", false)], Vec::new(), Some(6), None, false, true)
+            .append_delta(7, vec![block_item(1, "later", false)], Vec::new(), Some(6), None, false, true)
             .unwrap();
         assert_eq!(next, meta_sequence + 1);
     }
@@ -3227,7 +3227,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for key in ["a", "b", "c"] {
             store
-                .append_delta(5, vec![page_item(1, key, false)], Vec::new(), Some(1), None, false, true)
+                .append_delta(5, vec![block_item(1, key, false)], Vec::new(), Some(1), None, false, true)
                 .unwrap();
         }
         drop(store);
@@ -3256,7 +3256,7 @@ mod tests {
             store
                 .append_delta(
                     5,
-                    vec![page_item(1, key, false)],
+                    vec![block_item(1, key, false)],
                     Vec::new(),
                     Some(index as u64 + 1),
                     None,
@@ -4101,7 +4101,7 @@ mod tests {
                 let sequence = store
                     .append_delta(
                         6,
-                        vec![page_item(1, &format!("tenant/1/object/{index:06}"), false)],
+                        vec![block_item(1, &format!("tenant/1/object/{index:06}"), false)],
                         Vec::new(),
                         Some(index as u64 + 1),
                         None,
@@ -4158,7 +4158,7 @@ mod tests {
             store
                 .append_delta(
                     7,
-                    vec![page_item(1, &format!("tenant/1/object/{index:06}"), false)],
+                    vec![block_item(1, &format!("tenant/1/object/{index:06}"), false)],
                     Vec::new(),
                     // Anchor == sequence, so "reflected" and "below the bound" move together and
                     // the piece boundary is the only thing deciding what survives.
@@ -4235,7 +4235,7 @@ mod tests {
                         store
                             .append_delta(
                                 4,
-                                vec![page_item(1, &format!("k-{writer}-{index}"), false)],
+                                vec![block_item(1, &format!("k-{writer}-{index}"), false)],
                                 Vec::new(),
                                 None,
                                 None,
@@ -4351,7 +4351,7 @@ mod tests {
         let json_record = IndexDeltaRecord {
             shard_id: 1,
             sequence: 1,
-            items: vec![page_item(1, "a", false)],
+            items: vec![block_item(1, "a", false)],
             meta: None,
             applied_wal_sequence: Some(1),
             upsert: false,
@@ -4360,7 +4360,7 @@ mod tests {
         };
         let binary_record = IndexDeltaRecord {
             sequence: 2,
-            items: vec![page_item(2, "b", false)],
+            items: vec![block_item(2, "b", false)],
             ..json_record.clone()
         };
 
@@ -4407,7 +4407,7 @@ mod tests {
         let record = IndexDeltaRecord {
             shard_id: 4,
             sequence: 77,
-            items: vec![page_item(5, "c", false)],
+            items: vec![block_item(5, "c", false)],
             meta: None,
             applied_wal_sequence: Some(31),
             upsert: true,
@@ -4823,14 +4823,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(3, vec![page_item(1, "first", false)], Vec::new(), Some(1), None, true, true)
+            .append_delta(3, vec![block_item(1, "first", false)], Vec::new(), Some(1), None, true, true)
             .unwrap();
         drop(store);
 
         let record = IndexDeltaRecord {
             shard_id: 3,
             sequence: 10,
-            items: vec![page_item(2, "second", false)],
+            items: vec![block_item(2, "second", false)],
             meta: None,
             applied_wal_sequence: Some(2),
             upsert: true,
@@ -4859,14 +4859,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(4, vec![page_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
+            .append_delta(4, vec![block_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
             .unwrap();
         drop(store);
 
         let record = IndexDeltaRecord {
             shard_id: 4,
             sequence: 10,
-            items: vec![page_item(2, "b", false)],
+            items: vec![block_item(2, "b", false)],
             meta: None,
             applied_wal_sequence: Some(2),
             upsert: true,
@@ -4893,14 +4893,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(6, vec![page_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
+            .append_delta(6, vec![block_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
             .unwrap();
         drop(store);
 
         let record = IndexDeltaRecord {
             shard_id: 6,
             sequence: 10,
-            items: vec![page_item(2, "b", false)],
+            items: vec![block_item(2, "b", false)],
             meta: None,
             applied_wal_sequence: Some(2),
             upsert: true,
@@ -4931,14 +4931,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(8, vec![page_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
+            .append_delta(8, vec![block_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
             .unwrap();
         drop(store);
 
         let record = IndexDeltaRecord {
             shard_id: 8,
             sequence: 10,
-            items: vec![page_item(2, "b", false)],
+            items: vec![block_item(2, "b", false)],
             meta: None,
             applied_wal_sequence: Some(2),
             upsert: true,
@@ -4972,10 +4972,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(9, vec![page_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
+            .append_delta(9, vec![block_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
             .unwrap();
         store
-            .append_delta(9, vec![page_item(2, "b", false)], Vec::new(), Some(2), None, true, true)
+            .append_delta(9, vec![block_item(2, "b", false)], Vec::new(), Some(2), None, true, true)
             .unwrap();
         drop(store);
 
@@ -5017,7 +5017,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for i in 1..=3u64 {
             store
-                .append_delta(5, vec![page_item(1, "k", false)], Vec::new(), Some(i), None, true, true)
+                .append_delta(5, vec![block_item(1, "k", false)], Vec::new(), Some(i), None, true, true)
                 .unwrap();
         }
         drop(store);

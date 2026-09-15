@@ -1436,6 +1436,21 @@ fn expiry_scan_budget(limit: usize) -> usize {
             self.persist_index_bytes(shard_id, &partial_index_bytes)
                 .map_err(|persist| Status::error("page_compaction_failed", persist.to_string()))?;
             let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
+            // Keep the round OPEN. A relocation that failed partway left work behind by
+            // definition -- the pages it had not reached yet are still on their old slabs -- and
+            // this used to return without recording the anchor, so the next round read
+            // `resumed = None`, rolled a SECOND fresh slab, and re-moved every page this one had
+            // already moved. That is exactly the shuffle the note above the resume read exists to
+            // rule out, and the failure path was the one way into it. It costs repeated work and
+            // one extra slab per failure rather than data loss, which is why it survived.
+            //
+            // Recorded UNCONDITIONALLY here, not under `left_work_behind()`: that flag is
+            // `skipped_by_budget > 0`, which a failed READ never sets, so gating on it would
+            // leave the anchor unwritten in precisely the case this handler exists for.
+            self.compaction_rounds
+                .write()
+                .expect("compaction round lock poisoned")
+                .insert(shard_id, (previous_block_slab_id, target_block_slab_id));
             return Err(err);
         }
 

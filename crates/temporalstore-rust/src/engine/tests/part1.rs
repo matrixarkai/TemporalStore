@@ -10791,3 +10791,153 @@ zero would mean nothing"
         dirty_breakdown: breakdown("dirty", &dirty_sites),
     }
 }
+
+
+/// A compaction round that fails PARTWAY must keep its resume anchor.
+///
+/// A round rolls a fresh slab and relocates live pages onto it, and `compaction_rounds` records
+/// which slab it is filling so the next round CONTINUES onto that slab instead of rolling again.
+/// Rolling again while a round is unfinished re-moves everything the unfinished round moved --
+/// the pages it relocated are no longer on the newest slab -- so the rounds shuffle instead of
+/// progressing.
+///
+/// The anchor used to be written only on the success path. The partial-failure handler returned
+/// before reaching it, so a round that rolled a slab, moved some pages and then failed recorded
+/// nothing: the next round read no anchor, rolled a SECOND slab, and re-moved every page the
+/// failed round had already moved. Repeated work and one extra slab per failure, not data loss,
+/// which is why it went unnoticed.
+///
+/// The only way a round fails partway in production is the block read returning `None` -- a torn
+/// or missing page -- so this drives `fail_compaction_block_read_after_for_test`, the `cfg(test)`
+/// seam in front of that read. Without the seam this behaviour has no trigger and cannot be
+/// characterized at all.
+///
+/// Two numbers, asserted SEPARATELY, because they fail for different reasons: the slab count says
+/// whether a second slab was rolled, and the relocated-page count says whether already-moved
+/// pages were moved again. A fix that addressed only one of them would pass the other.
+#[test]
+fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
+    const RECORDS: usize = 32;
+    const RELOCATIONS_BEFORE_FAILURE: usize = 8;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("anchor-{index:04}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    // THE DENOMINATOR. Every count below is a share of this, and a fixture that stored too few
+    // live pages to fail partway would make the whole test vacuous -- the round would either
+    // finish or fail on its first page, and neither exercises resuming.
+    let live_blocks: usize = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.block_ref_count as usize)
+        .sum();
+    assert!(
+        live_blocks > RELOCATIONS_BEFORE_FAILURE,
+        "fixture holds {live_blocks} live page refs, which is not more than the \
+         {RELOCATIONS_BEFORE_FAILURE} relocations the round is told to survive -- the round \
+         would not fail PARTWAY and this test would prove nothing",
+    );
+
+    let slabs_at_start = engine
+        .page_store
+        .slab_ids()
+        .expect("slab ids readable")
+        .len();
+
+    // ROUND ONE: roll a slab, move `RELOCATIONS_BEFORE_FAILURE` pages, then fail the next read.
+    crate::engine::compaction::fail_compaction_block_read_after_for_test(Some(
+        RELOCATIONS_BEFORE_FAILURE,
+    ));
+    let first_round = engine.compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX);
+    crate::engine::compaction::fail_compaction_block_read_after_for_test(None);
+
+    // PROOF THE TREATMENT RAN. A round that succeeded, or failed for some other reason, would
+    // make every number below meaningless -- and a passing assertion about a round that never
+    // failed is exactly the shape this test exists to avoid.
+    let failure = first_round.expect_err("the seam must make round one fail partway");
+    assert_eq!(
+        failure.code, "page_compaction_failed",
+        "round one failed for the wrong reason: {failure:?}",
+    );
+
+    let slabs_after_failed_round = engine
+        .page_store
+        .slab_ids()
+        .expect("slab ids readable")
+        .len();
+    assert_eq!(
+        slabs_after_failed_round,
+        slabs_at_start + 1,
+        "round one should have rolled exactly one slab",
+    );
+
+    // The anchor itself. Checked directly as well as through its consequences, so a failure says
+    // WHICH of the two broke.
+    let anchored = engine
+        .compaction_rounds
+        .read()
+        .expect("compaction round lock poisoned")
+        .get(&1)
+        .copied();
+    assert!(
+        anchored.is_some(),
+        "a round that failed partway left no resume anchor, so the next round will roll again",
+    );
+
+    // ROUND TWO: unarmed. It must CONTINUE the failed round.
+    let second_round = engine
+        .compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX)
+        .expect("round two runs to completion");
+
+    // NUMBER ONE -- slabs. Resuming rolls nothing; starting fresh rolls a second slab.
+    let slabs_after_second_round = engine
+        .page_store
+        .slab_ids()
+        .expect("slab ids readable")
+        .len();
+    assert_eq!(
+        slabs_after_second_round, slabs_after_failed_round,
+        "round two rolled another slab instead of resuming onto the one round one was filling \
+         ({slabs_at_start} at start, {slabs_after_failed_round} after the failed round, \
+         {slabs_after_second_round} after round two)",
+    );
+
+    // NUMBER TWO -- relocations. Resuming moves only what round one did not reach; starting
+    // fresh re-moves everything, because nothing sits on the newly rolled slab yet.
+    assert_eq!(
+        second_round.rewritten_block_refs,
+        live_blocks - RELOCATIONS_BEFORE_FAILURE,
+        "round two relocated {} of {live_blocks} live page refs; resuming should have moved only \
+         the {} round one never reached, and re-moving all {live_blocks} means it rolled fresh",
+        second_round.rewritten_block_refs,
+        live_blocks - RELOCATIONS_BEFORE_FAILURE,
+    );
+
+    // A round that relocated everything CLOSES, so the next one starts fresh. The anchor is a
+    // resume marker, not a permanent one, and leaving it set would stall compaction on this slab.
+    assert!(
+        engine
+            .compaction_rounds
+            .read()
+            .expect("compaction round lock poisoned")
+            .get(&1)
+            .is_none(),
+        "a round that finished its work must close, so the next round rolls a fresh slab",
+    );
+}
