@@ -2726,7 +2726,7 @@ fn execute_on_shard_guards_every_arm_that_can_hold_a_deadline() {
     // Arms that read no key able to carry a deadline, each with the reason. `EXPIRE` only
     // records a deadline for a key `record_exists_exact` can see, and only
     // `delete_record_exact` collects one, so "cannot hold a deadline" means: not in those.
-    const EXEMPT: [(&str, &str); 8] = [
+    const EXEMPT: [(&str, &str); 7] = [
         ("LeaderEstablish", "touches no object at all; `command_object_keys` gives it none"),
         (
             "ContextResourceBlobBegin",
@@ -2738,7 +2738,6 @@ fn execute_on_shard_guards_every_arm_that_can_hold_a_deadline() {
             "deletes the record unconditionally and answers Empty either way, so the expired \
              and the live case are already the same command with the same answer",
         ),
-        ("CommonTtl", "guards through `ttl_ms`, which calls `remove_if_expired` first"),
         (
             "ContextMarkSummaryDirty",
             "reads only `context_dirty_index`, an ephemeral in-memory map that \
@@ -3151,4 +3150,100 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
             "the fold dropped {key}, which none of the three writes touched"
         );
     }
+}
+
+
+/// Every clock read in `execute_on_shard` asks the REPLAY-AWARE clock.
+///
+/// `resolve_now_ms()` returns the per-record leader timestamp while a record is being replayed
+/// and the live clock otherwise. `remove_if_expired` records at engine.rs:3948 why the restart
+/// clock is the wrong question during replay -- a key that was live at leader-time would read as
+/// expired on recovery, dropping a durably committed write -- and `command_validation.rs:493`
+/// states the same obligation for the validator, in as many words: the expiry checks there "use
+/// the SAME replay-aware clock as the executor".
+///
+/// That obligation was stated in two comments and enforced nowhere. One arm disagreed:
+/// `Command::CommonTtl` tested its deadline against the bare `now_ms()` while the collection it
+/// performed one line later, through `ttl_ms` -> `remove_if_expired`, used the replay-aware one.
+/// Eleven of the twelve clock reads in the file were already right; that was the twelfth.
+///
+/// LATENT, AND SAID SO PLAINLY. `CommonTtl` is classified as a read
+/// (`is_raft_read_command`, `is_write_command`), so it is never appended to the WAL and therefore
+/// never re-executed with a replay clock installed. The split could not be reached from any
+/// command path, and four separate attempts to make it produce an observable difference -- a
+/// missing WAL tombstone, a stale cached read after TTL, a divergent replayed deadline, and a
+/// stale block-ownership index -- all came back negative. This guard is here because the cost of
+/// the hazard is not paid until a classification changes, and at that point nothing would have
+/// said so. It fails on a NUMBER, not on a shape: the count of non-replay-aware clock reads.
+#[test]
+fn every_clock_read_in_execute_on_shard_is_replay_aware() {
+    const SOURCE: &str = include_str!("../execute_on_shard.rs");
+
+    // The classifier. Used on the file AND on the controls below, so a control can never be
+    // checked by different code than the subject.
+    fn classify(text: &str) -> (usize, Vec<(usize, String)>) {
+        let mut replay_aware = 0usize;
+        let mut live: Vec<(usize, String)> = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let mut offset = 0usize;
+            while let Some(at) = line[offset..].find("now_ms()") {
+                let absolute = offset + at;
+                if line[..absolute].ends_with("resolve_") {
+                    replay_aware += 1;
+                } else {
+                    live.push((index + 1, line.trim().to_string()));
+                }
+                offset = absolute + "now_ms()".len();
+            }
+        }
+        (replay_aware, live)
+    }
+
+    // ---- POSITIVE CONTROL: the classifier can tell the two spellings apart ---------------
+    // Without this, a scan that matched nothing would report every file clean, and that would
+    // look exactly like the result this test exists to produce.
+    let (control_aware, control_live) = classify("let a = resolve_now_ms();\nlet b = now_ms();");
+    assert_eq!(
+        (control_aware, control_live.len()),
+        (1, 1),
+        "CONTROL: the classifier must read one replay-aware and one live clock read out of a \
+         line of each; it read {control_aware} and {}.",
+        control_live.len(),
+    );
+    // And it must not be fooled by a comment, which is how the doc above is written.
+    let (_, commented) = classify("// this mentions now_ms() only in prose");
+    assert!(
+        commented.is_empty(),
+        "CONTROL: a mention inside a comment must not count as a clock read.",
+    );
+
+    // ---- DENOMINATOR --------------------------------------------------------------------
+    let (replay_aware, live) = classify(SOURCE);
+    assert!(
+        replay_aware > 8,
+        "VACUITY: only {replay_aware} replay-aware clock reads were found in \
+         execute_on_shard.rs. Either the file moved or the spelling changed, and this guard is \
+         reading nothing.",
+        replay_aware = replay_aware,
+    );
+
+    // ---- THE CLAIM ----------------------------------------------------------------------
+    let rendered: Vec<String> = live
+        .iter()
+        .map(|(line, text)| format!("  execute_on_shard.rs:{line}: {text}"))
+        .collect();
+    assert_eq!(
+        live.len(),
+        0,
+        "{} of {} clock reads in execute_on_shard.rs bypass the replay-aware clock:\n{}\n\nA \
+         deadline compared against the restart clock during replay reads a key that was live at \
+         leader-time as expired. Use `resolve_now_ms()`, or reach the deadline through \
+         `drop_if_expired` / `remove_if_expired`, which already do.",
+        live.len(),
+        replay_aware + live.len(),
+        rendered.join("\n"),
+    );
 }

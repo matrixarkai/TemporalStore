@@ -288,13 +288,23 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::CommonTtl { key } => {
-            let expired = shard
-                .expires_at_ms
-                .get(&key)
-                .map(|expires_at| *expires_at <= now_ms())
-                .unwrap_or(false);
+            // Take the answer from the COLLECTION, the way the other thirty-six arms do, rather
+            // than from a second and narrower predicate beside it. `ttl_ms` calls
+            // `remove_if_expired`, which collects the key AND its three control-state families
+            // (`associated_record_keys`). Asking `expires_at_ms` about the bare key alone
+            // answered a narrower question than the collection actually performed, so a TTL that
+            // collected an expired `control_state:<family>:<key>` record reported no mutation:
+            // the record left memory and no WAL tombstone was ever appended for it, leaving it to
+            // come back on the next recovery after the caller had been told it was gone. An
+            // expiry deletion is a LOGGED deletion on this path as much as in the sweep.
+            //
+            // `drop_if_expired` is the one spelling the other arms use. It also drops the cached
+            // copy of the record it removes -- which the inline predicate never did, so the next
+            // read could answer from the cache of a record just collected -- and it reads the
+            // same replay-aware clock as every other deadline check, where the inline test read
+            // the live clock instead.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let value = ttl_ms(shard, &key);
-            mutated = expired;
             CommandResponse::Integer { value }
         }
         Command::CommonExists { key } => {
