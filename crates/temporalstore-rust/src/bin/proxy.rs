@@ -8,9 +8,9 @@ use tracing::info;
 
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = std::env::var("TS_PROXY_BIND_ADDR")
-        .or_else(|_| std::env::var("TS_PROXY_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:17000".to_string());
+    let addr = temporalstore_rust::env_flag::env_value("TS_PROXY_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_PROXY_ADDR"))
+        .unwrap_or_else(|| "127.0.0.1:17000".to_string());
     let meta_addr = std::env::var("TS_META_ADDR").unwrap_or_else(|_| "127.0.0.1:17001".to_string());
     // Every environment fallback below reads its default from here rather than repeating a
     // literal. Repeating them meant the binary could disagree with the option's declared

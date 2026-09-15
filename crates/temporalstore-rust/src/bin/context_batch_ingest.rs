@@ -113,9 +113,9 @@ fn main() {
         std::env::var("MATRIXARK_ACCOUNT_ID").unwrap_or_else(|_| "acct_codex".to_string());
     let tenant_id =
         std::env::var("MATRIXARK_TENANT_ID").unwrap_or_else(|_| "tenant_codex".to_string());
-    let user_id = std::env::var("MATRIXARK_USER_ID")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "codex_user".to_string());
+    let user_id = temporalstore_rust::env_flag::env_value("MATRIXARK_USER_ID")
+        .or_else(|| temporalstore_rust::env_flag::env_value("USER"))
+        .unwrap_or_else(|| "codex_user".to_string());
     let root = PathBuf::from(
         std::env::var("TEMPORALSTORE_RUST_CODEX_HOOK_ROOT")
             .unwrap_or_else(|_| "/tmp/temporalstore-rust-codex-hook".to_string()),

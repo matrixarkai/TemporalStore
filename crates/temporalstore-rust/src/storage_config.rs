@@ -115,6 +115,10 @@ impl StorageTuningConfig {
     }
 
     pub fn from_getter(get: impl Fn(&str) -> Option<String>) -> Self {
+        // A variable that is PRESENT AND BLANK is not a value. Without this, `get(NEW)` answers
+        // `Some("")`, `or_else` never reaches the previous name below, and a deployment that set
+        // the older spelling correctly gets the built-in default instead of what it asked for.
+        let get = |name: &str| get(name).filter(|value| !value.trim().is_empty());
         let defaults = Self::default();
         Self {
             context_block_target_bytes: parse_usize(

@@ -203,9 +203,9 @@ fn main() {
 
 fn parse_args() -> Args {
     let mut args = std::env::args().skip(1);
-    let agent_name = std::env::var("MATRIXARK_AGENT_NAME")
-        .or_else(|_| std::env::var("TEMPORALSTORE_AGENT_NAME"))
-        .unwrap_or_else(|_| "codex".to_string());
+    let agent_name = temporalstore_rust::env_flag::env_value("MATRIXARK_AGENT_NAME")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TEMPORALSTORE_AGENT_NAME"))
+        .unwrap_or_else(|| "codex".to_string());
     let mut parsed = Args {
         agent_name,
         event: std::env::var("CODEX_HOOK_EVENT").unwrap_or_else(|_| "UserPromptSubmit".to_string()),
@@ -222,9 +222,9 @@ fn parse_args() -> Args {
             .unwrap_or_else(|_| "acct_codex".to_string()),
         tenant_id: std::env::var("MATRIXARK_TENANT_ID")
             .unwrap_or_else(|_| "tenant_codex".to_string()),
-        user_id: std::env::var("MATRIXARK_USER_ID")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "codex_user".to_string()),
+        user_id: temporalstore_rust::env_flag::env_value("MATRIXARK_USER_ID")
+            .or_else(|| temporalstore_rust::env_flag::env_value("USERNAME"))
+            .unwrap_or_else(|| "codex_user".to_string()),
         session_id: std::env::var("MATRIXARK_SESSION_ID")
             .unwrap_or_else(|_| "codex_session".to_string()),
         query: String::new(),

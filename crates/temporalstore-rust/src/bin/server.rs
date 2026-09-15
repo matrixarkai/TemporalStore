@@ -92,11 +92,12 @@ struct BlobReceipt {
 
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = std::env::var("TS_SERVER_BIND_ADDR")
-        .or_else(|_| std::env::var("TS_SERVER_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:17002".to_string());
-    let advertised_addr = std::env::var("TS_SERVER_ADVERTISE_ADDR")
-        .unwrap_or_else(|_| std::env::var("TS_SERVER_ADDR").unwrap_or_else(|_| addr.clone()));
+    let addr = temporalstore_rust::env_flag::env_value("TS_SERVER_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
+        .unwrap_or_else(|| "127.0.0.1:17002".to_string());
+    let advertised_addr = temporalstore_rust::env_flag::env_value("TS_SERVER_ADVERTISE_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
+        .unwrap_or_else(|| addr.clone());
     let meta_addr_raw = std::env::var("TS_META_ADDR").ok();
     let meta_addr = meta_addr_raw
         .clone()

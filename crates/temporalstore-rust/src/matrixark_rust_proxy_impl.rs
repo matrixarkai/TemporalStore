@@ -5247,7 +5247,7 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
 fn env_bool_any(names: &[&str], default: bool) -> bool {
     names
         .iter()
-        .find_map(|name| env::var(name).ok())
+        .find_map(|name| temporalstore_rust::env_flag::env_value(name))
         .and_then(|value| temporalstore_rust::env_flag::parse_bool(&value))
         .unwrap_or(default)
 }
@@ -5255,7 +5255,7 @@ fn env_bool_any(names: &[&str], default: bool) -> bool {
 fn env_usize_any(names: &[&str], default: usize) -> usize {
     names
         .iter()
-        .find_map(|name| env::var(name).ok())
+        .find_map(|name| temporalstore_rust::env_flag::env_value(name))
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
@@ -5264,7 +5264,7 @@ fn env_usize_any(names: &[&str], default: usize) -> usize {
 fn env_u64_any(names: &[&str], default: u64) -> u64 {
     names
         .iter()
-        .find_map(|name| env::var(name).ok())
+        .find_map(|name| temporalstore_rust::env_flag::env_value(name))
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(default)
 }
@@ -5272,7 +5272,7 @@ fn env_u64_any(names: &[&str], default: u64) -> u64 {
 fn env_i32_any(names: &[&str], default: i32) -> i32 {
     names
         .iter()
-        .find_map(|name| env::var(name).ok())
+        .find_map(|name| temporalstore_rust::env_flag::env_value(name))
         .and_then(|value| value.trim().parse::<i32>().ok())
         .unwrap_or(default)
 }

@@ -83,6 +83,34 @@ pub fn parse_number<T: std::str::FromStr>(raw: &str) -> Option<T> {
     raw.trim().parse::<T>().ok()
 }
 
+/// The value of `name`, or `None` when it is unset OR set to nothing.
+///
+/// `std::env::var` answers `Ok("")` for a variable that is present and empty -- which is what
+/// `export NEW=$UNSET` leaves behind, and what clearing a field means. Read through `or_else`,
+/// that `Ok("")` is the newer spelling WINNING with nothing in it, and the older spelling it was
+/// meant to replace is never consulted however correctly a deployment set it:
+///
+/// ```text
+/// TS_BLOCK_SLAB_TARGET_BYTES=""        the previous name held 2 MiB
+/// -> neither honoured; the built-in 1 GiB default applied
+///
+/// TS_DATA_RAFT_READ_MODE=""            TS_SERVER_RAFT_READ_MODE=linearizable
+/// -> panic!("invalid TS_DATA_RAFT_READ_MODE"), and the data node exits at startup
+/// ```
+///
+/// The python side settled this and wrote it down in
+/// `tools/test_a_blank_flag_falls_through_to_the_older_spelling.py`, and two chains in
+/// `context_workflow/model_provider.rs` already spell the filter out by hand. This is that rule,
+/// in one place, for the rest of them.
+///
+/// Whitespace-only counts as nothing, for the same reason [`env_number`] trims: a value a shell
+/// leaves as `" "` is not a value.
+pub fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,6 +153,40 @@ mod tests {
         let unset = "TS_ENV_FLAG_NUMBER_NAME_THAT_IS_NEVER_SET";
         assert_eq!(7usize, env_number(unset, 7usize));
         assert_eq!(7u64, env_number(unset, 7u64));
+    }
+
+    #[test]
+    fn a_blank_value_is_not_a_value() {
+        let name = "TS_ENV_FLAG_BLANK_PROBE";
+        for written in ["", " ", "\t", "  \n "] {
+            std::env::set_var(name, written);
+            assert_eq!(None, env_value(name), "{written:?} should read as absent");
+        }
+        std::env::set_var(name, " codex ");
+        assert_eq!(Some(" codex ".to_string()), env_value(name),
+                   "a real value is returned as written, trimming is the caller's business");
+        std::env::remove_var(name);
+        assert_eq!(None, env_value(name));
+    }
+
+    #[test]
+    fn a_blank_newer_spelling_falls_through_to_the_older_one() {
+        // The whole point. Read with `std::env::var(..).or_else(..)` the second name is never
+        // consulted here, because the first answered Ok("").
+        let new = "TS_ENV_FLAG_CHAIN_NEW";
+        let old = "TS_ENV_FLAG_CHAIN_OLD";
+        std::env::set_var(new, "");
+        std::env::set_var(old, "2097152");
+        assert_eq!(
+            Some("2097152".to_string()),
+            env_value(new).or_else(|| env_value(old)),
+            "a blank newer spelling must not shadow the older one"
+        );
+        std::env::set_var(new, "4194304");
+        assert_eq!(Some("4194304".to_string()), env_value(new).or_else(|| env_value(old)),
+                   "and a real newer value still wins");
+        std::env::remove_var(new);
+        std::env::remove_var(old);
     }
 
     #[test]
