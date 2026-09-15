@@ -108,7 +108,7 @@ pub struct SharedStoreWalEntry {
     ///
     /// Empty for the overwhelming majority of writes, and `serde(default)` so an entry written
     /// before this field existed still loads.
-    #[serde(default)]
+    #[serde(default, rename = "staged_pages")]
     pub staged_pages: Vec<crate::wal::StagedBlock>,
     /// What this write DID, so a successor can install results instead of re-running operations.
     ///
@@ -199,7 +199,7 @@ pub struct SharedStoreCheckpointManifest {
     /// owner's page-id counter past this floor so replayed/new writes never reuse a
     /// page id that a lazily-fetched checkpoint slab still carries. Defaults to 0 for
     /// manifests written before this field existed (backward compatible).
-    #[serde(default)]
+    #[serde(default, rename = "next_page_id")]
     pub next_page_id: u64,
 }
 
