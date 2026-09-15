@@ -246,7 +246,7 @@ impl TemporalEngine {
         } else {
             None
         };
-        reconcile_secondary_views_from_bucket_index(&self.page_store, &mut shard, warm);
+        reconcile_secondary_views_from_bucket_index(&self.block_store, &mut shard, warm);
         // Reloaded data is durable, hence clean: clear the transient per-page/bucket
         // dirty flags that were persisted before unload (the durable dirty_generation
         // identity is preserved). refresh_bucket_runtime_flags below then recomputes
@@ -330,7 +330,7 @@ impl TemporalEngine {
         // advancing the durable anchor past pages that never reached disk would suppress
         // their replay on reload -> silent data loss. advances the watermark only after
         // the commit succeeds; the next flush retries.
-        if self.page_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
+        if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
             return;
         }
         let index_bytes = {
@@ -341,7 +341,7 @@ impl TemporalEngine {
             match shards.get_mut(&shard_id) {
                 Some(shard) => {
                     if promote_model_maps_to_bucket_index_authority(shard_id, shard, 0, u32::MAX) {
-                        reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+                        reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
                     }
                     rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
                     refresh_bucket_runtime_flags(shard);
@@ -456,7 +456,7 @@ impl TemporalEngine {
         // 1. Make deferred data pages + the slab manifest + the WAL durable BEFORE materializing
         //    the dump, so nothing the anchor references is un-fsynced. Bail (without advancing the
         //    watermark) if the barrier fails; the next cycle retries.
-        if self.page_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
+        if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
             return None;
         }
         // 2. Serialize + durably write the base served index (collapses the legacy per-write
@@ -483,7 +483,7 @@ impl TemporalEngine {
         //    after it, the slab catalog is recoverable from the durable log, so the per-write
         //    slab-manifest file stops being the source of truth.
         let slab_version = anchor;
-        let slabs = self.page_store.slab_catalog(slab_version);
+        let slabs = self.block_store.slab_catalog(slab_version);
         let meta = crate::index_log::MetaItem {
             version: 1,
             start_wal_sequence: anchor,
@@ -585,7 +585,7 @@ impl TemporalEngine {
         // (the write was acked off a synthetic address), so truncating it turns an acked write
         // into a MISSING read while the process is still serving.
         let wal_retention_floor =
-            super::block_in_wal::min_registered_sequence(&self.page_store, shard_id, &self.wal_store);
+            super::block_in_wal::min_registered_sequence(&self.block_store, shard_id, &self.wal_store);
         match wal_retention_floor {
             Some(sequence) => self.wal_store.set_block_retention_floor(shard_id, sequence),
             None => self.wal_store.clear_block_retention_floor(shard_id),
@@ -734,8 +734,8 @@ impl TemporalEngine {
             .get(&shard_id)
             .cloned();
         shards.get(&shard_id).map(|state| {
-            let page_store = self.page_store.stats();
-            let page_store_slabs = self.page_store.slab_summary();
+            let block_store = self.block_store.stats();
+            let block_store_slabs = self.block_store.slab_summary();
             let string_records = state.strings.len();
             let hash_records = state.hashes.len();
             let set_records = state.sets.len();
@@ -792,7 +792,7 @@ impl TemporalEngine {
                 start_routing_bucket,
                 end_routing_bucket,
                 total_records,
-                storage_bytes: page_store.bytes_written,
+                storage_bytes: block_store.bytes_written,
                 object_manager: object_manager.clone(),
             };
             let storage = crate::control::ShardCanonicalStorageStats {
@@ -815,29 +815,29 @@ impl TemporalEngine {
                 bucket_index_resident_bytes:
                     crate::engine::storage_bucket_internals::bucket_index_resident_bytes(state),
                 bucket_index_resident_entries: state.bucket_index.bucket_map.len() as u64,
-                storage_slab_count: page_store_slabs
+                storage_slab_count: block_store_slabs
                     .active_slabs
-                    .saturating_add(page_store_slabs.sealed_slabs)
-                    .saturating_add(page_store_slabs.delayed_destroy_slabs)
-                    .saturating_add(page_store_slabs.purged_slabs),
-                active_storage_slabs: page_store_slabs.active_slabs,
-                sealed_storage_slabs: page_store_slabs.sealed_slabs,
-                stream_slab_count: page_store_slabs
+                    .saturating_add(block_store_slabs.sealed_slabs)
+                    .saturating_add(block_store_slabs.delayed_destroy_slabs)
+                    .saturating_add(block_store_slabs.purged_slabs),
+                active_storage_slabs: block_store_slabs.active_slabs,
+                sealed_storage_slabs: block_store_slabs.sealed_slabs,
+                stream_slab_count: block_store_slabs
                     .active_slabs
-                    .saturating_add(page_store_slabs.sealed_slabs)
-                    .saturating_add(page_store_slabs.delayed_destroy_slabs)
-                    .saturating_add(page_store_slabs.purged_slabs),
-                storage_slab_total_bytes: page_store_slabs.total_known_physical_bytes,
-                storage_slab_used_bytes: page_store_slabs.live_physical_bytes,
-                storage_slab_stale_bytes: page_store_slabs.reclaimable_physical_bytes,
-                page_reads: page_store.reads,
-                page_writes: page_store.writes,
-                block_reads: page_store.reads,
-                block_writes: page_store.writes,
-                bytes_read: page_store.bytes_read,
-                bytes_written: page_store.bytes_written,
-                append_watermark: page_store.writes,
-                compaction_watermark: page_store_slabs.reclaimable_physical_bytes,
+                    .saturating_add(block_store_slabs.sealed_slabs)
+                    .saturating_add(block_store_slabs.delayed_destroy_slabs)
+                    .saturating_add(block_store_slabs.purged_slabs),
+                storage_slab_total_bytes: block_store_slabs.total_known_physical_bytes,
+                storage_slab_used_bytes: block_store_slabs.live_physical_bytes,
+                storage_slab_stale_bytes: block_store_slabs.reclaimable_physical_bytes,
+                page_reads: block_store.reads,
+                page_writes: block_store.writes,
+                block_reads: block_store.reads,
+                block_writes: block_store.writes,
+                bytes_read: block_store.bytes_read,
+                bytes_written: block_store.bytes_written,
+                append_watermark: block_store.writes,
+                compaction_watermark: block_store_slabs.reclaimable_physical_bytes,
             };
             ShardStats {
                 shard_id,
@@ -851,15 +851,15 @@ impl TemporalEngine {
                 feature_records,
                 sequence_records,
                 control_state_records,
-                storage_bytes: page_store.bytes_written,
+                storage_bytes: block_store.bytes_written,
                 object_manager,
                 shard_stat_info,
                 storage,
                 cache: self.cache.stats(),
-                page_store: page_store.clone(),
-                page_store_zones: page_store_slabs.clone(),
-                block_store: page_store,
-                block_store_slabs: page_store_slabs,
+                block_store_compat: block_store.clone(),
+                block_store_slabs_compat: block_store_slabs.clone(),
+                block_store,
+                block_store_slabs,
                 write_ahead_log: self.wal_store.stats(shard_id),
             }
         })

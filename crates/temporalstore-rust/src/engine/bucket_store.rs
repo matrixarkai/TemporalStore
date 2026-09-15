@@ -285,7 +285,7 @@ fn released_component_block_addresses(
 
 pub(super) fn read_bucket_index_value(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     model_id: &str,
@@ -293,5 +293,5 @@ pub(super) fn read_bucket_index_value(
     component: Option<&str>,
 ) -> Option<Vec<u8>> {
     bucket_index_block_address(shard, model_id, object_key, component)
-        .and_then(|address| read_block_bytes(cache, page_store, shard_id, &address))
+        .and_then(|address| read_block_bytes(cache, block_store, shard_id, &address))
 }

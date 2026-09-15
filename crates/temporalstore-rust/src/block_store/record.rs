@@ -163,7 +163,7 @@ struct BlockRecordHeader {
     payload_len: usize,
     pub(super) stored_len: usize,
     checksum: [u8; BLOCK_RECORD_CHECKSUM_LEN],
-    page_id: Option<u64>,
+    block_id: Option<u64>,
     object_id: Option<u64>,
     routing_bucket: Option<u32>,
     slab_id: Option<u64>,
@@ -193,7 +193,7 @@ pub(super) struct LogicalRangeRead {
 
 pub(super) fn encode_block_record(
     payload: &[u8],
-    page_id: u64,
+    block_id: u64,
     object_id: Option<u64>,
     routing_bucket: Option<u32>,
     slab_id: u64,
@@ -235,13 +235,13 @@ pub(super) fn encode_block_record(
     record.extend_from_slice(BLOCK_RECORD_MAGIC);
     record.extend_from_slice(&checksum_field);
     record.extend_from_slice(&sized.to_le_bytes());
-    if page_id > u64::from(u16::MAX) {
+    if block_id > u64::from(u16::MAX) {
         return Err(corrupt_block_envelope(
             &BlockAddress::default(),
-            format!("block index {page_id} does not fit a block id field"),
+            format!("block index {block_id} does not fit a block id field"),
         ));
     }
-    record.extend_from_slice(&(page_id as u16).to_le_bytes());
+    record.extend_from_slice(&(block_id as u16).to_le_bytes());
     debug_assert_eq!(record.len(), BLOCK_RECORD_HEADER_LEN, "the header is one size");
     let stored_len = block_size;
     record.extend_from_slice(&stored_payload);
@@ -306,7 +306,7 @@ pub(super) fn decode_block_record(
         return Err(corrupt_block_envelope(address, "short header"));
     }
     let header = parse_block_record_header(record, address)?;
-    if let (Some(address_block_id), Some(record_block_id)) = (address.page_id(), header.page_id) {
+    if let (Some(address_block_id), Some(record_block_id)) = (address.block_id(), header.block_id) {
         if address_block_id != record_block_id {
             return Err(corrupt_block_envelope(
                 address,
@@ -416,7 +416,7 @@ pub(super) fn logical_range_from_slab(
                 "payload length mismatch".to_string(),
             ));
         }
-        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.page_id, header.object_id, header.routing_bucket, header.page_id.or(header.object_id));
+        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.block_id, header.object_id, header.routing_bucket, header.block_id.or(header.object_id));
         let payload = decode_block_record_payload(
             &remaining[header.header_len..record_len],
             &header,
@@ -511,7 +511,7 @@ fn parse_block_record_header(
         payload_len,
         stored_len: block_size,
         checksum,
-        page_id: Some(u64::from(block_id)),
+        block_id: Some(u64::from(block_id)),
         // The index holds these. A record that repeated them could only ever agree or be wrong.
         object_id: None,
         routing_bucket: None,
@@ -697,16 +697,16 @@ pub(super) fn summarize_slab(
                 "payload length mismatch".to_string(),
             ));
         }
-        if let Some(page_id) = header.page_id {
+        if let Some(block_id) = header.block_id {
             summary.first_block_id = Some(
                 summary
                     .first_block_id
-                    .map_or(page_id, |current| current.min(page_id)),
+                    .map_or(block_id, |current| current.min(block_id)),
             );
             summary.last_block_id = Some(
                 summary
                     .last_block_id
-                    .map_or(page_id, |current| current.max(page_id)),
+                    .map_or(block_id, |current| current.max(block_id)),
             );
         }
         summary.logical_bytes = summary
@@ -859,7 +859,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
             break;
         }
         address.length = record_len as u64;
-        address.set_block_id(header.page_id);
+        address.set_block_id(header.block_id);
         address.set_object_id(header.object_id);
         address.set_routing_bucket(header.routing_bucket);
         match decode_block_record(&remaining[..record_len], &address) {
@@ -878,7 +878,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                     storage_slab_id: header.slab_id,
                     object_id: header.object_id,
                     model_id: None,
-                    block_id: header.page_id,
+                    block_id: header.block_id,
                     block_size: decoded.logical_len as u64,
                     stored_size: header.stored_len as u64,
                     dirty: false,
@@ -906,16 +906,16 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                     report.first_routing_bucket = routing_buckets.first().copied();
                     report.last_routing_bucket = routing_buckets.last().copied();
                 }
-                if let Some(page_id) = header.page_id {
+                if let Some(block_id) = header.block_id {
                     report.first_block_id = Some(
                         report
                             .first_block_id
-                            .map_or(page_id, |current| current.min(page_id)),
+                            .map_or(block_id, |current| current.min(block_id)),
                     );
                     report.last_block_id = Some(
                         report
                             .last_block_id
-                            .map_or(page_id, |current| current.max(page_id)),
+                            .map_or(block_id, |current| current.max(block_id)),
                     );
                 }
             }
@@ -981,7 +981,7 @@ mod block_record_format_tests {
             "one header size, whatever the values"
         );
         let header = parse_block_record_header(&encoded.bytes, &address()).expect("parse");
-        assert_eq!(header.page_id, Some(block_id), "block id");
+        assert_eq!(header.block_id, Some(block_id), "block id");
         assert_eq!(header.payload_len, payload.len());
         assert_eq!(header.stored_len, payload.len());
         assert_eq!(header.object_id, None, "the index holds the object id");
@@ -1080,7 +1080,7 @@ mod reused_zstd_context_tests {
             payload_len,
             stored_len,
             checksum: [0_u8; BLOCK_RECORD_CHECKSUM_LEN],
-            page_id: Some(1),
+            block_id: Some(1),
             // The record no longer carries these; the index does.
             object_id: None,
             routing_bucket: None,

@@ -317,7 +317,7 @@ pub(super) fn live_block_entry(
         // A page materialized in the block store carries a real page_id; a page
         // backed only by the hot/append-log buffer does not. Evaluate before the
         // `address` field moves it.
-        log_backed: address.page_id().is_none(),
+        log_backed: address.block_id().is_none(),
         address,
         dirty: false,
         deleted: false,
@@ -332,7 +332,7 @@ pub(super) fn storage_page_address_sample(
         shard_id,
         stored_slab_id: address.block_slab_id,
         slab_id: address.block_slab_id,
-        page_id: address.page_id().unwrap_or(address.block_slab_id),
+        block_id: address.block_id().unwrap_or(address.block_slab_id),
         offset: address.offset,
         length: address.length,
         generation: address.object_id().unwrap_or(0),
@@ -1323,7 +1323,7 @@ fn released_block_identity(
         address.block_slab_id,
         address.offset,
         address.length,
-        address.page_id(),
+        address.block_id(),
         address.generation(),
     )
 }
@@ -2162,7 +2162,7 @@ pub(super) fn block_physical_identity_key(
         address.block_slab_id,
         address.offset,
         address.length,
-        address.page_id(),
+        address.block_id(),
         address.object_id(),
         address.routing_bucket(),
         address.generation(),
@@ -2234,7 +2234,7 @@ pub(super) fn upsert_bucket_index_block_with(
         kind: crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, kind),
         component: component
             .map(|name| crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, &name)),
-        log_backed: address.page_id().is_none(),
+        log_backed: address.block_id().is_none(),
         address,
         dirty,
         deleted: false,
@@ -2499,7 +2499,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             object_key: Arc::clone(&object_key_arc),
             kind: Arc::clone(&kind_arc),
             component: None,
-            log_backed: address.page_id().is_none(),
+            log_backed: address.block_id().is_none(),
             address,
             dirty,
             deleted: false,
@@ -3038,7 +3038,7 @@ fn reconcile_timestamped_series_membership(
 }
 
 pub(super) fn reconcile_secondary_views_from_bucket_index(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard: &mut ShardState,
     warm: Option<(&MultiLayerCache, ShardId)>,
 ) {
@@ -3148,7 +3148,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "feature" => {
                 saw_features = true;
                 insert_timestamped_secondary_view(
-                    page_store,
+                    block_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut features,
@@ -3159,7 +3159,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "sequence" => {
                 saw_features = true;
                 insert_timestamped_secondary_view(
-                    page_store,
+                    block_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut features,
@@ -3169,7 +3169,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "control_state" => {
                 saw_control_state = true;
-                if let Ok(bytes) = page_store.read(&entry.address) {
+                if let Ok(bytes) = block_store.read(&entry.address) {
                     if let Some(shard_id) = warm_shard {
                         let key = CacheKey::page_with_slot(
                             shard_id,
@@ -3189,7 +3189,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "context_event" => {
                 saw_context_events = true;
                 insert_context_event_views(
-                    page_store,
+                    block_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_events,
@@ -3201,7 +3201,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "context_index" => {
                 saw_context_indexes = true;
                 insert_timestamped_secondary_view(
-                    page_store,
+                    block_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_indexes,
@@ -3212,7 +3212,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "context_audit" => {
                 saw_context_audits = true;
                 insert_timestamped_secondary_view(
-                    page_store,
+                    block_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_audits,
@@ -3234,7 +3234,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "context_child" => {
                 saw_context_children = true;
                 insert_timestamped_secondary_view(
-                    page_store,
+                    block_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_children,
@@ -3247,7 +3247,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "context_summary" => {
                 saw_context_summaries = true;
                 insert_timestamped_secondary_view(
-                    page_store,
+                    block_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_summaries,
@@ -3258,7 +3258,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "context_compression" => {
                 saw_context_compressions = true;
                 insert_timestamped_secondary_view(
-                    page_store,
+                    block_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_compressions,
@@ -3365,14 +3365,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
 }
 
 pub(super) fn insert_timestamped_secondary_view(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
     target: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
     object_key: String,
     address: BlockAddress,
 ) {
-    let bytes = page_store.read(&address).ok();
+    let bytes = block_store.read(&address).ok();
     // Fold the disk->memory promotion into the load read we already perform here.
     // page_store.read is mutex-serialized, so a separate post-load warm pass would
     // re-read every page under the same lock; collect the bytes we just read for a
@@ -3435,7 +3435,7 @@ pub(super) fn insert_timestamped_secondary_view(
 /// slab/offset order, not write order.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_context_event_views(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
     events: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
@@ -3443,7 +3443,7 @@ pub(super) fn insert_context_event_views(
     object_key: String,
     address: BlockAddress,
 ) {
-    let bytes = page_store.read(&address).ok();
+    let bytes = block_store.read(&address).ok();
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,
@@ -3521,7 +3521,7 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
         let expected_object_id = expected_live_block_object_id(shard_id, entry);
         let expected_routing_bucket =
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
-        let expected_block_id = entry.address.page_id();
+        let expected_block_id = entry.address.block_id();
         let object_mismatch = entry
             .address
             .object_id()
@@ -3544,7 +3544,7 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
                         page.address.block_slab_id == entry.address.block_slab_id
                             && page.address.offset == entry.address.offset
                             && page.address.length == entry.address.length
-                            && page.address.page_id() == expected_block_id
+                            && page.address.block_id() == expected_block_id
                             && page.model_id == entry.kind
                     })
             });

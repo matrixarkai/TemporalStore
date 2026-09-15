@@ -46,9 +46,9 @@ fn main() {
                         }
                     }
                 }
-                if !record.staged_pages.is_empty() {
+                if !record.staged_blocks.is_empty() {
                     with_staged_blocks += 1;
-                    staged_block_bytes += record.staged_pages.iter().map(|p| p.bytes.len()).sum::<usize>();
+                    staged_block_bytes += record.staged_blocks.iter().map(|p| p.bytes.len()).sum::<usize>();
                 }
             }
             Err(_) => undecodable += 1,

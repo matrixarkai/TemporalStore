@@ -45,8 +45,8 @@ pub(super) const COMPACTION_ROUND_BLOCK_REFS: usize = 2_048;
 ///
 /// The relocation itself was never the problem -- it has a 256 MiB budget and resumes. This is
 /// the survey around it.
-fn slab_block_counts_by_slab(page_store: &BlockStore) -> BTreeMap<u64, u64> {
-    page_store
+fn slab_block_counts_by_slab(block_store: &BlockStore) -> BTreeMap<u64, u64> {
+    block_store
         .slab_block_counts()
         .unwrap_or_default()
         .into_iter()
@@ -55,10 +55,10 @@ fn slab_block_counts_by_slab(page_store: &BlockStore) -> BTreeMap<u64, u64> {
 }
 
 pub(super) fn compaction_utility_report(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard: &ShardState,
 ) -> ShardCompactionUtilityReport {
-    compaction_utility_report_from_entries(page_store, shard, &collect_live_block_entries(shard))
+    compaction_utility_report_from_entries(block_store, shard, &collect_live_block_entries(shard))
 }
 
 /// The same report, from live-page entries the caller ALREADY has.
@@ -67,7 +67,7 @@ pub(super) fn compaction_utility_report(
 /// builds several reports from that same set, so one walk can serve them all; the wrapper above
 /// keeps the old signature for callers with nothing to share.
 pub(super) fn compaction_utility_report_from_entries(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard: &ShardState,
     entries: &[LiveBlockEntry],
 ) -> ShardCompactionUtilityReport {
@@ -80,7 +80,7 @@ pub(super) fn compaction_utility_report_from_entries(
         .iter()
         .map(|address| address.block_slab_id)
         .collect::<BTreeSet<_>>();
-    let slab_page_counts = slab_block_counts_by_slab(page_store);
+    let slab_page_counts = slab_block_counts_by_slab(block_store);
     let total_block_count = live_block_slab_ids
         .iter()
         .map(|block_slab_id| {
@@ -442,10 +442,10 @@ pub(super) fn block_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, 
 }
 
 pub(super) fn compaction_model_layout_reports(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard: &ShardState,
 ) -> Vec<ShardCompactionModelLayoutReport> {
-    let slab_page_counts = slab_block_counts_by_slab(page_store);
+    let slab_page_counts = slab_block_counts_by_slab(block_store);
     let mut reports = Vec::new();
     reports.push(compaction_layout_from_addresses(
         "string",
@@ -653,7 +653,7 @@ pub(crate) fn fail_compaction_block_read_after_for_test(relocations: Option<usiz
 /// tests: the hook exists only under `cfg(test)`, so no production round pays for it.
 fn read_block_bytes_for_compaction(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
 ) -> Option<Vec<u8>> {
@@ -667,11 +667,11 @@ fn read_block_bytes_for_compaction(
             FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
         }
     }
-    read_block_bytes(cache, page_store, shard_id, address)
+    read_block_bytes(cache, block_store, shard_id, address)
 }
 
 pub(super) fn compact_block_addresses<'a>(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
@@ -683,7 +683,7 @@ pub(super) fn compact_block_addresses<'a>(
             continue;
         }
         let cold_block = !block_memory_resident(cache, shard_id, address);
-        let bytes = read_block_bytes_for_compaction(cache, page_store, shard_id, address)
+        let bytes = read_block_bytes_for_compaction(cache, block_store, shard_id, address)
             .ok_or_else(|| {
                 Status::error(
                     "page_compaction_failed",
@@ -694,12 +694,12 @@ pub(super) fn compact_block_addresses<'a>(
         // already has. A block id is an index inside its object: taking a fresh one here would
         // give every block of a multi-block object the same index, and the index entries would
         // collide -- which reads back as a reload losing rows.
-        let new_address = page_store
+        let new_address = block_store
             .append_block_of_object(
                 &bytes,
                 address.object_id(),
                 address.routing_bucket(),
-                address.page_id().unwrap_or_default() as u32,
+                address.block_id().unwrap_or_default() as u32,
             )
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
@@ -720,7 +720,7 @@ pub(super) fn compact_block_addresses<'a>(
 }
 
 pub(super) fn compact_feature_block_addresses(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
@@ -734,19 +734,19 @@ pub(super) fn compact_feature_block_addresses(
             continue;
         }
         let cold_block = !block_memory_resident(cache, shard_id, &old_address);
-        let bytes = read_block_bytes_for_compaction(cache, page_store, shard_id, &old_address)
+        let bytes = read_block_bytes_for_compaction(cache, block_store, shard_id, &old_address)
             .ok_or_else(|| {
                 Status::error(
                     "page_compaction_failed",
                     "missing feature page bytes during compaction",
                 )
             })?;
-        let new_address = page_store
+        let new_address = block_store
             .append_block_of_object(
                 &bytes,
                 old_address.object_id(),
                 old_address.routing_bucket(),
-                old_address.page_id().unwrap_or_default() as u32,
+                old_address.block_id().unwrap_or_default() as u32,
             )
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = cache.put(

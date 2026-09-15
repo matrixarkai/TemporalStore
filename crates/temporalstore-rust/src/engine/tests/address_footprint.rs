@@ -92,12 +92,12 @@ impl AddressCensus {
         self.widest[0] = self.widest[0].max(address.block_slab_id);
         self.widest[1] = self.widest[1].max(address.offset);
         self.widest[2] = self.widest[2].max(address.length);
-        self.widest[3] = self.widest[3].max(address.page_id().unwrap_or(0));
+        self.widest[3] = self.widest[3].max(address.block_id().unwrap_or(0));
         self.widest[4] = self.widest[4].max(address.object_id().unwrap_or(0));
         self.widest[5] = self.widest[5].max(address.generation().unwrap_or(0));
         self.widest[6] = self.widest[6].max(address.routing_bucket().unwrap_or(0) as u64);
         let mut set = 0usize;
-        if address.page_id().is_some() {
+        if address.block_id().is_some() {
             self.with_block_id += 1;
             set += 1;
         }
@@ -116,7 +116,7 @@ impl AddressCensus {
         self.optional_field_histogram[set] += 1;
 
         // Is the generation its own value, or a copy of a neighbour?
-        let derived = address.page_id().or(address.object_id());
+        let derived = address.block_id().or(address.object_id());
         if address.generation() == derived {
             self.generation_is_a_copy += 1;
         } else {
@@ -668,7 +668,7 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
         store.read(&good).expect("the honest address must read back"),
         "denominator: the unmodified address reads its page"
     );
-    assert!(good.page_id().is_some(), "fixture must produce an address carrying page_id");
+    assert!(good.block_id().is_some(), "fixture must produce an address carrying page_id");
     assert!(good.object_id().is_some(), "fixture must produce an address carrying object_id");
     assert!(
         good.routing_bucket().is_some(),
@@ -680,7 +680,7 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     let mut ignored: Vec<&str> = Vec::new();
 
     let mut tampered = good.clone();
-    tampered.set_block_id(Some(good.page_id().unwrap() ^ 0xffff));
+    tampered.set_block_id(Some(good.block_id().unwrap() ^ 0xffff));
     match store.read(&tampered) {
         Err(error) => {
             noticed.push("page_id");
@@ -714,7 +714,7 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     // The one live check is presence-gated: strip the field and it stops running altogether.
     let mut stripped = good.clone();
     stripped.set_block_id(None);
-    assert!(stripped.page_id().is_none());
+    assert!(stripped.block_id().is_none());
     let stripped_reads = store.read(&stripped).is_ok();
 
     println!(
@@ -783,7 +783,7 @@ fn an_address_is_fifty_six_bytes_and_twenty_eight_of_them_are_optional() {
     let bare = BlockAddress::from_parts(1, 0, 64, None, None, None, None);
     let full = BlockAddress::from_parts(1, 0, 64, Some(1), Some(2), Some(3), Some(4));
     assert_eq!(std::mem::size_of_val(&bare), std::mem::size_of_val(&full));
-    assert!(bare.page_id().is_none() && full.page_id().is_some());
+    assert!(bare.block_id().is_none() && full.block_id().is_some());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -854,7 +854,7 @@ fn differing_fields(a: &BlockAddress, b: &BlockAddress) -> Vec<&'static str> {
     if a.length != b.length {
         out.push("length");
     }
-    if a.page_id() != b.page_id() {
+    if a.block_id() != b.block_id() {
         out.push("page_id");
     }
     if a.object_id() != b.object_id() {
@@ -1617,7 +1617,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
             model_ids.insert(page.model_id.to_string());
             *blocks_per_object.entry(page.object_id()).or_default() += 1;
             max_length = max_length.max(page.address.length);
-            max_page_id = max_page_id.max(page.address.page_id().unwrap_or(0));
+            max_page_id = max_page_id.max(page.address.block_id().unwrap_or(0));
             longest.push((page.address.length, page.object_key.to_string()));
             if page.object_key.as_ref() == "big_value" || page.object_key.as_ref() == "empty_value"
             {

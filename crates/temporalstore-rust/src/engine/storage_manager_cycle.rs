@@ -203,7 +203,7 @@ impl TemporalEngine {
             .read()
             .expect("shards lock poisoned")
             .get(&request.shard_id)
-            .map(|shard| compaction_utility_report(&self.page_store, shard))
+            .map(|shard| compaction_utility_report(&self.block_store, shard))
             .unwrap_or_default();
         let compaction_debt_model_count = compaction_utility
             .model_policies
@@ -446,7 +446,7 @@ impl TemporalEngine {
             // shard being cycled (see the module header): otherwise a slab whose pages belong to
             // another shard is absent from this shard's live set and gets deleted.
             let reclaim_live_refs = self.live_block_slab_ids_all_shards();
-            match self.page_store.gc_slabs_before_with_live_refs_policy_limited(
+            match self.block_store.gc_slabs_before_with_live_refs_policy_limited(
                 retain_from_block_slab_id,
                 reclaim_live_refs,
                 // garbage-ratio victim selection: collect the highest-garbage slabs first,

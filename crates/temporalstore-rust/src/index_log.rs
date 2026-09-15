@@ -304,7 +304,7 @@ pub struct IndexItem {
     #[serde(rename = "oi", alias = "object_id", default)]
     pub object_id: u64,
     #[serde(rename = "pi", alias = "page_id", default)]
-    pub page_id: u64,
+    pub block_id: u64,
     #[serde(rename = "a", alias = "address", default)]
     pub address: Option<BlockAddress>,
     #[serde(rename = "sz", alias = "size", default)]
@@ -378,7 +378,7 @@ impl IndexItem {
             address.block_slab_id,
             address.offset,
             address.length,
-            address.page_id().unwrap_or_default(),
+            address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default(),
         );
         if derived == self.block_ref_key {
@@ -404,7 +404,7 @@ impl IndexItem {
             address.block_slab_id,
             address.offset,
             address.length,
-            address.page_id().unwrap_or_default(),
+            address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default(),
         );
     }
@@ -722,7 +722,7 @@ impl serde::Serialize for IndexItem {
         row.serialize_element(&Model(&self.model_id))?;
         row.serialize_element(&self.component)?;
         row.serialize_element(&self.object_id)?;
-        row.serialize_element(&self.page_id)?;
+        row.serialize_element(&self.block_id)?;
         row.serialize_element(&self.address)?;
         row.serialize_element(&self.size)?;
         row.serialize_element(&self.in_log)?;
@@ -986,7 +986,7 @@ pub fn block_ref_key_from_parts(
     block_slab_id: u64,
     offset: u64,
     length: u64,
-    page_id: u64,
+    block_id: u64,
     generation: u64,
 ) -> String {
     // Built into one buffer rather than with `format!`, which allocates its own and then
@@ -1004,7 +1004,7 @@ pub fn block_ref_key_from_parts(
     // `write!` into a String appends in place; it does not allocate.
     let _ = write!(
         key,
-        ":{block_slab_id}:{offset}:{length}:{page_id}:{generation}"
+        ":{block_slab_id}:{offset}:{length}:{block_id}:{generation}"
     );
     key
 }
@@ -2824,7 +2824,7 @@ mod tests {
             model_id: "m".to_string(),
             component: None,
             object_id: 1,
-            page_id: 0,
+            block_id: 0,
             address: None,
             size: 8,
             in_log: false,
@@ -3310,6 +3310,38 @@ mod tests {
         assert!(!item.deleted);
     }
 
+    /// The old `page_id` key must still land in the renamed `block_id` field.
+    ///
+    /// The guard above spells `page_id` in its fixture, but it writes 0 there and never reads
+    /// the field back -- and every field here carries `serde(default)`, so it fills in the same
+    /// 0 whether the alias survives or not. Dropping `alias = "page_id"` leaves that guard
+    /// passing. This one asserts a value that is NOT the default, so the alias is what makes it
+    /// pass, which is the property the rename to `block_id` now rests on.
+    #[test]
+    fn the_old_page_id_key_still_loads_into_the_renamed_block_id_field() {
+        let legacy = serde_json::json!({
+            "kind": "page",
+            "routing_slot": 545210715_u32,
+            "page_ref_key": "string:m:0::0:0:126:0:0",
+            "object_key": "m:0",
+            "model_id": "string",
+            "object_id": 122110326161599232_u64,
+            "page_id": 4242,
+            "size": 126,
+            "in_log": false,
+            "deleted": false
+        });
+        let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
+        assert_ne!(
+            4242, u64::default(),
+            "the fixture value must not be the serde default, or this cannot fail"
+        );
+        assert_eq!(
+            item.block_id, 4242,
+            "the old `page_id` key must reach the renamed `block_id` field"
+        );
+    }
+
     #[test]
     fn an_index_item_costs_far_less_than_its_field_names_used_to() {
         // Field names were 65.3% of a measured 859-byte index-log record: they are written once
@@ -3322,7 +3354,7 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id: 122110326161599232,
-            page_id: 0,
+            block_id: 0,
             address: None,
             size: 126,
             in_log: false,
@@ -3536,7 +3568,7 @@ mod tests {
                 address.block_slab_id,
                 address.offset,
                 address.length,
-                address.page_id().unwrap_or_default(),
+                address.block_id().unwrap_or_default(),
                 address.generation().unwrap_or_default(),
             );
             IndexItem {
@@ -3547,7 +3579,7 @@ mod tests {
                 model_id: "feature".to_string(),
                 component: Some(component.to_string()),
                 object_id: 0,
-                page_id: 0,
+                block_id: 0,
                 address: Some(address),
                 size: 832,
                 in_log: false,
@@ -3606,7 +3638,7 @@ mod tests {
                 model_id: "feature".to_string(),
                 component: Some((1_787_429_651_961u64 + index).to_string()),
                 object_id: 0,
-                page_id: index,
+                block_id: index,
                 address: None,
                 size: 832,
                 in_log: false,
@@ -4493,7 +4525,7 @@ mod tests {
 
         assert!(!decoded.in_log, "in_log must default to false when absent");
         assert!(!decoded.deleted, "deleted must default to false when absent");
-        assert_eq!(decoded.page_id, 0, "page_id must default to zero when absent");
+        assert_eq!(decoded.block_id, 0, "page_id must default to zero when absent");
         assert_eq!(decoded.size, 0, "size must default to zero when absent");
         assert_eq!(decoded.routing_bucket, 8539, "what WAS written must survive");
         assert_eq!(decoded.object_key, "tenant/7/object/000000123");
@@ -4507,7 +4539,7 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345,
-            page_id: 7,
+            block_id: 7,
             address: None,
             size: 4096,
             in_log: true,
@@ -4517,7 +4549,7 @@ mod tests {
             &encode_index_payload(&full, INDEX_LOG_SHAPE_DELTA).expect("encode"),
         )
         .expect("decode");
-        assert_eq!(round_tripped.page_id, 7, "a set page_id must still be written");
+        assert_eq!(round_tripped.block_id, 7, "a set page_id must still be written");
         assert_eq!(round_tripped.size, 4096, "a set size must still be written");
         assert!(round_tripped.in_log, "a true in_log must still be written");
         assert!(round_tripped.deleted, "a true deleted must still be written");
@@ -4550,7 +4582,7 @@ mod tests {
             #[serde(rename = "oi")]
             object_id: u64,
             #[serde(rename = "pi")]
-            page_id: u64,
+            block_id: u64,
             #[serde(rename = "sz")]
             size: u64,
             #[serde(rename = "il")]
@@ -4567,7 +4599,7 @@ mod tests {
             object_key: "tenant/7/object/000000123".to_string(),
             model_id: "string".to_string(),
             object_id: 12_345,
-            page_id: 7,
+            block_id: 7,
             size: 4096,
             in_log: false,
             deleted: false,
@@ -4591,7 +4623,7 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345,
-            page_id: 7,
+            block_id: 7,
             address: None,
             size: 4096,
             in_log: false,
@@ -4656,7 +4688,7 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id,
-            page_id: 7,
+            block_id: 7,
             address,
             size: 4096,
             in_log: false,
@@ -4714,7 +4746,7 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id,
-            page_id: 7,
+            block_id: 7,
             address,
             size: 4096,
             in_log: false,
@@ -4760,7 +4792,7 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345_678_901_234_567u64,
-            page_id: 7,
+            block_id: 7,
             address: Some(crate::block_store::BlockAddress::from_parts(
                 42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567), Some(8539),
                 Some(3),

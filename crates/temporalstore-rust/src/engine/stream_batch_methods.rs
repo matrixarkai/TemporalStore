@@ -8,7 +8,7 @@ impl TemporalEngine {
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
             StreamKind::Block | StreamKind::Page => self
-                .page_store
+                .block_store
                 .read_logical_range(request.block_slab_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
             StreamKind::Index => {
@@ -283,7 +283,7 @@ impl TemporalEngine {
                 start_routing_bucket,
                 end_routing_bucket,
             ) {
-                reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
             }
             // Latch only once the shard actually holds model-map state: `promote` returns false
             // without establishing anything on an empty shard, so guarding on non-emptiness
@@ -374,7 +374,7 @@ impl TemporalEngine {
                     .maxmemory_bytes
                     // Current on-disk footprint (GC-decremented), not cumulative-ever
                     // bytes_written -- see the single-command execute path.
-                    .map(|limit| self.page_store.slab_summary().total_known_physical_bytes >= limit)
+                    .map(|limit| self.block_store.slab_summary().total_known_physical_bytes >= limit)
                     .unwrap_or(false)
             {
                 responses.push(ExecuteResponse {
@@ -388,7 +388,7 @@ impl TemporalEngine {
             }
             if let Err(status) = validate_command_preconditions(
                 &self.cache,
-                &self.page_store,
+                &self.block_store,
                 request.shard_id,
                 shard,
                 &command,
@@ -413,7 +413,7 @@ impl TemporalEngine {
                     .collect();
             let outcome = execute_on_shard(
                 &self.cache,
-                &self.page_store,
+                &self.block_store,
                 config.feature_max_size,
                 config.async_storage,
                 config.control_rollup_enabled(),
@@ -873,7 +873,7 @@ impl TemporalEngine {
         };
         let mut publish_records = Vec::with_capacity(publish_targets.len());
         for (target, address) in publish_targets {
-            if let Some(bytes) = read_block_bytes(&self.cache, &self.page_store, shard_id, &address)
+            if let Some(bytes) = read_block_bytes(&self.cache, &self.block_store, shard_id, &address)
             {
                 publish_records.push((
                     target,
@@ -899,12 +899,12 @@ impl TemporalEngine {
                     bytes.as_slice(),
                     *object_id,
                     *routing_bucket,
-                    address.page_id().unwrap_or_default() as u32,
+                    address.block_id().unwrap_or_default() as u32,
                 )
             })
             .collect::<Vec<BlockAppendRecord>>();
         let published_addresses = self
-            .page_store
+            .block_store
             .append_batch_with_block_metadata(append_records)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
         let index_bytes = {

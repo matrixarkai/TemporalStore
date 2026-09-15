@@ -182,7 +182,7 @@ impl TemporalEngine {
             .copied()
             .collect::<BTreeSet<_>>();
         let stale_block_slab_ids = self
-            .page_store
+            .block_store
             .slab_ids()
             .unwrap_or_default()
             .into_iter()
@@ -267,7 +267,7 @@ impl TemporalEngine {
             &stale_block_slab_set,
         );
         let delayed_destroy_reports = self
-            .page_store
+            .block_store
             .delayed_destroy_slab_reports()
             .unwrap_or_default();
         reclaim_candidates.extend(delayed_destroy_reports.iter().map(|report| {
@@ -406,7 +406,7 @@ impl TemporalEngine {
         let shared_store_cursors = shared_store_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
         let delayed_destroy_reports = self
-            .page_store
+            .block_store
             .delayed_destroy_slab_reports()
             .unwrap_or_default();
         let delayed_destroy_modified = delayed_destroy_reports
@@ -742,7 +742,7 @@ impl TemporalEngine {
             for manifest in self.list_bucket_dump_manifests(request.shard_id) {
                 purge_live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
             }
-            self.page_store
+            self.block_store
                 .purge_delayed_destroy_slabs_selected(
                     crate::block_store::DELAYED_DESTROY_MIN_AGE_MS,
                     purge_live_block_slab_ids,

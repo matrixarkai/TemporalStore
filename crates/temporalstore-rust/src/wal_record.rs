@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(address.offset, 4096, "the address IS the log id");
         assert_eq!(address.length, 512);
         assert_eq!(address.routing_bucket(), Some(11));
-        assert_eq!(address.page_id(), Some(7));
+        assert_eq!(address.block_id(), Some(7));
         assert_eq!(address.object_id(), Some(3));
     }
 
@@ -325,7 +325,7 @@ mod tests {
                     batch_size: None,
                     batch_index: None,
                 }),
-                staged_pages: Vec::new(),
+                staged_blocks: Vec::new(),
                 outcomes: Vec::new(),
             };
             let today = crate::log_framing::encode_line(&serde_json::to_vec(&record).unwrap());
@@ -443,7 +443,7 @@ mod tests {
                     batch_size: None,
                     batch_index: None,
                 }),
-                staged_pages: Vec::new(),
+                staged_blocks: Vec::new(),
                 outcomes: Vec::new(),
             };
             let framed = crate::log_framing::encode_line(&serde_json::to_vec(&record).unwrap());

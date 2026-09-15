@@ -109,7 +109,7 @@ pub struct SharedStoreWalEntry {
     /// Empty for the overwhelming majority of writes, and `serde(default)` so an entry written
     /// before this field existed still loads.
     #[serde(default, rename = "staged_pages")]
-    pub staged_pages: Vec<crate::wal::StagedBlock>,
+    pub staged_blocks: Vec<crate::wal::StagedBlock>,
     /// What this write DID, so a successor can install results instead of re-running operations.
     ///
     /// Carrying pages was the same idea reached halfway: a page is derived state the command
@@ -200,7 +200,7 @@ pub struct SharedStoreCheckpointManifest {
     /// page id that a lazily-fetched checkpoint slab still carries. Defaults to 0 for
     /// manifests written before this field existed (backward compatible).
     #[serde(default, rename = "next_page_id")]
-    pub next_page_id: u64,
+    pub next_block_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -404,7 +404,7 @@ struct SharedStoreWalFrameProto {
     /// Tag 7, added after the fact: an older reader ignores it and an older writer leaves it
     /// empty, so both directions stay readable across the change.
     #[prost(message, repeated, tag = "7")]
-    staged_pages: Vec<SharedStoreStagedBlockProto>,
+    staged_blocks: Vec<SharedStoreStagedBlockProto>,
     /// What the write DID, in the SAME message the engine log uses.
     ///
     /// Not a shared-store item type: the shared log needs a destination, not a schema. Carrying
@@ -1051,7 +1051,7 @@ where
             index_byte_size: index.len() as u64,
             index_sha256: sha256_hex(&index),
             block_slabs,
-            next_page_id: block_store.next_page_id(),
+            next_block_id: block_store.next_block_id(),
         };
         self.object_store
             .put(
@@ -1256,7 +1256,7 @@ where
             // The fallback is what makes this safe to land. An entry carrying no outcomes replays
             // exactly as it used to, so a shared log written before this still applies.
             if !entry.outcomes.is_empty() {
-                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_pages) {
+                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_blocks) {
                     return Err(SharedStoreReplicationError::ApplyFailed {
                         wal_index,
                         status: Status::error(
@@ -1284,7 +1284,7 @@ where
             };
             let response = engine.execute_with_carried_blocks(
                 ExecuteRequest { shard_id, command },
-                entry.staged_pages,
+                entry.staged_blocks,
             );
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
@@ -1342,7 +1342,7 @@ where
             // The fallback is what makes this safe to land. An entry carrying no outcomes replays
             // exactly as it used to, so a shared log written before this still applies.
             if !entry.outcomes.is_empty() {
-                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_pages) {
+                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_blocks) {
                     return Err(SharedStoreReplicationError::ApplyFailed {
                         wal_index,
                         status: Status::error(
@@ -1370,7 +1370,7 @@ where
             };
             let response = engine.execute_with_carried_blocks(
                 ExecuteRequest { shard_id, command },
-                entry.staged_pages,
+                entry.staged_blocks,
             );
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
@@ -2060,7 +2060,7 @@ where
         // Roll local appends past the checkpoint's slab/page-id range so replayed WAL-tail
         // and new writes never overwrite a slab still served lazily from shared storage.
         if !manifest.block_slabs.is_empty() {
-            block_store.reserve_lazy_checkpoint_range(max_slab_id, manifest.next_page_id)?;
+            block_store.reserve_lazy_checkpoint_range(max_slab_id, manifest.next_block_id)?;
             // S3: install SEALED slab descriptors for the lazily-backed checkpoint slabs so
             // GC/compaction accounting is complete immediately after restore, before the first
             // on-demand fetch materializes any slab locally. Runs AFTER the reserve so the freshly
@@ -2247,7 +2247,7 @@ where
             wal_index,
             command: Some(command),
         
-                        staged_pages: Vec::new(),
+                        staged_blocks: Vec::new(),
                                 outcomes: Vec::new(),
         };
         match self.mode {
@@ -2536,9 +2536,9 @@ fn encode_wal_proto_frame(
     };
     // The same rule the log frame follows: a carried block states the length its address
     // covers, so the address need not restate it.
-    let implied_length = if entry.outcomes.len() == 1 && entry.staged_pages.len() == 1 {
+    let implied_length = if entry.outcomes.len() == 1 && entry.staged_blocks.len() == 1 {
         let carried =
-            entry.staged_pages[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+            entry.staged_blocks[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
         Some(carried as u64)
     } else {
         None
@@ -2550,8 +2550,8 @@ fn encode_wal_proto_frame(
         command_sha256: sha256_hex(&command_payload),
         command_payload,
         command_encoding,
-        staged_pages: entry
-            .staged_pages
+        staged_blocks: entry
+            .staged_blocks
             .iter()
             .map(|page| SharedStoreStagedBlockProto {
                 object_id: page.object_id,
@@ -2646,9 +2646,9 @@ fn decode_wal_proto_frame_exact(
             )));
         }
     };
-    let implied_length = if frame.items.len() == 1 && frame.staged_pages.len() == 1 {
+    let implied_length = if frame.items.len() == 1 && frame.staged_blocks.len() == 1 {
         let carried =
-            frame.staged_pages[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+            frame.staged_blocks[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
         Some(carried as u64)
     } else {
         None
@@ -2671,8 +2671,8 @@ fn decode_wal_proto_frame_exact(
                 )
             })
             .collect(),
-        staged_pages: frame
-            .staged_pages
+        staged_blocks: frame
+            .staged_blocks
             .into_iter()
             .map(|page| crate::wal::StagedBlock {
                 object_id: page.object_id,
@@ -2977,7 +2977,7 @@ mod tests {
                     value: b"wal-value".to_vec(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -3200,7 +3200,7 @@ mod tests {
                     key: "gone".to_string(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -3292,7 +3292,7 @@ mod tests {
                     value: b"wal-value".to_vec(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -3396,7 +3396,7 @@ mod tests {
         for record in &published {
             // Carry the blocks the results point at: a follower has its own block store, and an
             // address alone names a place it cannot reach.
-            let mut carried = record.staged_pages.clone();
+            let mut carried = record.staged_blocks.clone();
             if carried.is_empty() {
                 for item in &record.outcomes {
                     if let Some(address) = item.resolved_address() {
@@ -3414,7 +3414,7 @@ mod tests {
                     shard_id: 1,
                     wal_index: record.sequence,
                     command: record.command.clone(),
-                    staged_pages: carried,
+                    staged_blocks: carried,
                     outcomes: record.outcomes.clone(),
                 })
                 .await
@@ -3523,7 +3523,7 @@ mod tests {
         // A result names an address in the primary's block store, and the follower has its own,
         // so an entry carrying only the address gives the follower an index entry pointing at
         // bytes it does not have -- a shard that looks whole and serves nothing.
-        let mut carried = tail.staged_pages.clone();
+        let mut carried = tail.staged_blocks.clone();
         if carried.is_empty() {
             for item in &tail.outcomes {
                 if let Some(address) = item.resolved_address() {
@@ -3545,7 +3545,7 @@ mod tests {
                 shard_id: 1,
                 wal_index: tail.sequence,
                 command: tail.command.clone(),
-                staged_pages: carried,
+                staged_blocks: carried,
                 outcomes: tail.outcomes.clone(),
             })
             .await
@@ -3634,7 +3634,7 @@ mod tests {
                     value: b"wal-value".to_vec(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -3904,7 +3904,7 @@ mod tests {
                     value: b"wal-value".to_vec(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -4010,7 +4010,7 @@ mod tests {
                         value: key.as_bytes().to_vec(),
                     }),
                 
-                                       staged_pages: Vec::new(),
+                                       staged_blocks: Vec::new(),
                                                        outcomes: Vec::new(),
                 })
                 .await
@@ -4068,7 +4068,7 @@ mod tests {
                         value,
                     }),
                 
-                                       staged_pages: Vec::new(),
+                                       staged_blocks: Vec::new(),
                                                        outcomes: Vec::new(),
                 })
                 .await
@@ -4319,7 +4319,7 @@ mod tests {
                     value: b"wal-value".to_vec(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -4438,7 +4438,7 @@ mod tests {
                         value: key.as_bytes().to_vec(),
                     }),
                 
-                                       staged_pages: Vec::new(),
+                                       staged_blocks: Vec::new(),
                                                        outcomes: Vec::new(),
                 })
                 .await
@@ -4496,7 +4496,7 @@ mod tests {
                         value,
                     }),
                 
-                                       staged_pages: Vec::new(),
+                                       staged_blocks: Vec::new(),
                                                        outcomes: Vec::new(),
                 })
                 .await
@@ -4545,7 +4545,7 @@ mod tests {
                 key: "k".to_string(),
                 value: b"v".to_vec(),
             }),
-            staged_pages: vec![crate::wal::StagedBlock {
+            staged_blocks: vec![crate::wal::StagedBlock {
                 object_id: 77,
                 bytes: b"derived-page-bytes".to_vec(),
             }],
@@ -4557,7 +4557,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         let round_tripped = loaded.values().next().expect("one entry");
         assert_eq!(
-            round_tripped.staged_pages, entry.staged_pages,
+            round_tripped.staged_blocks, entry.staged_blocks,
             "the pages must survive the trip, not just the command"
         );
     }
@@ -4577,7 +4577,7 @@ mod tests {
                 key: "k".to_string(),
                 value: b"v".to_vec(),
             }),
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
                     outcomes: Vec::new(),
         };
         let mut legacy = serde_json::to_value(&entry).unwrap();
@@ -4592,7 +4592,7 @@ mod tests {
 
         let loaded: SharedStoreWalEntry = serde_json::from_value(legacy)
             .expect("an entry without the field must still load");
-        assert!(loaded.staged_pages.is_empty());
+        assert!(loaded.staged_blocks.is_empty());
         assert_eq!(loaded.command, entry.command);
     }
 
@@ -4801,7 +4801,7 @@ mod tests {
                     value: b"v".to_vec(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -5191,7 +5191,7 @@ mod tests {
                     value: b"v".to_vec(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -5244,7 +5244,7 @@ mod tests {
                     value: b"ok".to_vec(),
                 }),
             
-                                   staged_pages: Vec::new(),
+                                   staged_blocks: Vec::new(),
                                                outcomes: Vec::new(),
             })
             .await
@@ -5303,7 +5303,7 @@ mod tests {
                         value: vec![wal_index as u8],
                     }),
                 
-                                       staged_pages: Vec::new(),
+                                       staged_blocks: Vec::new(),
                                                        outcomes: Vec::new(),
                 })
                 .await
@@ -5373,7 +5373,7 @@ mod tests {
                         value,
                     }),
                 
-                                       staged_pages: Vec::new(),
+                                       staged_blocks: Vec::new(),
                                                        outcomes: Vec::new(),
                 })
                 .await

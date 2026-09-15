@@ -484,7 +484,7 @@ pub(super) fn now_epoch_seconds() -> u64 {
 
 pub(super) fn validate_command_preconditions(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     command: &Command,
@@ -922,7 +922,7 @@ pub(super) fn validate_command_preconditions(
             .hashes
             .get(key)
             .and_then(|entries| entries.get(field))
-            .and_then(|address| read_block_bytes(cache, page_store, shard_id, address))
+            .and_then(|address| read_block_bytes(cache, block_store, shard_id, address))
         else {
             return 0_i64
                 .checked_add(*increment)

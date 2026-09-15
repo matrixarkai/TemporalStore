@@ -60,11 +60,11 @@ impl BlockStore {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
-        let page_id = u64::from(block_ordinal);
+        let block_id = u64::from(block_ordinal);
         let mut stored_slab_id = inner.block_slab_id;
         let mut record = encode_block_record(
             bytes,
-            page_id,
+            block_id,
             object_id,
             routing_bucket,
             stored_slab_id,
@@ -79,7 +79,7 @@ impl BlockStore {
             stored_slab_id = inner.block_slab_id;
             record = encode_block_record(
                 bytes,
-                page_id,
+                block_id,
                 object_id,
                 routing_bucket,
                 stored_slab_id,
@@ -88,7 +88,7 @@ impl BlockStore {
         }
         let path = slab_path(&inner.root, inner.block_slab_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let address = BlockAddress::from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(page_id), object_id, routing_bucket, Some(page_id));
+        let address = BlockAddress::from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id, routing_bucket, Some(block_id));
         file.write_all(&record.bytes)?;
         file.flush()?;
         // Two INDEPENDENT relaxations:
@@ -114,7 +114,7 @@ impl BlockStore {
             block_slab_id,
             write_offset,
             record.logical_len as u64,
-            page_id,
+            block_id,
         );
         if defer_manifest {
             inner.relaxed_dirty = true;
@@ -151,11 +151,11 @@ impl BlockStore {
         let mut compression_bytes_saved = 0u64;
 
         for (bytes, object_id, routing_bucket, block_ordinal) in records {
-            let page_id = u64::from(block_ordinal);
+            let block_id = u64::from(block_ordinal);
             let mut stored_slab_id = inner.block_slab_id;
             let mut record = encode_block_record(
                 bytes,
-                page_id,
+                block_id,
                 object_id,
                 routing_bucket,
                 stored_slab_id,
@@ -174,7 +174,7 @@ impl BlockStore {
                 stored_slab_id = inner.block_slab_id;
                 record = encode_block_record(
                     &bytes,
-                    page_id,
+                    block_id,
                     object_id,
                     routing_bucket,
                     stored_slab_id,
@@ -185,7 +185,7 @@ impl BlockStore {
                 let path = slab_path(&inner.root, inner.block_slab_id);
                 file = Some(OpenOptions::new().create(true).append(true).open(path)?);
             }
-            let address = BlockAddress::from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(page_id), object_id, routing_bucket, Some(page_id));
+            let address = BlockAddress::from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id, routing_bucket, Some(block_id));
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;
             }
@@ -197,7 +197,7 @@ impl BlockStore {
                 block_slab_id,
                 write_offset,
                 record.logical_len as u64,
-                page_id,
+                block_id,
             );
             writes = writes.saturating_add(1);
             bytes_written = bytes_written.saturating_add(address.length);

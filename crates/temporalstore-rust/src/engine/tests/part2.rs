@@ -1542,7 +1542,7 @@ fn wal_replay_gap_refuses_load_like_dataloss() {
                 value: b"v".to_vec(),
             }),
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         })
         .unwrap();
@@ -1756,7 +1756,7 @@ fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
                 batch_size: None,
                 batch_index: None,
             }),
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         }
     }

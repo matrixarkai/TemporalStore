@@ -1096,7 +1096,7 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     page.address.block_slab_id.hash(&mut hasher);
     page.address.offset.hash(&mut hasher);
     page.address.length.hash(&mut hasher);
-    page.address.page_id().unwrap_or_default().hash(&mut hasher);
+    page.address.block_id().unwrap_or_default().hash(&mut hasher);
     page.address.generation().unwrap_or_default().hash(&mut hasher);
     hasher.finish()
 }
@@ -1109,7 +1109,7 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
         page.address.block_slab_id,
         page.address.offset,
         page.address.length,
-        page.address.page_id().unwrap_or_default(),
+        page.address.block_id().unwrap_or_default(),
         page.address.generation().unwrap_or_default(),
     )
 }
@@ -2076,7 +2076,7 @@ pub(super) fn next_block_index_for_object(
                 .filter(|block| {
                     block.model_id.as_ref() == model_id && block.object_key.as_ref() == object_key
                 })
-                .filter_map(|block| block.address.page_id())
+                .filter_map(|block| block.address.block_id())
                 .max()
         })
         .map_or(0, |highest| {
@@ -2113,7 +2113,7 @@ fn same_block_address(left: &BlockAddress, right: &BlockAddress) -> bool {
     left.block_slab_id == right.block_slab_id
         && left.offset == right.offset
         && left.length == right.length
-        && left.page_id() == right.page_id()
+        && left.block_id() == right.block_id()
         && left.object_id() == right.object_id()
         && left.routing_bucket() == right.routing_bucket()
         && left.generation() == right.generation()

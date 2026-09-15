@@ -517,7 +517,7 @@ pub(super) fn upsert_slab_after_append(
     block_slab_id: u64,
     physical_bytes: u64,
     logical_bytes_written: u64,
-    page_id: u64,
+    block_id: u64,
 ) {
     let slab = slabs
         .entry(block_slab_id)
@@ -529,8 +529,8 @@ pub(super) fn upsert_slab_after_append(
             logical_bytes: 0,
             created_unix_ms: Some(now_unix_ms()),
             updated_unix_ms: Some(now_unix_ms()),
-            first_block_id: Some(page_id),
-            last_block_id: Some(page_id),
+            first_block_id: Some(block_id),
+            last_block_id: Some(block_id),
             readable_prefix_physical_bytes: 0,
             verified_source_mtime_unix_ms: None,
             has_corruption: false,
@@ -552,12 +552,12 @@ pub(super) fn upsert_slab_after_append(
     slab.first_block_id = Some(
         slab
             .first_block_id
-            .map_or(page_id, |first| first.min(page_id)),
+            .map_or(block_id, |first| first.min(block_id)),
     );
     slab.last_block_id = Some(
         slab
             .last_block_id
-            .map_or(page_id, |last| last.max(page_id)),
+            .map_or(block_id, |last| last.max(block_id)),
     );
 }
 

@@ -346,8 +346,8 @@ fn checksum_from_raw(raw: &[u8]) -> String {
 /// A COMPRESSED block stores fewer bytes than it carries, so this will not match and the address
 /// writes its length as before. That is the point of comparing rather than assuming.
 pub(crate) fn implied_block_length(record: &WriteAheadLogRecord) -> Option<u64> {
-    if record.outcomes.len() == 1 && record.staged_pages.len() == 1 {
-        let carried = record.staged_pages[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+    if record.outcomes.len() == 1 && record.staged_blocks.len() == 1 {
+        let carried = record.staged_blocks[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
         return Some(carried as u64);
     }
     None
@@ -365,7 +365,7 @@ fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::
         } else {
             address.length
         },
-        block_id: address.page_id(),
+        block_id: address.block_id(),
         object_id: address.object_id(),
         // Deliberately dropped, exactly as the text encoding drops it: the item carries the
         // routing bucket, and `resolved_address` puts it back. Writing it here made the two
@@ -922,7 +922,7 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
         + tail.encoded_len()
         + items_len
         + record
-            .staged_pages
+            .staged_blocks
             .iter()
             .map(|page| {
                 crate::raft::wal_proto::len_delimited_len(
@@ -953,7 +953,7 @@ impl RecordParts<'_> {
             put_wal_item(5, item, derived, out);
         }
         let implied = implied_staged_object_id(record);
-        for page in &record.staged_pages {
+        for page in &record.staged_blocks {
             crate::raft::wal_proto::put_staged_block(6, page, implied, out);
         }
         Ok(())
@@ -966,7 +966,7 @@ impl RecordParts<'_> {
 /// that outcome and nothing else, so dropping the id from the block loses nothing a reader
 /// cannot put back. With more than one of either, every block writes its own.
 pub(crate) fn implied_staged_object_id(record: &WriteAheadLogRecord) -> Option<u64> {
-    if record.outcomes.len() == 1 && record.staged_pages.len() == 1 {
+    if record.outcomes.len() == 1 && record.staged_blocks.len() == 1 {
         return Some(record.outcomes[0].object_id);
     }
     None
@@ -1147,7 +1147,7 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
         sequence: message.sequence,
         command,
         metadata: message.metadata.map(metadata_from_proto).transpose()?,
-        staged_pages: message
+        staged_blocks: message
             .staged_blocks
             .into_iter()
             .map(|block| StagedBlock {
@@ -1192,7 +1192,7 @@ mod command_key_tests {
             sequence: 3,
             command,
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes,
         }
     }
@@ -1360,7 +1360,7 @@ mod tests {
                 })
                 .collect(),
             staged_blocks: record
-                .staged_pages
+                .staged_blocks
                 .iter()
                 .map(|page| v1::WalStagedBlock {
                     // The same rule the borrowing encoder applies, so the two agree byte for
@@ -1845,7 +1845,7 @@ mod tests {
             sequence: 42,
             command,
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         }
     }
@@ -1868,7 +1868,7 @@ mod tests {
             key: "p".to_string(),
             value: vec![9; 10],
         }));
-        with_blocks.staged_pages = vec![StagedBlock {
+        with_blocks.staged_blocks = vec![StagedBlock {
             object_id: 900,
             bytes: vec![7; 4096],
         }];
@@ -1914,7 +1914,7 @@ mod tests {
             deleted: true,
             meta: true,
         }];
-        everything.staged_pages = vec![
+        everything.staged_blocks = vec![
             StagedBlock {
                 object_id: 10,
                 bytes: vec![1; 4096],
@@ -2064,7 +2064,7 @@ mod tests {
             )),
             ..outcome_with_object_id(0x1234_5678_9ABC_DEF0)
         }];
-        record.staged_pages = vec![crate::wal::StagedBlock {
+        record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: 0x1234_5678_9ABC_DEF0,
             bytes,
         }];
@@ -2158,7 +2158,7 @@ mod tests {
             None,
         );
         record.outcomes = vec![outcome_with_object_id(derivable)];
-        record.staged_pages = vec![crate::wal::StagedBlock {
+        record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: derivable,
             bytes: vec![3; 64],
         }];
@@ -2170,7 +2170,7 @@ mod tests {
             "the item's id comes back derived"
         );
         assert_eq!(
-            back.staged_pages[0].object_id, derivable,
+            back.staged_blocks[0].object_id, derivable,
             "and the block takes it from the RESTORED item, not from a wire field that is absent"
         );
         assert_eq!(back, record, "the whole record must round trip");
@@ -2180,7 +2180,7 @@ mod tests {
         // would encode to the same length.
         let mut foreign = record.clone();
         foreign.outcomes[0].object_id = derivable ^ 0xFFFF;
-        foreign.staged_pages[0].object_id = derivable ^ 0xFFFF;
+        foreign.staged_blocks[0].object_id = derivable ^ 0xFFFF;
         let longer = encode(&foreign).expect("encode");
         assert!(
             longer.len() > encoded.len(),
@@ -2204,7 +2204,7 @@ mod tests {
     fn one_block_for_one_outcome_says_the_object_id_once() {
         let mut record = record_with(None);
         record.outcomes = vec![outcome_with_object_id(0x1234_5678_9ABC_DEF0)];
-        record.staged_pages = vec![crate::wal::StagedBlock {
+        record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: 0x1234_5678_9ABC_DEF0,
             bytes: vec![3; 64],
         }];
@@ -2212,7 +2212,7 @@ mod tests {
         let encoded = encode(&record).expect("encode");
         let back = decode(&encoded).expect("decode");
         assert_eq!(
-            back.staged_pages[0].object_id, record.staged_pages[0].object_id,
+            back.staged_blocks[0].object_id, record.staged_blocks[0].object_id,
             "the reader must put the omitted id back"
         );
         assert_eq!(back, record, "the whole record must round trip");
@@ -2221,7 +2221,7 @@ mod tests {
         // cannot imply the id and has to write it, so it comes out longer. Without the rule
         // these two would encode to the same length.
         let mut unmatched = record.clone();
-        unmatched.staged_pages[0].object_id = 0x0FED_CBA9_8765_4321;
+        unmatched.staged_blocks[0].object_id = 0x0FED_CBA9_8765_4321;
         let longer = encode(&unmatched).expect("encode");
         assert!(
             longer.len() > encoded.len(),
@@ -2237,7 +2237,7 @@ mod tests {
     fn two_blocks_each_say_their_own_object_id() {
         let mut record = record_with(None);
         record.outcomes = vec![outcome_with_object_id(11), outcome_with_object_id(22)];
-        record.staged_pages = vec![
+        record.staged_blocks = vec![
             crate::wal::StagedBlock {
                 object_id: 11,
                 bytes: vec![1; 8],
@@ -2248,8 +2248,8 @@ mod tests {
             },
         ];
         let back = decode(&encode(&record).expect("encode")).expect("decode");
-        assert_eq!(back.staged_pages[0].object_id, 11);
-        assert_eq!(back.staged_pages[1].object_id, 22);
+        assert_eq!(back.staged_blocks[0].object_id, 11);
+        assert_eq!(back.staged_blocks[1].object_id, 22);
         assert_eq!(back, record);
     }
 
@@ -2288,8 +2288,8 @@ mod tests {
                 "command for {label}"
             );
             assert_eq!(
-                decoded.staged_pages.len(),
-                record.staged_pages.len(),
+                decoded.staged_blocks.len(),
+                record.staged_blocks.len(),
                 "staged pages for {label}"
             );
         }

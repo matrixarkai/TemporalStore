@@ -4918,7 +4918,7 @@ fn what_each_address_field_actually_ranges_over() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut pages = 0usize;
     let (mut slab, mut offset, mut length) = (0u64, 0u64, 0u64);
-    let (mut page_id, mut object_id, mut generation, mut derived_slab) = (0u64, 0u64, 0u64, 0u64);
+    let (mut block_id, mut object_id, mut generation, mut derived_slab) = (0u64, 0u64, 0u64, 0u64);
     let mut routing = 0u32;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_key, page) in bucket.block_index.iter() {
@@ -4927,7 +4927,7 @@ fn what_each_address_field_actually_ranges_over() {
             slab = slab.max(a.block_slab_id);
             offset = offset.max(a.offset);
             length = length.max(a.length);
-            page_id = page_id.max(a.page_id().unwrap_or(0));
+            block_id = block_id.max(a.block_id().unwrap_or(0));
             object_id = object_id.max(a.object_id().unwrap_or(0));
             generation = generation.max(a.generation().unwrap_or(0));
             derived_slab = derived_slab.max(a.slab_id().unwrap_or(0));
@@ -4943,7 +4943,7 @@ fn what_each_address_field_actually_ranges_over() {
     block_slab_id  {slab:>22}  {:>2} bits   bounded by slab count
     offset        {offset:>22}  {:>2} bits   bounded by slab size
     length        {length:>22}  {:>2} bits   bounded by page size
-    page_id       {page_id:>22}  {:>2} bits
+    page_id       {block_id:>22}  {:>2} bits
     object_id     {object_id:>22}  {:>2} bits   a hash -- bounded by nothing
     generation    {generation:>22}  {:>2} bits
     slab_id       {derived_slab:>22}  {:>2} bits
@@ -4953,7 +4953,7 @@ fn what_each_address_field_actually_ranges_over() {
     not that it is safe. Narrowing one needs the bound asserted where the
     value is produced, so a violation fails loudly instead of truncating.
 ",
-        bits(slab), bits(offset), bits(length), bits(page_id),
+        bits(slab), bits(offset), bits(length), bits(block_id),
         bits(object_id), bits(generation), bits(derived_slab), bits(u64::from(routing)),
     );
 }
@@ -8489,10 +8489,10 @@ fn a_carried_block_is_what_reaches_the_log_record() {
     let logged = records
         .iter()
         .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
-        .find(|record| !record.staged_pages.is_empty())
+        .find(|record| !record.staged_blocks.is_empty())
         .expect("the record must carry pages");
     assert_eq!(
-        logged.staged_pages, carried,
+        logged.staged_blocks, carried,
         "the carried pages belong on the record, not this node's re-derivation"
     );
 }
@@ -8874,7 +8874,7 @@ fn a_synchronous_write_puts_its_block_in_its_record() {
         .unwrap()
         .iter()
         .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
-        .flat_map(|record| record.staged_pages)
+        .flat_map(|record| record.staged_blocks)
         .collect();
     assert_eq!(
         carried.len(),
@@ -10874,7 +10874,7 @@ fn a_group_commit_write_keeps_the_block_it_staged() {
         .unwrap()
         .iter()
         .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
-        .map(|record| record.staged_pages.len())
+        .map(|record| record.staged_blocks.len())
         .sum();
     println!(
         "[block-in-wal] group-commit write: {} block(s) carried, index holds {}",
@@ -11971,7 +11971,7 @@ fn what_a_live_record_is_made_of() {
                     address.block_slab_id,
                     address.offset,
                     address.length,
-                    address.page_id(),
+                    address.block_id(),
                     address.object_id(),
                     address.generation(),
                     address.slab_id(),
@@ -12307,7 +12307,7 @@ fn a_record_carrying_its_blocks_states_results_instead_of_the_operation() {
     let mut carrying_blocks_with_command = 0usize;
     for (_, line) in &records {
         let record = crate::wal::decode_wal_line(line).expect("a record should decode");
-        if record.staged_pages.is_empty() {
+        if record.staged_blocks.is_empty() {
             continue;
         }
         carrying_blocks += 1;
@@ -13713,14 +13713,14 @@ fn which_parts_of_a_block_address_are_populated() {
     let shard = shards.get(&1).expect("shard 1 loaded");
 
     let mut pages = 0usize;
-    let (mut page_id, mut object_id, mut routing_bucket) = (0usize, 0usize, 0usize);
+    let (mut block_id, mut object_id, mut routing_bucket) = (0usize, 0usize, 0usize);
     let (mut generation, mut slab_id, mut sha256) = (0usize, 0usize, 0usize);
     let mut compactable = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             pages += 1;
             let a = &page.address;
-            page_id += usize::from(a.page_id().is_some());
+            block_id += usize::from(a.block_id().is_some());
             object_id += usize::from(a.object_id().is_some());
             routing_bucket += usize::from(a.routing_bucket().is_some());
             generation += usize::from(a.generation().is_some());
@@ -13735,7 +13735,7 @@ fn which_parts_of_a_block_address_are_populated() {
         "
   {pages} pages, which of the address's optional fields are set
 
-    page_id          {page_id:>6}  {:>5.1}%   16 B each
+    page_id          {block_id:>6}  {:>5.1}%   16 B each
     object_id        {object_id:>6}  {:>5.1}%   16 B
     routing_slot     {routing_bucket:>6}  {:>5.1}%    8 B
     generation       {generation:>6}  {:>5.1}%   16 B
@@ -13744,7 +13744,7 @@ fn which_parts_of_a_block_address_are_populated() {
 
     fit the compact (slab, offset) u64: {compactable:>6}  {:>5.1}%
 ",
-        pct(page_id), pct(object_id), pct(routing_bucket),
+        pct(block_id), pct(object_id), pct(routing_bucket),
         pct(generation), pct(slab_id), pct(sha256), pct(compactable),
     );
 
@@ -15945,7 +15945,7 @@ fn a_wide_parent_keeps_its_newest_children_for_scoring() {
         let shard = shards.get(&1).expect("shard 1 loaded");
         crate::engine::context::traverse_context_tree(
             &engine.cache,
-            &engine.page_store,
+            &engine.block_store,
             1,
             shard,
             TENANT,
@@ -18193,7 +18193,7 @@ fn what_a_packed_block_looks_like_in_the_index() {
             address.block_slab_id,
             address.offset,
             address.length,
-            address.page_id()
+            address.block_id()
         );
         distinct.insert(address.clone());
     }

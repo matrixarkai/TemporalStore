@@ -348,27 +348,27 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
 
 pub(super) fn read_context_value<T: ContextWire>(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
 ) -> Option<T> {
-    let point = read_feature_point(cache, page_store, shard_id, timeline_key, address)?;
+    let point = read_feature_point(cache, block_store, shard_id, timeline_key, address)?;
     context_from_bytes(&point.value)
 }
 
 pub(super) fn read_context_value_cold<T: ContextWire>(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     timeline_key: u64,
     address: &BlockAddress,
 ) -> Option<T> {
-    let point = read_feature_point_cold(page_store, timeline_key, address)?;
+    let point = read_feature_point_cold(block_store, timeline_key, address)?;
     context_from_bytes(&point.value)
 }
 
 pub(super) fn read_context_value_cached<T: ContextWire>(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
@@ -376,7 +376,7 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
 ) -> Option<T> {
     let point = read_feature_point_cached(
         cache,
-        page_store,
+        block_store,
         shard_id,
         timeline_key,
         address,
@@ -785,7 +785,7 @@ pub(super) fn validate_context_compression_event(
 
 pub(super) fn load_context_children(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -799,7 +799,7 @@ pub(super) fn load_context_children(
                 .filter_map(|(timeline_key, address)| {
                     read_context_value::<ContextChildRef>(
                         cache,
-                        page_store,
+                        block_store,
                         shard_id,
                         *timeline_key,
                         address,
@@ -834,7 +834,7 @@ pub fn reset_context_children_dropped_before_scoring() {
 
 pub(super) fn load_context_node_vector(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -847,14 +847,14 @@ pub(super) fn load_context_node_vector(
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .or_else(|| shard.context_nodes.get(&object_key))
         .and_then(|address| {
-            super::read_block_shared(cache, page_store, shard_id, address)
+            super::read_block_shared(cache, block_store, shard_id, address)
                 .and_then(|bytes| crate::types::decode_context_node_vector(&bytes))
         })
 }
 
 pub(super) fn load_context_node(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -872,14 +872,14 @@ pub(super) fn load_context_node(
         .and_then(|address| {
             // Shared, not copied: the bytes are parsed here and dropped, so owning them costs a
             // page-sized memcpy and an allocation for nothing.
-            super::read_block_shared(cache, page_store, shard_id, address)
+            super::read_block_shared(cache, block_store, shard_id, address)
                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
 }
 
 pub(super) fn load_context_summaries(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -896,7 +896,7 @@ pub(super) fn load_context_summaries(
                 .filter_map(|(timeline_key, address)| {
                     read_context_value::<ContextSummary>(
                         cache,
-                        page_store,
+                        block_store,
                         shard_id,
                         *timeline_key,
                         address,
@@ -922,7 +922,7 @@ pub(super) fn load_context_summaries(
 /// keeps walking only if a decode fails or an entry does not satisfy `valid_from_ms <= as_of_ms`.
 pub(super) fn load_newest_context_summary(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -938,7 +938,7 @@ pub(super) fn load_newest_context_summary(
                 .filter_map(|(timeline_key, address)| {
                     read_context_value::<ContextSummary>(
                         cache,
-                        page_store,
+                        block_store,
                         shard_id,
                         *timeline_key,
                         address,
@@ -950,14 +950,14 @@ pub(super) fn load_newest_context_summary(
 
 pub(super) fn load_latest_context_summary(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
     as_of_ms: u64,
 ) -> Option<ContextSummary> {
     load_context_summaries(
-        cache, page_store, shard_id, shard, object_key, as_of_ms, None,
+        cache, block_store, shard_id, shard, object_key, as_of_ms, None,
     )
     .into_iter()
     .max_by_key(|summary| summary.valid_from_ms)
@@ -965,7 +965,7 @@ pub(super) fn load_latest_context_summary(
 
 pub(super) fn load_context_compression_events(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -985,7 +985,7 @@ pub(super) fn load_context_compression_events(
             events.extend(series.iter().filter_map(|(timeline_key, address)| {
                 read_context_value::<ContextCompressionEvent>(
                     cache,
-                    page_store,
+                    block_store,
                     shard_id,
                     *timeline_key,
                     address,
@@ -1031,7 +1031,7 @@ pub(super) fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn traverse_context_tree(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -1067,7 +1067,7 @@ pub(super) fn traverse_context_tree(
         for parent in &frontier {
             let child_key = context_child_key(tenant_hash, parent.node_hash);
             let mut children =
-                load_context_children(cache, page_store, shard_id, shard, &child_key);
+                load_context_children(cache, block_store, shard_id, shard, &child_key);
             // NEWEST first, not oldest. This cut happens BEFORE any scoring, so whatever it
             // drops is unreachable by any query however well it matches -- and it used to sort
             // ascending, which kept the oldest children and made the most recently ingested the
@@ -1101,7 +1101,7 @@ pub(super) fn traverse_context_tree(
                 // reconstruct without already holding the owner.
                 let vector = load_context_node_vector(
                     cache,
-                    page_store,
+                    block_store,
                     shard_id,
                     shard,
                     tenant_hash,
@@ -1133,7 +1133,7 @@ pub(super) fn traverse_context_tree(
         for node in scored_layer {
             let child_key = context_child_key(tenant_hash, node.node_hash);
             let is_leaf =
-                load_context_children(cache, page_store, shard_id, shard, &child_key).is_empty();
+                load_context_children(cache, block_store, shard_id, shard, &child_key).is_empty();
             next_frontier.push(node.clone());
             if !leaf_only || is_leaf {
                 results.push(node);

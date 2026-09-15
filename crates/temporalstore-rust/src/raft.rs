@@ -151,7 +151,7 @@ pub struct RaftSnapshot {
 pub struct RaftSnapshotStateImage {
     pub index_bytes: Vec<u8>,
     #[serde(rename = "next_page_id")]
-    pub next_page_id: u64,
+    pub next_block_id: u64,
     pub slabs: Vec<RaftSnapshotStateImageSlab>,
 }
 

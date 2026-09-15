@@ -148,16 +148,16 @@ fn registry() -> &'static Mutex<HashMap<(usize, ShardId, u64), Registration>> {
 pub(super) fn register_record(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
-    staged_pages: &[StagedBlock],
+    staged_blocks: &[StagedBlock],
     log_id: u64,
     sequence: u64,
     store: &LocalWriteAheadLogStore,
 ) {
-    if staged_pages.is_empty() {
+    if staged_blocks.is_empty() {
         return;
     }
     if let Ok(mut map) = registry().lock() {
-        for page in staged_pages {
+        for page in staged_blocks {
             map.insert(
                 (block_store.store_id(), shard_id, page.object_id),
                 (store.clone(), log_id, sequence),
@@ -330,7 +330,7 @@ pub(super) fn read_block(
         }
     }
     let record = record?;
-    let pages = record.staged_pages;
+    let pages = record.staged_blocks;
     if let Ok(mut cache) = record_lru().lock() {
         if cache.len() >= 8 {
             cache.remove(0);

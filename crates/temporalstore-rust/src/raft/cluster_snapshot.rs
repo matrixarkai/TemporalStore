@@ -1210,7 +1210,7 @@ fn build_state_image(engine: &TemporalEngine, shard_id: ShardId) -> Option<RaftS
     }
     Some(RaftSnapshotStateImage {
         index_bytes,
-        next_page_id: block_store.next_page_id(),
+        next_block_id: block_store.next_block_id(),
         slabs,
     })
 }

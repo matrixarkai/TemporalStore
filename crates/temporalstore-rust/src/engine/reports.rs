@@ -272,7 +272,7 @@ pub struct RustStorageObservation {
     pub shard_id: ShardId,
     pub cache: CacheStats,
     #[serde(rename = "page_store")]
-    pub page_store: BlockStoreStats,
+    pub block_store: BlockStoreStats,
     pub observed_memory_hit: bool,
     pub observed_block_cache_hit: bool,
     pub observed_local_file_read: bool,
@@ -727,7 +727,7 @@ pub struct StoragePhysicalBlockIndex {
     pub offset: u64,
     pub length: u64,
     #[serde(default, rename = "page_id", skip_serializing_if = "Option::is_none")]
-    pub page_id: Option<u64>,
+    pub block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
     #[serde(rename = "zone_id", default, skip_serializing_if = "Option::is_none")]
@@ -2189,7 +2189,7 @@ pub struct StoragePageAddressSample {
     #[serde(alias = "segment_id")]
     pub slab_id: u64,
     #[serde(rename = "page_id")]
-    pub page_id: u64,
+    pub block_id: u64,
     pub offset: u64,
     pub length: u64,
     pub generation: u64,

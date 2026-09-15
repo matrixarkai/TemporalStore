@@ -23,7 +23,7 @@ impl TemporalEngine {
         // silent data loss on crash. Propagate: an Err here skips clear_dumped_bucket_dirty_state
         // (apply_storage_lifecycle consumes the manifest via .ok()), so the bucket stays dirty
         // and the reclaim frontier does not advance.
-        self.page_store.sync_durable().map_err(|err| {
+        self.block_store.sync_durable().map_err(|err| {
             Status::error(
                 "slot_dump_failed",
                 format!("page durability barrier failed before dump capture: {err}"),
@@ -590,7 +590,7 @@ impl TemporalEngine {
             ));
         }
         let existing_slabs = self
-            .page_store
+            .block_store
             .slab_ids()
             .map_err(|err| Status::error("slot_dump_invalid", err.to_string()))?
             .into_iter()
@@ -775,7 +775,7 @@ impl TemporalEngine {
         let mut unreadable_block_refs = 0usize;
         let mut unreadable_block_bytes = 0u64;
         for entry in live_block_entries {
-            if self.page_store.read(&entry.address).is_err() {
+            if self.block_store.read(&entry.address).is_err() {
                 unreadable_block_refs = unreadable_block_refs.saturating_add(1);
                 unreadable_block_bytes = unreadable_block_bytes.saturating_add(entry.address.length);
             }
@@ -817,7 +817,7 @@ impl TemporalEngine {
         let current_index_log_sequence =
             self.index_log_store.stats(manifest.shard_id).last_sequence;
         let existing_slabs = self
-            .page_store
+            .block_store
             .slab_ids()
             .unwrap_or_default()
             .into_iter()
@@ -829,7 +829,7 @@ impl TemporalEngine {
             .filter(|id| !existing_slabs.contains(id))
             .collect::<Vec<_>>();
         let corrupt_block_slab_ids = self
-            .page_store
+            .block_store
             .slab_reports()
             .unwrap_or_default()
             .into_iter()
@@ -866,7 +866,7 @@ impl TemporalEngine {
                             continue;
                         }
                         probed_block_refs += 1;
-                        if self.page_store.read(&entry.address).is_err() {
+                        if self.block_store.read(&entry.address).is_err() {
                             unreadable_block_ref_count = unreadable_block_ref_count.saturating_add(1);
                             unreadable_block_bytes =
                                 unreadable_block_bytes.saturating_add(entry.address.length);
@@ -1266,12 +1266,12 @@ impl TemporalEngine {
         let mut corrupt_blockers = Vec::new();
         let mut corrupt_install_safe = false;
         if let Some(slab_id) = manifest.block_slab_ids.first().copied() {
-            match self.page_store.read_slab(slab_id) {
+            match self.block_store.read_slab(slab_id) {
                 Ok(mut slab) if !slab.is_empty() => {
                     if let Some(last) = slab.last_mut() {
                         *last ^= 0xff;
                     }
-                    match self.page_store.install_slab(slab_id, &slab) {
+                    match self.block_store.install_slab(slab_id, &slab) {
                         Ok(()) => {
                             let corrupt_preflight =
                                 self.bucket_dump_install_preflight_report(&manifest);

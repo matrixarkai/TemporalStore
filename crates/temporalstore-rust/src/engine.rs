@@ -122,7 +122,7 @@ use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 pub struct TemporalEngine {
     shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
     cache: MultiLayerCache,
-    page_store: BlockStore,
+    block_store: BlockStore,
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
@@ -335,7 +335,7 @@ impl TemporalEngine {
         address: &BlockAddress,
     ) -> Result<Vec<u8>, BlockStoreError> {
         shard_write_guard::note_block_read();
-        self.page_store.read(address)
+        self.block_store.read(address)
     }
 
     /// Mirror the deletions this engine emits on its own -- eviction drops, expiry sweeps --
@@ -785,7 +785,7 @@ impl TemporalEngine {
                 start_routing_bucket,
                 end_routing_bucket,
             ) {
-                reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
             }
             // Mark the reconcile confirmed only once the shard actually holds model-map state:
             // `promote` returns false (without establishing anything) on an empty shard, so
@@ -830,7 +830,7 @@ impl TemporalEngine {
                 // long-running node permanently rejected all writes once it tripped.
                 // compares live resident size and evicts; this at least lets
                 // reclamation re-admit writes.
-                .map(|limit| self.page_store.slab_summary().total_known_physical_bytes >= limit)
+                .map(|limit| self.block_store.slab_summary().total_known_physical_bytes >= limit)
                 .unwrap_or(false)
         {
             return ExecuteResponse {
@@ -851,7 +851,7 @@ impl TemporalEngine {
         if !replaying_wal() {
             if let Err(status) = validate_command_preconditions(
                 &self.cache,
-                &self.page_store,
+                &self.block_store,
                 request.shard_id,
                 shard,
                 &command,
@@ -884,7 +884,7 @@ impl TemporalEngine {
 
         let outcome = execute_on_shard(
             &self.cache,
-            &self.page_store,
+            &self.block_store,
             config.feature_max_size,
             config.async_storage,
             config.control_rollup_enabled(),
@@ -1140,15 +1140,15 @@ impl TemporalEngine {
                             // object id the write derived -- which is what the stored address
                             // carries, so a read finds it by identity rather than by timing.
                             block_in_wal::register_record(
-                                &self.page_store,
+                                &self.block_store,
                                 request.shard_id,
-                                &record.staged_pages,
+                                &record.staged_blocks,
                                 log_id,
                                 record.sequence,
                                 &self.wal_store,
                             );
                             // Same fact, written down where it survives this process.
-                            wal_resident_updates.extend(record.staged_pages.iter().map(|page| {
+                            wal_resident_updates.extend(record.staged_blocks.iter().map(|page| {
                                 (
                                     page.object_id,
                                     crate::engine::state::WalResidentBlock {
@@ -1376,7 +1376,7 @@ impl TemporalEngine {
         if write_command && !replaying_wal() {
             let limit = wal_resident_block_limit();
             if limit > 0
-                && block_in_wal::registration_count(&self.page_store, request.shard_id) > limit
+                && block_in_wal::registration_count(&self.block_store, request.shard_id) > limit
             {
                 let moved = self.materialize_oldest_resident_blocks(
                     request.shard_id,
@@ -1444,7 +1444,7 @@ impl TemporalEngine {
                             value: shard.strings.get(key).and_then(|address| {
                                 read_block_bytes(
                                     &self.cache,
-                                    &self.page_store,
+                                    &self.block_store,
                                     request.shard_id,
                                     address,
                                 )
@@ -1471,7 +1471,7 @@ impl TemporalEngine {
                             .filter_map(|(field, address)| {
                                 read_block_bytes(
                                     &self.cache,
-                                    &self.page_store,
+                                    &self.block_store,
                                     request.shard_id,
                                     address,
                                 )
@@ -1735,15 +1735,15 @@ impl TemporalEngine {
                 shard_id,
                 observed_memory_hit: stats.cache.memory_hits > 0,
                 observed_block_cache_hit: stats.cache.disk_hits > 0,
-                observed_local_file_read: stats.page_store.reads > 0,
+                observed_local_file_read: stats.block_store_compat.reads > 0,
                 observed_cache_invalidation: stats.cache.invalidations > 0,
                 observed_memory_eviction: stats.cache.memory_evictions > 0,
                 cache_memory_bytes: stats.cache.memory_bytes,
                 cache_disk_bytes: stats.cache.disk_bytes,
-                local_block_bytes_written: stats.page_store.bytes_written,
-                local_block_bytes_read: stats.page_store.bytes_read,
+                local_block_bytes_written: stats.block_store_compat.bytes_written,
+                local_block_bytes_read: stats.block_store_compat.bytes_read,
                 cache: stats.cache,
-                page_store: stats.page_store,
+                block_store: stats.block_store_compat,
             })
     }
 
@@ -1910,7 +1910,7 @@ impl TemporalEngine {
         let physical_index = self.storage_physical_index_report(shard_id);
         let ownership = self.bucket_object_block_ownership_report(shard_id);
         let object_manager = self.object_manager_runtime_report(shard_id);
-        let slab_reports = self.page_store.slab_reports().unwrap_or_default();
+        let slab_reports = self.block_store.slab_reports().unwrap_or_default();
         let block_index_count = slab_reports
             .iter()
             .map(|slab| slab.block_index_count)
@@ -1937,7 +1937,7 @@ impl TemporalEngine {
                     && (!checksums_recorded || entry.checksum.is_some())
             })
         });
-        let slab_report = self.page_store.stream_backed_slab_runtime_report().ok();
+        let slab_report = self.block_store.stream_backed_slab_runtime_report().ok();
         let stream_backed_slab_api_ready = slab_report
             .as_ref()
             .map(|report| {
@@ -2874,7 +2874,7 @@ fn collect_upsert_index_items(
             address.block_slab_id,
             address.offset,
             address.length,
-            address.page_id().unwrap_or_default(),
+            address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default()
         );
         items.push(crate::index_log::IndexItem {
@@ -2885,9 +2885,9 @@ fn collect_upsert_index_items(
             model_id: (*kind).to_string(),
             component: component.clone(),
             object_id,
-            page_id: address.page_id().unwrap_or(0),
+            block_id: address.block_id().unwrap_or(0),
             size: address.length,
-            in_log: address.page_id().is_none(),
+            in_log: address.block_id().is_none(),
             deleted: false,
             address: Some(address),
         });
@@ -2967,7 +2967,7 @@ fn collect_command_index_items_for(
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone().map(|value| value.to_string()),
                 object_id: page.object_id(),
-                page_id: page.address.page_id().unwrap_or(0),
+                block_id: page.address.block_id().unwrap_or(0),
                 address: Some(page.address.clone()),
                 size: page.address.length,
                 in_log: page.log_backed,
@@ -3699,7 +3699,7 @@ fn now_ms() -> u64 {
 /// Returns true if it wrote a compression record. Entities are never touched.
 fn maybe_auto_compress_context_node(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     tenant_hash: u64,
@@ -3750,7 +3750,7 @@ fn maybe_auto_compress_context_node(
     let mut mutated = false;
     if let Ok(addresses) = append_timestamped_kv_blocks(
         cache,
-        page_store,
+        block_store,
         shard_id,
         "context_compression",
         &compression_key,
@@ -4307,7 +4307,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
 
 fn append_value(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
@@ -4331,7 +4331,7 @@ fn append_value(
         if let Some(object_id) = object_id {
             block_in_wal::stage(object_id, bytes);
         }
-        return page_store.append_with_block_metadata(bytes, object_id, routing_bucket);
+        return block_store.append_with_block_metadata(bytes, object_id, routing_bucket);
     }
     let address = BlockAddress::from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id);
     // Put the page aside for this write's record. It is often derived state rather than the
@@ -4354,7 +4354,7 @@ fn append_value(
 
 fn persist_control_state_block(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     key: &str,
@@ -4380,7 +4380,7 @@ fn persist_control_state_block(
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     if let Ok(address) = append_value(
         cache,
-        page_store,
+        block_store,
         shard_id,
         &bytes,
         Some(object_id),
@@ -4517,7 +4517,7 @@ fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) 
 
 fn read_block_bytes(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
 ) -> Option<Vec<u8>> {
@@ -4537,7 +4537,7 @@ fn read_block_bytes(
     // value and a reload replays it.
     if crate::wal_record::is_wal_resident(address.block_slab_id) {
         if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset) {
-            if let Ok(bytes) = page_store.read(&real_address) {
+            if let Ok(bytes) = block_store.read(&real_address) {
                 let _ = cache.put(cache_key, bytes.clone());
                 return Some(bytes);
             }
@@ -4548,13 +4548,13 @@ fn read_block_bytes(
         // parses a log record.
         if let Some(bytes) = address
             .object_id()
-            .and_then(|object_id| block_in_wal::read_block(page_store, shard_id, object_id))
+            .and_then(|object_id| block_in_wal::read_block(block_store, shard_id, object_id))
         {
             let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
         }
     }
-    if let Ok(bytes) = page_store.read(address) {
+    if let Ok(bytes) = block_store.read(address) {
         let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
@@ -4575,7 +4575,7 @@ fn read_block_bytes(
     // a direct read, while this one resolves a log id and parses a record.
     if let Some(bytes) = address
         .object_id()
-        .and_then(|object_id| block_in_wal::read_block(page_store, shard_id, object_id))
+        .and_then(|object_id| block_in_wal::read_block(block_store, shard_id, object_id))
     {
         let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
@@ -4594,7 +4594,7 @@ fn read_block_bytes(
 /// the bytes should keep using `read_block_bytes`.
 fn read_block_shared(
     cache: &MultiLayerCache,
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
 ) -> Option<std::sync::Arc<[u8]>> {
@@ -4610,11 +4610,11 @@ fn read_block_shared(
     // Every path below writes to the cache and hands back what it wrote, so going through
     // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
     // place rather than duplicating three fallbacks that must not drift apart.
-    read_block_bytes(cache, page_store, shard_id, address).map(std::sync::Arc::from)
+    read_block_bytes(cache, block_store, shard_id, address).map(std::sync::Arc::from)
 }
 
-fn read_block_bytes_cold(page_store: &BlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
-    page_store.read(address).ok()
+fn read_block_bytes_cold(block_store: &BlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
+    block_store.read(address).ok()
 }
 
 fn dedupe_nonzero_u64_preserve_order(values: Vec<u64>) -> Vec<u64> {

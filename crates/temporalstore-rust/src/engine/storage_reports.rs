@@ -213,10 +213,10 @@ impl TemporalEngine {
             .as_ref()
             .map(|stats| stats.cache.clone())
             .unwrap_or_else(|| self.cache.stats());
-        let page_store = stats
+        let block_store = stats
             .as_ref()
-            .map(|stats| stats.page_store.clone())
-            .unwrap_or_else(|| self.page_store.stats());
+            .map(|stats| stats.block_store_compat.clone())
+            .unwrap_or_else(|| self.block_store.stats());
         let log_compatibility = self.storage_log_compatibility_report(shard_id);
         let block_format_compatibility = self.storage_block_format_compatibility_report(shard_id);
         let bucket_dump_manifest_count = self.list_bucket_dump_manifests(shard_id).len();
@@ -333,8 +333,8 @@ impl TemporalEngine {
             bucket_dump_manifest_count,
             cache_memory_bytes: cache.memory_bytes,
             cache_disk_bytes: cache.disk_bytes,
-            page_store_bytes_written: page_store.bytes_written,
-            block_store_bytes_written: page_store.bytes_written,
+            page_store_bytes_written: block_store.bytes_written,
+            block_store_bytes_written: block_store.bytes_written,
             boundary,
             object_lifecycle: recovery.object_lifecycle,
             slab_integrity,
@@ -392,8 +392,8 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> StorageBlockFormatCompatibilityReport {
-        let stats = self.page_store.stats();
-        let summary = self.page_store.slab_summary();
+        let stats = self.block_store.stats();
+        let summary = self.block_store.slab_summary();
         StorageBlockFormatCompatibilityReport {
             shard_id,
             block_format: "rust-page-envelope-v6".to_string(),
@@ -606,7 +606,7 @@ impl TemporalEngine {
             .into_iter()
             .collect::<BTreeSet<_>>();
         let all_slab_ids = self
-            .page_store
+            .block_store
             .slab_ids()
             .unwrap_or_default()
             .into_iter()

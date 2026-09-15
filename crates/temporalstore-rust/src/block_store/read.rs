@@ -126,7 +126,7 @@ impl BlockStore {
         }
         let slab_summary = summarize_slab(bytes, block_slab_id)?;
         if let Some(max_block_id) = slab_summary.last_block_id {
-            inner.next_page_id = inner.next_page_id.max(max_block_id.saturating_add(1));
+            inner.next_block_id = inner.next_block_id.max(max_block_id.saturating_add(1));
         }
         let is_current_slab = block_slab_id == inner.block_slab_id;
         let now = now_unix_ms();

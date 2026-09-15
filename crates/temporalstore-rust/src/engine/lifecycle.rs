@@ -61,7 +61,7 @@ impl TemporalEngine {
         Self {
             shards: Arc::default(),
             cache,
-            page_store: block_store,
+            block_store,
             wal_store,
             index_log_store,
             index_dir,
@@ -211,7 +211,7 @@ impl TemporalEngine {
     }
 
     pub fn block_store(&self) -> BlockStore {
-        self.page_store.clone()
+        self.block_store.clone()
     }
 
     #[deprecated(
@@ -452,7 +452,7 @@ impl TemporalEngine {
         // metadata refinement over the lossless disk-derived catalog, making the per-write
         // slab-manifest file unnecessary as the catalog's source of truth.
         if let Ok(Some(meta)) = self.index_log_store.latest_slab_catalog(request.shard_id) {
-            let _ = self.page_store.install_slab_catalog(&meta.slabs);
+            let _ = self.block_store.install_slab_catalog(&meta.slabs);
         }
         let mut state = loaded.unwrap_or_default();
         promote_model_maps_to_bucket_index_authority(
@@ -863,12 +863,12 @@ impl TemporalEngine {
                 item.resolved_address(),
                 carried.iter().find(|page| page.object_id == item.object_id),
             ) {
-                if self.page_store.read(&address).is_err() {
+                if self.block_store.read(&address).is_err() {
                     // The bytes are not here, and the entry brought them. Write them and install
                     // where they landed LOCALLY.
                     if let Ok(local) = super::append_value(
                         &self.cache,
-                        &self.page_store,
+                        &self.block_store,
                         shard_id,
                         &page.bytes,
                         Some(item.object_id),
@@ -1428,7 +1428,7 @@ impl TemporalEngine {
     /// bytes are in the record just written -- and everything older is written where anyone can
     /// find it. Oldest first, because the oldest is the one holding the floor down.
     pub fn materialize_oldest_resident_blocks(&self, shard_id: ShardId, keep: usize) -> usize {
-        let ordered = super::block_in_wal::oldest_registered_objects(&self.page_store, shard_id);
+        let ordered = super::block_in_wal::oldest_registered_objects(&self.block_store, shard_id);
         if ordered.len() <= keep {
             return 0;
         }
@@ -1471,13 +1471,13 @@ impl TemporalEngine {
             }
             // Read it the way a reader here would -- through the registry that still works in
             // this process -- and write it where anyone can find it.
-            let Some(bytes) = super::read_block_bytes(&self.cache, &self.page_store, shard_id, &address)
+            let Some(bytes) = super::read_block_bytes(&self.cache, &self.block_store, shard_id, &address)
             else {
                 continue;
             };
             let Ok(durable) = super::append_value(
                 &self.cache,
-                &self.page_store,
+                &self.block_store,
                 shard_id,
                 &bytes,
                 Some(object_id),
@@ -1506,7 +1506,7 @@ impl TemporalEngine {
             }
             // Retire the registration too. It is what pins the WAL retention floor, and a floor
             // held by a page that is now in the block store stops reclaim for no reason.
-            super::block_in_wal::deregister(&self.page_store, shard_id, object_id);
+            super::block_in_wal::deregister(&self.block_store, shard_id, object_id);
             moved += 1;
         }
         moved
@@ -1514,7 +1514,7 @@ impl TemporalEngine {
 
     /// How many log-resident registrations this shard holds.
     pub(crate) fn registration_count_for_test(&self, shard_id: ShardId) -> usize {
-        super::block_in_wal::registration_count(&self.page_store, shard_id)
+        super::block_in_wal::registration_count(&self.block_store, shard_id)
     }
 
     /// How many addresses in the served index name a slab that is not a file.
@@ -1579,7 +1579,7 @@ impl TemporalEngine {
         };
         for (object_id, placement) in &shard.wal_resident_blocks {
             super::block_in_wal::register_at(
-                &self.page_store,
+                &self.block_store,
                 shard_id,
                 *object_id,
                 placement.log_id,
@@ -1791,19 +1791,19 @@ impl TemporalEngine {
                 // an error, not an empty shard: a durably acknowledged write reported as absent,
                 // which is the quietest way a store can lose data. Registering here, where the log
                 // id is still in hand, makes a replayed record as addressable as a written one.
-                if !record.staged_pages.is_empty() {
+                if !record.staged_blocks.is_empty() {
                     if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
                         super::block_in_wal::register_record(
-                            &self.page_store,
+                            &self.block_store,
                             shard_id,
-                            &record.staged_pages,
+                            &record.staged_blocks,
                             log_id,
                             record.sequence,
                             &self.wal_store,
                         );
                         // The same fact written where it survives this process, so a later reload
                         // rehydrates it instead of rediscovering that it cannot.
-                        wal_resident_updates.extend(record.staged_pages.iter().map(|page| {
+                        wal_resident_updates.extend(record.staged_blocks.iter().map(|page| {
                             (
                                 page.object_id,
                                 crate::engine::state::WalResidentBlock {
@@ -1964,7 +1964,7 @@ impl TemporalEngine {
                             u32::MAX,
                         ) {
                             reconcile_secondary_views_from_bucket_index(
-                                &self.page_store,
+                                &self.block_store,
                                 shard,
                                 None,
                             );
@@ -2039,7 +2039,7 @@ impl TemporalEngine {
         hot_page_spill::clear_shard(request.shard_id);
         // Drop this shard's WAL-resident registrations too: they name records in a log this
         // engine no longer serves, and a reload re-derives them from the WAL anyway.
-        block_in_wal::clear_shard(&self.page_store, request.shard_id);
+        block_in_wal::clear_shard(&self.block_store, request.shard_id);
         UnloadShardResponse {
             status: Status::ok(),
         }
@@ -2300,7 +2300,7 @@ mod replay_window_tests {
                 batch_size: batch.map(|(_, size, _)| size),
                 batch_index: batch.map(|(_, _, index)| index),
             }),
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         }
     }
@@ -2385,7 +2385,7 @@ mod batch_truncation_tests {
             sequence: seq,
             command: Some(command),
             metadata: Some(metadata),
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         }
     }

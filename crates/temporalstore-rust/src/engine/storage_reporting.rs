@@ -134,7 +134,7 @@ pub(super) fn bucket_dump_entries_by_key(
         })
         .map(|entry| {
             let component = entry.component.unwrap_or_default();
-            let page_id = entry.address.page_id().unwrap_or_else(|| {
+            let block_id = entry.address.block_id().unwrap_or_else(|| {
                 stable_block_object_id(
                     shard_id,
                     &entry.kind,
@@ -145,7 +145,7 @@ pub(super) fn bucket_dump_entries_by_key(
             (
                 format!(
                     "{}:{}:{}:{}",
-                    entry.kind, entry.object_key, component, page_id
+                    entry.kind, entry.object_key, component, block_id
                 ),
                 entry.address,
             )
@@ -297,11 +297,11 @@ pub(super) fn native_packed_block_index_bytes(
     let mut bytes = [0u8; NATIVE_PACKED_BLOCK_INDEX_SIZE];
     bytes[0] = page.object_id.unwrap_or_default() as u8;
     bytes[1] = storage_model_code(&page.model_id);
-    bytes[2..4].copy_from_slice(&(page.page_id.unwrap_or_default() as u16).to_le_bytes());
+    bytes[2..4].copy_from_slice(&(page.block_id.unwrap_or_default() as u16).to_le_bytes());
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&BlockAddress::from_parts(page.block_slab_id, page.offset, page.length, page.page_id, page.object_id, Some(page.routing_bucket), page.page_id.or(page.object_id)));
+    let address = physical_address_word(&BlockAddress::from_parts(page.block_slab_id, page.offset, page.length, page.block_id, page.object_id, Some(page.routing_bucket), page.block_id.or(page.object_id)));
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
 }
@@ -402,7 +402,7 @@ pub(super) fn storage_physical_index_report(
             block_slab_id: entry.address.block_slab_id,
             offset: entry.address.offset,
             length: entry.address.length,
-            page_id: entry.address.page_id(),
+            block_id: entry.address.block_id(),
             object_id: entry.address.object_id(),
             stored_slab_id: entry.address.slab_id(),
             // The index does not hold a digest; a caller wanting one reads the page.
@@ -454,7 +454,7 @@ pub(super) fn storage_physical_index_report(
                 block_slab_id: page.address.block_slab_id,
                 offset: page.address.offset,
                 length: page.address.length,
-                page_id: page.address.page_id(),
+                block_id: page.address.block_id(),
                 object_id: Some(page.object_id()),
                 stored_slab_id: page.address.slab_id(),
                 checksum: None,
@@ -506,7 +506,7 @@ pub(super) fn storage_physical_index_report(
         .count();
     let missing_block_id_count = block_indexes
         .iter()
-        .filter(|page| page.page_id.is_none())
+        .filter(|page| page.block_id.is_none())
         .count();
     let missing_checksum_count = block_indexes
         .iter()
@@ -811,7 +811,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.address.block_slab_id,
             entry.address.offset,
             entry.address.length,
-            entry.address.page_id().unwrap_or_default(),
+            entry.address.block_id().unwrap_or_default(),
             entry.address.object_id().unwrap_or_default(),
             entry.address.routing_bucket().unwrap_or(routing_bucket),
             entry.address.generation().unwrap_or_default(),
@@ -893,7 +893,7 @@ pub(super) fn timestamped_kv_series<'a>(
 }
 
 pub(super) fn storage_feature_block_layout_report(
-    page_store: &BlockStore,
+    block_store: &BlockStore,
     shard: &ShardState,
 ) -> StorageFeatureBlockLayoutReport {
     let mut report = StorageFeatureBlockLayoutReport::default();
@@ -935,7 +935,7 @@ pub(super) fn storage_feature_block_layout_report(
 
         for (address, indexed_timestamps) in timestamps_by_address {
             inspected_addresses.insert(address.clone());
-            match page_store.read(&address) {
+            match block_store.read(&address) {
                 Ok(bytes) => match decode_feature_block_strict(&bytes) {
                     PackedFeatureBlockDecode::Packed(points) => {
                         report.packed_timestamped_blocks =
@@ -1054,7 +1054,7 @@ pub(super) fn storage_feature_block_layout_report(
         if &*entry.kind == "feature" {
             report.unique_feature_block_refs = report.unique_feature_block_refs.saturating_add(1);
         }
-        match page_store.read(&entry.address) {
+        match block_store.read(&entry.address) {
             Ok(bytes) => match decode_feature_block_strict(&bytes) {
                 PackedFeatureBlockDecode::Packed(points) => {
                     report.packed_timestamped_blocks =

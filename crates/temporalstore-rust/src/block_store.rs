@@ -118,7 +118,7 @@ struct BlockAddressWire {
         alias = "page_id",
         default
     )]
-    page_id: Option<u64>,
+    block_id: Option<u64>,
     #[serde(
         rename = "oi",
         alias = "object_id",
@@ -154,7 +154,7 @@ impl From<BlockAddressWire> for BlockAddress {
             wire.block_slab_id,
             wire.offset,
             wire.length,
-            wire.page_id,
+            wire.block_id,
             wire.object_id,
             wire.routing_bucket,
             wire.generation,
@@ -168,7 +168,7 @@ impl From<BlockAddress> for BlockAddressWire {
             block_slab_id: address.block_slab_id,
             offset: address.offset,
             length: address.length,
-            page_id: address.page_id(),
+            block_id: address.block_id(),
             object_id: address.object_id(),
             routing_bucket: address.routing_bucket(),
             generation: address.generation(),
@@ -187,7 +187,7 @@ pub struct BlockAddress {
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
-    page_id: u64,
+    block_id: u64,
     object_id: u64,
     generation: u64,
     routing_bucket: u32,
@@ -207,13 +207,13 @@ impl BlockAddress {
         block_slab_id: u64,
         offset: u64,
         length: u64,
-        page_id: Option<u64>,
+        block_id: Option<u64>,
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
         generation: Option<u64>,
     ) -> Self {
         let mut present = 0u8;
-        if page_id.is_some() {
+        if block_id.is_some() {
             present |= ADDRESS_HAS_BLOCK_ID;
         }
         if object_id.is_some() {
@@ -229,7 +229,7 @@ impl BlockAddress {
             block_slab_id,
             offset,
             length,
-            page_id: page_id.unwrap_or_default(),
+            block_id: block_id.unwrap_or_default(),
             object_id: object_id.unwrap_or_default(),
             generation: generation.unwrap_or_default(),
             routing_bucket: routing_bucket.unwrap_or_default(),
@@ -237,8 +237,8 @@ impl BlockAddress {
         }
     }
 
-    pub fn page_id(&self) -> Option<u64> {
-        (self.present & ADDRESS_HAS_BLOCK_ID != 0).then_some(self.page_id)
+    pub fn block_id(&self) -> Option<u64> {
+        (self.present & ADDRESS_HAS_BLOCK_ID != 0).then_some(self.block_id)
     }
 
     pub fn object_id(&self) -> Option<u64> {
@@ -267,7 +267,7 @@ impl BlockAddress {
     }
 
     pub fn set_block_id(&mut self, value: Option<u64>) {
-        self.page_id = value.unwrap_or_default();
+        self.block_id = value.unwrap_or_default();
         self.set_present(ADDRESS_HAS_BLOCK_ID, value.is_some());
     }
 
@@ -1136,7 +1136,7 @@ struct BlockStoreInner {
     relaxed_dirty: bool,
     block_slab_id: u64,
     write_offset: u64,
-    next_page_id: u64,
+    next_block_id: u64,
     options: BlockStoreOptions,
     slabs: BTreeMap<u64, BlockStoreSlabDescriptor>,
     /// Slab installs since the manifest was last written out. Writing it costs the whole manifest,
@@ -1209,7 +1209,7 @@ impl BlockStore {
         // inside its object, and the object is what knows how many blocks it has. Recovering a
         // counter here used to mean reading every block header in every slab to work out one
         // integer -- on a live-store copy, the bulk of a steady-state open.
-        let next_page_id = 0;
+        let next_block_id = 0;
         let reconciled = reconcile_slab_manifest_with_disk(&root, &mut slabs).unwrap_or_default();
         let slab_manifest_reconciled_on_open = reconciled.changed;
         let slabs_skipped_reinspection_on_open = reconciled.slabs_skipped_reinspection;
@@ -1261,7 +1261,7 @@ impl BlockStore {
                 relaxed_dirty: false,
                 block_slab_id,
                 write_offset,
-                next_page_id,
+                next_block_id,
                 options,
                 slabs,
                 slabs_unwritten: 0,
@@ -1296,11 +1296,11 @@ impl BlockStore {
 
     /// The next free page id this store would assign on the next append. Recorded in a
     /// shared checkpoint so a lazy restore can advance the fresh owner's counter past it.
-    pub fn next_page_id(&self) -> u64 {
+    pub fn next_block_id(&self) -> u64 {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .next_page_id
+            .next_block_id
     }
 
     /// Reserve the slab-id (and page-id) range consumed by a lazily-restored checkpoint
@@ -1327,7 +1327,7 @@ impl BlockStore {
         sync_parent_dir(&path)?;
         inner.block_slab_id = new_slab_id;
         inner.write_offset = 0;
-        inner.next_page_id = inner.next_page_id.max(next_block_id_floor);
+        inner.next_block_id = inner.next_block_id.max(next_block_id_floor);
         let now = now_unix_ms();
         // Any previously-active local slab is now sealed; the reserved slab is active.
         for slab in inner.slabs.values_mut() {
@@ -2175,7 +2175,7 @@ mod address_size_tests {
         block_slab_id: u64,
         offset: u64,
         length: u64,
-        page_id: Option<u64>,
+        block_id: Option<u64>,
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
         generation: Option<u64>,
@@ -2220,14 +2220,14 @@ mod address_size_tests {
     fn setters_track_presence_both_ways() {
         let mut address =
             BlockAddress::from_parts(1, 0, 0, Some(7), None, None, None);
-        assert_eq!(address.page_id(), Some(7));
+        assert_eq!(address.block_id(), Some(7));
         address.set_block_id(None);
-        assert_eq!(address.page_id(), None);
+        assert_eq!(address.block_id(), None);
         address.set_block_id(Some(9));
-        assert_eq!(address.page_id(), Some(9));
+        assert_eq!(address.block_id(), Some(9));
         address.set_object_id(Some(3));
         assert_eq!(address.object_id(), Some(3));
-        assert_eq!(address.page_id(), Some(9), "one setter disturbed another");
+        assert_eq!(address.block_id(), Some(9), "one setter disturbed another");
     }
 
     /// The packing is an in-memory concern, and the field names are a wire concern: an address
@@ -2701,7 +2701,7 @@ mod tests {
         // Every other field the legacy record carried, under whichever name it used: this is the
         // "all of them must still land" the comment above promises, and asserting one of them was
         // never enough to keep that promise.
-        assert_eq!(address.page_id(), Some(9));
+        assert_eq!(address.block_id(), Some(9));
         assert_eq!(address.object_id(), Some(122110326161599232));
         assert_eq!(address.routing_bucket(), Some(545210715));
         assert_eq!(address.generation(), Some(2));
@@ -3258,7 +3258,7 @@ mod tests {
         assert_eq!(address.block_slab_id, 0);
         assert_eq!(address.offset, 0);
         assert!(address.length > b"address-contract".len() as u64);
-        assert_eq!(address.page_id(), Some(0));
+        assert_eq!(address.block_id(), Some(0));
         assert_eq!(address.object_id(), Some(4242));
         assert_eq!(address.routing_bucket(), Some(17));
         assert_eq!(address.slab_id(), Some(0));
@@ -3281,7 +3281,7 @@ mod tests {
             "page_segment_id": address.block_slab_id,
             "offset": address.offset,
             "length": address.length,
-            "page_id": address.page_id(),
+            "page_id": address.block_id(),
             "object_id": address.object_id(),
             "routing_slot": address.routing_bucket(),
             // generation is a canonical, always-present field on write (append sets
@@ -3313,7 +3313,7 @@ mod tests {
         let address = store.append(b"enveloped-page").unwrap();
         let raw = store.read_slab(address.block_slab_id).unwrap();
 
-        assert_eq!(address.page_id(), Some(0));
+        assert_eq!(address.block_id(), Some(0));
         assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
     }
 
@@ -3322,7 +3322,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         let mut address = store.append(b"identity-checked-page").unwrap();
-        address.set_block_id(Some(address.page_id().unwrap() + 1));
+        address.set_block_id(Some(address.block_id().unwrap() + 1));
 
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptBlockEnvelope { .. }));
@@ -3580,14 +3580,14 @@ mod tests {
         assert_eq!(slabs.len(), 2);
         assert_eq!(slabs[0].block_slab_id, first.block_slab_id);
         assert_eq!(slabs[0].state, BlockStoreSlabState::Sealed);
-        assert_eq!(slabs[0].first_block_id, first.page_id());
-        assert_eq!(slabs[0].last_block_id, first.page_id());
+        assert_eq!(slabs[0].first_block_id, first.block_id());
+        assert_eq!(slabs[0].last_block_id, first.block_id());
         assert!(slabs[0].created_unix_ms.is_some());
         assert!(slabs[0].updated_unix_ms.is_some());
         assert_eq!(slabs[1].block_slab_id, second.block_slab_id);
         assert_eq!(slabs[1].state, BlockStoreSlabState::Active);
-        assert_eq!(slabs[1].first_block_id, second.page_id());
-        assert_eq!(slabs[1].last_block_id, second.page_id());
+        assert_eq!(slabs[1].first_block_id, second.block_id());
+        assert_eq!(slabs[1].last_block_id, second.block_id());
         assert!(slabs[1].created_unix_ms.is_some());
         assert!(slabs[1].updated_unix_ms.is_some());
         assert!(slab_manifest_path(dir.path()).exists());
@@ -3766,14 +3766,14 @@ mod tests {
         assert_eq!(slabs.len(), 2);
         assert_eq!(slabs[0].block_slab_id, first.block_slab_id);
         assert_eq!(slabs[0].state, BlockStoreSlabState::Sealed);
-        assert_eq!(slabs[0].first_block_id, first.page_id());
-        assert_eq!(slabs[0].last_block_id, first.page_id());
+        assert_eq!(slabs[0].first_block_id, first.block_id());
+        assert_eq!(slabs[0].last_block_id, first.block_id());
         assert!(slabs[0].created_unix_ms.is_some());
         assert!(slabs[0].updated_unix_ms.is_some());
         assert_eq!(slabs[1].block_slab_id, second.block_slab_id);
         assert_eq!(slabs[1].state, BlockStoreSlabState::Active);
-        assert_eq!(slabs[1].first_block_id, second.page_id());
-        assert_eq!(slabs[1].last_block_id, second.page_id());
+        assert_eq!(slabs[1].first_block_id, second.block_id());
+        assert_eq!(slabs[1].last_block_id, second.block_id());
         assert!(slabs[1].created_unix_ms.is_some());
         assert!(slabs[1].updated_unix_ms.is_some());
         assert!(slab_manifest_path(dir.path()).exists());
@@ -3836,8 +3836,8 @@ mod tests {
         assert!(sealed.has_corruption);
         assert_eq!(sealed.first_error_offset, Some(readable_prefix));
         assert_eq!(sealed.readable_prefix_physical_bytes, readable_prefix);
-        assert_eq!(sealed.first_block_id, first.page_id());
-        assert_eq!(sealed.last_block_id, first.page_id());
+        assert_eq!(sealed.first_block_id, first.block_id());
+        assert_eq!(sealed.last_block_id, first.block_id());
         assert!(sealed
             .first_error
             .as_deref()
@@ -4062,8 +4062,8 @@ mod tests {
         assert_eq!(before_gc.sealed_slabs, 1);
         assert_eq!(before_gc.slab_lifecycle_states, vec!["active", "sealed"]);
         assert_eq!(before_gc.stream_record_count, 3);
-        assert_eq!(before_gc.first_block_id, first.page_id());
-        assert_eq!(before_gc.last_block_id, third.page_id());
+        assert_eq!(before_gc.first_block_id, first.block_id());
+        assert_eq!(before_gc.last_block_id, third.block_id());
         assert!(before_gc.block_id_continuity_ready);
         assert!(before_gc.slab_manifest_rebuild_ready);
         assert!(before_gc.slab_stats_ready);
@@ -4123,8 +4123,8 @@ mod tests {
         assert!(!report.purge_lifecycle_ready);
         assert!(report.logical_bytes >= third_payload.len() as u64);
         assert_eq!(report.stream_record_count, 1);
-        assert_eq!(report.first_block_id, third.page_id());
-        assert_eq!(report.last_block_id, third.page_id());
+        assert_eq!(report.first_block_id, third.block_id());
+        assert_eq!(report.last_block_id, third.block_id());
         assert!(report.block_id_continuity_ready);
         assert!(report.blockers.is_empty());
         assert!(report
@@ -4188,8 +4188,8 @@ mod tests {
         );
         assert!(!reports[0].has_corruption);
         assert_eq!(reports[0].first_error_offset, None);
-        assert_eq!(reports[0].first_block_id, first.page_id());
-        assert_eq!(reports[0].last_block_id, second.page_id());
+        assert_eq!(reports[0].first_block_id, first.block_id());
+        assert_eq!(reports[0].last_block_id, second.block_id());
         assert_eq!(reports[0].block_index_count, 2);
         assert_eq!(reports[0].block_index_entries.len(), 2);
         assert_eq!(
@@ -4210,7 +4210,7 @@ mod tests {
             reports[0].block_index_entries[0].compact_slab_offset,
             first.compact_slab_offset()
         );
-        assert_eq!(reports[0].block_index_entries[0].block_id, first.page_id());
+        assert_eq!(reports[0].block_index_entries[0].block_id, first.block_id());
         assert_eq!(
             reports[0].block_index_entries[0].block_size,
             first_payload.len() as u64
@@ -4221,7 +4221,7 @@ mod tests {
         assert!(!reports[0].block_index_entries[0].block_in_log);
         assert_eq!(reports[0].block_index_entries[1].offset, second.offset);
         assert_eq!(reports[0].block_index_entries[1].length, second.length);
-        assert_eq!(reports[0].block_index_entries[1].block_id, second.page_id());
+        assert_eq!(reports[0].block_index_entries[1].block_id, second.block_id());
         assert_eq!(reports[0].first_error, None);
     }
 
@@ -4244,8 +4244,8 @@ mod tests {
         assert_eq!(reports[0].readable_prefix_physical_bytes, first.length);
         assert!(reports[0].has_corruption);
         assert_eq!(reports[0].first_error_offset, Some(first.length));
-        assert_eq!(reports[0].first_block_id, first.page_id());
-        assert_eq!(reports[0].last_block_id, first.page_id());
+        assert_eq!(reports[0].first_block_id, first.block_id());
+        assert_eq!(reports[0].last_block_id, first.block_id());
         let error = reports[0]
             .first_error
             .as_ref()

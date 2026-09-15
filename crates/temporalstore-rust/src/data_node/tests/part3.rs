@@ -4442,9 +4442,9 @@ climbing below is growth with no writer"
 
         let wal = engine.write_ahead_log_store().stats(1);
         let idx_bytes = engine.index_log_store().log_len_bytes(1);
-        let slab_ids = engine.page_store().slab_ids().unwrap_or_default();
+        let slab_ids = engine.block_store().slab_ids().unwrap_or_default();
         let slab_bytes: u64 = engine
-            .page_store()
+            .block_store()
             .slab_block_counts()
             .unwrap_or_default()
             .iter()
@@ -8063,9 +8063,9 @@ fn settle_one_corpus(records: usize) {
                 )
             })
             .unwrap_or((0, 0, 0));
-        let slab_ids = engine.page_store().slab_ids().unwrap_or_default();
+        let slab_ids = engine.block_store().slab_ids().unwrap_or_default();
         let slab_bytes: u64 = engine
-            .page_store()
+            .block_store()
             .slab_block_counts()
             .unwrap_or_default()
             .iter()
@@ -9616,7 +9616,7 @@ cap {max_rounds}"
         let index_log_bytes = engine.index_log_store().log_len_bytes(1);
         let slab_ids = engine.block_store().slab_ids().unwrap_or_default();
         let slab_bytes: u64 = engine
-            .page_store()
+            .block_store()
             .slab_block_counts()
             .unwrap_or_default()
             .iter()
@@ -10124,7 +10124,7 @@ fn drain_fixture(
         // An explicit target rather than the process-wide one: no env var is touched, so no other
         // test in this process inherits a small slab.
         engine
-            .page_store()
+            .block_store()
             .prepare_next_slab_with_target(1)
             .expect("rolling a slab between batches should succeed");
     }

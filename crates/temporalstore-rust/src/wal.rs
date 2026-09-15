@@ -259,7 +259,7 @@ pub struct WriteAheadLogRecord {
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
-    pub staged_pages: Vec<StagedBlock>,
+    pub staged_blocks: Vec<StagedBlock>,
     /// What this write did, stated as results rather than as the operation that caused them.
     ///
     /// Called `outcomes` and not `items` on purpose: [`WriteAheadLogRecordMetadata`] already has
@@ -1073,9 +1073,9 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         sync: bool,
-        staged_pages: Vec<StagedBlock>,
+        staged_blocks: Vec<StagedBlock>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        self.append_with_sync_inner(shard_id, command, sync, staged_pages, Vec::new())
+        self.append_with_sync_inner(shard_id, command, sync, staged_blocks, Vec::new())
     }
 
     /// [`append_with_sync_staged`](Self::append_with_sync_staged), also carrying what the write
@@ -1085,10 +1085,10 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         sync: bool,
-        staged_pages: Vec<StagedBlock>,
+        staged_blocks: Vec<StagedBlock>,
         outcomes: Vec<WalOutcomeItem>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        self.append_with_sync_inner(shard_id, command, sync, staged_pages, outcomes)
+        self.append_with_sync_inner(shard_id, command, sync, staged_blocks, outcomes)
     }
 
     pub fn append_with_sync(
@@ -1106,7 +1106,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         sync: bool,
-        staged_pages: Vec<StagedBlock>,
+        staged_blocks: Vec<StagedBlock>,
         outcomes: Vec<WalOutcomeItem>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         // The durable barrier is deferred out of the append critical section (below), so the
@@ -1141,8 +1141,8 @@ impl LocalWriteAheadLogStore {
                 // What still cannot: an ASYNCHRONOUS write with nothing carried. Its result names
                 // an address in the block store that a crash may leave unwritten, and no amount
                 // of registering helps a block that was never stored.
-                command: record_command(command, &outcomes, sync || !staged_pages.is_empty()),
-                staged_pages,
+                command: record_command(command, &outcomes, sync || !staged_blocks.is_empty()),
+                staged_blocks,
                 outcomes,
             };
             let report = append_record_locked(&mut inner, &rec, sync && !group, Some(on_disk_len))?;
@@ -1202,7 +1202,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         outcomes: Vec<WalOutcomeItem>,
-        staged_pages: Vec<StagedBlock>,
+        staged_blocks: Vec<StagedBlock>,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         // Acquiring the append lock creates the directory the first time it opens the lock
@@ -1228,8 +1228,8 @@ impl LocalWriteAheadLogStore {
             //
             // So this path asks the same question every other one does -- can these blocks be found
             // again? -- and answers it from what the record actually carries.
-            command: record_command(command, &outcomes, !staged_pages.is_empty()),
-            staged_pages,
+            command: record_command(command, &outcomes, !staged_blocks.is_empty()),
+            staged_blocks,
             outcomes,
         };
         // sync=false: write the bytes, defer the fdatasync to `commit_barrier`. Same as the
@@ -1299,7 +1299,7 @@ impl LocalWriteAheadLogStore {
         &self,
         shard_id: ShardId,
         outcomes: Vec<WalOutcomeItem>,
-        staged_pages: Vec<StagedBlock>,
+        staged_blocks: Vec<StagedBlock>,
         sync: bool,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
@@ -1317,7 +1317,7 @@ impl LocalWriteAheadLogStore {
                     key: String::new(),
                 },
             )),
-            staged_pages,
+            staged_blocks,
             outcomes,
         };
         let report = append_record_locked(&mut inner, &record, sync, None)?;
@@ -1394,7 +1394,7 @@ impl LocalWriteAheadLogStore {
                     metadata: Some(metadata),
                     // No results on this path, so the operation is what replay has.
                     command: Some(command),
-                    staged_pages: Vec::new(),
+                    staged_blocks: Vec::new(),
                     outcomes: Vec::new(),
                 };
                 // Buffer every record (sync=false); the single durability barrier below covers
@@ -4438,7 +4438,7 @@ mod tests {
                     batch_size: Some(8),
                     batch_index: Some(index as u32 + 1),
                 }),
-                staged_pages: Vec::new(),
+                staged_blocks: Vec::new(),
                 outcomes: vec![item(index)],
             };
             separate += crate::log_framing::encode_record(&encode_wal_payload(&record).unwrap()).len();
@@ -4457,7 +4457,7 @@ mod tests {
                 batch_size: None,
                 batch_index: None,
             }),
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: (0..8).map(item).collect(),
         };
         let together = crate::log_framing::encode_record(&encode_wal_payload(&record).unwrap()).len();
@@ -5702,7 +5702,7 @@ mod tests {
                     key: "tenant/7/object/000000123".to_string(),
                     value: vec![118u8; value_len],
                 }),
-                staged_pages: Vec::new(),
+                staged_blocks: Vec::new(),
                 outcomes: Vec::new(),
             };
 
@@ -6626,7 +6626,7 @@ mod tests {
                 value: (0..4096u32).map(|index| (index % 7) as u8).collect(),
             }),
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
         let line = encode_wal_line_for_test(&record).expect("record frames");
@@ -7041,7 +7041,7 @@ mod tests {
                 value: b"v".to_vec(),
             }),
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
         let mut raw = serde_json::to_vec(&make(1, "k1")).unwrap();
@@ -7229,7 +7229,7 @@ mod tests {
             sequence: 8,
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command: Some(command),
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
 
@@ -7948,7 +7948,7 @@ mod tests {
                 value: Vec::new(),
             }),
             metadata: None,
-            staged_pages: vec![StagedBlock {
+            staged_blocks: vec![StagedBlock {
                 object_id: 7,
                 bytes: page.clone(),
             }],
@@ -7965,7 +7965,7 @@ mod tests {
 
         // And it round-trips.
         let decoded: WriteAheadLogRecord = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded.staged_pages[0].bytes, page);
+        assert_eq!(decoded.staged_blocks[0].bytes, page);
     }
 
     #[test]
@@ -7974,8 +7974,8 @@ mod tests {
         // earlier build becomes unreadable.
         let json = br#"{"shard_id":1,"sequence":2,"command":{"kind":"string_set","key":"k","value":[]},"staged_pages":[{"object_id":9,"bytes":[104,105]}]}"#;
         let decoded: WriteAheadLogRecord = serde_json::from_slice(json).unwrap();
-        assert_eq!(decoded.staged_pages[0].object_id, 9);
-        assert_eq!(decoded.staged_pages[0].bytes, b"hi".to_vec());
+        assert_eq!(decoded.staged_blocks[0].object_id, 9);
+        assert_eq!(decoded.staged_blocks[0].bytes, b"hi".to_vec());
     }
 
     #[test]
@@ -7989,7 +7989,7 @@ mod tests {
                 value: b"v".to_vec(),
             }),
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
         let encoded = String::from_utf8(serde_json::to_vec(&record).unwrap()).unwrap();
@@ -8163,7 +8163,7 @@ mod tests {
                 batch_size: None,
                 batch_index: None,
             }),
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
         let encoded = serde_json::to_string(&record).unwrap();
@@ -8494,7 +8494,7 @@ mod tests {
                 value: all_bytes.clone(),
             }),
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
         // Encode with whichever frame is configured, so the payload's escaping and the frame
@@ -8528,7 +8528,7 @@ mod tests {
                 ],
             }),
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
         let framed = crate::log_framing::encode_line(&encode_wal_payload(&record).unwrap());
@@ -8547,7 +8547,7 @@ mod tests {
                 value: newlines.clone(),
             }),
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
         let payload = encode_wal_payload(&record).unwrap();
@@ -8588,7 +8588,7 @@ mod tests {
                 value: incompressible(900),
             }),
             metadata: None,
-            staged_pages: Vec::new(),
+            staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
         let mut payload = encode_wal_payload(&record).unwrap();

@@ -270,13 +270,13 @@ impl TemporalEngine {
                 );
             }
             for (kind, value) in [
-                ("writes", stats.page_store.writes),
-                ("reads", stats.page_store.reads),
+                ("writes", stats.block_store_compat.writes),
+                ("reads", stats.block_store_compat.reads),
                 (
                     "compressed_writes",
-                    stats.page_store.compressed_records_written,
+                    stats.block_store_compat.compressed_records_written,
                 ),
-                ("compressed_reads", stats.page_store.compressed_records_read),
+                ("compressed_reads", stats.block_store_compat.compressed_records_read),
             ] {
                 push_metric(
                     &mut out,
@@ -298,13 +298,13 @@ impl TemporalEngine {
                 );
             }
             for (kind, value) in [
-                ("written", stats.page_store.bytes_written),
-                ("read", stats.page_store.bytes_read),
-                ("logical_written", stats.page_store.logical_bytes_written),
-                ("logical_read", stats.page_store.logical_bytes_read),
+                ("written", stats.block_store_compat.bytes_written),
+                ("read", stats.block_store_compat.bytes_read),
+                ("logical_written", stats.block_store_compat.logical_bytes_written),
+                ("logical_read", stats.block_store_compat.logical_bytes_read),
                 (
                     "compression_saved",
-                    stats.page_store.compression_bytes_saved,
+                    stats.block_store_compat.compression_bytes_saved,
                 ),
             ] {
                 push_metric(
@@ -318,13 +318,13 @@ impl TemporalEngine {
                 );
             }
             for (state, value) in [
-                ("active", stats.page_store_zones.active_slabs),
-                ("sealed", stats.page_store_zones.sealed_slabs),
+                ("active", stats.block_store_slabs_compat.active_slabs),
+                ("sealed", stats.block_store_slabs_compat.sealed_slabs),
                 (
                     "delayed_destroy",
-                    stats.page_store_zones.delayed_destroy_slabs,
+                    stats.block_store_slabs_compat.delayed_destroy_slabs,
                 ),
-                ("purged", stats.page_store_zones.purged_slabs),
+                ("purged", stats.block_store_slabs_compat.purged_slabs),
             ] {
                 push_metric(
                     &mut out,
@@ -346,21 +346,21 @@ impl TemporalEngine {
                 );
             }
             for (kind, value) in [
-                ("active", stats.page_store_zones.active_physical_bytes),
-                ("sealed", stats.page_store_zones.sealed_physical_bytes),
+                ("active", stats.block_store_slabs_compat.active_physical_bytes),
+                ("sealed", stats.block_store_slabs_compat.sealed_physical_bytes),
                 (
                     "delayed_destroy",
-                    stats.page_store_zones.delayed_destroy_physical_bytes,
+                    stats.block_store_slabs_compat.delayed_destroy_physical_bytes,
                 ),
-                ("purged", stats.page_store_zones.purged_physical_bytes),
-                ("live", stats.page_store_zones.live_physical_bytes),
+                ("purged", stats.block_store_slabs_compat.purged_physical_bytes),
+                ("live", stats.block_store_slabs_compat.live_physical_bytes),
                 (
                     "reclaimable",
-                    stats.page_store_zones.reclaimable_physical_bytes,
+                    stats.block_store_slabs_compat.reclaimable_physical_bytes,
                 ),
                 (
                     "total_known",
-                    stats.page_store_zones.total_known_physical_bytes,
+                    stats.block_store_slabs_compat.total_known_physical_bytes,
                 ),
             ] {
                 push_metric(
@@ -383,11 +383,11 @@ impl TemporalEngine {
                 );
             }
             for (scope, value) in [
-                ("known", stats.page_store_zones.oldest_known_slab_unix_ms),
-                ("live", stats.page_store_zones.oldest_live_slab_unix_ms),
+                ("known", stats.block_store_slabs_compat.oldest_known_slab_unix_ms),
+                ("live", stats.block_store_slabs_compat.oldest_live_slab_unix_ms),
                 (
                     "reclaimable",
-                    stats.page_store_zones.oldest_reclaimable_slab_unix_ms,
+                    stats.block_store_slabs_compat.oldest_reclaimable_slab_unix_ms,
                 ),
             ] {
                 if let Some(value) = value {
@@ -412,11 +412,11 @@ impl TemporalEngine {
                 }
             }
             for (scope, value) in [
-                ("known", stats.page_store_zones.oldest_known_slab_age_ms),
-                ("live", stats.page_store_zones.oldest_live_slab_age_ms),
+                ("known", stats.block_store_slabs_compat.oldest_known_slab_age_ms),
+                ("live", stats.block_store_slabs_compat.oldest_live_slab_age_ms),
                 (
                     "reclaimable",
-                    stats.page_store_zones.oldest_reclaimable_slab_age_ms,
+                    stats.block_store_slabs_compat.oldest_reclaimable_slab_age_ms,
                 ),
             ] {
                 if let Some(value) = value {

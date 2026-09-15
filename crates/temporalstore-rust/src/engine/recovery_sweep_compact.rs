@@ -65,7 +65,7 @@ impl TemporalEngine {
             .into_iter()
             .collect::<BTreeSet<_>>();
         let stale = self
-            .page_store
+            .block_store
             .slab_ids()
             .unwrap_or_default()
             .into_iter()
@@ -125,7 +125,7 @@ impl TemporalEngine {
         // `logical_bytes` is left at zero here for the same reason as the read-dependent
         // fields: `storage_reclaim_candidates_from_slab_reports` does not read it, and
         // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
-        let block_slab_counts = self.page_store.slab_block_counts().unwrap_or_default();
+        let block_slab_counts = self.block_store.slab_block_counts().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         // THE MAINTAINED TALLY FIRST, AND THE WALK ONLY IF THERE ISN'T ONE.
         //
@@ -264,7 +264,7 @@ impl TemporalEngine {
     ) -> StorageObjectLifecycleReport {
         // Header walk, not a full decode of every record -- see `storage_reclaim_slab_reports`.
         // Only the per-slab block count is read below.
-        let block_slab_counts = self.page_store.slab_block_counts().unwrap_or_default();
+        let block_slab_counts = self.block_store.slab_block_counts().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
             return StorageObjectLifecycleReport::default();
@@ -387,10 +387,10 @@ impl TemporalEngine {
         // and take its length -- on the plan path of every maintenance round.
         let wal_records = self.wal_store.record_count(shard_id).unwrap_or_default();
         let index_log_records = self.index_log_store.record_count(shard_id).unwrap_or_default();
-        let active_block_slab_ids = self.page_store.slab_ids().unwrap_or_default();
-        let slab_descriptors = self.page_store.slab_descriptors();
-        let slab_summary = self.page_store.slab_summary();
-        let block_slab_reports = self.page_store.slab_reports().unwrap_or_default();
+        let active_block_slab_ids = self.block_store.slab_ids().unwrap_or_default();
+        let slab_descriptors = self.block_store.slab_descriptors();
+        let slab_summary = self.block_store.slab_summary();
+        let block_slab_reports = self.block_store.slab_reports().unwrap_or_default();
         let shards = self.shards_read_marked();
         let addresses = shards
             .get(&shard_id)
@@ -538,7 +538,7 @@ impl TemporalEngine {
             object_lifecycle = storage_object_lifecycle_report(shard_id, shard);
             object_lifecycle.owner_mismatch_block_refs = owner_mismatch_block_refs.len() as u64;
             object_lifecycle.missing_owner_block_refs = missing_owner_block_refs as u64;
-            feature_block_layout = storage_feature_block_layout_report(&self.page_store, shard);
+            feature_block_layout = storage_feature_block_layout_report(&self.block_store, shard);
         }
         let block_slab_live_reports = block_slab_live_reports
             .into_values()
@@ -644,7 +644,7 @@ impl TemporalEngine {
             return ready_shards;
         }
         drop(shards);
-        self.page_store.publish_live_block_bytes(live);
+        self.block_store.publish_live_block_bytes(live);
         ready_shards
     }
 
@@ -1201,8 +1201,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
             ));
         }
         let before_slabs = collect_live_block_slab_ids(shard);
-        let before = compaction_utility_report_from_entries(&self.page_store, shard, &entries);
-        let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
+        let before = compaction_utility_report_from_entries(&self.block_store, shard, &entries);
+        let model_layouts_before = compaction_model_layout_reports(&self.block_store, shard);
         // Ordered so the ONE consumer that takes the Vec by value goes last. These are read-only
         // reports over unchanged state, so the order among them carries no meaning beyond that.
         let object_manager_before = object_manager_runtime_report_from_entries(
@@ -1233,7 +1233,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             Some(round) => round,
             None => {
                 let roll = self
-                    .page_store
+                    .block_store
                     .roll_slab()
                     .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
                 (roll.previous_block_slab_id, roll.new_block_slab_id)
@@ -1259,7 +1259,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // unpersisted -- see the `if let Err(err)` handler after this block for why.
         let relocation_result: Result<(), Status> = (|| {
         compact_block_addresses(
-            &self.page_store,
+            &self.block_store,
             &self.cache,
             shard_id,
             "string",
@@ -1268,7 +1268,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         )?;
         for fields in shard.hashes.values_mut() {
             compact_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "hash",
@@ -1278,7 +1278,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for members in shard.zsets.values_mut() {
             compact_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "zset",
@@ -1288,7 +1288,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for elements in shard.lists.values_mut() {
             compact_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "list",
@@ -1298,7 +1298,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for members in shard.sets.values_mut() {
             compact_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "set",
@@ -1308,7 +1308,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for series in shard.features.values_mut() {
             compact_feature_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "feature",
@@ -1317,7 +1317,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         compact_block_addresses(
-            &self.page_store,
+            &self.block_store,
             &self.cache,
             shard_id,
             "control_state",
@@ -1325,7 +1325,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             &mut rewrite_stats,
         )?;
         compact_block_addresses(
-            &self.page_store,
+            &self.block_store,
             &self.cache,
             shard_id,
             "context_node",
@@ -1334,7 +1334,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         )?;
         for series in shard.context_events.values_mut() {
             compact_feature_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "context_event",
@@ -1344,7 +1344,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for series in shard.context_indexes.values_mut() {
             compact_feature_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "context_index",
@@ -1354,7 +1354,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for series in shard.context_audits.values_mut() {
             compact_feature_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "context_audit",
@@ -1364,7 +1364,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for series in shard.context_children.values_mut() {
             compact_feature_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "context_child",
@@ -1374,7 +1374,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for series in shard.context_summaries.values_mut() {
             compact_feature_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "context_summary",
@@ -1384,7 +1384,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for series in shard.context_compressions.values_mut() {
             compact_feature_block_addresses(
-                &self.page_store,
+                &self.block_store,
                 &self.cache,
                 shard_id,
                 "context_compression",
@@ -1393,7 +1393,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         compact_block_addresses(
-            &self.page_store,
+            &self.block_store,
             &self.cache,
             shard_id,
             "context_entity",
@@ -1423,7 +1423,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
             refresh_bucket_runtime_flags(shard);
             rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
-            self.page_store.sync_durable().map_err(|barrier| {
+            self.block_store.sync_durable().map_err(|barrier| {
                 Status::error(
                     "page_compaction_failed",
                     format!(
@@ -1471,7 +1471,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
         refresh_bucket_runtime_flags(shard);
         let after_slabs = collect_live_block_slab_ids(shard);
-        let after = compaction_utility_report(&self.page_store, shard);
+        let after = compaction_utility_report(&self.block_store, shard);
         rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let delete_marked_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).delete_marked_object_ids;
@@ -1508,7 +1508,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // slab (compaction does not advance applied_wal_sequence, so WAL replay does not
         // re-derive them) = permanent silent loss. The partial-failure path above already
         // syncs here; the success path must too. Unconditional, matching that path.
-        self.page_store.sync_durable().map_err(|barrier| {
+        self.block_store.sync_durable().map_err(|barrier| {
             Status::error(
                 "page_compaction_failed",
                 format!(

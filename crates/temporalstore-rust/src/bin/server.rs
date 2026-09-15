@@ -1402,10 +1402,10 @@ fn publish_shard_checkpoint(
             //
             // Empty on the local record for a synchronous write -- that page went to the block
             // store rather than into the record -- so they are gathered here.
-            staged_pages: if record.staged_pages.is_empty() {
+            staged_blocks: if record.staged_blocks.is_empty() {
                 gather_result_blocks(engine, shard_id, &record.outcomes)
             } else {
-                record.staged_pages
+                record.staged_blocks
             },
         };
         if let Err(err) = runtime.block_on(replicator.publish_wal_entry(entry)) {

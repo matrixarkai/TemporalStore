@@ -3778,12 +3778,12 @@ fn what_reading_one_summary_actually_costs() {
         };
 
         // Warm, so neither half is charged for filling a cache that a steady-state read finds warm.
-        let _ = super::read_block_bytes(&engine.cache, &engine.page_store, 1, &address);
+        let _ = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address);
 
         let read_probe = crate::alloc_probe::Probe::start();
         let mut bytes = Vec::new();
         for _ in 0..5 {
-            bytes = super::read_block_bytes(&engine.cache, &engine.page_store, 1, &address)
+            bytes = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address)
                 .expect("the page must read, or the split below is measuring a None");
         }
         let read = read_probe.stop();
@@ -3830,7 +3830,7 @@ fn what_reading_one_summary_actually_costs() {
             .iter()
             .filter(|a| crate::wal_record::is_wal_resident(a.block_slab_id))
             .count();
-        let with_block_id = addresses.iter().filter(|a| a.page_id().is_some()).count();
+        let with_block_id = addresses.iter().filter(|a| a.block_id().is_some()).count();
         let distinct_slabs: std::collections::BTreeSet<u64> =
             addresses.iter().map(|a| a.block_slab_id).collect();
         println!(
@@ -3842,7 +3842,7 @@ fn what_reading_one_summary_actually_costs() {
         let walk_probe = crate::alloc_probe::Probe::start();
         let mut decoded = 0usize;
         for address in &addresses {
-            if let Some(page) = super::read_block_bytes(&engine.cache, &engine.page_store, 1, address)
+            if let Some(page) = super::read_block_bytes(&engine.cache, &engine.block_store, 1, address)
             {
                 if let super::state::PackedFeatureBlockDecode::Packed(points) =
                     super::packed_pages::decode_feature_block_strict(&page)
@@ -3858,7 +3858,7 @@ fn what_reading_one_summary_actually_costs() {
         let read_only_probe = crate::alloc_probe::Probe::start();
         let mut read_bytes_total = 0usize;
         for address in &addresses {
-            if let Ok(b) = engine.page_store.read(address) {
+            if let Ok(b) = engine.block_store.read(address) {
                 read_bytes_total += b.len();
             }
         }
@@ -4509,7 +4509,7 @@ fn which_write_primitive_grows_with_the_store() {
         let warm_key = format!("probe:series:warm:{rung}");
         let _ = super::packed_pages::append_timestamped_kv_blocks(
             &engine.cache,
-            &engine.page_store,
+            &engine.block_store,
             1,
             "context_summary",
             &warm_key,
@@ -4526,7 +4526,7 @@ fn which_write_primitive_grows_with_the_store() {
         let probe = crate::alloc_probe::Probe::start();
         let _ = super::packed_pages::append_timestamped_kv_blocks(
             &engine.cache,
-            &engine.page_store,
+            &engine.block_store,
             1,
             "context_summary",
             &key,
@@ -4544,7 +4544,7 @@ fn which_write_primitive_grows_with_the_store() {
         // The plain value append, for contrast.
         let _ = super::append_value(
             &engine.cache,
-            &engine.page_store,
+            &engine.block_store,
             1,
             &payload,
             Some(9_900_000 + rung as u64),
@@ -4554,7 +4554,7 @@ fn which_write_primitive_grows_with_the_store() {
         let probe = crate::alloc_probe::Probe::start();
         let _ = super::append_value(
             &engine.cache,
-            &engine.page_store,
+            &engine.block_store,
             1,
             &payload,
             Some(9_950_000 + rung as u64),
@@ -5594,7 +5594,7 @@ fn where_a_block_read_miss_allocates() {
         shard.strings.values().cloned().collect()
     };
     assert!(addresses.len() >= 8, "need several pages: {}", addresses.len());
-    let page_store = &engine.page_store;
+    let block_store = &engine.block_store;
 
     const ROUNDS: u64 = 100;
     let per = |n: u64| n as f64 / ROUNDS as f64;
@@ -5605,7 +5605,7 @@ fn where_a_block_read_miss_allocates() {
     for round in 0..ROUNDS {
         let address = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = page_store.read(address);
+        let got = block_store.read(address);
         let counts = probe.stop();
         assert!(got.is_ok(), "the page must read back from the block store");
         store_allocs += counts.allocs;
@@ -5618,7 +5618,7 @@ fn where_a_block_read_miss_allocates() {
     for round in 0..ROUNDS {
         let address = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_bytes(&engine.cache, page_store, 1, address);
+        let got = super::read_block_bytes(&engine.cache, block_store, 1, address);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         whole_allocs += counts.allocs;
@@ -5699,11 +5699,11 @@ fn what_a_block_read_costs_hit_against_miss() {
     };
 
     let cache = &engine.cache;
-    let page_store = &engine.page_store;
+    let block_store = &engine.block_store;
 
     // Warm once: the first read of anything touches one-off structures that would otherwise be
     // counted against whichever arm ran first.
-    let warm = super::read_block_shared(cache, page_store, 1, &address)
+    let warm = super::read_block_shared(cache, block_store, 1, &address)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
@@ -5713,7 +5713,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     let mut hit_bytes = 0u64;
     for _ in 0..ROUNDS {
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_shared(cache, page_store, 1, &address);
+        let got = super::read_block_shared(cache, block_store, 1, &address);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the hit path");
         hit_allocs += counts.allocs;
@@ -5737,7 +5737,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     };
     assert!(addresses.len() >= 8, "need several pages to cycle through: {}", addresses.len());
     let small_cache = &small.cache;
-    let small_blocks = &small.page_store;
+    let small_blocks = &small.block_store;
     for address in &addresses {
         let _ = super::read_block_shared(small_cache, small_blocks, 1, address);
     }
@@ -5877,15 +5877,15 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
         .expect("the ingest wrote at least one context node page");
 
     let cache = &engine.cache;
-    let page_store = &engine.page_store;
+    let block_store = &engine.block_store;
 
     // Warm: the first read of a page touches one-off structures.
-    let warm = super::read_block_bytes(cache, page_store, 1, &address)
+    let warm = super::read_block_bytes(cache, block_store, 1, &address)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
     let probe = crate::alloc_probe::Probe::start();
-    let bytes = super::read_block_bytes(cache, page_store, 1, &address)
+    let bytes = super::read_block_bytes(cache, block_store, 1, &address)
         .expect("the page reads back");
     let read_allocs = probe.stop().allocs;
 
@@ -7430,8 +7430,8 @@ fn what_grows_outside_the_shard_index() {
             });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
-        let descriptors = engine.page_store.slab_descriptors().len();
-        let slabs = engine.page_store.slab_ids().map(|v| v.len()).unwrap_or(0);
+        let descriptors = engine.block_store.slab_descriptors().len();
+        let slabs = engine.block_store.slab_ids().map(|v| v.len()).unwrap_or(0);
         let strings = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             shards.get(&1).expect("loaded shard").strings.len()
@@ -8657,7 +8657,7 @@ fn what_the_compaction_preamble_walks() {
     report("collect_live_block_slab_ids", walked);
 
     crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::compaction::compaction_utility_report(&engine.page_store, shard);
+    let _ = crate::engine::compaction::compaction_utility_report(&engine.block_store, shard);
     let walked = crate::engine::live_block_scan_entries();
     total += walked;
     report("compaction_utility_report", walked);
@@ -8669,7 +8669,7 @@ fn what_the_compaction_preamble_walks() {
     report("storage_object_lifecycle_report", walked);
 
     crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::compaction::compaction_model_layout_reports(&engine.page_store, shard);
+    let _ = crate::engine::compaction::compaction_model_layout_reports(&engine.block_store, shard);
     let walked = crate::engine::live_block_scan_entries();
     total += walked;
     report("compaction_model_layout_reports", walked);
@@ -9271,7 +9271,7 @@ fn what_each_plan_call_walks() {
         let _ = engine.create_bucket_dump_manifest(1, Vec::new());
     });
     mutating_walk("purge_delayed_destroy_slabs", &|engine| {
-        let _ = engine.page_store.purge_delayed_destroy_slabs_with_report();
+        let _ = engine.block_store.purge_delayed_destroy_slabs_with_report();
     });
     mutating_walk("clear_dumped_bucket_dirty_state", &|engine| {
         if let Ok(manifest) = engine.create_bucket_dump_manifest(1, Vec::new()) {
@@ -10855,7 +10855,7 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
     );
 
     let slabs_at_start = engine
-        .page_store
+        .block_store
         .slab_ids()
         .expect("slab ids readable")
         .len();
@@ -10877,7 +10877,7 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
     );
 
     let slabs_after_failed_round = engine
-        .page_store
+        .block_store
         .slab_ids()
         .expect("slab ids readable")
         .len();
@@ -10907,7 +10907,7 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
 
     // NUMBER ONE -- slabs. Resuming rolls nothing; starting fresh rolls a second slab.
     let slabs_after_second_round = engine
-        .page_store
+        .block_store
         .slab_ids()
         .expect("slab ids readable")
         .len();
