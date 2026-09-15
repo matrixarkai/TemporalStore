@@ -86,6 +86,7 @@ mod part3;
 mod part4;
 mod expiry_scale;
 mod reclaim_dump;
+mod claim_stamp_hold;
 mod command_surface;
 mod address_footprint;
 
