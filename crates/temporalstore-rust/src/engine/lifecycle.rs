@@ -33,6 +33,24 @@ fn timestamped_series_mut<'a>(
 pub(crate) static LAST_REPLAY_WATERMARK: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// Was the serving gate SHUT at the moment WAL replay began? Recorded per replay.
+///
+/// `recovering` is set by two production sites -- `load_shard_with` on the load path, and
+/// `install_bucket_dump_manifest` when a dump lands on an already-loaded shard -- and it is read
+/// by `execute`, by the stream-batch apply, by the storage-manager cycle and by the reclaim RPC.
+/// Nothing asserted that EITHER site actually shuts it. Every test that exercises the gate
+/// publishes the info row itself through `test_publish_recovering_shard`, which is a fixture that
+/// sets the flag by hand, so the claim under test was supplied by the test: both production sites
+/// were changed to publish `recovering: false` and the whole suite stayed green.
+///
+/// Recorded at the one point both paths funnel through, so a guard can say "the gate was shut
+/// while the real replay ran" about the code that ships rather than about a fixture. A read
+/// arriving in that window is answered from an index that describes the shard as it was at the
+/// checkpoint, and a write arriving in it interleaves with replay and regresses the anchor.
+#[cfg(test)]
+pub(crate) static REPLAY_ENTERED_WITH_SERVING_GATE_SHUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
         Self::with_cache_and_block_store(cache, BlockStore::default())
@@ -1610,6 +1628,13 @@ impl TemporalEngine {
         watermark: u64,
         window_bytes: u64,
     ) -> Result<(), Status> {
+        // See `REPLAY_ENTERED_WITH_SERVING_GATE_SHUT`. Read before any record is applied, so it
+        // reports the gate the CALLER left, not one this function could set for itself.
+        #[cfg(test)]
+        REPLAY_ENTERED_WITH_SERVING_GATE_SHUT.store(
+            self.shard_is_recovering(shard_id),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         // Replay both re-executes commands and installs recorded outcomes, and BOTH stage
         // outcome items -- while replay itself never appends, so nothing ever takes them.
         // What it leaves behind is picked up by the next write on this thread and written

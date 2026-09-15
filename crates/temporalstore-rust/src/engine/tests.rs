@@ -90,6 +90,7 @@ mod claim_stamp_hold;
 mod command_surface;
 mod address_footprint;
 mod serving_read_guard;
+mod restore_serving_gate;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,
