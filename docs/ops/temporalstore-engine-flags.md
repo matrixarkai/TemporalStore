@@ -113,7 +113,7 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_SHARED_STORE_CLUSTER_ID` | — | launch, script | 1 | — |
 | `TS_SHARED_STORE_DIR` | — | config, script | 1 | — |
 | `TS_SHARED_STORE_URI` | — | nothing | 1 | — |
-| `TS_STANDALONE` | — | config, launch, script | 1 | — |
+| `TS_STANDALONE` | — | config, launch, script, test | 1 | — |
 | `TS_STORAGE_BACKEND` | — | config, launch, script | 1 | — |
 
 ## cluster policy (39)
