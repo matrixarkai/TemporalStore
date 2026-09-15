@@ -89,6 +89,7 @@ mod reclaim_dump;
 mod claim_stamp_hold;
 mod command_surface;
 mod address_footprint;
+mod serving_read_guard;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,

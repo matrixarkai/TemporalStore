@@ -1418,76 +1418,102 @@ impl TemporalEngine {
         {
             return None;
         }
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&request.shard_id) else {
-            return Some(ExecuteResponse {
-                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
-                response: CommandResponse::Empty,
-            });
-        };
-        match &request.command {
-            Command::StringGet { key } => {
-                if shard
-                    .expires_at_ms
-                    .get(key)
-                    .map(|expires_at| *expires_at <= now_ms())
-                    .unwrap_or(false)
-                {
-                    return None;
+        // The addresses come from the shard index and the BYTES come from the block store, so
+        // the guard covers the lookup only. A read guard admits other readers and excludes every
+        // WRITER, and this path held it across one block-store read PER FIELD -- so a wide hash
+        // stopped all writes on the shard for as many reads as the value had fields. See
+        // `FastPathRead` for why releasing first is safe and what the one scope still buys.
+        let hold_guard_across_reads = shard_write_guard::serving_holds_guard_across_reads();
+        let (plan, _held_across_reads) = {
+            let shards = self.shards_read_marked();
+            let Some(shard) = shards.get(&request.shard_id) else {
+                return Some(ExecuteResponse {
+                    status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
+                    response: CommandResponse::Empty,
+                });
+            };
+            let plan = match &request.command {
+                Command::StringGet { key } => {
+                    if shard
+                        .expires_at_ms
+                        .get(key)
+                        .map(|expires_at| *expires_at <= now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    FastPathRead::String {
+                        key: key.as_str(),
+                        address: shard.strings.get(key).cloned(),
+                    }
                 }
-                Some(ExecuteResponse {
-                    status: Status::ok(),
-                    response: cached_response(
-                        &self.cache,
-                        CacheKey::string(request.shard_id, key),
-                        || CommandResponse::Bytes {
-                            value: shard.strings.get(key).and_then(|address| {
-                                read_block_bytes(
-                                    &self.cache,
-                                    &self.block_store,
-                                    request.shard_id,
-                                    address,
-                                )
-                            }),
-                        },
-                    ),
-                })
-            }
-            Command::HashGetAll { key } => {
-                if shard
-                    .expires_at_ms
-                    .get(key)
-                    .map(|expires_at| *expires_at <= now_ms())
-                    .unwrap_or(false)
-                {
-                    return None;
-                }
-                let entries = shard
-                    .hashes
-                    .get(key)
-                    .map(|fields| {
-                        let mut entries = fields
-                            .iter()
-                            .filter_map(|(field, address)| {
-                                read_block_bytes(
-                                    &self.cache,
-                                    &self.block_store,
-                                    request.shard_id,
-                                    address,
-                                )
-                                .map(|value| (field.clone(), value))
+                Command::HashGetAll { key } => {
+                    if shard
+                        .expires_at_ms
+                        .get(key)
+                        .map(|expires_at| *expires_at <= now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    FastPathRead::Hash {
+                        fields: shard
+                            .hashes
+                            .get(key)
+                            .map(|fields| {
+                                fields
+                                    .iter()
+                                    .map(|(field, address)| (field.clone(), address.clone()))
+                                    .collect::<Vec<_>>()
                             })
-                            .collect::<Vec<_>>();
-                        entries.sort_by(|a, b| a.0.cmp(&b.0));
-                        entries
+                            .unwrap_or_default(),
+                    }
+                }
+                _ => return None,
+            };
+            // The measurement's control arm carries the guard out of this block so the reads
+            // below still happen inside the region. `None` in every shipped build, which is what
+            // makes the guard drop here.
+            let held = if hold_guard_across_reads {
+                Some(shards)
+            } else {
+                None
+            };
+            (plan, held)
+        };
+
+        match plan {
+            FastPathRead::String { key, address } => Some(ExecuteResponse {
+                status: Status::ok(),
+                response: cached_response(
+                    &self.cache,
+                    CacheKey::string(request.shard_id, key),
+                    || CommandResponse::Bytes {
+                        value: address.as_ref().and_then(|address| {
+                            read_block_bytes(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                address,
+                            )
+                        }),
+                    },
+                ),
+            }),
+            FastPathRead::Hash { fields } => {
+                let mut entries = fields
+                    .iter()
+                    .filter_map(|(field, address)| {
+                        read_block_bytes(&self.cache, &self.block_store, request.shard_id, address)
+                            .map(|value| (field.clone(), value))
                     })
-                    .unwrap_or_default();
+                    .collect::<Vec<_>>();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::HashEntries { entries },
                 })
             }
-            _ => None,
         }
     }
 
@@ -2259,6 +2285,31 @@ pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Valu
     value
 }
 
+/// What the serving read fast path decided to serve: chosen under the shard-table read guard,
+/// read off the block store after it drops.
+///
+/// THE GUARD PROTECTS THE INDEX, NOT THE BYTES. Once an address is copied out, no writer can
+/// invalidate it into something wrong: compaction relocates a block by APPENDING the new copy and
+/// repointing the index, leaving the old bytes where they were, and slab ids are handed out
+/// strictly monotonically, so a stale address never resolves to a DIFFERENT record. The one path
+/// that destroys bytes quarantines the slab for `DELAYED_DESTROY_MIN_AGE_MS` first -- an hour,
+/// documented as covering exactly "a reader holding a stale address" -- and a read that somehow
+/// lost even that race fails the record's block-id and checksum check and answers ABSENT, which is
+/// what a concurrently deleted key answers anyway.
+///
+/// What the single guard scope still buys, and what must not be narrowed away: a `HashGetAll`
+/// snapshots EVERY field's address at one instant. Taking the guard once per field instead would
+/// let a concurrent write land between two fields and serve half of one hash and half of another.
+enum FastPathRead<'a> {
+    String {
+        key: &'a str,
+        address: Option<BlockAddress>,
+    },
+    Hash {
+        fields: Vec<(String, BlockAddress)>,
+    },
+}
+
 /// What the served-index encode did while this thread held the shard-table WRITE guard.
 ///
 /// The thing worth shortening is the HOLD, and on a shared box the hold cannot be timed: a build
@@ -2373,6 +2424,33 @@ pub mod shard_write_guard {
     pub struct MaintenanceBlockReadCounts {
         pub block_reads_under_guard: u64,
         pub block_reads_total: u64,
+    }
+
+    thread_local! {
+        /// Whether the serving read fast path should keep the shard-table read guard alive
+        /// across its page reads, the way it did before they were moved out.
+        ///
+        /// Kept for the reason the other control arms are kept: a guard asserting ZERO reads
+        /// under the lock is vacuous unless an arm in the same process, on the same fixture,
+        /// can still produce a non-zero one. Thread-local so one arm cannot leak into another.
+        static SERVE_UNDER_SHARD_GUARD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Serve the read fast path with the guard held across the reads, for the measurement.
+    #[cfg(test)]
+    pub fn serve_fast_path_under_shard_guard_for_test(hold: bool) {
+        SERVE_UNDER_SHARD_GUARD.with(|flag| flag.set(hold));
+    }
+
+    #[cfg(test)]
+    pub(super) fn serving_holds_guard_across_reads() -> bool {
+        SERVE_UNDER_SHARD_GUARD.with(|flag| flag.get())
+    }
+
+    /// Always false outside tests: the shipped path reads its pages after the guard drops.
+    #[cfg(not(test))]
+    pub(super) fn serving_holds_guard_across_reads() -> bool {
+        false
     }
 
     pub(super) fn note_block_read() {
@@ -4530,6 +4608,10 @@ fn read_block_bytes(
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
         return Some(bytes);
     }
+    // Past the cache, so this call goes to storage. Counted here rather than at each of the
+    // three fallbacks below because every one of them is a trip to the store and they must not
+    // drift apart in the tally; a cache HIT returns above and is not I/O.
+    shard_write_guard::note_block_read();
     // Log-backed hot page (synthetic address, no block-store file): a cache miss here would read
     // as MISSING for an acked async write. If it was spilled to a real slab on eviction, resolve
     // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
