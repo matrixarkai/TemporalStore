@@ -630,6 +630,46 @@ impl CompactionLayoutIndexRefs for ShardCompactionModelLayoutReport {
     }
 }
 
+/// Fault seam: make the block read inside a compaction round fail after N relocations.
+///
+/// The ONLY way a round fails partway in production is `read_block_bytes` returning `None` --
+/// a torn or missing page -- and nothing else in the round can produce that state on demand. The
+/// resume-anchor behaviour on the partial-failure path is therefore untestable without a seam, so
+/// this is it. Thread-local, because a round runs on its caller's thread and tests that set it
+/// must not reach a round another test is driving.
+#[cfg(test)]
+thread_local! {
+    static FAIL_BLOCK_READ_AFTER: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Arm (`Some(n)`) or disarm (`None`) the seam above. `Some(0)` fails the first read.
+#[cfg(test)]
+pub(crate) fn fail_compaction_block_read_after_for_test(relocations: Option<usize>) {
+    FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(relocations));
+}
+
+/// `read_block_bytes`, with the test seam in front of it. Compiles to a direct call outside
+/// tests: the hook exists only under `cfg(test)`, so no production round pays for it.
+fn read_block_bytes_for_compaction(
+    cache: &MultiLayerCache,
+    page_store: &BlockStore,
+    shard_id: ShardId,
+    address: &BlockAddress,
+) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    {
+        let armed = FAIL_BLOCK_READ_AFTER.with(|cell| cell.get());
+        if let Some(remaining) = armed {
+            if remaining == 0 {
+                return None;
+            }
+            FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
+        }
+    }
+    read_block_bytes(cache, page_store, shard_id, address)
+}
+
 pub(super) fn compact_block_addresses<'a>(
     page_store: &BlockStore,
     cache: &MultiLayerCache,
@@ -643,12 +683,13 @@ pub(super) fn compact_block_addresses<'a>(
             continue;
         }
         let cold_block = !block_memory_resident(cache, shard_id, address);
-        let bytes = read_block_bytes(cache, page_store, shard_id, address).ok_or_else(|| {
-            Status::error(
-                "page_compaction_failed",
-                "missing page bytes during compaction",
-            )
-        })?;
+        let bytes = read_block_bytes_for_compaction(cache, page_store, shard_id, address)
+            .ok_or_else(|| {
+                Status::error(
+                    "page_compaction_failed",
+                    "missing page bytes during compaction",
+                )
+            })?;
         // Compaction REWRITES a block that already exists, so it keeps the id that block
         // already has. A block id is an index inside its object: taking a fresh one here would
         // give every block of a multi-block object the same index, and the index entries would
@@ -693,8 +734,8 @@ pub(super) fn compact_feature_block_addresses(
             continue;
         }
         let cold_block = !block_memory_resident(cache, shard_id, &old_address);
-        let bytes =
-            read_block_bytes(cache, page_store, shard_id, &old_address).ok_or_else(|| {
+        let bytes = read_block_bytes_for_compaction(cache, page_store, shard_id, &old_address)
+            .ok_or_else(|| {
                 Status::error(
                     "page_compaction_failed",
                     "missing feature page bytes during compaction",

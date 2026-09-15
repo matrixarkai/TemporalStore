@@ -8,6 +8,69 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The four terms of the storage-eviction loop's continue-decision, named so the count and the
+/// vacuity of individual terms can be asserted instead of described in prose.
+///
+/// Two of the four are constants at the shipped default threshold of 0; see the comment at the
+/// loop in `run_storage_manager_round_inner` for which and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EvictionLoopTerms {
+    /// `apply_storage_eviction` did not take its `pressure_before < threshold` early return.
+    pub(crate) pressure_gate_open: bool,
+    /// The per-call victim count budget has room left.
+    pub(crate) more_budget: bool,
+    /// `pressure_after >= threshold` -- the loop has not reached its goal.
+    pub(crate) still_over: bool,
+    /// The last batch took victims and was not in cooldown.
+    pub(crate) made_progress: bool,
+}
+
+/// The terms that can be `false` at `threshold`, i.e. the ones that can actually stop the loop.
+///
+/// At a threshold of 0 the two threshold-derived terms are constants -- no `u64` is below 0, so
+/// `apply_storage_eviction` cannot take its early return and `pressure_after >= 0` cannot be
+/// false -- and only the budget and the progress checks remain. This is the DENOMINATOR for the
+/// guard: 2 of 4 live at the shipped default, 4 of 4 once an operator raises the threshold.
+pub(crate) fn eviction_loop_live_stopping_conditions(threshold: u64) -> &'static [&'static str] {
+    if threshold == 0 {
+        &["more_budget", "made_progress"]
+    } else {
+        &[
+            "pressure_gate_open",
+            "more_budget",
+            "still_over",
+            "made_progress",
+        ]
+    }
+}
+
+impl EvictionLoopTerms {
+    /// Take another batch only if every term holds.
+    pub(crate) fn should_continue(self) -> bool {
+        self.pressure_gate_open && self.more_budget && self.still_over && self.made_progress
+    }
+
+    /// True unless the loop is stopping ONLY because of a term that cannot fire at `threshold`.
+    ///
+    /// A stated precondition that is printed but not enforced is not one, so this is checked at
+    /// the loop rather than left to the comment. At a threshold of 0 a stop must be attributable
+    /// to `more_budget` or `made_progress`; a stop attributable only to `still_over` or
+    /// `pressure_gate_open` means someone has made a vacuous term load-bearing.
+    pub(crate) fn stops_only_on_live_conditions(self, threshold: u64) -> bool {
+        if self.should_continue() {
+            return true;
+        }
+        let live = eviction_loop_live_stopping_conditions(threshold);
+        live.iter().any(|name| match *name {
+            "pressure_gate_open" => !self.pressure_gate_open,
+            "more_budget" => !self.more_budget,
+            "still_over" => !self.still_over,
+            "made_progress" => !self.made_progress,
+            other => unreachable!("unknown eviction stopping condition {other}"),
+        })
+    }
+}
+
 impl DataNodeRuntime {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         self.inner.engine.storage_lifecycle_plan(request)
@@ -423,10 +486,31 @@ impl DataNodeRuntime {
         // roughly 370 rounds. The design being followed loops instead and stops on a per-call
         // count budget.
         //
-        // Three stopping conditions, and all three are needed. The budget bounds the work. The
-        // threshold is the goal. And a batch that frees nothing -- `cooldown`, or one that finds no
-        // victims at all -- means another batch will not help either, which is what stops this
-        // spinning on a shard whose memory is not reclaimable by eviction.
+        // FOUR terms decide whether the loop takes another batch, and at the shipped default
+        // threshold of 0 only TWO of them can ever be false. Counting them as "three stopping
+        // conditions, all three needed" -- which is what this comment used to say -- reads the
+        // guard as stronger than it is, so the terms are named in `EvictionLoopTerms` and the
+        // count is asserted rather than described.
+        //
+        //   `more_budget`        -- bounds the work. Live at every threshold.
+        //   `made_progress`      -- a batch that freed nothing (`cooldown`) or found no victims
+        //                           means the next will not do better; this is what stops the loop
+        //                           spinning on a shard whose memory eviction cannot reclaim.
+        //                           Live at every threshold.
+        //   `still_over`         -- `pressure_after >= threshold`. The goal. VACUOUS at threshold
+        //                           0: both are `u64`, so the comparison is a constant `true`.
+        //   `pressure_gate_open` -- set only on the path that did not take the early return at
+        //                           `storage_lifecycle_methods.rs`, whose test is
+        //                           `pressure_before < threshold`. Also VACUOUS at threshold 0,
+        //                           and for the same reason: no `u64` is below 0, so the early
+        //                           return is unreachable and the field is a constant `true`.
+        //
+        // Neither vacuous term is deleted -- both become real the moment an operator raises the
+        // threshold, which is the only supported way to turn this stage into a goal-seeking loop.
+        // The shipped default keeps `enable_evict` false and the threshold 0 together; see
+        // `data_node.rs`. What is NOT supported is leaning on `still_over` to terminate the loop
+        // while the threshold is 0, because at 0 it cannot terminate anything -- the guard below
+        // pins that, and `eviction_loop_live_stopping_conditions` is its denominator.
         let eviction = options.enable_evict.then(|| {
             let mut report = self.inner.engine.apply_storage_eviction(
                 shard_id,
@@ -450,12 +534,24 @@ impl DataNodeRuntime {
             let mut dropped_object_count = report.dropped_object_count;
             loop {
                 let taken = victims.len();
-                let more_budget = options.eviction_count_limit > taken;
-                let still_over =
-                    report.pressure_after >= options.eviction_memory_pressure_threshold;
-                // A batch that freed nothing, or found nobody, means the next will not do better.
-                let made_progress = !report.cooldown && !report.selected_victims.is_empty();
-                if !(report.pressure_gate_open && more_budget && still_over && made_progress) {
+                let terms = EvictionLoopTerms {
+                    pressure_gate_open: report.pressure_gate_open,
+                    more_budget: options.eviction_count_limit > taken,
+                    still_over: report.pressure_after
+                        >= options.eviction_memory_pressure_threshold,
+                    // A batch that freed nothing, or found nobody, means the next will not do
+                    // better.
+                    made_progress: !report.cooldown && !report.selected_victims.is_empty(),
+                };
+                debug_assert!(
+                    terms.stops_only_on_live_conditions(
+                        options.eviction_memory_pressure_threshold
+                    ),
+                    "eviction loop stopped on a condition that cannot fire at threshold {}: {:?}",
+                    options.eviction_memory_pressure_threshold,
+                    terms,
+                );
+                if !terms.should_continue() {
                     break;
                 }
                 report = self.inner.engine.apply_storage_eviction(
@@ -1565,5 +1661,182 @@ impl DataNodeRuntime {
             stop,
             handle: Some(handle),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod eviction_loop_terms_tests {
+    use super::{eviction_loop_live_stopping_conditions, EvictionLoopTerms};
+    use crate::data_node::StorageManagerOptions;
+
+    fn all_true() -> EvictionLoopTerms {
+        EvictionLoopTerms {
+            pressure_gate_open: true,
+            more_budget: true,
+            still_over: true,
+            made_progress: true,
+        }
+    }
+
+    /// The shipped default really is the vacuous one. If this changes, every claim below about
+    /// what can and cannot fire has to be re-derived, so it is asserted rather than assumed.
+    #[test]
+    fn shipped_eviction_threshold_is_zero_and_evict_is_off() {
+        let options = StorageManagerOptions::default();
+        assert_eq!(
+            options.eviction_memory_pressure_threshold, 0,
+            "the vacuity documented at the eviction loop is derived from a threshold of 0",
+        );
+        assert!(
+            !options.enable_evict,
+            "the threshold of 0 is only safe because the stage does not run by default",
+        );
+    }
+
+    /// The denominator: 2 of the 4 terms can stop the loop at the shipped default, 4 of 4 above
+    /// it. Printing the count is the point -- a guard that says "the conditions are checked"
+    /// without saying how many are live is the shape this replaces.
+    #[test]
+    fn live_stopping_condition_count_is_two_of_four_at_the_shipped_default() {
+        let at_zero = eviction_loop_live_stopping_conditions(0);
+        let above_zero = eviction_loop_live_stopping_conditions(1);
+        assert_eq!(
+            at_zero.len(),
+            2,
+            "expected 2 of 4 live stopping conditions at threshold 0, got {at_zero:?}",
+        );
+        assert_eq!(
+            above_zero.len(),
+            4,
+            "expected 4 of 4 live stopping conditions above 0, got {above_zero:?}",
+        );
+        assert!(!at_zero.contains(&"still_over"));
+        assert!(!at_zero.contains(&"pressure_gate_open"));
+        assert!(above_zero.contains(&"still_over"));
+        assert!(above_zero.contains(&"pressure_gate_open"));
+    }
+
+    /// `still_over` is `pressure_after >= threshold` on two `u64`s. At a threshold of 0 there is
+    /// no value of `pressure_after` -- including `u64::MAX` and 0 itself -- that makes it false.
+    #[test]
+    fn still_over_cannot_be_false_at_threshold_zero() {
+        let threshold_zero: u64 = 0;
+        let mut false_cases = 0usize;
+        let probes = [0u64, 1, 4_800, 1_775_000, u64::MAX];
+        for pressure_after in probes {
+            if !(pressure_after >= threshold_zero) {
+                false_cases += 1;
+            }
+        }
+        assert_eq!(
+            false_cases, 0,
+            "still_over fired at threshold 0 -- the documented vacuity is wrong",
+        );
+        // POSITIVE CONTROL over the same probe set: above 0 the comparison is a real test, so
+        // the probes are proving something rather than passing because the loop body never ran.
+        let threshold_raised: u64 = 1_775_000;
+        let mut raised_false_cases = 0usize;
+        for pressure_after in probes {
+            if !(pressure_after >= threshold_raised) {
+                raised_false_cases += 1;
+            }
+        }
+        assert_eq!(
+            raised_false_cases, 3,
+            "expected 3 of {} probes below a raised threshold",
+            probes.len(),
+        );
+    }
+
+    /// The loop must not be able to terminate on a vacuous term at the shipped default. With the
+    /// two live terms satisfied, the decision is `continue` no matter what the two vacuous terms
+    /// would have said had they been reachable.
+    #[test]
+    fn at_threshold_zero_the_loop_stops_only_on_budget_or_progress() {
+        let terms = all_true();
+        assert!(terms.should_continue());
+        assert!(terms.stops_only_on_live_conditions(0));
+
+        let out_of_budget = EvictionLoopTerms {
+            more_budget: false,
+            ..all_true()
+        };
+        assert!(!out_of_budget.should_continue());
+        assert!(
+            out_of_budget.stops_only_on_live_conditions(0),
+            "the budget is a live stopping condition at every threshold",
+        );
+
+        let no_progress = EvictionLoopTerms {
+            made_progress: false,
+            ..all_true()
+        };
+        assert!(!no_progress.should_continue());
+        assert!(
+            no_progress.stops_only_on_live_conditions(0),
+            "progress is a live stopping condition at every threshold",
+        );
+
+        // The guard itself: a stop attributable ONLY to a term that cannot fire at 0.
+        let leaned_on_still_over = EvictionLoopTerms {
+            still_over: false,
+            ..all_true()
+        };
+        assert!(!leaned_on_still_over.should_continue());
+        assert!(
+            !leaned_on_still_over.stops_only_on_live_conditions(0),
+            "a loop that stops only because still_over went false at threshold 0 is relying on a \
+             condition that cannot fire there",
+        );
+
+        let leaned_on_gate = EvictionLoopTerms {
+            pressure_gate_open: false,
+            ..all_true()
+        };
+        assert!(
+            !leaned_on_gate.stops_only_on_live_conditions(0),
+            "pressure_gate_open cannot be false at threshold 0",
+        );
+
+        // ... and above 0 both become legitimate stops. Same inputs, different threshold: this is
+        // what makes the assertion above about the threshold and not about the struct.
+        assert!(leaned_on_still_over.stops_only_on_live_conditions(1));
+        assert!(leaned_on_gate.stops_only_on_live_conditions(1));
+    }
+
+    /// Every term is load-bearing in `should_continue`: dropping any one of the four flips the
+    /// decision for at least one input. Keeps a future edit from quietly deleting a term.
+    #[test]
+    fn each_of_the_four_terms_can_stop_the_loop() {
+        let mut stopped_by = 0usize;
+        assert!(!EvictionLoopTerms {
+            pressure_gate_open: false,
+            ..all_true()
+        }
+        .should_continue());
+        stopped_by += 1;
+        assert!(!EvictionLoopTerms {
+            more_budget: false,
+            ..all_true()
+        }
+        .should_continue());
+        stopped_by += 1;
+        assert!(!EvictionLoopTerms {
+            still_over: false,
+            ..all_true()
+        }
+        .should_continue());
+        stopped_by += 1;
+        assert!(!EvictionLoopTerms {
+            made_progress: false,
+            ..all_true()
+        }
+        .should_continue());
+        stopped_by += 1;
+        assert_eq!(
+            stopped_by, 4,
+            "all four terms must be able to stop the loop once the threshold is raised",
+        );
     }
 }
