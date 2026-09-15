@@ -1712,6 +1712,124 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
     );
 }
 
+/// A WAL record carrying NO leader timestamp must replay against the LIVE clock.
+///
+/// The rule is already written down for the raft-apply path, on `execute_raft_apply_at`: "`None`
+/// (or a zero stamp, from an entry written before the log carried one) keeps the live clock".
+/// `ReplayClockGuard::enter` enforces it with `.filter(|stamp| *stamp > 0)`. The WAL replay loop
+/// sets the same thread-local, but set it straight from `metadata.timestamp_ms` -- so an
+/// unstamped record pinned the replay clock to 0 and every relative deadline resolved during it
+/// landed in 1970. A durably acknowledged write then comes back from recovery already expired,
+/// which is the quietest way a store can lose one.
+///
+/// The zero is reachable rather than hypothetical: protobuf is the only WAL encoder, and its
+/// decoder copies this field verbatim, so an absent `timestamp_ms` decodes as 0 -- while the
+/// field immediately beside it, `version`, IS normalized for precisely this case.
+///
+/// BOTH HALVES ARE ASSERTED SEPARATELY, and they fail the same way for opposite reasons: a
+/// stamped record must still resolve against its stamp (the behaviour this must not break), and
+/// an unstamped one must not resolve against a zero. Asserting only one of them would pass on a
+/// replay that got the other exactly backwards.
+#[test]
+fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
+    use crate::wal::{WriteAheadLogRecord, WriteAheadLogRecordMetadata};
+
+    const ONE_MINUTE_MS: u64 = 60 * 1000;
+
+    // Records built by hand and written straight into the log, because the stamp is the whole
+    // subject: no writer API will produce a zero on request (`set_test_record_clock_ms` reads
+    // its own zero as "not pinned"), so the only way to state one is to write the record.
+    fn record_at(sequence: u64, key: &str, stamp_ms: u64) -> WriteAheadLogRecord {
+        WriteAheadLogRecord {
+            shard_id: 1,
+            sequence,
+            command: Some(Command::StringSetEx {
+                key: key.to_string(),
+                value: b"v".to_vec(),
+                ttl_ms: ONE_MINUTE_MS,
+            }),
+            metadata: Some(WriteAheadLogRecordMetadata {
+                version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
+                timestamp_ms: stamp_ms,
+                items: Vec::new(),
+                batch_id: None,
+                batch_size: None,
+                batch_index: None,
+            }),
+            staged_pages: Vec::new(),
+            outcomes: Vec::new(),
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let live_now_ms = PinnedLeaderClock::real_now_ms();
+
+    {
+        let writer = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache-a"),
+            &page_dir,
+            &index_dir,
+        );
+        let log = writer.write_ahead_log_store();
+        // Sequence 1: STAMPED an hour ago, one-minute TTL. Its deadline is long past.
+        log.append_replayed_record(record_at(1, "stamped", live_now_ms - 60 * ONE_MINUTE_MS))
+            .unwrap();
+        // Sequence 2: UNSTAMPED, same one-minute TTL. Nothing in the record says when the
+        // leader took it, so the only honest reading of its deadline is "a minute from now".
+        log.append_replayed_record(record_at(2, "unstamped", 0))
+            .unwrap();
+    }
+
+    // No index file was ever written, so the replay watermark is 0 and both records replay.
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+
+    let ttl_of = |key: &str| {
+        match restarted
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonTtl {
+                    key: key.to_string(),
+                },
+            })
+            .response
+        {
+            CommandResponse::Integer { value } => value,
+            other => panic!("TTL for {key} answered {other:?}"),
+        }
+    };
+
+    // HALF A, the control. The stamped record still resolves against its own stamp, so its
+    // deadline sits 59 minutes in the past and the key is gone. -2 is "no such key". This half
+    // passes before the fix as well as after; it is here so a change that repaired half B by
+    // ignoring every stamp could not pass.
+    assert_eq!(
+        ttl_of("stamped"),
+        -2,
+        "a record carrying a real leader stamp must resolve its deadline against that stamp, \
+         not against the restart clock"
+    );
+
+    // HALF B, the finding. Read against a zero clock the unstamped record's deadline is 60000 --
+    // an absolute instant in 1970 -- so it replays already-expired and answers -2, the same
+    // number as half A for the opposite reason.
+    let remaining = ttl_of("unstamped");
+    assert!(
+        remaining > 0 && remaining <= ONE_MINUTE_MS as i64,
+        "an unstamped record must resolve its one-minute TTL against the live clock, leaving \
+         at most {ONE_MINUTE_MS}ms and more than 0; got {remaining} (-2 means the replay clock \
+         was pinned to 1970 and a durable write came back from recovery already expired)"
+    );
+}
+
 #[test]
 fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() {
     let dir = tempfile::tempdir().unwrap();

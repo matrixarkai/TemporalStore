@@ -1866,7 +1866,23 @@ impl TemporalEngine {
                 // captured when this record was written, not the (later) restart clock, so
                 // recovery reconstructs the identical absolute deadlines the leader logged
                 // (resolve-then-log) instead of extending every recently-SETEX'd key.
-                set_replay_clock_ms(record.metadata.as_ref().map(|meta| meta.timestamp_ms));
+                //
+                // A ZERO STAMP IS NOT AN INSTANT, it is a record that never carried one, and it
+                // gets the same reading here that `ReplayClockGuard::enter` gives it on the
+                // raft-apply path: leave the live clock in charge. Passing the zero through
+                // pinned this thread's clock to the epoch, and the deadline every relative TTL
+                // in that record resolved to was then `ttl_ms` past 1970 -- already expired, so
+                // a durably acknowledged write came back from recovery absent. The zero is
+                // reachable rather than theoretical: protobuf is the only WAL encoder and its
+                // decoder copies this field verbatim, so an absent `timestamp_ms` arrives as 0
+                // while `version`, the field beside it, is normalized for exactly this case.
+                set_replay_clock_ms(
+                    record
+                        .metadata
+                        .as_ref()
+                        .map(|meta| meta.timestamp_ms)
+                        .filter(|stamp| *stamp > 0),
+                );
                 // Neither results nor an operation. Refusing is the only honest answer: replaying it
                 // as nothing would serve a shard missing a durable write and report success.
                 let Some(command) = record.command else {
