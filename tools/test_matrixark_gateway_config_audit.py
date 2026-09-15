@@ -93,6 +93,98 @@ _LAYER_THE_SETTING_DOES_NOT_DESCRIBE = {
     ("retrieval.timeout_ms", "matrixark_mcp_server.py"),
 }
 
+# A capture at import that is a PRODUCT question, not a wiring one, recorded here instead of
+# being decided in a test.
+#
+# `matrixark_resource_parser` computes DEFAULT_EMBEDDING_TEXT_MAX_TOKENS at import, and the
+# fallback is `encoder_window_tokens()` -- which reads MATRIXARK_EMBEDDING_MODEL. So the window
+# one vector's worth of text is measured against follows the model named when the module was
+# imported, and the page calls that setting `live`.
+#
+# Changing the embedding model under a running process is not a labelling question. The encoder
+# is loaded once, vectors already written were produced by the old model, and this repository
+# has a model_hash guard for exactly that. Relabelling the setting `restart` would say something
+# true about this reader and something misleading about the several that resolve the model per
+# call; leaving it `live` says the opposite. Neither is this file's decision.
+#
+# Asserted in BOTH directions below, so it cannot quietly stop being true: the capture must still
+# be there, and the label must still be the one recorded.
+_RECORDED_IMPORT_TIME_CAPTURE = {
+    ("embedding.model", "matrixark_resource_parser.py"): "live",
+}
+
+# A CALLED-AT-IMPORT helper is the one shape of this that does not need a list.
+#
+# `_STARTUP_ONLY` below is a hand-maintained set of functions that run once per process. It is
+# right about what it holds and it cannot be complete, because "runs once" is a fact about
+# callers. One case IS decidable from the module alone: a module-level `X = helper()`, where
+# `helper` is defined in the same module and reads the environment. That read is syntactically
+# inside a function -- so `func_depth` calls it deferred -- and behaviourally it happened at
+# import, once.
+#
+# Two settings were in that state and neither was listed:
+#
+#   matrixark_codex_hook.py:235   DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT
+#                                 = _default_additional_context_char_limit()
+#   matrixark_resource_parser.py  DEFAULT_EMBEDDING_TEXT_MAX_TOKENS
+#                                 = int(... or str(encoder_window_tokens()))
+#
+# The first was measured, in one process, writing the variable the way `update()` does:
+#
+#     moment                         codex chars   agent chars
+#     at import (unset)                    12662          7620
+#     after a portal write of 2000         12662          1567
+#     after a portal write of 20000        12662         19740
+#
+# -- the sibling hook tracked the write on every row and this one never moved, because
+# `char_limit: int = DEFAULT_...` binds when the `def` runs. That is fixed; the rule is what
+# stops the next one, and it is derived rather than listed so it cannot go stale.
+def _is_main_guard(node) -> bool:
+    """`if __name__ == "__main__":` -- module-level text that does not run on import.
+
+    The first version of the rule below did not skip it, and every hook module ends with
+
+        if __name__ == "__main__":
+            try:
+                raise SystemExit(main())
+            except Exception as exc:
+                if fail_open_enabled():
+
+    so `main` and `fail_open_enabled` read as called-at-import and MATRIXARK_HOOK_FAIL_OPEN was
+    reported as a live label that could not be live. It is read per call, in a block that runs
+    only when the file is executed as a script. A rule that cannot tell those apart would have
+    put a wrong entry in front of whoever read the failure.
+    """
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        return False
+    left = node.test.left
+    return (isinstance(left, ast.Name) and left.id == "__name__"
+            and any(isinstance(c, ast.Constant) and c.value == "__main__"
+                    for c in node.test.comparators))
+
+
+def _called_at_import(tree) -> set:
+    """Functions this module CALLS while the module body runs, so their reads are import-time."""
+    called = set()
+
+    def walk(node, in_function):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                walk(child, True)
+                continue
+            if _is_main_guard(child):
+                continue
+            if not in_function and isinstance(child, ast.Call) \
+                    and isinstance(child.func, ast.Name):
+                called.add(child.func.id)
+            walk(child, in_function)
+
+    walk(tree, False)
+    defined = {n.name for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    return called & defined
+
+
 # Full qualnames. `make_v1_app` is the app FACTORY -- its own body runs once per worker -- but the
 # request handler nested inside it (`make_v1_app._serve`) runs per request and must not inherit the
 # factory's classification.
@@ -210,6 +302,9 @@ def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
             continue
         visitor = _Sites(wanted)
         visitor.visit(tree)
+        at_import = _called_at_import(tree)
+        if at_import:
+            CALLED_AT_IMPORT[entry] = at_import
         for name, qual, line, deferred in visitor.hits:
             if qual is not None and (entry, qual.split(".")[-1]) in _DISPLAY_ONLY:
                 continue
@@ -220,11 +315,17 @@ def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
             # inside make_v1_app, so every per-request read in it read as captured-at-boot.
             elif (entry, qual) in _STARTUP_ONLY:
                 scope = "import-time"
+            # A module-level helper the module calls while it is being imported. Exact qualname
+            # for the same reason as above: a function nested inside one of these defers.
+            elif qual in at_import:
+                scope = "import-time"
             else:
                 scope = "per-call"
             found[name].append((scope, entry, line))
     return found
 
+
+CALLED_AT_IMPORT: Dict[str, Set[str]] = {}
 
 SITES = _scan()
 
@@ -282,7 +383,8 @@ class AppliesLabelTest(unittest.TestCase):
                 continue
             frozen = [s for s in SITES.get(setting.env, [])
                       if s[0] == "import-time"
-                      and (setting.key, s[1]) not in _LAYER_THE_SETTING_DOES_NOT_DESCRIBE]
+                      and (setting.key, s[1]) not in _LAYER_THE_SETTING_DOES_NOT_DESCRIBE
+                      and (setting.key, s[1]) not in _RECORDED_IMPORT_TIME_CAPTURE]
             if frozen:
                 where = ", ".join("%s:%d" % (f, n) for _s, f, n in frozen[:3])
                 wrong.append("%s (%s) is labelled live but captured at import in %s"
@@ -302,6 +404,36 @@ class AppliesLabelTest(unittest.TestCase):
                 wrong.append("%s (%s) is labelled restart but every reader is per-call: %s"
                              % (setting.key, setting.env, where))
         self.assertEqual([], wrong, "\n".join(wrong))
+
+
+class TheImportTimeHelperRuleDecidesSomethingTest(unittest.TestCase):
+    """A rule that matches nothing passes every assertion that rests on it."""
+
+    def test_the_scan_found_helpers_called_at_import(self) -> None:
+        total = sum(len(names) for names in CALLED_AT_IMPORT.values())
+        self.assertGreaterEqual(
+            total, 5,
+            "found %d module-level calls to same-module helpers across %d files; the rule that "
+            "classifies their reads as import-time is deciding nothing"
+            % (total, len(CALLED_AT_IMPORT)))
+
+    def test_the_recorded_captures_are_still_captures(self) -> None:
+        """Both directions. If a recorded capture goes away, the record has to go with it --
+        otherwise this file keeps describing a tree that has moved on."""
+        for (key, entry), label in sorted(_RECORDED_IMPORT_TIME_CAPTURE.items()):
+            with self.subTest(setting=key, module=entry):
+                setting = cfgmod.SETTINGS_BY_KEY[key]
+                frozen = [s for s in SITES.get(setting.env, [])
+                          if s[0] == "import-time" and s[1] == entry]
+                self.assertTrue(
+                    frozen,
+                    "%s is recorded as captured at import in %s and no longer is -- strike the "
+                    "record rather than leaving it" % (key, entry))
+                self.assertEqual(
+                    label, setting.applies,
+                    "%s is recorded here as labelled %r and the page now says %r; the record is "
+                    "about that contradiction, so it has to move with it"
+                    % (key, label, setting.applies))
 
 
 class RegistryShapeTest(unittest.TestCase):

@@ -232,7 +232,6 @@ def _default_additional_context_char_limit() -> int:
         return 40000
 
 
-DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT = _default_additional_context_char_limit()
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -1724,11 +1723,29 @@ def additional_context_from_retrieve(
     query: str,
     local_context_count: int,
     session_id_source: str = "",
-    char_limit: int = DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT,
+    char_limit: int | None = None,
 ) -> str:
-    """Build Codex hook additionalContext from a MatrixArk ContextPack."""
+    """Build Codex hook additionalContext from a MatrixArk ContextPack.
+
+    `char_limit` is resolved HERE rather than in the signature. A default argument is evaluated
+    once, when the `def` runs, so
+    `char_limit: int = DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT` captured the control at import --
+    and the operator page calls it `live`. Measured in one process that had imported this module,
+    writing the variable the way the portal's `update()` does:
+
+        moment                         reader says   codex chars   agent chars
+        at import (unset)                    40000         12662          7620
+        after a portal write of 2000          2000         12662          1567
+        after a portal write of 20000        20000         12662         19740
+
+    The sibling hook tracked the write on every row. This one returned the same 12662 characters
+    whatever the page had been told to do, because the number it compared against was decided
+    before the write happened.
+    """
     if not isinstance(pack, dict):
         return ""
+    if char_limit is None:
+        char_limit = _default_additional_context_char_limit()
     refs = [ref for ref in _selected_refs_from_retrieve(pack) if not _ref_is_codex_hook_heartbeat(ref)]
     context_text = sanitized_rendered_context_from_retrieve(pack)
     lines = [
