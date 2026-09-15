@@ -6,22 +6,39 @@
 use super::*;
 
 impl DataNodeRuntime {
+    /// QUEUE FIRST, THEN DIRTY, THEN STATS. The order is the point, not the contents.
+    ///
+    /// This holds three of the runtime's mutexes at once so the report is one cut rather than
+    /// three readings taken at different instants. Holding three is only safe while every other
+    /// site that holds two of them agrees on the order, and the rest of the runtime takes
+    /// `queue` before `stats`: `submit` holds `queue` across the two rejection paths that charge
+    /// `stats`, and `cancel_job` holds `jobs` then `queue` and charges `stats` inside both.
+    ///
+    /// Read the other way round -- stats, dirty, queue, which is what this was -- the two paths
+    /// deadlock against each other outright: a reporting thread holding `stats` waits for
+    /// `queue` while a submitting thread holding `queue` waits for `stats`, and neither ever
+    /// yields. Nothing about the report changes by reordering the three acquisitions; the
+    /// bindings below are all read after the last of them is taken.
+    ///
+    /// If a fourth lock is ever added to this cut, put it where the rest of the runtime already
+    /// takes it rather than where it reads best here. The guard
+    /// `the_data_node_runtime_locks_have_one_global_order` walks these files for exactly this.
     pub fn stats(&self) -> DataNodeRuntimeStats {
-        let stats = self
-            .inner
-            .stats
-            .lock()
-            .expect("runtime stats lock poisoned");
-        let dirty = self
-            .inner
-            .dirty
-            .lock()
-            .expect("dirty tracker lock poisoned");
         let queue = self
             .inner
             .queue
             .lock()
             .expect("runtime queue lock poisoned");
+        let dirty = self
+            .inner
+            .dirty
+            .lock()
+            .expect("dirty tracker lock poisoned");
+        let stats = self
+            .inner
+            .stats
+            .lock()
+            .expect("runtime stats lock poisoned");
         let queue_depth = queue.queued_total;
         let queued_shard_count = queue.by_shard.len();
         let running_shard_count = queue.running_shards.len();
