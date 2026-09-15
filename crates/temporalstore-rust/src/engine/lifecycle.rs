@@ -1573,9 +1573,6 @@ impl TemporalEngine {
     /// reading the index. Both end up in the same table, which is why no read path had to
     /// change for this to work.
     pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) {
-        if !self.page_store.block_in_wal() {
-            return;
-        }
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
             return;
@@ -1794,7 +1791,7 @@ impl TemporalEngine {
                 // an error, not an empty shard: a durably acknowledged write reported as absent,
                 // which is the quietest way a store can lose data. Registering here, where the log
                 // id is still in hand, makes a replayed record as addressable as a written one.
-                if self.page_store.block_in_wal() && !record.staged_pages.is_empty() {
+                if !record.staged_pages.is_empty() {
                     if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
                         super::block_in_wal::register_record(
                             &self.page_store,

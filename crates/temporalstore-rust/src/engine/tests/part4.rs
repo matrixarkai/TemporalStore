@@ -8782,17 +8782,17 @@ fn a_wal_resident_block_records_where_it_lives_in_the_index() {
     );
 }
 
-/// With the feature off, nothing is recorded -- the index does not grow for a store that puts no
-/// pages in the log.
+/// An asynchronous write whose block is not spilled records WHERE that block lives.
 ///
-/// Both halves are here because the assertion is `== 0`, and a zero is what this test would report
-/// if the write never staged a page for any other reason. It did exactly that until now: it wrote
-/// synchronously, and a synchronous write goes straight to the block store whatever this setting
-/// says, so the test passed with the feature ON as readily as OFF. The control below is the write
-/// that DOES stage, under the same configuration, differing only in the setting.
+/// This was once the control half of a test asserting the opposite for a store that put nothing
+/// in the log. That store no longer exists -- a write always carries its block -- so the control
+/// is the whole test: an async write with the spill handler off leaves its block in its record
+/// and nowhere else, and the location it records is the only thing that can serve it back.
+/// A zero here means the write staged nothing, which is the acked-write-reads-back-as-MISSING
+/// case the carry was added to close.
 #[test]
-fn a_store_that_puts_no_blocks_in_the_log_carries_no_locations() {
-    fn resident_blocks_after_a_staging_write(put_blocks_in_the_log: bool) -> usize {
+fn an_async_write_records_where_its_block_lives() {
+    fn resident_blocks_after_a_staging_write() -> usize {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -8813,9 +8813,6 @@ fn a_store_that_puts_no_blocks_in_the_log_carries_no_locations() {
             },
         });
         engine.disable_hot_block_spill_for_test();
-        if !put_blocks_in_the_log {
-            engine.block_store().stop_putting_blocks_in_the_log_for_test();
-        }
         assert!(
             engine
                 .execute(ExecuteRequest {
@@ -8832,13 +8829,79 @@ fn a_store_that_puts_no_blocks_in_the_log_carries_no_locations() {
     }
 
     assert!(
-        resident_blocks_after_a_staging_write(true) > 0,
-        "the control has to stage something, or the zero below means nothing"
+        resident_blocks_after_a_staging_write() > 0,
+        "the write has to stage something, or nothing can serve its block back from the record"
+    );
+}
+
+/// A synchronous write puts its block INSIDE its own record.
+///
+/// The single barrier acks on the WAL fsync and DEFERS the block fsync, so at the moment a write
+/// is acknowledged the block store holds the block in buffers and nowhere else. The copy carried
+/// in the record is therefore the only durable one until a dump moves it into a slab, which is
+/// why the write carries it at all.
+///
+/// Two things have to happen for the count below to be non-zero: the write stages its bytes, and
+/// the append puts what was staged into the record rather than dropping it. Both were arms of a
+/// predicate once; stop doing either and an acked write's block is gone if the process dies before
+/// the deferred block fsync. `a_group_commit_write_keeps_the_block_it_staged` prints this number
+/// on the same path -- this is the test that requires it.
+#[test]
+fn a_synchronous_write_puts_its_block_in_its_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // No `async_storage`: this is the synchronous path, and it is the default.
+    let key = "carried-sync-key";
+    let value = b"carried-sync-value".to_vec();
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: key.to_string(),
+            value: value.clone(),
+        },
+    });
+    assert!(write.status.ok, "the write must be acked: {write:?}");
+
+    let carried: Vec<crate::wal::StagedBlock> = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .flat_map(|record| record.staged_pages)
+        .collect();
+    assert_eq!(
+        carried.len(),
+        1,
+        "the acked write's record must carry its block: at ack time the block store has it in \
+         buffers and nowhere else"
     );
     assert_eq!(
-        resident_blocks_after_a_staging_write(false),
-        0,
-        "a store that puts no pages in the log records no locations"
+        carried[0].bytes, value,
+        "the record has to carry the bytes that were written, not a reconstruction of them"
+    );
+
+    // Drop every cached copy, then take the shard down and bring it back: the value has to come
+    // back from something durable rather than from memory.
+    engine.cache().invalidate_shard(1).unwrap();
+    engine.unload_shard(1);
+    engine.load_shard(1);
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: key.to_string(),
+        },
+    });
+    assert_eq!(
+        read.response,
+        CommandResponse::Bytes { value: Some(value) },
+        "an acked write must read back after the reload"
     );
 }
 
@@ -11657,14 +11720,13 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
     // Every combination that could put a page somewhere other than the block store: the log-in-
     // record path, the reserve-only append that skips staging, and asynchronous writes whose
     // pages are buffered rather than written.
-    let cases: Vec<(&str, &str, &str, bool)> = vec![
-        ("default", "1", "1", false),
-        ("log-in-record OFF", "0", "1", false),
-        ("group-commit OFF", "1", "0", false),
-        ("async writes", "1", "1", true),
-        ("async + group-commit OFF", "1", "0", true),
+    let cases: Vec<(&str, &str, bool)> = vec![
+        ("default", "1", false),
+        ("group-commit OFF", "0", false),
+        ("async writes", "1", true),
+        ("async + group-commit OFF", "0", true),
     ];
-    for (label, block_in_wal, concurrent, async_storage) in cases {
+    for (label, concurrent, async_storage) in cases {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -11674,9 +11736,6 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
         );
         // Said to THIS engine. `TS_ENGINE_CONCURRENT_COMMIT` used to carry it, which meant the
         // case that wanted the barrier under the lock set it for every engine in the process.
-        if block_in_wal == "0" {
-            engine.block_store().stop_putting_blocks_in_the_log_for_test();
-        }
         if concurrent == "0" {
             engine.commit_under_lock_for_test();
         }

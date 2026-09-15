@@ -305,10 +305,8 @@ fn append_timestamped_kv_blocks_inner(
         // un-fsynced block -- which the single barrier permits -- replay installed the outcomes,
         // the outcomes named a block that was never written, and the read had nothing to fall back
         // to. The whole series came back empty.
-        if block_store.block_in_wal() {
-            for packed in &encoded_blocks {
-                super::block_in_wal::stage(object_id, packed.as_slice());
-            }
+        for packed in &encoded_blocks {
+            super::block_in_wal::stage(object_id, packed.as_slice());
         }
         let addresses = block_store.append_batch_with_block_metadata(writes)?;
         if addresses.len() != chunk_points.len() {

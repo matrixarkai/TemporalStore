@@ -864,9 +864,7 @@ impl TemporalEngine {
         }
         // Start this write with nothing staged, so a page put aside by a command that never
         // appended cannot ride along on the next command's record.
-        if self.page_store.block_in_wal() {
-            block_in_wal::begin_write();
-        }
+        block_in_wal::begin_write();
         // What the touched keys held before this command, so the capture below can be
         // skipped when nothing was removed. Sizes and one `u64` -- no allocation.
         //
@@ -1109,15 +1107,9 @@ impl TemporalEngine {
                             command,
                             std::mem::take(&mut staged_outcomes),
                             if carried_blocks.is_empty() {
-                                if self.page_store.block_in_wal() {
-                                    block_in_wal::take_staged()
-                                } else {
-                                    Vec::new()
-                                }
+                                block_in_wal::take_staged()
                             } else {
-                                if self.page_store.block_in_wal() {
-                                    let _ = block_in_wal::take_staged();
-                                }
+                                let _ = block_in_wal::take_staged();
                                 std::mem::take(&mut carried_blocks)
                             },
                         )
@@ -1132,18 +1124,12 @@ impl TemporalEngine {
                             command,
                             sync,
                             if carried_blocks.is_empty() {
-                                if self.page_store.block_in_wal() {
-                                    block_in_wal::take_staged()
-                                } else {
-                                    Vec::new()
-                                }
+                                block_in_wal::take_staged()
                             } else {
                                 // The caller handed us the pages the original write produced.
                                 // Drop whatever this execute re-derived rather than letting a
                                 // reconstruction win over the bytes that were acked.
-                                if self.page_store.block_in_wal() {
-                                    let _ = block_in_wal::take_staged();
-                                }
+                                let _ = block_in_wal::take_staged();
                                 std::mem::take(&mut carried_blocks)
                             },
                             std::mem::take(&mut staged_outcomes),
@@ -1153,28 +1139,24 @@ impl TemporalEngine {
                             // Point every page this record carries at the record, keyed on the
                             // object id the write derived -- which is what the stored address
                             // carries, so a read finds it by identity rather than by timing.
-                            if self.page_store.block_in_wal() {
-                                block_in_wal::register_record(
-                                    &self.page_store,
-                                    request.shard_id,
-                                    &record.staged_pages,
-                                    log_id,
-                                    record.sequence,
-                                    &self.wal_store,
-                                );
-                                // Same fact, written down where it survives this process.
-                                wal_resident_updates.extend(record.staged_pages.iter().map(
-                                    |page| {
-                                        (
-                                            page.object_id,
-                                            crate::engine::state::WalResidentBlock {
-                                                log_id,
-                                                sequence: record.sequence,
-                                            },
-                                        )
+                            block_in_wal::register_record(
+                                &self.page_store,
+                                request.shard_id,
+                                &record.staged_pages,
+                                log_id,
+                                record.sequence,
+                                &self.wal_store,
+                            );
+                            // Same fact, written down where it survives this process.
+                            wal_resident_updates.extend(record.staged_pages.iter().map(|page| {
+                                (
+                                    page.object_id,
+                                    crate::engine::state::WalResidentBlock {
+                                        log_id,
+                                        sequence: record.sequence,
                                     },
-                                ));
-                            }
+                                )
+                            }));
                             None
                         })
                 };
@@ -4346,20 +4328,16 @@ fn append_value(
         // Carrying it costs the bytes twice for as long as the record lives, and no longer: the
         // storage manager's reclaim stage moves carried pages into the block store and drops the
         // registration that pins the log floor.
-        if page_store.block_in_wal() {
-            if let Some(object_id) = object_id {
-                block_in_wal::stage(object_id, bytes);
-            }
+        if let Some(object_id) = object_id {
+            block_in_wal::stage(object_id, bytes);
         }
         return page_store.append_with_block_metadata(bytes, object_id, routing_bucket);
     }
     let address = BlockAddress::from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id);
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
-    if page_store.block_in_wal() {
-        if let Some(object_id) = object_id {
-            block_in_wal::stage(object_id, bytes);
-        }
+    if let Some(object_id) = object_id {
+        block_in_wal::stage(object_id, bytes);
     }
     let bytes = bytes.to_vec();
     cache.put_memory_only(
@@ -4568,15 +4546,12 @@ fn read_block_bytes(
         // been all along. Read it back by the log id the write registered. Tried after the
         // spill redirect because a spilled copy is a direct block-store read, while this one
         // parses a log record.
-        if page_store.block_in_wal() {
-            if let Some(bytes) =
-                address
-                    .object_id()
-                    .and_then(|object_id| block_in_wal::read_block(page_store, shard_id, object_id))
-            {
-                let _ = cache.put(cache_key, bytes.clone());
-                return Some(bytes);
-            }
+        if let Some(bytes) = address
+            .object_id()
+            .and_then(|object_id| block_in_wal::read_block(page_store, shard_id, object_id))
+        {
+            let _ = cache.put(cache_key, bytes.clone());
+            return Some(bytes);
         }
     }
     if let Ok(bytes) = page_store.read(address) {
@@ -4598,14 +4573,12 @@ fn read_block_bytes(
     //
     // Ordered after the block-store read, not before it: the durable copy is the common case and
     // a direct read, while this one resolves a log id and parses a record.
-    if page_store.block_in_wal() {
-        if let Some(bytes) = address
-            .object_id()
-            .and_then(|object_id| block_in_wal::read_block(page_store, shard_id, object_id))
-        {
-            let _ = cache.put(cache_key, bytes.clone());
-            return Some(bytes);
-        }
+    if let Some(bytes) = address
+        .object_id()
+        .and_then(|object_id| block_in_wal::read_block(page_store, shard_id, object_id))
+    {
+        let _ = cache.put(cache_key, bytes.clone());
+        return Some(bytes);
     }
     None
 }
