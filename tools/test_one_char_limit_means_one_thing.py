@@ -66,13 +66,22 @@ RECORDED_OWN_BUDGET = {"agent": 8000}
 #: below it, the two the old rust reader took as "not set", and whitespace.
 CASES = (None, "40000", "20000", "2000", "500", "100", "0", "-1", "garbage", " 20000 ")
 
+#: Both readers are called as FUNCTIONS, and that is the point rather than a style choice.
+#:
+#: This probe read `c.DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT`, a module-level constant, because that
+#: was where the codex hook's answer lived. The change that removed the constant -- it was a default
+#: ARGUMENT, evaluated once when the `def` ran, which froze a control the page calls live -- and the
+#: change that added this file were each green on a main that did not have the other. Together they
+#: are `AttributeError` in `setUpClass`, which reads as eight tests erroring about a char limit.
+#:
+#: A function call cannot go stale the same way: it is the reader, whatever the reader keeps.
 PROBE = r"""
 import json, sys
 sys.path.insert(0, %r)
 import matrixark_agent_hook as a
 import matrixark_codex_hook as c
 print(json.dumps({"agent": a._additional_context_char_limit(),
-                  "codex": c.DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT}))
+                  "codex": c._default_additional_context_char_limit()}))
 """
 
 
