@@ -5356,6 +5356,85 @@ mod tests {
         );
     }
 
+    /// The displaced-footer search may only ever say YES on the MAGIC.
+    ///
+    /// `displaced_block_footer_end` exists because a reclaim copies a block footer to an offset
+    /// the new file's grid has no boundary at, so the walk has to find it off-grid. It looks for
+    /// the first NON-ZERO byte within one block, on the reasoning that the writer leaves the
+    /// space between the last record and the footer slot unwritten. But "non-zero" is not
+    /// evidence of a footer: record bytes, or a torn write, read exactly the same from here.
+    /// Believing one would resume the walk at an offset chosen by arbitrary data and hand the
+    /// next read whatever followed it.
+    ///
+    /// The reclaim fixture above cannot reach this. Every run the search meets THERE is a real
+    /// displaced footer, so a search that believed any non-zero run passes it unchanged --
+    /// measured: dropping the `decode_block_footer` check entirely leaves that test green.
+    ///
+    /// Both directions in one test, and the POSITIVE half first, because a search that had
+    /// stopped finding anything at all would pass the negative half on its own.
+    #[test]
+    fn the_displaced_footer_search_believes_a_footer_only_on_its_magic() {
+        use std::io::Cursor;
+
+        // Off the grid on purpose: this offset is not a block boundary, which is the whole
+        // situation the function exists for.
+        const AT: u64 = 4096;
+        // The unwritten run between the last record and the copied footer.
+        const PAD: usize = 100;
+        const TAIL: usize = WAL_BLOCK_BYTES as usize / 2;
+
+        // POSITIVE CONTROL. A real footer, displaced, must still be found -- and the walk must
+        // resume AFTER it, not at it. Without this half the negative assertion below is passed
+        // by a function that answers None to everything.
+        let footer = encode_block_footer(0, 1234, 64, 7, 0);
+        assert_eq!(
+            footer.len(),
+            WAL_BLOCK_FOOTER_BYTES as usize,
+            "the fixture must write a full-slot footer"
+        );
+        let mut found = vec![0u8; AT as usize + PAD];
+        found.extend_from_slice(&footer);
+        found.resize(AT as usize + TAIL, 0);
+        let len = found.len() as u64;
+        assert_eq!(
+            displaced_block_footer_end(&mut Cursor::new(found), AT, len).unwrap(),
+            Some(AT + PAD as u64 + WAL_BLOCK_FOOTER_BYTES),
+            "a displaced footer must be found, and the walk must resume after it"
+        );
+
+        // THE PROPERTY. The same shape, but the non-zero run carries no magic -- it is record
+        // bytes. The search must find nothing, and the caller must stop exactly as it did
+        // before this path existed.
+        let mut garbage = vec![0u8; AT as usize + PAD];
+        garbage.extend(std::iter::repeat(b'A').take(4 * WAL_BLOCK_FOOTER_BYTES as usize));
+        garbage.resize(AT as usize + TAIL, 0);
+        let len = garbage.len() as u64;
+        assert_eq!(
+            displaced_block_footer_end(&mut Cursor::new(garbage), AT, len).unwrap(),
+            None,
+            "record bytes carry no footer magic, so the search must not name them a footer and \
+             send the walk into the middle of them"
+        );
+
+        // And a run that is nearly a footer: the slot's own length prefix is right, the magic is
+        // not. This is the case a length-only check would wave through.
+        let mut wrong_magic = encode_block_footer(0, 1234, 64, 7, 0);
+        let magic_at = wrong_magic
+            .windows(8)
+            .position(|window| window == WAL_BLOCK_FOOTER_MAGIC.to_le_bytes())
+            .expect("the encoded footer must carry its magic little-endian");
+        wrong_magic[magic_at..magic_at + 8].copy_from_slice(&0xDEAD_BEEF_DEAD_BEEFu64.to_le_bytes());
+        let mut spoiled = vec![0u8; AT as usize + PAD];
+        spoiled.extend_from_slice(&wrong_magic);
+        spoiled.resize(AT as usize + TAIL, 0);
+        let len = spoiled.len() as u64;
+        assert_eq!(
+            displaced_block_footer_end(&mut Cursor::new(spoiled), AT, len).unwrap(),
+            None,
+            "a well-formed slot whose magic is wrong is not a footer"
+        );
+    }
+
     /// Not an assertion about behaviour -- a look at what the writer actually did, because the
     /// agreement test only says the footer is absent, not why.
     #[test]
