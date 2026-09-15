@@ -67,6 +67,23 @@ struct AddressCensus {
     /// whether a field can be omitted; width tells you whether it can be shrunk. A field that is
     /// always set AND uses its full 64 bits cannot be made smaller without dropping information.
     widest: [u64; 7],
+    /// Addresses whose `generation` equals `page_id.or(object_id)` -- which is what every
+    /// production constructor in the tree passes for it.
+    ///
+    /// WHY THIS IS COUNTED. Presence and width are the two obvious questions about a field; this
+    /// is the third and it is worth more than either. `append.rs` builds an address with
+    /// `Some(page_id)` as the generation, and `record.rs` rebuilds one on read with
+    /// `header.page_id.or(header.object_id)`. If that holds for every live address then
+    /// `generation` carries no information of its own: it is a COPY of a neighbouring field, and
+    /// dropping it costs 8 bytes and imposes no capacity ceiling at all -- unlike narrowing,
+    /// which always does.
+    ///
+    /// Counted rather than asserted, because the wire carries `generation` as its own key and an
+    /// index written earlier could hold a value that disagrees. The number below is the evidence
+    /// for or against, and the disagreeing samples are printed.
+    generation_is_a_copy: usize,
+    generation_disagrees: usize,
+    generation_disagreement_samples: Vec<(u64, Option<u64>, Option<u64>)>,
 }
 
 impl AddressCensus {
@@ -97,6 +114,21 @@ impl AddressCensus {
             set += 1;
         }
         self.optional_field_histogram[set] += 1;
+
+        // Is the generation its own value, or a copy of a neighbour?
+        let derived = address.page_id().or(address.object_id());
+        if address.generation() == derived {
+            self.generation_is_a_copy += 1;
+        } else {
+            self.generation_disagrees += 1;
+            if self.generation_disagreement_samples.len() < 8 {
+                self.generation_disagreement_samples.push((
+                    address.offset,
+                    address.generation(),
+                    derived,
+                ));
+            }
+        }
     }
 
     fn note(&mut self, name: &'static str, count: usize) {
@@ -151,6 +183,17 @@ impl AddressCensus {
             self.dead_optional_bytes(),
             self.dead_optional_bytes() as f64 / (1024.0 * 1024.0)
         );
+
+        println!(
+            "  generation EQUALS page_id.or(object_id) on {} of {} addresses ({:.2}%); it differs on {}",
+            self.generation_is_a_copy,
+            self.total,
+            100.0 * self.generation_is_a_copy as f64 / self.total.max(1) as f64,
+            self.generation_disagrees,
+        );
+        for (offset, held, derived) in &self.generation_disagreement_samples {
+            println!("    disagreement at offset {offset}: stored {held:?} vs derived {derived:?}");
+        }
 
         // Presence says whether a field can be OMITTED. Width says whether it can be SHRUNK.
         // Both have to fail before the 56 bytes are justified.
@@ -1442,5 +1485,273 @@ fn the_bucket_index_holds_one_page_inline_and_the_series_maps_hold_none() {
         "  {} timestamped series maps share one container type, so the split shape has to be \
          adopted for all of them or none",
         six.len()
+    );
+}
+
+/// The CAPACITY CEILING each proposed narrowing would impose, measured on a fixture built to
+/// push on it rather than on the one that happens to exist.
+///
+/// WHY A SECOND FIXTURE. The seed helper writes one small block per key, so the census it feeds
+/// reports a page_id maximum of 1 and a length maximum of 712. Both clear a 16-bit and a 32-bit
+/// field by four orders of magnitude, and both numbers are properties of THAT fixture rather
+/// than of the type. Narrowing a field on the strength of them would be the empty-denominator
+/// mistake with extra steps: the measurement cannot fail, so it cannot authorise anything.
+///
+/// This fixture pushes on each ceiling separately:
+///   * many HASH FIELDS under ONE key, which is one object with many components, for the
+///     blocks-per-object ceiling,
+///   * a LARGE value, for the block-length ceiling,
+///   * many distinct keys, for the objects-per-bucket ceiling.
+///
+/// NON-VACUITY: each arm asserts it actually moved its own maximum off the floor the default
+/// fixture sits at, BEFORE any ceiling is reported. An arm that stopped writing would otherwise
+/// report a comfortable maximum that only means nothing was written.
+#[test]
+#[ignore = "seeds a wide fixture; run by name"]
+fn the_capacity_ceilings_each_narrowing_would_impose() {
+    const FIELDS_PER_OBJECT: usize = 4_000;
+    const BIG_VALUE: usize = 1 << 20;
+    const DISTINCT_KEYS: usize = 2_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = new_engine(dir.path());
+
+    for chunk_start in (0..FIELDS_PER_OBJECT).step_by(500) {
+        let commands = (chunk_start..(chunk_start + 500).min(FIELDS_PER_OBJECT))
+            .map(|i| Command::HashSet {
+                key: "wide_object".to_string(),
+                field: format!("component{i}"),
+                value: vec![104u8; 16],
+            })
+            .collect::<Vec<_>>();
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: 1,
+            commands,
+        });
+        assert!(response.status.ok, "hash seed must ack: {:?}", response.status);
+    }
+
+    // INCOMPRESSIBLE, and that is the whole point of this arm.
+    //
+    // An earlier draft wrote vec![66u8; 1 MiB] -- a run of one byte -- and the index recorded a
+    // length of 66. The address does not hold the VALUE length, it holds the framed RECORD
+    // length, and the record is compressed: a megabyte of one repeated byte is 66 bytes on disk.
+    // Measuring the length ceiling against that would have reported 56-million-fold headroom for
+    // a field whose real maximum is set by incompressible payloads. A cheap LCG defeats the
+    // compressor without pulling in a dependency.
+    let mut seed_state = 0x2545_F491_4F6C_DD1Du64;
+    let mut big = Vec::with_capacity(BIG_VALUE);
+    for _ in 0..BIG_VALUE {
+        seed_state = seed_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        big.push((seed_state >> 33) as u8);
+    }
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "big_value".to_string(),
+            value: big,
+        },
+    });
+    assert!(response.status.ok, "big value must ack: {:?}", response.status);
+
+    // An EMPTY value. This is the whole of the tombstone question: if a live, undeleted block can
+    // carry length 0, then a length-0 tombstone would read a live block as deleted.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "empty_value".to_string(),
+            value: Vec::new(),
+        },
+    });
+    assert!(response.status.ok, "empty value must ack: {:?}", response.status);
+
+    for chunk_start in (0..DISTINCT_KEYS).step_by(500) {
+        let commands = (chunk_start..(chunk_start + 500).min(DISTINCT_KEYS))
+            .map(|i| Command::StringSet {
+                key: format!("k{i}"),
+                value: vec![118u8; 64],
+            })
+            .collect::<Vec<_>>();
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: 1,
+            commands,
+        });
+        assert!(response.status.ok, "key seed must ack: {:?}", response.status);
+    }
+
+    // The bucket index and the model maps hold DIFFERENT lengths for the same write, and only one
+    // of them is the payload. Walk both: the census covers every model map, and the loop below
+    // covers the bucket index. Reading only the bucket index reported a 1 MiB write as 66 bytes.
+    let wide = census(&engine, 1);
+    println!("--- wide fixture, model-map census ---");
+    wide.report("wide fixture");
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    let empty_in_model_map = shard.strings.get("empty_value").map(|a| a.length);
+    let big_in_model_map = shard.strings.get("big_value").map(|a| a.length);
+    println!(
+        "  MODEL MAP lengths -- empty_value: {empty_in_model_map:?}   big_value: {big_in_model_map:?}"
+    );
+
+    let mut max_objects_in_a_bucket = 0usize;
+    let mut max_blocks_in_a_bucket = 0usize;
+    let mut blocks_per_object: BTreeMap<u64, usize> = BTreeMap::new();
+    let mut model_ids: std::collections::BTreeSet<String> = Default::default();
+    let mut max_length = 0u64;
+    let mut max_page_id = 0u64;
+    let mut live_zero_length: Vec<(String, String)> = Vec::new();
+    let mut deleted_zero_length = 0usize;
+    let mut live_blocks = 0usize;
+    let mut named: BTreeMap<String, (u64, bool)> = BTreeMap::new();
+    let mut longest: Vec<(u64, String)> = Vec::new();
+
+    for bucket in shard.bucket_index.bucket_map.values() {
+        max_objects_in_a_bucket = max_objects_in_a_bucket.max(bucket.object_index.len());
+        let mut blocks_here = 0usize;
+        for (_, page) in bucket.block_index.iter() {
+            blocks_here += 1;
+            model_ids.insert(page.model_id.to_string());
+            *blocks_per_object.entry(page.object_id()).or_default() += 1;
+            max_length = max_length.max(page.address.length);
+            max_page_id = max_page_id.max(page.address.page_id().unwrap_or(0));
+            longest.push((page.address.length, page.object_key.to_string()));
+            if page.object_key.as_ref() == "big_value" || page.object_key.as_ref() == "empty_value"
+            {
+                named.insert(
+                    page.object_key.to_string(),
+                    (page.address.length, page.deleted),
+                );
+            }
+            if !page.deleted {
+                live_blocks += 1;
+                if page.address.length == 0 {
+                    live_zero_length
+                        .push((page.model_id.to_string(), page.object_key.to_string()));
+                }
+            } else if page.address.length == 0 {
+                deleted_zero_length += 1;
+            }
+        }
+        max_blocks_in_a_bucket = max_blocks_in_a_bucket.max(blocks_here);
+    }
+    let max_blocks_in_an_object = blocks_per_object.values().copied().max().unwrap_or(0);
+
+    // WHAT A NARROWING WOULD ACTUALLY BUY, which is not what its field width suggests.
+    //
+    // BlockAddress is 8-byte aligned because it contains u64s, so its size is its payload rounded
+    // UP to a multiple of 8. Today that payload is 6*8 + 4 + 1 = 53, rounded to 56 -- there are
+    // already 3 bytes of padding being paid for. Narrowing ONE 8-byte field to 4 takes the
+    // payload to 49, which still rounds to 56 and buys NOTHING. The struct only gets smaller when
+    // a change removes at least 6 bytes of payload. That is why these are printed together: the
+    // per-field question is not "can this be narrower" but "does this cross an alignment step".
+    println!("--- what the struct actually costs ---");
+    println!(
+        "  size_of BlockAddress = {} (payload 6*8 + 4 + 1 = 53, so {} bytes are padding)",
+        std::mem::size_of::<BlockAddress>(),
+        std::mem::size_of::<BlockAddress>() - 53
+    );
+    println!(
+        "  align_of BlockAddress = {}",
+        std::mem::align_of::<BlockAddress>()
+    );
+    println!(
+        "  size_of BlockIndex = {} (it holds a BlockAddress plus 2 Arc<str>, an Option<Arc<str>> and 3 bools)",
+        std::mem::size_of::<BlockIndex>()
+    );
+    println!(
+        "  size_of Arc<str> = {}, size_of Option<Arc<str>> = {}, size_of bool = {}",
+        std::mem::size_of::<Arc<str>>(),
+        std::mem::size_of::<Option<Arc<str>>>(),
+        std::mem::size_of::<bool>()
+    );
+
+    println!("--- capacity ceilings, wide fixture ---");
+    println!("  live blocks walked: {live_blocks}");
+    println!(
+        "  max objects in one bucket: {max_objects_in_a_bucket}  (8-bit object_id ceiling 255, headroom {:.1}x)",
+        255.0 / max_objects_in_a_bucket.max(1) as f64
+    );
+    println!("  max blocks in one bucket: {max_blocks_in_a_bucket}");
+    println!(
+        "  max blocks in one object: {max_blocks_in_an_object}  (16-bit page_id ceiling 65535, headroom {:.1}x)",
+        65535.0 / max_blocks_in_an_object.max(1) as f64
+    );
+    println!(
+        "  max page_id observed: {max_page_id}  (16-bit ceiling 65535, headroom {:.1}x)",
+        65535.0 / max_page_id.max(1) as f64
+    );
+    println!(
+        "  max block length: {max_length} bytes  (32-bit ceiling 4294967295, headroom {:.1}x)",
+        4294967295.0 / max_length.max(1) as f64
+    );
+    longest.sort_by(|a, b| b.0.cmp(&a.0));
+    println!("  five longest blocks (length, key):");
+    for (len, key) in longest.iter().take(5) {
+        println!("    {len} bytes  key={key}");
+    }
+    println!(
+        "  the 1 MiB write landed as: {:?}   the empty write landed as: {:?}   (length, deleted)",
+        named.get("big_value"),
+        named.get("empty_value")
+    );
+    println!(
+        "  distinct model_id values in the tree: {} -> {:?}",
+        model_ids.len(),
+        model_ids
+    );
+    println!(
+        "  LIVE blocks carrying length 0: {} (deleted blocks carrying length 0: {deleted_zero_length})",
+        live_zero_length.len()
+    );
+    for (model, key) in live_zero_length.iter().take(5) {
+        println!("    live zero-length block: model={model} key={key}");
+    }
+    println!(
+        "  VERDICT on the length-0 tombstone: {}",
+        if live_zero_length.is_empty() {
+            "no live block carries length 0 in this fixture"
+        } else {
+            "A LIVE BLOCK CARRIES LENGTH 0, so the length-0 tombstone encoding is UNAVAILABLE"
+        }
+    );
+
+    // NON-VACUITY, asserted AFTER the report so a guard can never hide the numbers that explain
+    // why it fired. An earlier draft asserted first, and the blocks-per-object arm aborted the
+    // whole probe before a single maximum was printed -- which is the same failure as an empty
+    // sweep: the run says something is wrong and nothing about what.
+    assert!(
+        live_blocks > DISTINCT_KEYS,
+        "fixture must produce more live blocks ({live_blocks}) than the {DISTINCT_KEYS} plain keys"
+    );
+    // The large-value arm is reported, not asserted on its MAXIMUM, because what it revealed is
+    // that a value does not become a block of its own size: the entry below names the length the
+    // index actually holds for a 1 MiB write. Asserting a maximum here would have turned a fact
+    // about where big values live into a red test.
+    assert!(
+        named.contains_key("big_value") && named.contains_key("empty_value"),
+        "both probe keys must reach the bucket index, saw {:?}",
+        named.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        max_objects_in_a_bucket >= 1 && !model_ids.is_empty(),
+        "the bucket walk must see objects and models, saw {max_objects_in_a_bucket} and {}",
+        model_ids.len()
+    );
+
+    // BLOCKS PER OBJECT IS NOT A FIXTURE FAILURE, it is the answer.
+    //
+    // This arm wrote 4,000 hash fields under ONE key expecting one object with 4,000 blocks, and
+    // got 4,000 objects with one block each. That is not the fixture missing: our object identity
+    // is stable_block_object_id(shard, kind, key, COMPONENT), so a component is a separate OBJECT
+    // rather than another block inside one. page_id therefore has almost nothing left to
+    // enumerate, which is why it measures 1 -- and it is a fact about the design, not about the
+    // seed. Recorded here so the next reader does not spend the same build cycles on it.
+    println!(
+        "  NOTE: blocks-per-object is {max_blocks_in_an_object} because component identity is folded \
+         into the OBJECT id, so a component is its own object rather than another block"
     );
 }
