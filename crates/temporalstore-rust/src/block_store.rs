@@ -467,6 +467,19 @@ pub struct BlockStoreGcReport {
     pub retained_current_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_current_physical_bytes: u64,
+    /// Slabs this round declined to reclaim because the PUBLISHED BYTE TALLY still credits them
+    /// with live block bytes, even though the caller's live slab-id set did not name them.
+    ///
+    /// Not the same thing as `retained_live_block_slab_ids`, which is the slabs the caller's id
+    /// set kept. These are the ones the two sources DISAGREE about, and reaching this list means
+    /// a bug upstream: an id set and a tally derived from the same index should never contradict
+    /// each other about the same slab. Non-empty is an alarm, and the point of the check is that
+    /// the disagreement costs a round of reclaim instead of the bytes.
+    #[serde(default)]
+    #[serde(rename = "retained_live_bytes_page_slab_ids")]
+    pub retained_live_bytes_block_slab_ids: Vec<u64>,
+    #[serde(default)]
+    pub retained_live_bytes_physical_bytes: u64,
 }
 
 /// Live pages on ONE slab, as the INDEX counts them.
@@ -5599,6 +5612,106 @@ mod tests {
             .map(|fraction| fraction.live_basis_points)
             .collect::<Vec<_>>();
         assert_eq!(live_points, vec![2_000, 9_000, 0, 0], "{fractions:?}");
+    }
+
+    /// A slab the PUBLISHED TALLY still credits with live bytes is not reclaimed, however little
+    /// of it is live.
+    ///
+    /// The tally's own header says it "only ever KEEPS a slab; it never grants permission to delete
+    /// one". Its only consumer was the garbage floor, and a floor is a threshold: at the shipped
+    /// 4,000 basis points a slab that is 20% live is 8,000 bp of garbage and clears it. So the
+    /// tally could keep a slab only once it was more than 60% live.
+    ///
+    /// Two arms on ONE fixture, differing only in whether a tally was published, so the number the
+    /// assertions move is the tally and not the store.
+    #[test]
+    fn a_slab_the_tally_still_credits_with_live_bytes_is_not_reclaimed() {
+        fn arm(publish: bool) -> (BlockStoreGcReport, Vec<u64>) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = BlockStore::new(dir.path());
+            // Equal sizes: nothing below can be satisfied by the slabs merely differing in length.
+            store.install_slab(0, &vec![b'a'; 1_000]).unwrap();
+            store.install_slab(1, &vec![b'b'; 1_000]).unwrap();
+            store.install_slab(2, b"current").unwrap();
+            if publish {
+                // Slab 0 is 20% live -- 8,000 bp of garbage, which clears the shipped 4,000 floor.
+                // Slab 1 is named nowhere, which the publisher's contract reads as zero live bytes.
+                store.publish_live_block_bytes(BTreeMap::from([(
+                    0_u64,
+                    BlockStoreSlabLive {
+                        live_block_refs: 2,
+                        live_bytes: 200,
+                    },
+                )]));
+            }
+            // The caller's live id set is EMPTY in both arms. That is the disagreement being
+            // tested: the walk says nothing is live, the tally says slab 0 is.
+            let report = store
+                .gc_slabs_before_with_live_refs(2, Vec::<u64>::new())
+                .unwrap();
+            let left = store.slab_ids().unwrap();
+            (report, left)
+        }
+
+        let (without, left_without) = arm(false);
+        let (with, left_with) = arm(true);
+
+        // THE DENOMINATOR, and the control. With no tally published the check reads zero and the
+        // round reclaims both slabs below the floor, exactly as it did before.
+        assert_eq!(
+            without.removed_block_slab_ids,
+            vec![0, 1],
+            "the unpublished arm must reclaim both candidates, or the arm below proves nothing: \
+             {without:?}"
+        );
+        assert!(
+            without.retained_live_bytes_block_slab_ids.is_empty(),
+            "nothing was published, so nothing can be held back by a tally: {without:?}"
+        );
+        assert_eq!(without.retained_live_bytes_physical_bytes, 0);
+        assert_eq!(left_without, vec![2], "only the current slab survives: {left_without:?}");
+
+        // THE TWO HALVES, ASSERTED SEPARATELY.
+        //
+        // Half one: the slab the tally credits is held back, named, and still on disk.
+        assert_eq!(
+            with.retained_live_bytes_block_slab_ids,
+            vec![0],
+            "the 20%-live slab must be refused, not merely under-selected: {with:?}"
+        );
+        assert_eq!(
+            with.retained_live_bytes_physical_bytes, 1_000,
+            "and reported at its own physical size: {with:?}"
+        );
+        assert!(
+            with.retained_block_slab_ids.contains(&0),
+            "a refused slab is retained: {with:?}"
+        );
+        assert!(
+            left_with.contains(&0),
+            "and its file is still in the store: {left_with:?}"
+        );
+
+        // Half two: the round still did its work on the slab the tally agrees is dead. A check
+        // that refused everything would satisfy half one and be useless.
+        assert_eq!(
+            with.removed_block_slab_ids,
+            vec![1],
+            "the slab with no tallied live bytes is still reclaimed: {with:?}"
+        );
+        assert!(
+            !left_with.contains(&1),
+            "and its file is gone: {left_with:?}"
+        );
+        assert_eq!(left_with, vec![0, 2], "{left_with:?}");
+
+        // The refusal is not double-counted as an ordinary live-set retention: the caller's id set
+        // was empty in both arms, so that list must stay empty.
+        assert!(
+            with.retained_live_block_slab_ids.is_empty(),
+            "the caller named no live slabs, so `retained_live` must not absorb the refusal: \
+             {with:?}"
+        );
     }
 
     #[test]

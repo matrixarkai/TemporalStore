@@ -467,11 +467,13 @@ impl BlockStore {
         let mut delayed_destroy_ids = Vec::new();
         let mut retained_live = Vec::new();
         let mut retained_current = Vec::new();
+        let mut retained_live_bytes = Vec::new();
         let mut removed_physical_bytes = 0;
         let mut retained_physical_bytes = 0;
         let mut delayed_destroy_physical_bytes = 0;
         let mut retained_live_physical_bytes = 0;
         let mut retained_current_physical_bytes = 0;
+        let mut retained_live_bytes_physical_bytes = 0;
         for block_slab_id in slab_ids_at(&inner.root)? {
             let slab_physical_bytes = slab_path(&inner.root, block_slab_id)
                 .metadata()
@@ -484,7 +486,44 @@ impl BlockStore {
                 .as_ref()
                 .map(|selected| selected.contains(&block_slab_id))
                 .unwrap_or(true);
-            if below_retention_floor && !is_current && !is_live && is_selected {
+            // ASK THE TALLY ONE LAST TIME, IMMEDIATELY BEFORE THE IRREVERSIBLE STEP.
+            //
+            // The header on `live_block_bytes` states the rule this enforces: the tally "only ever
+            // KEEPS a slab; it never grants permission to delete one". Nothing made that true. The
+            // only consumer was the garbage floor in `gc_policy_plan`, and a floor is a THRESHOLD
+            // -- at the shipped 4,000 basis points a slab the tally credits with 200 live bytes out
+            // of 1,000 is 8,000 bp of garbage, clears the floor, and is selected for destruction.
+            // So the tally could keep a slab only once it was more than 60% live, and below that it
+            // was silently overruled in exactly the case it exists to notice.
+            //
+            // The two reclaim entries that take no policy at all -- `gc_slabs_before_with_live_refs`
+            // and its delayed-destroy sibling, which is what the operator reclaim RPC calls -- never
+            // consulted it in any form.
+            //
+            // The constructor doc on `with_slab_garbage_floor` states the invariant from the other
+            // side: a collector candidate is a slab no live page points at, "so its maintained live
+            // bytes are genuinely zero". That was asserted in prose and nowhere in code. It is a
+            // claim about two INDEPENDENT derivations agreeing -- `live_block_slab_ids` is walked
+            // fresh from the index at every call, while the tally is maintained incrementally on the
+            // index's own mutation path and has a drift check of its own -- so the case where they
+            // disagree is real, and the direction that matters is the tally saying live where the
+            // walk said dead.
+            //
+            // `None` (nobody has published) reads as zero and the check is inert, which is the only
+            // reading that is safe: a store with no tally must reclaim exactly as it did before.
+            let tallied_live_bytes = inner
+                .live_block_bytes
+                .as_ref()
+                .and_then(|published| published.get(&block_slab_id))
+                .map(|live| live.live_bytes)
+                .unwrap_or_default();
+            let holds_tallied_live_bytes = tallied_live_bytes > 0;
+            if below_retention_floor
+                && !is_current
+                && !is_live
+                && is_selected
+                && !holds_tallied_live_bytes
+            {
                 removed_physical_bytes += slab_physical_bytes;
                 if delayed_destroy {
                     move_slab_to_delayed_destroy_unsynced(&inner.root, block_slab_id)?;
@@ -512,6 +551,17 @@ impl BlockStore {
                 if below_retention_floor && is_live {
                     retained_live.push(block_slab_id);
                     retained_live_physical_bytes += slab_physical_bytes;
+                }
+                // Everything the destroy branch required EXCEPT the tally. Reported on its own so
+                // a slab held back by the disagreement cannot be read as an ordinary retention.
+                if below_retention_floor
+                    && !is_current
+                    && !is_live
+                    && is_selected
+                    && holds_tallied_live_bytes
+                {
+                    retained_live_bytes.push(block_slab_id);
+                    retained_live_bytes_physical_bytes += slab_physical_bytes;
                 }
                 retained_physical_bytes += slab_physical_bytes;
                 retained.push(block_slab_id);
@@ -558,6 +608,8 @@ impl BlockStore {
             retained_live_physical_bytes,
             retained_current_block_slab_ids: retained_current,
             retained_current_physical_bytes,
+            retained_live_bytes_block_slab_ids: retained_live_bytes,
+            retained_live_bytes_physical_bytes,
         })
     }
 }
