@@ -1762,7 +1762,7 @@ fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let live_now_ms = PinnedLeaderClock::real_now_ms();
 
@@ -1770,7 +1770,7 @@ fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
         let writer = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache-a"),
-            &page_dir,
+            &block_dir,
             &index_dir,
         );
         let log = writer.write_ahead_log_store();
@@ -1787,7 +1787,7 @@ fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
