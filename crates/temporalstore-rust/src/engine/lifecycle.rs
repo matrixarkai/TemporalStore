@@ -2093,6 +2093,28 @@ impl TemporalEngine {
         }
     }
 
+    /// Is this shard inside its recovery window -- published, but with WAL replay still to run
+    /// (or still running)?
+    ///
+    /// The bucket index is half-reconstructed for the whole of that window, so anything that
+    /// derives a LIVE SET from it sees a set that is missing everything still waiting in the
+    /// log. Reclaim is the dangerous reader: a slab whose only referents have not been replayed
+    /// yet reads as dead, and reclaim is irreversible.
+    ///
+    /// This is the same signal the storage-manager cycle gates on, and it is deliberately
+    /// path-independent: the synchronous load path calls load_shard_with directly and never
+    /// registers in running_shards, so the shard info row is the only place the recovery window
+    /// is visible from outside the engine. Callers outside this module could not read it at all
+    /// before this accessor existed, which is why the reclaim entry point went unguarded.
+    pub fn shard_is_recovering(&self, shard_id: ShardId) -> bool {
+        self.infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| info.recovering)
+            .unwrap_or(false)
+    }
+
     /// Test-only: run the publish phase of `load_shard_with` (install newer manifest, load
     /// the served-index base, publish the shard as `recovering: true`) but STOP before WAL
     /// replay, leaving the shard parked in the recovery window. Returns the WAL replay

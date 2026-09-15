@@ -11056,3 +11056,166 @@ fn what_a_follower_rewrites_per_round() {
         }
     }
 }
+
+/// RECLAIM MUST NOT RUN AGAINST A HALF-REPLAYED INDEX.
+///
+/// run_storage_manager_cycle refuses to run while a shard is recovering, and its own comment
+/// says why: the cycle mutates shard state, and a reclaim round interleaved with an in-flight
+/// WAL replay observes a half-reconstructed index and can reclaim something still live.
+///
+/// run_gc_inner -- the reclaim that BOTH the periodic storage-manager loop and the operator
+/// reclaim RPC actually run -- had no such check, and a recovering shard reaches both callers.
+/// load_shard_with publishes the shard into the shards map BEFORE it replays the WAL, and
+/// loaded_shard_ids() reads that map without consulting the recovery flag.
+///
+/// The sharpest exposure is the LOG, not the slabs. run_gc_inner also reclaims the write-ahead
+/// log, and a shard that has never dumped gets an UNPROVEN durable anchor whose through_sequence
+/// is u64::MAX -- no clamp at all. So a reclaim taken during the recovery window deletes the
+/// very records replay has not applied yet. Slabs at least have quarantine to be restored from;
+/// the log has nothing.
+///
+/// async_storage is what makes the served index genuinely partial: the write lands in the WAL
+/// and page/index materialization is deferred to replay, so the index on disk does not contain
+/// these records at all.
+///
+/// The halves are asserted SEPARATELY -- what the reclaim removed, and what survived -- because
+/// a test that only counted survivors would pass if the round had removed nothing for an
+/// unrelated reason, and a total can pass when two errors cancel.
+#[test]
+fn reclaim_is_refused_while_the_shard_is_recovering() {
+    const RECORDS: usize = 32;
+
+    let dir = tempfile::tempdir().unwrap();
+    let block_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-a"),
+        &block_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(crate::control::SetConfigRequest {
+                shard_id: 1,
+                config: crate::control::Config {
+                    version: 2,
+                    async_storage: true,
+                    ..crate::control::Config::default()
+                },
+            })
+            .ok
+    );
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("recovery-{index:03}"),
+                value: format!("value-{index:03}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "write {index} failed: {response:?}");
+    }
+    let wal_writes = engine.write_ahead_log_store().stats(1).writes;
+    let block_writes = engine.block_store().stats().writes;
+    assert_eq!(
+        block_writes, 0,
+        "NON-VACUITY: async_storage must defer every block write, so the served index cannot already hold these records; block_writes={block_writes}"
+    );
+    assert!(
+        wal_writes >= RECORDS as u64,
+        "NON-VACUITY: all {RECORDS} records must be in the log; wal_writes={wal_writes}"
+    );
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &block_dir,
+        &index_dir,
+    );
+    let watermark = restarted.test_publish_recovering_shard(1);
+    let last_sequence = restarted.write_ahead_log_store().stats(1).last_sequence;
+    assert!(
+        last_sequence > 0,
+        "NON-VACUITY: the log must hold something to reclaim; last_sequence={last_sequence}"
+    );
+
+    let cycle = restarted.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_wal_reclaim: true,
+        enable_block_reclaim: true,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(
+        !cycle.completed,
+        "CONTROL: the guarded cycle must refuse while the shard is recovering: {cycle:?}"
+    );
+
+    let runtime = DataNodeRuntime::new(
+        restarted.clone(),
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    let submitted = runtime.submit_gc(
+        GcRequest {
+            shard_id: 1,
+            retain_wal_from_sequence: Some(last_sequence.saturating_add(1)),
+            retain_index_log_from_sequence: None,
+            retain_block_slabs_from_id: Some(u64::MAX),
+            block_gc_delayed_destroy: false,
+            block_gc_invalidate_removed_slabs_only: false,
+        },
+        RequestController { timeout_ms: 5_000 },
+    );
+    let finished = wait_for_job(&runtime, submitted.job_id);
+    let Some(DataNodeTaskOutput::Gc(output)) = finished.output else {
+        panic!("expected gc output");
+    };
+    println!(
+        "MEASURED-RECLAIM status_ok={} wal_records_removed={} block_slabs_removed={} last_sequence={last_sequence}",
+        output.status.ok, output.wal_records_removed, output.block_slabs_removed
+    );
+
+    // HALF ONE, asserted BEFORE recovery is finished. What did the reclaim take? Checked here
+    // so the first failure is a NUMBER rather than a panic out of replay: with the log already
+    // holed, finishing recovery aborts with a replay-hole status and the count below would never
+    // be reported.
+    assert_eq!(
+        output.wal_records_removed, 0,
+        "a reclaim ran during replay and deleted {} log records that replay had not applied yet",
+        output.wal_records_removed
+    );
+    assert_eq!(
+        output.block_slabs_removed, 0,
+        "a reclaim ran during replay and destroyed {} slabs",
+        output.block_slabs_removed
+    );
+
+    restarted.test_finish_recovery(1, watermark);
+    let mut readable = 0usize;
+    for index in 0..RECORDS {
+        let response = restarted.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("recovery-{index:03}"),
+            },
+        });
+        if let CommandResponse::Bytes { value: Some(value) } = response.response {
+            if value == format!("value-{index:03}").into_bytes() {
+                readable += 1;
+            }
+        }
+    }
+    println!("MEASURED-SURVIVORS records_written={RECORDS} records_readable={readable}");
+
+    assert_eq!(
+        readable, RECORDS,
+        "only {readable} of {RECORDS} records survived a reclaim taken during replay"
+    );
+}
