@@ -1832,8 +1832,31 @@ impl BlockStore {
         // reaching disk, as a side effect of `persist_slab_manifest` fsyncing the root to commit
         // its own rename -- which is exactly the kind of accident that survives until someone
         // reorders the two calls. It is stated here instead of relied upon there.
-        sync_delayed_destroy_dirs(&root)?;
-        persist_slab_manifest(&inner.root, &inner.slabs)?;
+        //
+        // AND ONLY WHEN THE ROUND ACTUALLY DID SOMETHING, which is the guard the collector half of
+        // this stage already carries (`a_gc_round_that_reclaimed_nothing_does_not_rewrite_the_
+        // manifest`) and this half did not. Both run in the same periodic round, from
+        // `apply_storage_lifecycle`, and the reasoning recorded there applies unchanged: the
+        // manifest write serialises every slab, fsyncs a temp file, renames it and fsyncs the
+        // parent directory.
+        //
+        // `inner.slabs` is mutated in exactly two places in the loop above, both `set_slab_state`
+        // -- one in the branch that pushes onto `restored`, one in the branch that pushes onto
+        // `purged` -- and the only filesystem changes are the rename inside those restores and the
+        // unlink inside those destroys. A `restore_blocked` entry moves nothing
+        // (`restore_slab_from_delayed_destroy_unsynced` returns before its rename when the
+        // destination is occupied) and a `retained_too_young` entry touches nothing at all. So with
+        // both lists empty there is no rename and no unlink for an fsync to commit, and the
+        // manifest would be rewritten with byte-identical content.
+        //
+        // That is the ordinary shape of a purge round, not a corner: a quarantined slab waits
+        // DELAYED_DESTROY_MIN_AGE_MS -- an hour -- and every round in that window walks the whole
+        // trash directory and acts on none of it. Measured on a sixteen-slab quarantine: three
+        // directory fsyncs plus a full manifest rewrite per round, for no durable change.
+        if !purged.is_empty() || !restored.is_empty() {
+            sync_delayed_destroy_dirs(&root)?;
+            persist_slab_manifest(&inner.root, &inner.slabs)?;
+        }
         retained_too_young.sort_unstable();
         Ok(BlockStorePurgeDelayedDestroyReport {
             purged_block_slab_ids: purged,
@@ -5311,6 +5334,109 @@ mod tests {
             small_fsyncs >= 2,
             "and it must still sync BOTH directories -- a round that syncs nothing would satisfy \
              the equality above while making the renames undurable"
+        );
+    }
+
+    /// A purge round that DESTROYED AND RESTORED NOTHING must not fsync, and must not rewrite the
+    /// slab manifest.
+    ///
+    /// The collector half of this stage already has the guard --
+    /// `a_gc_round_that_reclaimed_nothing_does_not_rewrite_the_manifest` -- and the reasoning it
+    /// records applies word for word here: the manifest write "serialises every slab, fsyncs the
+    /// temp file, renames it and fsyncs the parent directory", on a stage the periodic loop runs
+    /// whenever page pressure holds. The purge runs in the SAME round as the collector, from
+    /// `apply_storage_lifecycle`, and had no such guard: it synced both directories and rewrote the
+    /// manifest on every round, including the rounds where every quarantined slab was still inside
+    /// its grace window and the round therefore touched nothing at all -- which is what a purge
+    /// round looks like for the whole hour after a quarantine.
+    ///
+    /// Counted rather than timed: how many fsyncs a round issues is the shape itself and reads the
+    /// same on a loaded box as on an idle one.
+    #[test]
+    fn a_purge_round_that_acted_on_nothing_does_not_fsync_or_rewrite_the_manifest() {
+        fn arm(
+            min_age_ms: u64,
+            live_block_slab_ids: Vec<u64>,
+        ) -> (u64, bool, BlockStorePurgeDelayedDestroyReport) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = BlockStore::new(dir.path());
+            for index in 0..8u64 {
+                store.append(format!("record-{index}").as_bytes()).unwrap();
+            }
+            store.sync_durable().unwrap();
+            quarantine_fixture(dir.path(), 16);
+            let manifest = slab_manifest_path(dir.path());
+            assert!(manifest.exists(), "the fixture needs a manifest to leave alone");
+            let mtime_before = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+            let fsyncs_before = super::paths::directory_fsyncs();
+            let report = store
+                .purge_delayed_destroy_slabs_capped(min_age_ms, live_block_slab_ids, None, 0)
+                .unwrap();
+            let fsyncs = super::paths::directory_fsyncs() - fsyncs_before;
+            let mtime_after = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+            (fsyncs, mtime_before != mtime_after, report)
+        }
+
+        // Nothing is old enough, so the round walks all sixteen entries and acts on none of them.
+        let (idle_fsyncs, idle_rewrote, idle) = arm(u64::MAX, Vec::new());
+        // THE DENOMINATOR: the round really did walk the quarantine. A round that found an empty
+        // directory would satisfy everything below for the wrong reason.
+        assert_eq!(
+            idle.retained_too_young_block_slab_ids.len(),
+            16,
+            "the idle round must have examined all sixteen quarantined slabs: {idle:?}"
+        );
+        assert_eq!(idle.processed_block_slabs, 0, "and charged its budget for none: {idle:?}");
+        assert!(idle.purged_block_slab_ids.is_empty(), "{idle:?}");
+        assert!(idle.restored_block_slab_ids.is_empty(), "{idle:?}");
+
+        // THE TWO HALVES, ASSERTED SEPARATELY.
+        assert_eq!(
+            idle_fsyncs, 0,
+            "a purge round that destroyed and restored nothing issued {idle_fsyncs} directory \
+             fsyncs; there is no rename and no unlink for them to commit"
+        );
+        assert!(
+            !idle_rewrote,
+            "and it rewrote the slab manifest with byte-identical content: {idle:?}"
+        );
+
+        // THE CONTROL, on the same fixture: a round that DOES act still syncs and still writes.
+        // Without this the assertions above are satisfied by a purge that stopped working.
+        let (busy_fsyncs, _, busy) = arm(0, Vec::new());
+        assert_eq!(
+            busy.purged_block_slab_ids.len(),
+            16,
+            "the control round must really have destroyed the quarantine: {busy:?}"
+        );
+        assert!(
+            busy_fsyncs >= 3,
+            "a round that unlinked sixteen slabs must still sync both directories and the \
+             manifest rename, but issued {busy_fsyncs}"
+        );
+
+        // THE OTHER HALF OF THE CONDITION, ON ITS OWN. A round can do work without destroying
+        // anything: a slab that came back live is RENAMED out of quarantine and back into the
+        // store, and that rename needs the same two directory fsyncs an unlink does. Without this
+        // arm the guard passes while testing only the purged half -- verified by mutation:
+        // narrowing the condition to `!purged.is_empty()` alone left all 79 tests green.
+        //
+        // Nothing is old enough to destroy, and ids 8..16 are named live. Ids 0..8 stay put
+        // (too young), so this round restores and destroys nothing.
+        let (restore_fsyncs, _, restore) = arm(u64::MAX, (8..16).collect::<Vec<u64>>());
+        assert_eq!(
+            restore.restored_block_slab_ids,
+            (8..16).collect::<Vec<u64>>(),
+            "the restore-only round must really have restored eight slabs: {restore:?}"
+        );
+        assert!(
+            restore.purged_block_slab_ids.is_empty(),
+            "and destroyed none, which is the whole point of this arm: {restore:?}"
+        );
+        assert!(
+            restore_fsyncs >= 3,
+            "a round that renamed eight slabs back into the store must still sync both \
+             directories and the manifest rename, but issued {restore_fsyncs}"
         );
     }
 
