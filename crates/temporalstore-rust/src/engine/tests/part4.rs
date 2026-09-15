@@ -20973,3 +20973,95 @@ walking the whole set again to find one bucket's keys.",
         "bucket {chosen} was dumped and cleared but still holds dirty objects",
     );
 }
+
+/// WHAT ACTUALLY GOVERNS THE RAFT-SNAPSHOT SLAB RETENTION: A LOG SEQUENCE, NOT A SLAB.
+///
+/// The three sibling dependencies in this loop each compare a slab id against a slab id --
+/// the shared-store cursor against its retain_from_block_slab_id, and the two floors against
+/// their own slab ids. The raft-snapshot dependency compares the slab id against
+/// index_log_sequence, which counts LOG RECORDS, and then reports it in a field named
+/// retain_from_block_slab_id.
+///
+/// BucketDumpRaftSnapshotRef carries no slab id at all -- snapshot_id, shard_id,
+/// last_included_index, last_included_term, wal_sequence, index_log_sequence -- so there is no
+/// correct field to compare against and no way to make this meaningful without changing the
+/// type. This test therefore PINS THE CURRENT BEHAVIOUR rather than asserting a fix, and states
+/// the domain confusion in numbers so it cannot be read as intentional.
+///
+/// It exists because the dependency-matrix test cannot see this. That test sets every input to
+/// zero against candidates [0, 1], which makes the predicate universally true, so it pins only
+/// "the dependency fires for every candidate". Measured by mutation on this tree: replacing the
+/// predicate with the literal true leaves that test PASSING; replacing it with false fails it
+/// (0 against an expected 2). It detects the dependency vanishing and nothing else.
+///
+/// The inputs below are chosen so the two readings give DIFFERENT answers.
+#[test]
+fn raft_snapshot_slab_retention_is_decided_by_a_log_sequence_not_a_slab_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let candidates = vec![0_u64, 1, 2];
+    let snapshot_at = |index_log_sequence: u64| BucketDumpRaftSnapshotRef {
+        snapshot_id: "raft-snapshot-domain".to_string(),
+        shard_id: 1,
+        last_included_index: 7,
+        last_included_term: 2,
+        wal_sequence: 0,
+        index_log_sequence,
+    };
+    let block_count = |index_log_sequence: u64| {
+        engine
+            .storage_block_gc_dependency_plan(
+                1,
+                candidates.clone(),
+                Vec::<StorageBlockGcReplayCursor>::new(),
+                vec![snapshot_at(index_log_sequence)],
+                None,
+                None,
+                0,
+            )
+            .raft_snapshot_ref_block_count
+    };
+
+    // Nothing about the SLABS changes across these three calls. The same three candidate slab
+    // ids are passed every time, and the same snapshot pins them. Only a counter of log records
+    // moves -- and the slab retention decision moves with it.
+    let at_zero = block_count(0);
+    let at_two = block_count(2);
+    let at_high = block_count(3);
+
+    assert_eq!(
+        at_zero, 3,
+        "a snapshot whose log sequence is 0 retains every candidate slab: {at_zero}"
+    );
+    assert_eq!(
+        at_two, 1,
+        "advancing the LOG SEQUENCE to 2 releases slabs 0 and 1, though no slab changed: {at_two}"
+    );
+    assert_eq!(
+        at_high, 0,
+        "a log sequence past the highest slab id releases them all: {at_high}"
+    );
+
+    // The point, stated as a comparison rather than three separate numbers: writing records --
+    // which is all that advances a log sequence -- is what releases slabs from a Raft snapshot
+    // dependency here. A retention rule about slabs must not be a function of how many log
+    // records have been written.
+    assert!(
+        at_zero > at_high,
+        "retention must have moved purely as a function of the log sequence for this test to say anything: at_zero={at_zero} at_high={at_high}"
+    );
+
+    // And the control that the dependency-matrix test is missing: at these inputs the predicate
+    // is NOT universally true, so a literal true does not reproduce these counts.
+    assert_ne!(
+        at_high, candidates.len(),
+        "NON-VACUITY: at least one reading must differ from block-everything, or this test cannot distinguish the predicate from the literal true"
+    );
+}
