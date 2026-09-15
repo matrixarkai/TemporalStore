@@ -27,8 +27,8 @@ fn main() {
     let mut with_outcomes = 0usize;
     let mut outcome_items = 0usize;
     let mut outcomes_carrying_a_value = 0usize;
-    let mut with_staged_pages = 0usize;
-    let mut staged_page_bytes = 0usize;
+    let mut with_staged_blocks = 0usize;
+    let mut staged_block_bytes = 0usize;
     let mut undecodable = 0usize;
 
     for (_, bytes) in &records {
@@ -47,8 +47,8 @@ fn main() {
                     }
                 }
                 if !record.staged_pages.is_empty() {
-                    with_staged_pages += 1;
-                    staged_page_bytes += record.staged_pages.iter().map(|p| p.bytes.len()).sum::<usize>();
+                    with_staged_blocks += 1;
+                    staged_block_bytes += record.staged_pages.iter().map(|p| p.bytes.len()).sum::<usize>();
                 }
             }
             Err(_) => undecodable += 1,
@@ -58,7 +58,7 @@ fn main() {
     println!("  carrying a COMMAND to re-run          {with_command}");
     println!("  carrying OUTCOMES                     {with_outcomes}  ({outcome_items} items)");
     println!("     of those items, carrying a VALUE   {outcomes_carrying_a_value}");
-    println!("  carrying STAGED PAGES                 {with_staged_pages}  ({staged_page_bytes} bytes)");
+    println!("  carrying STAGED PAGES                 {with_staged_blocks}  ({staged_block_bytes} bytes)");
     println!("  undecodable                           {undecodable}");
     println!();
     println!("With the pages wiped, a value can only come back from a command to re-run, an");

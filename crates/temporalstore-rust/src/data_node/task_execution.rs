@@ -26,14 +26,14 @@ pub(super) fn run_compaction_inner_draining(
     let compaction = match drain_block_slab_ids {
         Some(drain_block_slab_ids) => inner
             .engine
-            .compact_shard_pages_draining(request.shard_id, drain_block_slab_ids),
-        None => inner.engine.compact_shard_pages(request.shard_id),
+            .compact_shard_blocks_draining(request.shard_id, drain_block_slab_ids),
+        None => inner.engine.compact_shard_blocks(request.shard_id),
     };
     let (
         status,
         compacted_objects,
         relocated_bytes,
-        rewritten_object_pages,
+        rewritten_object_blocks,
         delete_marked_object_ids_before,
         delete_marked_object_ids_after,
         model_layouts,
@@ -45,9 +45,9 @@ pub(super) fn run_compaction_inner_draining(
     ) = match compaction {
         Ok(report) => (
             Status::ok(),
-            report.rewritten_page_refs,
+            report.rewritten_block_refs,
             report.relocated_bytes,
-            report.rewritten_object_pages,
+            report.rewritten_object_blocks,
             report.delete_marked_object_ids_before,
             report.delete_marked_object_ids_after,
             report.model_layouts,
@@ -82,7 +82,7 @@ pub(super) fn run_compaction_inner_draining(
         shard_id: request.shard_id,
         compacted_objects,
         relocated_bytes,
-        rewritten_object_pages,
+        rewritten_object_blocks,
         delete_marked_object_ids_before,
         delete_marked_object_ids_after,
         model_layouts,
@@ -118,7 +118,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     // all: it cannot know what will be reclaimed, so it takes everything. Scoping it to what was
     // actually reclaimed means doing it after, which is why this is a branch here and a second
     // block below rather than a narrower call in the same place.
-    if !request.page_gc_invalidate_removed_slabs_only {
+    if !request.block_gc_invalidate_removed_slabs_only {
         match inner.engine.cache().invalidate_shard(request.shard_id) {
             Ok(report) => {
                 cache_entries_removed = report.memory_entries_removed;
@@ -209,7 +209,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             // operator /gc RPC must not delete a slab a retained manifest needs: a lagging
             // follower's replay or a snapshot-install reads it, and deleting it makes the
             // manifest uninstallable (replica data loss). The gated storage-manager cycle
-            // already blocks this via storage_page_gc_dependency_plan; mirror that manifest
+            // already blocks this via storage_block_gc_dependency_plan; mirror that manifest
             // guard here so the operator path cannot bypass it.
             for manifest in inner.engine.list_bucket_dump_manifests(request.shard_id) {
                 live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
@@ -217,7 +217,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             // Quarantine or unlink, nothing else: both entries take the same path and differ
             // only in what they do with a slab once it has been selected, so a request that does
             // not ask for quarantine runs exactly the code it ran before.
-            let gc_result = if request.page_gc_delayed_destroy {
+            let gc_result = if request.block_gc_delayed_destroy {
                 inner
                     .engine
                     .block_store()
@@ -233,7 +233,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             };
             match gc_result {
                 Ok(report) => {
-                    if request.page_gc_invalidate_removed_slabs_only {
+                    if request.block_gc_invalidate_removed_slabs_only {
                         // The entries that went stale are the ones whose slab went away, and
                         // nothing else in the shard did.
                         //
@@ -287,11 +287,11 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: Vec::new(),
-                page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: Vec::new(),
-                page_gc_checkpoint_floor_slab_id: None,
-                page_gc_raft_install_floor_slab_id: None,
-                page_gc_delayed_destroy_grace_ms: 0,
+                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_raft_snapshot_refs: Vec::new(),
+                block_gc_checkpoint_floor_slab_id: None,
+                block_gc_raft_install_floor_slab_id: None,
+                block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             }),

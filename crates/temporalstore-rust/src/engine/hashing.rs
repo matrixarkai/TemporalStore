@@ -61,7 +61,7 @@ pub(super) fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u
     stable_object_hash_update(hash, &buf[pos..]);
 }
 
-pub(crate) fn stable_page_object_id(shard_id: ShardId, kind: &str, key: &str, component: Option<&str>) -> u64 {
+pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str, component: Option<&str>) -> u64 {
     let mut hash = FNV1A64_OFFSET_BASIS;
     stable_object_hash_update_u64_decimal(&mut hash, shard_id as u64);
     stable_object_hash_update(&mut hash, b":");
@@ -75,7 +75,7 @@ pub(crate) fn stable_page_object_id(shard_id: ShardId, kind: &str, key: &str, co
     hash
 }
 
-pub(super) fn page_routing_bucket(key: &str, start_routing_bucket: u32, end_routing_bucket: u32) -> u32 {
+pub(super) fn block_routing_bucket(key: &str, start_routing_bucket: u32, end_routing_bucket: u32) -> u32 {
     bucket_for_object(
         key,
         start_routing_bucket,

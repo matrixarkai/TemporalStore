@@ -129,6 +129,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms: None,
                 condition: StringSetCondition::Always,
                 return_old: true,
+                keep_ttl: false,
             }) {
                 Ok(CommandResponse::Bytes { value }) => {
                     state.keyspace.insert(key);
@@ -155,6 +156,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms: options.ttl_ms,
                 condition: options.condition,
                 return_old: options.return_old,
+                keep_ttl: options.keep_ttl,
             }) {
                 Ok(CommandResponse::Bytes { value }) => {
                     if options.condition == StringSetCondition::Always || value.is_some() {
@@ -177,6 +179,7 @@ pub fn execute_redis_command_with_state(
             ttl_ms: None,
             condition: StringSetCondition::IfNotExists,
             return_old: false,
+            keep_ttl: false,
         }) {
             Ok(CommandResponse::Integer { value }) => {
                 if value > 0 {
@@ -198,6 +201,7 @@ pub fn execute_redis_command_with_state(
                     ttl_ms: None,
                     condition: StringSetCondition::Always,
                     return_old: false,
+                    keep_ttl: false,
                 }) {
                     return RespValue::Error(format!("ERR {err}"));
                 }
@@ -229,6 +233,7 @@ pub fn execute_redis_command_with_state(
                     ttl_ms: None,
                     condition: StringSetCondition::Always,
                     return_old: false,
+                    keep_ttl: false,
                 }) {
                     return RespValue::Error(format!("ERR {err}"));
                 }
@@ -696,7 +701,7 @@ pub fn execute_redis_command_with_state(
                             ]
                         })
                         .collect();
-                    redis_cursor_page_response(cursor, count, values)
+                    redis_cursor_block_response(cursor, count, values)
                 }
                 Ok(_) => RespValue::Error("ERR invalid hscan response".to_string()),
                 Err(err) => RespValue::Error(format!("ERR {err}")),
@@ -1198,7 +1203,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             match sorted_set_members(&string_arg(&args[1]), &mut execute) {
-                Ok(members) => redis_cursor_page_response(
+                Ok(members) => redis_cursor_block_response(
                     cursor,
                     count,
                     members

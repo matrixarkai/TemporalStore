@@ -9,7 +9,7 @@ use super::*;
 /// A routing slot is derived per key, so per-slot metrics scale with record count rather than
 /// with topology. Past this many slots the per-slot detail is dropped in favour of the shard
 /// totals, which are emitted unconditionally.
-fn max_slot_series_per_shard() -> usize {
+fn max_bucket_series_per_shard() -> usize {
     std::env::var("TS_METRICS_MAX_SLOT_SERIES")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
@@ -462,7 +462,7 @@ impl TemporalEngine {
                 &mut out,
                 "temporalstore_object_manager_page_refs",
                 &[("shard_id", stats.shard_id.to_string())],
-                stats.object_manager.page_ref_count as u64,
+                stats.object_manager.block_ref_count as u64,
             );
             push_metric(
                 &mut out,
@@ -488,17 +488,17 @@ impl TemporalEngine {
             // instead; the shard totals emitted above already carry the aggregate. Note
             // object_manager.routing_bucket_count is the shard's routing RANGE (u32::MAX), not the
             // number of occupied slots, so the occupied count has to come from the summaries.
-            let slot_summaries = self.bucket_storage_summaries(stats.shard_id);
-            let max_slot_series = max_slot_series_per_shard();
-            if slot_summaries.len() > max_slot_series {
+            let bucket_summaries = self.bucket_storage_summaries(stats.shard_id);
+            let max_bucket_series = max_bucket_series_per_shard();
+            if bucket_summaries.len() > max_bucket_series {
                 push_metric(
                     &mut out,
                     "temporalstore_storage_slot_series_omitted",
                     &[("shard_id", stats.shard_id.to_string())],
-                    slot_summaries.len() as u64,
+                    bucket_summaries.len() as u64,
                 );
             }
-            for summary in slot_summaries.iter().take(max_slot_series) {
+            for summary in bucket_summaries.iter().take(max_bucket_series) {
                 push_metric(
                     &mut out,
                     "temporalstore_storage_slot_page_refs",
@@ -506,7 +506,7 @@ impl TemporalEngine {
                         ("shard_id", stats.shard_id.to_string()),
                         ("slot", summary.routing_bucket.to_string()),
                     ],
-                    summary.page_ref_count,
+                    summary.block_ref_count,
                 );
                 for (kind, value) in [
                     ("logical", summary.logical_bytes),

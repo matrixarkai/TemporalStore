@@ -10,7 +10,7 @@ use crate::block_store::{
 };
 use crate::storage_config::{
     StorageTuningConfig, TS_BLOCK_INDEX_CACHE_BYTES, TS_BLOCK_SLAB_TARGET_BYTES,
-    TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_PAGE_TARGET_BYTES,
+    TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_BLOCK_TARGET_BYTES,
     TS_PAGE_INDEX_CACHE_BYTES, TS_STREAM_MAX_BLOB_SIZE,
 };
 use crate::types::{ShardId, Status};
@@ -62,7 +62,8 @@ pub struct ShardCompactionReport {
     #[serde(alias = "compacted_page_segment_id")]
     #[serde(rename = "compacted_page_slab_id")]
     pub compacted_block_slab_id: u64,
-    pub rewritten_page_refs: usize,
+    #[serde(rename = "rewritten_page_refs")]
+    pub rewritten_block_refs: usize,
     /// Bytes this round copied onto the fresh slab, verbatim.
     ///
     /// The round's real cost, and the figure that says how much a round on a node leading
@@ -78,8 +79,8 @@ pub struct ShardCompactionReport {
     /// Non-zero means the round did NOT finish, and the next one continues filling the same slab
     /// rather than rolling a new one. Zero means compaction completed inside one round, which is
     /// what every store smaller than a round's budget does.
-    #[serde(default)]
-    pub pages_left_by_budget: usize,
+    #[serde(rename = "pages_left_by_budget", default)]
+    pub blocks_left_by_budget: usize,
     #[serde(default)]
     pub bytes_left_by_budget: u64,
     /// Pages this round left where they were because emptying their slab was not asked for.
@@ -91,12 +92,12 @@ pub struct ShardCompactionReport {
     ///
     /// Unlike `pages_left_by_budget` this does NOT mean the round is unfinished: a later round
     /// will not want these pages either.
-    #[serde(default)]
-    pub pages_left_off_drain_set: usize,
-    #[serde(default)]
-    pub cold_page_rewrite_refs: usize,
-    #[serde(default)]
-    pub object_page_pack_group_count: usize,
+    #[serde(rename = "pages_left_off_drain_set", default)]
+    pub blocks_left_off_drain_set: usize,
+    #[serde(rename = "cold_page_rewrite_refs", default)]
+    pub cold_block_rewrite_refs: usize,
+    #[serde(rename = "object_page_pack_group_count", default)]
+    pub object_block_pack_group_count: usize,
     #[serde(alias = "stale_page_segment_ids")]
     #[serde(rename = "stale_page_slab_ids")]
     pub stale_block_slab_ids: Vec<u64>,
@@ -113,8 +114,8 @@ pub struct ShardCompactionReport {
     pub stale_density_policy_model_count: usize,
     #[serde(default)]
     pub layout_aware_policy_model_count: usize,
-    #[serde(default)]
-    pub rewritten_object_pages: usize,
+    #[serde(rename = "rewritten_object_pages", default)]
+    pub rewritten_object_blocks: usize,
     #[serde(default)]
     #[serde(rename = "slot_layout_transition_count")]
     pub bucket_layout_transition_count: u64,
@@ -148,10 +149,14 @@ pub struct ShardCompactionModelLayoutReport {
     pub kind: String,
     pub object_count: usize,
     pub index_refs: usize,
-    pub unique_page_refs: usize,
-    pub packed_timestamped_pages: usize,
-    pub legacy_value_pages: usize,
-    pub stale_page_estimate: u64,
+    #[serde(rename = "unique_page_refs")]
+    pub unique_block_refs: usize,
+    #[serde(rename = "packed_timestamped_pages")]
+    pub packed_timestamped_blocks: usize,
+    #[serde(rename = "legacy_value_pages")]
+    pub legacy_value_blocks: usize,
+    #[serde(rename = "stale_page_estimate")]
+    pub stale_block_estimate: u64,
     pub live_ref_density_basis_points: u64,
 }
 
@@ -160,9 +165,12 @@ pub struct ShardCompactionUtilityReport {
     #[serde(alias = "live_page_segment_count")]
     #[serde(rename = "live_page_slab_count")]
     pub live_block_slab_count: usize,
-    pub total_page_count: u64,
-    pub live_page_refs: u64,
-    pub stale_page_estimate: u64,
+    #[serde(rename = "total_page_count")]
+    pub total_block_count: u64,
+    #[serde(rename = "live_page_refs")]
+    pub live_block_refs: u64,
+    #[serde(rename = "stale_page_estimate")]
+    pub stale_block_estimate: u64,
     pub live_ref_density_basis_points: u64,
     #[serde(default)]
     pub model_policies: Vec<ModelCompactionPolicyReport>,
@@ -172,20 +180,23 @@ pub struct ShardCompactionUtilityReport {
 pub struct ModelCompactionPolicyReport {
     pub model_id: String,
     pub layout_policy: String,
-    pub live_page_refs: u64,
-    pub deleted_page_refs: u64,
-    #[serde(alias = "total_segment_pages")]
-    pub total_slab_pages: u64,
-    pub stale_page_estimate: u64,
+    #[serde(rename = "live_page_refs")]
+    pub live_block_refs: u64,
+    #[serde(rename = "deleted_page_refs")]
+    pub deleted_block_refs: u64,
+    #[serde(rename = "total_slab_pages", alias = "total_segment_pages")]
+    pub total_slab_blocks: u64,
+    #[serde(rename = "stale_page_estimate")]
+    pub stale_block_estimate: u64,
     pub stale_density_basis_points: u64,
     #[serde(rename = "tombstone_density_basis_points")]
     pub delete_marker_density_basis_points: u64,
-    #[serde(default)]
-    pub object_page_packing_enabled: bool,
-    #[serde(default)]
-    pub object_page_pack_group_count: u64,
-    #[serde(default)]
-    pub cold_page_rewrite_eligible_refs: u64,
+    #[serde(rename = "object_page_packing_enabled", default)]
+    pub object_block_packing_enabled: bool,
+    #[serde(rename = "object_page_pack_group_count", default)]
+    pub object_block_pack_group_count: u64,
+    #[serde(rename = "cold_page_rewrite_eligible_refs", default)]
+    pub cold_block_rewrite_eligible_refs: u64,
     #[serde(default)]
     pub compaction_action: String,
     #[serde(default)]
@@ -201,9 +212,12 @@ pub struct ModelCompactionPolicyReport {
 pub struct ModelCompactionRewriteReport {
     pub model_id: String,
     pub layout_policy: String,
-    pub rewritten_page_refs: usize,
-    pub cold_page_rewrite_refs: usize,
-    pub object_page_pack_group_count: usize,
+    #[serde(rename = "rewritten_page_refs")]
+    pub rewritten_block_refs: usize,
+    #[serde(rename = "cold_page_rewrite_refs")]
+    pub cold_block_rewrite_refs: usize,
+    #[serde(rename = "object_page_pack_group_count")]
+    pub object_block_pack_group_count: usize,
     #[serde(rename = "tombstone_density_basis_points")]
     pub delete_marker_density_basis_points: u64,
     pub stale_density_basis_points: u64,
@@ -265,8 +279,10 @@ pub struct RustStorageObservation {
     pub observed_memory_eviction: bool,
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
-    pub local_page_bytes_written: u64,
-    pub local_page_bytes_read: u64,
+    #[serde(rename = "local_page_bytes_written")]
+    pub local_block_bytes_written: u64,
+    #[serde(rename = "local_page_bytes_read")]
+    pub local_block_bytes_read: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,16 +312,18 @@ pub struct StorageRecoveryReport {
     #[serde(alias = "page_segment_live_reports")]
     #[serde(rename = "page_slab_live_reports")]
     pub block_slab_live_reports: Vec<StorageRecoverySlabLiveReport>,
-    pub total_page_refs: usize,
-    pub readable_page_refs: usize,
+    #[serde(rename = "total_page_refs")]
+    pub total_block_refs: usize,
+    #[serde(rename = "readable_page_refs")]
+    pub readable_block_refs: usize,
     /// How many live pages this call actually READ, as opposed to tallied.
     ///
     /// `readable_page_refs` counts the ones that read back, and `all_live_pages_readable`
     /// compares the two -- so without this number a reader cannot tell a call that read
     /// everything from a call that read a sample, and "all readable" means different things in
     /// the two cases. Equal to `total_page_refs` for an unbounded call.
-    #[serde(default)]
-    pub probed_page_refs: usize,
+    #[serde(rename = "probed_page_refs", default)]
+    pub probed_block_refs: usize,
     /// The index into this shard's live-page vector where this call STARTED reading.
     ///
     /// A bounded probe reads a window rather than the whole shard, and successive rounds move
@@ -315,26 +333,27 @@ pub struct StorageRecoveryReport {
     /// call, which starts at the beginning and reads everything.
     #[serde(default)]
     pub readable_probe_cursor: usize,
-    #[serde(default)]
-    pub unreadable_page_refs: Vec<StorageRecoveryPageError>,
-    #[serde(default)]
-    pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
-    #[serde(default)]
-    pub missing_owner_page_refs: usize,
+    #[serde(rename = "unreadable_page_refs", default)]
+    pub unreadable_block_refs: Vec<StorageRecoveryBlockError>,
+    #[serde(rename = "owner_mismatch_page_refs", default)]
+    pub owner_mismatch_block_refs: Vec<StorageRecoveryBlockOwnerMismatch>,
+    #[serde(rename = "missing_owner_page_refs", default)]
+    pub missing_owner_block_refs: usize,
     #[serde(default)]
     pub object_lifecycle: StorageObjectLifecycleReport,
-    pub all_live_pages_readable: bool,
+    #[serde(rename = "all_live_pages_readable")]
+    pub all_live_blocks_readable: bool,
     #[serde(default)]
     pub boundary: StorageRecoveryBoundaryReport,
     #[serde(default)]
     #[serde(alias = "segment_integrity")]
     pub slab_integrity: StorageSlabIntegrityReport,
-    #[serde(default)]
-    pub feature_page_layout: StorageFeaturePageLayoutReport,
+    #[serde(rename = "feature_page_layout", default)]
+    pub feature_block_layout: StorageFeatureBlockLayoutReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageRecoveryPageError {
+pub struct StorageRecoveryBlockError {
     #[serde(rename = "page_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
@@ -343,7 +362,7 @@ pub struct StorageRecoveryPageError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageRecoveryPageOwnerMismatch {
+pub struct StorageRecoveryBlockOwnerMismatch {
     pub object_key: String,
     #[serde(rename = "page_segment_id")]
     pub block_slab_id: u64,
@@ -357,45 +376,51 @@ pub struct StorageRecoveryPageOwnerMismatch {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageFeaturePageLayoutReport {
+pub struct StorageFeatureBlockLayoutReport {
     #[serde(default)]
     pub indexed_timestamped_points: usize,
+    #[serde(rename = "unique_timestamped_page_refs", default)]
+    pub unique_timestamped_block_refs: usize,
+    #[serde(rename = "packed_timestamped_pages", default)]
+    pub packed_timestamped_blocks: usize,
+    #[serde(rename = "legacy_timestamped_value_pages", default)]
+    pub legacy_timestamped_value_blocks: usize,
     #[serde(default)]
-    pub unique_timestamped_page_refs: usize,
-    #[serde(default)]
-    pub packed_timestamped_pages: usize,
-    #[serde(default)]
-    pub legacy_timestamped_value_pages: usize,
-    #[serde(default)]
-    pub families: Vec<StorageTimestampedPageFamilyReport>,
+    pub families: Vec<StorageTimestampedBlockFamilyReport>,
     pub indexed_feature_points: usize,
-    pub unique_feature_page_refs: usize,
-    pub packed_feature_pages: usize,
-    pub legacy_feature_value_pages: usize,
+    #[serde(rename = "unique_feature_page_refs")]
+    pub unique_feature_block_refs: usize,
+    #[serde(rename = "packed_feature_pages")]
+    pub packed_feature_blocks: usize,
+    #[serde(rename = "legacy_feature_value_pages")]
+    pub legacy_feature_value_blocks: usize,
+    #[serde(rename = "corrupt_packed_feature_pages", default)]
+    pub corrupt_packed_feature_blocks: Vec<StorageFeatureBlockError>,
     #[serde(default)]
-    pub corrupt_packed_feature_pages: Vec<StorageFeaturePageError>,
+    pub missing_indexed_timestamps: Vec<StorageFeatureBlockTimestampMismatch>,
     #[serde(default)]
-    pub missing_indexed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
+    pub orphan_packed_timestamps: Vec<StorageFeatureBlockTimestampMismatch>,
     #[serde(default)]
-    pub orphan_packed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
-    #[serde(default)]
-    pub duplicate_packed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
+    pub duplicate_packed_timestamps: Vec<StorageFeatureBlockTimestampMismatch>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageTimestampedPageFamilyReport {
+pub struct StorageTimestampedBlockFamilyReport {
     pub kind: String,
     pub indexed_points: usize,
-    pub unique_page_refs: usize,
+    #[serde(rename = "unique_page_refs")]
+    pub unique_block_refs: usize,
     pub packed_pages: usize,
-    pub legacy_value_pages: usize,
-    pub corrupt_pages: usize,
+    #[serde(rename = "legacy_value_pages")]
+    pub legacy_value_blocks: usize,
+    #[serde(rename = "corrupt_pages")]
+    pub corrupt_blocks: usize,
     pub mismatch_count: usize,
 }
 
-impl StorageFeaturePageLayoutReport {
+impl StorageFeatureBlockLayoutReport {
     pub(crate) fn has_errors(&self) -> bool {
-        !self.corrupt_packed_feature_pages.is_empty()
+        !self.corrupt_packed_feature_blocks.is_empty()
             || !self.missing_indexed_timestamps.is_empty()
             || !self.orphan_packed_timestamps.is_empty()
             || !self.duplicate_packed_timestamps.is_empty()
@@ -409,7 +434,7 @@ impl StorageFeaturePageLayoutReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageFeaturePageError {
+pub struct StorageFeatureBlockError {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     pub key: String,
@@ -421,7 +446,7 @@ pub struct StorageFeaturePageError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageFeaturePageTimestampMismatch {
+pub struct StorageFeatureBlockTimestampMismatch {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     pub key: String,
@@ -435,13 +460,16 @@ pub struct StorageFeaturePageTimestampMismatch {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageObjectLifecycleReport {
     pub live_object_ids: u64,
-    pub live_page_refs: u64,
+    #[serde(rename = "live_page_refs")]
+    pub live_block_refs: u64,
     pub stale_object_ids: u64,
     #[serde(rename = "tombstoned_object_ids")]
     pub delete_marked_object_ids: u64,
     pub reused_object_id_conflicts: u64,
-    pub missing_owner_page_refs: u64,
-    pub owner_mismatch_page_refs: u64,
+    #[serde(rename = "missing_owner_page_refs")]
+    pub missing_owner_block_refs: u64,
+    #[serde(rename = "owner_mismatch_page_refs")]
+    pub owner_mismatch_block_refs: u64,
     #[serde(default)]
     pub reused_object_ids: Vec<u64>,
     #[serde(default)]
@@ -462,10 +490,14 @@ pub struct StorageRecoverySlabLiveReport {
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     pub page_count: u64,
-    pub live_page_refs: u64,
-    pub readable_live_page_refs: u64,
-    pub unreadable_live_page_refs: u64,
-    pub stale_page_estimate: u64,
+    #[serde(rename = "live_page_refs")]
+    pub live_block_refs: u64,
+    #[serde(rename = "readable_live_page_refs")]
+    pub readable_live_block_refs: u64,
+    #[serde(rename = "unreadable_live_page_refs")]
+    pub unreadable_live_block_refs: u64,
+    #[serde(rename = "stale_page_estimate")]
+    pub stale_block_estimate: u64,
     pub live_physical_bytes: u64,
     pub live_logical_bytes: u64,
     pub live_object_count: u64,
@@ -495,7 +527,8 @@ pub struct BlockSlabLiveDriftReport {
     pub drifted_slabs: u64,
     /// Maintained minus recomputed, summed over every slab. Signed on purpose: an over-count and
     /// an under-count are different bugs, and a sum of absolute values hides which one happened.
-    pub page_ref_drift: i64,
+    #[serde(rename = "page_ref_drift")]
+    pub block_ref_drift: i64,
     pub byte_drift: i64,
     /// The slab with the largest absolute byte disagreement, when there was one.
     pub worst_block_slab_id: Option<u64>,
@@ -503,7 +536,7 @@ pub struct BlockSlabLiveDriftReport {
 
 impl BlockSlabLiveDriftReport {
     pub fn is_clean(&self) -> bool {
-        self.drifted_slabs == 0 && self.page_ref_drift == 0 && self.byte_drift == 0
+        self.drifted_slabs == 0 && self.block_ref_drift == 0 && self.byte_drift == 0
     }
 }
 
@@ -522,14 +555,19 @@ pub struct StorageSlabIntegrityReport {
     #[serde(alias = "orphan_page_segment_count")]
     #[serde(rename = "orphan_page_slab_count")]
     pub orphan_block_slab_count: usize,
-    pub stale_page_ref_count: usize,
+    #[serde(rename = "stale_page_ref_count")]
+    pub stale_block_ref_count: usize,
     #[serde(alias = "corrupt_page_segment_count")]
     #[serde(rename = "corrupt_page_slab_count")]
     pub corrupt_block_slab_count: usize,
-    pub unreadable_page_ref_count: usize,
-    pub unreadable_page_bytes: u64,
-    pub owner_mismatch_page_ref_count: usize,
-    pub missing_owner_page_ref_count: usize,
+    #[serde(rename = "unreadable_page_ref_count")]
+    pub unreadable_block_ref_count: usize,
+    #[serde(rename = "unreadable_page_bytes")]
+    pub unreadable_block_bytes: u64,
+    #[serde(rename = "owner_mismatch_page_ref_count")]
+    pub owner_mismatch_block_ref_count: usize,
+    #[serde(rename = "missing_owner_page_ref_count")]
+    pub missing_owner_block_ref_count: usize,
     pub reclaim_required: bool,
     pub integrity_ok: bool,
 }
@@ -559,8 +597,8 @@ pub struct BucketStorageSummary {
     pub routing_bucket: u32,
     #[serde(alias = "oc")]
     pub object_count: u64,
-    #[serde(alias = "prc")]
-    pub page_ref_count: u64,
+    #[serde(rename = "page_ref_count", alias = "prc")]
+    pub block_ref_count: u64,
     #[serde(alias = "lb")]
     pub logical_bytes: u64,
     #[serde(alias = "pb")]
@@ -615,7 +653,7 @@ impl BucketStorageSummary {
         out.serialize_field(if short { "oc" } else { "object_count" }, &self.object_count)?;
         out.serialize_field(
             if short { "prc" } else { "page_ref_count" },
-            &self.page_ref_count,
+            &self.block_ref_count,
         )?;
         out.serialize_field(
             if short { "lb" } else { "logical_bytes" },
@@ -676,7 +714,7 @@ impl serde::Serialize for SummaryNamed<'_> {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoragePhysicalPageIndex {
+pub struct StoragePhysicalBlockIndex {
     pub object_key: String,
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -698,8 +736,10 @@ pub struct StoragePhysicalPageIndex {
     pub dirty: bool,
     pub deleted: bool,
     pub log_backed: bool,
-    pub native_packed_page_index_len: usize,
-    pub native_packed_page_index_hex: String,
+    #[serde(rename = "native_packed_page_index_len")]
+    pub native_packed_block_index_len: usize,
+    #[serde(rename = "native_packed_page_index_hex")]
+    pub native_packed_block_index_hex: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -713,7 +753,8 @@ pub struct StoragePhysicalBucketNode {
     pub in_memory: bool,
     pub ttl_ms: Option<u64>,
     pub object_count: u64,
-    pub page_ref_count: u64,
+    #[serde(rename = "page_ref_count")]
+    pub block_ref_count: u64,
     pub logical_bytes: u64,
     pub physical_bytes: u64,
     pub dirty_generation: u64,
@@ -722,8 +763,8 @@ pub struct StoragePhysicalBucketNode {
     pub native_packed_bucket_node_len: usize,
     #[serde(rename = "native_packed_slot_node_hex")]
     pub native_packed_bucket_node_hex: String,
-    #[serde(default)]
-    pub page_indexes: Vec<StoragePhysicalPageIndex>,
+    #[serde(rename = "page_indexes", default)]
+    pub block_indexes: Vec<StoragePhysicalBlockIndex>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -744,9 +785,11 @@ pub struct StoragePhysicalIndexReport {
     pub missing_object_id_count: usize,
     #[serde(rename = "missing_routing_slot_count")]
     pub missing_routing_bucket_count: usize,
-    pub missing_page_id_count: usize,
+    #[serde(rename = "missing_page_id_count")]
+    pub missing_block_id_count: usize,
     pub missing_checksum_count: usize,
-    pub native_packed_page_index_size: usize,
+    #[serde(rename = "native_packed_page_index_size")]
+    pub native_packed_block_index_size: usize,
     #[serde(rename = "native_packed_slot_node_size")]
     pub native_packed_bucket_node_size: usize,
     pub native_packed_layout_compatible: bool,
@@ -756,13 +799,16 @@ pub struct StoragePhysicalIndexReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BucketObjectPageOwnershipReport {
+pub struct BucketObjectBlockOwnershipReport {
     pub shard_id: ShardId,
     pub first_class_index_present: bool,
     pub derived_from_model_maps: bool,
-    pub page_ref_count: usize,
-    pub missing_owner_page_ref_count: usize,
-    pub owner_mismatch_page_ref_count: usize,
+    #[serde(rename = "page_ref_count")]
+    pub block_ref_count: usize,
+    #[serde(rename = "missing_owner_page_ref_count")]
+    pub missing_owner_block_ref_count: usize,
+    #[serde(rename = "owner_mismatch_page_ref_count")]
+    pub owner_mismatch_block_ref_count: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -772,7 +818,8 @@ pub struct ObjectManagerRuntimeReport {
     #[serde(rename = "routing_slot_count")]
     pub routing_bucket_count: u64,
     pub object_count: u64,
-    pub page_ref_count: u64,
+    #[serde(rename = "page_ref_count")]
+    pub block_ref_count: u64,
     pub hot_object_count: u64,
     pub cold_object_count: u64,
     pub mixed_residency_object_count: u64,
@@ -785,16 +832,21 @@ pub struct ObjectManagerRuntimeReport {
     #[serde(rename = "dirty_slot_count")]
     pub dirty_bucket_count: u64,
     pub max_dirty_generation: u64,
-    #[serde(default)]
-    pub object_page_transition_count: u64,
+    #[serde(rename = "object_page_transition_count", default)]
+    pub object_block_transition_count: u64,
     pub layout_transition_count: u64,
     #[serde(default)]
     pub layout_states: Vec<BucketLayoutStateCount>,
-    pub object_page_count: u64,
-    pub packed_timestamped_page_count: u64,
-    pub multi_page_object_count: u64,
-    pub missing_owner_page_ref_count: usize,
-    pub owner_mismatch_page_ref_count: usize,
+    #[serde(rename = "object_page_count")]
+    pub object_block_count: u64,
+    #[serde(rename = "packed_timestamped_page_count")]
+    pub packed_timestamped_block_count: u64,
+    #[serde(rename = "multi_page_object_count")]
+    pub multi_block_object_count: u64,
+    #[serde(rename = "missing_owner_page_ref_count")]
+    pub missing_owner_block_ref_count: usize,
+    #[serde(rename = "owner_mismatch_page_ref_count")]
+    pub owner_mismatch_block_ref_count: usize,
     pub reused_object_id_conflict_count: u64,
     pub evidence: Vec<String>,
     pub blockers: Vec<String>,
@@ -832,7 +884,8 @@ pub struct BucketDumpManifest {
     #[serde(rename = "wal_sequence")]
     pub wal_sequence: u64,
     pub index_log_sequence: u64,
-    pub live_page_refs: u64,
+    #[serde(rename = "live_page_refs")]
+    pub live_block_refs: u64,
     pub logical_bytes: u64,
     pub physical_bytes: u64,
     #[serde(rename = "slot_summaries")]
@@ -895,17 +948,19 @@ pub struct BucketDumpInstallPreflightReport {
     #[serde(alias = "corrupt_page_segment_ids")]
     #[serde(rename = "corrupt_page_slab_ids")]
     pub corrupt_block_slab_ids: Vec<u64>,
-    pub unreadable_page_ref_count: usize,
-    pub unreadable_page_bytes: u64,
+    #[serde(rename = "unreadable_page_ref_count")]
+    pub unreadable_block_ref_count: usize,
+    #[serde(rename = "unreadable_page_bytes")]
+    pub unreadable_block_bytes: u64,
     pub stale_manifest: bool,
     #[serde(default)]
     pub stale_object_conflict_count: usize,
-    #[serde(default)]
-    pub stale_page_conflict_count: usize,
+    #[serde(rename = "stale_page_conflict_count", default)]
+    pub stale_block_conflict_count: usize,
     #[serde(default)]
     pub stale_object_conflicts: Vec<String>,
-    #[serde(default)]
-    pub stale_page_conflicts: Vec<String>,
+    #[serde(rename = "stale_page_conflicts", default)]
+    pub stale_block_conflicts: Vec<String>,
     #[serde(default)]
     pub source_manifest_count: usize,
     #[serde(default)]
@@ -942,8 +997,8 @@ pub struct BucketDumpMergedInstallReport {
     pub source_bucket_coverage_missing_bucket_ids: Vec<u32>,
     #[serde(default)]
     pub stale_object_conflict_count: usize,
-    #[serde(default)]
-    pub stale_page_conflict_count: usize,
+    #[serde(rename = "stale_page_conflict_count", default)]
+    pub stale_block_conflict_count: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1114,8 +1169,10 @@ pub struct StorageReclaimCandidate {
     pub live_physical_bytes: u64,
     pub stale_physical_bytes: u64,
     pub page_count: u64,
-    pub live_page_refs: u64,
-    pub stale_page_estimate: u64,
+    #[serde(rename = "live_page_refs")]
+    pub live_block_refs: u64,
+    #[serde(rename = "stale_page_estimate")]
+    pub stale_block_estimate: u64,
     pub live_ref_density_basis_points: u64,
     pub reclaim_score: u64,
     pub reason: String,
@@ -1133,7 +1190,8 @@ pub struct ShardCompactionRelocationHint {
     /// trivially zero for a reason that has nothing to do with compaction.
     pub examined_object_count: u64,
     pub relocatable_object_count: u64,
-    pub relocatable_page_refs: u64,
+    #[serde(rename = "relocatable_page_refs")]
+    pub relocatable_block_refs: u64,
     /// Slabs carrying dead space that objects still hold pages on: compaction's job.
     #[serde(rename = "drain_page_segment_ids")]
     pub drain_block_slab_ids: Vec<u64>,
@@ -1141,11 +1199,12 @@ pub struct ShardCompactionRelocationHint {
     /// on. A round triggered by these is the self-retrigger.
     #[serde(rename = "collector_only_page_segment_ids")]
     pub collector_only_block_slab_ids: Vec<u64>,
-    pub relocatable_page_refs_by_model: BTreeMap<String, u64>,
+    #[serde(rename = "relocatable_page_refs_by_model")]
+    pub relocatable_block_refs_by_model: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoragePageGcReplayCursor {
+pub struct StorageBlockGcReplayCursor {
     pub cursor_id: String,
     pub shard_id: ShardId,
     #[serde(alias = "retain_from_page_segment_id")]
@@ -1156,7 +1215,7 @@ pub struct StoragePageGcReplayCursor {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoragePageGcDependencyBlock {
+pub struct StorageBlockGcDependencyBlock {
     #[serde(rename = "page_segment_id")]
     pub block_slab_id: u64,
     pub dependency: String,
@@ -1173,7 +1232,7 @@ pub struct StoragePageGcDependencyBlock {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoragePageGcDependencyPlan {
+pub struct StorageBlockGcDependencyPlan {
     pub shard_id: ShardId,
     pub safe_to_reclaim: bool,
     #[serde(alias = "candidate_page_segment_ids")]
@@ -1210,7 +1269,7 @@ pub struct StoragePageGcDependencyPlan {
     pub raft_snapshot_install_floor_block_count: usize,
     #[serde(default)]
     pub delayed_destroy_grace_block_count: usize,
-    pub dependency_blocks: Vec<StoragePageGcDependencyBlock>,
+    pub dependency_blocks: Vec<StorageBlockGcDependencyBlock>,
     pub blocker_reasons: Vec<String>,
 }
 
@@ -1462,8 +1521,8 @@ pub struct StorageLifecycleReport {
     pub dump_manifest: Option<BucketDumpManifest>,
     pub cache_entries_removed: usize,
     pub cache_disk_bytes_removed: u64,
-    #[serde(default)]
-    pub cache_warmup_page_refs: usize,
+    #[serde(rename = "cache_warmup_page_refs", default)]
+    pub cache_warmup_block_refs: usize,
     #[serde(default)]
     pub cache_warmup: StorageCacheWarmupReport,
     #[serde(alias = "delayed_destroy_purged_segments")]
@@ -1521,7 +1580,7 @@ impl Default for StorageLifecycleReport {
             dump_manifest: None,
             cache_entries_removed: 0,
             cache_disk_bytes_removed: 0,
-            cache_warmup_page_refs: 0,
+            cache_warmup_block_refs: 0,
             cache_warmup: StorageCacheWarmupReport::default(),
             delayed_destroy_purged_slabs: Vec::new(),
             delayed_destroy_purged_bytes: 0,
@@ -1645,13 +1704,13 @@ impl StorageLifecycleReport {
             "slot_stale_ref_count",
             object_lifecycle
                 .stale_object_ids
-                .saturating_add(object_lifecycle.missing_owner_page_refs)
-                .saturating_add(object_lifecycle.owner_mismatch_page_refs),
+                .saturating_add(object_lifecycle.missing_owner_block_refs)
+                .saturating_add(object_lifecycle.owner_mismatch_block_refs),
         );
         put(
             &mut metrics,
             "slot_owner_mismatch_count",
-            object_lifecycle.owner_mismatch_page_refs,
+            object_lifecycle.owner_mismatch_block_refs,
         );
         // OMITTED, not zeroed, when the round did not walk the live pages. In a metrics map an
         // absent key is "not measured" and a present 0 is "measured none" -- publishing the
@@ -1674,7 +1733,7 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "slot_page_ref_count",
-            object_lifecycle.live_page_refs,
+            object_lifecycle.live_block_refs,
         );
         put(
             &mut metrics,
@@ -1684,27 +1743,27 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "page_index_entry_count",
-            object_lifecycle.live_page_refs,
+            object_lifecycle.live_block_refs,
         );
         put(
             &mut metrics,
             "block_index_entry_count",
-            object_lifecycle.live_page_refs,
+            object_lifecycle.live_block_refs,
         );
         put(
             &mut metrics,
             "page_address_count",
-            object_lifecycle.live_page_refs,
+            object_lifecycle.live_block_refs,
         );
         put(
             &mut metrics,
             "missing_owner_ref_count",
-            object_lifecycle.missing_owner_page_refs,
+            object_lifecycle.missing_owner_block_refs,
         );
         put(
             &mut metrics,
             "owner_mismatch_count",
-            object_lifecycle.owner_mismatch_page_refs,
+            object_lifecycle.owner_mismatch_block_refs,
         );
         put(
             &mut metrics,
@@ -1729,12 +1788,12 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "cache_rehydrates",
-            self.cache_warmup_page_refs as u64,
+            self.cache_warmup_block_refs as u64,
         );
         put(
             &mut metrics,
             "cache_refills",
-            self.cache_warmup.warmed_page_refs as u64,
+            self.cache_warmup.warmed_block_refs as u64,
         );
         put(
             &mut metrics,
@@ -1744,7 +1803,7 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "cold_scan_no_cache_reads",
-            self.cache_warmup.skipped_page_refs as u64,
+            self.cache_warmup.skipped_block_refs as u64,
         );
         put(
             &mut metrics,
@@ -2149,7 +2208,8 @@ pub struct StorageBlockAddressSample {
 pub struct StoragePageIndexEntrySample {
     pub logical_key: String,
     pub timestamp_range: Option<(u64, u64)>,
-    pub page_addresses: Vec<StoragePageAddressSample>,
+    #[serde(rename = "page_addresses")]
+    pub block_addresses: Vec<StoragePageAddressSample>,
     pub append_watermark: u64,
     pub generation: u64,
 }
@@ -2169,7 +2229,8 @@ pub struct StorageObjectIndexEntrySample {
     pub model: String,
     pub table: String,
     pub object_key: String,
-    pub page_chain: Vec<StoragePageAddressSample>,
+    #[serde(rename = "page_chain")]
+    pub block_chain: Vec<StoragePageAddressSample>,
     #[serde(rename = "tombstone")]
     pub delete_marker: bool,
     pub generation: u64,
@@ -2185,9 +2246,11 @@ pub struct StorageIndexSnapshot {
     #[serde(rename = "slot_object_ref_count")]
     pub bucket_object_ref_count: u64,
     #[serde(rename = "slot_page_ref_count")]
-    pub bucket_page_ref_count: u64,
-    pub page_address_count: u64,
-    pub unreadable_page_refs: u64,
+    pub bucket_block_ref_count: u64,
+    #[serde(rename = "page_address_count")]
+    pub block_address_count: u64,
+    #[serde(rename = "unreadable_page_refs")]
+    pub unreadable_block_refs: u64,
     pub checksum_mismatches: u64,
     pub missing_owner_ref_count: u64,
     pub owner_mismatch_count: u64,
@@ -2209,9 +2272,9 @@ pub fn storage_index_snapshot_from_metrics(
         object_index_entry_count: metric(metrics, "object_index_entry_count"),
         bucket_index_entry_count: metric(metrics, "slot_index_entry_count"),
         bucket_object_ref_count: metric(metrics, "slot_object_ref_count"),
-        bucket_page_ref_count: metric(metrics, "slot_page_ref_count"),
-        page_address_count: metric(metrics, "page_address_count"),
-        unreadable_page_refs: metric(metrics, "unreadable_page_refs"),
+        bucket_block_ref_count: metric(metrics, "slot_page_ref_count"),
+        block_address_count: metric(metrics, "page_address_count"),
+        unreadable_block_refs: metric(metrics, "unreadable_page_refs"),
         checksum_mismatches: metric(metrics, "checksum_mismatches"),
         missing_owner_ref_count: metric(metrics, "missing_owner_ref_count"),
         owner_mismatch_count: metric(metrics, "owner_mismatch_count"),
@@ -2283,7 +2346,8 @@ pub struct StorageBucketSample {
     pub bucket_id: u32,
     pub dirty_generation: u64,
     pub object_refs: Vec<u64>,
-    pub page_refs: Vec<StoragePageAddressSample>,
+    #[serde(rename = "page_refs")]
+    pub block_refs: Vec<StoragePageAddressSample>,
     #[serde(rename = "tombstones")]
     pub delete_markers: Vec<String>,
     pub owner_mismatch_count: u64,
@@ -2444,8 +2508,8 @@ pub fn effective_storage_tuning_from_env() -> BTreeMap<String, StorageContractVa
     let tuning = StorageTuningConfig::from_env();
     let mut values = BTreeMap::new();
     values.insert(
-        TS_CONTEXT_PAGE_TARGET_BYTES.to_string(),
-        contract_u64(tuning.context_page_target_bytes as u64),
+        TS_CONTEXT_BLOCK_TARGET_BYTES.to_string(),
+        contract_u64(tuning.context_block_target_bytes as u64),
     );
     values.insert(
         TS_BLOCK_SLAB_TARGET_BYTES.to_string(),
@@ -3111,8 +3175,8 @@ pub struct StorageEvictionReport {
     /// was untouchable at any setting.
     #[serde(default)]
     pub bucket_index_buckets_released: usize,
-    #[serde(default)]
-    pub bucket_index_pages_released: usize,
+    #[serde(rename = "bucket_index_pages_released", default)]
+    pub bucket_index_blocks_released: usize,
     /// Victims a release was attempted on and refused -- dirty, deleted, already released, or
     /// holding a page the model maps could not rebuild. A release that did nothing and a release
     /// that was declined are different answers and a round that reports only the first cannot be
@@ -3177,14 +3241,19 @@ pub struct StorageCacheWarmupReport {
     pub shard_id: ShardId,
     #[serde(rename = "selected_slots")]
     pub selected_buckets: Vec<u32>,
-    pub considered_page_refs: usize,
-    pub skipped_page_refs: usize,
-    pub already_cached_page_refs: usize,
+    #[serde(rename = "considered_page_refs")]
+    pub considered_block_refs: usize,
+    #[serde(rename = "skipped_page_refs")]
+    pub skipped_block_refs: usize,
+    #[serde(rename = "already_cached_page_refs")]
+    pub already_cached_block_refs: usize,
     pub page_store_reads: usize,
     #[serde(default)]
     pub block_store_reads: usize,
-    pub warmed_page_refs: usize,
-    pub failed_page_refs: usize,
+    #[serde(rename = "warmed_page_refs")]
+    pub warmed_block_refs: usize,
+    #[serde(rename = "failed_page_refs")]
+    pub failed_block_refs: usize,
     pub warmed_bytes: u64,
 }
 
@@ -3205,7 +3274,8 @@ pub struct StorageRecoveryBoundaryReport {
     pub orphan_block_slab_ids: Vec<u64>,
     #[serde(rename = "missing_dump_slot_ids")]
     pub missing_dump_bucket_ids: Vec<u32>,
-    pub stale_index_page_refs: Vec<StorageRecoveryPageError>,
+    #[serde(rename = "stale_index_page_refs")]
+    pub stale_index_block_refs: Vec<StorageRecoveryBlockError>,
     #[serde(default)]
     #[serde(rename = "interrupted_slot_dump_installs")]
     pub interrupted_bucket_dump_installs: Vec<BucketDumpInstallMarker>,
@@ -3220,16 +3290,17 @@ pub struct StorageRecoveryBoundaryReport {
     pub unknown_bucket_dump_install_count: usize,
     #[serde(default)]
     pub manifest_chain_issues: Vec<BucketDumpManifestChainIssue>,
-    #[serde(default)]
-    pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
-    #[serde(default)]
-    pub missing_owner_page_refs: usize,
+    #[serde(rename = "owner_mismatch_page_refs", default)]
+    pub owner_mismatch_block_refs: Vec<StorageRecoveryBlockOwnerMismatch>,
+    #[serde(rename = "missing_owner_page_refs", default)]
+    pub missing_owner_block_refs: usize,
     #[serde(default)]
     pub object_lifecycle: StorageObjectLifecycleReport,
     #[serde(alias = "corrupt_page_segment_ids")]
     #[serde(rename = "corrupt_page_slab_ids")]
     pub corrupt_block_slab_ids: Vec<u64>,
-    pub unreadable_page_bytes: u64,
+    #[serde(rename = "unreadable_page_bytes")]
+    pub unreadable_block_bytes: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3273,18 +3344,18 @@ pub struct StorageLifecycleRequest {
     pub roll_forward_bucket_dump_installs: bool,
     #[serde(default)]
     pub follower_replay_cursors: Vec<BucketDumpFollowerReplayCursor>,
+    #[serde(rename = "page_gc_shared_store_cursors", default)]
+    pub block_gc_shared_store_cursors: Vec<StorageBlockGcReplayCursor>,
+    #[serde(rename = "page_gc_raft_snapshot_refs", default)]
+    pub block_gc_raft_snapshot_refs: Vec<BucketDumpRaftSnapshotRef>,
     #[serde(default)]
-    pub page_gc_shared_store_cursors: Vec<StoragePageGcReplayCursor>,
+    #[serde(rename = "page_gc_checkpoint_floor_slab_id", alias = "page_gc_checkpoint_floor_segment_id")]
+    pub block_gc_checkpoint_floor_slab_id: Option<u64>,
     #[serde(default)]
-    pub page_gc_raft_snapshot_refs: Vec<BucketDumpRaftSnapshotRef>,
-    #[serde(default)]
-    #[serde(alias = "page_gc_checkpoint_floor_segment_id")]
-    pub page_gc_checkpoint_floor_slab_id: Option<u64>,
-    #[serde(default)]
-    #[serde(alias = "page_gc_raft_install_floor_segment_id")]
-    pub page_gc_raft_install_floor_slab_id: Option<u64>,
-    #[serde(default)]
-    pub page_gc_delayed_destroy_grace_ms: u64,
+    #[serde(rename = "page_gc_raft_install_floor_slab_id", alias = "page_gc_raft_install_floor_segment_id")]
+    pub block_gc_raft_install_floor_slab_id: Option<u64>,
+    #[serde(rename = "page_gc_delayed_destroy_grace_ms", default)]
+    pub block_gc_delayed_destroy_grace_ms: u64,
     #[serde(default)]
     pub invalidate_cache: bool,
     #[serde(default)]
@@ -3316,10 +3387,10 @@ pub struct StorageManagerCycleRequest {
     pub enable_evict: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_expire: bool,
-    #[serde(default = "default_storage_manager_stage_enabled")]
-    pub enable_page_reclaim: bool,
-    #[serde(default = "default_storage_manager_stage_enabled")]
-    pub enable_page_compaction: bool,
+    #[serde(rename = "enable_page_reclaim", default = "default_storage_manager_stage_enabled")]
+    pub enable_block_reclaim: bool,
+    #[serde(rename = "enable_page_compaction", default = "default_storage_manager_stage_enabled")]
+    pub enable_block_compaction: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_index_gc: bool,
     #[serde(default)]
@@ -3370,16 +3441,16 @@ pub struct StorageManagerCycleRequest {
     pub follower_replay_cursors: Vec<BucketDumpFollowerReplayCursor>,
     #[serde(default)]
     pub raft_snapshot_refs: Vec<BucketDumpRaftSnapshotRef>,
+    #[serde(rename = "page_gc_shared_store_cursors", default)]
+    pub block_gc_shared_store_cursors: Vec<StorageBlockGcReplayCursor>,
     #[serde(default)]
-    pub page_gc_shared_store_cursors: Vec<StoragePageGcReplayCursor>,
+    #[serde(rename = "page_gc_checkpoint_floor_slab_id", alias = "page_gc_checkpoint_floor_segment_id")]
+    pub block_gc_checkpoint_floor_slab_id: Option<u64>,
     #[serde(default)]
-    #[serde(alias = "page_gc_checkpoint_floor_segment_id")]
-    pub page_gc_checkpoint_floor_slab_id: Option<u64>,
-    #[serde(default)]
-    #[serde(alias = "page_gc_raft_install_floor_segment_id")]
-    pub page_gc_raft_install_floor_slab_id: Option<u64>,
-    #[serde(default)]
-    pub page_gc_delayed_destroy_grace_ms: u64,
+    #[serde(rename = "page_gc_raft_install_floor_slab_id", alias = "page_gc_raft_install_floor_segment_id")]
+    pub block_gc_raft_install_floor_slab_id: Option<u64>,
+    #[serde(rename = "page_gc_delayed_destroy_grace_ms", default)]
+    pub block_gc_delayed_destroy_grace_ms: u64,
     #[serde(default)]
     pub index_gc_index_log_bytes_threshold: u64,
     #[serde(default)]
@@ -3401,7 +3472,7 @@ pub struct StorageManagerCycleRequest {
     /// (today's behavior). The garbage-ratio GC gate, expressed against slabs.
     #[serde(default)]
     #[serde(rename = "page_gc_min_band_garbage_basis_points")]
-    pub page_gc_min_slab_garbage_basis_points: u64,
+    pub block_gc_min_slab_garbage_basis_points: u64,
     /// Bytes the active data slab must hold before the prepare stage rolls a fresh one.
     ///
     /// Zero means "whatever the process is configured for", which is what a caller with no
@@ -3462,7 +3533,7 @@ pub const DEFAULT_EVICTION_BATCH_LIMIT: usize = 16;
 /// points of garbage, which clears any threshold below it. It binds only if a future GC starts
 /// offering partially-live slabs as candidates -- which is exactly when a threshold should
 /// already be in place rather than being added in a hurry.
-pub const DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 4_000;
+pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 4_000;
 
 impl Default for StorageManagerCycleRequest {
     fn default() -> Self {
@@ -3474,8 +3545,8 @@ impl Default for StorageManagerCycleRequest {
             enable_wal_reclaim: true,
             enable_evict: true,
             enable_expire: true,
-            enable_page_reclaim: true,
-            enable_page_compaction: true,
+            enable_block_reclaim: true,
+            enable_block_compaction: true,
             enable_index_gc: true,
             max_dump_buckets_per_round: 0,
             min_undumped_wal_records: 0,
@@ -3492,17 +3563,17 @@ impl Default for StorageManagerCycleRequest {
             load_cold_buckets_for_expire: false,
             follower_replay_cursors: Vec::new(),
             raft_snapshot_refs: Vec::new(),
-            page_gc_shared_store_cursors: Vec::new(),
-            page_gc_checkpoint_floor_slab_id: None,
-            page_gc_raft_install_floor_slab_id: None,
-            page_gc_delayed_destroy_grace_ms: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            block_gc_delayed_destroy_grace_ms: 0,
             index_gc_index_log_bytes_threshold: DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD,
             index_gc_usage_ratio_trigger_basis_points:
                 DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS,
             index_gc_max_entries_per_round: DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
             index_gc_commit_dirty_buckets_before_truncation: true,
-            page_gc_min_slab_garbage_basis_points:
-                DEFAULT_PAGE_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+            block_gc_min_slab_garbage_basis_points:
+                DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
             prepare_slab_target_bytes: 0,
         }
     }
@@ -3575,8 +3646,8 @@ pub struct StorageManagerStageReport {
     /// Separate from `wal_records_removed`: this counts what had to become durable ELSEWHERE
     /// before any record could be removed at all, because a page still living only inside a
     /// record pins the retention floor to that record's sequence.
-    #[serde(default)]
-    pub wal_resident_pages_materialised: usize,
+    #[serde(rename = "wal_resident_pages_materialised", default)]
+    pub wal_resident_blocks_materialised: usize,
     #[serde(default)]
     pub retain_from_wal_sequence: u64,
     #[serde(default)]
@@ -3599,12 +3670,12 @@ pub struct StorageManagerStageReport {
     #[serde(alias = "page_segments_reclaimed")]
     #[serde(rename = "page_slabs_reclaimed")]
     pub block_slabs_reclaimed: usize,
-    #[serde(default)]
-    pub page_bytes_reclaimed: u64,
+    #[serde(rename = "page_bytes_reclaimed", default)]
+    pub block_bytes_reclaimed: u64,
     #[serde(default)]
     pub bytes_reclaimed: u64,
-    #[serde(default)]
-    pub pages_compacted: usize,
+    #[serde(rename = "pages_compacted", default)]
+    pub blocks_compacted: usize,
     #[serde(default)]
     pub manifest_pruned_count: usize,
     #[serde(default)]
@@ -3613,8 +3684,8 @@ pub struct StorageManagerStageReport {
     #[serde(alias = "compacted_page_segment_id")]
     #[serde(rename = "compacted_page_slab_id")]
     pub compacted_block_slab_id: Option<u64>,
-    #[serde(default)]
-    pub rewritten_page_refs: usize,
+    #[serde(rename = "rewritten_page_refs", default)]
+    pub rewritten_block_refs: usize,
     #[serde(default)]
     pub wal_floor_sequence: u64,
     #[serde(default)]
@@ -3628,8 +3699,8 @@ pub struct StorageManagerStageReport {
     #[serde(default)]
     #[serde(rename = "metrics_slot_count")]
     pub metrics_bucket_count: usize,
-    #[serde(default)]
-    pub metrics_page_ref_count: u64,
+    #[serde(rename = "metrics_page_ref_count", default)]
+    pub metrics_block_ref_count: u64,
     /// The slab the prepare stage rolled to, or `None` when it did not roll.
     ///
     /// `applied` on this stage says the stage RAN; this says whether it did anything, and the
@@ -3649,8 +3720,10 @@ pub struct StorageManagerPressureSignals {
     pub undumped_wal_records: u64,
     pub wal_bytes: u64,
     pub index_log_bytes: u64,
-    pub stale_page_bytes: u64,
-    pub live_page_bytes: u64,
+    #[serde(rename = "stale_page_bytes")]
+    pub stale_block_bytes: u64,
+    #[serde(rename = "live_page_bytes")]
+    pub live_block_bytes: u64,
     #[serde(alias = "page_segment_stale_density_basis_points")]
     #[serde(rename = "page_slab_stale_density_basis_points")]
     pub block_slab_stale_density_basis_points: u64,
@@ -3679,8 +3752,8 @@ pub struct StorageManagerPressureSignals {
     /// engine's own cycle fills it from `shard.expires_at_ms.len()` and never touched the walk.
     /// On the first path a 0 with this flag false means "not counted"; on the second the flag says
     /// nothing about that field and only qualifies the slot and page figures.
-    #[serde(default)]
-    pub live_page_summaries_measured: bool,
+    #[serde(rename = "live_page_summaries_measured", default)]
+    pub live_block_summaries_measured: bool,
     #[serde(rename = "expired_slot_object_scan_debt")]
     pub expired_bucket_object_scan_debt: usize,
     #[serde(alias = "delayed_destroy_segment_count")]
@@ -3726,8 +3799,8 @@ pub struct StorageManagerCycleReport {
     pub index_gc_report: Option<StorageIndexGcReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eviction_report: Option<StorageEvictionReport>,
-    #[serde(default)]
-    pub page_gc_dependency_plan: StoragePageGcDependencyPlan,
+    #[serde(rename = "page_gc_dependency_plan", default)]
+    pub block_gc_dependency_plan: StorageBlockGcDependencyPlan,
     #[serde(default)]
     pub errors: Vec<String>,
 }
@@ -3737,7 +3810,7 @@ pub struct StorageDataStructureApiParityReport {
     pub shard_id: ShardId,
     pub ready: bool,
     #[serde(rename = "slot_object_page_authority_ready")]
-    pub bucket_object_page_authority_ready: bool,
+    pub bucket_object_block_authority_ready: bool,
     #[serde(rename = "slot_store_layout_api_ready")]
     pub bucket_store_layout_api_ready: bool,
     pub object_manager_runtime_api_ready: bool,
@@ -3769,8 +3842,8 @@ pub struct StorageManagerLoopRequest {
     pub apply: bool,
     #[serde(default)]
     pub expire_records: bool,
-    #[serde(default)]
-    pub compact_pages: bool,
+    #[serde(rename = "compact_pages", default)]
+    pub compact_blocks: bool,
     #[serde(default)]
     pub lifecycle: StorageLifecycleRequest,
 }
@@ -3847,9 +3920,12 @@ pub struct StorageProductionReadinessReport {
     #[serde(alias = "corrupt_page_segment_count")]
     #[serde(rename = "corrupt_page_slab_count")]
     pub corrupt_block_slab_count: usize,
-    pub unreadable_page_ref_count: usize,
-    pub owner_mismatch_page_ref_count: usize,
-    pub missing_owner_page_ref_count: u64,
+    #[serde(rename = "unreadable_page_ref_count")]
+    pub unreadable_block_ref_count: usize,
+    #[serde(rename = "owner_mismatch_page_ref_count")]
+    pub owner_mismatch_block_ref_count: usize,
+    #[serde(rename = "missing_owner_page_ref_count")]
+    pub missing_owner_block_ref_count: u64,
     pub reused_object_id_conflict_count: u64,
     #[serde(rename = "interrupted_slot_dump_install_count")]
     pub interrupted_bucket_dump_install_count: usize,
@@ -3876,12 +3952,14 @@ pub struct StorageProductionReadinessReport {
     pub slab_integrity: StorageSlabIntegrityReport,
     #[serde(default)]
     pub log_compatibility: StorageLogCompatibilityReport,
-    #[serde(default)]
-    pub page_format_compatibility: StoragePageFormatCompatibilityReport,
-    #[serde(default)]
-    pub feature_page_layout: StorageFeaturePageLayoutReport,
-    pub feature_page_layout_mismatch_count: usize,
-    pub corrupt_feature_page_count: usize,
+    #[serde(rename = "page_format_compatibility", default)]
+    pub block_format_compatibility: StorageBlockFormatCompatibilityReport,
+    #[serde(rename = "feature_page_layout", default)]
+    pub feature_block_layout: StorageFeatureBlockLayoutReport,
+    #[serde(rename = "feature_page_layout_mismatch_count")]
+    pub feature_block_layout_mismatch_count: usize,
+    #[serde(rename = "corrupt_feature_page_count")]
+    pub corrupt_feature_block_count: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3915,22 +3993,24 @@ pub struct StorageLogCompatibilityReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoragePageFormatCompatibilityReport {
+pub struct StorageBlockFormatCompatibilityReport {
     pub shard_id: ShardId,
-    pub page_format: String,
+    #[serde(rename = "page_format")]
+    pub block_format: String,
     pub rust_envelope_version: u8,
     #[serde(default)]
     pub compatibility_mode: String,
     #[serde(default)]
     pub migration_required: bool,
-    #[serde(default)]
-    pub native_page_header_reader_supported: bool,
-    #[serde(default)]
-    pub native_page_header_writer_supported: bool,
+    #[serde(rename = "native_page_header_reader_supported", default)]
+    pub native_block_header_reader_supported: bool,
+    #[serde(rename = "native_page_header_writer_supported", default)]
+    pub native_block_header_writer_supported: bool,
     #[serde(default)]
     pub golden_conversion_required: bool,
     pub rust_native_read_safe: bool,
-    pub native_page_header_compatible: bool,
+    #[serde(rename = "native_page_header_compatible")]
+    pub native_block_header_compatible: bool,
     pub checksum_protected: bool,
     pub object_ids_embedded: bool,
     #[serde(rename = "routing_slots_embedded")]
@@ -4017,7 +4097,8 @@ mod manifest_field_name_tests {
         #[serde(rename = "routing_slot")]
         routing_bucket: u32,
         object_count: u64,
-        page_ref_count: u64,
+        #[serde(rename = "page_ref_count")]
+        block_ref_count: u64,
         logical_bytes: u64,
         physical_bytes: u64,
         dirty_object_count: u64,
@@ -4033,7 +4114,7 @@ mod manifest_field_name_tests {
         Derived {
             routing_bucket: summary.routing_bucket,
             object_count: summary.object_count,
-            page_ref_count: summary.page_ref_count,
+            block_ref_count: summary.block_ref_count,
             logical_bytes: summary.logical_bytes,
             physical_bytes: summary.physical_bytes,
             dirty_object_count: summary.dirty_object_count,
@@ -4048,7 +4129,7 @@ mod manifest_field_name_tests {
         let full = BucketStorageSummary {
             routing_bucket: 8539,
             object_count: 12,
-            page_ref_count: 34,
+            block_ref_count: 34,
             logical_bytes: 4096,
             physical_bytes: 8192,
             dirty_object_count: 3,

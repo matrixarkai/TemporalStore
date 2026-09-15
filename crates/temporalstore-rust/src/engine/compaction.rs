@@ -32,12 +32,12 @@ pub(super) const COMPACTION_ROUND_BYTES: u64 = 256 * 1024 * 1024;
 ///
 /// A round that stops here stays open and the next one resumes onto the same slab, so bounding
 /// costs round count, not progress.
-pub(super) const COMPACTION_ROUND_PAGE_REFS: usize = 2_048;
+pub(super) const COMPACTION_ROUND_BLOCK_REFS: usize = 2_048;
 
 /// Blocks per slab, counted by header walk.
 ///
 /// Both callers below read `page_count` and nothing else off a slab report, and `slab_reports()`
-/// reaches that by calling `decode_page_record` on every record in the store -- a CRC32C verify
+/// reaches that by calling `decode_block_record` on every record in the store -- a CRC32C verify
 /// and a decompress each. The compaction phase builds a utility report and a model-layout report
 /// BEFORE and AFTER the relocation, so that was four whole-store decodes per round to populate a
 /// before/after figure. `count_slab_blocks` walks headers instead: measured 35x cheaper at 32,000
@@ -45,7 +45,7 @@ pub(super) const COMPACTION_ROUND_PAGE_REFS: usize = 2_048;
 ///
 /// The relocation itself was never the problem -- it has a 256 MiB budget and resumes. This is
 /// the survey around it.
-fn slab_block_counts_by_slab(page_store: &LocalBlockStore) -> BTreeMap<u64, u64> {
+fn slab_block_counts_by_slab(page_store: &BlockStore) -> BTreeMap<u64, u64> {
     page_store
         .slab_block_counts()
         .unwrap_or_default()
@@ -55,19 +55,19 @@ fn slab_block_counts_by_slab(page_store: &LocalBlockStore) -> BTreeMap<u64, u64>
 }
 
 pub(super) fn compaction_utility_report(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard: &ShardState,
 ) -> ShardCompactionUtilityReport {
-    compaction_utility_report_from_entries(page_store, shard, &collect_live_page_entries(shard))
+    compaction_utility_report_from_entries(page_store, shard, &collect_live_block_entries(shard))
 }
 
 /// The same report, from live-page entries the caller ALREADY has.
 ///
-/// `collect_live_page_entries` materializes every live page in the shard. The compaction preamble
+/// `collect_live_block_entries` materializes every live page in the shard. The compaction preamble
 /// builds several reports from that same set, so one walk can serve them all; the wrapper above
 /// keeps the old signature for callers with nothing to share.
 pub(super) fn compaction_utility_report_from_entries(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard: &ShardState,
     entries: &[LiveBlockEntry],
 ) -> ShardCompactionUtilityReport {
@@ -81,7 +81,7 @@ pub(super) fn compaction_utility_report_from_entries(
         .map(|address| address.block_slab_id)
         .collect::<BTreeSet<_>>();
     let slab_page_counts = slab_block_counts_by_slab(page_store);
-    let total_page_count = live_block_slab_ids
+    let total_block_count = live_block_slab_ids
         .iter()
         .map(|block_slab_id| {
             slab_page_counts
@@ -90,18 +90,18 @@ pub(super) fn compaction_utility_report_from_entries(
                 .unwrap_or_default()
         })
         .sum::<u64>();
-    let live_page_refs = addresses.len() as u64;
-    let stale_page_estimate = total_page_count.saturating_sub(live_page_refs);
-    let live_ref_density_basis_points = if total_page_count == 0 {
+    let live_block_refs = addresses.len() as u64;
+    let stale_block_estimate = total_block_count.saturating_sub(live_block_refs);
+    let live_ref_density_basis_points = if total_block_count == 0 {
         0
     } else {
-        live_page_refs.saturating_mul(10_000) / total_page_count
+        live_block_refs.saturating_mul(10_000) / total_block_count
     };
     ShardCompactionUtilityReport {
         live_block_slab_count: live_block_slab_ids.len(),
-        total_page_count,
-        live_page_refs,
-        stale_page_estimate,
+        total_block_count,
+        live_block_refs,
+        stale_block_estimate,
         live_ref_density_basis_points,
         model_policies: model_compaction_policy_reports(shard, &entries, &slab_page_counts),
     }
@@ -114,8 +114,8 @@ pub(super) fn model_compaction_policy_reports(
 ) -> Vec<ModelCompactionPolicyReport> {
     #[derive(Default)]
     struct ModelStats {
-        live_page_refs: u64,
-        deleted_page_refs: u64,
+        live_block_refs: u64,
+        deleted_block_refs: u64,
         slab_ids: BTreeSet<u64>,
     }
 
@@ -123,9 +123,9 @@ pub(super) fn model_compaction_policy_reports(
     for entry in entries {
         let stats = by_model.entry(entry.kind.clone().to_string()).or_default();
         if entry.deleted {
-            stats.deleted_page_refs = stats.deleted_page_refs.saturating_add(1);
+            stats.deleted_block_refs = stats.deleted_block_refs.saturating_add(1);
         } else {
-            stats.live_page_refs = stats.live_page_refs.saturating_add(1);
+            stats.live_block_refs = stats.live_block_refs.saturating_add(1);
             stats.slab_ids.insert(entry.address.block_slab_id);
         }
     }
@@ -144,7 +144,7 @@ pub(super) fn model_compaction_policy_reports(
             "zset"
         } else if shard.features.contains_key(key) {
             "feature"
-        } else if shard.control_state_pages.contains_key(key) {
+        } else if shard.control_state_blocks.contains_key(key) {
             "control_state"
         } else if shard.context_nodes.contains_key(key) {
             "context_node"
@@ -162,13 +162,13 @@ pub(super) fn model_compaction_policy_reports(
             "string"
         };
         let stats = by_model.entry(model_id.to_string()).or_default();
-        stats.deleted_page_refs = stats.deleted_page_refs.saturating_add(1);
+        stats.deleted_block_refs = stats.deleted_block_refs.saturating_add(1);
     }
 
     by_model
         .into_iter()
         .map(|(model_id, stats)| {
-            let total_slab_pages = stats
+            let total_slab_blocks = stats
                 .slab_ids
                 .iter()
                 .map(|slab_id| {
@@ -178,24 +178,24 @@ pub(super) fn model_compaction_policy_reports(
                         .unwrap_or_default()
                 })
                 .sum::<u64>();
-            let stale_page_estimate = total_slab_pages.saturating_sub(stats.live_page_refs);
-            let stale_density_basis_points = if total_slab_pages == 0 {
+            let stale_block_estimate = total_slab_blocks.saturating_sub(stats.live_block_refs);
+            let stale_density_basis_points = if total_slab_blocks == 0 {
                 0
             } else {
-                stale_page_estimate.saturating_mul(10_000) / total_slab_pages
+                stale_block_estimate.saturating_mul(10_000) / total_slab_blocks
             };
-            let total_refs = stats.live_page_refs.saturating_add(stats.deleted_page_refs);
+            let total_refs = stats.live_block_refs.saturating_add(stats.deleted_block_refs);
             let delete_marker_density_basis_points = if total_refs == 0 {
                 0
             } else {
-                stats.deleted_page_refs.saturating_mul(10_000) / total_refs
+                stats.deleted_block_refs.saturating_mul(10_000) / total_refs
             };
             let layout_policy = compaction_layout_policy_for_model(&model_id);
             let stale_density_triggered = stale_density_basis_points > 0;
             let delete_marker_compaction_triggered =
-                stats.deleted_page_refs > 0 || delete_marker_density_basis_points > 0;
-            let object_page_packing_enabled = compaction_object_page_packing_enabled(&model_id);
-            let layout_aware_rewrite_required = object_page_packing_enabled
+                stats.deleted_block_refs > 0 || delete_marker_density_basis_points > 0;
+            let object_block_packing_enabled = compaction_object_block_packing_enabled(&model_id);
+            let layout_aware_rewrite_required = object_block_packing_enabled
                 || matches!(
                     layout_policy,
                     "timestamped_chunked_pages" | "context_timeline_or_sidecar_pages"
@@ -203,19 +203,19 @@ pub(super) fn model_compaction_policy_reports(
                 || model_id == "control_state";
             ModelCompactionPolicyReport {
                 layout_policy: layout_policy.to_string(),
-                object_page_packing_enabled,
+                object_block_packing_enabled,
                 model_id,
-                live_page_refs: stats.live_page_refs,
-                deleted_page_refs: stats.deleted_page_refs,
-                total_slab_pages,
-                stale_page_estimate,
+                live_block_refs: stats.live_block_refs,
+                deleted_block_refs: stats.deleted_block_refs,
+                total_slab_blocks,
+                stale_block_estimate,
                 stale_density_basis_points,
                 delete_marker_density_basis_points,
-                object_page_pack_group_count: stats.slab_ids.len() as u64,
-                cold_page_rewrite_eligible_refs: stats.live_page_refs,
+                object_block_pack_group_count: stats.slab_ids.len() as u64,
+                cold_block_rewrite_eligible_refs: stats.live_block_refs,
                 compaction_action: compaction_action_for_policy(
-                    stats.live_page_refs,
-                    stats.deleted_page_refs,
+                    stats.live_block_refs,
+                    stats.deleted_block_refs,
                     stale_density_basis_points,
                     delete_marker_density_basis_points,
                 )
@@ -240,7 +240,7 @@ pub(super) fn compaction_layout_policy_for_model(model_id: &str) -> &'static str
     }
 }
 
-pub(super) fn compaction_object_page_packing_enabled(model_id: &str) -> bool {
+pub(super) fn compaction_object_block_packing_enabled(model_id: &str) -> bool {
     matches!(
         compaction_layout_policy_for_model(model_id),
         "single_page_object" | "component_page_object"
@@ -248,14 +248,14 @@ pub(super) fn compaction_object_page_packing_enabled(model_id: &str) -> bool {
 }
 
 pub(super) fn compaction_action_for_policy(
-    live_page_refs: u64,
-    deleted_page_refs: u64,
+    live_block_refs: u64,
+    deleted_block_refs: u64,
     stale_density_basis_points: u64,
     delete_marker_density_basis_points: u64,
 ) -> &'static str {
-    if live_page_refs == 0 && deleted_page_refs > 0 {
+    if live_block_refs == 0 && deleted_block_refs > 0 {
         "drop_tombstones"
-    } else if delete_marker_density_basis_points > 0 || deleted_page_refs > 0 {
+    } else if delete_marker_density_basis_points > 0 || deleted_block_refs > 0 {
         "rewrite_live_drop_tombstones"
     } else if stale_density_basis_points > 0 {
         "rewrite_stale_density"
@@ -266,8 +266,8 @@ pub(super) fn compaction_action_for_policy(
 
 #[derive(Debug, Default)]
 pub(super) struct CompactionRewriteStats {
-    pub(super) rewritten_page_refs: usize,
-    pub(super) cold_page_rewrite_refs: usize,
+    pub(super) rewritten_block_refs: usize,
+    pub(super) cold_block_rewrite_refs: usize,
     by_model: BTreeMap<String, ModelCompactionRewriteStats>,
     /// The slab this round is filling. A page already there does not move.
     target_block_slab_id: u64,
@@ -276,7 +276,7 @@ pub(super) struct CompactionRewriteStats {
     budget_bytes: u64,
     /// Page refs this round may still relocate, the bound that actually tracks the stall.
     /// Same saturating behaviour as `budget_bytes`; whichever runs out first ends the round.
-    budget_page_refs: usize,
+    budget_block_refs: usize,
     pub(super) skipped_by_budget: usize,
     pub(super) skipped_by_budget_bytes: u64,
     /// Bytes this round committed to copying, charged at the same point the byte budget is.
@@ -308,22 +308,22 @@ pub(super) struct CompactionRewriteStats {
 
 #[derive(Debug, Default)]
 pub(super) struct ModelCompactionRewriteStats {
-    rewritten_page_refs: usize,
-    cold_page_rewrite_refs: usize,
+    rewritten_block_refs: usize,
+    cold_block_rewrite_refs: usize,
 }
 
 impl CompactionRewriteStats {
     /// A round that relocates onto `target_block_slab_id`, spending at most `budget_bytes` and
-    /// `budget_page_refs`. Whichever runs out first ends the round.
+    /// `budget_block_refs`. Whichever runs out first ends the round.
     pub(super) fn for_round(
         target_block_slab_id: u64,
         budget_bytes: u64,
-        budget_page_refs: usize,
+        budget_block_refs: usize,
     ) -> Self {
         Self {
             target_block_slab_id,
             budget_bytes,
-            budget_page_refs,
+            budget_block_refs,
             ..Self::default()
         }
     }
@@ -337,12 +337,12 @@ impl CompactionRewriteStats {
     pub(super) fn for_drain_round(
         target_block_slab_id: u64,
         budget_bytes: u64,
-        budget_page_refs: usize,
+        budget_block_refs: usize,
         drain_block_slab_ids: BTreeSet<u64>,
     ) -> Self {
         Self {
             drain_block_slab_ids: Some(drain_block_slab_ids),
-            ..Self::for_round(target_block_slab_id, budget_bytes, budget_page_refs)
+            ..Self::for_round(target_block_slab_id, budget_bytes, budget_block_refs)
         }
     }
 
@@ -370,14 +370,14 @@ impl CompactionRewriteStats {
             self.skipped_off_drain_set = self.skipped_off_drain_set.saturating_add(1);
             return false;
         }
-        if address.length > self.budget_bytes || self.budget_page_refs == 0 {
+        if address.length > self.budget_bytes || self.budget_block_refs == 0 {
             self.skipped_by_budget = self.skipped_by_budget.saturating_add(1);
             self.skipped_by_budget_bytes =
                 self.skipped_by_budget_bytes.saturating_add(address.length);
             return false;
         }
         self.budget_bytes = self.budget_bytes.saturating_sub(address.length);
-        self.budget_page_refs = self.budget_page_refs.saturating_sub(1);
+        self.budget_block_refs = self.budget_block_refs.saturating_sub(1);
         self.relocated_bytes = self.relocated_bytes.saturating_add(address.length);
         true
     }
@@ -387,13 +387,13 @@ impl CompactionRewriteStats {
         self.skipped_by_budget > 0
     }
 
-    fn record(&mut self, model_id: &str, cold_page: bool) {
-        self.rewritten_page_refs = self.rewritten_page_refs.saturating_add(1);
+    fn record(&mut self, model_id: &str, cold_block: bool) {
+        self.rewritten_block_refs = self.rewritten_block_refs.saturating_add(1);
         let model = self.by_model.entry(model_id.to_string()).or_default();
-        model.rewritten_page_refs = model.rewritten_page_refs.saturating_add(1);
-        if cold_page {
-            self.cold_page_rewrite_refs = self.cold_page_rewrite_refs.saturating_add(1);
-            model.cold_page_rewrite_refs = model.cold_page_rewrite_refs.saturating_add(1);
+        model.rewritten_block_refs = model.rewritten_block_refs.saturating_add(1);
+        if cold_block {
+            self.cold_block_rewrite_refs = self.cold_block_rewrite_refs.saturating_add(1);
+            model.cold_block_rewrite_refs = model.cold_block_rewrite_refs.saturating_add(1);
         }
     }
 
@@ -411,10 +411,10 @@ impl CompactionRewriteStats {
                 ModelCompactionRewriteReport {
                     layout_policy: compaction_layout_policy_for_model(&model_id).to_string(),
                     model_id,
-                    rewritten_page_refs: stats.rewritten_page_refs,
-                    cold_page_rewrite_refs: stats.cold_page_rewrite_refs,
-                    object_page_pack_group_count: before_policy
-                        .map(|policy| policy.object_page_pack_group_count as usize)
+                    rewritten_block_refs: stats.rewritten_block_refs,
+                    cold_block_rewrite_refs: stats.cold_block_rewrite_refs,
+                    object_block_pack_group_count: before_policy
+                        .map(|policy| policy.object_block_pack_group_count as usize)
                         .unwrap_or_default(),
                     delete_marker_density_basis_points: before_policy
                         .map(|policy| policy.delete_marker_density_basis_points)
@@ -428,7 +428,7 @@ impl CompactionRewriteStats {
     }
 }
 
-pub(super) fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &BlockAddress) -> bool {
+pub(super) fn block_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &BlockAddress) -> bool {
     cache
         .get_memory(&CacheKey::page_with_slot_generation(
             shard_id,
@@ -442,7 +442,7 @@ pub(super) fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, a
 }
 
 pub(super) fn compaction_model_layout_reports(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard: &ShardState,
 ) -> Vec<ShardCompactionModelLayoutReport> {
     let slab_page_counts = slab_block_counts_by_slab(page_store);
@@ -591,7 +591,7 @@ pub(super) fn compaction_layout_from_addresses(
         .iter()
         .map(|address| address.block_slab_id)
         .collect::<BTreeSet<_>>();
-    let total_pages_in_live_slabs = live_slab_ids
+    let total_blocks_in_live_slabs = live_slab_ids
         .iter()
         .map(|slab_id| {
             slab_page_counts
@@ -600,21 +600,21 @@ pub(super) fn compaction_layout_from_addresses(
                 .unwrap_or_default()
         })
         .sum::<u64>();
-    let unique_page_refs = unique_addresses.len();
-    let packed_timestamped_pages = packed_pages.unwrap_or_default();
-    let live_ref_density_basis_points = if total_pages_in_live_slabs == 0 {
+    let unique_block_refs = unique_addresses.len();
+    let packed_timestamped_blocks = packed_pages.unwrap_or_default();
+    let live_ref_density_basis_points = if total_blocks_in_live_slabs == 0 {
         0
     } else {
-        (unique_page_refs as u64).saturating_mul(10_000) / total_pages_in_live_slabs
+        (unique_block_refs as u64).saturating_mul(10_000) / total_blocks_in_live_slabs
     };
     ShardCompactionModelLayoutReport {
         kind: kind.to_string(),
         object_count,
         index_refs: addresses.len(),
-        unique_page_refs,
-        packed_timestamped_pages,
-        legacy_value_pages: unique_page_refs.saturating_sub(packed_timestamped_pages),
-        stale_page_estimate: total_pages_in_live_slabs.saturating_sub(unique_page_refs as u64),
+        unique_block_refs,
+        packed_timestamped_blocks,
+        legacy_value_blocks: unique_block_refs.saturating_sub(packed_timestamped_blocks),
+        stale_block_estimate: total_blocks_in_live_slabs.saturating_sub(unique_block_refs as u64),
         live_ref_density_basis_points,
     }
 }
@@ -630,8 +630,8 @@ impl CompactionLayoutIndexRefs for ShardCompactionModelLayoutReport {
     }
 }
 
-pub(super) fn compact_page_addresses<'a>(
-    page_store: &LocalBlockStore,
+pub(super) fn compact_block_addresses<'a>(
+    page_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
@@ -642,8 +642,8 @@ pub(super) fn compact_page_addresses<'a>(
         if !rewrite_stats.should_relocate(address) {
             continue;
         }
-        let cold_page = !page_memory_resident(cache, shard_id, address);
-        let bytes = read_page_bytes(cache, page_store, shard_id, address).ok_or_else(|| {
+        let cold_block = !block_memory_resident(cache, shard_id, address);
+        let bytes = read_block_bytes(cache, page_store, shard_id, address).ok_or_else(|| {
             Status::error(
                 "page_compaction_failed",
                 "missing page bytes during compaction",
@@ -673,28 +673,28 @@ pub(super) fn compact_page_addresses<'a>(
             ),
             bytes,
         );
-        rewrite_stats.record(model_id, cold_page);
+        rewrite_stats.record(model_id, cold_block);
     }
     Ok(())
 }
 
-pub(super) fn compact_feature_page_addresses(
-    page_store: &LocalBlockStore,
+pub(super) fn compact_feature_block_addresses(
+    page_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
     series: &mut BTreeMap<u64, BlockAddress>,
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
-    let unique_addresses = unique_feature_page_addresses(series);
+    let unique_addresses = unique_feature_block_addresses(series);
     let mut rewritten = HashMap::<BlockAddress, BlockAddress>::new();
     for old_address in unique_addresses {
         if !rewrite_stats.should_relocate(&old_address) {
             continue;
         }
-        let cold_page = !page_memory_resident(cache, shard_id, &old_address);
+        let cold_block = !block_memory_resident(cache, shard_id, &old_address);
         let bytes =
-            read_page_bytes(cache, page_store, shard_id, &old_address).ok_or_else(|| {
+            read_block_bytes(cache, page_store, shard_id, &old_address).ok_or_else(|| {
                 Status::error(
                     "page_compaction_failed",
                     "missing feature page bytes during compaction",
@@ -720,7 +720,7 @@ pub(super) fn compact_feature_page_addresses(
             bytes,
         );
         rewritten.insert(old_address, new_address);
-        rewrite_stats.record(model_id, cold_page);
+        rewrite_stats.record(model_id, cold_block);
     }
     for address in series.values_mut() {
         if let Some(new_address) = rewritten.get(address) {
@@ -739,14 +739,14 @@ pub(super) fn compact_feature_page_addresses(
 /// A reclaim candidate is any slab carrying dead space, and that is TWO different situations the
 /// maintenance round has never told apart:
 ///
-///   - a slab with dead space that objects STILL HOLD PAGES ON. Only relocation empties it, so
+///   - a slab with dead space that objects STILL HOLD BLOCKS ON. Only relocation empties it, so
 ///     it is compaction's job.
 ///   - a slab holding nothing but dead space. No object has a page left on it, so there is
 ///     nothing for compaction to relocate; destroying it is the COLLECTOR's job.
 ///
 /// The second is the one a compaction round manufactures FOR ITSELF. A round relocates a slab's
 /// live pages onto a fresh one, and the slab it just emptied stays a reclaim candidate until the
-/// collector destroys it. `stale_page_pressure` counts candidates without asking which kind they
+/// collector destroys it. `stale_block_pressure` counts candidates without asking which kind they
 /// are, so the round that emptied a slab is the reason the next round runs -- on a shard nobody
 /// is writing to, for ever, each round persisting another index record.
 ///
@@ -758,16 +758,16 @@ pub fn compaction_drain_block_slab_ids(
 ) -> BTreeSet<u64> {
     reclaim_candidates
         .iter()
-        .filter(|candidate| candidate.live_page_refs > 0)
+        .filter(|candidate| candidate.live_block_refs > 0)
         .map(|candidate| candidate.block_slab_id)
         .collect()
 }
 
-/// What a relocation round should move FOR THIS OBJECT, as indexes into `object_pages`.
+/// What a relocation round should move FOR THIS OBJECT, as indexes into `object_blocks`.
 ///
 /// The decision belongs at this granularity and not to the shard. An object's pages are worth
 /// relocating when they sit on a slab the collector wants emptied, because vacating that slab is
-/// the only thing a relocation achieves for them: `compact_page_addresses` copies a page's bytes
+/// the only thing a relocation achieves for them: `compact_block_addresses` copies a page's bytes
 /// verbatim and appends them elsewhere, so a page that moves off a slab nobody is draining comes
 /// out byte for byte what it went in as, on a slab that is now the one carrying dead space.
 ///
@@ -777,13 +777,13 @@ pub fn compaction_drain_block_slab_ids(
 /// rewrite could, and this is where it says so: it would name its own pages here whether or not
 /// their slab is being drained. The hint carries a per-model tally so the answer stays
 /// attributable when that arrives.
-pub(super) fn compaction_object_page_hint(
+pub(super) fn compaction_object_block_hint(
     model_id: &str,
-    object_pages: &[BlockAddress],
+    object_blocks: &[BlockAddress],
     drain_block_slab_ids: &BTreeSet<u64>,
 ) -> Vec<usize> {
     let _ = model_id;
-    object_pages
+    object_blocks
         .iter()
         .enumerate()
         .filter(|(_, address)| drain_block_slab_ids.contains(&address.block_slab_id))
@@ -803,39 +803,39 @@ pub(super) fn compaction_relocation_hint_per_object(
     reclaim_candidates: &[StorageReclaimCandidate],
 ) -> ShardCompactionRelocationHint {
     let drain_block_slab_ids = compaction_drain_block_slab_ids(reclaim_candidates);
-    let mut object_pages: BTreeMap<(String, String), Vec<BlockAddress>> = BTreeMap::new();
-    for entry in collect_live_page_entries(shard) {
-        object_pages
+    let mut object_blocks: BTreeMap<(String, String), Vec<BlockAddress>> = BTreeMap::new();
+    for entry in collect_live_block_entries(shard) {
+        object_blocks
             .entry((entry.kind.to_string(), entry.object_key.to_string()))
             .or_default()
             .push(entry.address);
     }
-    let examined_object_count = object_pages.len() as u64;
+    let examined_object_count = object_blocks.len() as u64;
     let mut relocatable_object_count = 0_u64;
-    let mut relocatable_page_refs = 0_u64;
+    let mut relocatable_block_refs = 0_u64;
     let mut by_model: BTreeMap<String, u64> = BTreeMap::new();
-    for ((model_id, _object_key), pages) in &object_pages {
-        let hint = compaction_object_page_hint(model_id, pages, &drain_block_slab_ids);
+    for ((model_id, _object_key), pages) in &object_blocks {
+        let hint = compaction_object_block_hint(model_id, pages, &drain_block_slab_ids);
         if hint.is_empty() {
             continue;
         }
         relocatable_object_count = relocatable_object_count.saturating_add(1);
-        relocatable_page_refs = relocatable_page_refs.saturating_add(hint.len() as u64);
+        relocatable_block_refs = relocatable_block_refs.saturating_add(hint.len() as u64);
         *by_model.entry(model_id.clone()).or_default() += hint.len() as u64;
     }
     let collector_only_block_slab_ids = reclaim_candidates
         .iter()
-        .filter(|candidate| candidate.live_page_refs == 0)
+        .filter(|candidate| candidate.live_block_refs == 0)
         .map(|candidate| candidate.block_slab_id)
         .collect::<Vec<_>>();
     ShardCompactionRelocationHint {
         shard_id,
         examined_object_count,
         relocatable_object_count,
-        relocatable_page_refs,
+        relocatable_block_refs,
         drain_block_slab_ids: drain_block_slab_ids.into_iter().collect(),
         collector_only_block_slab_ids,
-        relocatable_page_refs_by_model: by_model,
+        relocatable_block_refs_by_model: by_model,
     }
 }
 
@@ -846,10 +846,10 @@ pub(super) fn compaction_relocation_hint_per_object(
 /// it over the drain set is the per-object answer, aggregated, for no extra walk of the shard.
 /// The round runs eight of those already; a ninth to ask whether it should run is not a trade
 /// worth making on a loop that ticks every thirty seconds per shard.
-pub fn compaction_relocatable_page_refs(reclaim_candidates: &[StorageReclaimCandidate]) -> u64 {
+pub fn compaction_relocatable_block_refs(reclaim_candidates: &[StorageReclaimCandidate]) -> u64 {
     reclaim_candidates
         .iter()
-        .filter(|candidate| candidate.live_page_refs > 0)
-        .map(|candidate| candidate.live_page_refs)
+        .filter(|candidate| candidate.live_block_refs > 0)
+        .map(|candidate| candidate.live_block_refs)
         .fold(0_u64, |total, refs| total.saturating_add(refs))
 }

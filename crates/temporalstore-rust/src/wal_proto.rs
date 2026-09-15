@@ -22,7 +22,7 @@ use prost::Message;
 
 use crate::block_store::BlockAddress;
 use crate::sdk::v1;
-use crate::wal::{StagedPage, WalOutcomeItem, WriteAheadLogRecord, WriteAheadLogRecordMetadata};
+use crate::wal::{StagedBlock, WalOutcomeItem, WriteAheadLogRecord, WriteAheadLogRecordMetadata};
 
 /// Marks a payload as protobuf.
 ///
@@ -445,7 +445,7 @@ fn numeric_component_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -> O
 
 /// The object id an item has to write, or absent when the rest of the item already says it.
 ///
-/// An object id is `stable_page_object_id` of the shard, the kind, the key and the component --
+/// An object id is `stable_block_object_id` of the shard, the kind, the key and the component --
 /// and an item carries the last three while the record carries the shard. So the nine bytes a
 /// `fixed64` takes are nine bytes restating a hash of the fields sitting beside it.
 ///
@@ -505,7 +505,7 @@ fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardI
     let component =
         numeric_component_text(numeric.map(|(key, _)| key), numeric.and_then(|(_, id)| id))
             .or_else(|| item.component.clone());
-    let derived = crate::engine::hashing::stable_page_object_id(
+    let derived = crate::engine::hashing::stable_block_object_id(
         shard_id,
         kind,
         &item.object_key,
@@ -757,7 +757,7 @@ pub(crate) fn item_from_proto(
     // omits it exactly when the derivation agrees. This goes FIRST because the address is
     // restored from it below.
     let object_id = item.object_id.unwrap_or_else(|| {
-        crate::engine::hashing::stable_page_object_id(
+        crate::engine::hashing::stable_block_object_id(
             shard_id,
             &kind,
             &object_key,
@@ -978,7 +978,7 @@ pub(crate) fn implied_staged_object_id(record: &WriteAheadLogRecord) -> Option<u
 /// This length reserves the buffer the writer then fills, so if the two ever disagree the record
 /// is written into the wrong number of bytes -- and they did disagree, because this was a
 /// separate copy that still measured a varint after the writer had moved to a fixed field.
-fn staged_block_body_len(page: &crate::wal::StagedPage, implied: Option<u64>) -> usize {
+fn staged_block_body_len(page: &crate::wal::StagedBlock, implied: Option<u64>) -> usize {
     crate::raft::wal_proto::staged_block_body_len(page, implied)
 }
 
@@ -1150,7 +1150,7 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
         staged_pages: message
             .staged_blocks
             .into_iter()
-            .map(|block| StagedPage {
+            .map(|block| StagedBlock {
                 object_id: block.object_id.or(implied).unwrap_or_default(),
                 bytes: block.block,
             })
@@ -1171,7 +1171,7 @@ mod command_key_tests {
             kind: "string".to_string(),
             object_key: key.to_string(),
             component: component.map(str::to_string),
-            object_id: crate::engine::hashing::stable_page_object_id(
+            object_id: crate::engine::hashing::stable_block_object_id(
                 7,
                 "string",
                 key,
@@ -1326,7 +1326,7 @@ mod command_key_tests {
 mod tests {
     use super::*;
     use crate::types::Command;
-    use crate::wal::{StagedPage, WriteAheadLogRecord, WriteAheadLogRecordMetadata};
+    use crate::wal::{StagedBlock, WriteAheadLogRecord, WriteAheadLogRecordMetadata};
 
     /// The encoder this replaced: build the whole message, owning every payload, then serialise.
     ///
@@ -1864,11 +1864,11 @@ mod tests {
             batch_size: Some(3),
             batch_index: Some(1),
         });
-        let mut with_pages = record_with(Some(Command::StringSet {
+        let mut with_blocks = record_with(Some(Command::StringSet {
             key: "p".to_string(),
             value: vec![9; 10],
         }));
-        with_pages.staged_pages = vec![StagedPage {
+        with_blocks.staged_pages = vec![StagedBlock {
             object_id: 900,
             bytes: vec![7; 4096],
         }];
@@ -1915,11 +1915,11 @@ mod tests {
             meta: true,
         }];
         everything.staged_pages = vec![
-            StagedPage {
+            StagedBlock {
                 object_id: 10,
                 bytes: vec![1; 4096],
             },
-            StagedPage {
+            StagedBlock {
                 object_id: 11,
                 bytes: Vec::new(),
             },
@@ -2016,7 +2016,7 @@ mod tests {
             ("every field populated", everything),
             ("zero shard and sequence", zeroed),
             ("with metadata", with_metadata),
-            ("with staged pages", with_pages),
+            ("with staged pages", with_blocks),
         ]
     }
 
@@ -2064,7 +2064,7 @@ mod tests {
             )),
             ..outcome_with_object_id(0x1234_5678_9ABC_DEF0)
         }];
-        record.staged_pages = vec![crate::wal::StagedPage {
+        record.staged_pages = vec![crate::wal::StagedBlock {
             object_id: 0x1234_5678_9ABC_DEF0,
             bytes,
         }];
@@ -2151,14 +2151,14 @@ mod tests {
     #[test]
     fn an_item_does_not_write_the_object_id_it_can_derive() {
         let mut record = record_with(None);
-        let derivable = crate::engine::hashing::stable_page_object_id(
+        let derivable = crate::engine::hashing::stable_block_object_id(
             record.shard_id,
             "page",
             "tenant/1/object/9",
             None,
         );
         record.outcomes = vec![outcome_with_object_id(derivable)];
-        record.staged_pages = vec![crate::wal::StagedPage {
+        record.staged_pages = vec![crate::wal::StagedBlock {
             object_id: derivable,
             bytes: vec![3; 64],
         }];
@@ -2204,7 +2204,7 @@ mod tests {
     fn one_block_for_one_outcome_says_the_object_id_once() {
         let mut record = record_with(None);
         record.outcomes = vec![outcome_with_object_id(0x1234_5678_9ABC_DEF0)];
-        record.staged_pages = vec![crate::wal::StagedPage {
+        record.staged_pages = vec![crate::wal::StagedBlock {
             object_id: 0x1234_5678_9ABC_DEF0,
             bytes: vec![3; 64],
         }];
@@ -2238,11 +2238,11 @@ mod tests {
         let mut record = record_with(None);
         record.outcomes = vec![outcome_with_object_id(11), outcome_with_object_id(22)];
         record.staged_pages = vec![
-            crate::wal::StagedPage {
+            crate::wal::StagedBlock {
                 object_id: 11,
                 bytes: vec![1; 8],
             },
-            crate::wal::StagedPage {
+            crate::wal::StagedBlock {
                 object_id: 22,
                 bytes: vec![2; 8],
             },

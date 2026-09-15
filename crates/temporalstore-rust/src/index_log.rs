@@ -270,7 +270,7 @@ pub struct IndexItem {
     /// stringifies it on the way in. As decimal text it was 20 bytes of a 161-byte item, 12.4%;
     /// as a number it is about nine.
     ///
-    /// Both halves have landed. `page_ref_key_as_number_when_it_is_one` parses the string and
+    /// Both halves have landed. `block_ref_key_as_number_when_it_is_one` parses the string and
     /// serializes a `u64` when it parses, falling back to a string when it does not; the reader
     /// takes either shape, because records written before the writer half exist on disk and are
     /// not going to rewrite themselves.
@@ -285,10 +285,10 @@ pub struct IndexItem {
         rename = "pk",
         alias = "page_ref_key",
         default,
-        deserialize_with = "page_ref_key_either_shape",
-        serialize_with = "page_ref_key_as_number_when_it_is_one"
+        deserialize_with = "block_ref_key_either_shape",
+        serialize_with = "block_ref_key_as_number_when_it_is_one"
     )]
-    pub page_ref_key: String,
+    pub block_ref_key: String,
     #[serde(rename = "ok", alias = "object_key", default)]
     pub object_key: String,
     #[serde(
@@ -339,7 +339,7 @@ fn is_zero_u64(value: &u64) -> bool {
 /// everywhere else and the write path stringifies it on the way in; as decimal text it was 20
 /// bytes of a 161-byte item, and as a msgpack integer it is about nine.
 ///
-/// Safe to flip because `page_ref_key_either_shape` already takes both, and it has shipped: a
+/// Safe to flip because `block_ref_key_either_shape` already takes both, and it has shipped: a
 /// reader that had only ever seen the string would have had msgpack refuse the type outright
 /// rather than degrade, which is exactly why the reader went first.
 ///
@@ -358,7 +358,7 @@ impl IndexItem {
     /// `restore_address_repeats` puts back only what is absent, so the pair round-trips.
     /// Drop the composite key when the record already carries every part of it.
     ///
-    /// `page_ref_key` is `page_ref_key_from_parts` of this item's own model, object key,
+    /// `page_ref_key` is `block_ref_key_from_parts` of this item's own model, object key,
     /// component and address -- measured at 43 bytes of a 176-byte record, the largest single
     /// field in the index log, and every byte of it is spelled out again in the fields beside it.
     /// A reader rebuilds it with the same function, so the log carries the parts and not the
@@ -367,11 +367,11 @@ impl IndexItem {
     /// Cleared only on an exact match. Anything the derivation does not reproduce is written as
     /// it stands, so a key that is not the composite -- the numeric handle form, for one --
     /// survives untouched.
-    fn strip_page_ref_key_repeat(&mut self) {
+    fn strip_block_ref_key_repeat(&mut self) {
         let Some(address) = self.address.as_ref() else {
             return;
         };
-        let derived = page_ref_key_from_parts(
+        let derived = block_ref_key_from_parts(
             &self.model_id,
             &self.object_key,
             self.component.as_deref(),
@@ -381,23 +381,23 @@ impl IndexItem {
             address.page_id().unwrap_or_default(),
             address.generation().unwrap_or_default(),
         );
-        if derived == self.page_ref_key {
-            self.page_ref_key.clear();
+        if derived == self.block_ref_key {
+            self.block_ref_key.clear();
         }
     }
 
     /// Rebuild the composite key the writer left out.
     ///
-    /// The inverse of `strip_page_ref_key_repeat`. A log written before that stripping carries the
+    /// The inverse of `strip_block_ref_key_repeat`. A log written before that stripping carries the
     /// key, and this leaves it alone: it fills only what is absent.
-    fn restore_page_ref_key_repeat(&mut self) {
-        if !self.page_ref_key.is_empty() {
+    fn restore_block_ref_key_repeat(&mut self) {
+        if !self.block_ref_key.is_empty() {
             return;
         }
         let Some(address) = self.address.as_ref() else {
             return;
         };
-        self.page_ref_key = page_ref_key_from_parts(
+        self.block_ref_key = block_ref_key_from_parts(
             &self.model_id,
             &self.object_key,
             self.component.as_deref(),
@@ -431,7 +431,7 @@ impl IndexItem {
 
     /// Drop the object id when it is the hash of what this row already says.
     ///
-    /// An object id is `stable_page_object_id` of the shard, the kind, the key and the
+    /// An object id is `stable_block_object_id` of the shard, the kind, the key and the
     /// component -- and a row carries the last three, with the record carrying the shard. So the
     /// nine bytes it takes are nine bytes restating a hash of fields sitting beside it.
     ///
@@ -451,7 +451,7 @@ impl IndexItem {
     }
 
     fn derived_object_id(&self, shard_id: ShardId) -> u64 {
-        crate::engine::hashing::stable_page_object_id(
+        crate::engine::hashing::stable_block_object_id(
             shard_id,
             &self.model_id,
             &self.object_key,
@@ -704,7 +704,7 @@ impl serde::Serialize for IndexItem {
         struct Handle<'a>(&'a str);
         impl serde::Serialize for Handle<'_> {
             fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                page_ref_key_as_number_when_it_is_one(self.0, s)
+                block_ref_key_as_number_when_it_is_one(self.0, s)
             }
         }
         struct Model<'a>(&'a str);
@@ -717,7 +717,7 @@ impl serde::Serialize for IndexItem {
         let mut row = serializer.serialize_seq(Some(12))?;
         row.serialize_element(&Kind(&self.kind))?;
         row.serialize_element(&self.routing_bucket)?;
-        row.serialize_element(&Handle(&self.page_ref_key))?;
+        row.serialize_element(&Handle(&self.block_ref_key))?;
         row.serialize_element(&self.object_key)?;
         row.serialize_element(&Model(&self.model_id))?;
         row.serialize_element(&self.component)?;
@@ -801,7 +801,7 @@ where
     deserializer.deserialize_any(EitherShape)
 }
 
-fn page_ref_key_as_number_when_it_is_one<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+fn block_ref_key_as_number_when_it_is_one<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -811,7 +811,7 @@ where
     }
 }
 
-fn page_ref_key_either_shape<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn block_ref_key_either_shape<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -879,10 +879,10 @@ pub struct SlabCatalogEntry {
     pub created_unix_ms: Option<u64>,
     #[serde(default)]
     pub updated_unix_ms: Option<u64>,
-    #[serde(default)]
-    pub first_page_id: Option<u64>,
-    #[serde(default)]
-    pub last_page_id: Option<u64>,
+    #[serde(rename = "first_page_id", default)]
+    pub first_block_id: Option<u64>,
+    #[serde(rename = "last_page_id", default)]
+    pub last_block_id: Option<u64>,
     #[serde(default)]
     pub version: u64,
 }
@@ -936,7 +936,7 @@ pub struct IndexDeltaRecord {
     pub applied_wal_sequence: Option<u64>,
     /// When true, this record's items are the exact pages the write produced: replay replaces
     /// each item's (kind, object, component) predecessor and inserts, WITHOUT the covered-key
-    /// wipe -- mirroring the write path's upsert_bucket_index_page. When false (the default,
+    /// wipe -- mirroring the write path's upsert_bucket_index_block. When false (the default,
     /// and every record written before this field existed), the record snapshots each covered
     /// object's whole page set and replay wipes-then-restores. The snapshot shape is what made
     /// every append O(store): a batch touching the grow-with-the-store index hashes logged
@@ -979,7 +979,7 @@ pub struct IndexDeltaRecord {
 ///
 /// One definition, called from the page index's serialization and from the replay log, so the two
 /// cannot drift into different spellings of the same page.
-pub fn page_ref_key_from_parts(
+pub fn block_ref_key_from_parts(
     kind: &str,
     object_key: &str,
     component: Option<&str>,
@@ -1144,7 +1144,7 @@ fn bulk_ingest_mode() -> bool {
 /// single-barrier default; restored to a synchronous fsync only under the TS_WAL_LEGACY_RECOVERY
 /// escape hatch (whose delta-fold recovery trusts the durable delta).
 fn indexlog_wal_only_sync() -> bool {
-    // See `block_store::page_wal_single_barrier`: one reader, in `engine`, so the three barriers
+    // See `block_store::block_wal_single_barrier`: one reader, in `engine`, so the three barriers
     // this hatch controls cannot end up disagreeing about whether it is set.
     !crate::engine::wal_legacy_recovery()
 }
@@ -1496,7 +1496,7 @@ impl LocalIndexLogStore {
         // item. `restore_address_repeats` at the decode site puts them back.
         let mut items = items;
         for item in items.iter_mut() {
-            item.strip_page_ref_key_repeat();
+            item.strip_block_ref_key_repeat();
             item.strip_size_repeat();
             // The address first, because it is stripped against the item's id, and the item's
             // id is what goes next.
@@ -1505,7 +1505,7 @@ impl LocalIndexLogStore {
         }
         // Hoist the object key when every item names the same one, and blank the copies.
         //
-        // LAST, after the strips above. `strip_page_ref_key_repeat` DERIVES the page handle from
+        // LAST, after the strips above. `strip_block_ref_key_repeat` DERIVES the page handle from
         // the item's own fields and `object_key` is one of them, so blanking the key first would
         // derive a different handle and the strip would decline -- costing more than this saves.
         let shared_object_key = match items.split_first() {
@@ -1647,7 +1647,7 @@ impl LocalIndexLogStore {
                     // The item's id first: the address is restored FROM it.
                     item.restore_object_id_repeat(record.shard_id);
                     item.restore_address_repeats();
-                    item.restore_page_ref_key_repeat();
+                    item.restore_block_ref_key_repeat();
                     item.restore_size_repeat();
                 }
                 // Enforce delta sequence-continuity: sequences are assigned strictly
@@ -2819,7 +2819,7 @@ mod tests {
         IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
-            page_ref_key: key.to_string(),
+            block_ref_key: key.to_string(),
             object_key: key.to_string(),
             model_id: "m".to_string(),
             component: None,
@@ -2834,14 +2834,14 @@ mod tests {
 
     /// An object id that is the hash of the row's own fields is not written, and comes back.
     ///
-    /// It is `stable_page_object_id` of the shard, the model, the key and the component -- and a
+    /// It is `stable_block_object_id` of the shard, the model, the key and the component -- and a
     /// row carries the last three while the record carries the shard. Nine bytes restating a
     /// hash of fields sitting beside it.
     #[test]
     fn a_row_does_not_write_the_object_id_it_can_derive() {
         let shard_id: ShardId = 7;
         let mut derivable = page_item(3, "tenant/1/object/9", false);
-        derivable.object_id = crate::engine::hashing::stable_page_object_id(
+        derivable.object_id = crate::engine::hashing::stable_block_object_id(
             shard_id,
             &derivable.model_id,
             &derivable.object_key,
@@ -2934,7 +2934,7 @@ mod tests {
         let records = store.read_delta_records(7, 0).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].items.len(), 1);
-        assert_eq!(records[1].items[0].page_ref_key, "b");
+        assert_eq!(records[1].items[0].block_ref_key, "b");
         // The sequence tail is readable across a reopen even though the log now holds
         // delta records rather than whole-index records.
         let reopened = LocalIndexLogStore::new(dir.path());
@@ -2968,8 +2968,8 @@ mod tests {
                 logical_bytes: 1,
                 created_unix_ms: None,
                 updated_unix_ms: None,
-                first_page_id: None,
-                last_page_id: None,
+                first_block_id: None,
+                last_block_id: None,
                 version: 1,
             }],
         };
@@ -3034,7 +3034,7 @@ mod tests {
         // Retaining after the first delta's sequence yields only the later delta.
         let suffix = store.read_delta_records(9, anchor_seq).unwrap();
         assert_eq!(suffix.len(), 1);
-        assert_eq!(suffix[0].items[0].page_ref_key, "b");
+        assert_eq!(suffix[0].items[0].block_ref_key, "b");
     }
 
     #[test]
@@ -3178,7 +3178,7 @@ mod tests {
         let survivors = store.read_delta_records(7, 0).unwrap();
         assert_eq!(survivors.len(), 2);
         assert_eq!(
-            survivors[0].items[0].page_ref_key, "racing",
+            survivors[0].items[0].block_ref_key, "racing",
             "the unreflected concurrent delta must survive the sweep"
         );
         assert!(
@@ -3317,7 +3317,7 @@ mod tests {
         let item = IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: 545210715,
-            page_ref_key: "string:m:0::0:0:126:0:0".to_string(),
+            block_ref_key: "string:m:0::0:0:126:0:0".to_string(),
             object_key: "m:0".to_string(),
             model_id: "string".to_string(),
             component: None,
@@ -3394,8 +3394,8 @@ mod tests {
                     logical_bytes: 4000,
                     created_unix_ms: Some(10),
                     updated_unix_ms: Some(20),
-                    first_page_id: Some(0),
-                    last_page_id: Some(9),
+                    first_block_id: Some(0),
+                    last_block_id: Some(9),
                     version: 3,
                 },
                 SlabCatalogEntry {
@@ -3405,8 +3405,8 @@ mod tests {
                     logical_bytes: 512,
                     created_unix_ms: Some(30),
                     updated_unix_ms: Some(30),
-                    first_page_id: Some(10),
-                    last_page_id: Some(10),
+                    first_block_id: Some(10),
+                    last_block_id: Some(10),
                     version: 3,
                 },
             ],
@@ -3439,8 +3439,8 @@ mod tests {
                 logical_bytes: 1,
                 created_unix_ms: None,
                 updated_unix_ms: None,
-                first_page_id: None,
-                last_page_id: None,
+                first_block_id: None,
+                last_block_id: None,
                 version: 1,
             }],
         };
@@ -3456,8 +3456,8 @@ mod tests {
                 logical_bytes: 2,
                 created_unix_ms: None,
                 updated_unix_ms: None,
-                first_page_id: None,
-                last_page_id: None,
+                first_block_id: None,
+                last_block_id: None,
                 version: 2,
             }],
         };
@@ -3529,7 +3529,7 @@ mod tests {
                 None,
                 None,
             );
-            let page_ref_key = page_ref_key_from_parts(
+            let block_ref_key = block_ref_key_from_parts(
                 "feature",
                 key,
                 Some(component),
@@ -3542,7 +3542,7 @@ mod tests {
             IndexItem {
                 kind: IndexItemKind::Page,
                 routing_bucket: 1024,
-                page_ref_key,
+                block_ref_key,
                 object_key: key.to_string(),
                 model_id: "feature".to_string(),
                 component: Some(component.to_string()),
@@ -3567,7 +3567,7 @@ mod tests {
             let store = LocalIndexLogStore::new(dir.path());
             let expected: Vec<String> = items.iter().map(|item| item.object_key.clone()).collect();
             let expected_handles: Vec<String> =
-                items.iter().map(|item| item.page_ref_key.clone()).collect();
+                items.iter().map(|item| item.block_ref_key.clone()).collect();
             store
                 .append_delta(11, items.clone(), Vec::new(), Some(1), None, false, true)
                 .unwrap();
@@ -3579,7 +3579,7 @@ mod tests {
             // The derived handle too: it is derived FROM the object key, so a key restored after
             // it would have produced a handle derived against an empty key.
             let handles: Vec<String> =
-                read[0].items.iter().map(|item| item.page_ref_key.clone()).collect();
+                read[0].items.iter().map(|item| item.block_ref_key.clone()).collect();
             assert_eq!(handles, expected_handles, "{label}: page handles did not round-trip");
 
             let distinct = expected.iter().collect::<std::collections::BTreeSet<_>>().len();
@@ -3601,7 +3601,7 @@ mod tests {
             .map(|index| IndexItem {
                 kind: IndexItemKind::Page,
                 routing_bucket: 1024,
-                page_ref_key: String::new(),
+                block_ref_key: String::new(),
                 object_key: "ctx:event:41:tenant-7".to_string(),
                 model_id: "feature".to_string(),
                 component: Some((1_787_429_651_961u64 + index).to_string()),
@@ -4388,7 +4388,7 @@ mod tests {
         let b: IndexDeltaRecord = decode_index_payload(&binary_payload).unwrap();
         assert_eq!(a.sequence, 1);
         assert_eq!(b.sequence, 2);
-        assert_eq!(b.items[0].page_ref_key, "b");
+        assert_eq!(b.items[0].block_ref_key, "b");
     }
 
     /// GC retains the raw payload of a record it keeps, never re-encoding it -- a delta record
@@ -4470,7 +4470,7 @@ mod tests {
             #[serde(rename = "rb")]
             routing_bucket: u32,
             #[serde(rename = "pk")]
-            page_ref_key: String,
+            block_ref_key: String,
             #[serde(rename = "ok")]
             object_key: String,
             #[serde(rename = "mi")]
@@ -4482,7 +4482,7 @@ mod tests {
         let sparse = Sparse {
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
-            page_ref_key: "17665223918442101733".to_string(),
+            block_ref_key: "17665223918442101733".to_string(),
             object_key: "tenant/7/object/000000123".to_string(),
             model_id: "string".to_string(),
             object_id: 12_345,
@@ -4502,7 +4502,7 @@ mod tests {
         let full = IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
-            page_ref_key: "17665223918442101733".to_string(),
+            block_ref_key: "17665223918442101733".to_string(),
             object_key: "tenant/7/object/000000123".to_string(),
             model_id: "string".to_string(),
             component: None,
@@ -4532,7 +4532,7 @@ mod tests {
     ///
     /// This pins the half that lands first. Readers take both; the writer still emits text.
     #[test]
-    fn a_page_handle_reads_as_a_number_or_a_string() {
+    fn a_block_handle_reads_as_a_number_or_a_string() {
         // The same field names the item uses, with the handle as a NUMBER -- what a future writer
         // would produce.
         #[derive(serde::Serialize)]
@@ -4542,7 +4542,7 @@ mod tests {
             #[serde(rename = "rb")]
             routing_bucket: u32,
             #[serde(rename = "pk")]
-            page_ref_key: u64,
+            block_ref_key: u64,
             #[serde(rename = "ok")]
             object_key: String,
             #[serde(rename = "mi")]
@@ -4563,7 +4563,7 @@ mod tests {
         let numeric = NumericHandle {
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
-            page_ref_key: handle,
+            block_ref_key: handle,
             object_key: "tenant/7/object/000000123".to_string(),
             model_id: "string".to_string(),
             object_id: 12_345,
@@ -4576,7 +4576,7 @@ mod tests {
         let decoded: IndexItem =
             decode_index_payload(&as_number).expect("a numeric handle must decode");
         assert_eq!(
-            decoded.page_ref_key,
+            decoded.block_ref_key,
             handle.to_string(),
             "a handle written as a number must come back as the same handle"
         );
@@ -4586,7 +4586,7 @@ mod tests {
         let textual = IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
-            page_ref_key: handle.to_string(),
+            block_ref_key: handle.to_string(),
             object_key: "tenant/7/object/000000123".to_string(),
             model_id: "string".to_string(),
             component: None,
@@ -4599,7 +4599,7 @@ mod tests {
         };
         let as_text = encode_as_map(&textual, INDEX_LOG_SHAPE_DELTA);
         let round_tripped: IndexItem = decode_index_payload(&as_text).expect("text must decode");
-        assert_eq!(round_tripped.page_ref_key, handle.to_string());
+        assert_eq!(round_tripped.block_ref_key, handle.to_string());
 
         // The writer now emits the number, so `as_text` above is ALSO numeric and the two are no
         // longer a text-vs-number comparison -- they are two different structs. `NumericHandle`
@@ -4610,9 +4610,9 @@ mod tests {
         // Compare like with like instead: the same item, with a handle that parses as a number
         // and one of the same length that does not.
         let mut unparseable = textual.clone();
-        unparseable.page_ref_key = format!("x{}", &handle.to_string()[1..]);
+        unparseable.block_ref_key = format!("x{}", &handle.to_string()[1..]);
         assert_eq!(
-            unparseable.page_ref_key.len(),
+            unparseable.block_ref_key.len(),
             handle.to_string().len(),
             "the two handles must be the same length or the comparison measures the length"
         );
@@ -4651,7 +4651,7 @@ mod tests {
         let build = |address| IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
-            page_ref_key: 17_665_223_918_442_101_733u64.to_string(),
+            block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".to_string(),
             model_id: "string".to_string(),
             component: None,
@@ -4709,7 +4709,7 @@ mod tests {
         let item = |address| IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
-            page_ref_key: 17_665_223_918_442_101_733u64.to_string(),
+            block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".to_string(),
             model_id: "string".to_string(),
             component: None,
@@ -4755,7 +4755,7 @@ mod tests {
         let full = IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
-            page_ref_key: 17_665_223_918_442_101_733u64.to_string(),
+            block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".to_string(),
             model_id: "string".to_string(),
             component: None,
@@ -4784,7 +4784,7 @@ mod tests {
         println!("  ITEM whole record {whole} B");
         price("address", IndexItem { address: None, ..full.clone() });
         price("object_key", IndexItem { object_key: String::new(), ..full.clone() });
-        price("page_ref_key", IndexItem { page_ref_key: String::new(), ..full.clone() });
+        price("page_ref_key", IndexItem { block_ref_key: String::new(), ..full.clone() });
         price("model_id", IndexItem { model_id: String::new(), ..full.clone() });
         price("object_id", IndexItem { object_id: 0, ..full.clone() });
 
@@ -4848,7 +4848,7 @@ mod tests {
         let records = reopened.read_delta_records(3, 0).unwrap();
         assert_eq!(records.len(), 2, "both records must survive: {records:?}");
         assert_eq!(records[1].sequence, 10);
-        assert_eq!(records[1].items[0].page_ref_key, "second");
+        assert_eq!(records[1].items[0].block_ref_key, "second");
         assert_eq!(records[1].applied_wal_sequence, Some(2));
     }
 
@@ -4959,7 +4959,7 @@ mod tests {
             .read_delta_records(8, 0)
             .expect("a torn tail is not corruption");
         assert_eq!(records.len(), 1, "the torn record is dropped, the whole one kept");
-        assert_eq!(records[0].items[0].page_ref_key, "a");
+        assert_eq!(records[0].items[0].block_ref_key, "a");
     }
 
 
@@ -5002,8 +5002,8 @@ mod tests {
         let reopened = LocalIndexLogStore::new(dir.path());
         let records = reopened.read_delta_records(9, 0).unwrap();
         assert_eq!(records.len(), 2, "both records fold back: {records:?}");
-        assert_eq!(records[0].items[0].page_ref_key, "a");
-        assert_eq!(records[1].items[0].page_ref_key, "b");
+        assert_eq!(records[0].items[0].block_ref_key, "a");
+        assert_eq!(records[1].items[0].block_ref_key, "b");
         assert_eq!(records[1].applied_wal_sequence, Some(2));
     }
 

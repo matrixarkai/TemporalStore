@@ -44,11 +44,11 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::types::ShardId;
-use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedPage};
+use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 
 thread_local! {
     /// Pages produced by the write currently executing on this thread.
-    static STAGED: RefCell<Vec<StagedPage>> = const { RefCell::new(Vec::new()) };
+    static STAGED: RefCell<Vec<StagedBlock>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Start a write with nothing staged.
@@ -70,7 +70,7 @@ pub(super) fn begin_write() {
 /// somebody reads to decide what an ack promises.
 pub(super) fn stage(object_id: u64, bytes: &[u8]) {
     STAGED.with(|staged| {
-        staged.borrow_mut().push(StagedPage {
+        staged.borrow_mut().push(StagedBlock {
             object_id,
             bytes: bytes.to_vec(),
         })
@@ -112,7 +112,7 @@ pub(super) fn take_outcomes() -> Vec<crate::wal::WalOutcomeItem> {
 }
 
 /// Take what this write staged, leaving nothing behind.
-pub(super) fn take_staged() -> Vec<StagedPage> {
+pub(super) fn take_staged() -> Vec<StagedBlock> {
     STAGED.with(|staged| std::mem::take(&mut *staged.borrow_mut()))
 }
 
@@ -146,9 +146,9 @@ fn registry() -> &'static Mutex<HashMap<(usize, ShardId, u64), Registration>> {
 /// A later write of the same object replaces its entry, so a registration always names the
 /// record holding the current page rather than a superseded one.
 pub(super) fn register_record(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
-    staged_pages: &[StagedPage],
+    staged_pages: &[StagedBlock],
     log_id: u64,
     sequence: u64,
     store: &LocalWriteAheadLogStore,
@@ -172,7 +172,7 @@ pub(super) fn register_record(
 /// index. Same fact, different source, so it lands in the same table -- which is what lets the
 /// read path stay exactly as it was.
 pub(super) fn register_at(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
     log_id: u64,
@@ -196,7 +196,7 @@ pub(super) fn register_at(
 /// embedded engine serves shard 1, so without the filter one engine's registrations would pin
 /// every other engine's reclaim floor forever.
 pub(super) fn min_registered_sequence(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     store: &LocalWriteAheadLogStore,
 ) -> Option<u64> {
@@ -221,7 +221,7 @@ pub(super) fn min_registered_sequence(
 /// reclaim move at all. Newest are kept because a page written a moment ago is the one a read is
 /// most likely to want, and it is already in the record the writer just wrote.
 pub(super) fn oldest_registered_objects(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
 ) -> Vec<(u64, u64)> {
     let Ok(map) = registry().lock() else {
@@ -238,7 +238,7 @@ pub(super) fn oldest_registered_objects(
 }
 
 pub(super) fn registration_count(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
 ) -> usize {
     let Ok(map) = registry().lock() else {
@@ -257,7 +257,7 @@ pub(super) fn registration_count(
 /// needs, which is not a leak of bytes but of RECLAIM: the floor is the lowest live registration,
 /// so one stale entry holds the whole log.
 pub(super) fn deregister(
-    block_store: &crate::block_store::LocalBlockStore,
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
 ) {
@@ -269,7 +269,7 @@ pub(super) fn deregister(
 
 /// Forget a shard's registrations. Called when the shard unloads; a reload replays the WAL and
 /// re-derives whatever it needs.
-pub(super) fn clear_shard(block_store: &crate::block_store::LocalBlockStore, shard_id: ShardId) {
+pub(super) fn clear_shard(block_store: &crate::block_store::BlockStore, shard_id: ShardId) {
     if let Ok(mut map) = registry().lock() {
         let owner = block_store.store_id();
         map.retain(|(store_id, shard, _), _| !(*store_id == owner && *shard == shard_id));
@@ -281,8 +281,8 @@ pub(super) fn clear_shard(block_store: &crate::block_store::LocalBlockStore, sha
 /// `None` means the object was never registered, its record has been reclaimed, or the record
 /// does not carry that page -- in every case the caller falls through to the behaviour it had
 /// before, so this can only turn a miss into a hit.
-pub(super) fn read_page(
-    block_store: &crate::block_store::LocalBlockStore,
+pub(super) fn read_block(
+    block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
 ) -> Option<Vec<u8>> {
@@ -347,8 +347,8 @@ pub(super) fn read_page(
 /// Tiny on purpose: the working set is "the record(s) the current request's batch just wrote".
 /// Entries cannot go stale: WAL records are immutable, a superseding write registers a newer
 /// log id, and the post-dump WAL sweep never truncates a registered record (its floor).
-fn record_lru() -> &'static Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedPage>)>> {
-    static LRU: OnceLock<Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedPage>)>>> =
+fn record_lru() -> &'static Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedBlock>)>> {
+    static LRU: OnceLock<Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedBlock>)>>> =
         OnceLock::new();
     LRU.get_or_init(|| Mutex::new(Vec::new()))
 }

@@ -38,7 +38,7 @@ pub(super) struct ContextDirtyEntry {
 /// Where a WAL-resident page's bytes are: the log id of the record carrying it, and that
 /// record's sequence (which is what log reclaim reasons about).
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct WalResidentPage {
+pub(super) struct WalResidentBlock {
     pub(super) log_id: u64,
     pub(super) sequence: u64,
 }
@@ -68,8 +68,8 @@ pub(super) struct ShardState {
     /// A stale entry costs a miss, never wrong bytes. The resolver reads the record at that log
     /// id and looks for the object inside it, so a reclaimed record or a superseded page simply
     /// is not found, and the read falls through exactly as it did before this existed.
-    #[serde(default)]
-    pub(super) wal_resident_pages: BTreeMap<u64, WalResidentPage>,
+    #[serde(rename = "wal_resident_pages", default)]
+    pub(super) wal_resident_blocks: BTreeMap<u64, WalResidentBlock>,
     /// Routing buckets whose derived runtime flags may be stale, so a write can refresh the
     /// buckets it touched instead of sweeping the shard.
     ///
@@ -81,7 +81,7 @@ pub(super) struct ShardState {
     ///
     /// Recorded where the routing bucket is already known -- the bucket-index upsert, the removal
     /// paths, and the async dirty mark -- rather than inferred from the key, because a stored
-    /// address may carry an explicit routing bucket that disagrees with `page_routing_bucket`.
+    /// address may carry an explicit routing bucket that disagrees with `block_routing_bucket`.
     ///
     /// Not persisted: on load this is empty, and every load and recovery path already runs the
     /// full sweep, so a fresh process starts from fully recomputed flags.
@@ -154,8 +154,8 @@ pub(super) struct ShardState {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(super) sequences: HashMap<String, BTreeMap<u64, BlockAddress>>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
-    #[serde(default)]
-    pub(super) control_state_pages: HashMap<String, BlockAddress>,
+    #[serde(rename = "control_state_pages", default)]
+    pub(super) control_state_blocks: HashMap<String, BlockAddress>,
     #[serde(default)]
     pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     // Bounded distinct: per (key, bucket) HyperLogLog sketch. A bucket lives in EITHER
@@ -309,7 +309,7 @@ pub(super) struct CoreIndex {
     pub(super) bucket_map: BucketMap,
     /// Per-slab live page refs and live bytes, maintained by every mutation of the map above.
     ///
-    /// HERE, and not one level up on `ShardState`, for two reasons. `fold_delta_page_items` files
+    /// HERE, and not one level up on `ShardState`, for two reasons. `fold_delta_block_items` files
     /// pages through a bare `&mut CoreIndex` and has no shard to reach for -- a tally it could not
     /// see would be a hole in the mutation surface, which is the one thing this must not have. And
     /// two fields of ONE struct are what make the borrows work at every other site:
@@ -323,8 +323,8 @@ pub(super) struct CoreIndex {
     // Derived lookup tables rebuilt from the bucket map on load. Persisting them duplicates
     // page references already carried by the bucket index and made large context backfill
     // checkpoints tens of MB larger without adding authoritative recovery state.
-    #[serde(default, skip_serializing)]
-    pub(super) object_page_lookup: ObjectBlockLookup,
+    #[serde(rename = "object_page_lookup", default, skip_serializing)]
+    pub(super) object_block_lookup: ObjectBlockLookup,
     /// One shared copy of each page kind, so a page holds a pointer rather than its own string.
     ///
     /// Measured over 2700 pages: `model_id` had 2 distinct values and 2700 copies -- 1350 copies
@@ -350,11 +350,11 @@ pub(super) struct CoreIndex {
     /// 3.3-3.7x; with the heartbeat off, 0.84-0.94x -- flat.
     ///
     /// Maintained by the two methods below, which are the only places the lookup is mutated, and
-    /// recomputed by `rebuild_object_page_lookup`. `None` means "not established yet" (a
+    /// recomputed by `rebuild_object_block_lookup`. `None` means "not established yet" (a
     /// freshly deserialized index, before any rebuild) and the reader falls back to the walk,
     /// so a missing value costs time rather than correctness.
-    #[serde(skip)]
-    pub(super) object_component_page_refs: Option<usize>,
+    #[serde(rename = "object_component_page_refs", skip)]
+    pub(super) object_component_block_refs: Option<usize>,
     /// Buckets whose page list has been released: present in `bucket_map`, `in_memory: false`,
     /// `page_index` empty, reloadable from the model maps on demand.
     ///
@@ -668,14 +668,14 @@ impl<'a> Iterator for BlockIndexValuesMut<'a> {
 /// compaction drain set asks whether ANY page is still there, a garbage fraction asks how MUCH.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SlabLiveTally {
-    pub(super) page_refs: u64,
+    pub(super) block_refs: u64,
     pub(super) bytes: u64,
 }
 
 /// Per-slab live-page tally, MAINTAINED on every index mutation rather than recomputed by a
 /// whole-shard walk.
 ///
-/// WHAT IT COUNTS. Exactly the page set `collect_live_page_entries` returns: every page held in
+/// WHAT IT COUNTS. Exactly the page set `collect_live_block_entries` returns: every page held in
 /// the bucket index, plus -- for a RELEASED bucket -- the pages that bucket held when it was
 /// released. Delete-marked pages are included, because that walk includes them; a page leaves
 /// this tally when its index entry does, not when a flag on it changes.
@@ -685,9 +685,9 @@ pub(super) struct SlabLiveTally {
 /// pointing at an offset reaches it nowhere. A live-byte figure maintained there could only be
 /// recomputed from the index anyway, which is the walk this exists to remove.
 ///
-/// RELEASE IS COUNTER-NEUTRAL, DELIBERATELY. `release_bucket_pages` empties a bucket page index
+/// RELEASE IS COUNTER-NEUTRAL, DELIBERATELY. `release_bucket_blocks` empties a bucket page index
 /// while its pages stay live -- they are still in the model maps, and
-/// `collect_bucket_index_live_page_entries` supplements them back into the walk. So release does
+/// `collect_bucket_index_live_block_entries` supplements them back into the walk. So release does
 /// NOT decrement, and `reload_released_bucket` does NOT increment: it re-files the same pages
 /// through `insert_released`. The pair cancels, which is why a released-then-reloaded bucket is
 /// one of the workloads the drift check is required to cover rather than one it may assume.
@@ -741,7 +741,7 @@ impl BlockSlabLiveIndex {
     pub(super) fn add_address(&mut self, address: &BlockAddress) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tally = self.by_slab.entry(address.block_slab_id).or_default();
-        tally.page_refs = tally.page_refs.saturating_add(1);
+        tally.block_refs = tally.block_refs.saturating_add(1);
         tally.bytes = tally.bytes.saturating_add(address.length);
     }
 
@@ -750,9 +750,9 @@ impl BlockSlabLiveIndex {
         let Some(tally) = self.by_slab.get_mut(&address.block_slab_id) else {
             return;
         };
-        tally.page_refs = tally.page_refs.saturating_sub(1);
+        tally.block_refs = tally.block_refs.saturating_sub(1);
         tally.bytes = tally.bytes.saturating_sub(address.length);
-        if tally.page_refs == 0 && tally.bytes == 0 {
+        if tally.block_refs == 0 && tally.bytes == 0 {
             // A slab nothing points at any more is ABSENT, not zero. Keeping the entry would grow
             // this map with every slab the store ever rolled, and the caller that wants a zero for
             // a slab it can name gets one from `tally` regardless.
@@ -772,17 +772,17 @@ impl BlockSlabLiveIndex {
         self.by_slab.len()
     }
 
-    pub(super) fn total_page_refs(&self) -> u64 {
+    pub(super) fn total_block_refs(&self) -> u64 {
         self.by_slab
             .values()
-            .fold(0_u64, |sum, tally| sum.saturating_add(tally.page_refs))
+            .fold(0_u64, |sum, tally| sum.saturating_add(tally.block_refs))
     }
 
     /// Declare the tally derived, without replacing it.
     ///
     /// For a rebuild that CHARGED every page as it filed it: the tally is already correct and a
     /// walk to confirm that would be the walk this type exists to remove. Callers must have
-    /// emptied it first -- `rebuild_bucket_page_ownership` does, right where it clears the map it
+    /// emptied it first -- `rebuild_bucket_block_ownership` does, right where it clears the map it
     /// counts.
     pub(super) fn mark_ready(&mut self) {
         self.ready = true;
@@ -971,7 +971,7 @@ impl BlockIndexMap {
     /// `BlockIndex::address` private, and it is read in three figures of places.
     /// `the_maintained_slab_live_tally_matches_the_walk` is what fails if the name stops being
     /// obeyed.
-    pub(super) fn pages_mut_unaccounted(&mut self) -> BlockIndexValuesMut<'_> {
+    pub(super) fn blocks_mut_unaccounted(&mut self) -> BlockIndexValuesMut<'_> {
         match self {
             BlockIndexMap::Empty => BlockIndexValuesMut::Empty,
             BlockIndexMap::One(_, page) => BlockIndexValuesMut::One(std::iter::once(page)),
@@ -1102,7 +1102,7 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
 }
 
 pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
-    crate::index_log::page_ref_key_from_parts(
+    crate::index_log::block_ref_key_from_parts(
         &page.model_id,
         &page.object_key,
         page.component.as_deref(),
@@ -1600,7 +1600,8 @@ impl From<BlockRefs> for Vec<BlockLookupRef> {
 pub(super) struct BlockLookupRef {
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    pub(super) page_ref_key: u64,
+    #[serde(rename = "page_ref_key")]
+    pub(super) block_ref_key: u64,
 }
 
 /// Rust-native core index mirroring the shape:
@@ -1748,7 +1749,7 @@ pub(super) struct BucketNode {
     #[serde(default)]
     pub(super) deleted: bool,
     /// The three flags of a per-bucket residency lifecycle. They are SET now, by
-    /// `release_bucket_pages` and `reload_released_bucket` in `storage_bucket_internals`.
+    /// `release_bucket_blocks` and `reload_released_bucket` in `storage_bucket_internals`.
     ///
     /// A RELEASED bucket is `meta_loaded: true, loading: false, in_memory: false` with an empty
     /// `page_index` and its `object_index` intact: the node stays in `bucket_map`, so the bucket
@@ -1756,7 +1757,7 @@ pub(super) struct BucketNode {
     /// per-page entries, which are what the index actually costs (~760 B a record).
     ///
     /// WHERE THE PAGE LIST COMES BACK FROM. `bucket_map` is derived:
-    /// `rebuild_bucket_page_ownership` builds it by walking `collect_model_live_page_entries`,
+    /// `rebuild_bucket_block_ownership` builds it by walking `collect_model_live_block_entries`,
     /// which iterates `strings`, `zsets`, `lists` and the rest -- the resident address maps. That
     /// used to read as the reason a bucket could not be released, and it is in fact the reason it
     /// CAN be: the model maps, not the bucket index, are what a read resolves through (see
@@ -1764,7 +1765,7 @@ pub(super) struct BucketNode {
     /// per-page view frees memory without touching anything a read needs. Reload re-derives
     /// exactly that bucket's pages from the same maps.
     ///
-    /// WHAT THAT COSTS IN PRECONDITIONS, all checked by `release_bucket_pages`, none assumed:
+    /// WHAT THAT COSTS IN PRECONDITIONS, all checked by `release_bucket_blocks`, none assumed:
     ///
     ///   * the bucket must be clean and undeleted, page by page -- the model maps carry no
     ///     per-page `dirty`/`deleted` bit, so a release that had to restore one could not;
@@ -1820,8 +1821,8 @@ pub(super) struct BucketNode {
     pub(super) object_index: ObjectIndex,
     #[serde(default, alias = "deleted_object_ids")]
     pub(super) deleted_object_index: ObjectIndex,
-    #[serde(default, alias = "page_refs")]
-    pub(super) page_index: BlockIndexMap,
+    #[serde(rename = "page_index", default, alias = "page_refs")]
+    pub(super) block_index: BlockIndexMap,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1829,8 +1830,10 @@ pub(super) enum BucketLayoutState {
     #[default]
     Empty,
     SingleObject,
-    SinglePageObject,
-    MultiPageObject,
+    #[serde(rename = "SinglePageObject")]
+    SingleBlockObject,
+    #[serde(rename = "MultiPageObject")]
+    MultiBlockObject,
     MultiObject,
 }
 
@@ -1859,32 +1862,32 @@ impl BlockIndex {
 }
 
 impl CoreIndex {
-    pub(super) fn rebuild_object_page_lookup(&mut self) {
+    pub(super) fn rebuild_object_block_lookup(&mut self) {
         // The rebuild is already O(pages); establishing the total here costs nothing extra and
         // is what lets the stats path stop walking the shard.
-        self.object_component_page_refs = Some(0);
-        self.object_page_lookup.clear();
+        self.object_component_block_refs = Some(0);
+        self.object_block_lookup.clear();
         let refs = self
             .bucket_map
             .iter()
             .flat_map(|(routing_bucket, bucket)| {
-                bucket.page_index.iter().map(move |(page_ref_key, page)| {
-                    (*routing_bucket, *page_ref_key, page.clone())
+                bucket.block_index.iter().map(move |(block_ref_key, page)| {
+                    (*routing_bucket, *block_ref_key, page.clone())
                 })
             })
             .collect::<Vec<_>>();
-        for (routing_bucket, page_ref_key, page) in refs {
-            self.insert_object_page_lookup(routing_bucket, page_ref_key, &page);
+        for (routing_bucket, block_ref_key, page) in refs {
+            self.insert_object_block_lookup(routing_bucket, block_ref_key, &page);
         }
     }
 
     /// Takes the handle the page index filed this page under, so the two cannot name different
     /// things. It used to take the rendered key by shared pointer; the key is a number now and
     /// costs nothing to copy.
-    pub(super) fn insert_object_page_lookup(
+    pub(super) fn insert_object_block_lookup(
         &mut self,
         routing_bucket: u32,
-        page_ref_key: u64,
+        block_ref_key: u64,
         page: &BlockIndex,
     ) {
         if page.deleted {
@@ -1892,11 +1895,11 @@ impl CoreIndex {
         }
         let added = {
             let entry = self
-                .object_page_lookup
+                .object_block_lookup
                 .entry(&page.model_id, &page.object_key);
             let value = BlockLookupRef {
                 routing_bucket,
-                page_ref_key,
+                block_ref_key,
             };
             match entry.position(page.component.as_deref()) {
                 Ok(at) => entry.by_component[at].refs.insert(value),
@@ -1915,34 +1918,34 @@ impl CoreIndex {
             }
         };
         if added {
-            if let Some(total) = self.object_component_page_refs.as_mut() {
+            if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_add(1);
             }
         }
     }
 
     /// Every page ref this object holds, for one component.
-    pub(super) fn page_refs_for(
+    pub(super) fn block_refs_for(
         &self,
         model_id: &str,
         object_key: &str,
         component: Option<&str>,
     ) -> Option<&[BlockLookupRef]> {
-        self.object_page_lookup
+        self.object_block_lookup
             .get(model_id, object_key)
             .and_then(|entry| entry.refs_for(component))
     }
 
     /// Every component of this object, and the pages holding each.
-    pub(super) fn object_page_refs(
+    pub(super) fn object_block_refs(
         &self,
         model_id: &str,
         object_key: &str,
     ) -> Option<&ObjectBlockRefs> {
-        self.object_page_lookup.get(model_id, object_key)
+        self.object_block_lookup.get(model_id, object_key)
     }
 
-    pub(super) fn remove_object_page_lookup_entry(
+    pub(super) fn remove_object_block_lookup_entry(
         &mut self,
         model_id: &str,
         object_key: &str,
@@ -1955,17 +1958,17 @@ impl CoreIndex {
         // component's refs could only be found by range, not by index. Nesting deletes that.
         let mut removed = 0usize;
         let mut now_empty = false;
-        if let Some(entry) = self.object_page_lookup.get_mut(model_id, object_key) {
+        if let Some(entry) = self.object_block_lookup.get_mut(model_id, object_key) {
             if let Ok(at) = entry.position(component) {
                 removed = entry.by_component.remove(at).refs.len();
             }
             now_empty = entry.by_component.is_empty();
         }
         if now_empty {
-            self.object_page_lookup.remove(model_id, object_key);
+            self.object_block_lookup.remove(model_id, object_key);
         }
         if removed > 0 {
-            if let Some(total) = self.object_component_page_refs.as_mut() {
+            if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
             }
         }
@@ -1973,19 +1976,19 @@ impl CoreIndex {
 
     /// Drop every ref an object holds under one kind.
     ///
-    /// The delete path used to call `rebuild_object_page_lookup` instead, which clears the whole
+    /// The delete path used to call `rebuild_object_block_lookup` instead, which clears the whole
     /// lookup, clones every page in every bucket into a vector, and re-inserts them -- so one
     /// delete cost work proportional to the entire shard, and deleting a store cost the square of
     /// it. Removing the object's own entry is the same result for a fraction of the work.
     ///
     /// Maintains `object_component_page_refs` exactly as the per-component removal above does,
     /// because that counter is what lets the stats path avoid walking the shard.
-    pub(super) fn remove_object_from_page_lookup(
+    pub(super) fn remove_object_from_block_lookup(
         &mut self,
         model_id: &str,
         object_key: &str,
     ) -> usize {
-        let Some(entry) = self.object_page_lookup.remove(model_id, object_key) else {
+        let Some(entry) = self.object_block_lookup.remove(model_id, object_key) else {
             return 0;
         };
         let removed: usize = entry
@@ -1994,47 +1997,47 @@ impl CoreIndex {
             .map(|component| component.refs.len())
             .sum();
         if removed > 0 {
-            if let Some(total) = self.object_component_page_refs.as_mut() {
+            if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
             }
         }
         removed
     }
 
-    pub(super) fn contains_object_page_address(
+    pub(super) fn contains_object_block_address(
         &self,
         model_id: &str,
         object_key: &str,
         component: Option<&str>,
         address: &BlockAddress,
     ) -> bool {
-        if let Some(page_refs) = self.page_refs_for(model_id, object_key, component) {
-            return page_refs.iter().any(|page_ref| {
+        if let Some(block_refs) = self.block_refs_for(model_id, object_key, component) {
+            return block_refs.iter().any(|block_ref| {
                 self.bucket_map
-                    .get(&page_ref.routing_bucket)
-                    .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
+                    .get(&block_ref.routing_bucket)
+                    .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
                     .map(|page| {
                         !page.deleted
                             && &*page.model_id == model_id
                             && &*page.object_key == object_key
                             && page.component.as_deref() == component
-                            && same_page_address(&page.address, address)
+                            && same_block_address(&page.address, address)
                     })
                     .unwrap_or(false)
             });
         }
 
-        if !self.object_page_lookup.is_empty() {
+        if !self.object_block_lookup.is_empty() {
             return false;
         }
 
         self.bucket_map.values().any(|bucket| {
-            bucket.page_index.values().any(|page| {
+            bucket.block_index.values().any(|page| {
                 !page.deleted
                     && &*page.model_id == model_id
                     && &*page.object_key == object_key
                     && page.component.as_deref() == component
-                    && same_page_address(&page.address, address)
+                    && same_block_address(&page.address, address)
             })
         })
     }
@@ -2068,7 +2071,7 @@ pub(super) fn next_block_index_for_object(
         .get(&routing_bucket)
         .and_then(|bucket| {
             bucket
-                .page_index
+                .block_index
                 .values()
                 .filter(|block| {
                     block.model_id.as_ref() == model_id && block.object_key.as_ref() == object_key
@@ -2081,7 +2084,7 @@ pub(super) fn next_block_index_for_object(
         })
 }
 
-pub(super) fn object_page_lookup_key(
+pub(super) fn object_block_lookup_key(
     model_id: &str,
     object_key: &str,
     component: Option<&str>,
@@ -2106,7 +2109,7 @@ fn push_lookup_part(buffer: &mut String, value: &str) {
     buffer.push('|');
 }
 
-fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
+fn same_block_address(left: &BlockAddress, right: &BlockAddress) -> bool {
     left.block_slab_id == right.block_slab_id
         && left.offset == right.offset
         && left.length == right.length
@@ -2150,13 +2153,13 @@ pub(super) struct ExecuteOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PackedFeaturePage {
+pub(super) struct PackedFeatureBlock {
     pub(super) version: u8,
     pub(super) points: Vec<FeaturePoint>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum PackedFeaturePageDecode {
+pub(super) enum PackedFeatureBlockDecode {
     Legacy,
     Packed(Vec<FeaturePoint>),
     Corrupt(String),
@@ -2193,7 +2196,7 @@ mod component_lookup_tests {
     fn core_with(object: &str, components: &[Option<&str>]) -> CoreIndex {
         let mut index = CoreIndex::default();
         for (i, component) in components.iter().enumerate() {
-            index.insert_object_page_lookup(
+            index.insert_object_block_lookup(
                 i as u32,
                 i as u64,
                 &page(object, *component),
@@ -2204,7 +2207,7 @@ mod component_lookup_tests {
 
     fn components_left(index: &CoreIndex, object: &str) -> Vec<Option<String>> {
         index
-            .object_page_refs("hash", object)
+            .object_block_refs("hash", object)
             .map(|entry| {
                 entry
                     .by_component
@@ -2220,7 +2223,7 @@ mod component_lookup_tests {
     #[test]
     fn removing_one_component_leaves_the_others() {
         let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
-        index.remove_object_page_lookup_entry("hash", "k", Some("b"));
+        index.remove_object_block_lookup_entry("hash", "k", Some("b"));
         assert_eq!(
             components_left(&index, "k"),
             vec![Some("a".to_string()), Some("c".to_string())]
@@ -2230,12 +2233,12 @@ mod component_lookup_tests {
     #[test]
     fn removing_the_first_and_last_components_works() {
         let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
-        index.remove_object_page_lookup_entry("hash", "k", Some("a"));
+        index.remove_object_block_lookup_entry("hash", "k", Some("a"));
         assert_eq!(
             components_left(&index, "k"),
             vec![Some("b".to_string()), Some("c".to_string())]
         );
-        index.remove_object_page_lookup_entry("hash", "k", Some("c"));
+        index.remove_object_block_lookup_entry("hash", "k", Some("c"));
         assert_eq!(components_left(&index, "k"), vec![Some("b".to_string())]);
     }
 
@@ -2244,7 +2247,7 @@ mod component_lookup_tests {
         // `None` sorts before every `Some`, so it is the range's first element -- the case most
         // likely to run off the front of the set.
         let mut index = core_with("k", &[None, Some("a"), Some("b")]);
-        index.remove_object_page_lookup_entry("hash", "k", None);
+        index.remove_object_block_lookup_entry("hash", "k", None);
         assert_eq!(
             components_left(&index, "k"),
             vec![Some("a".to_string()), Some("b".to_string())]
@@ -2255,21 +2258,21 @@ mod component_lookup_tests {
     fn every_ref_sharing_a_component_goes() {
         let mut index = CoreIndex::default();
         for i in 0..3u32 {
-            index.insert_object_page_lookup(
+            index.insert_object_block_lookup(
                 i,
                 i as u64,
                 &page("k", Some("dup")),
             );
         }
-        index.insert_object_page_lookup(9, 9, &page("k", Some("keep")));
-        index.remove_object_page_lookup_entry("hash", "k", Some("dup"));
+        index.insert_object_block_lookup(9, 9, &page("k", Some("keep")));
+        index.remove_object_block_lookup_entry("hash", "k", Some("dup"));
         assert_eq!(components_left(&index, "k"), vec![Some("keep".to_string())]);
     }
 
     #[test]
     fn removing_an_absent_component_changes_nothing() {
         let mut index = core_with("k", &[Some("a"), Some("b")]);
-        index.remove_object_page_lookup_entry("hash", "k", Some("zzz"));
+        index.remove_object_block_lookup_entry("hash", "k", Some("zzz"));
         assert_eq!(
             components_left(&index, "k"),
             vec![Some("a".to_string()), Some("b".to_string())]
@@ -2279,8 +2282,8 @@ mod component_lookup_tests {
     #[test]
     fn emptying_the_set_drops_the_key_entirely() {
         let mut index = core_with("k", &[Some("only")]);
-        index.remove_object_page_lookup_entry("hash", "k", Some("only"));
-        assert!(index.object_page_refs("hash", "k").is_none());
+        index.remove_object_block_lookup_entry("hash", "k", Some("only"));
+        assert!(index.object_block_refs("hash", "k").is_none());
     }
 
     #[test]
@@ -2288,8 +2291,8 @@ mod component_lookup_tests {
         // main keeps a running total beside the map; `retain` derived the decrement by
         // differencing the length, and this form knows it directly. Same number either way.
         let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
-        index.object_component_page_refs = Some(3);
-        index.remove_object_page_lookup_entry("hash", "k", Some("b"));
-        assert_eq!(index.object_component_page_refs, Some(2));
+        index.object_component_block_refs = Some(3);
+        index.remove_object_block_lookup_entry("hash", "k", Some("b"));
+        assert_eq!(index.object_component_block_refs, Some(2));
     }
 }

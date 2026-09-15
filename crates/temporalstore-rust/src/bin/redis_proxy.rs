@@ -6,14 +6,14 @@ use tracing::info;
 
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = std::env::var("TS_REDIS_BIND_ADDR")
-        .or_else(|_| std::env::var("TS_REDIS_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:16379".to_string());
+    let addr = temporalstore_rust::env_flag::env_value("TS_REDIS_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_REDIS_ADDR"))
+        .unwrap_or_else(|| "127.0.0.1:16379".to_string());
     let proxy_addr =
         std::env::var("TS_PROXY_ADDR").unwrap_or_else(|_| "127.0.0.1:17000".to_string());
     let shard_id = std::env::var("TS_SHARD_ID")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(1);
     info!(
         %addr,

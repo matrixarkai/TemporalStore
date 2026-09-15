@@ -19,7 +19,7 @@ struct HarnessOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HarnessMode {
     WriteAbort,
-    CorruptPage,
+    CorruptBlock,
     Recover,
 }
 
@@ -36,7 +36,7 @@ fn main() {
     fs::create_dir_all(&options.root).expect("failed to create crash harness root");
     match options.mode {
         HarnessMode::WriteAbort => write_then_abort(options.root),
-        HarnessMode::CorruptPage => corrupt_first_block_slab(options.root),
+        HarnessMode::CorruptBlock => corrupt_first_block_slab(options.root),
         HarnessMode::Recover => recover_and_print(options.root),
     }
 }
@@ -137,7 +137,7 @@ fn parse_options() -> HarnessOptions {
             "--mode" => {
                 mode = args.next().map(|mode| match mode.as_str() {
                     "write-abort" => HarnessMode::WriteAbort,
-                    "corrupt-page" => HarnessMode::CorruptPage,
+                    "corrupt-page" => HarnessMode::CorruptBlock,
                     "recover" => HarnessMode::Recover,
                     other => panic!("unsupported --mode {other}"),
                 });

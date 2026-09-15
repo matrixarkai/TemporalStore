@@ -85,7 +85,7 @@ impl TemporalEngine {
         // newest manifest and nothing else, and a manifest carrying only its own buckets installs
         // a shard missing every bucket it did not name. `block_slab_ids` is the whole of what the
         // collector holds back -- `run_gc_inner` extends its live set with it,
-        // `storage_page_gc_dependency_plan` blocks on it, and the page-GC retain floor steps over
+        // `storage_block_gc_dependency_plan` blocks on it, and the page-GC retain floor steps over
         // it -- so deriving it from the DUMPED buckets alone left the slabs behind the unnamed
         // buckets' pages pinned by nothing. Compaction relocates those pages, the slab goes stale,
         // the sweep destroys it, and this manifest still points at it; neither
@@ -101,8 +101,8 @@ impl TemporalEngine {
         // this against -- under bulk ingest the exported index and the volatile summaries are not
         // the same state. ONE live-page walk, handed on to the object-lifecycle report that was
         // already taking one of its own, so the walk count per dump is unchanged.
-        let dump_live_page_entries = collect_live_page_entries(&dump_index_state);
-        let block_slab_ids = dump_live_page_entries
+        let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
+        let block_slab_ids = dump_live_block_entries
             .iter()
             .map(|entry| entry.address.block_slab_id)
             .collect::<BTreeSet<_>>()
@@ -111,7 +111,7 @@ impl TemporalEngine {
         let object_lifecycle = object_lifecycle_report_from_entries(
             shard_id,
             &dump_index_state,
-            dump_live_page_entries,
+            dump_live_block_entries,
             &selected_buckets,
             |key| self.routing_bucket_for_key(shard_id, key),
         );
@@ -133,9 +133,9 @@ impl TemporalEngine {
             block_slab_ids,
             wal_sequence,
             index_log_sequence,
-            live_page_refs: bucket_summaries
+            live_block_refs: bucket_summaries
                 .iter()
-                .map(|summary| summary.page_ref_count)
+                .map(|summary| summary.block_ref_count)
                 .sum(),
             logical_bytes: bucket_summaries
                 .iter()
@@ -638,15 +638,15 @@ impl TemporalEngine {
                 "slot dump manifest page segment ids must be sorted and unique",
             ));
         }
-        let all_live_page_entries = collect_live_page_entries(&restored);
+        let all_live_block_entries = collect_live_block_entries(&restored);
         // The slabs the WHOLE embedded index needs, which is what `block_slab_ids` now carries and
         // what the collector holds back. Taken off the same walk the per-bucket entries below come
         // from, so this costs no extra pass over the index.
-        let index_block_slab_ids = all_live_page_entries
+        let index_block_slab_ids = all_live_block_entries
             .iter()
             .map(|entry| entry.address.block_slab_id)
             .collect::<BTreeSet<_>>();
-        let live_page_entries = all_live_page_entries
+        let live_block_entries = all_live_block_entries
             .into_iter()
             .filter(|entry| {
                 let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
@@ -655,13 +655,13 @@ impl TemporalEngine {
                 manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket)
             })
             .collect::<Vec<_>>();
-        if live_page_entries.len() as u64 != manifest.live_page_refs {
+        if live_block_entries.len() as u64 != manifest.live_block_refs {
             return Err(Status::error(
                 "slot_dump_live_ref_mismatch",
                 format!(
                     "slot dump expected {} live page refs but index has {}",
-                    manifest.live_page_refs,
-                    live_page_entries.len()
+                    manifest.live_block_refs,
+                    live_block_entries.len()
                 ),
             ));
         }
@@ -772,19 +772,19 @@ impl TemporalEngine {
                 "slot dump manifest generation id does not match its sequence, slots, pages, and index checksum",
             ));
         }
-        let mut unreadable_page_refs = 0usize;
-        let mut unreadable_page_bytes = 0u64;
-        for entry in live_page_entries {
+        let mut unreadable_block_refs = 0usize;
+        let mut unreadable_block_bytes = 0u64;
+        for entry in live_block_entries {
             if self.page_store.read(&entry.address).is_err() {
-                unreadable_page_refs = unreadable_page_refs.saturating_add(1);
-                unreadable_page_bytes = unreadable_page_bytes.saturating_add(entry.address.length);
+                unreadable_block_refs = unreadable_block_refs.saturating_add(1);
+                unreadable_block_bytes = unreadable_block_bytes.saturating_add(entry.address.length);
             }
         }
-        if unreadable_page_refs > 0 {
+        if unreadable_block_refs > 0 {
             return Err(Status::error(
                 "slot_dump_unreadable_page_refs",
                 format!(
-                    "slot dump has {unreadable_page_refs} unreadable page refs covering {unreadable_page_bytes} bytes"
+                    "slot dump has {unreadable_block_refs} unreadable page refs covering {unreadable_block_bytes} bytes"
                 ),
             ));
         }
@@ -850,26 +850,26 @@ impl TemporalEngine {
             blockers.push("corrupt_page_segments".to_string());
         }
 
-        let mut unreadable_page_ref_count = 0usize;
-        let mut unreadable_page_bytes = 0u64;
+        let mut unreadable_block_ref_count = 0usize;
+        let mut unreadable_block_bytes = 0u64;
         let mut restored_index = None;
         if !manifest.index_bytes.is_empty() && missing_block_slab_ids.is_empty() {
             if let Ok(restored) = crate::engine::decode_index_bytes(&manifest.index_bytes) {
                 let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
-                let mut probed_page_refs = 0usize;
-                for entry in collect_live_page_entries(&restored) {
+                let mut probed_block_refs = 0usize;
+                for entry in collect_live_block_entries(&restored) {
                     let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
                         self.routing_bucket_for_key(manifest.shard_id, &entry.object_key)
                     });
                     if manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket) {
-                        if readable_probe_limit > 0 && probed_page_refs >= readable_probe_limit {
+                        if readable_probe_limit > 0 && probed_block_refs >= readable_probe_limit {
                             continue;
                         }
-                        probed_page_refs += 1;
+                        probed_block_refs += 1;
                         if self.page_store.read(&entry.address).is_err() {
-                            unreadable_page_ref_count = unreadable_page_ref_count.saturating_add(1);
-                            unreadable_page_bytes =
-                                unreadable_page_bytes.saturating_add(entry.address.length);
+                            unreadable_block_ref_count = unreadable_block_ref_count.saturating_add(1);
+                            unreadable_block_bytes =
+                                unreadable_block_bytes.saturating_add(entry.address.length);
                         }
                     }
                 }
@@ -878,7 +878,7 @@ impl TemporalEngine {
                 blockers.push("invalid_manifest_index".to_string());
             }
         }
-        let (stale_object_conflicts, mut stale_page_conflicts) = restored_index
+        let (stale_object_conflicts, mut stale_block_conflicts) = restored_index
             .as_ref()
             .map(|restored| self.bucket_dump_stale_conflict_report(manifest, restored))
             .unwrap_or_default();
@@ -894,13 +894,13 @@ impl TemporalEngine {
         if !source_bucket_coverage_missing_bucket_ids.is_empty() {
             blockers.push("source_manifest_slot_coverage".to_string());
         }
-        if stale_manifest && stale_page_conflicts.is_empty() {
-            stale_page_conflicts.push(format!(
+        if stale_manifest && stale_block_conflicts.is_empty() {
+            stale_block_conflicts.push(format!(
                 "index_log_sequence:{}->{}",
                 manifest.index_log_sequence, current_index_log_sequence
             ));
         }
-        if unreadable_page_ref_count > 0 {
+        if unreadable_block_ref_count > 0 {
             blockers.push("unreadable_page_refs".to_string());
         }
         if let Some(handoff) = &manifest.load_version_handoff {
@@ -918,7 +918,7 @@ impl TemporalEngine {
         if !stale_object_conflicts.is_empty() {
             blockers.push("stale_object_conflicts".to_string());
         }
-        if !stale_page_conflicts.is_empty() {
+        if !stale_block_conflicts.is_empty() {
             blockers.push("stale_page_conflicts".to_string());
         }
         blockers.sort();
@@ -935,13 +935,13 @@ impl TemporalEngine {
             manifest_index_log_sequence: manifest.index_log_sequence,
             missing_block_slab_ids,
             corrupt_block_slab_ids,
-            unreadable_page_ref_count,
-            unreadable_page_bytes,
+            unreadable_block_ref_count,
+            unreadable_block_bytes,
             stale_manifest,
             stale_object_conflict_count: stale_object_conflicts.len(),
-            stale_page_conflict_count: stale_page_conflicts.len(),
+            stale_block_conflict_count: stale_block_conflicts.len(),
             stale_object_conflicts,
-            stale_page_conflicts,
+            stale_block_conflicts,
             source_manifest_count,
             missing_source_manifest_ids,
             source_manifest_bucket_ids,
@@ -1071,23 +1071,23 @@ impl TemporalEngine {
             .map(|key| object_level(key))
             .collect::<BTreeSet<_>>();
         let mut stale_object_conflicts = Vec::new();
-        let mut stale_page_conflicts = Vec::new();
+        let mut stale_block_conflicts = Vec::new();
         for key in manifest_entries.keys().chain(current_entries.keys()) {
             let object_key = object_level(key);
             match (manifest_entries.get(key), current_entries.get(key)) {
                 (Some(manifest_address), Some(current_address)) => {
                     if manifest_address != current_address {
-                        stale_page_conflicts.push(object_key);
+                        stale_block_conflicts.push(object_key);
                     }
                 }
                 (Some(_), None) => {
                     if current_object_keys.contains(&object_key) {
-                        stale_page_conflicts.push(object_key);
+                        stale_block_conflicts.push(object_key);
                     }
                 }
                 (None, Some(_)) => {
                     if manifest_object_keys.contains(&object_key) {
-                        stale_page_conflicts.push(object_key);
+                        stale_block_conflicts.push(object_key);
                     } else {
                         stale_object_conflicts.push(object_key);
                     }
@@ -1097,9 +1097,9 @@ impl TemporalEngine {
         }
         stale_object_conflicts.sort();
         stale_object_conflicts.dedup();
-        stale_page_conflicts.sort();
-        stale_page_conflicts.dedup();
-        (stale_object_conflicts, stale_page_conflicts)
+        stale_block_conflicts.sort();
+        stale_block_conflicts.dedup();
+        (stale_object_conflicts, stale_block_conflicts)
     }
 
     pub fn bucket_dump_fault_matrix_report(&self, shard_id: ShardId) -> BucketDumpFaultMatrixReport {
@@ -1334,12 +1334,12 @@ impl TemporalEngine {
                     ),
                 ));
             }
-            if preflight.unreadable_page_ref_count > 0 {
+            if preflight.unreadable_block_ref_count > 0 {
                 return Err(Status::error(
                     "slot_dump_unreadable_page_refs",
                     format!(
                         "slot dump has {} unreadable page refs covering {} bytes",
-                        preflight.unreadable_page_ref_count, preflight.unreadable_page_bytes
+                        preflight.unreadable_block_ref_count, preflight.unreadable_block_bytes
                     ),
                 ));
             }
@@ -1365,12 +1365,12 @@ impl TemporalEngine {
         let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
-        // ownership. `rebuild_bucket_page_ownership` clears the bucket map and repopulates it
+        // ownership. `rebuild_bucket_block_ownership` clears the bucket map and repopulates it
         // from the model maps, so running it against a state whose `hashes` map never survived
         // serialization would drop every hash page from the restored index -- and that index is
         // what gets persisted durably below.
         rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
-        rebuild_bucket_page_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        rebuild_bucket_block_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
         let restored_index_bytes = serialize_index(&restored);
         self.persist_bucket_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
@@ -1426,7 +1426,7 @@ impl TemporalEngine {
             // same suffix from it; replaying here as well would be the same work done twice.
             //
             // A log holding nothing past the anchor replays nothing and costs a scan.
-            self.rehydrate_wal_resident_pages(manifest.shard_id);
+            self.rehydrate_wal_resident_blocks(manifest.shard_id);
             if let Err(status) =
                 self.replay_wal_into_shard(manifest.shard_id, manifest.wal_sequence)
             {
@@ -1470,7 +1470,7 @@ impl TemporalEngine {
                     .source_bucket_coverage_missing_bucket_ids
                     .clone(),
                 stale_object_conflict_count: preflight.stale_object_conflict_count,
-                stale_page_conflict_count: preflight.stale_page_conflict_count,
+                stale_block_conflict_count: preflight.stale_block_conflict_count,
                 preflight,
                 rollback_marker_written,
                 prepare_marker_written: false,
@@ -1506,7 +1506,7 @@ impl TemporalEngine {
                         .source_bucket_coverage_missing_bucket_ids
                         .clone(),
                     stale_object_conflict_count: preflight.stale_object_conflict_count,
-                    stale_page_conflict_count: preflight.stale_page_conflict_count,
+                    stale_block_conflict_count: preflight.stale_block_conflict_count,
                     preflight,
                     rollback_marker_written,
                     prepare_marker_written: true,
@@ -1528,7 +1528,7 @@ impl TemporalEngine {
                     .source_bucket_coverage_missing_bucket_ids
                     .clone(),
                 stale_object_conflict_count: preflight.stale_object_conflict_count,
-                stale_page_conflict_count: preflight.stale_page_conflict_count,
+                stale_block_conflict_count: preflight.stale_block_conflict_count,
                 preflight,
                 rollback_marker_written,
                 prepare_marker_written: false,

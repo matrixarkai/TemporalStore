@@ -28,8 +28,10 @@ struct WorkflowReport {
     root: String,
     workflow: String,
     records_written: usize,
-    write_page_store_writes: u64,
-    write_page_store_bytes: u64,
+    #[serde(rename = "write_page_store_writes")]
+    write_block_store_writes: u64,
+    #[serde(rename = "write_page_store_bytes")]
+    write_block_store_bytes: u64,
     context_count_before_restart: ContextDataCount,
     hot_read: ReadProbe,
     before_restart_memory: ResidencyProbe,
@@ -80,7 +82,8 @@ struct ReadProbe {
     cache_disk_hits: u64,
     cache_memory_evictions: u64,
     page_store_reads: u64,
-    page_store_bytes_read: u64,
+    #[serde(rename = "page_store_bytes_read")]
+    block_store_bytes_read: u64,
     object_count: u64,
     hot_object_count: u64,
     cold_object_count: u64,
@@ -106,7 +109,8 @@ struct ResidencyProbe {
     cache_disk_hits: u64,
     cache_memory_evictions: u64,
     page_store_reads: u64,
-    page_store_bytes_read: u64,
+    #[serde(rename = "page_store_bytes_read")]
+    block_store_bytes_read: u64,
     object_count: u64,
     hot_object_count: u64,
     cold_object_count: u64,
@@ -123,11 +127,15 @@ struct AsyncWarmupProbe {
     batch_size: usize,
     latency_us: u128,
     reports: Vec<StorageCacheWarmupReport>,
-    considered_page_refs: usize,
-    warmed_page_refs: usize,
-    already_cached_page_refs: usize,
+    #[serde(rename = "considered_page_refs")]
+    considered_block_refs: usize,
+    #[serde(rename = "warmed_page_refs")]
+    warmed_block_refs: usize,
+    #[serde(rename = "already_cached_page_refs")]
+    already_cached_block_refs: usize,
     block_store_reads: usize,
-    failed_page_refs: usize,
+    #[serde(rename = "failed_page_refs")]
+    failed_block_refs: usize,
     warmed_bytes: u64,
 }
 
@@ -140,7 +148,8 @@ struct Verification {
     restart_reloaded_from_physical_store: bool,
     disk_block_cache_used_after_restart: bool,
     serving_available_while_async_warmup_running: bool,
-    async_warmup_loaded_pages_without_foreground_query: bool,
+    #[serde(rename = "async_warmup_loaded_pages_without_foreground_query")]
+    async_warmup_loaded_blocks_without_foreground_query: bool,
     context_total_count_survives_restart: bool,
     post_restart_append_increased_total_count: bool,
     second_restart_preserved_increased_total_count: bool,
@@ -241,7 +250,7 @@ fn main() {
                 > query_refill_after_restart.cache_disk_hits,
         serving_available_while_async_warmup_running: warmup_active_during_serving
             && serving_during_async_warmup.ok,
-        async_warmup_loaded_pages_without_foreground_query: async_warmup.warmed_page_refs > 0
+        async_warmup_loaded_blocks_without_foreground_query: async_warmup.warmed_block_refs > 0
             && after_async_warmup.cache_memory_entry_count
                 > async_warmup_before_query.cache_memory_entry_count,
         context_total_count_survives_restart: context_count_after_restart_query
@@ -260,8 +269,8 @@ fn main() {
         root: root.display().to_string(),
         workflow: "temporalstore_native_memory_disk_persistence".to_string(),
         records_written,
-        write_page_store_writes: write_stats.writes,
-        write_page_store_bytes: write_stats.bytes_written,
+        write_block_store_writes: write_stats.writes,
+        write_block_store_bytes: write_stats.bytes_written,
         context_count_before_restart,
         hot_read,
         before_restart_memory,
@@ -642,17 +651,17 @@ fn run_gradual_async_warmup_with_serving(
         batches: reports.len(),
         batch_size,
         latency_us,
-        considered_page_refs: reports
+        considered_block_refs: reports
             .iter()
-            .map(|report| report.considered_page_refs)
+            .map(|report| report.considered_block_refs)
             .sum(),
-        warmed_page_refs: reports.iter().map(|report| report.warmed_page_refs).sum(),
-        already_cached_page_refs: reports
+        warmed_block_refs: reports.iter().map(|report| report.warmed_block_refs).sum(),
+        already_cached_block_refs: reports
             .iter()
-            .map(|report| report.already_cached_page_refs)
+            .map(|report| report.already_cached_block_refs)
             .sum(),
         block_store_reads: reports.iter().map(|report| report.block_store_reads).sum(),
-        failed_page_refs: reports.iter().map(|report| report.failed_page_refs).sum(),
+        failed_block_refs: reports.iter().map(|report| report.failed_block_refs).sum(),
         warmed_bytes: reports.iter().map(|report| report.warmed_bytes).sum(),
         reports,
     };
@@ -741,7 +750,7 @@ fn read_context_probe(name: &str, engine: &TemporalEngine) -> ReadProbe {
         cache_disk_hits: residency.cache_disk_hits,
         cache_memory_evictions: residency.cache_memory_evictions,
         page_store_reads: residency.page_store_reads,
-        page_store_bytes_read: residency.page_store_bytes_read,
+        block_store_bytes_read: residency.block_store_bytes_read,
         object_count: residency.object_count,
         hot_object_count: residency.hot_object_count,
         cold_object_count: residency.cold_object_count,
@@ -795,7 +804,7 @@ fn residency_probe(name: &str, engine: &TemporalEngine) -> ResidencyProbe {
         cache_disk_hits: stats.cache.disk_hits,
         cache_memory_evictions: stats.cache.memory_evictions,
         page_store_reads: stats.page_store.reads,
-        page_store_bytes_read: stats.page_store.bytes_read,
+        block_store_bytes_read: stats.page_store.bytes_read,
         object_count: object_runtime.object_count,
         hot_object_count: object_runtime.hot_object_count,
         cold_object_count: object_runtime.cold_object_count,

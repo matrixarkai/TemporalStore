@@ -151,7 +151,7 @@ fn recover_sb_ok(root: &str, keys: &str) {
 }
 
 #[test]
-fn single_barrier_data_page_loss_after_dump_rebuilds_from_wal() {
+fn single_barrier_data_block_loss_after_dump_rebuilds_from_wal() {
     // THE data-page kill-point case for the true single barrier. The per-write data-page fdatasync
     // is deferred, so pages become durable only at the dump. A dump at key 150 fsyncs pages 0..150
     // and anchors the watermark; writes 151..300 then append pages that are NEVER fsync'd. Model a
@@ -202,7 +202,7 @@ fn single_barrier_non_idempotent_counter_applies_exactly_once() {
 }
 
 #[test]
-fn single_barrier_full_page_loss_no_dump_rebuilds_from_wal() {
+fn single_barrier_full_block_loss_no_dump_rebuilds_from_wal() {
     // No dump: every data page is un-synced. Wipe all non-WAL state (pages + served index + delta);
     // only the fsync'd WAL survives. Base-only replay from 0 rebuilds all 300 keys.
     let dir = tempfile::tempdir().unwrap();

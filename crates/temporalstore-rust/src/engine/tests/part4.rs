@@ -495,7 +495,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers() {
     assert!(report.runtime_ready, "{report:?}");
     assert!(report.routing_bucket_count >= 1);
     assert!(report.object_count >= 4);
-    assert!(report.page_ref_count >= 3);
+    assert!(report.block_ref_count >= 3);
     // Freshly written, materialized, in-memory pages are hot (not log-backed), so
     // their objects are hot; cold residency only applies to reloaded-from-disk pages.
     assert!(report.hot_object_count >= 3);
@@ -503,9 +503,9 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers() {
     assert!(report.dirty_object_count >= 4);
     assert!(report.dirty_bucket_count >= 1);
     assert!(report.max_dirty_generation >= 1);
-    assert!(report.object_page_count >= 2);
-    assert_eq!(report.missing_owner_page_ref_count, 0);
-    assert_eq!(report.owner_mismatch_page_ref_count, 0);
+    assert!(report.object_block_count >= 2);
+    assert_eq!(report.missing_owner_block_ref_count, 0);
+    assert_eq!(report.owner_mismatch_block_ref_count, 0);
     assert_eq!(report.reused_object_id_conflict_count, 0);
     assert!(report.blockers.is_empty());
     assert!(report
@@ -513,14 +513,14 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers() {
         .iter()
         .any(|item| item.contains("hot/cold/tombstone object state")));
 
-    let compaction = engine.compact_shard_pages(1).unwrap();
+    let compaction = engine.compact_shard_blocks(1).unwrap();
     assert!(compaction.model_layout_compaction_ready, "{compaction:?}");
     let after_compaction = engine.object_manager_runtime_report(1);
     assert!(after_compaction.runtime_ready, "{after_compaction:?}");
     assert!(after_compaction.object_count >= report.object_count.saturating_sub(1));
-    assert_eq!(after_compaction.missing_owner_page_ref_count, 0);
-    assert_eq!(after_compaction.owner_mismatch_page_ref_count, 0);
-    assert!(after_compaction.object_page_count >= 1);
+    assert_eq!(after_compaction.missing_owner_block_ref_count, 0);
+    assert_eq!(after_compaction.owner_mismatch_block_ref_count, 0);
+    assert!(after_compaction.object_block_count >= 1);
 
     let manifest = engine
         .create_bucket_dump_manifest(1, Vec::new())
@@ -550,14 +550,14 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers() {
     let reloaded = engine.object_manager_runtime_report(1);
     assert!(reloaded.runtime_ready, "{reloaded:?}");
     assert_eq!(reloaded.object_count, after_dump_load.object_count);
-    assert_eq!(reloaded.page_ref_count, after_dump_load.page_ref_count);
+    assert_eq!(reloaded.block_ref_count, after_dump_load.block_ref_count);
     assert_eq!(
         reloaded.delete_marker_object_count,
         after_dump_load.delete_marker_object_count
     );
     assert_eq!(
-        reloaded.object_page_count,
-        after_dump_load.object_page_count
+        reloaded.object_block_count,
+        after_dump_load.object_block_count
     );
 }
 
@@ -620,7 +620,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers_pari
     assert!(report.runtime_ready, "{report:?}");
     assert!(report.routing_bucket_count >= 1);
     assert!(report.object_count >= 4);
-    assert!(report.page_ref_count >= 3);
+    assert!(report.block_ref_count >= 3);
     // Freshly written, materialized, in-memory pages are hot (not log-backed), so
     // their objects are hot; cold residency only applies to reloaded-from-disk pages.
     assert!(report.hot_object_count >= 3);
@@ -628,10 +628,10 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers_pari
     assert!(report.dirty_object_count >= 4);
     assert!(report.dirty_bucket_count >= 1);
     assert!(report.max_dirty_generation >= 1);
-    assert!(report.object_page_count >= 2);
-    assert!(report.packed_timestamped_page_count >= 1);
-    assert_eq!(report.missing_owner_page_ref_count, 0);
-    assert_eq!(report.owner_mismatch_page_ref_count, 0);
+    assert!(report.object_block_count >= 2);
+    assert!(report.packed_timestamped_block_count >= 1);
+    assert_eq!(report.missing_owner_block_ref_count, 0);
+    assert_eq!(report.owner_mismatch_block_ref_count, 0);
     assert_eq!(report.reused_object_id_conflict_count, 0);
     assert!(report.blockers.is_empty());
     assert!(report
@@ -653,14 +653,14 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers_pari
     let reloaded = engine.object_manager_runtime_report(1);
     assert!(reloaded.runtime_ready, "{reloaded:?}");
     assert_eq!(reloaded.object_count, report.object_count);
-    assert_eq!(reloaded.page_ref_count, report.page_ref_count);
+    assert_eq!(reloaded.block_ref_count, report.block_ref_count);
     assert_eq!(
         reloaded.delete_marker_object_count,
         report.delete_marker_object_count
     );
     assert_eq!(
-        reloaded.packed_timestamped_page_count,
-        report.packed_timestamped_page_count
+        reloaded.packed_timestamped_block_count,
+        report.packed_timestamped_block_count
     );
 }
 
@@ -730,8 +730,8 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
     assert!(corrupt_preflight
         .corrupt_block_slab_ids
         .contains(&slab_id));
-    assert!(corrupt_preflight.unreadable_page_ref_count > 0);
-    assert!(corrupt_preflight.unreadable_page_bytes > 0);
+    assert!(corrupt_preflight.unreadable_block_ref_count > 0);
+    assert!(corrupt_preflight.unreadable_block_bytes > 0);
     assert!(corrupt_preflight
         .blockers
         .contains(&"unreadable_page_refs".to_string()));
@@ -1042,7 +1042,7 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     // fix durably commits the consistent partial state before propagating the error. avoids the
     // desync structurally (the compactor leaves the index unchanged on failure + one atomic commit).
     //
-    // Setup: k1 (string, relocated FIRST by compact_shard_pages) lives in an earlier slab; k2 (hash,
+    // Setup: k1 (string, relocated FIRST by compact_shard_blocks) lives in an earlier slab; k2 (hash,
     // relocated after) lives in a later slab. We corrupt ONLY the latest slab (k2's), so compaction
     // relocates k1 (vacating its old slab) and then FAILS reading k2. A tiny cache forces the reads
     // to hit disk. Assert the on-disk index CHANGED -- i.e. the relocated partial state was durably
@@ -1094,7 +1094,7 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     let k2_slab = slabs.last().expect("at least two page slabs after the roll").clone();
     fs::write(&k2_slab, b"").unwrap();
 
-    let result = engine.compact_shard_pages(1);
+    let result = engine.compact_shard_blocks(1);
     assert!(
         result.is_err(),
         "compaction must fail when a live page's slab is unreadable, got {result:?}"
@@ -1348,7 +1348,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(install_report.commit_marker_written);
     assert_eq!(install_report.source_manifest_count, 1);
     assert_eq!(install_report.stale_object_conflict_count, 0);
-    assert_eq!(install_report.stale_page_conflict_count, 0);
+    assert_eq!(install_report.stale_block_conflict_count, 0);
     assert!(install_report
         .load_version_handoff
         .as_ref()
@@ -1394,7 +1394,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(stale_preflight
         .blockers
         .contains(&"stale_page_conflicts".to_string()));
-    assert!(stale_preflight.stale_page_conflict_count > 0);
+    assert!(stale_preflight.stale_block_conflict_count > 0);
     assert_eq!(stale_preflight.stale_object_conflict_count, 0);
     assert!(!engine
         .install_bucket_dump_manifest(&manifest)
@@ -2407,8 +2407,8 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     );
     let restart_boundary = restarted.storage_recovery_boundary_report(1);
     assert!(restart_boundary.latest_safe_index_log_sequence >= final_anchor.index_log_sequence);
-    assert!(restart_boundary.stale_index_page_refs.is_empty());
-    assert_eq!(restart_boundary.missing_owner_page_refs, 0);
+    assert!(restart_boundary.stale_index_block_refs.is_empty());
+    assert_eq!(restart_boundary.missing_owner_block_refs, 0);
 }
 
 /// The lifecycle round's purge re-checks liveness, and the re-check REACHES it.
@@ -2563,10 +2563,10 @@ fn a_single_pinned_slab_does_not_suppress_the_other_candidates() {
     });
 
     // One shared-store cursor pins slab 1 and everything above it; slab 0 is free.
-    let plan = engine.storage_page_gc_dependency_plan(
+    let plan = engine.storage_block_gc_dependency_plan(
         1,
         vec![0, 1],
-        vec![StoragePageGcReplayCursor {
+        vec![StorageBlockGcReplayCursor {
             cursor_id: "lagging-follower".to_string(),
             shard_id: 1,
             retain_from_block_slab_id: 1,
@@ -2609,7 +2609,7 @@ fn a_single_pinned_slab_does_not_suppress_the_other_candidates() {
 
 // shared-corpus: storage_gc_dependency_retention_matrix
 #[test]
-fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
+fn storage_block_gc_blocks_all_retention_dependencies_before_reclaim() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2641,10 +2641,10 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
         .unwrap();
     assert_eq!(delayed.delayed_destroy_block_slab_ids, vec![0]);
 
-    let matrix = engine.storage_page_gc_dependency_plan(
+    let matrix = engine.storage_block_gc_dependency_plan(
         1,
         vec![0, 1],
-        vec![StoragePageGcReplayCursor {
+        vec![StorageBlockGcReplayCursor {
             cursor_id: "shared-follower-a".to_string(),
             shard_id: 1,
             retain_from_block_slab_id: 0,
@@ -2686,10 +2686,10 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
         );
     }
 
-    let released = engine.storage_page_gc_dependency_plan(
+    let released = engine.storage_block_gc_dependency_plan(
         1,
         vec![0],
-        Vec::<StoragePageGcReplayCursor>::new(),
+        Vec::<StorageBlockGcReplayCursor>::new(),
         Vec::<BucketDumpRaftSnapshotRef>::new(),
         None,
         None,
@@ -2726,7 +2726,7 @@ fn bucket_dump_manifest_rejects_generation_mismatch_and_conflicts() {
     assert_eq!(manifest.version, 3);
     assert!(!manifest.dump_generation_id.is_empty());
     assert_eq!(manifest.object_lifecycle.live_object_ids, 1);
-    assert_eq!(manifest.object_lifecycle.live_page_refs, 1);
+    assert_eq!(manifest.object_lifecycle.live_block_refs, 1);
 
     let mut legacy_v2 = manifest.clone();
     legacy_v2.version = 2;
@@ -2871,7 +2871,7 @@ fn bucket_dump_manifest_rejects_bucket_summary_mismatch() {
         .bucket_summaries
         .first_mut()
         .expect("slot summary should exist");
-    summary.page_ref_count = summary.page_ref_count.saturating_add(1);
+    summary.block_ref_count = summary.block_ref_count.saturating_add(1);
     stale_summary.dump_generation_id = bucket_dump_generation_id(&stale_summary);
     stale_summary.checksum = bucket_dump_manifest_checksum(&stale_summary).unwrap();
 
@@ -3051,7 +3051,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
     });
     assert!(report.dump_manifest.is_some());
     assert_eq!(report.object_lifecycle.live_object_ids, 1);
-    assert_eq!(report.object_lifecycle.live_page_refs, 1);
+    assert_eq!(report.object_lifecycle.live_block_refs, 1);
     assert_eq!(report.object_lifecycle.stale_object_ids, 1);
     let boundary = engine.storage_recovery_boundary_report(1);
     assert_eq!(boundary.latest_safe_wal_sequence, 2);
@@ -3090,9 +3090,9 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
         .warnings
         .contains(&"dirty_slots_pending_dump".to_string()));
     assert!(report.slab_integrity.integrity_ok);
-    assert_eq!(report.slab_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(report.unreadable_page_ref_count, 0);
-    assert_eq!(report.owner_mismatch_page_ref_count, 0);
+    assert_eq!(report.slab_integrity.unreadable_block_ref_count, 0);
+    assert_eq!(report.unreadable_block_ref_count, 0);
+    assert_eq!(report.owner_mismatch_block_ref_count, 0);
     assert!(report.log_compatibility.rust_native_replay_safe);
     assert!(!report.log_compatibility.native_binary_compatible);
     assert_eq!(
@@ -3111,30 +3111,30 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     assert!(report.log_compatibility.golden_conversion_required);
     assert!(!report.log_compatibility.native_reader_supported);
     assert!(!report.log_compatibility.native_writer_supported);
-    assert!(report.page_format_compatibility.rust_native_read_safe);
-    assert!(!report.page_format_compatibility.native_page_header_compatible);
+    assert!(report.block_format_compatibility.rust_native_read_safe);
+    assert!(!report.block_format_compatibility.native_block_header_compatible);
     assert_eq!(
-        report.page_format_compatibility.page_format,
+        report.block_format_compatibility.block_format,
         "rust-page-envelope-v6"
     );
     assert_eq!(
-        report.page_format_compatibility.compatibility_mode,
+        report.block_format_compatibility.compatibility_mode,
         "rust_envelope_migration_only"
     );
-    assert!(report.page_format_compatibility.migration_required);
-    assert!(report.page_format_compatibility.golden_conversion_required);
+    assert!(report.block_format_compatibility.migration_required);
+    assert!(report.block_format_compatibility.golden_conversion_required);
     assert!(
         !report
-            .page_format_compatibility
-            .native_page_header_reader_supported
+            .block_format_compatibility
+            .native_block_header_reader_supported
     );
     assert!(
         !report
-            .page_format_compatibility
-            .native_page_header_writer_supported
+            .block_format_compatibility
+            .native_block_header_writer_supported
     );
-    assert!(report.page_format_compatibility.checksum_protected);
-    assert!(report.page_format_compatibility.object_ids_embedded);
+    assert!(report.block_format_compatibility.checksum_protected);
+    assert!(report.block_format_compatibility.object_ids_embedded);
     assert!(report.block_store_bytes_written > 0);
 }
 
@@ -3193,7 +3193,7 @@ fn storage_log_compatibility_report_counts_jsonl_sequences_and_native_gaps() {
 }
 
 #[test]
-fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
+fn storage_block_format_compatibility_report_counts_zones_and_header_gaps() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -3216,17 +3216,17 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     );
     engine.block_store().roll_slab().unwrap();
 
-    let report = engine.storage_page_format_compatibility_report(1);
+    let report = engine.storage_block_format_compatibility_report(1);
     assert_eq!(report.shard_id, 1);
-    assert_eq!(report.page_format, "rust-page-envelope-v6");
+    assert_eq!(report.block_format, "rust-page-envelope-v6");
     assert_eq!(report.rust_envelope_version, 6);
     assert_eq!(report.compatibility_mode, "rust_envelope_migration_only");
     assert!(report.migration_required);
-    assert!(!report.native_page_header_reader_supported);
-    assert!(!report.native_page_header_writer_supported);
+    assert!(!report.native_block_header_reader_supported);
+    assert!(!report.native_block_header_writer_supported);
     assert!(report.golden_conversion_required);
     assert!(report.rust_native_read_safe);
-    assert!(!report.native_page_header_compatible);
+    assert!(!report.native_block_header_compatible);
     assert!(report.checksum_protected);
     assert!(report.object_ids_embedded);
     assert!(report.routing_buckets_embedded);
@@ -3384,13 +3384,13 @@ fn storage_production_readiness_blocks_corrupt_live_block_slabs() {
         .contains(&"storage_segment_integrity_failed".to_string()));
     assert!(!report.slab_integrity.integrity_ok);
     assert!(report.slab_integrity.corrupt_block_slab_count > 0);
-    assert!(report.slab_integrity.unreadable_page_ref_count > 0);
+    assert!(report.slab_integrity.unreadable_block_ref_count > 0);
     assert!(report.corrupt_block_slab_count > 0);
-    assert!(report.unreadable_page_ref_count > 0);
+    assert!(report.unreadable_block_ref_count > 0);
 }
 
 #[test]
-fn storage_lifecycle_apply_warms_cache_from_page_index() {
+fn storage_lifecycle_apply_warms_cache_from_block_index() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         32,
@@ -3435,15 +3435,15 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
         warm_cache: true,
         ..StorageLifecycleRequest::default()
     });
-    assert!(report.cache_warmup_page_refs >= 1);
+    assert!(report.cache_warmup_block_refs >= 1);
     assert_eq!(
-        report.cache_warmup.warmed_page_refs,
-        report.cache_warmup_page_refs
+        report.cache_warmup.warmed_block_refs,
+        report.cache_warmup_block_refs
     );
-    assert!(report.cache_warmup.considered_page_refs >= 1);
+    assert!(report.cache_warmup.considered_block_refs >= 1);
     assert!(report.cache_warmup.block_store_reads >= 1);
     assert!(report.cache_warmup.warmed_bytes >= 128);
-    assert_eq!(report.cache_warmup.failed_page_refs, 0);
+    assert_eq!(report.cache_warmup.failed_block_refs, 0);
     assert!(engine.cache().stats().puts >= 1);
 }
 
@@ -3482,11 +3482,11 @@ fn storage_cache_warmup_report_filters_buckets_and_counts_cache_hits() {
     let bucket = first_bucket;
     let first = engine.storage_cache_warmup_report(1, [bucket]);
     assert_eq!(first.selected_buckets, vec![bucket]);
-    assert_eq!(first.considered_page_refs, 1);
-    assert_eq!(first.skipped_page_refs, 1);
+    assert_eq!(first.considered_block_refs, 1);
+    assert_eq!(first.skipped_block_refs, 1);
     assert_eq!(first.block_store_reads, 1);
-    assert_eq!(first.already_cached_page_refs, 0);
-    assert_eq!(first.failed_page_refs, 0);
+    assert_eq!(first.already_cached_block_refs, 0);
+    assert_eq!(first.failed_block_refs, 0);
     assert!(first.warmed_bytes > 0);
 
     let hits_before_second = engine.cache().stats().memory_hits
@@ -3496,11 +3496,11 @@ fn storage_cache_warmup_report_filters_buckets_and_counts_cache_hits() {
     let hits_after_second = engine.cache().stats().memory_hits
         + engine.cache().stats().pmem_hits
         + engine.cache().stats().disk_hits;
-    assert_eq!(second.considered_page_refs, 1);
-    assert_eq!(second.skipped_page_refs, 1);
+    assert_eq!(second.considered_block_refs, 1);
+    assert_eq!(second.skipped_block_refs, 1);
     assert_eq!(second.block_store_reads, 0);
-    assert_eq!(second.already_cached_page_refs, 1);
-    assert_eq!(second.warmed_page_refs, 1);
+    assert_eq!(second.already_cached_block_refs, 1);
+    assert_eq!(second.warmed_block_refs, 1);
     assert_eq!(hits_after_second, hits_before_second);
 }
 
@@ -3570,10 +3570,10 @@ fn storage_cache_inspection_reports_bucket_entries_and_invalidates_bucket() {
 fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let restore_index_dir = dir.path().join("restore-indexes");
-    let engine = TemporalEngine::with_local_dirs(32, &cache_dir, &page_dir, &index_dir);
+    let engine = TemporalEngine::with_local_dirs(32, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
     let target_value = b"dump-load-target-1234".to_vec();
     for (key, value) in [
@@ -3594,7 +3594,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
                 .ok
         );
     }
-    let target_page_key = {
+    let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let address = shards
             .get(&1)
@@ -3640,13 +3640,13 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     }
     assert!(engine.cache().stats().memory_evictions > 0);
     assert!(engine.cache().stats().disk_bytes > 0);
-    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    assert_eq!(engine.cache().get_memory(&target_block_key), None);
     let manifest = engine
         .create_bucket_dump_manifest(1, Vec::new())
         .expect("slot dump manifest should persist");
     engine.validate_bucket_dump_manifest(&manifest).unwrap();
 
-    let restored = TemporalEngine::with_local_dirs(32, &cache_dir, &page_dir, &restore_index_dir);
+    let restored = TemporalEngine::with_local_dirs(32, &cache_dir, &block_dir, &restore_index_dir);
     restored.load_shard(1);
     restored
         .install_bucket_dump_manifest(&manifest)
@@ -3687,7 +3687,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     assert!(invalidated.memory_entries_removed >= 1);
     let readiness = restored.storage_production_readiness_report(1);
     assert!(readiness.production_ready, "{readiness:?}");
-    assert_eq!(readiness.unreadable_page_ref_count, 0);
+    assert_eq!(readiness.unreadable_block_ref_count, 0);
     assert_eq!(readiness.corrupt_block_slab_count, 0);
 }
 
@@ -3802,7 +3802,7 @@ fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy()
 // and the assertions below fail (slab 0 is moved out of the read path); the default (guard on)
 // passes.
 #[test]
-fn cross_shard_page_reclaim_retains_another_shards_live_slab() {
+fn cross_shard_block_reclaim_retains_another_shards_live_slab() {
     let dir = tempfile::tempdir().unwrap();
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
@@ -3867,8 +3867,8 @@ fn cross_shard_page_reclaim_retains_another_shards_live_slab() {
         enable_wal_reclaim: false,
         enable_evict: false,
         enable_expire: false,
-        enable_page_reclaim: true,
-        enable_page_compaction: false,
+        enable_block_reclaim: true,
+        enable_block_compaction: false,
         enable_index_gc: false,
         ..StorageManagerCycleRequest::default()
     });
@@ -3991,12 +3991,12 @@ fn expired_feature_key_reads_empty_consistently_across_feature_reads() {
 #[test]
 fn storage_manager_cycle_is_a_noop_while_shard_is_recovering() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -4016,7 +4016,7 @@ fn storage_manager_cycle_is_a_noop_while_shard_is_recovering() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     let watermark = restarted.test_publish_recovering_shard(1);
@@ -4028,8 +4028,8 @@ fn storage_manager_cycle_is_a_noop_while_shard_is_recovering() {
         min_undumped_wal_records: 0,
         warm_cache: true,
         enable_wal_reclaim: true,
-        enable_page_reclaim: true,
-        enable_page_compaction: true,
+        enable_block_reclaim: true,
+        enable_block_compaction: true,
         enable_index_gc: true,
         ..StorageManagerCycleRequest::default()
     });
@@ -4071,12 +4071,12 @@ fn storage_manager_cycle_is_a_noop_while_shard_is_recovering() {
 #[test]
 fn corrupt_wal_scan_refuses_load_rather_than_truncating() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -4108,7 +4108,7 @@ fn corrupt_wal_scan_refuses_load_rather_than_truncating() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     let response = restarted.load_shard_with(LoadShardRequest {
@@ -4134,12 +4134,12 @@ fn corrupt_wal_scan_refuses_load_rather_than_truncating() {
 #[test]
 fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -4192,7 +4192,7 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     let response = restarted.load_shard_with(LoadShardRequest {
@@ -4280,7 +4280,7 @@ fn batch_bucket_maintenance_does_not_grow_with_the_store() {
                 },
             });
         }
-        crate::engine::reset_bucket_page_index_visits();
+        crate::engine::reset_bucket_block_index_visits();
         for batch in 0..MEASURED_BATCHES {
             let commands = (0..BATCH)
                 .map(|item| Command::StringSet {
@@ -4293,7 +4293,7 @@ fn batch_bucket_maintenance_does_not_grow_with_the_store() {
                 commands,
             });
         }
-        let visited = crate::engine::bucket_page_index_visits();
+        let visited = crate::engine::bucket_block_index_visits();
 
         // Same equivalence requirement as the single-write path: sweeping afterwards must not
         // move anything the targeted refresh already settled.
@@ -4445,7 +4445,7 @@ fn bucket_runtime_flags_match_full_sweep() {
                         has_ttl: bucket.ttl_ms.is_some(),
                         layout: format!("{:?}", bucket.layout),
                         object_index: bucket.object_index.iter().copied().collect(),
-                        page_count: bucket.page_index.len(),
+                        page_count: bucket.block_index.len(),
                     },
                 )
             })
@@ -4508,7 +4508,7 @@ fn bucket_runtime_flags_match_full_sweep() {
 /// A report, not a threshold: it prints the comparison and asserts only that the workload
 /// produced something to compare.
 #[test]
-fn dirty_objects_versus_the_pages_own_dirty_flags() {
+fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -4552,35 +4552,35 @@ fn dirty_objects_versus_the_pages_own_dirty_flags() {
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
 
-    let pages_marked_dirty: std::collections::BTreeSet<String> = shard
+    let blocks_marked_dirty: std::collections::BTreeSet<String> = shard
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.page_index.values())
+        .flat_map(|bucket| bucket.block_index.values())
         .filter(|page| page.dirty)
         .map(|page| page.object_key.to_string())
         .collect();
-    let any_page_at_all: std::collections::BTreeSet<String> = shard
+    let any_block_at_all: std::collections::BTreeSet<String> = shard
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.page_index.values())
+        .flat_map(|bucket| bucket.block_index.values())
         .map(|page| page.object_key.to_string())
         .collect();
 
     let in_set_not_flagged: Vec<&str> = shard
         .dirty_objects
         .iter()
-        .filter(|k| !pages_marked_dirty.contains(*k))
+        .filter(|k| !blocks_marked_dirty.contains(*k))
         .collect();
-    let flagged_not_in_set: Vec<&String> = pages_marked_dirty
+    let flagged_not_in_set: Vec<&String> = blocks_marked_dirty
         .iter()
         .filter(|k| !shard.dirty_objects.contains(*k))
         .collect();
-    let in_set_with_no_page: usize = shard
+    let in_set_with_no_block: usize = shard
         .dirty_objects
         .iter()
-        .filter(|k| !any_page_at_all.contains(*k))
+        .filter(|k| !any_block_at_all.contains(*k))
         .count();
 
     assert!(
@@ -4596,10 +4596,10 @@ fn dirty_objects_versus_the_pages_own_dirty_flags() {
            in the set with NO live page at all: {}
 ",
         shard.dirty_objects.len(),
-        pages_marked_dirty.len(),
+        blocks_marked_dirty.len(),
         in_set_not_flagged.len(),
         flagged_not_in_set.len(),
-        in_set_with_no_page,
+        in_set_with_no_block,
     );
     if let Some(sample) = in_set_not_flagged.first() {
         println!("  e.g. in the set, no dirty page: {sample}");
@@ -4649,7 +4649,7 @@ fn components_of_one_object_stay_separate() {
 
     let grouped = shard
         .bucket_index
-        .object_page_refs("hash", "grouped")
+        .object_block_refs("hash", "grouped")
         .expect("the hash object should be in the lookup");
     assert_eq!(
         grouped.by_component.len(),
@@ -4688,7 +4688,7 @@ fn components_of_one_object_stay_separate() {
 
     let ungrouped = shard
         .bucket_index
-        .object_page_refs("string", "ungrouped")
+        .object_block_refs("string", "ungrouped")
         .expect("the string object should be in the lookup");
     assert_eq!(ungrouped.by_component.len(), 1);
     assert!(
@@ -4703,7 +4703,7 @@ fn components_of_one_object_stay_separate() {
 /// shape is being used. A structure that silently spilled every time would measure identically
 /// from the outside and cost an allocation each, so the arm is asserted directly.
 #[test]
-fn single_page_components_are_held_inline() {
+fn single_block_components_are_held_inline() {
     use crate::engine::state::{BlockLookupRef, BlockRefs};
 
     let dir = tempfile::tempdir().unwrap();
@@ -4728,7 +4728,7 @@ fn single_page_components_are_held_inline() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut inline = 0usize;
     let mut spilled = 0usize;
-    for entry in shard.bucket_index.object_page_lookup.values() {
+    for entry in shard.bucket_index.object_block_lookup.values() {
         for component in &entry.by_component {
             match component.refs {
                 BlockRefs::One(_) => inline += 1,
@@ -4744,8 +4744,8 @@ fn single_page_components_are_held_inline() {
     );
 
     // The spilled arm has to keep working: sorted, deduplicated, and reporting what it added.
-    let first = BlockLookupRef { routing_bucket: 7, page_ref_key: 2 };
-    let second = BlockLookupRef { routing_bucket: 7, page_ref_key: 1 };
+    let first = BlockLookupRef { routing_bucket: 7, block_ref_key: 2 };
+    let second = BlockLookupRef { routing_bucket: 7, block_ref_key: 1 };
     let mut refs = BlockRefs::One(first.clone());
     assert!(!refs.insert(first.clone()), "re-inserting the same ref adds nothing");
     assert_eq!(refs.len(), 1);
@@ -4764,12 +4764,12 @@ fn single_page_components_are_held_inline() {
 /// written before this stops loading. Both directions are checked, including a spilled arm read
 /// back as an inline one.
 #[test]
-fn page_refs_serialize_as_a_sequence() {
+fn block_refs_serialize_as_a_sequence() {
     use crate::engine::state::{BlockLookupRef, BlockRefs};
 
     let single = BlockRefs::One(BlockLookupRef {
         routing_bucket: 3,
-        page_ref_key: 1,
+        block_ref_key: 1,
     });
     let json = serde_json::to_value(&single).unwrap();
     assert!(json.is_array(), "must encode as a sequence, got {json}");
@@ -4787,7 +4787,7 @@ fn page_refs_serialize_as_a_sequence() {
     let mut pair = single.clone();
     pair.insert(BlockLookupRef {
         routing_bucket: 4,
-        page_ref_key: 2,
+        block_ref_key: 2,
     });
     let round_tripped: BlockRefs = serde_json::from_value(serde_json::to_value(&pair).unwrap()).unwrap();
     assert_eq!(round_tripped, pair);
@@ -4800,7 +4800,7 @@ fn page_refs_serialize_as_a_sequence() {
 /// could still hold its own allocation and the type would look identical from outside, exactly as
 /// the measurement did before. So this compares pointers, not contents.
 #[test]
-fn pages_of_one_kind_share_a_single_kind_string() {
+fn blocks_of_one_kind_share_a_single_kind_string() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -4837,7 +4837,7 @@ fn pages_of_one_kind_share_a_single_kind_string() {
     let mut pages = 0usize;
     let mut shared = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, page) in bucket.page_index.iter() {
+        for (_ref_key, page) in bucket.block_index.iter() {
             pages += 1;
             match first_of_kind.get(page.model_id.as_ref()) {
                 None => {
@@ -4883,7 +4883,7 @@ fn pages_of_one_kind_share_a_single_kind_string() {
 /// small in one corpus because the corpus is small would otherwise read as narrowable.
 #[test]
 fn what_each_address_field_actually_ranges_over() {
-    const PAGES: usize = 3_000;
+    const BLOCKS: usize = 3_000;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         2 * 1024 * 1024,
@@ -4892,7 +4892,7 @@ fn what_each_address_field_actually_ranges_over() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    for index in 0..PAGES {
+    for index in 0..BLOCKS {
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
@@ -4921,7 +4921,7 @@ fn what_each_address_field_actually_ranges_over() {
     let (mut page_id, mut object_id, mut generation, mut derived_slab) = (0u64, 0u64, 0u64, 0u64);
     let mut routing = 0u32;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_key, page) in bucket.page_index.iter() {
+        for (_key, page) in bucket.block_index.iter() {
             pages += 1;
             let a = &page.address;
             slab = slab.max(a.block_slab_id);
@@ -5012,14 +5012,14 @@ fn how_many_times_one_object_key_is_stored() {
             holders += 1;
         }
     }
-    for (_model, object, _refs) in shard.bucket_index.object_page_lookup.iter() {
+    for (_model, object, _refs) in shard.bucket_index.object_block_lookup.iter() {
         if object.as_ref() == sample.as_str() {
             allocations.insert(object.as_ptr());
             holders += 1;
         }
     }
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, page) in bucket.page_index.iter() {
+        for (_ref_key, page) in bucket.block_index.iter() {
             if page.object_key.as_ref() == sample.as_str() {
                 allocations.insert(page.object_key.as_ptr());
                 holders += 1;
@@ -5030,22 +5030,22 @@ fn how_many_times_one_object_key_is_stored() {
     assert!(holders > 0, "the sampled key was found nowhere; nothing was measured");
 
     let key_bytes: usize = shard.strings.keys().map(String::len).sum();
-    let page_key_bytes: usize = shard
+    let block_key_bytes: usize = shard
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.page_index.values())
+        .flat_map(|bucket| bucket.block_index.values())
         .map(|page| page.object_key.len())
         .sum();
     // No concatenation any more: what the lookup holds per object is the object key itself.
     let lookup_key_bytes: usize = shard
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .iter()
         .map(|(_model, object, _refs)| object.len())
         .sum();
     let expiry_key_bytes: usize = shard.expires_at_ms.keys().map(String::len).sum();
-    let total = key_bytes + page_key_bytes + lookup_key_bytes + expiry_key_bytes;
+    let total = key_bytes + block_key_bytes + lookup_key_bytes + expiry_key_bytes;
 
     println!(
         "
@@ -5055,7 +5055,7 @@ fn how_many_times_one_object_key_is_stored() {
 
   and in total over {OBJECTS} objects:
     strings keys              {key_bytes:>8} B
-    page_index object_key     {page_key_bytes:>8} B
+    page_index object_key     {block_key_bytes:>8} B
     object_page_lookup keys   {lookup_key_bytes:>8} B   (its own allocation of the key)
     expires_at_ms keys        {expiry_key_bytes:>8} B
     TOTAL                     {total:>8} B  = {:.1} B per object
@@ -5092,7 +5092,7 @@ fn the_nested_lookup_still_serializes_as_the_flat_composite() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let lookup = &shard.bucket_index.object_page_lookup;
+    let lookup = &shard.bucket_index.object_block_lookup;
     assert!(!lookup.is_empty(), "the write must produce a lookup entry");
 
     let json = serde_json::to_value(lookup).unwrap();
@@ -5123,7 +5123,7 @@ fn the_nested_lookup_still_serializes_as_the_flat_composite() {
 /// owned, which is byte-for-byte identical from the outside and costs exactly as much as before.
 /// Only pointer identity can tell those apart.
 #[test]
-fn the_page_and_the_lookup_point_at_one_object_key() {
+fn the_block_and_the_lookup_point_at_one_object_key() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -5148,10 +5148,10 @@ fn the_page_and_the_lookup_point_at_one_object_key() {
     let mut checked = 0usize;
     let mut shared = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, page) in bucket.page_index.iter() {
+        for (_ref_key, page) in bucket.block_index.iter() {
             let Some(refs) = shard
                 .bucket_index
-                .object_page_lookup
+                .object_block_lookup
                 .key_ptr(&page.model_id, page.object_key.as_ref())
             else {
                 continue;
@@ -5174,13 +5174,13 @@ fn the_page_and_the_lookup_point_at_one_object_key() {
 /// A page filed with an address that carries no object id still knows which object it belongs to.
 ///
 /// This is the one way removing the entry's own copy could lose information. The id is computed as
-/// `address.object_id().unwrap_or_else(stable_page_object_id)`, so before this change the entry
+/// `address.object_id().unwrap_or_else(stable_block_object_id)`, so before this change the entry
 /// could hold a fallback the address did not have. Reading through the address would then answer
 /// zero for exactly those pages. The write path now puts the computed id into the address; this
 /// asserts it, because the census that motivated the removal cannot see the case at all -- every
 /// address in it already carried an id.
 #[test]
-fn a_page_whose_address_carries_no_object_id_still_reports_one() {
+fn a_block_whose_address_carries_no_object_id_still_reports_one() {
     use crate::block_store::BlockAddress;
 
     let dir = tempfile::tempdir().unwrap();
@@ -5198,7 +5198,7 @@ fn a_page_whose_address_carries_no_object_id_still_reports_one() {
         // Deliberately no object id, and no routing slot either.
         let address = BlockAddress::from_parts(0, 0, 16, Some(7), None, None, None);
         assert!(address.object_id().is_none(), "the case under test");
-        crate::engine::storage_bucket_internals::upsert_bucket_index_page(
+        crate::engine::storage_bucket_internals::upsert_bucket_index_block(
             shard,
             1,
             "string",
@@ -5213,7 +5213,7 @@ fn a_page_whose_address_carries_no_object_id_still_reports_one() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut seen = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, page) in bucket.page_index.iter() {
+        for (_ref_key, page) in bucket.block_index.iter() {
             if page.object_key.as_ref() != "orphan-key" {
                 continue;
             }
@@ -5247,7 +5247,7 @@ fn a_page_whose_address_carries_no_object_id_still_reports_one() {
 /// measurement reports zero while the work still happens.
 #[test]
 #[cfg(feature = "alloc-probe")]
-fn deleting_an_object_does_not_allocate_per_page_scanned() {
+fn deleting_an_object_does_not_allocate_per_block_scanned() {
     let delete_from_a_hash_of = |fields: usize| -> u64 {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
@@ -5300,7 +5300,7 @@ fn deleting_an_object_does_not_allocate_per_page_scanned() {
 /// deduplicates by key collision or through the lookup, because that decides whether the key can
 /// become an opaque assigned id.
 #[test]
-fn rewriting_a_page_does_not_reuse_its_index_key() {
+fn rewriting_a_block_does_not_reuse_its_index_key() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -5322,7 +5322,7 @@ fn rewriting_a_page_does_not_reuse_its_index_key() {
             .bucket_index
             .bucket_map
             .values()
-            .flat_map(|bucket| bucket.page_index.iter())
+            .flat_map(|bucket| bucket.block_index.iter())
             .filter(|(_, page)| page.object_key.as_ref() == key)
             .map(|(ref_key, _)| ref_key.to_string())
             .collect()
@@ -5339,7 +5339,7 @@ fn rewriting_a_page_does_not_reuse_its_index_key() {
             .bucket_index
             .bucket_map
             .values()
-            .flat_map(|bucket| bucket.page_index.iter())
+            .flat_map(|bucket| bucket.block_index.iter())
             .filter(|(_, page)| page.object_key.as_ref() == key)
             .map(|(ref_key, _)| ref_key.to_string())
             .collect()
@@ -5378,7 +5378,7 @@ fn rewriting_a_page_does_not_reuse_its_index_key() {
 /// accumulates entries and the object counts drift apart. Three tests caught that as a wrong
 /// number; this one states the reason.
 #[test]
-fn installing_the_same_page_twice_replaces_it() {
+fn installing_the_same_block_twice_replaces_it() {
     let page = || crate::engine::state::BlockIndex {
         object_key: Arc::from("twice".to_string()),
         model_id: Arc::from("string".to_string()),
@@ -5410,7 +5410,7 @@ fn installing_the_same_page_twice_replaces_it() {
     assert_eq!(
         live.tally(1),
         crate::engine::state::SlabLiveTally {
-            page_refs: 2,
+            block_refs: 2,
             bytes: 8
         },
         "two distinct 4-byte pages on slab 1"
@@ -5425,7 +5425,7 @@ fn installing_the_same_page_twice_replaces_it() {
 /// the duplicated map structure, which is why it is measured rather than asserted.
 #[test]
 #[cfg(feature = "alloc-probe")]
-fn dumping_the_page_index_does_not_copy_it_first() {
+fn dumping_the_block_index_does_not_copy_it_first() {
     let dump_a_shard_of = |pages: usize| -> u64 {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
@@ -5451,11 +5451,11 @@ fn dumping_the_page_index_does_not_copy_it_first() {
             .bucket_index
             .bucket_map
             .values()
-            .find(|b| !b.page_index.is_empty())
+            .find(|b| !b.block_index.is_empty())
             .expect("the writes must produce pages");
 
         let probe = crate::alloc_probe::Probe::start();
-        let json = serde_json::to_string(&bucket.page_index).expect("the index serializes");
+        let json = serde_json::to_string(&bucket.block_index).expect("the index serializes");
         let counts = probe.stop();
         assert!(!json.is_empty());
         counts.allocs
@@ -5471,10 +5471,10 @@ fn dumping_the_page_index_does_not_copy_it_first() {
     // Writing a page costs its key and little else. Copying the index first, or building that key
     // with `format!` (which allocates its own buffer and then allocates again to return it), put
     // this near four.
-    let per_page = (large.saturating_sub(small)) as f64 / 180.0;
+    let per_block = (large.saturating_sub(small)) as f64 / 180.0;
     assert!(
-        per_page < 2.0,
-        "dumping cost {per_page:.2} allocations per page ({small} at 20, {large} at 200)"
+        per_block < 2.0,
+        "dumping cost {per_block:.2} allocations per page ({small} at 20, {large} at 200)"
     );
 }
 
@@ -5486,7 +5486,7 @@ fn dumping_the_page_index_does_not_copy_it_first() {
 /// writing it has to restore that order deliberately -- otherwise the bytes on disk change even
 /// though every entry is still present and correct.
 #[test]
-fn the_page_index_dump_is_ordered_by_its_written_key() {
+fn the_block_index_dump_is_ordered_by_its_written_key() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -5512,10 +5512,10 @@ fn the_page_index_dump_is_ordered_by_its_written_key() {
         .bucket_index
         .bucket_map
         .values()
-        .find(|b| b.page_index.len() > 4)
+        .find(|b| b.block_index.len() > 4)
         .expect("the writes must produce several pages in one bucket");
 
-    let json = serde_json::to_string(&bucket.page_index).expect("the index serializes");
+    let json = serde_json::to_string(&bucket.block_index).expect("the index serializes");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
     let keys: Vec<&String> = value
         .as_object()
@@ -5584,7 +5584,7 @@ fn a_command_does_not_allocate_to_check_expiry() {
 /// spelling would pass, and an index written now has to be readable by something expecting the old
 /// one.
 #[test]
-fn the_page_index_still_writes_string_keys() {
+fn the_block_index_still_writes_string_keys() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -5604,15 +5604,15 @@ fn the_page_index_still_writes_string_keys() {
         .bucket_index
         .bucket_map
         .values()
-        .find(|bucket| !bucket.page_index.is_empty())
+        .find(|bucket| !bucket.block_index.is_empty())
         .expect("the write must produce a page");
 
     // In memory: a handle, not text.
-    let (handle, page) = bucket.page_index.iter().next().expect("one page");
+    let (handle, page) = bucket.block_index.iter().next().expect("one page");
     assert!(*handle > 0, "the map assigns a handle");
 
     // On the wire: the same rendered key it always wrote, rebuilt from the page.
-    let json = serde_json::to_value(&bucket.page_index).unwrap();
+    let json = serde_json::to_value(&bucket.block_index).unwrap();
     let written = json.as_object().expect("the wire form is a map of string keys");
     let expected = crate::engine::state::block_index_written_key(page);
     assert!(
@@ -5627,7 +5627,7 @@ fn the_page_index_still_writes_string_keys() {
 
     // And a document in that shape loads back, with handles assigned afresh.
     let restored: crate::engine::state::BlockIndexMap = serde_json::from_value(json).unwrap();
-    assert_eq!(restored.len(), bucket.page_index.len());
+    assert_eq!(restored.len(), bucket.block_index.len());
     assert!(
         restored.iter().all(|(handle, _)| *handle > 0),
         "every loaded page gets a handle"
@@ -5636,7 +5636,7 @@ fn the_page_index_still_writes_string_keys() {
 
 /// After deletes, the lookup matches the one a full rebuild produces.
 ///
-/// The delete path used to call `rebuild_object_page_lookup`, so it was correct by construction
+/// The delete path used to call `rebuild_object_block_lookup`, so it was correct by construction
 /// and O(shard). It now removes the deleted object's own entries instead, which is only correct
 /// if the result is identical -- and a lookup that quietly disagrees with the page index does not
 /// fail loudly, it makes reads miss. So this compares against the rebuild rather than against a
@@ -5688,33 +5688,33 @@ fn deleting_leaves_the_lookup_a_rebuild_would_have_built() {
 
     let incremental: Vec<(String, String, Vec<(u32, u64)>)> = shard
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
                 .by_component
                 .iter()
                 .flat_map(|component| component.refs.as_slice())
-                .map(|page_ref| (page_ref.routing_bucket, page_ref.page_ref_key))
+                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
             (model.to_string(), object.to_string(), flat)
         })
         .collect();
-    let counter_before = shard.bucket_index.object_component_page_refs;
+    let counter_before = shard.bucket_index.object_component_block_refs;
 
-    shard.bucket_index.rebuild_object_page_lookup();
+    shard.bucket_index.rebuild_object_block_lookup();
 
     let rebuilt: Vec<(String, String, Vec<(u32, u64)>)> = shard
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
                 .by_component
                 .iter()
                 .flat_map(|component| component.refs.as_slice())
-                .map(|page_ref| (page_ref.routing_bucket, page_ref.page_ref_key))
+                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
             (model.to_string(), object.to_string(), flat)
@@ -5820,7 +5820,7 @@ fn does_delete_scale_with_the_store() {
 
 /// Exploratory: one page per field, or one page rewritten per write?
 #[test]
-fn how_many_pages_does_a_wide_hash_hold() {
+fn how_many_blocks_does_a_wide_hash_hold() {
     for fields in [10usize, 100, 400] {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
@@ -5846,12 +5846,12 @@ fn how_many_pages_does_a_wide_hash_hold() {
             .bucket_index
             .bucket_map
             .values()
-            .map(|bucket| bucket.page_index.len())
+            .map(|bucket| bucket.block_index.len())
             .sum();
         let buckets = shard.bucket_index.bucket_map.len();
         let lookup_refs: usize = shard
             .bucket_index
-            .object_page_lookup
+            .object_block_lookup
             .iter()
             .map(|(_m, _o, refs)| refs.by_component.iter().map(|c| c.refs.as_slice().len()).sum::<usize>())
             .sum();
@@ -5904,7 +5904,7 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
 
     for (field, address) in fields.iter() {
         assert!(
-            shard.bucket_index.contains_object_page_address(
+            shard.bucket_index.contains_object_block_address(
                 "hash",
                 "wide",
                 Some(field.as_str()),
@@ -5918,7 +5918,7 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
 /// Exploratory: which bucket-visiting site grows with a wide object?
 #[test]
 #[cfg(feature = "alloc-probe")]
-fn which_site_visits_the_pages() {
+fn which_site_visits_the_blocks() {
     use crate::engine::storage_bucket_internals::bucket_visit_sites;
     for fields in [100usize, 400, 1600] {
         let dir = tempfile::tempdir().unwrap();
@@ -6137,11 +6137,11 @@ fn what_the_lifecycle_plan_costs_alone() {
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
-            page_gc_shared_store_cursors: Vec::new(),
-            page_gc_raft_snapshot_refs: Vec::new(),
-            page_gc_checkpoint_floor_slab_id: None,
-            page_gc_raft_install_floor_slab_id: None,
-            page_gc_delayed_destroy_grace_ms: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            block_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         }
@@ -6291,11 +6291,11 @@ fn where_the_index_reclaim_time_goes() {
             prune_bucket_dump_manifests: prune,
             roll_forward_bucket_dump_installs: roll_forward,
             follower_replay_cursors: Vec::new(),
-            page_gc_shared_store_cursors: Vec::new(),
-            page_gc_raft_snapshot_refs: Vec::new(),
-            page_gc_checkpoint_floor_slab_id: None,
-            page_gc_raft_install_floor_slab_id: None,
-            page_gc_delayed_destroy_grace_ms: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            block_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         }
@@ -6586,7 +6586,7 @@ fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
         // back empty would agree with a rebuild that is also empty, and the test would pass while
         // measuring nothing.
         assert!(
-            !shard.bucket_index.object_page_lookup.is_empty(),
+            !shard.bucket_index.object_block_lookup.is_empty(),
             "the writes did not populate the lookup, so the reload below proves nothing"
         );
         let value = serde_json::to_value(&shard.bucket_index).expect("the index serializes");
@@ -6615,14 +6615,14 @@ fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
 
     let loaded: Vec<(String, String, Vec<(u32, u64)>)> = state
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
                 .by_component
                 .iter()
                 .flat_map(|component| component.refs.as_slice())
-                .map(|page_ref| (page_ref.routing_bucket, page_ref.page_ref_key))
+                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
             (model.to_string(), object.to_string(), flat)
@@ -6633,18 +6633,18 @@ fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
         "loading the base index left the derived lookup empty; nothing rebuilt it, and reads that          go through it will miss"
     );
 
-    state.bucket_index.rebuild_object_page_lookup();
+    state.bucket_index.rebuild_object_block_lookup();
 
     let rebuilt: Vec<(String, String, Vec<(u32, u64)>)> = state
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
                 .by_component
                 .iter()
                 .flat_map(|component| component.refs.as_slice())
-                .map(|page_ref| (page_ref.routing_bucket, page_ref.page_ref_key))
+                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
             (model.to_string(), object.to_string(), flat)
@@ -6851,7 +6851,7 @@ fn what_a_key_costs_the_index_in_live_heap() {
 /// otherwise keep its node for the rest of its life, which is exactly the cost being avoided and
 /// would not show up as a failure anywhere else.
 #[test]
-fn a_bucket_holding_one_page_holds_no_node() {
+fn a_bucket_holding_one_block_holds_no_node() {
     use crate::engine::state::BlockIndexMap;
 
     let dir = tempfile::tempdir().unwrap();
@@ -6878,10 +6878,10 @@ fn a_bucket_holding_one_page_holds_no_node() {
             .bucket_index
             .bucket_map
             .values()
-            .find(|bucket| bucket.page_index.len() == 1)
+            .find(|bucket| bucket.block_index.len() == 1)
             .expect("the write must produce a bucket holding one page");
         assert!(
-            matches!(bucket.page_index, BlockIndexMap::One(..)),
+            matches!(bucket.block_index, BlockIndexMap::One(..)),
             "a bucket holding one page must hold it inline"
         );
     }
@@ -6904,10 +6904,10 @@ fn a_bucket_holding_one_page_holds_no_node() {
             .bucket_index
             .bucket_map
             .values()
-            .find(|bucket| bucket.page_index.len() > 1)
+            .find(|bucket| bucket.block_index.len() > 1)
             .expect("three fields must share a bucket");
         assert!(
-            matches!(bucket.page_index, BlockIndexMap::Many(_)),
+            matches!(bucket.block_index, BlockIndexMap::Many(_)),
             "several pages belong in a map"
         );
     }
@@ -6931,14 +6931,14 @@ fn a_bucket_holding_one_page_holds_no_node() {
             .values()
             .find(|bucket| {
                 bucket
-                    .page_index
+                    .block_index
                     .values()
                     .any(|page| &*page.object_key == "wide")
             })
             .expect("the remaining field must still be filed");
-        assert_eq!(bucket.page_index.len(), 1, "two of three fields were removed");
+        assert_eq!(bucket.block_index.len(), 1, "two of three fields were removed");
         assert!(
-            matches!(bucket.page_index, BlockIndexMap::One(..)),
+            matches!(bucket.block_index, BlockIndexMap::One(..)),
             "a map that drops back to one page must give up its node"
         );
     }
@@ -6998,7 +6998,7 @@ fn one_component_is_held_without_a_vector() {
         component: name.map(Arc::from),
         refs: BlockRefs::One(BlockLookupRef {
             routing_bucket: 1,
-            page_ref_key: 7,
+            block_ref_key: 7,
         }),
     };
 
@@ -7210,14 +7210,14 @@ fn what_a_write_costs_across_every_subsystem() {
     for value_len in [64usize, 256, 1024, 4096] {
         let dir = tempfile::tempdir().unwrap();
         let wal_dir = dir.path().join("wal");
-        let pages_dir = dir.path().join("pages");
+        let blocks_dir = dir.path().join("pages");
         let index_dir = dir.path().join("indexes");
         std::fs::create_dir_all(&wal_dir).unwrap();
 
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            pages_dir.clone(),
+            blocks_dir.clone(),
             index_dir.clone(),
         );
         engine.load_shard(1);
@@ -7235,7 +7235,7 @@ fn what_a_write_costs_across_every_subsystem() {
         }
         engine.flush_shard_index(1);
 
-        let pages = tree_bytes(&pages_dir);
+        let pages = tree_bytes(&blocks_dir);
         let indexes = tree_bytes(&index_dir);
         let total = pages + indexes;
 
@@ -7286,8 +7286,8 @@ fn what_a_write_costs_across_every_subsystem() {
         println!(
             "  AMP-STEADY value {value_len:>5}B | index before {indexes:>9} -> {trail:?}              | settled {settled:>9} ({:>5.2}x) | pages {:>9} ({:>5.2}x)",
             settled as f64 / user_bytes as f64,
-            tree_bytes(&pages_dir),
-            tree_bytes(&pages_dir) as f64 / user_bytes as f64,
+            tree_bytes(&blocks_dir),
+            tree_bytes(&blocks_dir) as f64 / user_bytes as f64,
         );
 
         println!(
@@ -7360,7 +7360,7 @@ fn what_an_index_log_record_costs() {
 /// Reported per field rather than as one identity-strings total, because the answer differs by
 /// field and a combined number would hide that.
 #[test]
-fn page_index_identity_string_cardinality() {
+fn block_index_identity_string_cardinality() {
     use std::collections::HashSet;
 
     const STRING_OBJECTS: usize = 1_500;
@@ -7414,7 +7414,7 @@ fn page_index_identity_string_cardinality() {
     let mut key_bytes = 0usize;
     let mut components_present = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, page) in bucket.page_index.iter() {
+        for (_ref_key, page) in bucket.block_index.iter() {
             pages += 1;
             distinct_models.insert(page.model_id.as_ref());
             model_allocations.insert(std::sync::Arc::as_ptr(&page.model_id).cast::<u8>());
@@ -7473,7 +7473,7 @@ fn page_index_identity_string_cardinality() {
 /// is one entry per field, so a corpus of only one kind would decide the question by construction
 /// rather than by measurement. Both kinds are asserted present before any number is read.
 #[test]
-fn object_page_lookup_occupancy_census() {
+fn object_block_lookup_occupancy_census() {
     const STRING_OBJECTS: usize = 2_000;
     const HASH_OBJECTS: usize = 200;
     const FIELDS_PER_HASH: usize = 8;
@@ -7510,7 +7510,7 @@ fn object_page_lookup_occupancy_census() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let lookup = &shard.bucket_index.object_page_lookup;
+    let lookup = &shard.bucket_index.object_block_lookup;
 
     let mut single_component = 0usize;
     let mut multi_component = 0usize;
@@ -7625,7 +7625,7 @@ fn per_record_structure_census() {
         .bucket_index
         .bucket_map
         .values()
-        .map(|bucket| bucket.page_index.len())
+        .map(|bucket| bucket.block_index.len())
         .sum();
     let object_index_entries: usize = shard
         .bucket_index
@@ -7636,21 +7636,21 @@ fn per_record_structure_census() {
     // The map is keyed by object now, so its length is the object count and the per-component
     // map it used to be compared against is gone. Both numbers are still reported, because the
     // interesting quantity is entries PER RECORD and one of them stopped existing.
-    let page_lookup_keys = shard.bucket_index.object_page_lookup.len();
-    let page_lookup_refs: usize = shard
+    let block_lookup_keys = shard.bucket_index.object_block_lookup.len();
+    let block_lookup_refs: usize = shard
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .values()
         .map(crate::engine::state::ObjectBlockRefs::total_refs)
         .sum();
     let component_lookup_keys: usize = shard
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .values()
         .map(|entry| entry.by_component.len())
         .sum();
     let strings = shard.strings.len();
-    let wal_resident = shard.wal_resident_pages.len();
+    let wal_resident = shard.wal_resident_blocks.len();
     let dirty_objects = shard.dirty_objects.len();
 
     let per = |n: usize| n as f64 / RECORDS as f64;
@@ -7668,7 +7668,7 @@ fn per_record_structure_census() {
              (buckets: {buckets}, not per record)
 ",
         per(strings), per(page_index_entries), per(object_index_entries),
-        per(page_lookup_keys), per(page_lookup_refs), per(component_lookup_keys),
+        per(block_lookup_keys), per(block_lookup_refs), per(component_lookup_keys),
         per(dirty_objects), per(wal_resident),
     );
 
@@ -7676,11 +7676,11 @@ fn per_record_structure_census() {
     // 14.1 B of it, so knowing WHERE the key copies live says whether interning would pay and
     // which structure to attack first.
     let key_bytes: usize = shard.strings.keys().map(String::len).sum();
-    let page_index_bytes: usize = shard
+    let block_index_bytes: usize = shard
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.page_index.iter())
+        .flat_map(|bucket| bucket.block_index.iter())
         .map(|(_handle, page)| {
             // The key is an inline number now, not text on the heap.
             page.object_key.len()
@@ -7689,9 +7689,9 @@ fn per_record_structure_census() {
         })
         .sum();
     // Outer keys plus the page-ref key each entry holds.
-    let page_lookup_bytes: usize = shard
+    let block_lookup_bytes: usize = shard
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .iter()
         .map(|(_model, object, entry)| {
             // The model is stored once for all its objects now, so only the object key is a
@@ -7699,7 +7699,7 @@ fn per_record_structure_census() {
             object.len()
                 + entry
                     .all_refs()
-                    .map(|_page_ref| 0usize)
+                    .map(|_block_ref| 0usize)
                     .sum::<usize>()
         })
         .sum();
@@ -7707,7 +7707,7 @@ fn per_record_structure_census() {
     // point of nesting, and counting it twice would report the saving as if it had not happened.
     let component_lookup_bytes: usize = shard
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .values()
         .map(|entry| {
             entry
@@ -7719,7 +7719,7 @@ fn per_record_structure_census() {
         .sum();
     let dirty_bytes: usize = shard.dirty_objects.iter().map(str::len).sum();
     let total_string_bytes =
-        key_bytes + page_index_bytes + page_lookup_bytes + component_lookup_bytes + dirty_bytes;
+        key_bytes + block_index_bytes + block_lookup_bytes + component_lookup_bytes + dirty_bytes;
     let sample_key_len = shard.strings.keys().next().map_or(0, |name| name.len());
     let perb = |n: usize| n as f64 / RECORDS as f64;
     println!(
@@ -7731,7 +7731,7 @@ fn per_record_structure_census() {
              dirty_objects              {:>7.1}
              TOTAL                      {:>7.1}  = {:.1}x the key
 ",
-        perb(key_bytes), perb(page_index_bytes), perb(page_lookup_bytes),
+        perb(key_bytes), perb(block_index_bytes), perb(block_lookup_bytes),
         perb(component_lookup_bytes), perb(dirty_bytes), perb(total_string_bytes),
         perb(total_string_bytes) / sample_key_len.max(1) as f64,
     );
@@ -7855,7 +7855,7 @@ fn dirty_bucket_count_matches_the_unshortened_scan() {
 /// inserts, superseding overwrites that remove page refs, hash fields with components, expiries
 /// and deletes, then compares the maintained value against the sum it is meant to equal.
 #[test]
-fn maintained_component_page_ref_total_matches_the_walk() {
+fn maintained_component_block_ref_total_matches_the_walk() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -7926,13 +7926,13 @@ fn maintained_component_page_ref_total_matches_the_walk() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let walked: usize = shard
         .bucket_index
-        .object_page_lookup
+        .object_block_lookup
         .values()
         .map(crate::engine::state::ObjectBlockRefs::total_refs)
         .sum();
     let maintained = shard
         .bucket_index
-        .object_component_page_refs
+        .object_component_block_refs
         .expect("the total should be established once the lookup has been built");
     assert!(walked > 0, "workload produced no component page refs to compare");
     assert_eq!(
@@ -8035,14 +8035,14 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
     let mut mismatches = Vec::new();
     for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
         let recomputed: std::collections::BTreeSet<u64> = bucket
-            .page_index
+            .block_index
             .values()
             .filter(|page| !page.deleted)
             .map(|page| page.object_id())
             .collect();
         // Mirrors update_bucket_layout: an empty live set over an empty page index leaves the
         // stored set untouched, so only compare where the rebuild would actually assign.
-        if recomputed.is_empty() && bucket.page_index.is_empty() {
+        if recomputed.is_empty() && bucket.block_index.is_empty() {
             continue;
         }
         checked += 1;
@@ -8136,7 +8136,7 @@ fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
             });
         }
         const MEASURED_WRITES: usize = 20;
-        crate::engine::reset_bucket_page_index_visits();
+        crate::engine::reset_bucket_block_index_visits();
         for index in 0..MEASURED_WRITES {
             engine.execute(ExecuteRequest {
                 shard_id: 1,
@@ -8146,7 +8146,7 @@ fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
                 },
             });
         }
-        let visited = crate::engine::bucket_page_index_visits();
+        let visited = crate::engine::bucket_block_index_visits();
         visited as f64 / MEASURED_WRITES as f64
     }
 
@@ -8203,7 +8203,7 @@ fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
             });
         }
         const MEASURED_WRITES: usize = 20;
-        crate::engine::reset_bucket_page_index_visits();
+        crate::engine::reset_bucket_block_index_visits();
         crate::engine::bucket_visit_sites::reset();
         for index in 0..MEASURED_WRITES {
             engine.execute(ExecuteRequest {
@@ -8214,7 +8214,7 @@ fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
                 },
             });
         }
-        let visited = crate::engine::bucket_page_index_visits();
+        let visited = crate::engine::bucket_block_index_visits();
         let sites = crate::engine::bucket_visit_sites::snapshot();
         (visited, visited as f64 / MEASURED_WRITES as f64, sites)
     }
@@ -8286,10 +8286,10 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
         } else {
             engine.use_full_scan_eviction_for_test();
         }
-        crate::engine::reset_live_page_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
         // Threshold 0 so the pressure gate always admits and the selection path actually runs.
         let report = engine.apply_storage_eviction(1, 0, 4, false, false);
-        let scanned = crate::engine::live_page_scan_entries();
+        let scanned = crate::engine::live_block_scan_entries();
         (scanned, report.selected_victims.len())
     }
 
@@ -8351,7 +8351,7 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
     // slab on eviction.
     // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
     // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_page_spill_for_test();
+    engine.disable_hot_block_spill_for_test();
 
     let key = "block-in-wal-key";
     let value = b"block-in-wal-value".to_vec();
@@ -8389,7 +8389,7 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
 /// reconstructed from the command that wrote it. Serving it back therefore requires the record
 /// to carry the page itself, which is what staging does.
 #[test]
-fn an_evicted_derived_page_is_served_from_its_wal_record() {
+fn an_evicted_derived_block_is_served_from_its_wal_record() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -8409,7 +8409,7 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
 
     // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
     // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_page_spill_for_test();
+    engine.disable_hot_block_spill_for_test();
 
     let write = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -8447,7 +8447,7 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
 /// This is what lets a replayed write reproduce the bytes that were acked somewhere else
 /// rather than this node's reconstruction of them.
 #[test]
-fn a_carried_page_is_what_reaches_the_log_record() {
+fn a_carried_block_is_what_reaches_the_log_record() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -8465,11 +8465,11 @@ fn a_carried_page_is_what_reaches_the_log_record() {
         },
     });
 
-    let carried = vec![crate::wal::StagedPage {
+    let carried = vec![crate::wal::StagedBlock {
         object_id: 4242,
         bytes: b"pages-from-somewhere-else".to_vec(),
     }];
-    let write = engine.execute_with_carried_pages(
+    let write = engine.execute_with_carried_blocks(
         ExecuteRequest {
             shard_id: 1,
             command: Command::HashSet {
@@ -8651,7 +8651,7 @@ fn a_manifest_created_after_a_prune_plan_is_not_pruned_by_it() {
 /// reads back as MISSING after a restart: exactly the hole staging was added to close,
 /// reopened by a reload.
 #[test]
-fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
+fn a_block_in_wal_block_still_reads_back_after_a_shard_reload() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -8671,7 +8671,7 @@ fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
 
     // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
     // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_page_spill_for_test();
+    engine.disable_hot_block_spill_for_test();
 
     let key = "reload-block-key";
     let value = b"reload-block-value".to_vec();
@@ -8713,7 +8713,7 @@ fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
 /// cannot be turned back into bytes. The resolver's table can, but it starts empty after a
 /// restart, which is why the location has to travel with the index that depends on it.
 #[test]
-fn a_wal_resident_page_records_where_it_lives_in_the_index() {
+fn a_wal_resident_block_records_where_it_lives_in_the_index() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -8732,10 +8732,10 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
     });
     // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
     // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_page_spill_for_test();
+    engine.disable_hot_block_spill_for_test();
 
     assert_eq!(
-        engine.wal_resident_page_count(1),
+        engine.wal_resident_block_count(1),
         0,
         "nothing is in the log yet"
     );
@@ -8755,7 +8755,7 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
     );
 
     assert!(
-        engine.wal_resident_page_count(1) > 0,
+        engine.wal_resident_block_count(1) > 0,
         "the index must carry where the page went"
     );
 
@@ -8766,7 +8766,7 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
     engine.load_shard(1);
 
     assert!(
-        engine.wal_resident_page_count(1) > 0,
+        engine.wal_resident_block_count(1) > 0,
         "the location has to survive the reload, or it was never durable"
     );
     let read = engine.execute(ExecuteRequest {
@@ -8791,8 +8791,8 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
 /// says, so the test passed with the feature ON as readily as OFF. The control below is the write
 /// that DOES stage, under the same configuration, differing only in the setting.
 #[test]
-fn a_store_that_puts_no_pages_in_the_log_carries_no_locations() {
-    fn resident_pages_after_a_staging_write(put_pages_in_the_log: bool) -> usize {
+fn a_store_that_puts_no_blocks_in_the_log_carries_no_locations() {
+    fn resident_blocks_after_a_staging_write(put_blocks_in_the_log: bool) -> usize {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -8812,9 +8812,9 @@ fn a_store_that_puts_no_pages_in_the_log_carries_no_locations() {
                 ..Config::default()
             },
         });
-        engine.disable_hot_page_spill_for_test();
-        if !put_pages_in_the_log {
-            engine.block_store().stop_putting_pages_in_the_log_for_test();
+        engine.disable_hot_block_spill_for_test();
+        if !put_blocks_in_the_log {
+            engine.block_store().stop_putting_blocks_in_the_log_for_test();
         }
         assert!(
             engine
@@ -8828,15 +8828,15 @@ fn a_store_that_puts_no_pages_in_the_log_carries_no_locations() {
                 .status
                 .ok
         );
-        engine.wal_resident_page_count(1)
+        engine.wal_resident_block_count(1)
     }
 
     assert!(
-        resident_pages_after_a_staging_write(true) > 0,
+        resident_blocks_after_a_staging_write(true) > 0,
         "the control has to stage something, or the zero below means nothing"
     );
     assert_eq!(
-        resident_pages_after_a_staging_write(false),
+        resident_blocks_after_a_staging_write(false),
         0,
         "a store that puts no pages in the log records no locations"
     );
@@ -8901,7 +8901,7 @@ fn a_recorded_outcome_matches_the_index_entry_the_command_produced() {
 
     // The claim has to equal what the index actually holds. This is the whole point.
     let indexed = engine
-        .string_page_address(1, "outcome-key")
+        .string_block_address(1, "outcome-key")
         .expect("the index holds an address for the key");
     // Through the accessor, not the raw field: a recorded address omits the routing bucket the
     // item already carries, and putting it back is what `resolved_address` is for. Comparing the
@@ -8965,7 +8965,7 @@ fn a_record_carries_no_outcomes_unless_asked() {
 /// therefore collide on every key they happen to share, and the only thing separating them is
 /// that a registration also remembers WHICH log it points into.
 #[test]
-fn two_engines_in_one_process_do_not_read_each_others_pages() {
+fn two_engines_in_one_process_do_not_read_each_others_blocks() {
     let dir = tempfile::tempdir().unwrap();
     let make = |name: &str| {
         let engine = TemporalEngine::with_local_dirs(
@@ -8986,7 +8986,7 @@ fn two_engines_in_one_process_do_not_read_each_others_pages() {
         // Said to EACH engine this closure builds. The variable worked here -- it is set before
         // construction, unlike the four above -- but it said it to the process, and this test
         // builds two engines to prove they do not share a spill map.
-        engine.disable_hot_page_spill_for_test();
+        engine.disable_hot_block_spill_for_test();
         engine
     };
 
@@ -9169,7 +9169,7 @@ fn every_mutating_command_records_what_it_did() {
             key: "probe-string".to_string(),
             ttl_ms: 30_000,
         },
-        // Removals go through mark_bucket_index_page_deleted, not the upsert -- a different
+        // Removals go through mark_bucket_index_block_deleted, not the upsert -- a different
         // path, so a different chance to record nothing.
         Command::HashDelete {
             key: "probe-hash".to_string(),
@@ -9692,7 +9692,7 @@ fn every_maintenance_round_is_bounded_by_default() {
     assert_eq!(request.max_expire_hot_buckets_per_round, 128);
     assert_eq!(request.max_expire_cold_buckets_per_round, 8);
     assert_eq!(request.eviction_batch_limit, 16);
-    assert_eq!(request.page_gc_min_slab_garbage_basis_points, 4_000);
+    assert_eq!(request.block_gc_min_slab_garbage_basis_points, 4_000);
 
     for (name, bound) in [
         ("index_gc_max_entries_per_round", request.index_gc_max_entries_per_round as u64),
@@ -9706,7 +9706,7 @@ fn every_maintenance_round_is_bounded_by_default() {
         ("eviction_batch_limit", request.eviction_batch_limit as u64),
         (
             "page_gc_min_band_garbage_basis_points",
-            request.page_gc_min_slab_garbage_basis_points,
+            request.block_gc_min_slab_garbage_basis_points,
         ),
     ] {
         assert!(bound > 0, "{name} is zero, which is not a bound at all");
@@ -10221,6 +10221,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
                 ttl_ms: Some(600_000),
                 condition: crate::types::StringSetCondition::IfExists,
                 return_old: false,
+                keep_ttl: false,
             },
         ),
         (
@@ -10236,6 +10237,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
                 ttl_ms: None,
                 condition: crate::types::StringSetCondition::IfExists,
                 return_old: false,
+                keep_ttl: false,
             },
         ),
         (
@@ -10814,7 +10816,7 @@ fn a_group_commit_write_keeps_the_block_it_staged() {
     println!(
         "[block-in-wal] group-commit write: {} block(s) carried, index holds {}",
         carried,
-        engine.wal_resident_page_count(1)
+        engine.wal_resident_block_count(1)
     );
 
     // Whatever the answer, the value must read back -- that is the property that matters.
@@ -11587,7 +11589,7 @@ fn a_read_is_answered_from_memory_before_disk_and_the_counters_say_which() {
         let warm_reads = engine.block_store().stats().reads - warm_before;
         // REPORTED, not asserted. Measured at one block-store read per read even for values
         // written moments earlier, which is not what the read path looks like it should do --
-        // `append_value` puts the page in the cache under the same key `read_page_bytes` looks
+        // `append_value` puts the page in the cache under the same key `read_block_bytes` looks
         // up. Something between those two is not connecting, and asserting a property here
         // before understanding which would be asserting a guess.
         println!("[tier] warm: {warm_reads} block-store read(s) for {KEYS} reads");
@@ -11673,7 +11675,7 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
         // Said to THIS engine. `TS_ENGINE_CONCURRENT_COMMIT` used to carry it, which meant the
         // case that wanted the barrier under the lock set it for every engine in the process.
         if block_in_wal == "0" {
-            engine.block_store().stop_putting_pages_in_the_log_for_test();
+            engine.block_store().stop_putting_blocks_in_the_log_for_test();
         }
         if concurrent == "0" {
             engine.commit_under_lock_for_test();
@@ -11704,7 +11706,7 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
         }
 
         let synthetic = engine.synthetic_address_count_for_test(1);
-        let resident = engine.wal_resident_page_count(1);
+        let resident = engine.wal_resident_block_count(1);
         println!(
             "[synthetic] {label}: {synthetic} served address(es) resolvable only in-process, {resident} log-resident page(s) tracked"
         );
@@ -11786,7 +11788,7 @@ fn a_checkpoint_index_names_no_place_only_this_process_can_reach() {
         "this test needs async writes to produce in-process-only addresses, and got none"
     );
 
-    let moved = engine.materialize_synthetic_pages(1);
+    let moved = engine.materialize_synthetic_blocks(1);
     let after = engine.synthetic_address_count_for_test(1);
     println!("[portable] {before} in-process-only address(es), {moved} materialised, {after} left");
 
@@ -11978,13 +11980,13 @@ fn what_the_log_resident_registry_holds_after_a_dump() {
     }
 
     let registered = engine.registration_count_for_test(1);
-    let resident = engine.wal_resident_page_count(1);
+    let resident = engine.wal_resident_block_count(1);
     println!("[registry] after {WRITES} async writes: {registered} registration(s), {resident} index entr(ies)");
 
     // A dump makes those pages durable and prunes the INDEX's copy. What happens to the registry?
     engine.flush_shard_index(1);
     let after_flush = engine.registration_count_for_test(1);
-    let resident_after = engine.wal_resident_page_count(1);
+    let resident_after = engine.wal_resident_block_count(1);
     println!("[registry] after a flush: {after_flush} registration(s), {resident_after} index entr(ies)");
 
     let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
@@ -11992,7 +11994,7 @@ fn what_the_log_resident_registry_holds_after_a_dump() {
         ..Default::default()
     });
     let after_cycle = engine.registration_count_for_test(1);
-    let resident_cycle = engine.wal_resident_page_count(1);
+    let resident_cycle = engine.wal_resident_block_count(1);
     println!(
         "[registry] after a storage cycle ({} stages): {after_cycle} registration(s), {resident_cycle} index entr(ies)",
         cycle.stages.len()
@@ -12007,7 +12009,7 @@ fn what_the_log_resident_registry_holds_after_a_dump() {
         info.start_sequence, info.current_sequence
     );
 
-    let moved = engine.materialize_synthetic_pages(1);
+    let moved = engine.materialize_synthetic_blocks(1);
     let after_materialise = engine.registration_count_for_test(1);
     let synthetic_left = engine.synthetic_address_count_for_test(1);
     println!(
@@ -12044,12 +12046,12 @@ fn a_replay_leaves_nothing_staged_for_the_next_write_to_adopt() {
     // reused, in a server across requests and here across tests, so "the next write" is
     // routinely someone else entirely.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -12079,7 +12081,7 @@ fn a_replay_leaves_nothing_staged_for_the_next_write_to_adopt() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -12101,12 +12103,12 @@ fn an_async_write_is_never_lost_across_a_restart() {
     // to catch an intermittent one and reports the watermark it chose when it does.
     for attempt in 0..120 {
         let dir = tempfile::tempdir().unwrap();
-        let page_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("pages");
         let index_dir = dir.path().join("indexes");
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache-a"),
-            &page_dir,
+            &block_dir,
             &index_dir,
         );
         engine.load_shard(1);
@@ -12139,7 +12141,7 @@ fn an_async_write_is_never_lost_across_a_restart() {
         let restarted = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache-b"),
-            &page_dir,
+            &block_dir,
             &index_dir,
         );
         // Ask the successor what it can SEE before asking what it recovered. A load that
@@ -12203,12 +12205,12 @@ fn a_record_carrying_its_blocks_states_results_instead_of_the_operation() {
     // names a block-store address a crash may leave unwritten, and no registration recovers a
     // block that was never stored.
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -12281,7 +12283,7 @@ fn a_record_carrying_its_blocks_states_results_instead_of_the_operation() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -12316,12 +12318,12 @@ fn a_record_carrying_its_blocks_states_results_instead_of_the_operation() {
 #[test]
 fn what_the_log_resident_registry_does_under_sustained_writes() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -12387,12 +12389,12 @@ fn what_the_log_resident_registry_does_under_sustained_writes() {
 fn what_eight_records_per_ingest_cost() {
     fn write_and_measure(batched: bool, ingests: usize) -> (u64, u64, u64) {
         let dir = tempfile::tempdir().unwrap();
-        let page_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("pages");
         let index_dir = dir.path().join("indexes");
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            &page_dir,
+            &block_dir,
             &index_dir,
         );
         engine.load_shard(1);
@@ -12478,12 +12480,12 @@ fn registrations_plateau_instead_of_tracking_writes() {
     let before_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);
 
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         dir.path().join("cache"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -12568,12 +12570,12 @@ fn registrations_plateau_instead_of_tracking_writes() {
 #[test]
 fn a_batch_leaves_nothing_staged_for_the_next_write_to_adopt() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -12606,12 +12608,12 @@ fn a_batch_leaves_nothing_staged_for_the_next_write_to_adopt() {
 fn which_records_still_carry_an_operation() {
     fn audit(label: &str, async_storage: bool, batched: bool) -> (usize, usize, usize) {
         let dir = tempfile::tempdir().unwrap();
-        let page_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("pages");
         let index_dir = dir.path().join("indexes");
         let engine = TemporalEngine::with_local_dirs(
             2 * 1024 * 1024,
             dir.path().join("cache"),
-            &page_dir,
+            &block_dir,
             &index_dir,
         );
         engine.load_shard(1);
@@ -12710,7 +12712,7 @@ fn which_records_still_carry_an_operation() {
 /// for the same shard and compares it against what is actually held, so the number is a saving
 /// rather than a description.
 #[test]
-fn nesting_the_page_lookups_saved_what_it_measured() {
+fn nesting_the_block_lookups_saved_what_it_measured() {
     const RECORDS: usize = 4_000;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -12760,7 +12762,7 @@ fn nesting_the_page_lookups_saved_what_it_measured() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let lookup = &shard.bucket_index.object_page_lookup;
+    let lookup = &shard.bucket_index.object_block_lookup;
 
     // Held now: the (model, object) key once, plus the component alone on each nested entry.
     let mut nested_keys = 0usize;
@@ -13146,7 +13148,7 @@ fn a_clamped_reclaim_still_serves_what_it_kept_after_a_restart() {
 /// per-bucket loop:
 ///
 ///     for bucket_id in manifest.bucket_ids { ...
-///         shard.dirty_objects.retain(|key| page_routing_bucket(key, ..) != bucket_id)
+///         shard.dirty_objects.retain(|key| block_routing_bucket(key, ..) != bucket_id)
 ///
 /// so every qualifying bucket walked every dirty object, re-hashing each key to recompute a
 /// routing bucket the caller already knew. The work was |dirty objects| x |buckets| to remove at
@@ -13339,7 +13341,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
     for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
         // What a rebuild would produce: the ids of the pages that are not deleted.
         let rebuilt: crate::engine::state::ObjectIndex = bucket
-            .page_index
+            .block_index
             .values()
             .filter(|page| !page.deleted)
             .map(|page| page.object_id())
@@ -13407,14 +13409,14 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
 /// opposite ways. The executor for `ContextUpsertNode` stages its outcome under its own kind with
 /// the comment "this writes a hash page and -- unlike HashSet -- never registers it in the bucket
 /// index". But the page IS put into `shard.hashes`, and `rebuild_bucket_first_index` derives the
-/// index from `collect_model_live_page_entries`, which reads the model maps.
+/// index from `collect_model_live_block_entries`, which reads the model maps.
 ///
 /// If context pages ARE in the index, the rebuild is load-bearing and removing it needs the write
-/// path to call `upsert_bucket_index_page` itself. If they are NOT, the rebuild is doing nothing
+/// path to call `upsert_bucket_index_block` itself. If they are NOT, the rebuild is doing nothing
 /// for these writes and they can be classified as not dirtying the index at all -- a much smaller
 /// change. Reading the code has been wrong repeatedly here, so this asks the shard.
 #[test]
-fn whether_a_context_page_reaches_the_bucket_index() {
+fn whether_a_context_block_reaches_the_bucket_index() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         2 * 1024 * 1024,
@@ -13464,7 +13466,7 @@ fn whether_a_context_page_reaches_the_bucket_index() {
     // Every kind the index holds a page for, and how many of each.
     let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.page_index.values() {
+        for page in bucket.block_index.values() {
             *kinds.entry(page.model_id.clone().to_string()).or_insert(0) += 1;
         }
     }
@@ -13474,11 +13476,11 @@ fn whether_a_context_page_reaches_the_bucket_index() {
         .keys()
         .filter(|key| key.contains("ctx") || key.contains("context"))
         .count();
-    let context_pages_in_index: usize = shard
+    let context_blocks_in_index: usize = shard
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.page_index.values())
+        .flat_map(|bucket| bucket.block_index.values())
         .filter(|page| page.object_key.contains("ctx") || page.object_key.contains("context"))
         .count();
 
@@ -13486,7 +13488,7 @@ fn whether_a_context_page_reaches_the_bucket_index() {
         "
   page kinds held by the bucket index: {kinds:?}
   context-ish keys in the model map:   {context_keys_in_model}
-  context-ish pages in the bucket index: {context_pages_in_index}
+  context-ish pages in the bucket index: {context_blocks_in_index}
 "
     );
 
@@ -13498,7 +13500,7 @@ fn whether_a_context_page_reaches_the_bucket_index() {
     // wrong guess baked into an assertion would just move the mistake into the test.
     println!(
         "  => context pages {} the bucket index",
-        if context_pages_in_index > 0 { "DO reach" } else { "do NOT reach" }
+        if context_blocks_in_index > 0 { "DO reach" } else { "do NOT reach" }
     );
 }
 
@@ -13513,7 +13515,7 @@ fn whether_a_context_page_reaches_the_bucket_index() {
 /// This reports the inline size and the heap each entry pulls behind it, because `size_of` alone
 /// undercounts a struct whose fields are `String`.
 #[test]
-fn what_one_page_costs_to_index() {
+fn what_one_block_costs_to_index() {
     use crate::engine::state::BlockIndex;
 
     let inline = std::mem::size_of::<BlockIndex>();
@@ -13531,8 +13533,8 @@ fn what_one_page_costs_to_index() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    const PAGES: usize = 2_000;
-    for index in 0..PAGES {
+    const BLOCKS: usize = 2_000;
+    for index in 0..BLOCKS {
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
@@ -13550,7 +13552,7 @@ fn what_one_page_costs_to_index() {
     let mut object_key_bytes = 0usize;
     let mut shared_bytes = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_handle, page) in bucket.page_index.iter() {
+        for (_handle, page) in bucket.block_index.iter() {
             entries += 1;
             // The map key is an inline number now, not a rendered string on the heap.
             ref_key_bytes += 0;
@@ -13609,7 +13611,7 @@ fn what_one_page_costs_to_index() {
 /// weight in every page entry in the shard, and the measurement says how much is recoverable
 /// without changing what the type can express.
 #[test]
-fn which_parts_of_a_page_address_are_populated() {
+fn which_parts_of_a_block_address_are_populated() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
@@ -13656,7 +13658,7 @@ fn which_parts_of_a_page_address_are_populated() {
     let (mut generation, mut slab_id, mut sha256) = (0usize, 0usize, 0usize);
     let mut compactable = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.page_index.values() {
+        for page in bucket.block_index.values() {
             pages += 1;
             let a = &page.address;
             page_id += usize::from(a.page_id().is_some());
@@ -13708,7 +13710,7 @@ fn which_parts_of_a_page_address_are_populated() {
 /// in-memory entry and reconstructed on the way out; a field that disagrees with its surroundings
 /// cannot, and the disagreement would be the finding.
 #[test]
-fn which_parts_of_a_page_address_restate_their_surroundings() {
+fn which_parts_of_a_block_address_restate_their_surroundings() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
@@ -13744,7 +13746,7 @@ fn which_parts_of_a_page_address_restate_their_surroundings() {
     let mut routing_matches_bucket = 0usize;
     let mut object_id_matches_entry = 0usize;
     for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
-        for page in bucket.page_index.values() {
+        for page in bucket.block_index.values() {
             pages += 1;
             if page.address.routing_bucket() == Some(*bucket_key) {
                 routing_matches_bucket += 1;
@@ -13791,7 +13793,7 @@ fn which_parts_of_a_page_address_restate_their_surroundings() {
 ///
 /// A context write does not register its page; the shard rebuilds the whole first-index afterwards
 /// instead, which is the last O(corpus) term in an add. Replay already maintains these kinds
-/// incrementally (`sync_bucket_index_object_pages`, lifecycle.rs), and Feature and Sequence writes
+/// incrementally (`sync_bucket_index_object_blocks`, lifecycle.rs), and Feature and Sequence writes
 /// already do it on the write path — the context write path is the one that does not.
 ///
 /// Before removing the rebuild, this establishes what "equal" means. It ingests with the
@@ -13844,7 +13846,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
             .bucket_map
             .iter()
             .flat_map(|(bucket, node)| {
-                node.page_index.iter().map(move |(ref_key, page)| {
+                node.block_index.iter().map(move |(ref_key, page)| {
                     (
                         (*bucket, ref_key.to_string()),
                         (
@@ -13878,7 +13880,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
             .bucket_map
             .iter()
             .flat_map(|(bucket, node)| {
-                node.page_index.iter().map(move |(ref_key, page)| {
+                node.block_index.iter().map(move |(ref_key, page)| {
                     (
                         (*bucket, ref_key.to_string()),
                         (
@@ -14962,7 +14964,7 @@ fn what_the_hash_family_costs_as_a_hash_grows() {
 #[test]
 fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
 
     let members: Vec<(String, f64)> = (0..64)
@@ -14972,7 +14974,7 @@ fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -15019,7 +15021,7 @@ fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
     let restarted = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -15469,7 +15471,7 @@ fn which_commands_rebuild_the_whole_index_per_call() {
 
 /// A command exempted from the rebuild must leave the index matching a rebuilt one.
 ///
-/// `command_writes_no_page` exempts SeenCheck and the control-state change/selection writes from the
+/// `command_writes_no_block` exempts SeenCheck and the control-state change/selection writes from the
 /// post-command index rebuild, on the grounds that they mutate only non-page state. That holds today
 /// -- none of their arms appends a value or files a bucket-index page -- but it is exactly the kind
 /// of fact a later change can quietly break, and a stale index would not announce itself.
@@ -15477,7 +15479,7 @@ fn which_commands_rebuild_the_whole_index_per_call() {
 /// So this asserts the property the exemption rests on: run each exempted command against a store
 /// with real page-backed content, then compare the live index against a from-scratch rebuild.
 #[test]
-fn a_no_page_command_leaves_the_index_matching_a_rebuild() {
+fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
@@ -15518,7 +15520,7 @@ fn a_no_page_command_leaves_the_index_matching_a_rebuild() {
             .bucket_map
             .iter()
             .flat_map(|(routing_bucket, bucket)| {
-                bucket.page_index.values().map(move |page| {
+                bucket.block_index.values().map(move |page| {
                     format!(
                         "{routing_bucket}|{}|{}|{}",
                         page.model_id,
@@ -15568,7 +15570,7 @@ fn a_no_page_command_leaves_the_index_matching_a_rebuild() {
 
 /// The no-page rebuild exemption has to hold in a BATCH, not only alone.
 ///
-/// `command_writes_no_page` exempts SeenCheck and the control-state change/selection writes from
+/// `command_writes_no_block` exempts SeenCheck and the control-state change/selection writes from
 /// the post-command rebuild, because a command that files no page cannot have changed the page
 /// index -- measured at twice the shard's page count per call. The single-command path consults
 /// it. The batch path did not, so the SAME command cost a full index rebuild when it arrived in a
@@ -15577,7 +15579,7 @@ fn a_no_page_command_leaves_the_index_matching_a_rebuild() {
 /// Measured rather than argued, because the cost is invisible in the result: the command answers
 /// identically either way, and only the page-visit counter shows the walk.
 #[test]
-fn a_no_page_command_in_a_batch_does_not_rebuild_the_index() {
+fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         32 * 1024 * 1024,
@@ -15630,7 +15632,7 @@ fn a_no_page_command_in_a_batch_does_not_rebuild_the_index() {
     assert!(single.status.ok, "{:?}", single.status);
 
     // What the index holds, so skipping the rebuild can be shown not to leave it stale.
-    let page_rows = |engine: &TemporalEngine| -> Vec<String> {
+    let block_rows = |engine: &TemporalEngine| -> Vec<String> {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
         let mut rows: Vec<String> = shard
@@ -15638,7 +15640,7 @@ fn a_no_page_command_in_a_batch_does_not_rebuild_the_index() {
             .bucket_map
             .iter()
             .flat_map(|(routing_bucket, bucket)| {
-                bucket.page_index.values().map(move |page| {
+                bucket.block_index.values().map(move |page| {
                     format!(
                         "{routing_bucket}|{}|{}|{}",
                         page.model_id,
@@ -15651,7 +15653,7 @@ fn a_no_page_command_in_a_batch_does_not_rebuild_the_index() {
         rows.sort();
         rows
     };
-    let index_before = page_rows(&engine);
+    let index_before = block_rows(&engine);
 
     crate::engine::bucket_visit_sites::reset();
     let batched = engine.batch_execute(BatchExecuteRequest {
@@ -15666,7 +15668,7 @@ fn a_no_page_command_in_a_batch_does_not_rebuild_the_index() {
     // by a read that misses.
     assert_eq!(
         index_before,
-        page_rows(&engine),
+        block_rows(&engine),
         "a batched no-page command changed the page index, so skipping the rebuild after it          leaves the index stale"
     );
 
@@ -16135,7 +16137,7 @@ fn a_filtered_sequence_query_returns_fewer_rows_than_match() {
 
 /// One counter increment rewrites the WHOLE counter series.
 ///
-/// `persist_control_state_page` runs on every `ControlStateIncrement` and calls
+/// `persist_control_state_block` runs on every `ControlStateIncrement` and calls
 /// `serde_json::to_vec(series)` -- its own comment calls this "the O(series) per-write
 /// whole-series page rewrite (the write-amplification source)". The cure already exists
 /// behind `control_coalesce_persist`, which is off by default.
@@ -16358,7 +16360,7 @@ fn which_write_paths_cost_their_collection() {
 #[test]
 fn a_set_survives_a_restart_with_its_members_and_removals() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
 
     let members: Vec<String> = (0..64).map(|index| format!("m-{index:04}")).collect();
@@ -16366,7 +16368,7 @@ fn a_set_survives_a_restart_with_its_members_and_removals() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -16405,7 +16407,7 @@ fn a_set_survives_a_restart_with_its_members_and_removals() {
     let restarted = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -16467,13 +16469,13 @@ fn a_set_survives_a_restart_with_its_members_and_removals() {
 #[test]
 fn a_list_survives_a_restart_with_its_order_across_both_ends() {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
 
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache-a"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     engine.load_shard(1);
@@ -16536,7 +16538,7 @@ fn a_list_survives_a_restart_with_its_order_across_both_ends() {
     let restarted = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache-b"),
-        &page_dir,
+        &block_dir,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -16842,7 +16844,7 @@ fn what_a_feature_write_costs_against_its_series() {
     );
 }
 
-/// The four commands that hand a WHOLE address list to `sync_bucket_index_object_pages`
+/// The four commands that hand a WHOLE address list to `sync_bucket_index_object_blocks`
 /// (execute_on_shard lines ~1334, ~1402, ~1566, ~1727) -- do they all cost their series?
 ///
 /// FeatureAppend is carried as a KNOWN-amplifying control (15.20x, mx#793) and SetAdd as the
@@ -17556,7 +17558,7 @@ fn what_the_string_family_costs_against_the_store() {
 }
 
 #[test]
-fn an_entity_upsert_does_not_report_its_page_uncovered() {
+fn an_entity_upsert_does_not_report_its_block_uncovered() {
     // An entity write reports the PERSISTED per-entity key `ctx:entity:{t}:{n}:{e}`, but the index
     // groups entities under the node's COLLECTION key `ctx:entity:{t}:{n}`. Maintenance looked the
     // per-entity key up directly, always missed, and reported the object uncovered -- which sends
@@ -17607,7 +17609,7 @@ fn an_entity_upsert_does_not_report_its_page_uncovered() {
     {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        let covered = crate::engine::storage_bucket_internals::sync_context_pages_for_object(
+        let covered = crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
             shard,
             1,
             &absent_key,
@@ -17713,7 +17715,7 @@ fn a_requested_bucket_list_reaches_the_lifecycle_planner() {
 #[test]
 fn what_a_summary_write_costs_as_its_own_node_fills() {
     // A summary write spends ~8.3 KB in `maintained_bucket_index`, which calls
-    // sync_context_pages_for_object -- and for a summary that walks the NODE's timestamped series.
+    // sync_context_blocks_for_object -- and for a summary that walks the NODE's timestamped series.
     // So the question is not whether the write carries the STORE (it does not) but whether it
     // carries the node's own history. Same node, same summary, only the depth of its series varies.
     const REPS: usize = 20;
@@ -17953,19 +17955,19 @@ fn a_reclaim_that_drops_whole_segments_reports_them() {
 }
 
 #[test]
-fn a_compaction_round_stops_at_the_page_ref_budget() {
+fn a_compaction_round_stops_at_the_block_ref_budget() {
     // `COMPACTION_ROUND_BYTES` is 256 MiB and never binds in practice -- a store of a few MiB is
     // nowhere near it -- so before this a round relocated the WHOLE shard while holding the shard
     // write lock. Measured in release that is 3.1 s at 20k refs, on the periodic path.
     //
     // The stall tracks the NUMBER of refs moved (~200 us each, near enough regardless of page
     // size), so the ref budget is the bound that actually caps it.
-    use crate::engine::compaction::COMPACTION_ROUND_PAGE_REFS;
+    use crate::engine::compaction::COMPACTION_ROUND_BLOCK_REFS;
 
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     // Enough to exceed the cap and still leave a remainder for the control round.
-    let objects = COMPACTION_ROUND_PAGE_REFS + 600;
+    let objects = COMPACTION_ROUND_BLOCK_REFS + 600;
     for index in 0..objects {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -17978,16 +17980,16 @@ fn a_compaction_round_stops_at_the_page_ref_budget() {
     }
 
     let bounded = engine
-        .compact_shard_pages(1)
+        .compact_shard_blocks(1)
         .expect("compaction runs");
     assert!(
-        bounded.rewritten_page_refs <= COMPACTION_ROUND_PAGE_REFS,
+        bounded.rewritten_block_refs <= COMPACTION_ROUND_BLOCK_REFS,
         "a round must not relocate more than its ref budget: moved {} with a budget of {}",
-        bounded.rewritten_page_refs,
-        COMPACTION_ROUND_PAGE_REFS
+        bounded.rewritten_block_refs,
+        COMPACTION_ROUND_BLOCK_REFS
     );
     assert!(
-        bounded.pages_left_by_budget > 0,
+        bounded.blocks_left_by_budget > 0,
         "the round must leave the rest for the next one, so compaction still progresses"
     );
 
@@ -17995,10 +17997,10 @@ fn a_compaction_round_stops_at_the_page_ref_budget() {
     // Without this the assertions above would also pass on a fixture too small to reach the cap,
     // which is exactly the way a budget test passes while proving nothing.
     let unbounded = engine
-        .compact_shard_pages_with_budget(1, u64::MAX)
+        .compact_shard_blocks_with_budget(1, u64::MAX)
         .expect("compaction runs");
     assert_eq!(
-        unbounded.pages_left_by_budget, 0,
+        unbounded.blocks_left_by_budget, 0,
         "with the ref budget lifted the round must complete, which is what shows the budget \
          is what stopped the round above"
     );
@@ -18087,7 +18089,7 @@ fn the_delete_marker_rename_did_not_move_any_wire_name() {
 
 /// Do a packed page's timestamps share ONE address, or several?
 ///
-///   cargo test -p temporalstore-rust --lib what_a_packed_page_looks_like_in_the_index -- --ignored --nocapture
+///   cargo test -p temporalstore-rust --lib what_a_packed_block_looks_like_in_the_index -- --ignored --nocapture
 ///
 /// This settles which side of the corpus mismatch is right. `install_bucket_dump_manifest`
 /// cross-checks two derivations of one report: the model-map one dedupes a series' addresses
@@ -18101,7 +18103,7 @@ fn the_delete_marker_rename_did_not_move_any_wire_name() {
 /// invariant never held for packed pages.
 #[test]
 #[ignore]
-fn what_a_packed_page_looks_like_in_the_index() {
+fn what_a_packed_block_looks_like_in_the_index() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -18246,7 +18248,7 @@ fn what_a_delete_leaves_claimed() {
 /// THE DRIFT CHECK: the MAINTAINED per-slab live tally against the walk that defines it.
 ///
 /// A maintained counter that drifts is WORSE than a recomputed one, because everything downstream
-/// believes it. So the tally is held to `collect_live_page_entries` -- the same walk every other
+/// believes it. So the tally is held to `collect_live_block_entries` -- the same walk every other
 /// per-slab live figure is built from -- after each kind of mutation that can move a page, one at
 /// a time, so a failure names the stage that broke it instead of a total.
 ///
@@ -18278,11 +18280,11 @@ fn what_a_delete_leaves_claimed() {
 /// | `insert` charges nothing | stage 1 here | -240 page refs / -25,920 bytes |
 /// | `retain` discharges nothing, BOTH arms | stage 3 here | +80 page refs / +13,760 bytes |
 /// | `reload_released_bucket` charges what release never discharged | stage 5 here | +160 page refs / +27,520 bytes |
-/// | `insert` does not discharge the address it REPLACES | `installing_the_same_page_twice_replaces_it` | 3 page refs where 2 are live |
+/// | `insert` does not discharge the address it REPLACES | `installing_the_same_block_twice_replaces_it` | 3 page refs where 2 are live |
 ///
 /// THE LAST ROW IS THE INTERESTING ONE. This test still passes with that discharge removed, and
 /// it is not a weak assertion: the engine's overwrite path drops the superseded page through the
-/// explicit `remove` in `upsert_bucket_index_page_with` BEFORE the insert runs, so `insert` never
+/// explicit `remove` in `upsert_bucket_index_block_with` BEFORE the insert runs, so `insert` never
 /// sees a displacement on this workload. The branch is real on other paths and is guarded where it
 /// can be reached, by the unit test named above. Stated here rather than left to be discovered,
 /// because "the drift check covers every mutation site" is the kind of claim that is quietly
@@ -18316,11 +18318,11 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
         .block_slab_live_tallies(1)
         .expect("a derived tally")
         .iter()
-        .map(|(_, page_refs, _)| page_refs)
+        .map(|(_, block_refs, _)| block_refs)
         .sum();
     assert_eq!(
         maintained_refs,
-        engine.live_page_count_for_test(1) as u64,
+        engine.live_block_count_for_test(1) as u64,
         "the maintained page-ref total disagrees with the live page count"
     );
     assert!(maintained_refs >= KEYS as u64, "{maintained_refs} pages counted for {KEYS} keys");
@@ -18361,22 +18363,22 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
         "the tally drifted over deletes: {after_delete:?}"
     );
     assert_eq!(
-        engine.live_page_count_for_test(1) as u64,
+        engine.live_block_count_for_test(1) as u64,
         engine
             .block_slab_live_tallies(1)
             .expect("a derived tally")
             .iter()
-            .map(|(_, page_refs, _)| page_refs)
+            .map(|(_, block_refs, _)| block_refs)
             .sum::<u64>(),
         "the deletes left the tally and the walk disagreeing about how many pages are live"
     );
 
     // 4. COMPACTION RELOCATIONS.
     let compaction = engine
-        .compact_shard_pages(1)
+        .compact_shard_blocks(1)
         .expect("a loaded shard can be compacted");
     assert!(
-        compaction.rewritten_page_refs > 0,
+        compaction.rewritten_block_refs > 0,
         "compaction relocated nothing, so this stage measures nothing: {compaction:?}"
     );
     let after_compaction = engine.block_slab_live_drift_check(1);
@@ -18384,7 +18386,7 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
     assert!(
         after_compaction.is_clean(),
         "the tally drifted over {} relocated pages: {after_compaction:?}",
-        compaction.rewritten_page_refs
+        compaction.rewritten_block_refs
     );
 
     // 5. RELEASE + RELOAD. A release is refused for a dirty bucket, so dump first -- which is
@@ -18393,12 +18395,12 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
         .create_bucket_dump_manifest(1, Vec::new())
         .expect("a loaded shard can be dumped");
     engine.clear_dumped_bucket_dirty_state(1, &manifest);
-    let (released_buckets, released_pages, _refused) =
-        engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, released_blocks, _refused) =
+        engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
-        released_buckets > 0 && released_pages > 0,
+        released_buckets > 0 && released_blocks > 0,
         "nothing was released, so the counter-neutral claim is untested: \
-         {released_buckets} buckets / {released_pages} pages"
+         {released_buckets} buckets / {released_blocks} pages"
     );
     let after_release = engine.block_slab_live_drift_check(1);
     assert!(after_release.slabs_compared > 0, "{after_release:?}");
@@ -18410,7 +18412,7 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
 
     let mut reloaded = 0_usize;
     for routing_bucket in engine.released_bucket_index_buckets(1) {
-        if engine.reload_released_bucket_index_pages(1, routing_bucket) {
+        if engine.reload_released_bucket_index_blocks(1, routing_bucket) {
             reloaded = reloaded.saturating_add(1);
         }
     }
@@ -18520,11 +18522,11 @@ fn a_released_bucket_serves_every_key_it_held() {
 
     // THE DENOMINATOR. If nothing releases, reading every key back afterwards proves nothing --
     // it is the same assertion against the same resident index.
-    let (released_buckets, released_pages, refused) =
-        engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, released_blocks, refused) =
+        engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
-        released_buckets > 0 && released_pages > 0,
-        "nothing was released ({released_buckets} buckets / {released_pages} pages, \
+        released_buckets > 0 && released_blocks > 0,
+        "nothing was released ({released_buckets} buckets / {released_blocks} pages, \
          {refused} refused), so the read-back below is not about a released bucket"
     );
     assert_eq!(
@@ -18535,7 +18537,7 @@ fn a_released_bucket_serves_every_key_it_held() {
 
     // CONTROL: the pages really are gone from the index. Without this the test passes on a
     // release that reported a number and dropped nothing.
-    let resident_pages: usize = {
+    let resident_blocks: usize = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         shards
             .get(&1)
@@ -18543,12 +18545,12 @@ fn a_released_bucket_serves_every_key_it_held() {
             .bucket_index
             .bucket_map
             .values()
-            .map(|bucket| bucket.page_index.len())
+            .map(|bucket| bucket.block_index.len())
             .sum()
     };
     assert_eq!(
-        resident_pages, 0,
-        "{released_pages} pages were reported released but {resident_pages} are still filed"
+        resident_blocks, 0,
+        "{released_blocks} pages were reported released but {resident_blocks} are still filed"
     );
 
     for index in 0..KEYS {
@@ -18606,14 +18608,14 @@ fn releasing_a_bucket_reduces_resident_index_memory_and_reloading_restores_it() 
         "the fixture left no resident index to release"
     );
 
-    let (released_buckets, released_pages, _) = engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, released_blocks, _) = engine.release_all_releasable_bucket_index_blocks(1);
     assert!(released_buckets > 0, "nothing was released");
 
     let index_after = engine.bucket_index_resident_bytes(1);
     assert!(
         index_after < index_before,
         "release freed no INDEX memory: {index_before} -> {index_after} over \
-         {released_buckets} buckets / {released_pages} pages"
+         {released_buckets} buckets / {released_blocks} pages"
     );
     assert!(
         engine.cache().stats().memory_bytes <= cache_before,
@@ -18636,7 +18638,7 @@ fn releasing_a_bucket_reduces_resident_index_memory_and_reloading_restores_it() 
     // And the memory comes back on reload, which is what makes it a release rather than a delete.
     for routing_bucket in engine.released_bucket_index_buckets(1) {
         assert!(
-            engine.reload_released_bucket_index_pages(1, routing_bucket),
+            engine.reload_released_bucket_index_blocks(1, routing_bucket),
             "bucket {routing_bucket} was registered as released but would not reload"
         );
     }
@@ -18657,11 +18659,11 @@ fn releasing_a_bucket_reduces_resident_index_memory_and_reloading_restores_it() 
 /// compares the two lists from outside, over a real shard, rather than trusting the comparison the
 /// release makes about itself.
 #[test]
-fn a_released_bucket_reloads_the_exact_page_list_it_released() {
+fn a_released_bucket_reloads_the_exact_block_list_it_released() {
     const KEYS: usize = 120;
     let (_dir, engine) = dumped_shard_with_keys(KEYS, 48);
 
-    fn page_listing(engine: &TemporalEngine) -> Vec<(u32, String, String, Option<String>, u64, u64, u64)> {
+    fn block_listing(engine: &TemporalEngine) -> Vec<(u32, String, String, Option<String>, u64, u64, u64)> {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let mut rows = shards
             .get(&1)
@@ -18670,7 +18672,7 @@ fn a_released_bucket_reloads_the_exact_page_list_it_released() {
             .bucket_map
             .iter()
             .flat_map(|(routing_bucket, bucket)| {
-                bucket.page_index.values().map(move |page| {
+                bucket.block_index.values().map(move |page| {
                     (
                         *routing_bucket,
                         page.model_id.to_string(),
@@ -18687,21 +18689,21 @@ fn a_released_bucket_reloads_the_exact_page_list_it_released() {
         rows
     }
 
-    let before = page_listing(&engine);
+    let before = block_listing(&engine);
     assert!(!before.is_empty(), "the fixture filed no pages");
 
-    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_blocks(1);
     assert!(released_buckets > 0, "nothing was released");
     assert!(
-        page_listing(&engine).is_empty(),
+        block_listing(&engine).is_empty(),
         "the release left page entries behind"
     );
 
     for routing_bucket in engine.released_bucket_index_buckets(1) {
-        assert!(engine.reload_released_bucket_index_pages(1, routing_bucket));
+        assert!(engine.reload_released_bucket_index_blocks(1, routing_bucket));
     }
     assert_eq!(
-        page_listing(&engine),
+        block_listing(&engine),
         before,
         "the reloaded page list is not the one that was released"
     );
@@ -18718,7 +18720,7 @@ fn a_write_into_a_released_bucket_loads_it_back_first() {
     const VALUE_LEN: usize = 64;
     let (_dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
 
-    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_blocks(1);
     assert!(released_buckets > 0, "nothing was released");
     let target = engine.routing_bucket_for_key(1, "released-000007");
     assert!(
@@ -18748,7 +18750,7 @@ fn a_write_into_a_released_bucket_loads_it_back_first() {
         .get(&target)
         .expect("the written bucket");
     assert!(
-        bucket.in_memory && !bucket.page_index.is_empty(),
+        bucket.in_memory && !bucket.block_index.is_empty(),
         "the bucket the write touched is neither resident nor released"
     );
     drop(shards);
@@ -18772,7 +18774,7 @@ fn a_write_into_a_released_bucket_loads_it_back_first() {
 /// Derived the same way `Command::StringSet` derived it, so the set membership this asks about is
 /// the one the index actually holds rather than one the test invented.
 fn released_object_id(index: usize) -> u64 {
-    stable_page_object_id(1, "string", &format!("released-{index:06}"), None)
+    stable_block_object_id(1, "string", &format!("released-{index:06}"), None)
 }
 
 /// Every object id any bucket node still claims, across the whole shard.
@@ -18824,11 +18826,11 @@ fn a_delete_against_a_released_bucket_settles_its_object_count() {
     const DELETED: usize = 40;
     let (_dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
 
-    let (released_buckets, released_pages, _refused) =
-        engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, released_blocks, _refused) =
+        engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
-        released_buckets > 0 && released_pages > 0,
-        "nothing was released ({released_buckets} buckets / {released_pages} pages), so every \
+        released_buckets > 0 && released_blocks > 0,
+        "nothing was released ({released_buckets} buckets / {released_blocks} pages), so every \
          delete below takes the resident path and this test measures nothing"
     );
 
@@ -18913,7 +18915,7 @@ fn a_delete_against_a_released_bucket_settles_its_object_count() {
     // not against the node count: the delete path files a node of its own for the key's routing
     // bucket, so the map both grows and re-creates anything removed from it, and a node-identity
     // check cannot fail here (a mutation that dropped the emptied node passed it). The registry
-    // is the state only `release_bucket_pages` writes and only a reload clears, so it is the one
+    // is the state only `release_bucket_blocks` writes and only a reload clears, so it is the one
     // that answers.
     let still_released = engine.released_bucket_index_buckets(1);
     let kept_released = released
@@ -18968,11 +18970,11 @@ fn every_delete_against_a_released_bucket_settles_its_own_object() {
     const VALUE_LEN: usize = 48;
     let (_dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
 
-    let (released_buckets, released_pages, _refused) =
-        engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, released_blocks, _refused) =
+        engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
-        released_buckets > 0 && released_pages > 0,
-        "nothing was released ({released_buckets} buckets / {released_pages} pages)"
+        released_buckets > 0 && released_blocks > 0,
+        "nothing was released ({released_buckets} buckets / {released_blocks} pages)"
     );
     let released: std::collections::BTreeSet<u32> =
         engine.released_bucket_index_buckets(1).into_iter().collect();
@@ -19045,11 +19047,11 @@ fn a_delete_against_a_released_bucket_leaves_its_bucket_mates() {
     const VALUE_LEN: usize = 48;
     let (_dir, engine) = dumped_shard_with_keys_in_range(KEYS, VALUE_LEN, 0, 4);
 
-    let (released_buckets, released_pages, _refused) =
-        engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, released_blocks, _refused) =
+        engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
-        released_buckets > 0 && released_pages > 0,
-        "nothing was released ({released_buckets} buckets / {released_pages} pages)"
+        released_buckets > 0 && released_blocks > 0,
+        "nothing was released ({released_buckets} buckets / {released_blocks} pages)"
     );
 
     let mut by_bucket: std::collections::BTreeMap<u32, Vec<usize>> =
@@ -19185,10 +19187,10 @@ fn eviction_releases_the_index_it_used_to_leave_resident() {
         "the round selected no victims, so there was nothing to release: {report:?}"
     );
     assert!(
-        report.bucket_index_buckets_released > 0 && report.bucket_index_pages_released > 0,
+        report.bucket_index_buckets_released > 0 && report.bucket_index_blocks_released > 0,
         "eviction released no index: {} buckets / {} pages, {} refused",
         report.bucket_index_buckets_released,
-        report.bucket_index_pages_released,
+        report.bucket_index_blocks_released,
         report.bucket_index_release_refused,
     );
     assert!(
@@ -19239,7 +19241,7 @@ fn a_shard_released_and_reloaded_comes_back_whole() {
     const VALUE_LEN: usize = 72;
     let (dir, engine) = dumped_shard_with_keys(KEYS, VALUE_LEN);
 
-    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_pages(1);
+    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_blocks(1);
     assert!(released_buckets > 0, "nothing was released");
 
     // Write the index out while the buckets are released, then bring the shard back from it.
@@ -20019,7 +20021,7 @@ fn seed_dumpcost_keys(engine: &TemporalEngine, shard_id: ShardId, keys: Vec<Stri
 /// Build a shard holding exactly IN_TARGET keys in one chosen routing bucket plus filler keys
 /// filtered AWAY from it, then dump that ONE bucket.
 ///
-/// Returns (shard_buckets, shard_pages, dumped_buckets, dumped_pages, manifest_index_bytes,
+/// Returns (shard_buckets, shard_blocks, dumped_buckets, dumped_blocks, manifest_index_bytes,
 /// dump_encode_bytes).
 fn one_bucket_dump_at_shard_size(filler: usize) -> (usize, u64, usize, u64, usize, u64) {
     const IN_TARGET: usize = 100;
@@ -20054,9 +20056,9 @@ fn one_bucket_dump_at_shard_size(filler: usize) -> (usize, u64, usize, u64, usiz
 
     let summaries = engine.bucket_storage_summaries(SHARD);
     let shard_buckets = summaries.len();
-    let shard_pages = summaries
+    let shard_blocks = summaries
         .iter()
-        .map(|summary| summary.page_ref_count)
+        .map(|summary| summary.block_ref_count)
         .sum::<u64>();
 
     crate::engine::reset_index_encode_counts();
@@ -20067,9 +20069,9 @@ fn one_bucket_dump_at_shard_size(filler: usize) -> (usize, u64, usize, u64, usiz
 
     (
         shard_buckets,
-        shard_pages,
+        shard_blocks,
         manifest.bucket_ids.len(),
-        manifest.live_page_refs,
+        manifest.live_block_refs,
         manifest.index_bytes.len(),
         dump_encode_bytes,
     )
@@ -20085,7 +20087,7 @@ fn one_bucket_dump_at_shard_size(filler: usize) -> (usize, u64, usize, u64, usiz
 /// too, and a timing on this box is not evidence. This varies the SHARD SIZE tenfold while holding
 /// the DUMPED BUCKET byte-for-byte identical, and reports counts only.
 ///
-/// dumped_buckets and dumped_pages are the treatment-ran columns. If they are not equal across the
+/// dumped_buckets and dumped_blocks are the treatment-ran columns. If they are not equal across the
 /// arms the arms dumped different work and the comparison means nothing.
 #[test]
 #[ignore]
@@ -20094,10 +20096,10 @@ fn what_one_bucket_dumps_cost_at_two_shard_sizes() {
         "  filler  shard_buckets  shard_pages  dumped_buckets  dumped_pages  manifest_index_bytes  dump_encode_bytes"
     );
     for filler in [1_000usize, 10_000] {
-        let (shard_buckets, shard_pages, dumped_buckets, dumped_pages, index_bytes, encode_bytes) =
+        let (shard_buckets, shard_blocks, dumped_buckets, dumped_blocks, index_bytes, encode_bytes) =
             one_bucket_dump_at_shard_size(filler);
         println!(
-            "  {filler:>6}  {shard_buckets:>13}  {shard_pages:>11}  {dumped_buckets:>14}  {dumped_pages:>12}  {index_bytes:>20}  {encode_bytes:>17}"
+            "  {filler:>6}  {shard_buckets:>13}  {shard_blocks:>11}  {dumped_buckets:>14}  {dumped_blocks:>12}  {index_bytes:>20}  {encode_bytes:>17}"
         );
     }
 }
@@ -20327,7 +20329,7 @@ fn dumpcost_key_reads_back(engine: &TemporalEngine, shard_id: ShardId, key: &str
 /// the hole by reintroducing the cost the budget exists to bound. So the per-round read count is
 /// pinned as well, and the two together say the window moved rather than grew.
 #[test]
-fn the_bounded_readability_probe_reaches_a_page_outside_its_first_window() {
+fn the_bounded_readability_probe_reaches_a_block_outside_its_first_window() {
     const RECORDS: usize = 8_000;
     let budget = crate::engine::storage_manager_cycle::RECOVERY_READABLE_PROBE_PER_ROUND;
 
@@ -20375,7 +20377,7 @@ fn the_bounded_readability_probe_reaches_a_page_outside_its_first_window() {
 
     let exhaustive = engine.storage_recovery_report_without_boundary_sampled(1, 0);
     assert!(
-        !exhaustive.unreadable_page_refs.is_empty(),
+        !exhaustive.unreadable_block_refs.is_empty(),
         "flipping a byte in slab {target} produced no unreadable page, so the rounds below could \
 never find one and would pass for the wrong reason",
     );
@@ -20385,25 +20387,25 @@ never find one and would pass for the wrong reason",
     // below would hold for the broken code too.
     let first = engine.storage_recovery_report_without_boundary_sampled(1, budget);
     assert!(
-        first.total_page_refs > budget,
+        first.total_block_refs > budget,
         "the fixture holds {} live pages and the budget is {budget}; one window covers the whole \
 shard, so this test cannot distinguish a moving window from a fixed one",
-        first.total_page_refs,
+        first.total_block_refs,
     );
     assert_eq!(
         first.readable_probe_cursor, 0,
         "the first round should start at the beginning",
     );
     assert_eq!(
-        first.probed_page_refs, budget,
+        first.probed_block_refs, budget,
         "the first round read {} pages against a budget of {budget}",
-        first.probed_page_refs,
+        first.probed_block_refs,
     );
     // The SECOND denominator, and the one that stops this test passing vacuously: the planted
     // page has to lie outside the first window, or "a later round reaches it" is satisfied by
     // the first round and says nothing about the window moving.
     assert!(
-        first.unreadable_page_refs.is_empty(),
+        first.unreadable_block_refs.is_empty(),
         "the first window already read the corrupt page in slab {target}, so a later round \
 finding it would prove nothing about coverage. Plant it somewhere the first {budget} live pages \
 do not reach.",
@@ -20411,14 +20413,14 @@ do not reach.",
 
     // Now sweep. The window advances by `budget` a round, so the whole shard is covered in
     // `ceil(total / budget)` rounds; a couple spare absorb the wrap.
-    let rounds_to_cover = first.total_page_refs.div_ceil(budget);
+    let rounds_to_cover = first.total_block_refs.div_ceil(budget);
     let cap = rounds_to_cover + 2;
     let mut found_at: Option<usize> = None;
     let mut probed_each_round = Vec::new();
     for round in 1..=cap {
         let report = engine.storage_recovery_report_without_boundary_sampled(1, budget);
-        probed_each_round.push(report.probed_page_refs);
-        if !report.unreadable_page_refs.is_empty() && found_at.is_none() {
+        probed_each_round.push(report.probed_block_refs);
+        if !report.unreadable_block_refs.is_empty() && found_at.is_none() {
             found_at = Some(round);
         }
     }
@@ -20441,7 +20443,7 @@ MOVING the window, not from widening it -- the per-round cost is what the bound 
 worth of windows at {budget} a round), the probe never read the corrupt page in slab {target} \
 -- an exhaustive call finds it immediately. That is the probe re-reading its first window every \
 round instead of advancing through the shard.",
-        first.total_page_refs,
+        first.total_block_refs,
     ));
     assert!(
         found_at <= rounds_to_cover + 1,
@@ -20488,9 +20490,9 @@ fn the_readability_probe_window_advances_by_its_budget_at_both_corpus_sizes() {
         let mut total = 0usize;
         for _ in 0..3 {
             let report = engine.storage_recovery_report_without_boundary_sampled(1, budget);
-            total = report.total_page_refs;
+            total = report.total_block_refs;
             cursors.push(report.readable_probe_cursor);
-            probed.push(report.probed_page_refs);
+            probed.push(report.probed_block_refs);
         }
         (total, cursors, probed)
     }
@@ -20548,7 +20550,7 @@ budget of {budget}. A bounded probe's cost must not grow with the store.",
 /// `bucket_storage_summaries` takes the shard's routing range and used it for the dirty-key loop
 /// only. Its live-page loop fell back to `bucket_for_object(key, 0, u32::MAX)` -- a different
 /// placement from the one `rebuild_bucket_first_index` and the flag refresh use, which is
-/// `page_routing_bucket(key, start, end)`. The two agree only while the shard spans the whole
+/// `block_routing_bucket(key, start, end)`. The two agree only while the shard spans the whole
 /// range, and a production shard does not: `TS_SHARD_END_ROUTING_SLOT=1023` is the setting that
 /// cuts resident memory 45%.
 ///
@@ -20559,7 +20561,7 @@ budget of {budget}. A bounded probe's cost must not grow with the store.",
 /// source that did not carry one arrives in, and asserts that the strip took effect before it
 /// asserts anything about the answer.
 #[test]
-fn a_page_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
+fn a_block_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
     const RECORDS: usize = 400;
     const END_ROUTING_BUCKET: u32 = 1023;
 
@@ -20600,19 +20602,19 @@ fn a_page_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
     let shard = shards.get_mut(&1).expect("shard 1 loaded");
 
     // DENOMINATOR ONE: the shard holds pages at all.
-    let pages_before: usize = shard
+    let blocks_before: usize = shard
         .bucket_index
         .bucket_map
         .values()
-        .map(|bucket| bucket.page_index.len())
+        .map(|bucket| bucket.block_index.len())
         .sum();
-    assert!(pages_before > 0, "fixture stored no pages, so this measures nothing");
+    assert!(blocks_before > 0, "fixture stored no pages, so this measures nothing");
 
     // Put the pages into the state this branch exists for.
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         // Unaccounted on purpose: the routing bucket is not one of the two fields the live
         // tally reads, so stripping it moves no bytes between slabs.
-        for page in bucket.page_index.pages_mut_unaccounted() {
+        for page in bucket.block_index.blocks_mut_unaccounted() {
             page.address.set_routing_bucket(None);
         }
     }
@@ -20620,13 +20622,13 @@ fn a_page_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
     // DENOMINATOR TWO: the strip took, so the fallback is what answers below. Without this the
     // test passes on a fixture where the addresses still carry a bucket and the branch under
     // test never runs -- which is exactly how the live write path behaves.
-    let stripped = crate::engine::storage_bucket_internals::collect_live_page_entries(shard)
+    let stripped = crate::engine::storage_bucket_internals::collect_live_block_entries(shard)
         .iter()
         .filter(|entry| entry.address.routing_bucket().is_none())
         .count();
     assert_eq!(
-        stripped, pages_before,
-        "the fixture meant to leave {pages_before} pages without a routing bucket and left \
+        stripped, blocks_before,
+        "the fixture meant to leave {blocks_before} pages without a routing bucket and left \
 {stripped}; the fallback under test is not the code answering",
     );
 
@@ -20668,10 +20670,10 @@ naming the real bucket carries none of its pages.",
     );
 
     // And the page count survived the re-placement: every page is still summarised somewhere.
-    let summarised_pages: u64 = summaries.iter().map(|summary| summary.page_ref_count).sum();
+    let summarised_blocks: u64 = summaries.iter().map(|summary| summary.block_ref_count).sum();
     assert_eq!(
-        summarised_pages, pages_before as u64,
-        "{pages_before} pages went in and {summarised_pages} came out of the summaries",
+        summarised_blocks, blocks_before as u64,
+        "{blocks_before} pages went in and {summarised_blocks} came out of the summaries",
     );
 }
 

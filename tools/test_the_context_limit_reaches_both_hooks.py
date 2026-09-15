@@ -13,6 +13,26 @@ about how either behaves at startup.
 
 The fixture pack is far larger than any limit under test, and that is asserted: a pack smaller than
 every limit would produce the same output for all of them and agree for the wrong reason.
+
+One case runs in ONE process on purpose, and it is asking a different question. The operator page
+labels this control `live`, which is a claim about what happens AFTER startup -- so the fresh
+process the tests above use cannot decide it. Measured in a process that had imported the codex
+hook, writing the variable the way the portal's `update()` does:
+
+    moment                         codex chars   agent chars
+    at import (unset)                    12662          7620
+    after a portal write of 2000         12662          1567
+    after a portal write of 20000        12662         19740
+
+The sibling hook tracked the write on every row. The codex hook never moved, because its limit
+was a DEFAULT ARGUMENT -- `char_limit: int = DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT` -- and a
+default argument is evaluated once, when the `def` runs.
+
+The audit that exists to catch exactly this could not: it classifies a read by whether the
+variable NAME sits inside a function, and this one did. `test_matrixark_gateway_config_audit` now
+resolves a module-level call to a same-module helper, which is the shape that hid it. It still
+cannot see a LITERAL default, because there is no variable name in it to find -- that is what
+this test is for.
 """
 
 import json
@@ -88,6 +108,80 @@ class TheContextLimitReachesBothHooksTest(unittest.TestCase):
             self.assertIn(FLAG, text,
                           "%s no longer reads %s, so the operator page offers a limit that hook "
                           "ignores" % (name, FLAG))
+
+
+
+class TheLiveLabelIsTrueAfterStartupTest(unittest.TestCase):
+    """`applies: live` is a claim about a change made to a RUNNING process.
+
+    One process, one import, then a write -- which is what the portal does for a live setting: it
+    assigns into `os.environ` of the process serving the page. Both hooks must follow it.
+    """
+
+    PROBE = r"""
+import json, os, sys
+sys.path.insert(0, %r)
+os.environ.pop(%r, None)
+import matrixark_codex_hook as codex
+import matrixark_agent_hook as agent
+pack = {"groups": [{"items": [{"text": ("x" * 500) + str(i)} for i in range(400)]}]}
+def codex_chars():
+    return len(codex.additional_context_from_retrieve(pack, query="q", local_context_count=0))
+def agent_chars():
+    return len(agent.additional_context_from_retrieve(pack))
+out = {"raw": sum(len(i["text"]) for i in pack["groups"][0]["items"]), "rows": []}
+for value in (None, "2000", "20000"):
+    if value is None:
+        os.environ.pop(%r, None)
+    else:
+        os.environ[%r] = value
+    out["rows"].append({"set": value, "codex": codex_chars(), "agent": agent_chars()})
+print(json.dumps(out))
+"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        env = dict(os.environ)
+        env.pop(FLAG, None)
+        source = cls.PROBE % (str(TOOLS), FLAG, FLAG, FLAG)
+        result = subprocess.run([sys.executable, "-B", "-c", source],
+                                capture_output=True, text=True, cwd=str(TOOLS), env=env)
+        if result.returncode != 0:
+            raise AssertionError("in-process probe failed:\n%s" % result.stderr[-800:])
+        cls.out = json.loads(result.stdout.strip().splitlines()[-1])
+
+    def test_every_row_returned(self) -> None:
+        """A probe that raised and was read for a key would report agreement it never measured."""
+        self.assertEqual(3, len(self.out["rows"]))
+        for row in self.out["rows"]:
+            self.assertIsInstance(row["codex"], int)
+            self.assertIsInstance(row["agent"], int)
+
+    def test_the_fixture_is_bigger_than_every_limit_under_test(self) -> None:
+        self.assertGreater(self.out["raw"], 20000,
+                           "a pack smaller than every limit agrees for the wrong reason")
+
+    def test_lowering_the_limit_after_startup_reaches_both_hooks(self) -> None:
+        unset, lowered = self.out["rows"][0], self.out["rows"][1]
+        for hook in ("codex", "agent"):
+            with self.subTest(hook=hook):
+                self.assertLessEqual(
+                    lowered[hook], 2000,
+                    "%s handed back %d characters after the page lowered the limit to 2000; the "
+                    "setting is labelled live and this process was already running"
+                    % (hook, lowered[hook]))
+                self.assertLess(
+                    lowered[hook], unset[hook],
+                    "%s returned the same %d characters before and after the write, so the write "
+                    "reached nothing" % (hook, lowered[hook]))
+
+    def test_raising_it_again_reaches_both_hooks(self) -> None:
+        """The control that separates 'followed the write' from 'is always small'."""
+        lowered, raised = self.out["rows"][1], self.out["rows"][2]
+        for hook in ("codex", "agent"):
+            with self.subTest(hook=hook):
+                self.assertGreater(raised[hook], lowered[hook],
+                                   "%s did not grow when the limit was raised again" % hook)
 
 
 if __name__ == "__main__":

@@ -211,7 +211,7 @@ pub(crate) fn put_varint_field(tag: u32, value: u64, out: &mut Vec<u8>) {
 /// Write a staged page as field `tag`, its bytes borrowed straight into `out`.
 pub(crate) fn put_staged_block(
     tag: u32,
-    page: &crate::wal::StagedPage,
+    page: &crate::wal::StagedBlock,
     implied_object_id: Option<u64>,
     out: &mut Vec<u8>,
 ) {
@@ -232,7 +232,7 @@ pub(crate) fn put_staged_block(
 /// It is omitted only when there is exactly one of each and the two agree, so a reader never
 /// has to guess which outcome an unlabelled block belongs to.
 pub(crate) fn staged_block_object_id(
-    page: &crate::wal::StagedPage,
+    page: &crate::wal::StagedBlock,
     implied_object_id: Option<u64>,
 ) -> Option<u64> {
     if implied_object_id == Some(page.object_id) {
@@ -242,7 +242,7 @@ pub(crate) fn staged_block_object_id(
 }
 
 pub(crate) fn staged_block_body_len(
-    page: &crate::wal::StagedPage,
+    page: &crate::wal::StagedBlock,
     implied_object_id: Option<u64>,
 ) -> usize {
     let id_len = match staged_block_object_id(page, implied_object_id) {

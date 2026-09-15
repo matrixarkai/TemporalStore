@@ -76,9 +76,9 @@ fn load_corpus() -> StorageMigrationCorpus {
 
 fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
-    let mut engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    let mut engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
 
     execute_steps(&engine, case.shard_id, &case.operations, &case.name);
 
@@ -91,7 +91,7 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
     assert!(
         summaries
             .iter()
-            .any(|summary| summary.dirty_generation > 0 && summary.page_ref_count > 0),
+            .any(|summary| summary.dirty_generation > 0 && summary.block_ref_count > 0),
         "case={} should track dirty slot generations and page refs",
         case.name
     );
@@ -131,11 +131,11 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
             wal_sequence: 0,
             index_log_sequence: 0,
         }],
-        page_gc_shared_store_cursors: Vec::new(),
-        page_gc_raft_snapshot_refs: Vec::new(),
-        page_gc_checkpoint_floor_slab_id: None,
-        page_gc_raft_install_floor_slab_id: None,
-        page_gc_delayed_destroy_grace_ms: 0,
+        block_gc_shared_store_cursors: Vec::new(),
+        block_gc_raft_snapshot_refs: Vec::new(),
+        block_gc_checkpoint_floor_slab_id: None,
+        block_gc_raft_install_floor_slab_id: None,
+        block_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: true,
         warm_cache: true,
     });
@@ -146,12 +146,12 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
     assert!(!report_manifest.checksum.is_empty());
     assert!(!report_manifest.bucket_summaries.is_empty());
     assert!(
-        lifecycle.cache_warmup.considered_page_refs > 0,
+        lifecycle.cache_warmup.considered_block_refs > 0,
         "case={} cache warmup should inspect page refs",
         case.name
     );
     assert_eq!(
-        lifecycle.cache_warmup.failed_page_refs, 0,
+        lifecycle.cache_warmup.failed_block_refs, 0,
         "case={} cache warmup should not fail page reads",
         case.name
     );
@@ -159,7 +159,7 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
     assert_clean_recovery(&engine, case.shard_id, &case.name);
 
     drop(engine);
-    engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
     engine
         .install_bucket_dump_manifest(&installable_manifest)
         .unwrap_or_else(|status| {
@@ -370,42 +370,42 @@ fn redis(engine: &TemporalEngine, shard_id: u64, args: Vec<&[u8]>) -> RespValue 
 fn assert_clean_recovery(engine: &TemporalEngine, shard_id: u64, case_name: &str) {
     let recovery = engine.storage_recovery_report(shard_id);
     assert!(
-        recovery.all_live_pages_readable,
+        recovery.all_live_blocks_readable,
         "case={} live pages should be readable: {:?}",
-        case_name, recovery.unreadable_page_refs
+        case_name, recovery.unreadable_block_refs
     );
     assert!(
         recovery.slab_integrity.integrity_ok,
         "case={} segment integrity failed: {:?}",
         case_name, recovery.slab_integrity
     );
-    assert_eq!(recovery.slab_integrity.stale_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.stale_block_ref_count, 0);
     assert_eq!(recovery.slab_integrity.corrupt_block_slab_count, 0);
-    assert_eq!(recovery.slab_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(recovery.slab_integrity.owner_mismatch_page_ref_count, 0);
-    assert_eq!(recovery.slab_integrity.missing_owner_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.unreadable_block_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.owner_mismatch_block_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.missing_owner_block_ref_count, 0);
     assert_eq!(
         recovery
-            .feature_page_layout
+            .feature_block_layout
             .missing_indexed_timestamps
             .len(),
         0
     );
     assert_eq!(
-        recovery.feature_page_layout.orphan_packed_timestamps.len(),
+        recovery.feature_block_layout.orphan_packed_timestamps.len(),
         0
     );
     assert_eq!(
         recovery
-            .feature_page_layout
+            .feature_block_layout
             .duplicate_packed_timestamps
             .len(),
         0
     );
 }
 
-fn new_engine(root: &Path, page_dir: &Path, index_dir: &Path, shard_id: u64) -> TemporalEngine {
-    let engine = TemporalEngine::with_local_dirs(256, root.join("cache"), page_dir, index_dir);
+fn new_engine(root: &Path, block_dir: &Path, index_dir: &Path, shard_id: u64) -> TemporalEngine {
+    let engine = TemporalEngine::with_local_dirs(256, root.join("cache"), block_dir, index_dir);
     engine.load_shard(shard_id);
     engine
 }

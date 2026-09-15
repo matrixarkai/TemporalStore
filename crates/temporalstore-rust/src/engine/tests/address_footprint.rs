@@ -51,7 +51,7 @@ struct AddressCensus {
     /// (map name, how many addresses that map holds), in walk order.
     per_map: Vec<(&'static str, usize)>,
     total: usize,
-    with_page_id: usize,
+    with_block_id: usize,
     with_object_id: usize,
     with_generation: usize,
     with_routing_bucket: usize,
@@ -81,7 +81,7 @@ impl AddressCensus {
         self.widest[6] = self.widest[6].max(address.routing_bucket().unwrap_or(0) as u64);
         let mut set = 0usize;
         if address.page_id().is_some() {
-            self.with_page_id += 1;
+            self.with_block_id += 1;
             set += 1;
         }
         if address.object_id().is_some() {
@@ -124,8 +124,8 @@ impl AddressCensus {
         println!(
             "  optional fields SET, of {} addresses: page_id {} ({:.1}%), object_id {} ({:.1}%), generation {} ({:.1}%), routing_bucket {} ({:.1}%)",
             self.total,
-            self.with_page_id,
-            100.0 * self.with_page_id as f64 / self.total.max(1) as f64,
+            self.with_block_id,
+            100.0 * self.with_block_id as f64 / self.total.max(1) as f64,
             self.with_object_id,
             100.0 * self.with_object_id as f64 / self.total.max(1) as f64,
             self.with_generation,
@@ -187,7 +187,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     // HashMap<String, BlockAddress> -- one address per key.
     for (name, map) in [
         ("strings", &shard.strings),
-        ("control_state_pages", &shard.control_state_pages),
+        ("control_state_pages", &shard.control_state_blocks),
         ("context_nodes", &shard.context_nodes),
     ] {
         let before = c.total;
@@ -271,7 +271,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     {
         let before = c.total;
         for bucket in shard.bucket_index.bucket_map.values() {
-            for (_, page) in bucket.page_index.iter() {
+            for (_, page) in bucket.block_index.iter() {
                 c.observe(&page.address);
             }
         }
@@ -592,7 +592,7 @@ fn the_census_reads_every_map_that_holds_an_address() {
 /// Which of the address's optional fields actually DO anything on a read -- measured by tampering
 /// with each one and seeing whether the read notices.
 ///
-/// This is the fourth thing the task asks about. `decode_page_record` cross-checks the address's
+/// This is the fourth thing the task asks about. `decode_block_record` cross-checks the address's
 /// `page_id`, `object_id` and `routing_bucket` against the record header, each written
 /// `if let (Some(from_address), Some(from_record))`. Reading that source alone, all three look
 /// like live corruption detectors, and three live detectors would be a strong reason to keep the
@@ -610,13 +610,13 @@ fn the_census_reads_every_map_that_holds_an_address() {
 #[ignore = "touches the filesystem; run by name"]
 fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = LocalBlockStore::new(dir.path());
+    let store = BlockStore::new(dir.path());
 
     let payload = b"a page whose header states which block of its object it is".to_vec();
     let object_id = 0x0123_4567_89ab_cdefu64;
     let routing_bucket = 4_155_475_953u32;
     let good = store
-        .append_with_page_metadata(&payload, Some(object_id), Some(routing_bucket))
+        .append_with_block_metadata(&payload, Some(object_id), Some(routing_bucket))
         .expect("append");
 
     // DENOMINATOR: the honest address reads back, and really carries all three fields under test.
@@ -637,7 +637,7 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     let mut ignored: Vec<&str> = Vec::new();
 
     let mut tampered = good.clone();
-    tampered.set_page_id(Some(good.page_id().unwrap() ^ 0xffff));
+    tampered.set_block_id(Some(good.page_id().unwrap() ^ 0xffff));
     match store.read(&tampered) {
         Err(error) => {
             noticed.push("page_id");
@@ -670,7 +670,7 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
 
     // The one live check is presence-gated: strip the field and it stops running altogether.
     let mut stripped = good.clone();
-    stripped.set_page_id(None);
+    stripped.set_block_id(None);
     assert!(stripped.page_id().is_none());
     let stripped_reads = store.read(&stripped).is_ok();
 
@@ -833,7 +833,7 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
     let shard = shards.get(&shard_id).expect("shard is loaded");
     let mut d = DuplicationCensus::default();
 
-    for map in [&shard.strings, &shard.control_state_pages, &shard.context_nodes] {
+    for map in [&shard.strings, &shard.control_state_blocks, &shard.context_nodes] {
         for address in map.values() {
             d.observe_model(address);
         }
@@ -876,7 +876,7 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
         }
     }
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.page_index.iter() {
+        for (_, page) in bucket.block_index.iter() {
             d.observe_bucket(&page.address);
         }
     }

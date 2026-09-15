@@ -235,14 +235,14 @@ impl SingleNodeMeta {
 
         // The page is sorted and a table's shards are a contiguous range, so
         // the entries of the page that belong to a table are a slice of it.
-        let page_ids = page.iter().map(|(shard_id, _)| *shard_id).collect::<Vec<_>>();
+        let block_ids = page.iter().map(|(shard_id, _)| *shard_id).collect::<Vec<_>>();
         let mut shard_tables: BTreeMap<ShardId, (String, String)> = BTreeMap::new();
         for table in state.tables.values() {
             let first = table.info.first_shard_id;
             let end = first.saturating_add(table.info.shard_count);
-            let from = page_ids.partition_point(|shard_id| *shard_id < first);
-            let until = page_ids.partition_point(|shard_id| *shard_id < end);
-            for shard_id in &page_ids[from..until] {
+            let from = block_ids.partition_point(|shard_id| *shard_id < first);
+            let until = block_ids.partition_point(|shard_id| *shard_id < end);
+            for shard_id in &block_ids[from..until] {
                 // First table in map order wins a contested shard, which is how
                 // the map built shard by shard resolved two tables whose ranges
                 // overlap.

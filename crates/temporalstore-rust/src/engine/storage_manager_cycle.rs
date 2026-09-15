@@ -98,30 +98,30 @@ impl TemporalEngine {
             } else {
                 u64::MAX
             },
-            purge_delayed_destroy: request.enable_page_reclaim,
+            purge_delayed_destroy: request.enable_block_reclaim,
             purge_delayed_destroy_slab_ids: None,
             prune_bucket_dump_manifests: request.enable_index_gc,
             roll_forward_bucket_dump_installs: request.enable_index_gc,
             follower_replay_cursors: request.follower_replay_cursors.clone(),
-            page_gc_shared_store_cursors: request.page_gc_shared_store_cursors.clone(),
-            page_gc_raft_snapshot_refs: request.raft_snapshot_refs.clone(),
-            page_gc_checkpoint_floor_slab_id: request.page_gc_checkpoint_floor_slab_id,
-            page_gc_raft_install_floor_slab_id: request.page_gc_raft_install_floor_slab_id,
-            page_gc_delayed_destroy_grace_ms: request.page_gc_delayed_destroy_grace_ms,
+            block_gc_shared_store_cursors: request.block_gc_shared_store_cursors.clone(),
+            block_gc_raft_snapshot_refs: request.raft_snapshot_refs.clone(),
+            block_gc_checkpoint_floor_slab_id: request.block_gc_checkpoint_floor_slab_id,
+            block_gc_raft_install_floor_slab_id: request.block_gc_raft_install_floor_slab_id,
+            block_gc_delayed_destroy_grace_ms: request.block_gc_delayed_destroy_grace_ms,
             invalidate_cache: false,
             warm_cache: request.warm_cache,
         };
         let plan = self.storage_lifecycle_plan(plan_request.clone());
-        let page_gc_dependency_plan = self.storage_page_gc_dependency_plan(
+        let block_gc_dependency_plan = self.storage_block_gc_dependency_plan(
             request.shard_id,
             plan.reclaim_candidates
                 .iter()
                 .map(|candidate| candidate.block_slab_id),
-            request.page_gc_shared_store_cursors.clone(),
+            request.block_gc_shared_store_cursors.clone(),
             request.raft_snapshot_refs.clone(),
-            request.page_gc_checkpoint_floor_slab_id,
-            request.page_gc_raft_install_floor_slab_id,
-            request.page_gc_delayed_destroy_grace_ms,
+            request.block_gc_checkpoint_floor_slab_id,
+            request.block_gc_raft_install_floor_slab_id,
+            request.block_gc_delayed_destroy_grace_ms,
         );
         // THE ONE PLACE "did not look" COLLAPSES TO A ZERO IN THIS FUNCTION.
         //
@@ -135,7 +135,7 @@ impl TemporalEngine {
         // any of these byte or count figures can tell an unmeasured 0 from a measured one without
         // a second source. `live_page_summaries_measured` below is that test, named once.
         let bucket_summaries = plan.bucket_summaries.as_deref();
-        let live_page_summaries_measured = bucket_summaries.is_some();
+        let live_block_summaries_measured = bucket_summaries.is_some();
         let bucket_logical_bytes = bucket_summaries
             .map(|summaries| {
                 summaries
@@ -152,11 +152,11 @@ impl TemporalEngine {
                     .sum::<u64>()
             })
             .unwrap_or(0);
-        let bucket_page_ref_count = bucket_summaries
+        let bucket_block_ref_count = bucket_summaries
             .map(|summaries| {
                 summaries
                     .iter()
-                    .map(|summary| summary.page_ref_count)
+                    .map(|summary| summary.block_ref_count)
                     .sum::<u64>()
             })
             .unwrap_or(0);
@@ -209,7 +209,7 @@ impl TemporalEngine {
             .model_policies
             .iter()
             .filter(|policy| {
-                policy.stale_page_estimate > 0
+                policy.stale_block_estimate > 0
                     || policy.stale_density_basis_points > 0
                     || policy.delete_marker_density_basis_points > 0
             })
@@ -220,12 +220,12 @@ impl TemporalEngine {
             .iter()
             .map(|policy| {
                 policy
-                    .stale_page_estimate
+                    .stale_block_estimate
                     .saturating_add(policy.stale_density_basis_points)
                     .saturating_add(policy.delete_marker_density_basis_points)
             })
             .sum::<u64>()
-            .saturating_add(compaction_utility.stale_page_estimate)
+            .saturating_add(compaction_utility.stale_block_estimate)
             .saturating_add(reclaim_stale_bytes)
             .saturating_add(block_slab_stale_density_basis_points);
         let retention_prune_plan = self.bucket_dump_manifest_prune_plan_with_retention_refs(
@@ -266,13 +266,13 @@ impl TemporalEngine {
             + manifest_retention_blockers as u64
             + compaction_debt_score;
         let mut pressure_signals = StorageManagerPressureSignals {
-            live_page_summaries_measured,
+            live_block_summaries_measured,
             dirty_bucket_count: plan.dirty_buckets.len(),
             undumped_wal_records: plan.undumped_wal_records,
             wal_bytes: log_pressure.wal_bytes,
             index_log_bytes: log_pressure.index_log_bytes,
-            stale_page_bytes: reclaim_stale_bytes,
-            live_page_bytes: reclaim_live_bytes,
+            stale_block_bytes: reclaim_stale_bytes,
+            live_block_bytes: reclaim_live_bytes,
             block_slab_stale_density_basis_points,
             memory_cache_bytes: cache_pressure.stats.memory_bytes,
             disk_cache_bytes: cache_pressure.stats.disk_bytes,
@@ -292,7 +292,7 @@ impl TemporalEngine {
         // Everything above gets its own stage, for the reason mx#1435 gave for the dump-load
         // policy report: `stage_clock` runs from the previous stage's push, and this is the FIRST
         // stage boundary in the round. So `storage_lifecycle_plan` (which surveys the shard),
-        // `storage_page_gc_dependency_plan` and the pressure-snapshot arithmetic were all being
+        // `storage_block_gc_dependency_plan` and the pressure-snapshot arithmetic were all being
         // charged to `prepare` -- which pre-allocates the next slab and surveys nothing, yet
         // reported 328 ms at 32,000 records.
         stages.push(StorageManagerStageReport {
@@ -382,7 +382,7 @@ impl TemporalEngine {
             dirty_bucket_count: plan.dirty_buckets.len(),
             undumped_wal_records: plan.undumped_wal_records,
             metrics_bucket_count: bucket_count,
-            metrics_page_ref_count: bucket_page_ref_count,
+            metrics_block_ref_count: bucket_block_ref_count,
             ..StorageManagerStageReport::default()
         });
 
@@ -425,12 +425,12 @@ impl TemporalEngine {
         // Costs the number of slabs, not the number of pages: the shards keep the tally running
         // on their own mutation path and this only sums them.
         self.publish_block_slab_live_bytes();
-        let reclaimable_block_slab_ids = page_gc_dependency_plan
+        let reclaimable_block_slab_ids = block_gc_dependency_plan
             .reclaimable_block_slab_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        if request.enable_page_reclaim
+        if request.enable_block_reclaim
             && !request.dry_run
             && !plan.reclaim_candidates.is_empty()
             && !reclaimable_block_slab_ids.is_empty()
@@ -453,7 +453,7 @@ impl TemporalEngine {
                 // keeping slabs below the garbage floor. Floor 0 (the default) collects every
                 // eligible slab as before.
                 BlockStoreGcPolicy::with_slab_garbage_floor(
-                    request.page_gc_min_slab_garbage_basis_points,
+                    request.block_gc_min_slab_garbage_basis_points,
                     None,
                 ),
                 true,
@@ -565,10 +565,10 @@ impl TemporalEngine {
         // path's ceiling drains over several cycles instead of turning one into a long pause.
         // Oldest first, because the oldest registration is the one holding the floor down. The
         // bytes are already durable in the log, so this moves a copy that is safe either way.
-        let wal_resident_pages_before = self.wal_resident_page_count(request.shard_id);
-        let wal_resident_pages_materialised = if request.enable_wal_reclaim
+        let wal_resident_blocks_before = self.wal_resident_block_count(request.shard_id);
+        let wal_resident_blocks_materialised = if request.enable_wal_reclaim
             && !request.dry_run
-            && wal_resident_pages_before > 0
+            && wal_resident_blocks_before > 0
         {
             // Zero is how this request spells "no bound" -- its own default is 0 while the
             // scheduler's is 64 -- so a cycle asked for no bound drains the shard rather than
@@ -578,9 +578,9 @@ impl TemporalEngine {
             } else {
                 request.max_dump_buckets_per_round
             };
-            self.materialize_oldest_resident_pages(
+            self.materialize_oldest_resident_blocks(
                 request.shard_id,
-                wal_resident_pages_before.saturating_sub(per_round),
+                wal_resident_blocks_before.saturating_sub(per_round),
             )
         } else {
             0
@@ -618,7 +618,7 @@ impl TemporalEngine {
                 elapsed
             },
             stage: "reclaim_wal".to_string(),
-            wal_resident_pages_materialised,
+            wal_resident_blocks_materialised,
             enabled: request.enable_wal_reclaim,
             applied: wal_reclaim_report
                 .as_ref()
@@ -878,25 +878,25 @@ impl TemporalEngine {
                 elapsed
             },
             stage: "reclaim_page".to_string(),
-            enabled: request.enable_page_reclaim,
-            applied: request.enable_page_reclaim
+            enabled: request.enable_block_reclaim,
+            applied: request.enable_block_reclaim
                 && !request.dry_run
-                && page_gc_dependency_plan.safe_to_reclaim
+                && block_gc_dependency_plan.safe_to_reclaim
                 && lifecycle_report
                     .as_ref()
                     .map(|report| !report.delayed_destroy_purged_slabs.is_empty())
                     .unwrap_or(false),
-            skipped: !request.enable_page_reclaim
+            skipped: !request.enable_block_reclaim
                 || plan.reclaim_candidates.is_empty()
-                || !page_gc_dependency_plan.safe_to_reclaim,
-            reason: if !request.enable_page_reclaim {
+                || !block_gc_dependency_plan.safe_to_reclaim,
+            reason: if !request.enable_block_reclaim {
                 "page reclaim disabled".to_string()
             } else if plan.reclaim_candidates.is_empty() {
                 "no stale or delayed-destroy page segments are reclaimable".to_string()
-            } else if !page_gc_dependency_plan.safe_to_reclaim {
+            } else if !block_gc_dependency_plan.safe_to_reclaim {
                 format!(
                     "page GC refused because retained dependencies remain: {}",
-                    page_gc_dependency_plan.blocker_reasons.join(",")
+                    block_gc_dependency_plan.blocker_reasons.join(",")
                 )
             } else {
                 "reclaimed delayed-destroy page segments selected by stale-byte pressure"
@@ -906,26 +906,26 @@ impl TemporalEngine {
                 "stale_page_bytes+delayed_destroy_backlog+stale_density+dependency_retention"
                     .to_string(),
             pressure_score: pressure_signals
-                .stale_page_bytes
+                .stale_block_bytes
                 .saturating_add(pressure_signals.delayed_destroy_bytes)
                 .saturating_add(pressure_signals.block_slab_stale_density_basis_points),
             pressure_threshold: 1,
-            pressure_triggered: request.enable_page_reclaim
+            pressure_triggered: request.enable_block_reclaim
                 && !plan.reclaim_candidates.is_empty()
-                && page_gc_dependency_plan.safe_to_reclaim,
+                && block_gc_dependency_plan.safe_to_reclaim,
             candidate_count: reclaim_candidate_count,
             skipped_count: reclaim_skipped_count
-                .saturating_add(page_gc_dependency_plan.blocked_block_slab_ids.len()),
+                .saturating_add(block_gc_dependency_plan.blocked_block_slab_ids.len()),
             before_bytes: reclaim_live_bytes + reclaim_stale_bytes,
             after_bytes: reclaim_live_bytes,
             live_bytes: reclaim_live_bytes,
             stale_bytes: reclaim_stale_bytes,
-            selected_block_slab_ids: page_gc_dependency_plan.reclaimable_block_slab_ids.clone(),
+            selected_block_slab_ids: block_gc_dependency_plan.reclaimable_block_slab_ids.clone(),
             block_slabs_reclaimed: lifecycle_report
                 .as_ref()
                 .map(|report| report.delayed_destroy_purged_slabs.len())
                 .unwrap_or_default(),
-            page_bytes_reclaimed: lifecycle_report
+            block_bytes_reclaimed: lifecycle_report
                 .as_ref()
                 .map(|report| report.delayed_destroy_purged_bytes)
                 .unwrap_or_default(),
@@ -1083,11 +1083,11 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
-        let should_compact = request.enable_page_compaction
+        let should_compact = request.enable_block_compaction
             && !request.dry_run
             && (!plan.reclaim_candidates.is_empty() || plan.live_block_slab_ids.len() > 1);
         let compaction_report = if should_compact {
-            match self.compact_shard_pages(request.shard_id) {
+            match self.compact_shard_blocks(request.shard_id) {
                 Ok(report) => Some(report),
                 Err(err) => {
                     errors.push(format!("compact: {}", err.message));
@@ -1104,12 +1104,12 @@ impl TemporalEngine {
                 elapsed
             },
             stage: "compact".to_string(),
-            enabled: request.enable_page_compaction,
+            enabled: request.enable_block_compaction,
             applied: compaction_report.is_some(),
-            skipped: !request.enable_page_compaction
+            skipped: !request.enable_block_compaction
                 || request.dry_run
                 || (plan.reclaim_candidates.is_empty() && plan.live_block_slab_ids.len() <= 1),
-            reason: if !request.enable_page_compaction {
+            reason: if !request.enable_block_compaction {
                 "page compaction disabled".to_string()
             } else if request.dry_run {
                 "dry run reports compaction pressure without rewriting pages".to_string()
@@ -1146,9 +1146,9 @@ impl TemporalEngine {
             compacted_block_slab_id: compaction_report
                 .as_ref()
                 .map(|report| report.compacted_block_slab_id),
-            rewritten_page_refs: compaction_report
+            rewritten_block_refs: compaction_report
                 .as_ref()
-                .map(|report| report.rewritten_page_refs)
+                .map(|report| report.rewritten_block_refs)
                 .unwrap_or_default(),
             ..StorageManagerStageReport::default()
         });
@@ -1181,16 +1181,16 @@ impl TemporalEngine {
             applied: !request.dry_run,
             // An unmeasured round says so HERE, in the stage an operator reads for these
             // numbers, rather than leaving them to be read as a shard that emptied itself.
-            reason: if live_page_summaries_measured {
+            reason: if live_block_summaries_measured {
                 "reported slot/page/cache pressure metrics for the completed cycle".to_string()
             } else {
                 "no slot was dirty, so the round did not walk the live pages: the slot and page \
 counts on this stage are NOT MEASURED and read 0, they are not a measurement of zero"
                     .to_string()
             },
-            skipped: !live_page_summaries_measured,
+            skipped: !live_block_summaries_measured,
             pressure_signal: "slot_page_cache_metrics".to_string(),
-            pressure_score: bucket_count as u64 + bucket_page_ref_count,
+            pressure_score: bucket_count as u64 + bucket_block_ref_count,
             pressure_threshold: 1,
             pressure_triggered: bucket_summaries
                 .map(|summaries| !summaries.is_empty())
@@ -1200,7 +1200,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
             live_bytes: bucket_logical_bytes,
             stale_bytes: reclaim_stale_bytes,
             metrics_bucket_count: bucket_count,
-            metrics_page_ref_count: bucket_page_ref_count,
+            metrics_block_ref_count: bucket_block_ref_count,
             ..StorageManagerStageReport::default()
         });
         let phase_executor =
@@ -1246,7 +1246,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
             wal_reclaim_report,
             index_gc_report,
             eviction_report,
-            page_gc_dependency_plan,
+            block_gc_dependency_plan,
             errors,
         }
     }

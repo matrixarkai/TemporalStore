@@ -30,7 +30,7 @@ use std::sync::{Mutex, OnceLock};
 
 use matrixcache::{CacheEvictionRecord, MultiLayerCache};
 
-use crate::block_store::{BlockAddress, LocalBlockStore};
+use crate::block_store::{BlockAddress, BlockStore};
 use crate::types::ShardId;
 
 use super::constants::HOT_BLOCK_SLAB_ID;
@@ -41,7 +41,7 @@ fn redirects() -> &'static Mutex<HashMap<(ShardId, u64), BlockAddress>> {
 }
 
 /// The synthetic hot-page cache key's record_key, i.e. `segment-{HOT_BLOCK_SLAB_ID:020}`.
-fn hot_page_record_key() -> String {
+fn hot_block_record_key() -> String {
     format!("segment-{HOT_BLOCK_SLAB_ID:020}")
 }
 
@@ -74,18 +74,18 @@ fn parse_hot_selector(selector: &str) -> Option<(u64, Option<u32>)> {
 /// Always installed. `TS_HOT_PAGE_SPILL` used to be able to skip it -- strictly additive, so the
 /// off position only restored an acked-write-reads-as-missing bug -- and the only callers that
 /// ever set it were four tests that set it AFTER building their engine, by which time this had
-/// already run. `TemporalEngine::disable_hot_page_spill_for_test` is how an engine is told, and
+/// already run. `TemporalEngine::disable_hot_block_spill_for_test` is how an engine is told, and
 /// it works because `register_eviction_callback` replaces the callback rather than adding one.
-pub(super) fn install_spill_handler(cache: &MultiLayerCache, block_store: &LocalBlockStore) {
+pub(super) fn install_spill_handler(cache: &MultiLayerCache, block_store: &BlockStore) {
     let block_store = block_store.clone();
-    let hot_record_key = hot_page_record_key();
+    let hot_record_key = hot_block_record_key();
     cache.register_eviction_callback(move |record: CacheEvictionRecord| {
-        spill_evicted_hot_page(&block_store, &hot_record_key, record);
+        spill_evicted_hot_block(&block_store, &hot_record_key, record);
     });
 }
 
-fn spill_evicted_hot_page(
-    block_store: &LocalBlockStore,
+fn spill_evicted_hot_block(
+    block_store: &BlockStore,
     hot_record_key: &str,
     record: CacheEvictionRecord,
 ) {
@@ -107,7 +107,7 @@ fn spill_evicted_hot_page(
     }
     // Write the evicted bytes to a real slab. object_id is not needed for read-by-address
     // (reads resolve on slab+offset+length), so we only preserve the routing bucket.
-    match block_store.append_with_page_metadata(&record.value, None, routing_bucket) {
+    match block_store.append_with_block_metadata(&record.value, None, routing_bucket) {
         Ok(real_address) => {
             if let Ok(mut map) = redirects().lock() {
                 map.insert((shard_id, offset), real_address);

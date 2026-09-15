@@ -53,14 +53,71 @@ class _FakeProc:
         return None
 
 
+#: What the fake instance deliberately leaves out, and why. Everything `__init__` sets that is not
+#: named here must be carried, which is asserted below -- see `TheFakeCarriesWhatTheDaemonHasTest`.
+#:
+#: `_call_proxy` grew a read of `self._http_addr` when the daemon learned to bridge over HTTP. The
+#: fake is built with `__new__`, so it did not gain the attribute, and all three tests here died
+#: with `AttributeError: 'RustProxyDaemon' object has no attribute '_http_addr'` -- which reads as
+#: three failures about queueing and is not about queueing at all.
+_NOT_NEEDED_BY_THE_FAKE = {
+    # Paths and process plumbing the fake never touches: it answers from _FakeProc and writes no
+    # log, and _ensure_proxy is replaced so nothing is ever started.
+    "proxy_path", "socket_path", "log_path", "http_addr_path", "_stop",
+}
+
+
 def _daemon_with_fake_engine():
     """A daemon whose engine is a fake, and which never tries to start a real one."""
     instance = daemon.RustProxyDaemon.__new__(daemon.RustProxyDaemon)
     instance._lock = threading.Lock()
     instance._proc = _FakeProc()
     instance._log_file = None
+    # The stdio transport, which is what _FakeProc is: a pipe with one reader. The HTTP bridge is
+    # the other transport and has no lock to queue behind, so it is not what these tests are about.
+    instance._http_addr = None
     instance._ensure_proxy = lambda: None
     return instance
+
+
+def _real_daemon_attributes():
+    """Every instance attribute `RustProxyDaemon.__init__` sets, with throwaway paths."""
+    import pathlib
+    import tempfile
+
+    directory = pathlib.Path(tempfile.mkdtemp(prefix="matrixark-daemon-attrs-"))
+    real = daemon.RustProxyDaemon(
+        proxy_path=directory / "proxy",
+        socket_path=directory / "sock",
+        log_path=directory / "log",
+    )
+    return set(vars(real))
+
+
+class TheFakeCarriesWhatTheDaemonHasTest(unittest.TestCase):
+    """The fake is built with `__new__`, so a new attribute does not reach it.
+
+    That is not a detail: `__new__` skips `__init__` entirely, so the fake silently lacks whatever
+    the daemon gained since it was written, and the first read of it raises inside a worker thread
+    where the failure arrives as "the queued call never returned". Asserting the attribute SET is
+    how the next one is caught at the point it is added rather than three tests later.
+    """
+
+    def test_the_fake_has_every_attribute_the_daemon_sets(self) -> None:
+        missing = _real_daemon_attributes() - set(vars(_daemon_with_fake_engine()))
+        self.assertEqual(
+            set(), missing - _NOT_NEEDED_BY_THE_FAKE,
+            "RustProxyDaemon.__init__ sets these and the fake does not carry them, so the first "
+            "read of one raises inside a worker thread: %s" % sorted(missing))
+
+    def test_the_omissions_are_still_omissions(self) -> None:
+        """The other direction: an entry that stops being set by __init__ is a stale excuse, and
+        the list would go on explaining an attribute nobody has."""
+        stale = _NOT_NEEDED_BY_THE_FAKE - _real_daemon_attributes()
+        self.assertEqual(
+            set(), stale,
+            "these are recorded as deliberately left out of the fake and __init__ no longer sets "
+            "them at all: %s" % sorted(stale))
 
 
 class QueuedRequestDoesNotOutliveItsCaller(unittest.TestCase):

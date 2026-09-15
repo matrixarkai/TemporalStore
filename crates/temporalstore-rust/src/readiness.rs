@@ -161,20 +161,23 @@ pub struct StorageProductionPostureReport {
     pub rust_storage_lifecycle_behavior_ready: bool,
     #[serde(default)]
     pub rust_storage_lifecycle_behavior_evidence: Vec<String>,
-    pub orphan_page_detection_ready: bool,
-    pub missing_page_ref_detection_ready: bool,
-    pub stale_page_ref_detection_ready: bool,
+    #[serde(rename = "orphan_page_detection_ready")]
+    pub orphan_block_detection_ready: bool,
+    #[serde(rename = "missing_page_ref_detection_ready")]
+    pub missing_block_ref_detection_ready: bool,
+    #[serde(rename = "stale_page_ref_detection_ready")]
+    pub stale_block_ref_detection_ready: bool,
     #[serde(rename = "corrupt_page_index_wal_snapshot_evidence_ready")]
-    pub corrupt_page_index_wal_snapshot_evidence_ready: bool,
+    pub corrupt_block_index_wal_snapshot_evidence_ready: bool,
     pub follower_cursor_safe_gc_ready: bool,
     pub cache_pressure_and_refill_ready: bool,
     pub shared_store_sync_async_replay_ready: bool,
     pub unified_storage_corpus_ready: bool,
     #[serde(rename = "first_class_slot_object_page_index_ready")]
-    pub first_class_bucket_object_page_index_ready: bool,
+    pub first_class_bucket_object_block_index_ready: bool,
     #[serde(default)]
     #[serde(rename = "first_class_slot_object_page_index_evidence")]
-    pub first_class_bucket_object_page_index_evidence: Vec<String>,
+    pub first_class_bucket_object_block_index_evidence: Vec<String>,
     pub native_object_manager_runtime_ready: bool,
     #[serde(default)]
     pub native_object_manager_runtime_evidence: Vec<String>,
@@ -1309,21 +1312,21 @@ mod tests {
             .rust_storage_lifecycle_behavior_evidence
             .iter()
             .any(|item| item.contains("sync and async storage paths")));
-        assert!(report.orphan_page_detection_ready);
-        assert!(report.missing_page_ref_detection_ready);
-        assert!(report.stale_page_ref_detection_ready);
-        assert!(report.corrupt_page_index_wal_snapshot_evidence_ready);
+        assert!(report.orphan_block_detection_ready);
+        assert!(report.missing_block_ref_detection_ready);
+        assert!(report.stale_block_ref_detection_ready);
+        assert!(report.corrupt_block_index_wal_snapshot_evidence_ready);
         assert!(report.follower_cursor_safe_gc_ready);
         assert!(report.cache_pressure_and_refill_ready);
         assert!(report.shared_store_sync_async_replay_ready);
         assert!(report.unified_storage_corpus_ready);
-        assert!(report.first_class_bucket_object_page_index_ready);
+        assert!(report.first_class_bucket_object_block_index_ready);
         assert!(report
-            .first_class_bucket_object_page_index_evidence
+            .first_class_bucket_object_block_index_evidence
             .iter()
             .any(|item| item.contains("ShardState owns slot_objects")));
         assert!(report
-            .first_class_bucket_object_page_index_evidence
+            .first_class_bucket_object_block_index_evidence
             .iter()
             .any(|item| item.contains("BlockAddress carries segment/offset/length")));
         assert!(report.native_object_manager_runtime_ready);

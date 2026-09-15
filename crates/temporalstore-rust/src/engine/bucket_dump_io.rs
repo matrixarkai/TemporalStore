@@ -561,7 +561,7 @@ pub(super) fn bucket_dump_generation_id(manifest: &BucketDumpManifest) -> String
     digest.update(manifest.index_sha256.as_bytes());
     if manifest.version >= 3 {
         digest.update(manifest.object_lifecycle.live_object_ids.to_le_bytes());
-        digest.update(manifest.object_lifecycle.live_page_refs.to_le_bytes());
+        digest.update(manifest.object_lifecycle.live_block_refs.to_le_bytes());
         digest.update(manifest.object_lifecycle.stale_object_ids.to_le_bytes());
         digest.update(
             manifest
@@ -578,13 +578,13 @@ pub(super) fn bucket_dump_generation_id(manifest: &BucketDumpManifest) -> String
         digest.update(
             manifest
                 .object_lifecycle
-                .missing_owner_page_refs
+                .missing_owner_block_refs
                 .to_le_bytes(),
         );
         digest.update(
             manifest
                 .object_lifecycle
-                .owner_mismatch_page_refs
+                .owner_mismatch_block_refs
                 .to_le_bytes(),
         );
         for object_id in &manifest.object_lifecycle.reused_object_ids {

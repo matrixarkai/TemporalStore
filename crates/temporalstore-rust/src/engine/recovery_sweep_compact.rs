@@ -117,7 +117,7 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> Vec<StorageRecoverySlabLiveReport> {
         // Counted by header walk, not `slab_reports()`. That function calls
-        // `decode_page_record` on every record in every slab -- a CRC32C verify and a
+        // `decode_block_record` on every record in every slab -- a CRC32C verify and a
         // decompress each -- which is a full integrity pass over the whole store, and the
         // selection below reads two fields out of it: the slab's size and its block count.
         // Measured at 32,000 records: 12.95 ms against 0.37 ms, 35x, with identical counts.
@@ -132,7 +132,7 @@ impl TemporalEngine {
         // Everything below builds a per-slab live/stale view out of `live_page_refs` and
         // `live_physical_bytes`, and those two are exactly what the shard now keeps a running
         // total of. Taking them from the tally makes this round cost the number of SLABS; walking
-        // for them costs the number of live PAGES, on a loop that ticks every thirty seconds per
+        // for them costs the number of live BLOCKS, on a loop that ticks every thirty seconds per
         // shard for the life of the process.
         //
         // The fallback is not decoration. A shard whose tally has never been derived reports
@@ -152,7 +152,7 @@ impl TemporalEngine {
             Some(_) => Vec::new(),
             None => shards
                 .get(&shard_id)
-                .map(collect_live_page_addresses)
+                .map(collect_live_block_addresses)
                 .unwrap_or_default(),
         };
         let mut reports = block_slab_counts
@@ -178,7 +178,7 @@ impl TemporalEngine {
                             block_slab_id,
                             ..StorageRecoverySlabLiveReport::default()
                         });
-                slab_report.live_page_refs = tally.page_refs;
+                slab_report.live_block_refs = tally.block_refs;
                 slab_report.live_physical_bytes = tally.bytes;
             }
         }
@@ -191,7 +191,7 @@ impl TemporalEngine {
                     ..StorageRecoverySlabLiveReport::default()
                 },
             );
-            slab_report.live_page_refs = slab_report.live_page_refs.saturating_add(1);
+            slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
             slab_report.live_physical_bytes = slab_report
                 .live_physical_bytes
                 .saturating_add(address.length);
@@ -211,12 +211,12 @@ impl TemporalEngine {
         reports
             .into_values()
             .map(|mut report| {
-                report.stale_page_estimate =
-                    report.page_count.saturating_sub(report.live_page_refs);
+                report.stale_block_estimate =
+                    report.page_count.saturating_sub(report.live_block_refs);
                 report.live_ref_density_basis_points = if report.page_count == 0 {
                     0
                 } else {
-                    report.live_page_refs.saturating_mul(10_000) / report.page_count
+                    report.live_block_refs.saturating_mul(10_000) / report.page_count
                 };
                 report
             })
@@ -250,11 +250,11 @@ impl TemporalEngine {
     }
 
     #[cfg(test)]
-    pub(crate) fn live_page_count_for_test(&self, shard_id: ShardId) -> usize {
+    pub(crate) fn live_block_count_for_test(&self, shard_id: ShardId) -> usize {
         let shards = self.shards.read().expect("engine lock poisoned");
         shards
             .get(&shard_id)
-            .map(|shard| collect_live_page_addresses(shard).len())
+            .map(|shard| collect_live_block_addresses(shard).len())
             .unwrap_or_default()
     }
 
@@ -272,8 +272,8 @@ impl TemporalEngine {
         // ONE walk, three consumers.
         //
         // This used to walk the shard THREE times over identical, immutable state: once inside
-        // `validate_shard_page_ownership`, once inside `storage_object_lifecycle_report`, and once
-        // in `collect_live_page_addresses`. Each call to `collect_live_page_entries` materializes
+        // `validate_shard_block_ownership`, once inside `storage_object_lifecycle_report`, and once
+        // in `collect_live_block_addresses`. Each call to `collect_live_block_entries` materializes
         // every live page in the shard into a fresh Vec, and measured at 4,000 objects this single
         // function accounted for 3.0x the shard -- the largest piece of `apply_storage_lifecycle`,
         // itself 12.0x (`what_each_plan_call_walks`).
@@ -285,7 +285,7 @@ impl TemporalEngine {
         //
         // Order matters only because the report CONSUMES the entries: borrow for the two cheap
         // derivations first, then hand the Vec over last.
-        let entries = collect_live_page_entries(shard);
+        let entries = collect_live_block_entries(shard);
 
         let (start_routing_bucket, end_routing_bucket) = self
             .infos
@@ -305,9 +305,9 @@ impl TemporalEngine {
         // stale_object_ids is the per-slab shortfall of live refs against the slab's own page
         // count, summed. An address naming a slab the store has no report for contributes
         // nothing (the report path gives it page_count 0, so its shortfall saturates to 0).
-        let mut live_page_refs_by_slab = BTreeMap::<u64, u64>::new();
+        let mut live_block_refs_by_slab = BTreeMap::<u64, u64>::new();
         for entry in &entries {
-            *live_page_refs_by_slab
+            *live_block_refs_by_slab
                 .entry(entry.address.block_slab_id)
                 .or_default() += 1;
         }
@@ -319,13 +319,13 @@ impl TemporalEngine {
             &BTreeSet::new(),
             |_| 0,
         );
-        report.owner_mismatch_page_refs = ownership.mismatches.len() as u64;
-        report.missing_owner_page_refs = ownership.missing_owner_page_refs as u64;
+        report.owner_mismatch_block_refs = ownership.mismatches.len() as u64;
+        report.missing_owner_block_refs = ownership.missing_owner_block_refs as u64;
         report.stale_object_ids = block_slab_counts
             .iter()
             .map(|(block_slab_id, _physical_bytes, block_count)| {
                 block_count.saturating_sub(
-                    live_page_refs_by_slab
+                    live_block_refs_by_slab
                         .get(block_slab_id)
                         .copied()
                         .unwrap_or_default(),
@@ -394,9 +394,9 @@ impl TemporalEngine {
         let shards = self.shards_read_marked();
         let addresses = shards
             .get(&shard_id)
-            .map(collect_live_page_addresses)
+            .map(collect_live_block_addresses)
             .unwrap_or_default();
-        let total_page_refs = addresses.len();
+        let total_block_refs = addresses.len();
         // WHERE this call reads, not just how much.
         //
         // A bounded call used to read `addresses[0 .. limit]` and nothing else, every round. The
@@ -412,21 +412,21 @@ impl TemporalEngine {
         // The position is clamped rather than trusted: the live-page vector is rebuilt each
         // round and can shrink (compaction, eviction, expiry), and a stale index past its end
         // would otherwise skip the whole round.
-        let probe_window_start = if readable_probe_limit > 0 && total_page_refs > 0 {
+        let probe_window_start = if readable_probe_limit > 0 && total_block_refs > 0 {
             self.recovery_probe_cursors
                 .read()
                 .expect("recovery probe cursor lock poisoned")
                 .get(&shard_id)
                 .copied()
-                .filter(|start| *start < total_page_refs)
+                .filter(|start| *start < total_block_refs)
                 .unwrap_or(0)
         } else {
             0
         };
         let probe_window_len = if readable_probe_limit == 0 {
-            total_page_refs
+            total_block_refs
         } else {
-            readable_probe_limit.min(total_page_refs)
+            readable_probe_limit.min(total_block_refs)
         };
         // Whether index `position` falls in the window `[start, start + len)` taken modulo the
         // live-page count. Written as a distance from the start so the wrap needs no second
@@ -435,23 +435,23 @@ impl TemporalEngine {
             if probe_window_len == 0 {
                 return false;
             }
-            if probe_window_len >= total_page_refs {
+            if probe_window_len >= total_block_refs {
                 return true;
             }
             let distance = if position >= probe_window_start {
                 position - probe_window_start
             } else {
-                position + total_page_refs - probe_window_start
+                position + total_block_refs - probe_window_start
             };
             distance < probe_window_len
         };
-        let mut readable_page_refs = 0usize;
-        let mut probed_page_refs = 0usize;
-        let mut unreadable_page_refs = Vec::new();
-        let mut owner_mismatch_page_refs = Vec::new();
-        let mut missing_owner_page_refs = 0usize;
+        let mut readable_block_refs = 0usize;
+        let mut probed_block_refs = 0usize;
+        let mut unreadable_block_refs = Vec::new();
+        let mut owner_mismatch_block_refs = Vec::new();
+        let mut missing_owner_block_refs = 0usize;
         let mut object_lifecycle = StorageObjectLifecycleReport::default();
-        let mut feature_page_layout = StorageFeaturePageLayoutReport::default();
+        let mut feature_block_layout = StorageFeatureBlockLayoutReport::default();
         let mut block_slab_live_reports = block_slab_reports
             .iter()
             .map(|report| {
@@ -476,7 +476,7 @@ impl TemporalEngine {
                     block_slab_id: address.block_slab_id,
                     ..StorageRecoverySlabLiveReport::default()
                 });
-            slab_report.live_page_refs = slab_report.live_page_refs.saturating_add(1);
+            slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
             slab_report.live_physical_bytes = slab_report
                 .live_physical_bytes
                 .saturating_add(address.length);
@@ -504,25 +504,25 @@ impl TemporalEngine {
             if !in_probe_window(position) {
                 continue;
             }
-            probed_page_refs += 1;
+            probed_block_refs += 1;
             // Counted against the shard-table guard. This probe DOES read under the read guard,
             // and unlike the warm-up it is bounded -- `readable_probe_limit` stops the reads
             // while the per-slab tallies above keep going. Routed through the counter so the
             // measurement covers both of the engine's maintenance page readers and a claim about
             // one of them is made against a total that includes the other.
-            match self.read_page_counted(address) {
+            match self.read_block_counted(address) {
                 Ok(bytes) => {
-                    readable_page_refs += 1;
-                    slab_report.readable_live_page_refs =
-                        slab_report.readable_live_page_refs.saturating_add(1);
+                    readable_block_refs += 1;
+                    slab_report.readable_live_block_refs =
+                        slab_report.readable_live_block_refs.saturating_add(1);
                     slab_report.live_logical_bytes = slab_report
                         .live_logical_bytes
                         .saturating_add(bytes.len() as u64);
                 }
                 Err(err) => {
-                    slab_report.unreadable_live_page_refs =
-                        slab_report.unreadable_live_page_refs.saturating_add(1);
-                    unreadable_page_refs.push(StorageRecoveryPageError {
+                    slab_report.unreadable_live_block_refs =
+                        slab_report.unreadable_live_block_refs.saturating_add(1);
+                    unreadable_block_refs.push(StorageRecoveryBlockError {
                         block_slab_id: address.block_slab_id,
                         offset: address.offset,
                         length: address.length,
@@ -532,30 +532,30 @@ impl TemporalEngine {
             }
         }
         if let Some(shard) = shards.get(&shard_id) {
-            let ownership = self.validate_shard_page_ownership(shard_id, shard);
-            owner_mismatch_page_refs = ownership.mismatches;
-            missing_owner_page_refs = ownership.missing_owner_page_refs;
+            let ownership = self.validate_shard_block_ownership(shard_id, shard);
+            owner_mismatch_block_refs = ownership.mismatches;
+            missing_owner_block_refs = ownership.missing_owner_block_refs;
             object_lifecycle = storage_object_lifecycle_report(shard_id, shard);
-            object_lifecycle.owner_mismatch_page_refs = owner_mismatch_page_refs.len() as u64;
-            object_lifecycle.missing_owner_page_refs = missing_owner_page_refs as u64;
-            feature_page_layout = storage_feature_page_layout_report(&self.page_store, shard);
+            object_lifecycle.owner_mismatch_block_refs = owner_mismatch_block_refs.len() as u64;
+            object_lifecycle.missing_owner_block_refs = missing_owner_block_refs as u64;
+            feature_block_layout = storage_feature_block_layout_report(&self.page_store, shard);
         }
         let block_slab_live_reports = block_slab_live_reports
             .into_values()
             .map(|mut report| {
-                report.stale_page_estimate =
-                    report.page_count.saturating_sub(report.live_page_refs);
+                report.stale_block_estimate =
+                    report.page_count.saturating_sub(report.live_block_refs);
                 report.live_ref_density_basis_points = if report.page_count == 0 {
                     0
                 } else {
-                    report.live_page_refs.saturating_mul(10_000) / report.page_count
+                    report.live_block_refs.saturating_mul(10_000) / report.page_count
                 };
                 report
             })
             .collect::<Vec<_>>();
         object_lifecycle.stale_object_ids = block_slab_live_reports
             .iter()
-            .map(|report| report.stale_page_estimate)
+            .map(|report| report.stale_block_estimate)
             .sum();
         let mut live_block_slab_ids = addresses
             .iter()
@@ -574,8 +574,8 @@ impl TemporalEngine {
         // Only bounded callers write it, for the reason on the field itself: an unbounded call
         // has already read the whole shard, and moving the position would make the periodic
         // loop skip a window it had not covered.
-        if readable_probe_limit > 0 && total_page_refs > 0 {
-            let next = (probe_window_start + probe_window_len) % total_page_refs;
+        if readable_probe_limit > 0 && total_block_refs > 0 {
+            let next = (probe_window_start + probe_window_len) % total_block_refs;
             self.recovery_probe_cursors
                 .write()
                 .expect("recovery probe cursor lock poisoned")
@@ -593,21 +593,21 @@ impl TemporalEngine {
             slab_summary,
             block_slab_reports,
             block_slab_live_reports,
-            total_page_refs,
-            readable_page_refs,
-            probed_page_refs,
+            total_block_refs,
+            readable_block_refs,
+            probed_block_refs,
             readable_probe_cursor: probe_window_start,
-            unreadable_page_refs,
-            owner_mismatch_page_refs,
-            missing_owner_page_refs,
+            unreadable_block_refs,
+            owner_mismatch_block_refs,
+            missing_owner_block_refs,
             object_lifecycle,
             // Against what was PROBED, not against every live page. With a sample budget the
             // two differ, and reading it as "every page is readable" when only some were tried
             // is exactly the false assurance this field exists to avoid.
-            all_live_pages_readable: probed_page_refs == readable_page_refs,
+            all_live_blocks_readable: probed_block_refs == readable_block_refs,
             boundary: StorageRecoveryBoundaryReport::default(),
             slab_integrity: StorageSlabIntegrityReport::default(),
-            feature_page_layout,
+            feature_block_layout,
         }
     }
 
@@ -636,7 +636,7 @@ impl TemporalEngine {
             ready_shards = ready_shards.saturating_add(1);
             for (block_slab_id, tally) in shard.bucket_index.block_slab_live.iter() {
                 let entry = live.entry(block_slab_id).or_default();
-                entry.live_page_refs = entry.live_page_refs.saturating_add(tally.page_refs);
+                entry.live_block_refs = entry.live_block_refs.saturating_add(tally.block_refs);
                 entry.live_bytes = entry.live_bytes.saturating_add(tally.bytes);
             }
         }
@@ -644,7 +644,7 @@ impl TemporalEngine {
             return ready_shards;
         }
         drop(shards);
-        self.page_store.publish_live_page_bytes(live);
+        self.page_store.publish_live_block_bytes(live);
         ready_shards
     }
 
@@ -696,7 +696,7 @@ impl TemporalEngine {
                 .bucket_index
                 .block_slab_live
                 .iter()
-                .map(|(block_slab_id, tally)| (block_slab_id, tally.page_refs, tally.bytes))
+                .map(|(block_slab_id, tally)| (block_slab_id, tally.block_refs, tally.bytes))
                 .collect(),
         )
     }
@@ -932,11 +932,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         //
                         // `mark_bucket_index_object_deleted` has already run for each of these
                         // keys, and it retains every page carrying the key OUT of every bucket
-                        // that holds one -- the buckets come from `object_page_refs` across every
+                        // that holds one -- the buckets come from `object_block_refs` across every
                         // model kind, or from the whole bucket map when the lookup is not
                         // established. So by the time this record is built there is no page left
                         // to describe, and an empty item list against a covered key is exactly
-                        // how the fold spells a removal: `fold_delta_page_items` wipes every page
+                        // how the fold spells a removal: `fold_delta_block_items` wipes every page
                         // of every covered key and then restores the items carried, which is
                         // none.
                         //
@@ -1039,11 +1039,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .collect()
     }
 
-    pub(super) fn validate_shard_page_ownership(
+    pub(super) fn validate_shard_block_ownership(
         &self,
         shard_id: ShardId,
         shard: &ShardState,
-    ) -> StoragePageOwnershipValidation {
+    ) -> StorageBlockOwnershipValidation {
         let (start_routing_bucket, end_routing_bucket) = self
             .infos
             .read()
@@ -1059,7 +1059,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
     /// Takes the reclaim candidates rather than computing them, because every caller already has
     /// a lifecycle plan holding them and recomputing means another whole-shard walk.
     ///
-    /// NOT what `compact_shard_pages` consults. A direct compaction -- the operator RPC, the
+    /// NOT what `compact_shard_blocks` consults. A direct compaction -- the operator RPC, the
     /// on-demand cycle, and the suite -- is an instruction, not a suggestion, and still relocates
     /// everything. This is what the PERIODIC loop asks before deciding to issue one.
     pub fn compaction_relocation_hint(
@@ -1077,27 +1077,27 @@ fn expiry_scan_budget(limit: usize) -> usize {
         compaction_relocation_hint_per_object(shard_id, shard, reclaim_candidates)
     }
 
-    pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
-        self.compact_shard_pages_with_budgets(
+    pub fn compact_shard_blocks(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
+        self.compact_shard_blocks_with_budgets(
             shard_id,
             COMPACTION_ROUND_BYTES,
-            COMPACTION_ROUND_PAGE_REFS,
+            COMPACTION_ROUND_BLOCK_REFS,
         )
     }
 
     /// Compact, relocating ONLY the pages that sit on `drain_block_slab_ids`.
     ///
     /// This is what the PERIODIC loop issues, and it is the round the relocation hint describes.
-    /// `compact_shard_pages` above relocates every live page, which is what a direct
+    /// `compact_shard_blocks` above relocates every live page, which is what a direct
     /// instruction has always meant -- but for the loop that is far more work than the result
     /// needs. A relocation recovers space only for the slab it VACATES:
-    /// `compact_page_addresses` copies a page's bytes verbatim and appends them elsewhere, so
+    /// `compact_block_addresses` copies a page's bytes verbatim and appends them elsewhere, so
     /// a page moved off a slab with no dead space comes out byte for byte what it went in as, on
     /// a slab that is now the one carrying the dead space. The live bytes are unchanged and there
     /// is one more emptied slab for the collector to destroy.
     ///
     /// So a single overwritten record anywhere in the shard used to cost a rewrite of the WHOLE
-    /// live set, spread over `live_page_refs / COMPACTION_ROUND_PAGE_REFS` rounds of shard
+    /// live set, spread over `live_page_refs / COMPACTION_ROUND_BLOCK_REFS` rounds of shard
     /// write lock, to recover one page. Naming the drain set bounds the work by the size of the
     /// holed slabs instead of by the size of the store.
     ///
@@ -1105,15 +1105,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
     /// the maintenance round has already built, and it is the SAME plan the round's gate consults
     /// -- so what the round is allowed to move and what it was started for now come from one
     /// snapshot instead of two.
-    pub fn compact_shard_pages_draining(
+    pub fn compact_shard_blocks_draining(
         &self,
         shard_id: ShardId,
         drain_block_slab_ids: BTreeSet<u64>,
     ) -> Result<ShardCompactionReport, Status> {
-        self.compact_shard_pages_relocating(
+        self.compact_shard_blocks_relocating(
             shard_id,
             COMPACTION_ROUND_BYTES,
-            COMPACTION_ROUND_PAGE_REFS,
+            COMPACTION_ROUND_BLOCK_REFS,
             Some(drain_block_slab_ids),
         )
     }
@@ -1129,32 +1129,32 @@ fn expiry_scan_budget(limit: usize) -> usize {
     ///
     /// This is what the byte-budget probe measures and what every existing caller wants: adding
     /// a ref bound here would silently change what those measurements mean.
-    pub(crate) fn compact_shard_pages_with_budget(
+    pub(crate) fn compact_shard_blocks_with_budget(
         &self,
         shard_id: ShardId,
         budget_bytes: u64,
     ) -> Result<ShardCompactionReport, Status> {
-        self.compact_shard_pages_with_budgets(shard_id, budget_bytes, usize::MAX)
+        self.compact_shard_blocks_with_budgets(shard_id, budget_bytes, usize::MAX)
     }
 
-    pub(crate) fn compact_shard_pages_with_budgets(
+    pub(crate) fn compact_shard_blocks_with_budgets(
         &self,
         shard_id: ShardId,
         budget_bytes: u64,
-        budget_page_refs: usize,
+        budget_block_refs: usize,
     ) -> Result<ShardCompactionReport, Status> {
-        self.compact_shard_pages_relocating(shard_id, budget_bytes, budget_page_refs, None)
+        self.compact_shard_blocks_relocating(shard_id, budget_bytes, budget_block_refs, None)
     }
 
     /// The round itself. `drain_block_slab_ids` is `None` for "every live page" -- a
     /// direct instruction -- and `Some` for "only the slabs named", which is what the
     /// periodic loop asks for. Everything else about a round is identical either way, so the two
     /// share one body and one set of rules about resuming, budgets and the write guard.
-    fn compact_shard_pages_relocating(
+    fn compact_shard_blocks_relocating(
         &self,
         shard_id: ShardId,
         budget_bytes: u64,
-        budget_page_refs: usize,
+        budget_block_refs: usize,
         drain_block_slab_ids: Option<BTreeSet<u64>>,
     ) -> Result<ShardCompactionReport, Status> {
         let (start_routing_bucket, end_routing_bucket) = self
@@ -1171,7 +1171,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // ONE walk for the preamble's live-page consumers.
         //
         // Before any budget is consulted, this stage builds several whole-shard reports, and each
-        // one called `collect_live_page_entries` for its own copy -- measured by
+        // one called `collect_live_block_entries` for its own copy -- measured by
         // `what_the_compaction_preamble_walks` as 5.0x the shard. All of them run under the same
         // WRITE lock on an unchanged `&ShardState`, so every read and write on the shard queues
         // behind the lot. Three of them take the same live-page set and now share one walk.
@@ -1183,7 +1183,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         //
         // Order is forced by the last consumer taking the Vec BY VALUE: the two that borrow go
         // first, so nothing is cloned.
-        let entries = collect_live_page_entries(shard);
+        let entries = collect_live_block_entries(shard);
         let ownership = validate_bucket_ownership_index_from_entries(
             shard_id,
             shard,
@@ -1243,13 +1243,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
             Some(drain_block_slab_ids) => CompactionRewriteStats::for_drain_round(
                 target_block_slab_id,
                 budget_bytes,
-                budget_page_refs,
+                budget_block_refs,
                 drain_block_slab_ids,
             ),
             None => CompactionRewriteStats::for_round(
                 target_block_slab_id,
                 budget_bytes,
-                budget_page_refs,
+                budget_block_refs,
             ),
         };
 
@@ -1258,7 +1258,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // consistent partial state instead of leaving the volatile index half-advanced but
         // unpersisted -- see the `if let Err(err)` handler after this block for why.
         let relocation_result: Result<(), Status> = (|| {
-        compact_page_addresses(
+        compact_block_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
@@ -1267,7 +1267,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             &mut rewrite_stats,
         )?;
         for fields in shard.hashes.values_mut() {
-            compact_page_addresses(
+            compact_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1277,7 +1277,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for members in shard.zsets.values_mut() {
-            compact_page_addresses(
+            compact_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1287,7 +1287,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for elements in shard.lists.values_mut() {
-            compact_page_addresses(
+            compact_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1297,7 +1297,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for members in shard.sets.values_mut() {
-            compact_page_addresses(
+            compact_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1307,7 +1307,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for series in shard.features.values_mut() {
-            compact_feature_page_addresses(
+            compact_feature_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1316,15 +1316,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        compact_page_addresses(
+        compact_block_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
             "control_state",
-            shard.control_state_pages.values_mut(),
+            shard.control_state_blocks.values_mut(),
             &mut rewrite_stats,
         )?;
-        compact_page_addresses(
+        compact_block_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
@@ -1333,7 +1333,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             &mut rewrite_stats,
         )?;
         for series in shard.context_events.values_mut() {
-            compact_feature_page_addresses(
+            compact_feature_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1343,7 +1343,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for series in shard.context_indexes.values_mut() {
-            compact_feature_page_addresses(
+            compact_feature_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1353,7 +1353,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for series in shard.context_audits.values_mut() {
-            compact_feature_page_addresses(
+            compact_feature_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1363,7 +1363,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for series in shard.context_children.values_mut() {
-            compact_feature_page_addresses(
+            compact_feature_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1373,7 +1373,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for series in shard.context_summaries.values_mut() {
-            compact_feature_page_addresses(
+            compact_feature_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1383,7 +1383,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for series in shard.context_compressions.values_mut() {
-            compact_feature_page_addresses(
+            compact_feature_block_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
@@ -1392,7 +1392,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        compact_page_addresses(
+        compact_block_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
@@ -1422,7 +1422,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // complete (a later run retries the not-yet-moved pages).
             rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
             refresh_bucket_runtime_flags(shard);
-            rebuild_bucket_page_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+            rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
             self.page_store.sync_durable().map_err(|barrier| {
                 Status::error(
                     "page_compaction_failed",
@@ -1457,7 +1457,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         refresh_bucket_runtime_flags(shard);
         let after_slabs = collect_live_block_slab_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
-        rebuild_bucket_page_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+        rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let delete_marked_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).delete_marked_object_ids;
         let object_manager_after =
@@ -1486,7 +1486,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .filter(|policy| policy.layout_aware_rewrite_required)
             .count();
         // Durability barrier BEFORE publishing the base index that names the relocated pages.
-        // Under deferred-fsync modes (bulk / page_wal_single_barrier -> append.rs
+        // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
         // defer_data_sync) compaction relocates pages fsync-deferred, so the moved
         // bytes may still be in the page cache. Persisting a base index that references them
         // and crashing before the next barrier would leave dangling references at an un-synced
@@ -1529,7 +1529,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         self.persist_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
-        let rewritten_object_pages = rewrite_stats.rewritten_page_refs;
+        let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
         let bucket_layout_transition_count =
             bucket_layout_transition_count_after.saturating_sub(bucket_layout_transition_count_before);
         let has_model_layouts = !model_layouts_before.is_empty();
@@ -1541,7 +1541,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 .iter()
                 .any(|state| state.object_count > 0);
         let mut model_layout_compaction_blockers = Vec::new();
-        if rewritten_object_pages == 0 {
+        if rewritten_object_blocks == 0 {
             model_layout_compaction_blockers.push("no live page refs were rewritten".to_string());
         }
         if !has_model_layouts {
@@ -1575,16 +1575,16 @@ fn expiry_scan_budget(limit: usize) -> usize {
             model_layout_compaction_blockers,
             previous_block_slab_id,
             compacted_block_slab_id: target_block_slab_id,
-            pages_left_by_budget: rewrite_stats.skipped_by_budget,
+            blocks_left_by_budget: rewrite_stats.skipped_by_budget,
             bytes_left_by_budget: rewrite_stats.skipped_by_budget_bytes,
-            pages_left_off_drain_set: rewrite_stats.skipped_off_drain_set,
-            rewritten_page_refs: rewrite_stats.rewritten_page_refs,
+            blocks_left_off_drain_set: rewrite_stats.skipped_off_drain_set,
+            rewritten_block_refs: rewrite_stats.rewritten_block_refs,
             relocated_bytes: rewrite_stats.relocated_bytes,
-            cold_page_rewrite_refs: rewrite_stats.cold_page_rewrite_refs,
-            object_page_pack_group_count: before
+            cold_block_rewrite_refs: rewrite_stats.cold_block_rewrite_refs,
+            object_block_pack_group_count: before
                 .model_policies
                 .iter()
-                .map(|policy| policy.object_page_pack_group_count as usize)
+                .map(|policy| policy.object_block_pack_group_count as usize)
                 .sum(),
             stale_block_slab_ids,
             reclaimable_stale_block_slab_count,
@@ -1593,7 +1593,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             stale_density_policy_model_count,
             layout_aware_policy_model_count,
             model_rewrite_policies: rewrite_stats.into_reports(&before),
-            rewritten_object_pages,
+            rewritten_object_blocks,
             bucket_layout_transition_count,
             bucket_layout_states_after,
             delete_marked_object_ids_before,

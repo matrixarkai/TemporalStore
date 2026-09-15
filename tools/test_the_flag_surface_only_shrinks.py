@@ -86,7 +86,19 @@ _IDENTITY = re.compile(
 #: flags nothing sets, and 36 of those were the last read of their variable. Banked here in the
 #: same breath, because a ratchet that does not bank a reduction is the reduction nobody can see
 #: was made, and the check below refuses a ceiling left drifting above the truth.
-MAXIMUM_FLAGS_READ = 536
+#:
+#: 538 since matrixarkai#1753, which wired the proxy daemon's HTTP bridge. Three names arrived
+#: with it and they are the switch, its address and its concurrency:
+#:
+#:   MATRIXARK_PROXY_DAEMON_HTTP           starts the proxy in HTTP mode instead of on the stdio
+#:                                         pipe, which is what removes the single lock every
+#:                                         caller queues behind
+#:   MATRIXARK_PROXY_DAEMON_HTTP_ADDR      where it binds, so both transports can run on one box
+#:   MATRIXARK_RUST_PROXY_HTTP_CONCURRENT  how many requests that mode serves at once
+#:
+#: Raised deliberately and said out loud, which is what the failure message asks for. The switch
+#: is the one that decides; the other two are only meaningful once it is on.
+MAXIMUM_FLAGS_READ = 538
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
