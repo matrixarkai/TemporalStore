@@ -27,16 +27,16 @@ impl DataNodeRuntime {
                 max_dump_buckets_per_round: options.max_dump_buckets_per_round,
                 min_undumped_wal_records: options.min_undumped_wal_records,
                 min_undumped_wal_bytes: options.min_undumped_wal_bytes,
-                purge_delayed_destroy: options.enable_page_gc,
+                purge_delayed_destroy: options.enable_block_gc,
                 purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: options.enable_index_gc,
                 roll_forward_bucket_dump_installs: options.enable_index_gc,
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                page_gc_checkpoint_floor_slab_id: None,
-                page_gc_raft_install_floor_slab_id: None,
-                page_gc_delayed_destroy_grace_ms: 0,
+                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                block_gc_checkpoint_floor_slab_id: None,
+                block_gc_raft_install_floor_slab_id: None,
+                block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             });
@@ -80,7 +80,7 @@ impl DataNodeRuntime {
                 bucket_index_resident_bytes,
                 eviction_memory_pressure_bytes,
                 memory_cache_pressure_score: eviction_memory_pressure_bytes,
-                live_page_summaries_measured: plan.bucket_summaries.is_some(),
+                live_block_summaries_measured: plan.bucket_summaries.is_some(),
                 // 0 when the round did not walk. The flag above is what says which 0 this is.
                 expired_bucket_object_scan_debt: plan
                     .bucket_summaries
@@ -133,7 +133,7 @@ impl DataNodeRuntime {
             // Pre-allocate the next data slab so a client append never has to roll inline.
             //
             // Rolling costs several fsyncs plus a slab-directory scan (see
-            // LocalBlockStore::prepare_next_slab). Left to the write path it lands on one
+            // BlockStore::prepare_next_slab). Left to the write path it lands on one
             // unlucky write as a latency outlier unrelated to that write's size. Doing it
             // here -- the stage that already exists and is already named "prepare" -- is what
             // this design does with PrepareNewZone in the same position of
@@ -198,7 +198,7 @@ impl DataNodeRuntime {
         let cache_pressure = pressure.cache_memory_bytes
             >= options.cache_memory_bytes_pressure.max(1)
             || pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1);
-        let stale_page_pressure = pressure.stale_block_slab_count
+        let stale_block_pressure = pressure.stale_block_slab_count
             >= options.stale_block_slab_pressure.max(1)
             || pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1)
             || pressure.reclaimable_physical_bytes
@@ -242,11 +242,11 @@ impl DataNodeRuntime {
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                page_gc_checkpoint_floor_slab_id: None,
-                page_gc_raft_install_floor_slab_id: None,
-                page_gc_delayed_destroy_grace_ms: 0,
+                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                block_gc_checkpoint_floor_slab_id: None,
+                block_gc_raft_install_floor_slab_id: None,
+                block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             });
@@ -277,9 +277,9 @@ impl DataNodeRuntime {
             // which is the other implementation of these stages -- at most
             // `max_dump_buckets_per_round` per pass, oldest first. This is the copy that runs on a
             // timer, so it is the one that decides whether an IDLE shard ever becomes reclaimable.
-            let resident = self.inner.engine.wal_resident_page_count(shard_id);
+            let resident = self.inner.engine.wal_resident_block_count(shard_id);
             if resident > 0 {
-                let moved = self.inner.engine.materialize_oldest_resident_pages(
+                let moved = self.inner.engine.materialize_oldest_resident_blocks(
                     shard_id,
                     resident.saturating_sub(if options.max_dump_buckets_per_round == 0 {
                         usize::MAX
@@ -561,11 +561,11 @@ impl DataNodeRuntime {
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                page_gc_checkpoint_floor_slab_id: None,
-                page_gc_raft_install_floor_slab_id: None,
-                page_gc_delayed_destroy_grace_ms: 0,
+                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                block_gc_checkpoint_floor_slab_id: None,
+                block_gc_raft_install_floor_slab_id: None,
+                block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: true,
                 warm_cache: false,
             });
@@ -617,7 +617,7 @@ impl DataNodeRuntime {
         ));
 
 
-        if options.enable_page_gc && stale_page_pressure {
+        if options.enable_block_gc && stale_block_pressure {
             // The floor is a MIN over the stale slabs, so a stale slab that can never be deleted
             // freezes it -- and one always can be. `run_gc_inner` treats every slab named by a
             // bucket dump manifest as live, so the moment a dump exists, the slab it names is
@@ -674,11 +674,11 @@ impl DataNodeRuntime {
                     // generously there was nothing left to recover from. The prepare stage passes
                     // `purge_delayed_destroy` whenever page GC is on, so quarantined slabs are
                     // still collected -- an hour later, not never.
-                    page_gc_delayed_destroy: true,
+                    block_gc_delayed_destroy: true,
                     // This stage ran every round page pressure held, and each run emptied the
                     // shard's cache outright -- memory, pmem and disk tiers alike -- however few
                     // slabs it went on to reclaim. Invalidate what was reclaimed instead.
-                    page_gc_invalidate_removed_slabs_only: true,
+                    block_gc_invalidate_removed_slabs_only: true,
                 },
             );
             if !response.status.ok {
@@ -689,18 +689,18 @@ impl DataNodeRuntime {
                 .stats
                 .lock()
                 .expect("runtime stats lock poisoned")
-                .storage_manager_reclaim_page_runs += 1;
+                .storage_manager_reclaim_block_runs += 1;
             executed_stages.push("reclaim_page".to_string());
-        } else if !options.enable_page_gc {
+        } else if !options.enable_block_gc {
             skipped_stages.push("reclaim_page_disabled".to_string());
         } else {
             skipped_stages.push("reclaim_page_no_pressure".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
             "reclaim_page",
-            options.enable_page_gc,
-            stale_page_pressure,
-            options.enable_page_gc && stale_page_pressure,
+            options.enable_block_gc,
+            stale_block_pressure,
+            options.enable_block_gc && stale_block_pressure,
             vec![
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
@@ -734,8 +734,8 @@ impl DataNodeRuntime {
                 ),
             ]),
             storage_manager_skip_reason(
-                options.enable_page_gc,
-                stale_page_pressure,
+                options.enable_block_gc,
+                stale_block_pressure,
                 "reclaim_page",
             ),
         ));
@@ -779,11 +779,11 @@ impl DataNodeRuntime {
                 // dump -- loses the thing it would have restored from, and unlike a reclaimed log
                 // record nothing regenerates it.
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                page_gc_shared_store_cursors: Vec::new(),
-                page_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                page_gc_checkpoint_floor_slab_id: None,
-                page_gc_raft_install_floor_slab_id: None,
-                page_gc_delayed_destroy_grace_ms: 0,
+                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                block_gc_checkpoint_floor_slab_id: None,
+                block_gc_raft_install_floor_slab_id: None,
+                block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             };
@@ -879,9 +879,9 @@ impl DataNodeRuntime {
         // earlier cannot collect them any sooner; it only stops them from being written until
         // after it has finished. Neither order is unsafe and neither collects more.
         // WHAT WOULD THIS ROUND RELOCATE? Asked before issuing a compaction, and not the same
-        // question as `stale_page_pressure`.
+        // question as `stale_block_pressure`.
         //
-        // `stale_page_pressure` counts reclaim candidates, and a candidate is any slab carrying
+        // `stale_block_pressure` counts reclaim candidates, and a candidate is any slab carrying
         // dead space. That lumps together the slab compaction must empty and the slab compaction
         // has ALREADY emptied -- and the second is its own residue: a round relocates a slab's
         // live pages onto a fresh one, and the vacated slab stays a candidate until the collector
@@ -900,9 +900,9 @@ impl DataNodeRuntime {
         // the shard's staleness, and the shard is stale either way.
         //
         // Costs no walk: `live_page_refs` per candidate is already in the plan this round built.
-        let compaction_relocatable_page_refs =
-            crate::engine::compaction_relocatable_page_refs(&lifecycle_plan.reclaim_candidates);
-        let compaction_has_work = compaction_relocatable_page_refs > 0;
+        let compaction_relocatable_block_refs =
+            crate::engine::compaction_relocatable_block_refs(&lifecycle_plan.reclaim_candidates);
+        let compaction_has_work = compaction_relocatable_block_refs > 0;
         // AND THE ROUND MOVES THAT, AND NOT THE REST OF THE SHARD.
         //
         // The count above and the set below are the same answer read two ways off the same plan:
@@ -914,7 +914,7 @@ impl DataNodeRuntime {
         // to recover that one page.
         //
         // Relocating a page off a slab that carries no dead space recovers nothing.
-        // `compact_page_addresses` copies its bytes verbatim, so it lands byte for byte what
+        // `compact_block_addresses` copies its bytes verbatim, so it lands byte for byte what
         // it was, on a slab that is now the one carrying the dead space -- same live bytes, one
         // more emptied slab for the collector, one more share of an index record.
         //
@@ -942,9 +942,9 @@ impl DataNodeRuntime {
         // compaction off on every single-node store in the world, silently.
         let leadership = self.shard_leadership(shard_id);
         let leadership_permits_compaction = !leadership.is_known_not_leading();
-        if options.enable_page_compaction
+        if options.enable_block_compaction
             && leadership_permits_compaction
-            && stale_page_pressure
+            && stale_block_pressure
             && compaction_has_work
         {
             let response = run_compaction_inner_draining(
@@ -962,27 +962,27 @@ impl DataNodeRuntime {
                 .expect("runtime stats lock poisoned")
                 .storage_manager_compact_runs += 1;
             executed_stages.push("compact_pages".to_string());
-        } else if !options.enable_page_compaction {
+        } else if !options.enable_block_compaction {
             skipped_stages.push("compact_pages_disabled".to_string());
         } else if !leadership_permits_compaction {
             skipped_stages.push("compact_pages_not_leading".to_string());
-        } else if !stale_page_pressure {
+        } else if !stale_block_pressure {
             skipped_stages.push("compact_pages_no_pressure".to_string());
         } else {
             skipped_stages.push("compact_pages_nothing_to_relocate".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
             "compact_pages",
-            options.enable_page_compaction && leadership_permits_compaction,
-            stale_page_pressure,
-            options.enable_page_compaction
+            options.enable_block_compaction && leadership_permits_compaction,
+            stale_block_pressure,
+            options.enable_block_compaction
                 && leadership_permits_compaction
-                && stale_page_pressure
+                && stale_block_pressure
                 && compaction_has_work,
             vec![
                 storage_manager_pressure_signal(
                     "relocatable_page_refs",
-                    compaction_relocatable_page_refs,
+                    compaction_relocatable_block_refs,
                     1,
                 ),
                 // 1 for the two states that compact, 0 for the one that does not. Carried so an
@@ -1025,8 +1025,8 @@ impl DataNodeRuntime {
                 ),
             ]),
             storage_manager_skip_reason(
-                options.enable_page_compaction,
-                stale_page_pressure,
+                options.enable_block_compaction,
+                stale_block_pressure,
                 "compact_pages",
             )
             .or_else(|| {
@@ -1419,7 +1419,7 @@ impl DataNodeRuntime {
                     .shard_leadership(cycle_request.shard_id)
                     .is_known_not_leading()
                 {
-                    cycle_request.enable_page_compaction = false;
+                    cycle_request.enable_block_compaction = false;
                 }
                 let submitted =
                     runtime.submit_storage_manager_cycle(cycle_request, options.controller);

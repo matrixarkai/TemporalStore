@@ -2408,11 +2408,11 @@ mod tests {
 
         let threads: usize = std::env::var("BENCH_THREADS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(8);
         let iters: usize = std::env::var("BENCH_ITERS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(200_000);
 
         fn run<F>(label: &str, threads: usize, iters: usize, body: F)
@@ -2543,15 +2543,15 @@ mod tests {
     fn bench_proxy_admission_path() {
         let threads: usize = std::env::var("BENCH_THREADS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(8);
         let per_thread: usize = std::env::var("BENCH_ITERS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(20_000);
         let batch: usize = std::env::var("BENCH_BATCH")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(16);
 
         let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions {
@@ -3008,11 +3008,11 @@ mod tests {
     fn bench_proxy_cached_route_lookup() {
         let threads: usize = std::env::var("BENCH_THREADS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(8);
         let per_thread: usize = std::env::var("BENCH_ITERS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(50_000);
 
         let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
@@ -3092,11 +3092,11 @@ mod tests {
     fn bench_proxy_cached_table_lookup() {
         let threads: usize = std::env::var("BENCH_THREADS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(8);
         let per_thread: usize = std::env::var("BENCH_ITERS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(50_000);
 
         let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
@@ -3354,11 +3354,11 @@ mod tests {
     fn bench_proxy_route_lookup_split() {
         let threads: usize = std::env::var("BENCH_THREADS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(8);
         let per_thread: usize = std::env::var("BENCH_ITERS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(50_000);
 
         let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
@@ -3407,11 +3407,11 @@ mod tests {
     fn bench_proxy_context_admission() {
         let threads: usize = std::env::var("BENCH_THREADS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(8);
         let per_thread: usize = std::env::var("BENCH_ITERS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(50_000);
 
         let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
@@ -3460,11 +3460,11 @@ mod tests {
     fn bench_proxy_shard_id_for_key() {
         let threads: usize = std::env::var("BENCH_THREADS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(8);
         let per_thread: usize = std::env::var("BENCH_ITERS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(50_000);
 
         let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
@@ -4286,11 +4286,11 @@ mod tests {
     fn bench_proxy_per_request_bookkeeping() {
         let threads: usize = std::env::var("BENCH_THREADS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(8);
         let per_thread: usize = std::env::var("BENCH_ITERS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.trim().parse().ok())
             .unwrap_or(50_000);
 
         let run = |label: &str, sync: bool, topo: bool| {

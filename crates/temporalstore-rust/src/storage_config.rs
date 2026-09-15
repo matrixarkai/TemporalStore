@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const TS_CONTEXT_PAGE_TARGET_BYTES: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";
+pub const TS_CONTEXT_BLOCK_TARGET_BYTES: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";
 pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SLAB_TARGET_BYTES";
 pub const TS_STREAM_MAX_BLOB_SIZE: &str = "TS_STREAM_MAX_BLOB_SIZE";
 pub const TS_COMPACTION_WATERMARK_BYTES: &str = "TS_COMPACTION_WATERMARK_BYTES";
@@ -31,7 +31,7 @@ pub const TS_INDEX_GC_MIN_RECLAIMABLE_BYTES: &str = "TS_INDEX_GC_MIN_RECLAIMABLE
 /// `effective_block_slab_target_bytes`, and the field is `block_slab_target_bytes`.
 pub const TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME: &str = "TS_BLOCK_SEGMENT_TARGET_BYTES";
 
-pub const DEFAULT_CONTEXT_PAGE_TARGET_BYTES: usize = 64 * 1024;
+pub const DEFAULT_CONTEXT_BLOCK_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
 pub const DEFAULT_STREAM_MAX_BLOB_SIZE: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
@@ -78,7 +78,8 @@ pub const DEFAULT_INDEX_GC_MIN_RECLAIMABLE_BYTES: u64 = 768 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTuningConfig {
-    pub context_page_target_bytes: usize,
+    #[serde(rename = "context_page_target_bytes")]
+    pub context_block_target_bytes: usize,
     #[serde(alias = "block_segment_target_bytes")]
     pub block_slab_target_bytes: u64,
     pub stream_max_blob_size: u64,
@@ -94,7 +95,7 @@ pub struct StorageTuningConfig {
 impl Default for StorageTuningConfig {
     fn default() -> Self {
         Self {
-            context_page_target_bytes: DEFAULT_CONTEXT_PAGE_TARGET_BYTES,
+            context_block_target_bytes: DEFAULT_CONTEXT_BLOCK_TARGET_BYTES,
             block_slab_target_bytes: DEFAULT_BLOCK_SLAB_TARGET_BYTES,
             stream_max_blob_size: DEFAULT_STREAM_MAX_BLOB_SIZE,
             compaction_watermark_bytes: DEFAULT_COMPACTION_WATERMARK_BYTES,
@@ -114,11 +115,15 @@ impl StorageTuningConfig {
     }
 
     pub fn from_getter(get: impl Fn(&str) -> Option<String>) -> Self {
+        // A variable that is PRESENT AND BLANK is not a value. Without this, `get(NEW)` answers
+        // `Some("")`, `or_else` never reaches the previous name below, and a deployment that set
+        // the older spelling correctly gets the built-in default instead of what it asked for.
+        let get = |name: &str| get(name).filter(|value| !value.trim().is_empty());
         let defaults = Self::default();
         Self {
-            context_page_target_bytes: parse_usize(
-                get(TS_CONTEXT_PAGE_TARGET_BYTES),
-                defaults.context_page_target_bytes,
+            context_block_target_bytes: parse_usize(
+                get(TS_CONTEXT_BLOCK_TARGET_BYTES),
+                defaults.context_block_target_bytes,
             )
             .max(1024),
             block_slab_target_bytes: parse_u64(
@@ -176,7 +181,7 @@ impl StorageTuningConfig {
 
     pub fn env_names() -> [&'static str; 12] {
         [
-            TS_CONTEXT_PAGE_TARGET_BYTES,
+            TS_CONTEXT_BLOCK_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME,
             TS_STREAM_MAX_BLOB_SIZE,
@@ -192,8 +197,8 @@ impl StorageTuningConfig {
     }
 }
 
-pub fn context_page_target_bytes() -> usize {
-    StorageTuningConfig::from_env().context_page_target_bytes
+pub fn context_block_target_bytes() -> usize {
+    StorageTuningConfig::from_env().context_block_target_bytes
 }
 
 pub fn effective_block_slab_target_bytes() -> u64 {
@@ -251,8 +256,8 @@ mod tests {
     fn defaults_match_like_public_surface() {
         let config = StorageTuningConfig::default();
         assert_eq!(
-            config.context_page_target_bytes,
-            DEFAULT_CONTEXT_PAGE_TARGET_BYTES
+            config.context_block_target_bytes,
+            DEFAULT_CONTEXT_BLOCK_TARGET_BYTES
         );
         assert_eq!(
             config.block_slab_target_bytes,
@@ -362,10 +367,58 @@ mod tests {
     }
 
     #[test]
+    fn a_slab_target_under_the_blob_ceiling_does_not_reach_the_write_path() {
+        // The case `parses_public_knobs_from_getter` cannot see. It sets slab 10 MiB against blob
+        // 8 MiB -- the slab wins, so the floor below never fires and that assertion holds whether
+        // or not this clamp exists at all.
+        //
+        // `block_store/append.rs` and `block_store.rs` seal at
+        // `effective_block_slab_target_bytes()`, so this, not the field, is what an operator's
+        // value has to survive.
+        for written in ["1024", "65536", "1048576", "10485759"] {
+            let config = StorageTuningConfig::from_getter(|name| {
+                if name == TS_BLOCK_SLAB_TARGET_BYTES {
+                    Some(written.to_string())
+                } else {
+                    None
+                }
+            });
+            assert_eq!(
+                written.parse::<u64>().unwrap(),
+                config.block_slab_target_bytes,
+                "the field should hold what was written"
+            );
+            assert_eq!(
+                DEFAULT_STREAM_MAX_BLOB_SIZE,
+                config.effective_slab_target_bytes(),
+                "{written} is under the blob ceiling, so the write path must use the ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn the_blob_ceiling_moves_the_slab_target_with_it() {
+        // The other direction, and the reason neither page entry could be written without naming
+        // the other: TS_STREAM_MAX_BLOB_SIZE calls itself a ceiling on a payload, and is also a
+        // floor on the reclaim unit.
+        let config = StorageTuningConfig::from_getter(|name| {
+            if name == TS_BLOCK_SLAB_TARGET_BYTES {
+                Some("1073741824".to_string())
+            } else if name == TS_STREAM_MAX_BLOB_SIZE {
+                Some("2147483648".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(1_073_741_824, config.block_slab_target_bytes);
+        assert_eq!(2_147_483_648, config.effective_slab_target_bytes());
+    }
+
+    #[test]
     // shared-corpus: storage_config_like_public_knobs
     fn parses_public_knobs_from_getter() {
         let env = HashMap::from([
-            (TS_CONTEXT_PAGE_TARGET_BYTES, "32768"),
+            (TS_CONTEXT_BLOCK_TARGET_BYTES, "32768"),
             (TS_BLOCK_SLAB_TARGET_BYTES, "10485760"),
             (TS_STREAM_MAX_BLOB_SIZE, "8388608"),
             (TS_COMPACTION_WATERMARK_BYTES, "4096"),
@@ -375,7 +428,7 @@ mod tests {
             (TS_INDEX_DUMP_WAL_GAP_BYTES, "2097152"),
         ]);
         let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
-        assert_eq!(config.context_page_target_bytes, 32 * 1024);
+        assert_eq!(config.context_block_target_bytes, 32 * 1024);
         assert_eq!(config.block_slab_target_bytes, 10 * 1024 * 1024);
         assert_eq!(config.stream_max_blob_size, 8 * 1024 * 1024);
         // Seal = max(block_slab_target 10MiB, max_blob 8MiB) = 10MiB (blob is a floor).

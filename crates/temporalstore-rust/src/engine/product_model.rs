@@ -11,31 +11,31 @@
 
 use std::collections::BTreeMap;
 
-use crate::block_store::{BlockAddress, LocalBlockStore};
+use crate::block_store::{BlockAddress, BlockStore};
 use crate::types::{
     FeatureFilter, FeatureFilterOp, ControlStateFamily,
     ControlStateSelectionType, SequenceFeatureRow, ShardId,
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_pages::decode_feature_page_strict;
-use super::state::PackedFeaturePageDecode;
-use super::{parse_i64, read_page_bytes, ShardState};
+use super::packed_pages::decode_feature_block_strict;
+use super::state::PackedFeatureBlockDecode;
+use super::{parse_i64, read_block_bytes, ShardState};
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
 ) -> Option<SequenceFeatureRow> {
-    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => points
+    let bytes = read_block_bytes(cache, block_store, shard_id, address)?;
+    match decode_feature_block_strict(&bytes) {
+        PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
             .find(|point| point.timestamp_ms == timestamp_ms)
             .and_then(|point| serde_json::from_slice(&point.value).ok()),
-        PackedFeaturePageDecode::Legacy => serde_json::from_slice(&bytes).ok(),
-        PackedFeaturePageDecode::Corrupt(_) => None,
+        PackedFeatureBlockDecode::Legacy => serde_json::from_slice(&bytes).ok(),
+        PackedFeatureBlockDecode::Corrupt(_) => None,
     }
 }
 
@@ -59,7 +59,7 @@ pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &Feature
 
 pub(super) fn sequence_rows_in_range(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,

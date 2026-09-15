@@ -5,7 +5,7 @@ use super::*;
 
 impl Default for TemporalEngine {
     fn default() -> Self {
-        Self::with_cache_and_block_store(MultiLayerCache::default(), LocalBlockStore::default())
+        Self::with_cache_and_block_store(MultiLayerCache::default(), BlockStore::default())
     }
 }
 
@@ -35,10 +35,10 @@ pub(crate) static LAST_REPLAY_WATERMARK: std::sync::atomic::AtomicU64 =
 
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
-        Self::with_cache_and_block_store(cache, LocalBlockStore::default())
+        Self::with_cache_and_block_store(cache, BlockStore::default())
     }
 
-    pub fn with_cache_and_block_store(cache: MultiLayerCache, block_store: LocalBlockStore) -> Self {
+    pub fn with_cache_and_block_store(cache: MultiLayerCache, block_store: BlockStore) -> Self {
         let scratch = crate::scratch::owned_scratch_dir("indexes");
         let mut engine =
             Self::with_cache_block_store_and_index_dir(cache, block_store, scratch.path());
@@ -48,7 +48,7 @@ impl TemporalEngine {
 
     pub fn with_cache_block_store_and_index_dir(
         cache: MultiLayerCache,
-        block_store: LocalBlockStore,
+        block_store: BlockStore,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
         let index_dir = index_dir.into();
@@ -105,7 +105,7 @@ impl TemporalEngine {
     /// happened. `register_eviction_callback` REPLACES the callback, so a no-op takes the handler
     /// off the engine this test built, at the moment it asks.
     #[cfg(test)]
-    pub(crate) fn disable_hot_page_spill_for_test(&self) {
+    pub(crate) fn disable_hot_block_spill_for_test(&self) {
         self.cache.register_eviction_callback(|_| {});
     }
 
@@ -210,7 +210,7 @@ impl TemporalEngine {
         self.cache.clone()
     }
 
-    pub fn block_store(&self) -> LocalBlockStore {
+    pub fn block_store(&self) -> BlockStore {
         self.page_store.clone()
     }
 
@@ -218,7 +218,7 @@ impl TemporalEngine {
         since = "0.1.0",
         note = "use block_store; page naming remains only for legacy compatibility"
     )]
-    pub fn page_store(&self) -> LocalBlockStore {
+    pub fn page_store(&self) -> BlockStore {
         self.block_store()
     }
 
@@ -304,7 +304,7 @@ impl TemporalEngine {
         };
         Self::with_cache_block_store_and_index_dir(
             cache,
-            LocalBlockStore::with_options(block_store_dir, block_store_options),
+            BlockStore::with_options(block_store_dir, block_store_options),
             index_dir,
         )
     }
@@ -387,7 +387,7 @@ impl TemporalEngine {
                     // delta.
                     match crate::engine::decode_index_bytes(&manifest.index_bytes) {
                         Ok(mut restored) => {
-                            rebuild_bucket_page_ownership(
+                            rebuild_bucket_block_ownership(
                                 request.shard_id,
                                 &mut restored,
                                 0,
@@ -526,7 +526,7 @@ impl TemporalEngine {
         // Hand the resolver the log ids the index has been carrying. Without this a page whose
         // only durable copy is a WAL record stays unreadable by address after a reload -- the
         // served index points at a synthetic address and the resolver's table starts empty.
-        self.rehydrate_wal_resident_pages(request.shard_id);
+        self.rehydrate_wal_resident_blocks(request.shard_id);
         if let Err(status) = self.replay_wal_into_shard(request.shard_id, replay_watermark) {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
@@ -636,9 +636,9 @@ impl TemporalEngine {
         };
         let mut out = String::new();
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for (page_ref_key, page) in &bucket.page_index {
+            for (block_ref_key, page) in &bucket.block_index {
                 out.push_str(&format!(
-                    "bucket={routing_bucket} ref={page_ref_key} kind={} key={} component={:?} object_id={} slab={} off={} len={} deleted={} log_backed={}
+                    "bucket={routing_bucket} ref={block_ref_key} kind={} key={} component={:?} object_id={} slab={} off={} len={} deleted={} log_backed={}
 ",
                     page.model_id,
                     page.object_key,
@@ -694,9 +694,9 @@ impl TemporalEngine {
                 ));
             }
         }
-        let mut counter_pages: Vec<_> = shard.control_state_pages.iter().collect();
-        counter_pages.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, address) in counter_pages {
+        let mut counter_blocks: Vec<_> = shard.control_state_blocks.iter().collect();
+        counter_blocks.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, address) in counter_blocks {
             out.push_str(&format!(
                 "control_state_page {key} slab={} off={} len={}
 ",
@@ -854,7 +854,7 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         outcomes: &[crate::wal::WalOutcomeItem],
-        carried: &[crate::wal::StagedPage],
+        carried: &[crate::wal::StagedBlock],
     ) -> bool {
         let mut localised = Vec::with_capacity(outcomes.len());
         for item in outcomes {
@@ -905,7 +905,7 @@ impl TemporalEngine {
             return false;
         };
         match item.kind.as_str() {
-            // A TYPED REMOVAL. `mark_bucket_index_page_deleted` records one with no address --
+            // A TYPED REMOVAL. `mark_bucket_index_block_deleted` records one with no address --
             // nothing was written, so there is none to name -- and `stage_meta_outcome` does the
             // same for a string delete. Every arm below opens by demanding an address, so before
             // this branch existed a removal could not be installed, `apply_outcome_item` answered
@@ -965,7 +965,7 @@ impl TemporalEngine {
                     _ => return false,
                 }
                 if item.kind != "string" {
-                    super::mark_bucket_index_page_deleted_with(
+                    super::mark_bucket_index_block_deleted_with(
                         shard,
                         shard_id,
                         &item.kind,
@@ -1031,7 +1031,7 @@ impl TemporalEngine {
                 let Some(address) = item.resolved_address() else {
                     return false;
                 };
-                super::upsert_bucket_index_page(
+                super::upsert_bucket_index_block(
                     shard,
                     shard_id,
                     "string",
@@ -1051,7 +1051,7 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                super::upsert_bucket_index_page(
+                super::upsert_bucket_index_block(
                     shard,
                     shard_id,
                     "hash",
@@ -1077,7 +1077,7 @@ impl TemporalEngine {
                 let Ok(member) = hex::decode(&component) else {
                     return false;
                 };
-                super::upsert_bucket_index_page(
+                super::upsert_bucket_index_block(
                     shard,
                     shard_id,
                     "set",
@@ -1104,7 +1104,7 @@ impl TemporalEngine {
                     return false;
                 };
                 let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-                super::upsert_bucket_index_page(
+                super::upsert_bucket_index_block(
                     shard,
                     shard_id,
                     "list",
@@ -1136,7 +1136,7 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                super::upsert_bucket_index_page(
+                super::upsert_bucket_index_block(
                     shard,
                     shard_id,
                     "zset",
@@ -1209,7 +1209,7 @@ impl TemporalEngine {
                     }
                     live
                 };
-                super::sync_bucket_index_object_pages(
+                super::sync_bucket_index_object_blocks(
                     shard,
                     shard_id,
                     &item.kind,
@@ -1270,7 +1270,7 @@ impl TemporalEngine {
                     }
                     live
                 };
-                super::sync_bucket_index_object_pages(
+                super::sync_bucket_index_object_blocks(
                     shard,
                     shard_id,
                     "context_event",
@@ -1291,7 +1291,7 @@ impl TemporalEngine {
                 let Some(address) = item.resolved_address() else {
                     return false;
                 };
-                super::upsert_bucket_index_page(
+                super::upsert_bucket_index_block(
                     shard,
                     shard_id,
                     "control_state",
@@ -1301,7 +1301,7 @@ impl TemporalEngine {
                     true,
                 );
                 shard
-                    .control_state_pages
+                    .control_state_blocks
                     .insert(item.object_key.clone(), address);
                 true
             }
@@ -1395,7 +1395,7 @@ impl TemporalEngine {
 
     /// The address the index holds for a string key, so a test can compare it against what a
     /// record claims the write did.
-    pub(super) fn string_page_address(
+    pub(super) fn string_block_address(
         &self,
         shard_id: ShardId,
         key: &str,
@@ -1427,7 +1427,7 @@ impl TemporalEngine {
     /// So the recent stay resident -- they are the ones a read is most likely to want, and their
     /// bytes are in the record just written -- and everything older is written where anyone can
     /// find it. Oldest first, because the oldest is the one holding the floor down.
-    pub fn materialize_oldest_resident_pages(&self, shard_id: ShardId, keep: usize) -> usize {
+    pub fn materialize_oldest_resident_blocks(&self, shard_id: ShardId, keep: usize) -> usize {
         let ordered = super::block_in_wal::oldest_registered_objects(&self.page_store, shard_id);
         if ordered.len() <= keep {
             return 0;
@@ -1436,15 +1436,15 @@ impl TemporalEngine {
             .iter()
             .map(|(_, object_id)| *object_id)
             .collect();
-        self.materialize_resident_pages_where(shard_id, |object_id| retiring.contains(&object_id))
+        self.materialize_resident_blocks_where(shard_id, |object_id| retiring.contains(&object_id))
     }
 
-    pub fn materialize_synthetic_pages(&self, shard_id: ShardId) -> usize {
-        self.materialize_resident_pages_where(shard_id, |_| true)
+    pub fn materialize_synthetic_blocks(&self, shard_id: ShardId) -> usize {
+        self.materialize_resident_blocks_where(shard_id, |_| true)
     }
 
     /// The one implementation both callers use: everything, or only what `wanted` selects.
-    fn materialize_resident_pages_where(
+    fn materialize_resident_blocks_where(
         &self,
         shard_id: ShardId,
         wanted: impl Fn(u64) -> bool,
@@ -1465,13 +1465,13 @@ impl TemporalEngine {
         };
         let mut moved = 0usize;
         for (key, address) in addresses {
-            let object_id = super::stable_page_object_id(shard_id, "string", &key, None);
+            let object_id = super::stable_block_object_id(shard_id, "string", &key, None);
             if !wanted(object_id) {
                 continue;
             }
             // Read it the way a reader here would -- through the registry that still works in
             // this process -- and write it where anyone can find it.
-            let Some(bytes) = super::read_page_bytes(&self.cache, &self.page_store, shard_id, &address)
+            let Some(bytes) = super::read_block_bytes(&self.cache, &self.page_store, shard_id, &address)
             else {
                 continue;
             };
@@ -1490,7 +1490,7 @@ impl TemporalEngine {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
                 if let Some(shard) = shards.get_mut(&shard_id) {
                     shard.strings.insert(key.clone(), durable.clone());
-                    super::upsert_bucket_index_page(
+                    super::upsert_bucket_index_block(
                         shard,
                         shard_id,
                         "string",
@@ -1501,7 +1501,7 @@ impl TemporalEngine {
                     );
                     // The index no longer names a synthetic slab for this object, so nothing can
                     // resolve through its record any more.
-                    shard.wal_resident_pages.remove(&object_id);
+                    shard.wal_resident_blocks.remove(&object_id);
                 }
             }
             // Retire the registration too. It is what pins the WAL retention floor, and a floor
@@ -1547,7 +1547,7 @@ impl TemporalEngine {
             }
         }
         for bucket in shard.bucket_index.bucket_map.values() {
-            for page in bucket.page_index.values() {
+            for page in bucket.block_index.values() {
                 check(&page.address);
             }
         }
@@ -1558,12 +1558,12 @@ impl TemporalEngine {
     ///
     /// The point of the map is that it is part of the index rather than process state, so a
     /// test needs to be able to look at it to say anything about that.
-    pub(crate) fn wal_resident_page_count(&self, shard_id: ShardId) -> usize {
+    pub(crate) fn wal_resident_block_count(&self, shard_id: ShardId) -> usize {
         self.shards
             .read()
             .expect("engine lock poisoned")
             .get(&shard_id)
-            .map(|shard| shard.wal_resident_pages.len())
+            .map(|shard| shard.wal_resident_blocks.len())
             .unwrap_or(0)
     }
 
@@ -1572,7 +1572,7 @@ impl TemporalEngine {
     /// The append path learns a page's log id by writing the record; a reload learns it by
     /// reading the index. Both end up in the same table, which is why no read path had to
     /// change for this to work.
-    pub(super) fn rehydrate_wal_resident_pages(&self, shard_id: ShardId) {
+    pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) {
         if !self.page_store.block_in_wal() {
             return;
         }
@@ -1580,7 +1580,7 @@ impl TemporalEngine {
         let Some(shard) = shards.get(&shard_id) else {
             return;
         };
-        for (object_id, placement) in &shard.wal_resident_pages {
+        for (object_id, placement) in &shard.wal_resident_blocks {
             super::block_in_wal::register_at(
                 &self.page_store,
                 shard_id,
@@ -1661,7 +1661,7 @@ impl TemporalEngine {
         let _guard = WalReplayGuard::enter();
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
-        let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentPage)> =
+        let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentBlock)> =
             Vec::new();
         let mut replayed_any = false;
 
@@ -1809,7 +1809,7 @@ impl TemporalEngine {
                         wal_resident_updates.extend(record.staged_pages.iter().map(|page| {
                             (
                                 page.object_id,
-                                crate::engine::state::WalResidentPage {
+                                crate::engine::state::WalResidentBlock {
                                     log_id,
                                     sequence: record.sequence,
                                 },
@@ -1866,7 +1866,23 @@ impl TemporalEngine {
                 // captured when this record was written, not the (later) restart clock, so
                 // recovery reconstructs the identical absolute deadlines the leader logged
                 // (resolve-then-log) instead of extending every recently-SETEX'd key.
-                set_replay_clock_ms(record.metadata.as_ref().map(|meta| meta.timestamp_ms));
+                //
+                // A ZERO STAMP IS NOT AN INSTANT, it is a record that never carried one, and it
+                // gets the same reading here that `ReplayClockGuard::enter` gives it on the
+                // raft-apply path: leave the live clock in charge. Passing the zero through
+                // pinned this thread's clock to the epoch, and the deadline every relative TTL
+                // in that record resolved to was then `ttl_ms` past 1970 -- already expired, so
+                // a durably acknowledged write came back from recovery absent. The zero is
+                // reachable rather than theoretical: protobuf is the only WAL encoder and its
+                // decoder copies this field verbatim, so an absent `timestamp_ms` arrives as 0
+                // while `version`, the field beside it, is normalized for exactly this case.
+                set_replay_clock_ms(
+                    record
+                        .metadata
+                        .as_ref()
+                        .map(|meta| meta.timestamp_ms)
+                        .filter(|stamp| *stamp > 0),
+                );
                 // Neither results nor an operation. Refusing is the only honest answer: replaying it
                 // as nothing would serve a shard missing a durable write and report success.
                 let Some(command) = record.command else {
@@ -1913,7 +1929,7 @@ impl TemporalEngine {
             let mut shards = self.shards.write().expect("engine lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
                 for (object_id, placement) in wal_resident_updates {
-                    shard.wal_resident_pages.insert(object_id, placement);
+                    shard.wal_resident_blocks.insert(object_id, placement);
                 }
             }
         }

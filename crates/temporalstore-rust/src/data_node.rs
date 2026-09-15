@@ -186,8 +186,8 @@ pub struct DataNodeRuntimeStats {
     pub storage_manager_reclaim_memory_runs: u64,
     #[serde(default)]
     pub storage_manager_expire_runs: u64,
-    #[serde(default)]
-    pub storage_manager_reclaim_page_runs: u64,
+    #[serde(rename = "storage_manager_reclaim_page_runs", default)]
+    pub storage_manager_reclaim_block_runs: u64,
     #[serde(default)]
     pub storage_manager_compact_runs: u64,
     #[serde(default)]
@@ -344,7 +344,7 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
         stats
             .storage_manager_reclaim_wal_runs
             .saturating_add(stats.storage_manager_reclaim_memory_runs)
-            .saturating_add(stats.storage_manager_reclaim_page_runs),
+            .saturating_add(stats.storage_manager_reclaim_block_runs),
     );
     metrics.insert(
         "storage_manager_evict_count".to_string(),
@@ -359,13 +359,13 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
     metrics.insert(
         "storage_manager_page_gc_count".to_string(),
         stats
-            .storage_manager_reclaim_page_runs
+            .storage_manager_reclaim_block_runs
             .saturating_add(stats.gc_runs),
     );
     metrics.insert(
         "storage_manager_block_gc_count".to_string(),
         stats
-            .storage_manager_reclaim_page_runs
+            .storage_manager_reclaim_block_runs
             .saturating_add(stats.gc_runs),
     );
     metrics.insert(
@@ -380,11 +380,11 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
     );
     metrics.insert(
         "storage_manager_delayed_destroy_count".to_string(),
-        stats.storage_manager_reclaim_page_runs,
+        stats.storage_manager_reclaim_block_runs,
     );
     metrics.insert(
         "storage_manager_follower_cursor_safety_count".to_string(),
-        stats.storage_manager_reclaim_page_runs,
+        stats.storage_manager_reclaim_block_runs,
     );
     metrics.insert(
         "storage_manager_watermark_progress_count".to_string(),
@@ -415,11 +415,11 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
     );
     metrics.insert(
         "stale_page_tombstones".to_string(),
-        stats.storage_manager_reclaim_page_runs,
+        stats.storage_manager_reclaim_block_runs,
     );
     metrics.insert(
         "stale_block_tombstones".to_string(),
-        stats.storage_manager_reclaim_page_runs,
+        stats.storage_manager_reclaim_block_runs,
     );
     metrics.insert("stale_pages_rewritten".to_string(), stats.compaction_runs);
     metrics.insert("stale_blocks_rewritten".to_string(), stats.compaction_runs);
@@ -738,8 +738,8 @@ pub struct CompactionResponse {
     /// cannot say what a round cost.
     #[serde(default)]
     pub relocated_bytes: u64,
-    #[serde(default)]
-    pub rewritten_object_pages: usize,
+    #[serde(rename = "rewritten_object_pages", default)]
+    pub rewritten_object_blocks: usize,
     #[serde(default)]
     #[serde(rename = "tombstoned_object_ids_before")]
     pub delete_marked_object_ids_before: u64,
@@ -782,16 +782,16 @@ pub struct GcRequest {
     /// Defaults to false, which is what this RPC has always done. The storage-manager cycle
     /// quarantines, and the periodic loop now asks for the same thing; an operator collecting by
     /// hand keeps the immediate unlink, because the space is usually why they called.
-    #[serde(default)]
-    pub page_gc_delayed_destroy: bool,
+    #[serde(rename = "page_gc_delayed_destroy", default)]
+    pub block_gc_delayed_destroy: bool,
     /// Invalidate only the cache entries for slabs this round actually reclaimed.
     ///
     /// Defaults to false, which drops the WHOLE shard's cache -- every memory, pmem and disk
     /// entry the shard holds, across all three tiers. That is defensible for an operator who
     /// asked for a collection by hand and wants the caches clean afterwards, so the RPC keeps
     /// it. It is harder to defend on a loop that runs every thirty seconds.
-    #[serde(default)]
-    pub page_gc_invalidate_removed_slabs_only: bool,
+    #[serde(rename = "page_gc_invalidate_removed_slabs_only", default)]
+    pub block_gc_invalidate_removed_slabs_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -880,10 +880,10 @@ pub struct StorageManagerOptions {
     pub enable_memory_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_expire: bool,
-    #[serde(default = "default_storage_manager_stage_enabled")]
-    pub enable_page_gc: bool,
-    #[serde(default = "default_storage_manager_stage_enabled")]
-    pub enable_page_compaction: bool,
+    #[serde(rename = "enable_page_gc", default = "default_storage_manager_stage_enabled")]
+    pub enable_block_gc: bool,
+    #[serde(rename = "enable_page_compaction", default = "default_storage_manager_stage_enabled")]
+    pub enable_block_compaction: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_index_gc: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
@@ -1051,8 +1051,8 @@ impl Default for StorageManagerOptions {
             enable_wal_reclaim: true,
             enable_memory_reclaim: true,
             enable_expire: true,
-            enable_page_gc: true,
-            enable_page_compaction: true,
+            enable_block_gc: true,
+            enable_block_compaction: true,
             enable_index_gc: true,
             enable_metrics_reap: true,
             // Off, unlike every stage above it. See the field doc: this makes eviction REACHABLE
@@ -1224,8 +1224,8 @@ pub struct StorageManagerPressureSnapshot {
     pub memory_cache_pressure_score: u64,
     /// See `engine::reports::StorageManagerPressureSnapshot::live_page_summaries_measured`:
     /// false means the debt beside it was never counted this round, not that it is zero.
-    #[serde(default)]
-    pub live_page_summaries_measured: bool,
+    #[serde(rename = "live_page_summaries_measured", default)]
+    pub live_block_summaries_measured: bool,
     #[serde(default)]
     #[serde(rename = "expired_slot_object_scan_debt")]
     pub expired_bucket_object_scan_debt: usize,
@@ -1378,7 +1378,8 @@ pub struct StorageManagerRuntimeReport {
     pub phase_wal_reclaim_enabled: bool,
     pub phase_expire_enabled: bool,
     pub phase_evict_enabled: bool,
-    pub phase_page_gc_enabled: bool,
+    #[serde(rename = "phase_page_gc_enabled")]
+    pub phase_block_gc_enabled: bool,
     pub phase_compaction_enabled: bool,
     pub phase_index_gc_enabled: bool,
     #[serde(rename = "bounded_max_dump_slots_per_round")]
@@ -1388,8 +1389,8 @@ pub struct StorageManagerRuntimeReport {
     #[serde(default)]
     pub configured_raft_snapshot_ref_count: usize,
     #[serde(default)]
-    #[serde(alias = "configured_page_gc_raft_install_floor_segment_id")]
-    pub configured_page_gc_raft_install_floor_slab_id: Option<u64>,
+    #[serde(rename = "configured_page_gc_raft_install_floor_slab_id", alias = "configured_page_gc_raft_install_floor_segment_id")]
+    pub configured_block_gc_raft_install_floor_slab_id: Option<u64>,
     #[serde(default)]
     pub last_completed_cycle: Option<StorageManagerCycleReport>,
     #[serde(default)]
@@ -1687,7 +1688,7 @@ struct MutableRuntimeStats {
     storage_manager_reclaim_wal_runs: u64,
     storage_manager_reclaim_memory_runs: u64,
     storage_manager_expire_runs: u64,
-    storage_manager_reclaim_page_runs: u64,
+    storage_manager_reclaim_block_runs: u64,
     storage_manager_compact_runs: u64,
     storage_manager_index_gc_runs: u64,
     storage_manager_evict_runs: u64,

@@ -289,7 +289,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::ControlStateSet { .. }
             | Command::ControlStateSetAndGet { .. }
             | Command::ControlStateSetAndGetWithOptions { .. }
-            // These file their pages through `sync_bucket_index_object_pages`, which maintains
+            // These file their pages through `sync_bucket_index_object_blocks`, which maintains
             // exactly what a rebuild would recompute. Without them here the post-command path took
             // the rebuild branch on EVERY call: measured at twice the shard's page count per call,
             // so a one-point feature append into a 1,024-key store cost 12,717 allocations, none of
@@ -311,7 +311,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
 /// This is deliberately NOT folded into `command_updates_bucket_index_directly`: these commands do
 /// not update that index, and saying they do to skip the rebuild would make the predicate assert
 /// something false. They need their own reason.
-pub(super) fn command_writes_no_page(command: &Command) -> bool {
+pub(super) fn command_writes_no_block(command: &Command) -> bool {
     matches!(
         command,
         Command::SeenCheck { .. }
@@ -484,7 +484,7 @@ pub(super) fn now_epoch_seconds() -> u64 {
 
 pub(super) fn validate_command_preconditions(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     command: &Command,
@@ -922,7 +922,7 @@ pub(super) fn validate_command_preconditions(
             .hashes
             .get(key)
             .and_then(|entries| entries.get(field))
-            .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
+            .and_then(|address| read_block_bytes(cache, page_store, shard_id, address))
         else {
             return 0_i64
                 .checked_add(*increment)

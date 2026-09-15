@@ -49,9 +49,145 @@ pub fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Read `name` as a number, falling back to `default` when it is unset, empty, or holds
+/// something that does not parse.
+///
+/// The numeric half of the same argument [`env_bool`] settles. `usize::from_str` rejects
+/// surrounding whitespace outright -- `" 64 ".parse::<usize>()` is an `Err` -- so a reader that
+/// hands it the raw value discards what the operator set and falls back to the default with no
+/// message. A shell export, a systemd `Environment=` line, a heredoc and a `.env` file all leave
+/// whitespace behind, and the boolean reader directly above already tolerates every one of them:
+///
+/// | written | a raw `value.parse()` | this one |
+/// |---|---|---|
+/// | `64` | `64` | `64` |
+/// | `" 64"` / `"64 "` / `"\t64\n"` | the default | `64` |
+/// | `wat` | the default | the default |
+///
+/// Fourteen local copies of this function existed, in seven files, and none of them trimmed. The
+/// crate had settled the vocabulary question for booleans and left the numeric twin sitting
+/// directly underneath it in the same files.
+pub fn env_number<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<T>().ok())
+        .unwrap_or(default)
+}
+
+/// The value of a numeric flag, or `None` when it is not one.
+///
+/// `None` is distinct from a zero the same way [`parse_bool`]'s is from `Some(false)`: a value
+/// nobody can read is not a request for zero. Callers that treat zero as "unset" keep doing that
+/// themselves -- `env_usize_any` filters it out on purpose -- rather than having it decided here.
+pub fn parse_number<T: std::str::FromStr>(raw: &str) -> Option<T> {
+    raw.trim().parse::<T>().ok()
+}
+
+/// The value of `name`, or `None` when it is unset OR set to nothing.
+///
+/// `std::env::var` answers `Ok("")` for a variable that is present and empty -- which is what
+/// `export NEW=$UNSET` leaves behind, and what clearing a field means. Read through `or_else`,
+/// that `Ok("")` is the newer spelling WINNING with nothing in it, and the older spelling it was
+/// meant to replace is never consulted however correctly a deployment set it:
+///
+/// ```text
+/// TS_BLOCK_SLAB_TARGET_BYTES=""        the previous name held 2 MiB
+/// -> neither honoured; the built-in 1 GiB default applied
+///
+/// TS_DATA_RAFT_READ_MODE=""            TS_SERVER_RAFT_READ_MODE=linearizable
+/// -> panic!("invalid TS_DATA_RAFT_READ_MODE"), and the data node exits at startup
+/// ```
+///
+/// The python side settled this and wrote it down in
+/// `tools/test_a_blank_flag_falls_through_to_the_older_spelling.py`, and two chains in
+/// `context_workflow/model_provider.rs` already spell the filter out by hand. This is that rule,
+/// in one place, for the rest of them.
+///
+/// Whitespace-only counts as nothing, for the same reason [`env_number`] trims: a value a shell
+/// leaves as `" "` is not a value.
+pub fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_number_survives_the_whitespace_a_launcher_leaves_behind() {
+        // The failure this half of the module exists to prevent. Every one of these is an
+        // `Err` from `usize::from_str`, so a reader that skips the trim answers with its
+        // default and says nothing.
+        for written in ["64", " 64", "64 ", " 64 ", "\t64\n", "  64  "] {
+            assert_eq!(
+                Some(64usize),
+                parse_number::<usize>(written),
+                "{written:?} should read as 64"
+            );
+        }
+    }
+
+    #[test]
+    fn a_number_that_is_not_one_leaves_the_default_alone() {
+        for written in ["", "   ", "wat", "6 4", "64x", "-1"] {
+            assert_eq!(
+                None,
+                parse_number::<usize>(written),
+                "{written:?} should not parse as a usize"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_is_a_value_and_not_an_absence() {
+        // `env_usize_any` in the proxy treats 0 as "unset" and that is its decision to make.
+        // This reader does not make it for everyone: a cap of 0 that silently became the
+        // default would be the same silent discard, one layer up.
+        assert_eq!(Some(0usize), parse_number::<usize>(" 0 "));
+    }
+
+    #[test]
+    fn the_numeric_default_is_what_survives_an_unset_or_unreadable_variable() {
+        let unset = "TS_ENV_FLAG_NUMBER_NAME_THAT_IS_NEVER_SET";
+        assert_eq!(7usize, env_number(unset, 7usize));
+        assert_eq!(7u64, env_number(unset, 7u64));
+    }
+
+    #[test]
+    fn a_blank_value_is_not_a_value() {
+        let name = "TS_ENV_FLAG_BLANK_PROBE";
+        for written in ["", " ", "\t", "  \n "] {
+            std::env::set_var(name, written);
+            assert_eq!(None, env_value(name), "{written:?} should read as absent");
+        }
+        std::env::set_var(name, " codex ");
+        assert_eq!(Some(" codex ".to_string()), env_value(name),
+                   "a real value is returned as written, trimming is the caller's business");
+        std::env::remove_var(name);
+        assert_eq!(None, env_value(name));
+    }
+
+    #[test]
+    fn a_blank_newer_spelling_falls_through_to_the_older_one() {
+        // The whole point. Read with `std::env::var(..).or_else(..)` the second name is never
+        // consulted here, because the first answered Ok("").
+        let new = "TS_ENV_FLAG_CHAIN_NEW";
+        let old = "TS_ENV_FLAG_CHAIN_OLD";
+        std::env::set_var(new, "");
+        std::env::set_var(old, "2097152");
+        assert_eq!(
+            Some("2097152".to_string()),
+            env_value(new).or_else(|| env_value(old)),
+            "a blank newer spelling must not shadow the older one"
+        );
+        std::env::set_var(new, "4194304");
+        assert_eq!(Some("4194304".to_string()), env_value(new).or_else(|| env_value(old)),
+                   "and a real newer value still wins");
+        std::env::remove_var(new);
+        std::env::remove_var(old);
+    }
 
     #[test]
     fn both_halves_of_the_vocabulary_are_understood() {

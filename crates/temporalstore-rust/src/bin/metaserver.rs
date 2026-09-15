@@ -46,9 +46,9 @@ use tracing::{debug, error, info, warn};
 
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = std::env::var("TS_META_BIND_ADDR")
-        .or_else(|_| std::env::var("TS_META_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:17001".to_string());
+    let addr = temporalstore_rust::env_flag::env_value("TS_META_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_META_ADDR"))
+        .unwrap_or_else(|| "127.0.0.1:17001".to_string());
     let backend = MetaBackend::from_env().expect("failed to initialize metaserver backend");
     let scheduler =
         MetaTaskScheduler::from_env().expect("failed to initialize metaserver scheduler");
@@ -2267,10 +2267,7 @@ struct ManageNamespaceRequest {
 include!("metaserver/service_routes.rs");
 
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 

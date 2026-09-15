@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use tokio::sync::oneshot;
 
-use crate::block_store::{BlockStoreError, LazyCheckpointSlab, LocalBlockStore, SharedSlabSource};
+use crate::block_store::{BlockStoreError, LazyCheckpointSlab, BlockStore, SharedSlabSource};
 use crate::engine::TemporalEngine;
 use crate::sdk::{self, v1};
 use crate::types::{Command, ExecuteRequest, ShardId, Status};
@@ -109,7 +109,7 @@ pub struct SharedStoreWalEntry {
     /// Empty for the overwhelming majority of writes, and `serde(default)` so an entry written
     /// before this field existed still loads.
     #[serde(default)]
-    pub staged_pages: Vec<crate::wal::StagedPage>,
+    pub staged_pages: Vec<crate::wal::StagedBlock>,
     /// What this write DID, so a successor can install results instead of re-running operations.
     ///
     /// Carrying pages was the same idea reached halfway: a page is derived state the command
@@ -171,10 +171,10 @@ pub struct SharedStoreBlockSlab {
     // `byte_size` above is the slab's physical byte size.
     #[serde(default)]
     pub logical_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_page_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_page_id: Option<u64>,
+    #[serde(rename = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    pub first_block_id: Option<u64>,
+    #[serde(rename = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    pub last_block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_unix_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -380,7 +380,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
 }
 
 #[derive(Clone, PartialEq, Message)]
-struct SharedStoreStagedPageProto {
+struct SharedStoreStagedBlockProto {
     #[prost(uint64, tag = "1")]
     object_id: u64,
     #[prost(bytes = "vec", tag = "2")]
@@ -404,7 +404,7 @@ struct SharedStoreWalFrameProto {
     /// Tag 7, added after the fact: an older reader ignores it and an older writer leaves it
     /// empty, so both directions stay readable across the change.
     #[prost(message, repeated, tag = "7")]
-    staged_pages: Vec<SharedStoreStagedPageProto>,
+    staged_pages: Vec<SharedStoreStagedBlockProto>,
     /// What the write DID, in the SAME message the engine log uses.
     ///
     /// Not a shared-store item type: the shared log needs a destination, not a schema. Carrying
@@ -942,7 +942,7 @@ where
     pub async fn publish_block_slabs(
         &self,
         shard_id: ShardId,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let mut published = Vec::new();
         for block_slab_id in block_store.slab_ids()? {
@@ -962,7 +962,7 @@ where
         shard_id: ShardId,
         checkpoint_wal_index: u64,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         // R2 single-writer fence: a checkpoint publish is a durable-frontier advance, so a
         // superseded stale owner must be rejected here just as on a WAL append.
@@ -977,7 +977,7 @@ where
         // registry -- so an index carrying one names a place the restoring node cannot reach, and
         // that read returns nothing with no error. Materialising them first means the index names
         // only slabs this checkpoint actually uploads.
-        let materialised = engine.materialize_synthetic_pages(shard_id);
+        let materialised = engine.materialize_synthetic_blocks(shard_id);
         if materialised > 0 {
             tracing::info!(
                 shard_id,
@@ -1017,8 +1017,8 @@ where
                 byte_size: bytes.len() as u64,
                 sha256: sha256_hex(&bytes),
                 logical_bytes: slab.map(|slab| slab.logical_bytes).unwrap_or(0),
-                first_page_id: slab.and_then(|slab| slab.first_page_id),
-                last_page_id: slab.and_then(|slab| slab.last_page_id),
+                first_block_id: slab.and_then(|slab| slab.first_block_id),
+                last_block_id: slab.and_then(|slab| slab.last_block_id),
                 created_unix_ms: slab.and_then(|slab| slab.created_unix_ms),
                 updated_unix_ms: slab.and_then(|slab| slab.updated_unix_ms),
             });
@@ -1062,11 +1062,11 @@ where
         Ok(manifest)
     }
 
-    pub async fn restore_index_and_pages(
+    pub async fn restore_index_and_blocks(
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let index = self.object_store.get(&self.index_key(shard_id)).await?;
         engine.install_index_bytes(shard_id, &index)?;
@@ -1184,7 +1184,7 @@ where
         &self,
         manifest: &SharedStoreCheckpointManifest,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<(), SharedStoreReplicationError> {
         let index = self.object_store.get(&manifest.index_key).await?;
         verify_checksum(
@@ -1207,7 +1207,7 @@ where
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         let manifest = self
             .list_checkpoints(shard_id)
@@ -1282,7 +1282,7 @@ where
                     ),
                 });
             };
-            let response = engine.execute_with_carried_pages(
+            let response = engine.execute_with_carried_blocks(
                 ExecuteRequest { shard_id, command },
                 entry.staged_pages,
             );
@@ -1368,7 +1368,7 @@ where
                     ),
                 });
             };
-            let response = engine.execute_with_carried_pages(
+            let response = engine.execute_with_carried_blocks(
                 ExecuteRequest { shard_id, command },
                 entry.staged_pages,
             );
@@ -2018,11 +2018,11 @@ where
     /// O(index + recent WAL), not O(full history + all slabs). Returns
     /// `CheckpointNotFound` when no checkpoint exists so the caller can fall back to
     /// a full WAL replay.
-    async fn restore_index_and_page_addresses_with<F>(
+    async fn restore_index_and_block_addresses_with<F>(
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
         make_source: F,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError>
     where
@@ -2072,8 +2072,8 @@ where
                     block_slab_id: slab.block_slab_id,
                     physical_bytes: slab.byte_size,
                     logical_bytes: slab.logical_bytes,
-                    first_page_id: slab.first_page_id,
-                    last_page_id: slab.last_page_id,
+                    first_block_id: slab.first_block_id,
+                    last_block_id: slab.last_block_id,
                     created_unix_ms: slab.created_unix_ms,
                     updated_unix_ms: slab.updated_unix_ms,
                 })
@@ -2089,15 +2089,15 @@ impl SharedStoreReplicator<FileObjectStore> {
     /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
     /// Old (pre-checkpoint) pages are then read lazily through [`SharedPathSlabSource`]
     /// on the first read that needs them. See
-    /// [`restore_index_and_page_addresses_with`](Self::restore_index_and_page_addresses_with)
+    /// [`restore_index_and_block_addresses_with`](Self::restore_index_and_block_addresses_with)
     /// for the shared logic.
-    pub async fn restore_index_and_page_addresses(
+    pub async fn restore_index_and_block_addresses(
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
-        self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
+        self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(SharedPathSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
         })
         .await
@@ -2110,15 +2110,15 @@ impl SharedStoreReplicator<MatrixObjectHttpStore> {
     /// bytes. Old (pre-checkpoint) pages are then fetched lazily over the network
     /// through [`MatrixObjectSlabSource`] on the first read that needs them, so shard
     /// data follows the shard across nodes without an eager full download. See
-    /// [`restore_index_and_page_addresses_with`](Self::restore_index_and_page_addresses_with)
+    /// [`restore_index_and_block_addresses_with`](Self::restore_index_and_block_addresses_with)
     /// for the shared logic.
-    pub async fn restore_index_and_page_addresses(
+    pub async fn restore_index_and_block_addresses(
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
-        self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
+        self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(MatrixObjectSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
         })
         .await
@@ -2176,13 +2176,13 @@ impl SharedStoreReplicator<crate::matrixobject_store::MatrixObjectObjectStore> {
     /// first read that needs them. The same flow the shared-filesystem and networked
     /// backends already run -- it is what lets this backend's recovery replay only the
     /// WAL tail after a checkpoint instead of all history.
-    pub async fn restore_index_and_page_addresses(
+    pub async fn restore_index_and_block_addresses(
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        block_store: &LocalBlockStore,
+        block_store: &BlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
-        self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
+        self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(MatrixObjectLocalSlabSource {
                 object_store: store,
                 slabs,
@@ -2553,7 +2553,7 @@ fn encode_wal_proto_frame(
         staged_pages: entry
             .staged_pages
             .iter()
-            .map(|page| SharedStoreStagedPageProto {
+            .map(|page| SharedStoreStagedBlockProto {
                 object_id: page.object_id,
                 bytes: page.bytes.clone(),
             })
@@ -2674,7 +2674,7 @@ fn decode_wal_proto_frame_exact(
         staged_pages: frame
             .staged_pages
             .into_iter()
-            .map(|page| crate::wal::StagedPage {
+            .map(|page| crate::wal::StagedBlock {
                 object_id: page.object_id,
                 bytes: page.bytes,
             })
@@ -2950,7 +2950,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_store_restores_index_pages_and_replays_later_wal() {
+    async fn shared_store_restores_index_blocks_and_replays_later_wal() {
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
@@ -2985,7 +2985,7 @@ mod tests {
 
         let follower = test_engine(dir.path(), "follower");
         let restored = replicator
-            .restore_index_and_pages(1, &follower, &follower.block_store())
+            .restore_index_and_blocks(1, &follower, &follower.block_store())
             .await
             .unwrap();
         assert_eq!(restored, vec![0]);
@@ -3135,7 +3135,7 @@ mod tests {
 
         let follower = test_engine(dir.path(), "follower");
         replicator
-            .restore_index_and_pages(1, &follower, &follower.block_store())
+            .restore_index_and_blocks(1, &follower, &follower.block_store())
             .await
             .unwrap();
         follower.load_shard(1);
@@ -3208,7 +3208,7 @@ mod tests {
 
         let follower = test_engine(dir.path(), "follower");
         replicator
-            .restore_index_and_pages(1, &follower, &follower.block_store())
+            .restore_index_and_blocks(1, &follower, &follower.block_store())
             .await
             .unwrap();
         follower.load_shard(1);
@@ -3300,7 +3300,7 @@ mod tests {
 
         let follower = test_engine(dir.path(), "follower");
         let restored = replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
             .unwrap();
         assert_eq!(restored.checkpoint_wal_index, 1);
@@ -3401,7 +3401,7 @@ mod tests {
                 for item in &record.outcomes {
                     if let Some(address) = item.resolved_address() {
                         if let Ok(bytes) = primary.block_store().read(&address) {
-                            carried.push(crate::wal::StagedPage {
+                            carried.push(crate::wal::StagedBlock {
                                 object_id: item.object_id,
                                 bytes,
                             });
@@ -3528,7 +3528,7 @@ mod tests {
             for item in &tail.outcomes {
                 if let Some(address) = item.resolved_address() {
                     if let Ok(bytes) = primary.block_store().read(&address) {
-                        carried.push(crate::wal::StagedPage {
+                        carried.push(crate::wal::StagedBlock {
                             object_id: item.object_id,
                             bytes,
                         });
@@ -3554,7 +3554,7 @@ mod tests {
         // A node that has never seen this shard: restore, then take the tail.
         let follower = test_engine(dir.path(), "restored");
         let restored = replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
             .unwrap();
         follower.load_shard(1);
@@ -3600,7 +3600,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_store_lazy_restore_reads_old_page_on_demand() {
+    async fn shared_store_lazy_restore_reads_old_block_on_demand() {
         // On-demand lazy recovery: a fresh node with ONLY shared storage restores the
         // served index + a slab ADDRESS map (no slab bytes), replays the WAL tail, and
         // fetches an old (pre-checkpoint) slab ON DEMAND the first time a read needs it.
@@ -3646,7 +3646,7 @@ mod tests {
 
         // Lazy restore: index + address map only, NO slab bytes installed up front.
         let restored = replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
             .unwrap();
         assert_eq!(restored.checkpoint_wal_index, 1);
@@ -3840,7 +3840,7 @@ mod tests {
 
         let follower = test_engine(dir.path(), "follower");
         replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
             .unwrap();
 
@@ -3914,7 +3914,7 @@ mod tests {
         let buggy = test_engine(dir.path(), "buggy");
         buggy.load_shard(1); // reads an empty on-disk index into memory
         replicator
-            .restore_index_and_page_addresses(1, &buggy, &buggy.block_store())
+            .restore_index_and_block_addresses(1, &buggy, &buggy.block_store())
             .await
             .unwrap(); // writes the real index to DISK, but the in-memory shard is already loaded empty
         replicator
@@ -3937,7 +3937,7 @@ mod tests {
         // FIXED order (restore BEFORE load): what the fixed server startup + /load now do.
         let fixed = test_engine(dir.path(), "fixed");
         replicator
-            .restore_index_and_page_addresses(1, &fixed, &fixed.block_store())
+            .restore_index_and_block_addresses(1, &fixed, &fixed.block_store())
             .await
             .unwrap(); // installs the served index onto the on-disk base first
         fixed.load_shard(1); // load now reads the restored index into memory
@@ -4019,7 +4019,7 @@ mod tests {
 
         let follower = test_engine(dir.path(), "follower");
         let restored = replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
             .unwrap();
         follower.load_shard(1);
@@ -4078,7 +4078,7 @@ mod tests {
         let follower = test_engine(dir.path(), "follower");
         follower.load_shard(1);
         let after = match replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
         {
             Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
@@ -4284,7 +4284,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn matrixobject_networked_lazy_restore_reads_old_page_on_demand() {
+    async fn matrixobject_networked_lazy_restore_reads_old_block_on_demand() {
         // Conformance lazy data-follow over the NETWORK: a fresh node with only
         // the networked matrixobject store restores the served index + a slab ADDRESS
         // map (no slab bytes), replays the WAL tail, and fetches an old (pre-checkpoint)
@@ -4331,7 +4331,7 @@ mod tests {
 
         // Lazy restore: index + address map only, NO slab bytes installed up front.
         let restored = replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
             .unwrap();
         assert_eq!(restored.checkpoint_wal_index, 1);
@@ -4447,7 +4447,7 @@ mod tests {
 
         let follower = test_engine(dir.path(), "follower");
         let restored = replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
             .unwrap();
         follower.load_shard(1);
@@ -4506,7 +4506,7 @@ mod tests {
         let follower = test_engine(dir.path(), "follower");
         follower.load_shard(1);
         let after = match replicator
-            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
             .await
         {
             Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
@@ -4531,7 +4531,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_published_entry_keeps_the_pages_its_write_produced() {
+    async fn a_published_entry_keeps_the_blocks_its_write_produced() {
         // A command is not always enough to rebuild what it wrote. If the shared log drops the
         // pages, a successor replays the command and reconstructs derived state from whatever
         // it happens to have -- which is not necessarily the bytes that were acked.
@@ -4545,7 +4545,7 @@ mod tests {
                 key: "k".to_string(),
                 value: b"v".to_vec(),
             }),
-            staged_pages: vec![crate::wal::StagedPage {
+            staged_pages: vec![crate::wal::StagedBlock {
                 object_id: 77,
                 bytes: b"derived-page-bytes".to_vec(),
             }],
@@ -4563,7 +4563,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_entry_written_before_pages_existed_still_loads() {
+    async fn an_entry_written_before_blocks_existed_still_loads() {
         // `staged_pages` is serde(default), so a WAL object published by an older writer -- one
         // that never had the field -- must still deserialize rather than failing the whole
         // replay of a shard's history.

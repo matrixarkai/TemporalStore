@@ -88,17 +88,11 @@ fn env_bool(name: &str, default: bool) -> bool {
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    crate::env_flag::env_number(name, default)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    crate::env_flag::env_number(name, default)
 }
 
 /// Whether the background drainer is enabled (`MATRIXARK_EMBED_DRAINER`, default off).

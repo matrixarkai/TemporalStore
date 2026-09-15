@@ -1203,10 +1203,10 @@ mod tests {
     fn ingestion_persists_kafka_ledger_dead_letters_lag_and_flink_checkpoints() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
-        let page_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("pages");
         let index_dir = dir.path().join("indexes");
         let engine =
-            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
         engine.load_shard(7);
 
         let report = engine.ingest_batch(IngestionBatchRequest {
@@ -1249,7 +1249,7 @@ mod tests {
         assert!(report.state_persist_status.ok);
 
         let restarted =
-            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
         restarted.load_shard(7);
         let duplicate = restarted.ingest_batch(IngestionBatchRequest {
             stop_on_error: false,
@@ -1321,10 +1321,10 @@ mod tests {
     fn streaming_ingestion_commits_sequence_and_rejects_replay() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
-        let page_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("pages");
         let index_dir = dir.path().join("indexes");
         let engine =
-            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
         engine.load_shard(7);
 
         let first = engine.ingest_stream(IngestionStreamRequest {
@@ -1374,7 +1374,7 @@ mod tests {
         assert_eq!(first.committed_sequence, 2);
 
         let restarted =
-            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
         restarted.load_shard(7);
         let replay = restarted.ingest_stream(IngestionStreamRequest {
             stream_id: "stream-a".to_string(),
@@ -1615,10 +1615,10 @@ mod tests {
     fn dead_letter_export_and_raft_failover_idempotence_reports_are_ready() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
-        let page_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("pages");
         let index_dir = dir.path().join("indexes");
         let primary =
-            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
         primary.load_shard(7);
         let first = primary.ingest_batch(IngestionBatchRequest {
             stop_on_error: false,
@@ -1661,7 +1661,7 @@ mod tests {
         assert!(first.status.ok, "{first:?}");
 
         let restarted =
-            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
         restarted.load_shard(7);
         let replay = restarted.ingest_batch(IngestionBatchRequest {
             stop_on_error: false,

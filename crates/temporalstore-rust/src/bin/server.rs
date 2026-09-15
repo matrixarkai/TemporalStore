@@ -92,11 +92,12 @@ struct BlobReceipt {
 
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = std::env::var("TS_SERVER_BIND_ADDR")
-        .or_else(|_| std::env::var("TS_SERVER_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:17002".to_string());
-    let advertised_addr = std::env::var("TS_SERVER_ADVERTISE_ADDR")
-        .unwrap_or_else(|_| std::env::var("TS_SERVER_ADDR").unwrap_or_else(|_| addr.clone()));
+    let addr = temporalstore_rust::env_flag::env_value("TS_SERVER_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
+        .unwrap_or_else(|| "127.0.0.1:17002".to_string());
+    let advertised_addr = temporalstore_rust::env_flag::env_value("TS_SERVER_ADVERTISE_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
+        .unwrap_or_else(|| addr.clone());
     let meta_addr_raw = std::env::var("TS_META_ADDR").ok();
     let meta_addr = meta_addr_raw
         .clone()
@@ -104,7 +105,7 @@ fn main() {
         .unwrap_or_else(|| "127.0.0.1:17001".to_string());
     let shard_id = std::env::var("TS_SHARD_ID")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(1);
     let cache_dir =
         std::env::var("TS_CACHE_DIR").unwrap_or_else(|_| "target/temporalstore-cache".to_string());
@@ -118,11 +119,11 @@ fn main() {
         .unwrap_or_else(|_| "target/temporalstore-indexes".to_string());
     let cache_memory_bytes = std::env::var("TS_CACHE_MEMORY_BYTES")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(16 * 1024 * 1024);
     let node_id = std::env::var("TS_SERVER_NODE_ID")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or_default();
     // Whether this node already holds local shard state on disk, captured
     // BEFORE the engine constructs/loads (which may create empty dir
@@ -356,7 +357,7 @@ fn main() {
         .unwrap_or_default();
     let heartbeat_interval_ms = std::env::var("TS_SERVER_HEARTBEAT_INTERVAL_MS")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.trim().parse().ok())
         .unwrap_or(3_000);
     let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
 
@@ -1244,7 +1245,7 @@ fn restore_shared_index_before_load(
 ) -> Option<u64> {
     let replicator = replicator.as_ref()?;
     let after_wal_index =
-        match runtime.block_on(replicator.restore_index_and_page_addresses(
+        match runtime.block_on(replicator.restore_index_and_block_addresses(
             shard_id,
             engine,
             &engine.block_store(),
@@ -1315,18 +1316,18 @@ fn replay_shared_wal_tail(
 ///
 /// A successor installs an address; it can only serve that address if the bytes are reachable.
 /// Locally they are in the block store. Across nodes they are not, unless something carries them.
-fn gather_result_pages(
+fn gather_result_blocks(
     engine: &TemporalEngine,
     shard_id: ShardId,
     outcomes: &[temporalstore_rust::wal::WalOutcomeItem],
-) -> Vec<temporalstore_rust::wal::StagedPage> {
+) -> Vec<temporalstore_rust::wal::StagedBlock> {
     let mut pages = Vec::new();
     for item in outcomes {
         let Some(address) = item.resolved_address() else {
             continue;
         };
         if let Ok(bytes) = engine.block_store().read(&address) {
-            pages.push(temporalstore_rust::wal::StagedPage {
+            pages.push(temporalstore_rust::wal::StagedBlock {
                 object_id: item.object_id,
                 bytes,
             });
@@ -1402,7 +1403,7 @@ fn publish_shard_checkpoint(
             // Empty on the local record for a synchronous write -- that page went to the block
             // store rather than into the record -- so they are gathered here.
             staged_pages: if record.staged_pages.is_empty() {
-                gather_result_pages(engine, shard_id, &record.outcomes)
+                gather_result_blocks(engine, shard_id, &record.outcomes)
             } else {
                 record.staged_pages
             },
@@ -1931,7 +1932,7 @@ fn wire_matrixobject_durability(
         // the latest checkpoint, then replay ONLY the WAL tail after it -- old pages are read
         // out of the store on demand. A store with no checkpoint yet (or a failed restore)
         // falls back to the full replay from 0: the old behavior, correct but O(history).
-        let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(
+        let after_wal_index = match rt.block_on(replicator.restore_index_and_block_addresses(
             shard_id,
             engine,
             &engine.block_store(),
@@ -2171,7 +2172,7 @@ fn wire_matrixobject_networked_durability(
     // Fresh node: rebuild from the networked store via conformance lazy
     // data-follow (index + address map, then WAL tail; old pages fetched on demand).
     if !local_state_present {
-        let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(
+        let after_wal_index = match rt.block_on(replicator.restore_index_and_block_addresses(
             shard_id,
             engine,
             &engine.block_store(),
@@ -2194,7 +2195,7 @@ fn wire_matrixobject_networked_durability(
         };
         // Read the just-restored on-disk index into memory so this node auto-serves the
         // followed data. The process-level startup load was deferred to here precisely
-        // so it observes the index installed by `restore_index_and_page_addresses`
+        // so it observes the index installed by `restore_index_and_block_addresses`
         // above; the shared WAL-tail replay below then needs a loaded shard (it applies
         // through `engine.execute`). Join-empty placement instead loads via a later
         // `/load`, so `auto_load` is false and the load is skipped here (behavior
@@ -2278,31 +2279,19 @@ fn wire_matrixobject_networked_durability(
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 fn env_u32(name: &str, default: u32) -> u32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 fn env_i32(name: &str, default: i32) -> i32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+    temporalstore_rust::env_flag::env_number(name, default)
 }
 
 

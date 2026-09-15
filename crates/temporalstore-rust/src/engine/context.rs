@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::engine::constants::*;
-use crate::block_store::LocalBlockStore;
+use crate::block_store::BlockStore;
 use crate::block_store::BlockAddress;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEntity,
@@ -15,7 +15,7 @@ use crate::types::{
 use matrixcache::MultiLayerCache;
 
 use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
-use super::{read_page_bytes, stable_object_hash, ShardState};
+use super::{read_block_bytes, stable_object_hash, ShardState};
 /// `prefix` then two decimal parts, joined by colons, in one allocation.
 ///
 /// `format!` would take two: the String it returns, plus one inside the formatting machinery.
@@ -193,10 +193,10 @@ pub(super) fn default_traversal_candidates() -> usize {
 
 pub(super) fn context_compression_policy_from_env() -> ContextCompressionPolicy {
     fn env_usize(name: &str, default: usize) -> usize {
-        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        crate::env_flag::env_number(name, default)
     }
     fn env_u64(name: &str, default: u64) -> u64 {
-        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        crate::env_flag::env_number(name, default)
     }
     // A local name for the crate vocabulary, not a second one. Spelled out here it accepted
     // `1` and `true` only, and -- worse than the missing words -- it answered `false` for
@@ -348,7 +348,7 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
 
 pub(super) fn read_context_value<T: ContextWire>(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
@@ -358,7 +358,7 @@ pub(super) fn read_context_value<T: ContextWire>(
 }
 
 pub(super) fn read_context_value_cold<T: ContextWire>(
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     timeline_key: u64,
     address: &BlockAddress,
 ) -> Option<T> {
@@ -368,11 +368,11 @@ pub(super) fn read_context_value_cold<T: ContextWire>(
 
 pub(super) fn read_context_value_cached<T: ContextWire>(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
-    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    packed_block_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
 ) -> Option<T> {
     let point = read_feature_point_cached(
         cache,
@@ -380,7 +380,7 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
         shard_id,
         timeline_key,
         address,
-        packed_page_cache,
+        packed_block_cache,
     )?;
     context_from_bytes(&point.value)
 }
@@ -785,7 +785,7 @@ pub(super) fn validate_context_compression_event(
 
 pub(super) fn load_context_children(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -834,7 +834,7 @@ pub fn reset_context_children_dropped_before_scoring() {
 
 pub(super) fn load_context_node_vector(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -847,14 +847,14 @@ pub(super) fn load_context_node_vector(
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .or_else(|| shard.context_nodes.get(&object_key))
         .and_then(|address| {
-            super::read_page_shared(cache, page_store, shard_id, address)
+            super::read_block_shared(cache, page_store, shard_id, address)
                 .and_then(|bytes| crate::types::decode_context_node_vector(&bytes))
         })
 }
 
 pub(super) fn load_context_node(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -872,14 +872,14 @@ pub(super) fn load_context_node(
         .and_then(|address| {
             // Shared, not copied: the bytes are parsed here and dropped, so owning them costs a
             // page-sized memcpy and an allocation for nothing.
-            super::read_page_shared(cache, page_store, shard_id, address)
+            super::read_block_shared(cache, page_store, shard_id, address)
                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
 }
 
 pub(super) fn load_context_summaries(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -922,7 +922,7 @@ pub(super) fn load_context_summaries(
 /// keeps walking only if a decode fails or an entry does not satisfy `valid_from_ms <= as_of_ms`.
 pub(super) fn load_newest_context_summary(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -950,7 +950,7 @@ pub(super) fn load_newest_context_summary(
 
 pub(super) fn load_latest_context_summary(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -965,7 +965,7 @@ pub(super) fn load_latest_context_summary(
 
 pub(super) fn load_context_compression_events(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -1031,7 +1031,7 @@ pub(super) fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn traverse_context_tree(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,

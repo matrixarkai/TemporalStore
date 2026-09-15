@@ -104,7 +104,7 @@ pub(super) fn parse_scan_tail_options(args: &[Vec<u8>]) -> Result<(String, usize
     Ok((pattern, count))
 }
 
-pub(super) fn redis_cursor_page_response(cursor: usize, count: usize, values: Vec<RespValue>) -> RespValue {
+pub(super) fn redis_cursor_block_response(cursor: usize, count: usize, values: Vec<RespValue>) -> RespValue {
     let selected = values
         .iter()
         .skip(cursor)

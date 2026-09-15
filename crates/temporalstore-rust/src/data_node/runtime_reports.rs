@@ -60,7 +60,7 @@ impl DataNodeRuntime {
             storage_manager_reclaim_wal_runs: stats.storage_manager_reclaim_wal_runs,
             storage_manager_reclaim_memory_runs: stats.storage_manager_reclaim_memory_runs,
             storage_manager_expire_runs: stats.storage_manager_expire_runs,
-            storage_manager_reclaim_page_runs: stats.storage_manager_reclaim_page_runs,
+            storage_manager_reclaim_block_runs: stats.storage_manager_reclaim_block_runs,
             storage_manager_compact_runs: stats.storage_manager_compact_runs,
             storage_manager_index_gc_runs: stats.storage_manager_index_gc_runs,
             storage_manager_evict_runs: stats.storage_manager_evict_runs,

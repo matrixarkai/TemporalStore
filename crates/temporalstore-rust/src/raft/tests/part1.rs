@@ -744,7 +744,7 @@ fn raft_replicates_committed_write_to_majority_and_followers() {
 }
 
 #[test]
-fn raft_replicates_chunked_timestamped_kv_page_format_to_followers() {
+fn raft_replicates_chunked_timestamped_kv_block_format_to_followers() {
     let config = RaftConfig {
         max_memory_replicate_log_bytes: 512 * 1024,
         ..RaftConfig::default()
@@ -783,7 +783,7 @@ fn raft_replicates_chunked_timestamped_kv_page_format_to_followers() {
 }
 
 #[test]
-fn raft_snapshot_install_preserves_chunked_timestamped_kv_page_format() {
+fn raft_snapshot_install_preserves_chunked_timestamped_kv_block_format() {
     let config = RaftConfig {
         max_memory_replicate_log_bytes: 512 * 1024,
         ..RaftConfig::default()
@@ -823,10 +823,10 @@ fn raft_snapshot_install_preserves_chunked_timestamped_kv_page_format() {
     let layout = node
         .engine
         .storage_recovery_report(inner.shard_id)
-        .feature_page_layout;
-    assert!(layout.packed_feature_pages > 1);
+        .feature_block_layout;
+    assert!(layout.packed_feature_blocks > 1);
     assert_eq!(layout.indexed_feature_points, points.len());
-    assert!(layout.corrupt_packed_feature_pages.is_empty());
+    assert!(layout.corrupt_packed_feature_blocks.is_empty());
     assert!(layout.missing_indexed_timestamps.is_empty());
     assert!(layout.orphan_packed_timestamps.is_empty());
     assert!(layout.duplicate_packed_timestamps.is_empty());

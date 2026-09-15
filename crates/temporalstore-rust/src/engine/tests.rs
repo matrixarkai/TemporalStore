@@ -11,7 +11,7 @@ use crate::types::{
     ContextExtractedEventIndexes, ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
     ReplicatedCommand,
 };
-use crate::{BlockAddress, BlockStoreOptions, LocalBlockStore};
+use crate::{BlockAddress, BlockStoreOptions, BlockStore};
 
 fn wait_for_fresh_admission_second() {
     loop {

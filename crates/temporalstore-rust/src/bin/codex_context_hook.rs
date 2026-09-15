@@ -203,9 +203,9 @@ fn main() {
 
 fn parse_args() -> Args {
     let mut args = std::env::args().skip(1);
-    let agent_name = std::env::var("MATRIXARK_AGENT_NAME")
-        .or_else(|_| std::env::var("TEMPORALSTORE_AGENT_NAME"))
-        .unwrap_or_else(|_| "codex".to_string());
+    let agent_name = temporalstore_rust::env_flag::env_value("MATRIXARK_AGENT_NAME")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TEMPORALSTORE_AGENT_NAME"))
+        .unwrap_or_else(|| "codex".to_string());
     let mut parsed = Args {
         agent_name,
         event: std::env::var("CODEX_HOOK_EVENT").unwrap_or_else(|_| "UserPromptSubmit".to_string()),
@@ -222,9 +222,9 @@ fn parse_args() -> Args {
             .unwrap_or_else(|_| "acct_codex".to_string()),
         tenant_id: std::env::var("MATRIXARK_TENANT_ID")
             .unwrap_or_else(|_| "tenant_codex".to_string()),
-        user_id: std::env::var("MATRIXARK_USER_ID")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "codex_user".to_string()),
+        user_id: temporalstore_rust::env_flag::env_value("MATRIXARK_USER_ID")
+            .or_else(|| temporalstore_rust::env_flag::env_value("USERNAME"))
+            .unwrap_or_else(|| "codex_user".to_string()),
         session_id: std::env::var("MATRIXARK_SESSION_ID")
             .unwrap_or_else(|_| "codex_session".to_string()),
         query: String::new(),
@@ -432,12 +432,33 @@ fn env_bool(name: &str) -> bool {
     temporalstore_rust::env_flag::env_bool(name, false)
 }
 
+/// How many characters of retrieved context one hook invocation may hand back.
+///
+/// The operator page states the rule this control follows: "The value is floored at 1000 -- a
+/// smaller number is raised to it -- and a value that is not an integer falls back to 40000
+/// without complaining." `matrixark_codex_hook` and `matrixark_agent_hook` both apply that floor.
+/// This reader did not, and it also read `0` as "not set" rather than as a number below the floor:
+///
+/// | written | the page, and both python readers | this reader, before |
+/// |---|---|---|
+/// | `500` | 1000 | 500 |
+/// | `100` | 1000 | 100 |
+/// | `0` | 1000 | 40000 |
+/// | `-1` | 1000 | 40000 |
+///
+/// Which reader answers is not a deployment's choice: `tools/matrixark_claude_hook.sh` defaults to
+/// `MATRIXARK_CLAUDE_HOOK_BACKEND=auto`, which runs the python pipeline when the rust proxy binary
+/// is present and this binary when it is not. So `=0` meant 1000 characters on one box and 40000
+/// on another, for a reason that is not configuration.
+///
+/// Signed on purpose. The page says a value BELOW the floor is raised to it, and `-1` is below the
+/// floor; parsed as a `usize` it is not a number at all and takes the unset path instead.
 fn additional_context_char_limit() -> usize {
-    std::env::var("MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(40_000)
+    let written: i64 = temporalstore_rust::env_flag::env_number(
+        "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT",
+        40_000,
+    );
+    written.max(1_000) as usize
 }
 
 /// Extract the retrieved `<context>...</context>` block from the injected prompt so

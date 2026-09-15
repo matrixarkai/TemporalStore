@@ -402,12 +402,13 @@ impl TemporalEngine {
             let command_for_post_write = command.clone();
             // What the touched keys held before this command, so the capture below can be
             // skipped when nothing was removed. Sizes only -- no allocation.
-            let membership_before: Vec<(String, usize)> =
+            let membership_before: Vec<(String, usize, Option<u64>)> =
                 command_object_keys(&command_for_post_write)
                     .into_iter()
                     .map(|key| {
                         let size = key_membership_size(shard, &key);
-                        (key, size)
+                        let deadline = shard.expires_at_ms.get(&key).copied();
+                        (key, size, deadline)
                     })
                     .collect();
             let outcome = execute_on_shard(
@@ -430,7 +431,7 @@ impl TemporalEngine {
                 let now = now_ms();
                 for key in command_touched_keys(&command_for_post_write) {
                     let recency_bucket =
-                        page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                        block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
                     shard.bucket_recency.insert(recency_bucket, now);
                 }
             }
@@ -438,10 +439,11 @@ impl TemporalEngine {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
                 delta_command_keys.extend(object_keys.iter().cloned());
+                // Same question as the single-command path, through the SAME function: a
+                // membership shrink OR a deadline change. Two spellings of this test is how
+                // one of them keeps a bug the other fixed, so there is only one.
                 if !batch_membership_shrank {
-                    batch_membership_shrank = membership_before
-                        .iter()
-                        .any(|(key, before)| key_membership_size(shard, key) < *before);
+                    batch_membership_shrank = delta_key_state_change(shard, &membership_before);
                 }
                 match (
                     &mut batch_upsert_components,
@@ -454,7 +456,7 @@ impl TemporalEngine {
                 // consumed by the loop, so they are kept as they go past.
                 let mut object_keys_for_maintenance: Vec<String> = Vec::new();
                 if object_keys.is_empty() {
-                    rebuild_bucket_page_ownership(
+                    rebuild_bucket_block_ownership(
                         request.shard_id,
                         shard,
                         start_routing_bucket,
@@ -493,7 +495,7 @@ impl TemporalEngine {
                     let written = command_upsert_components(&command_for_post_write, shard);
                     let narrow = match written.as_deref() {
                         Some(components) => {
-                            crate::engine::storage_bucket_internals::sync_pages_for_written_components(
+                            crate::engine::storage_bucket_internals::sync_blocks_for_written_components(
                                 shard,
                                 request.shard_id,
                                 components,
@@ -504,7 +506,7 @@ impl TemporalEngine {
                     narrow
                         || (!object_keys_for_maintenance.is_empty()
                             && object_keys_for_maintenance.iter().all(|object_key| {
-                                crate::engine::storage_bucket_internals::sync_context_pages_for_object(
+                                crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
                                     shard,
                                     request.shard_id,
                                     object_key,
@@ -518,7 +520,7 @@ impl TemporalEngine {
                     // has always skipped it here; this path did not, so the same command walked
                     // the whole store when it arrived in a batch and nothing when it arrived
                     // alone -- measured at one visit per page in the shard, per command.
-                    && !command_writes_no_page(&command_for_post_write)
+                    && !command_writes_no_block(&command_for_post_write)
                     && (!command_updates_bucket_index_directly(&command_for_post_write)
                         || shard.bucket_index.bucket_map.is_empty())
                 {
@@ -648,7 +650,7 @@ impl TemporalEngine {
                 // undumped write, so a later batch into an already-dirty bucket must not move it.
                 for key in &delta_command_keys {
                     let routing_bucket =
-                        page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                        block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
                     if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
                         if bucket.first_dirty_wal_sequence == 0 {
                             bucket.first_dirty_wal_sequence = batch_first_wal_sequence;
@@ -712,7 +714,7 @@ impl TemporalEngine {
                 if appended_index_log_sequence > 0 {
                     for key in &delta_command_keys {
                         let routing_bucket =
-                            page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                            block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
                         if let Some(bucket) =
                             shard.bucket_index.bucket_map.get_mut(&routing_bucket)
                         {
@@ -871,7 +873,7 @@ impl TemporalEngine {
         };
         let mut publish_records = Vec::with_capacity(publish_targets.len());
         for (target, address) in publish_targets {
-            if let Some(bytes) = read_page_bytes(&self.cache, &self.page_store, shard_id, &address)
+            if let Some(bytes) = read_block_bytes(&self.cache, &self.page_store, shard_id, &address)
             {
                 publish_records.push((
                     target,
@@ -903,7 +905,7 @@ impl TemporalEngine {
             .collect::<Vec<BlockAppendRecord>>();
         let published_addresses = self
             .page_store
-            .append_batch_with_page_metadata(append_records)
+            .append_batch_with_block_metadata(append_records)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
         let index_bytes = {
             let mut shards = self.shards.write().expect("engine lock poisoned");
@@ -932,7 +934,7 @@ impl TemporalEngine {
                             ),
                             bytes,
                         );
-                        upsert_bucket_index_page(
+                        upsert_bucket_index_block(
                             shard,
                             shard_id,
                             "string",
@@ -959,7 +961,7 @@ impl TemporalEngine {
                             ),
                             bytes,
                         );
-                        upsert_bucket_index_page(
+                        upsert_bucket_index_block(
                             shard,
                             shard_id,
                             "hash",

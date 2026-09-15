@@ -42,13 +42,13 @@ fn evidence_store_probe() {
             .bucket_index
             .bucket_map
             .values()
-            .map(|bucket| bucket.page_index.len())
+            .map(|bucket| bucket.block_index.len())
             .sum();
-        let live_pages: usize = shard
+        let live_blocks: usize = shard
             .bucket_index
             .bucket_map
             .values()
-            .map(|bucket| bucket.page_index.values().filter(|p| !p.deleted).count())
+            .map(|bucket| bucket.block_index.values().filter(|p| !p.deleted).count())
             .sum();
         println!(
             "served: hashes={} strings={} features={} context_nodes={} buckets={} pages={} live_pages={} anchor={:?}",
@@ -58,7 +58,7 @@ fn evidence_store_probe() {
             shard.context_nodes.len(),
             shard.bucket_index.bucket_map.len(),
             pages,
-            live_pages,
+            live_blocks,
             shard.applied_wal_sequence,
         );
     } else {

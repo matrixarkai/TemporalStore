@@ -3631,6 +3631,37 @@ def _socket_budget_seconds(request_timeout_ms: int, caller_deadline_ms: int = 0)
     return min(ceiling_s, asked_s)
 
 
+def _published_proxy_http_addr(socket_path: str) -> str:
+    """The address the daemon published beside `socket_path`, if it is usable RIGHT NOW.
+
+    Connect-checked, not merely read. A daemon that was killed rather than stopped leaves the file
+    behind, and the client has no other way to tell a live address from a dead one -- so believing
+    the file would turn one stale entry into a hard failure on every call, where using the socket
+    would have worked. The socket is the safe answer whenever the address is not answering, which
+    is also what makes turning the transport on reversible: stop publishing, and clients fall back.
+
+    Deliberately silent on every failure. This runs in a constructor on the serving path, and a
+    missing file is the normal case for a deployment that has not turned the transport on.
+    """
+    try:
+        with open(socket_path + ".http", encoding="utf-8") as handle:
+            raw = handle.read().strip()
+    except (OSError, ValueError):
+        return ""
+    host, _, port = raw.rpartition(":")
+    if not host or not port.isdigit():
+        return ""
+    probe = socket.socket()
+    probe.settimeout(0.5)
+    try:
+        probe.connect((host, int(port)))
+    except OSError:
+        return ""
+    finally:
+        probe.close()
+    return raw
+
+
 def _caller_deadline_ms(kwargs: Json) -> int:
     """The deadline the CALLER set for this call, in milliseconds, or 0 for none.
 
@@ -3730,6 +3761,12 @@ class MatrixArkRustProxyClient(_AppendRecordsViaBatch):
         # Checked BEFORE the socket, so setting it is enough to switch a deployment over without
         # having to unset the socket the old path is still configured with.
         self._proxy_http = os.environ.get("MATRIXARK_RUST_PROXY_HTTP", "").strip()
+        if not self._proxy_http and self._proxy_socket:
+            # Nothing can hardcode the port: the daemon picks it at start, so it writes it beside
+            # the socket and a client that was going to use the socket reads it instead. Without
+            # this the direct transport is reachable only by a deployment that already knows a
+            # number it cannot know, which is why it has been complete and unused since #1364.
+            self._proxy_http = _published_proxy_http_addr(self._proxy_socket)
         self._http_local = threading.local()
         self._dedicated_pack_lanes_enabled = (
             env_bool("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", False)

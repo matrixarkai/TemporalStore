@@ -2634,9 +2634,9 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
 fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");
-    let page_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
-    let engine = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+    let engine = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
     let report = ingest_resource_skill_context(
         &engine,
@@ -2745,7 +2745,7 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
         + secondary_indexes.summary_refs.len();
     drop(engine);
 
-    let restored = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+    let restored = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
     restored.load_shard(1);
     // The vectors persisted on the nodes themselves, so a cold reload proves embedding
     // durability by fetching the owners.
@@ -5072,7 +5072,7 @@ fn a_copy_from_a_replaced_encoder_is_declined_and_counted() {
 /// path does after it: maintain the bucket index for the touched keys, or -- when maintenance does
 /// not cover them -- rebuild it, walking every live page in the shard.
 ///
-/// `live_page_scan_entries` counts exactly the entries that walk materializes, so it separates the
+/// `live_block_scan_entries` counts exactly the entries that walk materializes, so it separates the
 /// two outcomes by measurement rather than by reading:
 ///
 ///   live entries ~0           => maintenance covered the write
@@ -5136,7 +5136,7 @@ fn does_a_summary_write_rebuild_the_whole_index() {
             command: command(tag),
         });
         assert!(warm.status.ok, "warm: {:?}", warm.status);
-        crate::engine::reset_live_page_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
         crate::engine::bucket_visit_sites::reset();
         let probe = crate::alloc_probe::Probe::start();
         let out = engine.execute(ExecuteRequest {
@@ -5148,7 +5148,7 @@ fn does_a_summary_write_rebuild_the_whole_index() {
         let (layout, clear_dirty, refresh, remove_all) = crate::engine::bucket_visit_sites::snapshot();
         (
             allocs,
-            crate::engine::live_page_scan_entries(),
+            crate::engine::live_block_scan_entries(),
             layout,
             clear_dirty,
             refresh,

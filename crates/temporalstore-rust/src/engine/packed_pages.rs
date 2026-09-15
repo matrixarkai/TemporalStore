@@ -3,14 +3,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
+use crate::block_store::{BlockAddress, BlockStoreError, BlockStore};
 use crate::types::{FeaturePoint, ShardId};
 use matrixcache::{CacheKey, MultiLayerCache};
 
-use super::constants::{FEATURE_PAGE_BINARY_MAGIC, FEATURE_PAGE_MAGIC};
-use super::state::{PackedFeaturePage, PackedFeaturePageDecode};
-use super::{append_value, read_page_bytes, read_page_bytes_cold, stable_page_object_id};
-use crate::storage_config::context_page_target_bytes;
+use super::constants::{FEATURE_BLOCK_BINARY_MAGIC, FEATURE_BLOCK_MAGIC};
+use super::state::{PackedFeatureBlock, PackedFeatureBlockDecode};
+use super::{append_value, read_block_bytes, read_block_bytes_cold, stable_block_object_id};
+use crate::storage_config::context_block_target_bytes;
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
     if points
         .windows(2)
@@ -26,16 +26,16 @@ pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<Featur
 }
 
 /// Borrows the points instead of owning them, so the page can be serialised without first
-/// copying every value. Mirrors `PackedFeaturePage` field for field -- same names, same order,
+/// copying every value. Mirrors `PackedFeatureBlock` field for field -- same names, same order,
 /// same types -- and neither carries a serde attribute, so the two produce identical bytes.
 #[derive(serde::Serialize)]
-struct PackedFeaturePageRef<'a> {
+struct PackedFeatureBlockRef<'a> {
     version: u8,
     points: &'a [FeaturePoint],
 }
 
 /// A page's fixed header: the magic and the point count.
-const FEATURE_PAGE_HEADER_BYTES: usize = FEATURE_PAGE_BINARY_MAGIC.len() + 4;
+const FEATURE_BLOCK_HEADER_BYTES: usize = FEATURE_BLOCK_BINARY_MAGIC.len() + 4;
 
 /// Per point: an 8-byte timestamp and a 4-byte length in front of the value.
 const FEATURE_POINT_HEADER_BYTES: usize = 12;
@@ -51,15 +51,15 @@ const FEATURE_POINT_HEADER_BYTES: usize = 12;
 /// out of a page holding several. Every context write passes a single point, but the feature
 /// series path does not, and addressing a point by ordinal instead would change `BlockAddress` and
 /// every index that stores one.
-pub(super) fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
+pub(super) fn encode_feature_block(points: &[FeaturePoint]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(
-        FEATURE_PAGE_HEADER_BYTES
+        FEATURE_BLOCK_HEADER_BYTES
             + points
                 .iter()
                 .map(|point| FEATURE_POINT_HEADER_BYTES + point.value.len())
                 .sum::<usize>(),
     );
-    bytes.extend_from_slice(FEATURE_PAGE_BINARY_MAGIC);
+    bytes.extend_from_slice(FEATURE_BLOCK_BINARY_MAGIC);
     // A page with more points than a u32 can count cannot be written, and cannot occur: the
     // chunker splits on a byte target long before this.
     bytes.extend_from_slice(&(points.len() as u32).to_le_bytes());
@@ -71,8 +71,8 @@ pub(super) fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
     bytes
 }
 
-fn empty_feature_page_encoded_len() -> usize {
-    FEATURE_PAGE_HEADER_BYTES
+fn empty_feature_block_encoded_len() -> usize {
+    FEATURE_BLOCK_HEADER_BYTES
 }
 
 fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
@@ -115,7 +115,7 @@ fn stage_timestamped_outcomes(
             kind: kind.to_string(),
             object_key: key.to_string(),
             component: Some(component.clone()),
-            object_id: stable_page_object_id(shard_id, kind, key, Some(&component)),
+            object_id: stable_block_object_id(shard_id, kind, key, Some(&component)),
             routing_bucket,
             address: Some(address.clone()),
             value: None,
@@ -142,7 +142,7 @@ fn stage_timestamped_removal(
         kind: kind.to_string(),
         object_key: key.to_string(),
         component: Some(component.clone()),
-        object_id: stable_page_object_id(shard_id, kind, key, Some(&component)),
+        object_id: stable_block_object_id(shard_id, kind, key, Some(&component)),
         routing_bucket,
         address: None,
         value: None,
@@ -199,9 +199,9 @@ pub(super) fn trim_timestamped_series(
     trimmed
 }
 
-pub(super) fn append_timestamped_kv_pages(
+pub(super) fn append_timestamped_kv_blocks(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     kind: &str,
     key: &str,
@@ -209,9 +209,9 @@ pub(super) fn append_timestamped_kv_pages(
     routing_bucket: u32,
     async_storage: bool,
     promote_sync_writes: bool,
-    first_block_index: u32,
+    first_block_ordinal: u32,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
-    append_timestamped_kv_pages_inner(
+    append_timestamped_kv_blocks_inner(
         cache,
         block_store,
         shard_id,
@@ -222,7 +222,7 @@ pub(super) fn append_timestamped_kv_pages(
         async_storage,
         promote_sync_writes,
         None,
-        first_block_index,
+        first_block_ordinal,
     )
 }
 
@@ -231,9 +231,9 @@ pub(super) fn append_timestamped_kv_pages(
 /// The caller passes the key its map will actually use, so the recorded item can name the entry
 /// the write created. Without it a record states where a page landed and not what it became.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn append_timestamped_kv_pages_keyed(
+pub(super) fn append_timestamped_kv_blocks_keyed(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     kind: &str,
     key: &str,
@@ -242,9 +242,9 @@ pub(super) fn append_timestamped_kv_pages_keyed(
     async_storage: bool,
     promote_sync_writes: bool,
     identity: u64,
-    first_block_index: u32,
+    first_block_ordinal: u32,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
-    append_timestamped_kv_pages_inner(
+    append_timestamped_kv_blocks_inner(
         cache,
         block_store,
         shard_id,
@@ -255,14 +255,14 @@ pub(super) fn append_timestamped_kv_pages_keyed(
         async_storage,
         promote_sync_writes,
         Some(identity),
-        first_block_index,
+        first_block_ordinal,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn append_timestamped_kv_pages_inner(
+fn append_timestamped_kv_blocks_inner(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     kind: &str,
     key: &str,
@@ -271,22 +271,22 @@ fn append_timestamped_kv_pages_inner(
     async_storage: bool,
     promote_sync_writes: bool,
     identity: Option<u64>,
-    first_block_index: u32,
+    first_block_ordinal: u32,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
-    let object_id = stable_page_object_id(shard_id, kind, key, None);
+    let object_id = stable_block_object_id(shard_id, kind, key, None);
     let mut refs = Vec::new();
     let chunks = chunk_timestamped_kv_points(points);
     if !async_storage {
         let mut chunk_points = Vec::with_capacity(chunks.len());
-        let mut encoded_pages = Vec::with_capacity(chunks.len());
+        let mut encoded_blocks = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            encoded_pages.push(encode_feature_page(&chunk));
+            encoded_blocks.push(encode_feature_block(&chunk));
             chunk_points.push(chunk);
         }
         // Hand the store a slice of each page instead of a clone of it. The page is kept anyway,
         // for the cache put below, so the clone was a second full copy of a JSON page -- and a
         // page is several times its payload, because a value is written as decimal numbers.
-        let writes: Vec<crate::block_store::BlockAppendRecord<'_>> = encoded_pages
+        let writes: Vec<crate::block_store::BlockAppendRecord<'_>> = encoded_blocks
             .iter()
             .enumerate()
             .map(|(chunk, packed)| {
@@ -294,7 +294,7 @@ fn append_timestamped_kv_pages_inner(
                     packed.as_slice(),
                     Some(object_id),
                     Some(routing_bucket),
-                    first_block_index.saturating_add(chunk as u32),
+                    first_block_ordinal.saturating_add(chunk as u32),
                 )
             })
             .collect();
@@ -306,18 +306,18 @@ fn append_timestamped_kv_pages_inner(
         // the outcomes named a block that was never written, and the read had nothing to fall back
         // to. The whole series came back empty.
         if block_store.block_in_wal() {
-            for packed in &encoded_pages {
+            for packed in &encoded_blocks {
                 super::block_in_wal::stage(object_id, packed.as_slice());
             }
         }
-        let addresses = block_store.append_batch_with_page_metadata(writes)?;
+        let addresses = block_store.append_batch_with_block_metadata(writes)?;
         if addresses.len() != chunk_points.len() {
             return Err(BlockStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "batch page append returned fewer addresses than chunks",
             )));
         }
-        for ((chunk, packed), address) in chunk_points.into_iter().zip(encoded_pages).zip(addresses)
+        for ((chunk, packed), address) in chunk_points.into_iter().zip(encoded_blocks).zip(addresses)
         {
             if promote_sync_writes {
                 cache.put_memory_only(
@@ -342,7 +342,7 @@ fn append_timestamped_kv_pages_inner(
     }
 
     for chunk in chunks {
-        let packed = encode_feature_page(&chunk);
+        let packed = encode_feature_block(&chunk);
         let address = append_value(
             cache,
             block_store,
@@ -366,7 +366,7 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
     // One point is always exactly one page, so measuring it is wasted work. The split below fires
     // only when `current` is non-empty, which a lone point never is, so its encoded length is
     // computed and never read -- and computing it is a FULL `serde_json` serialisation of the
-    // point, the same work `encode_feature_page` is about to do again on the way to the page.
+    // point, the same work `encode_feature_block` is about to do again on the way to the page.
     //
     // A page carries its value as a `Vec<u8>`, which serde_json writes as an array of decimal
     // numbers, so that measurement costs several times the value it measures. Every context write
@@ -376,19 +376,19 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
     }
     let mut chunks = Vec::new();
     let mut current = Vec::new();
-    let empty_page_len = empty_feature_page_encoded_len();
-    let mut current_encoded_len = empty_page_len;
-    let page_target_bytes = context_page_target_bytes();
+    let empty_block_len = empty_feature_block_encoded_len();
+    let mut current_encoded_len = empty_block_len;
+    let block_target_bytes = context_block_target_bytes();
 
     for point in points {
         let point_encoded_len = feature_point_encoded_len(&point);
         let next_encoded_len = current_encoded_len
             .saturating_add(point_encoded_len)
             .saturating_add(if current.is_empty() { 0 } else { 1 });
-        if next_encoded_len > page_target_bytes && !current.is_empty() {
+        if next_encoded_len > block_target_bytes && !current.is_empty() {
             chunks.push(current);
             current = Vec::new();
-            current_encoded_len = empty_page_len;
+            current_encoded_len = empty_block_len;
         }
         current_encoded_len = current_encoded_len
             .saturating_add(point_encoded_len)
@@ -403,32 +403,32 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
 }
 
 #[cfg(test)]
-pub(super) fn decode_feature_page(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
-    match decode_feature_page_strict(bytes) {
-        PackedFeaturePageDecode::Packed(points) => Some(points),
-        PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
+pub(super) fn decode_feature_block(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
+    match decode_feature_block_strict(bytes) {
+        PackedFeatureBlockDecode::Packed(points) => Some(points),
+        PackedFeatureBlockDecode::Legacy | PackedFeatureBlockDecode::Corrupt(_) => None,
     }
 }
 
-pub(super) fn decode_feature_page_strict(bytes: &[u8]) -> PackedFeaturePageDecode {
-    if let Some(payload) = bytes.strip_prefix(FEATURE_PAGE_BINARY_MAGIC) {
-        return decode_binary_feature_page(payload);
+pub(super) fn decode_feature_block_strict(bytes: &[u8]) -> PackedFeatureBlockDecode {
+    if let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_BINARY_MAGIC) {
+        return decode_binary_feature_block(payload);
     }
-    if let Some(payload) = bytes.strip_prefix(FEATURE_PAGE_MAGIC) {
+    if let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_MAGIC) {
         // A page written before the byte format. Kept so a store that already exists keeps
         // reading; nothing writes this shape any more, and this arm goes when those stores do.
-        return match serde_json::from_slice::<PackedFeaturePage>(payload) {
-            Ok(page) if page.version == 1 => PackedFeaturePageDecode::Packed(page.points),
-            Ok(page) => PackedFeaturePageDecode::Corrupt(format!(
+        return match serde_json::from_slice::<PackedFeatureBlock>(payload) {
+            Ok(page) if page.version == 1 => PackedFeatureBlockDecode::Packed(page.points),
+            Ok(page) => PackedFeatureBlockDecode::Corrupt(format!(
                 "unsupported packed feature page version {}",
                 page.version
             )),
-            Err(err) => PackedFeaturePageDecode::Corrupt(format!(
+            Err(err) => PackedFeatureBlockDecode::Corrupt(format!(
                 "invalid packed feature page payload: {err}"
             )),
         };
     }
-    PackedFeaturePageDecode::Legacy
+    PackedFeatureBlockDecode::Legacy
 }
 
 /// Read a byte-format page, checking every declared length against what is actually there.
@@ -436,9 +436,9 @@ pub(super) fn decode_feature_page_strict(bytes: &[u8]) -> PackedFeaturePageDecod
 /// A torn page declares a length it does not have. Sizing a buffer from a declared length is what
 /// once turned a corrupt tail into an aborted process, so nothing here is allocated until the
 /// bytes behind it have been counted.
-fn decode_binary_feature_page(payload: &[u8]) -> PackedFeaturePageDecode {
+fn decode_binary_feature_block(payload: &[u8]) -> PackedFeatureBlockDecode {
     let Some((count_bytes, mut rest)) = split_at_checked(payload, 4) else {
-        return PackedFeaturePageDecode::Corrupt(
+        return PackedFeatureBlockDecode::Corrupt(
             "packed feature page ends before its point count".to_string(),
         );
     };
@@ -447,7 +447,7 @@ fn decode_binary_feature_page(payload: &[u8]) -> PackedFeaturePageDecode {
     // The smallest a point can be is its own header, so a count that could not fit in the
     // remaining bytes is a torn or forged page -- and this is checked BEFORE reserving for it.
     if count.saturating_mul(FEATURE_POINT_HEADER_BYTES) > rest.len() {
-        return PackedFeaturePageDecode::Corrupt(format!(
+        return PackedFeatureBlockDecode::Corrupt(format!(
             "packed feature page declares {count} points but holds {} bytes",
             rest.len()
         ));
@@ -455,7 +455,7 @@ fn decode_binary_feature_page(payload: &[u8]) -> PackedFeaturePageDecode {
     let mut points = Vec::with_capacity(count);
     for index in 0..count {
         let Some((header, tail)) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES) else {
-            return PackedFeaturePageDecode::Corrupt(format!(
+            return PackedFeatureBlockDecode::Corrupt(format!(
                 "packed feature page ends inside the header of point {index}"
             ));
         };
@@ -464,7 +464,7 @@ fn decode_binary_feature_page(payload: &[u8]) -> PackedFeaturePageDecode {
         ]);
         let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
         let Some((value, tail)) = split_at_checked(tail, length) else {
-            return PackedFeaturePageDecode::Corrupt(format!(
+            return PackedFeatureBlockDecode::Corrupt(format!(
                 "point {index} declares {length} bytes and the page has {}",
                 tail.len()
             ));
@@ -476,12 +476,12 @@ fn decode_binary_feature_page(payload: &[u8]) -> PackedFeaturePageDecode {
         rest = tail;
     }
     if !rest.is_empty() {
-        return PackedFeaturePageDecode::Corrupt(format!(
+        return PackedFeatureBlockDecode::Corrupt(format!(
             "packed feature page has {} bytes after its last point",
             rest.len()
         ));
     }
-    PackedFeaturePageDecode::Packed(points)
+    PackedFeatureBlockDecode::Packed(points)
 }
 
 /// `split_at` that returns `None` instead of panicking when the slice is too short.
@@ -494,51 +494,51 @@ fn split_at_checked(bytes: &[u8], at: usize) -> Option<(&[u8], &[u8])> {
 
 pub(super) fn read_feature_point(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
 ) -> Option<FeaturePoint> {
-    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => points
+    let bytes = read_block_bytes(cache, block_store, shard_id, address)?;
+    match decode_feature_block_strict(&bytes) {
+        PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
             .find(|point| point.timestamp_ms == timestamp_ms),
-        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
+        PackedFeatureBlockDecode::Legacy => Some(FeaturePoint {
             timestamp_ms,
             value: bytes,
         }),
-        PackedFeaturePageDecode::Corrupt(_) => None,
+        PackedFeatureBlockDecode::Corrupt(_) => None,
     }
 }
 
 pub(super) fn read_feature_point_cold(
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     timestamp_ms: u64,
     address: &BlockAddress,
 ) -> Option<FeaturePoint> {
-    let bytes = read_page_bytes_cold(block_store, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => points
+    let bytes = read_block_bytes_cold(block_store, address)?;
+    match decode_feature_block_strict(&bytes) {
+        PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
             .find(|point| point.timestamp_ms == timestamp_ms),
-        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
+        PackedFeatureBlockDecode::Legacy => Some(FeaturePoint {
             timestamp_ms,
             value: bytes,
         }),
-        PackedFeaturePageDecode::Corrupt(_) => None,
+        PackedFeatureBlockDecode::Corrupt(_) => None,
     }
 }
 
 pub(super) fn read_feature_point_cached(
     cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
+    block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
-    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    packed_block_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
 ) -> Option<FeaturePoint> {
-    if let Some(points) = packed_page_cache.get(address) {
+    if let Some(points) = packed_block_cache.get(address) {
         return points
             .as_ref()
             .and_then(|points| {
@@ -549,29 +549,29 @@ pub(super) fn read_feature_point_cached(
             .cloned();
     }
 
-    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => {
+    let bytes = read_block_bytes(cache, block_store, shard_id, address)?;
+    match decode_feature_block_strict(&bytes) {
+        PackedFeatureBlockDecode::Packed(points) => {
             let selected = points
                 .iter()
                 .find(|point| point.timestamp_ms == timestamp_ms)
                 .cloned();
-            packed_page_cache.insert(address.clone(), Some(points));
+            packed_block_cache.insert(address.clone(), Some(points));
             selected
         }
-        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
+        PackedFeatureBlockDecode::Legacy => Some(FeaturePoint {
             timestamp_ms,
             value: bytes,
         }),
-        PackedFeaturePageDecode::Corrupt(_) => {
-            packed_page_cache.insert(address.clone(), None);
+        PackedFeatureBlockDecode::Corrupt(_) => {
+            packed_block_cache.insert(address.clone(), None);
             None
         }
     }
 }
 
 #[cfg(test)]
-mod page_encoding_tests {
+mod block_encoding_tests {
     use super::*;
     use crate::types::FeaturePoint;
 
@@ -585,7 +585,7 @@ mod page_encoding_tests {
     /// Reports rather than asserts a threshold: a timing assertion on shared hardware is a flake
     /// generator, and the correctness of both paths is pinned by the tests above.
     #[test]
-    fn what_the_page_format_costs() {
+    fn what_the_block_format_costs() {
         use std::time::Instant;
 
         let value: Vec<u8> = (0..400u32).map(|i| (i % 251) as u8).collect();
@@ -593,15 +593,15 @@ mod page_encoding_tests {
         let rounds = 20_000;
 
         // Warm both paths so the first does not pay for what the second reuses.
-        let _ = encode_feature_page(&points);
-        let owned = PackedFeaturePage { version: 1, points: points.to_vec() };
+        let _ = encode_feature_block(&points);
+        let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
         let _ = serde_json::to_vec(&owned).expect("serialises");
 
         let started = Instant::now();
         let mut json_bytes = 0usize;
         for _ in 0..rounds {
-            let owned = PackedFeaturePage { version: 1, points: points.to_vec() };
-            let mut page = FEATURE_PAGE_MAGIC.to_vec();
+            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
+            let mut page = FEATURE_BLOCK_MAGIC.to_vec();
             page.append(&mut serde_json::to_vec(&owned).expect("serialises"));
             json_bytes = page.len();
         }
@@ -610,20 +610,20 @@ mod page_encoding_tests {
         let started = Instant::now();
         let mut binary_bytes = 0usize;
         for _ in 0..rounds {
-            binary_bytes = encode_feature_page(&points).len();
+            binary_bytes = encode_feature_block(&points).len();
         }
         let binary_encode_ns = started.elapsed().as_nanos();
 
-        let owned = PackedFeaturePage { version: 1, points: points.to_vec() };
-        let mut json_page = FEATURE_PAGE_MAGIC.to_vec();
-        json_page.append(&mut serde_json::to_vec(&owned).expect("serialises"));
-        let binary_page = encode_feature_page(&points);
+        let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
+        let mut json_block = FEATURE_BLOCK_MAGIC.to_vec();
+        json_block.append(&mut serde_json::to_vec(&owned).expect("serialises"));
+        let binary_block = encode_feature_block(&points);
 
         let started = Instant::now();
         for _ in 0..rounds {
             assert!(matches!(
-                decode_feature_page_strict(&json_page),
-                PackedFeaturePageDecode::Packed(_)
+                decode_feature_block_strict(&json_block),
+                PackedFeatureBlockDecode::Packed(_)
             ));
         }
         let json_decode_ns = started.elapsed().as_nanos();
@@ -631,8 +631,8 @@ mod page_encoding_tests {
         let started = Instant::now();
         for _ in 0..rounds {
             assert!(matches!(
-                decode_feature_page_strict(&binary_page),
-                PackedFeaturePageDecode::Packed(_)
+                decode_feature_block_strict(&binary_block),
+                PackedFeatureBlockDecode::Packed(_)
             ));
         }
         let binary_decode_ns = started.elapsed().as_nanos();
@@ -668,11 +668,11 @@ mod page_encoding_tests {
 
     /// Every shape a page can take must come back exactly as it went in.
     #[test]
-    fn the_page_round_trips_every_shape() {
+    fn the_block_round_trips_every_shape() {
         for points in fixtures() {
-            let encoded = encode_feature_page(&points);
+            let encoded = encode_feature_block(&points);
             assert_eq!(
-                decode_feature_page(&encoded).as_deref(),
+                decode_feature_block(&encoded).as_deref(),
                 Some(points.as_slice()),
                 "a page of {} point(s) did not decode back",
                 points.len()
@@ -685,13 +685,13 @@ mod page_encoding_tests {
     /// Stores exist that were written as JSON. Nothing writes that shape now, and this is what
     /// lets those stores keep serving until they are gone.
     #[test]
-    fn a_page_written_as_json_still_reads() {
+    fn a_block_written_as_json_still_reads() {
         for points in fixtures() {
-            let owned = PackedFeaturePage { version: 1, points: points.to_vec() };
-            let mut json_page = FEATURE_PAGE_MAGIC.to_vec();
-            json_page.append(&mut serde_json::to_vec(&owned).expect("owned page serialises"));
+            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
+            let mut json_block = FEATURE_BLOCK_MAGIC.to_vec();
+            json_block.append(&mut serde_json::to_vec(&owned).expect("owned page serialises"));
             assert_eq!(
-                decode_feature_page(&json_page).as_deref(),
+                decode_feature_block(&json_block).as_deref(),
                 Some(points.as_slice()),
                 "a JSON page of {} point(s) stopped reading",
                 points.len()
@@ -705,21 +705,21 @@ mod page_encoding_tests {
     /// process once already. Every prefix of a real page is fed in here: each must either decode
     /// to exactly the points that survived or say it is corrupt, and none may panic.
     #[test]
-    fn a_torn_page_is_reported_not_trusted() {
+    fn a_torn_block_is_reported_not_trusted() {
         let points = vec![
             FeaturePoint { timestamp_ms: 11, value: vec![b'x'; 40] },
             FeaturePoint { timestamp_ms: 12, value: vec![b'y'; 40] },
         ];
-        let whole = encode_feature_page(&points);
+        let whole = encode_feature_block(&points);
         for cut in 0..whole.len() {
-            match decode_feature_page_strict(&whole[..cut]) {
-                PackedFeaturePageDecode::Corrupt(_) => {}
+            match decode_feature_block_strict(&whole[..cut]) {
+                PackedFeatureBlockDecode::Corrupt(_) => {}
                 // A prefix shorter than the magic cannot claim to be one of our pages.
-                PackedFeaturePageDecode::Legacy => assert!(
-                    cut < FEATURE_PAGE_BINARY_MAGIC.len(),
+                PackedFeatureBlockDecode::Legacy => assert!(
+                    cut < FEATURE_BLOCK_BINARY_MAGIC.len(),
                     "a truncation at {cut} was read as an unframed page"
                 ),
-                PackedFeaturePageDecode::Packed(got) => panic!(
+                PackedFeatureBlockDecode::Packed(got) => panic!(
                     "a page truncated at {cut} decoded as {} point(s)",
                     got.len()
                 ),
@@ -727,12 +727,12 @@ mod page_encoding_tests {
         }
 
         // And a page that claims more points than it carries is refused rather than reserved for.
-        let mut lying = encode_feature_page(&points);
-        let count_at = FEATURE_PAGE_BINARY_MAGIC.len();
+        let mut lying = encode_feature_block(&points);
+        let count_at = FEATURE_BLOCK_BINARY_MAGIC.len();
         lying[count_at..count_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(matches!(
-            decode_feature_page_strict(&lying),
-            PackedFeaturePageDecode::Corrupt(_)
+            decode_feature_block_strict(&lying),
+            PackedFeatureBlockDecode::Corrupt(_)
         ));
     }
 
@@ -742,23 +742,23 @@ mod page_encoding_tests {
     /// 4.3x for a small one. This pins the new shape at the payload plus a fixed header, which is
     /// the whole point of the change and the thing a future edit could quietly undo.
     #[test]
-    fn a_page_is_no_longer_several_times_its_payload() {
+    fn a_block_is_no_longer_several_times_its_payload() {
         for payload_len in [48usize, 400, 4096] {
             let points = vec![FeaturePoint {
                 timestamp_ms: 1_789_007_622_131,
                 value: vec![7u8; payload_len],
             }];
-            let encoded = encode_feature_page(&points);
+            let encoded = encode_feature_block(&points);
             let overhead = encoded.len() - payload_len;
             assert_eq!(
                 overhead,
-                FEATURE_PAGE_HEADER_BYTES + FEATURE_POINT_HEADER_BYTES,
+                FEATURE_BLOCK_HEADER_BYTES + FEATURE_POINT_HEADER_BYTES,
                 "a {payload_len} B payload should cost a fixed header, not a multiple"
             );
 
             // Against what it used to cost, so the comparison is in the test rather than a note.
-            let owned = PackedFeaturePage { version: 1, points: points.to_vec() };
-            let json_len = FEATURE_PAGE_MAGIC.len()
+            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
+            let json_len = FEATURE_BLOCK_MAGIC.len()
                 + serde_json::to_vec(&owned).expect("serialises").len();
             // At least halved. A small payload saves less than a large one because the
             // header is the same 23 bytes either way: 48 B costs 71 B against 168 B as JSON,
@@ -805,7 +805,7 @@ mod single_point_chunking_tests {
 
         // 3. Two points too big to share DO split, which is the behaviour the short circuit must
         //    not have disabled for the multi-point path.
-        let target = context_page_target_bytes();
+        let target = context_block_target_bytes();
         let split = chunk_timestamped_kv_points(vec![point(1, target), point(2, target)]);
         assert_eq!(split.len(), 2, "two oversized points must not share a page");
         assert_eq!(split[0][0].timestamp_ms, 1, "order is preserved across the split");

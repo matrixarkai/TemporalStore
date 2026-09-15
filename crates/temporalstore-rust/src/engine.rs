@@ -47,20 +47,20 @@ pub(crate) use command_validation::{command_object_keys, is_write_command};
 pub(crate) use storage_bucket_internals::uncovered_maintenance;
 mod storage_bucket_internals;
 pub use storage_bucket_internals::{
-    bucket_page_index_visits, bucket_visit_sites, layout_by_caller, live_page_scan_entries,
-    live_page_scan_sites_snapshot, reset_bucket_page_index_visits,
-    reset_live_page_scan_entries, reset_live_page_scan_sites,
+    bucket_block_index_visits, bucket_visit_sites, layout_by_caller, live_block_scan_entries,
+    live_block_scan_sites_snapshot, reset_bucket_block_index_visits,
+    reset_live_block_scan_entries, reset_live_block_scan_sites,
     BLOCK_SLAB_LIVE_DRIFTS, BLOCK_SLAB_LIVE_RECONCILES,
 };
 pub use state::{block_slab_live_charges, reset_block_slab_live_charges};
 pub use shard_write_guard::{
-    index_encode_counts, maintenance_mirror_sink_lookups, maintenance_page_read_counts,
+    index_encode_counts, maintenance_mirror_sink_lookups, maintenance_block_read_counts,
     reset_index_encode_counts, reset_maintenance_mirror_sink_lookups,
-    reset_maintenance_page_read_counts, IndexEncodeCounts, MaintenancePageReadCounts,
+    reset_maintenance_block_read_counts, IndexEncodeCounts, MaintenanceBlockReadCounts,
 };
 mod compaction;
 // The maintenance round in `data_node` asks this before compacting; see the function's doc.
-pub use compaction::{compaction_drain_block_slab_ids, compaction_relocatable_page_refs};
+pub use compaction::{compaction_drain_block_slab_ids, compaction_relocatable_block_refs};
 mod storage_reporting;
 pub(crate) mod hashing;
 mod bucket_store;
@@ -90,7 +90,7 @@ use self::hashing::*;
 use self::storage_reporting::*;
 use self::storage_bucket_internals::*;
 use self::bucket_dump_io::*;
-use self::bucket_store::{read_bucket_index_value, bucket_index_component_page_addresses};
+use self::bucket_store::{read_bucket_index_value, bucket_index_component_block_addresses};
 use self::state::*;
 use crate::block_store::BlockAppendRecord;
 use crate::control::{
@@ -102,7 +102,7 @@ use crate::control::{
     UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
-use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
+use crate::block_store::{BlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
@@ -122,7 +122,7 @@ use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 pub struct TemporalEngine {
     shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
     cache: MultiLayerCache,
-    page_store: LocalBlockStore,
+    page_store: BlockStore,
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
@@ -263,7 +263,7 @@ pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
 /// The default is deliberately generous. The recent ones are worth keeping where they are: a page
 /// written moments ago is the one a read is most likely to want, and its bytes are already in the
 /// record just written. This is a ceiling on how far behind the dump can fall, not a cache policy.
-fn wal_resident_page_limit() -> usize {
+fn wal_resident_block_limit() -> usize {
     std::env::var("TS_WAL_RESIDENT_PAGES")
         .ok()
         .and_then(|value| value.trim().parse().ok())
@@ -272,7 +272,7 @@ fn wal_resident_page_limit() -> usize {
 
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
 /// materialise on every single append.
-fn wal_resident_page_floor(limit: usize) -> usize {
+fn wal_resident_block_floor(limit: usize) -> usize {
     limit.saturating_sub(limit / 4).max(1)
 }
 
@@ -330,11 +330,11 @@ impl TemporalEngine {
     /// the shard table was held. The count is taken here and the REGION is marked at the
     /// acquisition, so moving a read out of a guarded region moves it out of the under-guard
     /// tally without anything at this call site changing.
-    pub(crate) fn read_page_counted(
+    pub(crate) fn read_block_counted(
         &self,
         address: &BlockAddress,
     ) -> Result<Vec<u8>, BlockStoreError> {
-        shard_write_guard::note_page_read();
+        shard_write_guard::note_block_read();
         self.page_store.read(address)
     }
 
@@ -497,10 +497,10 @@ impl TemporalEngine {
     /// quietly substitute a reconstruction for what was actually acknowledged.
     ///
     /// An empty `pages` is exactly [`execute`](Self::execute).
-    pub fn execute_with_carried_pages(
+    pub fn execute_with_carried_blocks(
         &self,
         request: ExecuteRequest,
-        pages: Vec<crate::wal::StagedPage>,
+        pages: Vec<crate::wal::StagedBlock>,
     ) -> ExecuteResponse {
         self.execute_with_storage_override(request, None, pages)
     }
@@ -652,7 +652,7 @@ impl TemporalEngine {
         &self,
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
-        mut carried_pages: Vec<crate::wal::StagedPage>,
+        mut carried_blocks: Vec<crate::wal::StagedBlock>,
     ) -> ExecuteResponse {
         // Charged before anything else, including the read-only fast path -- a read served without
         // taking the shard lock still costs the shard, and a limit the cheapest reads slip past is
@@ -868,12 +868,19 @@ impl TemporalEngine {
             block_in_wal::begin_write();
         }
         // What the touched keys held before this command, so the capture below can be
-        // skipped when nothing was removed. Sizes only -- no allocation.
-        let membership_before: Vec<(String, usize)> = command_object_keys(&command)
+        // skipped when nothing was removed. Sizes and one `u64` -- no allocation.
+        //
+        // THE DEADLINE'S VALUE IS CARRIED SEPARATELY BECAUSE `key_membership_size` ONLY COUNTS
+        // ITS PRESENCE. It adds `expires_at_ms.contains_key(key)` as one unit, which notices a
+        // deadline being removed (a shrink) but not one being ARMED (a growth) or MOVED (no
+        // change at all). Keeping the millisecond itself is what lets those two be seen. See
+        // `delta_key_state_change` below.
+        let membership_before: Vec<(String, usize, Option<u64>)> = command_object_keys(&command)
             .into_iter()
             .map(|key| {
                 let size = key_membership_size(shard, &key);
-                (key, size)
+                let deadline = shard.expires_at_ms.get(&key).copied();
+                (key, size, deadline)
             })
             .collect();
 
@@ -897,7 +904,7 @@ impl TemporalEngine {
             let now = now_ms();
             for key in command_touched_keys(&command) {
                 let recency_bucket =
-                    page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                    block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
                 shard.bucket_recency.insert(recency_bucket, now);
             }
         }
@@ -920,7 +927,7 @@ impl TemporalEngine {
             let removed_component = command_removed_component(&command);
             let upsert_components = command_upsert_components(&command, shard);
             if object_keys.is_empty() {
-                rebuild_bucket_page_ownership(
+                rebuild_bucket_block_ownership(
                     request.shard_id,
                     shard,
                     info.as_ref()
@@ -945,7 +952,7 @@ impl TemporalEngine {
                     // that mark an object dirty and the bucket has to be supplied here too.
                     shard.dirty_objects.insert(
                         &object_key,
-                        page_routing_bucket(
+                        block_routing_bucket(
                             &object_key,
                             start_routing_bucket,
                             end_routing_bucket,
@@ -984,14 +991,14 @@ impl TemporalEngine {
             // Feature and Sequence writes already maintain on the write path, and replay already
             // maintains these same kinds; this closes the one path that did neither.
             //
-            // `sync_context_pages_for_object` mirrors `collect_model_live_page_entries` arm for
+            // `sync_context_blocks_for_object` mirrors `collect_model_live_block_entries` arm for
             // arm and reports whether it found anything, so a write it does not cover still gets
             // the rebuild rather than a quietly stale index. An empty bucket_map still rebuilds:
             // maintenance updates an index, it does not construct one.
             let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
                 && !delta_command_keys.is_empty()
                 && delta_command_keys.iter().all(|object_key| {
-                    storage_bucket_internals::sync_context_pages_for_object(
+                    storage_bucket_internals::sync_context_blocks_for_object(
                         shard,
                         request.shard_id,
                         object_key,
@@ -1002,7 +1009,7 @@ impl TemporalEngine {
                 // A command that writes no page cannot have changed the page index, so rebuilding it
                 // recomputes what it already held -- measured at twice the shard's page count per
                 // call for SeenCheck and the control-state change/selection writes.
-                && !command_writes_no_page(&command)
+                && !command_writes_no_block(&command)
                 && (!command_updates_bucket_index_directly(&command)
                     || shard.bucket_index.bucket_map.is_empty());
             if rebuilt_bucket_index {
@@ -1086,14 +1093,14 @@ impl TemporalEngine {
                 // longer do: they are resolved before they are staged, so they ride along and a
                 // recording write keeps its place in the group-commit queue.
                 let concurrent_commit = sync
-                    && carried_pages.is_empty()
+                    && carried_blocks.is_empty()
                     && (self
                         .concurrent_commit
                         .load(std::sync::atomic::Ordering::Relaxed)
                         || raft_apply_batch_active());
                 // Where each page this write stages ends up, so the index can carry it. Filled
                 // by the append below, which is the first moment the log id exists.
-                let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentPage)> =
+                let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentBlock)> =
                     Vec::new();
                 let append_result = if concurrent_commit {
                     self.wal_store
@@ -1101,7 +1108,7 @@ impl TemporalEngine {
                             request.shard_id,
                             command,
                             std::mem::take(&mut staged_outcomes),
-                            if carried_pages.is_empty() {
+                            if carried_blocks.is_empty() {
                                 if self.page_store.block_in_wal() {
                                     block_in_wal::take_staged()
                                 } else {
@@ -1111,7 +1118,7 @@ impl TemporalEngine {
                                 if self.page_store.block_in_wal() {
                                     let _ = block_in_wal::take_staged();
                                 }
-                                std::mem::take(&mut carried_pages)
+                                std::mem::take(&mut carried_blocks)
                             },
                         )
                         .map(|record| {
@@ -1124,7 +1131,7 @@ impl TemporalEngine {
                             request.shard_id,
                             command,
                             sync,
-                            if carried_pages.is_empty() {
+                            if carried_blocks.is_empty() {
                                 if self.page_store.block_in_wal() {
                                     block_in_wal::take_staged()
                                 } else {
@@ -1137,7 +1144,7 @@ impl TemporalEngine {
                                 if self.page_store.block_in_wal() {
                                     let _ = block_in_wal::take_staged();
                                 }
-                                std::mem::take(&mut carried_pages)
+                                std::mem::take(&mut carried_blocks)
                             },
                             std::mem::take(&mut staged_outcomes),
                         )
@@ -1160,7 +1167,7 @@ impl TemporalEngine {
                                     |page| {
                                         (
                                             page.object_id,
-                                            crate::engine::state::WalResidentPage {
+                                            crate::engine::state::WalResidentBlock {
                                                 log_id,
                                                 sequence: record.sequence,
                                             },
@@ -1177,7 +1184,7 @@ impl TemporalEngine {
                         // the mapping back rather than leaving the address unresolvable until a
                         // full replay re-derives the page.
                         for (object_id, placement) in wal_resident_updates.drain(..) {
-                            shard.wal_resident_pages.insert(object_id, placement);
+                            shard.wal_resident_blocks.insert(object_id, placement);
                         }
                         // Record where this write sits in the log, for every bucket it dirtied
                         // that did not already have a claim.
@@ -1191,7 +1198,7 @@ impl TemporalEngine {
                         // write to an already-dirty bucket must not move it forward.
                         if let Some(sequence) = appended_sequence {
                             for key in &delta_command_keys {
-                                let routing_bucket = page_routing_bucket(
+                                let routing_bucket = block_routing_bucket(
                                     key,
                                     start_routing_bucket,
                                     end_routing_bucket,
@@ -1290,8 +1297,10 @@ impl TemporalEngine {
                         false,
                     ),
                 };
-                // Capture the authoritative membership only when this write could have
-                // removed some.
+                // Capture the authoritative per-key state only when this write produced some
+                // that reconstruction from pages cannot redo: a membership SHRINK, or a
+                // DEADLINE CHANGE. See `delta_key_state_change` for both halves and for why
+                // the second one has to be asked separately.
                 //
                 // The capture exists so a reload after WAL replay does not resurrect an entry
                 // the write evicted or tombstoned -- reconstruction from physical pages would
@@ -1302,10 +1311,8 @@ impl TemporalEngine {
                 // key, so appending to a node that held 850 events serialized all 850 -- 8,647 of
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
-                let membership_shrank = membership_before.iter().any(|(key, before)| {
-                    key_membership_size(shard, key) < *before
-                });
-                let key_states = if membership_shrank {
+                let key_state_changed = delta_key_state_change(shard, &membership_before);
+                let key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
                 } else {
                     Vec::new()
@@ -1341,7 +1348,7 @@ impl TemporalEngine {
                 if appended_index_log_sequence > 0 {
                     for key in &delta_command_keys {
                         let routing_bucket =
-                            page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                            block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
                         if let Some(bucket) =
                             shard.bucket_index.bucket_map.get_mut(&routing_bucket)
                         {
@@ -1385,13 +1392,13 @@ impl TemporalEngine {
         // Not inside the write lock -- moving a page takes the same lock -- and not before the
         // barrier, because the write this call is acking must reach disk first.
         if write_command && !replaying_wal() {
-            let limit = wal_resident_page_limit();
+            let limit = wal_resident_block_limit();
             if limit > 0
                 && block_in_wal::registration_count(&self.page_store, request.shard_id) > limit
             {
-                let moved = self.materialize_oldest_resident_pages(
+                let moved = self.materialize_oldest_resident_blocks(
                     request.shard_id,
-                    wal_resident_page_floor(limit),
+                    wal_resident_block_floor(limit),
                 );
                 if moved > 0 {
                     RESIDENT_SWEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1453,7 +1460,7 @@ impl TemporalEngine {
                         CacheKey::string(request.shard_id, key),
                         || CommandResponse::Bytes {
                             value: shard.strings.get(key).and_then(|address| {
-                                read_page_bytes(
+                                read_block_bytes(
                                     &self.cache,
                                     &self.page_store,
                                     request.shard_id,
@@ -1480,7 +1487,7 @@ impl TemporalEngine {
                         let mut entries = fields
                             .iter()
                             .filter_map(|(field, address)| {
-                                read_page_bytes(
+                                read_block_bytes(
                                     &self.cache,
                                     &self.page_store,
                                     request.shard_id,
@@ -1751,15 +1758,15 @@ impl TemporalEngine {
                 observed_memory_eviction: stats.cache.memory_evictions > 0,
                 cache_memory_bytes: stats.cache.memory_bytes,
                 cache_disk_bytes: stats.cache.disk_bytes,
-                local_page_bytes_written: stats.page_store.bytes_written,
-                local_page_bytes_read: stats.page_store.bytes_read,
+                local_block_bytes_written: stats.page_store.bytes_written,
+                local_block_bytes_read: stats.page_store.bytes_read,
                 cache: stats.cache,
                 page_store: stats.page_store,
             })
     }
 
     #[doc(hidden)]
-    pub fn string_page_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
+    pub fn string_block_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let address = shards.get(&shard_id)?.strings.get(key)?;
         Some(CacheKey::page_with_slot(
@@ -1858,15 +1865,15 @@ impl TemporalEngine {
         storage_physical_index_report(shard_id, shard, summaries)
     }
 
-    pub fn bucket_object_page_ownership_report(
+    pub fn bucket_object_block_ownership_report(
         &self,
         shard_id: ShardId,
-    ) -> BucketObjectPageOwnershipReport {
+    ) -> BucketObjectBlockOwnershipReport {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
-            return BucketObjectPageOwnershipReport {
+            return BucketObjectBlockOwnershipReport {
                 shard_id,
-                ..BucketObjectPageOwnershipReport::default()
+                ..BucketObjectBlockOwnershipReport::default()
             };
         };
         let info = self
@@ -1875,7 +1882,7 @@ impl TemporalEngine {
             .expect("info lock poisoned")
             .get(&shard_id)
             .cloned();
-        bucket_object_page_ownership_report(
+        bucket_object_block_ownership_report(
             shard_id,
             shard,
             info.as_ref()
@@ -1919,7 +1926,7 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> StorageDataStructureApiParityReport {
         let physical_index = self.storage_physical_index_report(shard_id);
-        let ownership = self.bucket_object_page_ownership_report(shard_id);
+        let ownership = self.bucket_object_block_ownership_report(shard_id);
         let object_manager = self.object_manager_runtime_report(shard_id);
         let slab_reports = self.page_store.slab_reports().unwrap_or_default();
         let block_index_count = slab_reports
@@ -1929,7 +1936,7 @@ impl TemporalEngine {
         // The checksum is asked for only when checksum recording is on. It is an opt-in
         // diagnostic (TS_BLOCK_INDEX_CHECKSUMS, default off, because recomputing it at every
         // engine open dominated slab verification), and the integrity it would attest to is
-        // already verified by decode_page_record on the way in. Requiring it unconditionally
+        // already verified by decode_block_record on the way in. Requiring it unconditionally
         // made this report ready: false on every default deployment. The addressing fields are
         // what a complete block address API means; the digest is a hand-inspection aid.
         let checksums_recorded = crate::block_store::block_index_checksums_enabled();
@@ -2039,7 +2046,7 @@ impl TemporalEngine {
         StorageDataStructureApiParityReport {
             shard_id,
             ready: blockers.is_empty() && legacy_page_zone_aliases_ready,
-            bucket_object_page_authority_ready: physical_index.bucket_index_authority
+            bucket_object_block_authority_ready: physical_index.bucket_index_authority
                 && ownership.first_class_index_present
                 && !ownership.derived_from_model_maps,
             bucket_store_layout_api_ready,
@@ -2092,7 +2099,7 @@ impl TemporalEngine {
             .as_ref()
             .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
-        page_routing_bucket(key, start, end)
+        block_routing_bucket(key, start, end)
     }
 
     /// What the resident bucket index costs on this shard: one node per bucket, plus one entry
@@ -2115,7 +2122,7 @@ impl TemporalEngine {
     /// Returns `(buckets released, pages released, candidates refused)`. Every precondition is
     /// checked against live state inside; naming a bucket that cannot be released is refused, not
     /// forced.
-    pub fn release_bucket_index_pages(
+    pub fn release_bucket_index_blocks(
         &self,
         shard_id: ShardId,
         buckets: Vec<u32>,
@@ -2124,16 +2131,16 @@ impl TemporalEngine {
         let Some(shard) = shards.get_mut(&shard_id) else {
             return (0, 0, 0);
         };
-        let outcome = crate::engine::storage_bucket_internals::release_bucket_pages(shard, &buckets);
+        let outcome = crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &buckets);
         (
             outcome.released_buckets.len(),
-            outcome.released_pages,
+            outcome.released_blocks,
             outcome.refused_buckets,
         )
     }
 
     /// Offer every bucket on the shard for release. The whole-shard form of the call above.
-    pub fn release_all_releasable_bucket_index_pages(
+    pub fn release_all_releasable_bucket_index_blocks(
         &self,
         shard_id: ShardId,
     ) -> (usize, usize, usize) {
@@ -2144,11 +2151,11 @@ impl TemporalEngine {
                 .map(|shard| shard.bucket_index.bucket_map.keys().copied().collect::<Vec<_>>())
                 .unwrap_or_default()
         };
-        self.release_bucket_index_pages(shard_id, candidates)
+        self.release_bucket_index_blocks(shard_id, candidates)
     }
 
     /// Load a released bucket's page list back. False when the bucket was not released.
-    pub fn reload_released_bucket_index_pages(
+    pub fn reload_released_bucket_index_blocks(
         &self,
         shard_id: ShardId,
         routing_bucket: u32,
@@ -2225,7 +2232,7 @@ pub(crate) fn bulk_ingest_mode() -> bool {
 /// many already-committed writes with no interleaved client reads, so running the
 /// O(store) promote/rebuild per command is the dominant O(n^2) cost. Deferring is
 /// lossless because point string/hash/set reads+writes maintain the bucket_map /
-/// object_page_lookup directly via upsert_bucket_index_page/read_bucket_index_value,
+/// object_page_lookup directly via upsert_bucket_index_block/read_bucket_index_value,
 /// and the deferred context (model-map) records are append-only until the single
 /// reconstruct folds them in (bulk: flush_shard_index(); replay: replay_wal_into_shard()).
 fn defer_bucket_index_reconstruct() -> bool {
@@ -2356,8 +2363,8 @@ pub mod shard_write_guard {
         /// A maintenance stage that reads pages while holding this one is not blocking other
         /// reads -- it is blocking every WRITE on the shard, including the rest of its own round.
         static READ_DEPTH: Cell<u32> = const { Cell::new(0) };
-        static PAGE_READS_UNDER_GUARD: Cell<u64> = const { Cell::new(0) };
-        static PAGE_READS_TOTAL: Cell<u64> = const { Cell::new(0) };
+        static BLOCK_READS_UNDER_GUARD: Cell<u64> = const { Cell::new(0) };
+        static BLOCK_READS_TOTAL: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(super) fn entered_read() {
@@ -2381,29 +2388,29 @@ pub mod shard_write_guard {
     /// pages off the block store. The `_total` is the denominator -- "no reads happened under a
     /// guard" is satisfied just as well by a stage that read nothing, or did not run.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub struct MaintenancePageReadCounts {
-        pub page_reads_under_guard: u64,
-        pub page_reads_total: u64,
+    pub struct MaintenanceBlockReadCounts {
+        pub block_reads_under_guard: u64,
+        pub block_reads_total: u64,
     }
 
-    pub(super) fn note_page_read() {
-        PAGE_READS_TOTAL.with(|count| count.set(count.get().saturating_add(1)));
+    pub(super) fn note_block_read() {
+        BLOCK_READS_TOTAL.with(|count| count.set(count.get().saturating_add(1)));
         if held_any() {
-            PAGE_READS_UNDER_GUARD.with(|count| count.set(count.get().saturating_add(1)));
+            BLOCK_READS_UNDER_GUARD.with(|count| count.set(count.get().saturating_add(1)));
         }
     }
 
-    pub fn maintenance_page_read_counts() -> MaintenancePageReadCounts {
-        MaintenancePageReadCounts {
-            page_reads_under_guard: PAGE_READS_UNDER_GUARD.with(|count| count.get()),
-            page_reads_total: PAGE_READS_TOTAL.with(|count| count.get()),
+    pub fn maintenance_block_read_counts() -> MaintenanceBlockReadCounts {
+        MaintenanceBlockReadCounts {
+            block_reads_under_guard: BLOCK_READS_UNDER_GUARD.with(|count| count.get()),
+            block_reads_total: BLOCK_READS_TOTAL.with(|count| count.get()),
         }
     }
 
     /// Clear this thread's page-read tallies. For a test measuring one stage.
-    pub fn reset_maintenance_page_read_counts() {
-        PAGE_READS_UNDER_GUARD.with(|count| count.set(0));
-        PAGE_READS_TOTAL.with(|count| count.set(0));
+    pub fn reset_maintenance_block_read_counts() {
+        BLOCK_READS_UNDER_GUARD.with(|count| count.set(0));
+        BLOCK_READS_TOTAL.with(|count| count.set(0));
     }
 
     thread_local! {
@@ -2872,12 +2879,12 @@ fn collect_upsert_index_items(
         let routing_bucket = address
             .routing_bucket()
             .unwrap_or_else(|| {
-                page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+                block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
             });
         let object_id = address.object_id().unwrap_or_else(|| {
-            stable_page_object_id(shard_id, kind, object_key, component.as_deref())
+            stable_block_object_id(shard_id, kind, object_key, component.as_deref())
         });
-        let page_ref_key = format!(
+        let block_ref_key = format!(
             "{}:{}:{}:{}:{}:{}:{}:{}",
             kind,
             object_key,
@@ -2891,7 +2898,7 @@ fn collect_upsert_index_items(
         items.push(crate::index_log::IndexItem {
             kind: crate::index_log::IndexItemKind::Page,
             routing_bucket,
-            page_ref_key,
+            block_ref_key,
             object_key: object_key.clone(),
             model_id: (*kind).to_string(),
             component: component.clone(),
@@ -2954,14 +2961,14 @@ fn collect_command_index_items_for(
     }
     let buckets: BTreeSet<u32> = keys
         .iter()
-        .map(|key| page_routing_bucket(key, start_routing_bucket, end_routing_bucket))
+        .map(|key| block_routing_bucket(key, start_routing_bucket, end_routing_bucket))
         .collect();
     let mut items = Vec::new();
     for routing_bucket in buckets {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
-        for (page_ref_key, page) in &bucket.page_index {
+        for (block_ref_key, page) in &bucket.block_index {
             if !keys.contains(page.object_key.as_ref()) {
                 continue;
             }
@@ -2973,7 +2980,7 @@ fn collect_command_index_items_for(
             items.push(crate::index_log::IndexItem {
                 kind: crate::index_log::IndexItemKind::Page,
                 routing_bucket,
-                page_ref_key: page_ref_key.to_string(),
+                block_ref_key: block_ref_key.to_string(),
                 object_key: page.object_key.clone().to_string(),
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone().map(|value| value.to_string()),
@@ -3026,6 +3033,52 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.context_summaries.get(key).map_or(0, |v| v.len())
         + shard.context_compressions.get(key).map_or(0, |v| v.len())
         + shard.context_entities.get(key).map_or(0, |v| v.len())
+}
+
+/// Did this write produce per-key state that reconstruction from physical pages cannot redo?
+///
+/// TWO REASONS, AND THE SECOND ONE COVERS THE HALF THE FIRST CANNOT SEE.
+///
+/// The first is a MEMBERSHIP SHRINK: an entry was evicted or tombstoned, and rebuilding the
+/// index from the pages on disk would find it again and resurrect it. That is what this used
+/// to ask on its own, and it is still asked first because it is the cheap half.
+///
+/// The second is a DEADLINE CHANGE. `key_membership_size` DOES count the deadline -- but only
+/// as `expires_at_ms.contains_key(key)`, one unit of presence. That is enough to notice a
+/// deadline being REMOVED (1 -> 0 is a shrink, so `CommonPersist` and `SET` without `KEEPTTL`
+/// were always captured) and blind to the other two directions:
+///
+///   * ARMING a deadline where there was none is 0 -> 1, a GROWTH, and the gate only fires on
+///     a shrink;
+///   * MOVING a deadline to a different millisecond leaves `contains_key` true on both sides,
+///     so the size does not move at all.
+///
+/// Either of those left `key_states` empty while the delta record it rode on still advanced
+/// `applied_wal_sequence` to cover the WAL entry that set the deadline. On the legacy-recovery
+/// load path the fold trusts that anchor and replays only the WAL tail BEYOND it, so the
+/// command that armed the deadline is replayed by nobody, and the deadline is recovered from
+/// neither the base, nor the record, nor the log. The anchor advance is what makes this a loss
+/// rather than a slow path.
+///
+/// WHY THIS DOES NOT REINTRODUCE THE CAPTURE COST. Capturing serializes every entry the
+/// per-key maps hold, which is why it is gated at all -- on a real corpus the unconditional
+/// version wrote 3.53 GB of index log against 16 MB for the same 20,001 messages. That cost
+/// came from APPENDS to long postings, and an append does not move a deadline, so it still
+/// takes the cheap path. What newly captures is a write that armed or moved a key's deadline,
+/// which is a deliberate and far rarer act than appending to a node.
+///
+/// The comparison is on `Option<u64>`, so a re-arm to the SAME millisecond correctly is not a
+/// change and does not capture.
+fn delta_key_state_change(
+    shard: &ShardState,
+    membership_before: &[(String, usize, Option<u64>)],
+) -> bool {
+    membership_before
+        .iter()
+        .any(|(key, size_before, deadline_before)| {
+            key_membership_size(shard, key) < *size_before
+                || shard.expires_at_ms.get(key).copied() != *deadline_before
+        })
 }
 
 fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Value> {
@@ -3174,7 +3227,7 @@ where
 /// addresses. This is what lets reload reconstruct the exact on-disk page layout without
 /// re-executing the WAL (which would write fresh pages and relocate them to the active
 /// slab). `covered_keys` are the object keys the write touched (from the key-state blobs).
-fn fold_delta_page_items(
+fn fold_delta_block_items(
     bucket_index: &mut CoreIndex,
     covered_keys: &BTreeSet<String>,
     items: &[crate::index_log::IndexItem],
@@ -3189,7 +3242,7 @@ fn fold_delta_page_items(
             let Some(bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
                 continue;
             };
-            bucket.page_index.retain(&mut bucket_index.block_slab_live, |_, page| {
+            bucket.block_index.retain(&mut bucket_index.block_slab_live, |_, page| {
                 !(page.model_id.as_ref() == item.model_id
                     && page.object_key.as_ref() == item.object_key.as_str()
                     && page.component.as_deref() == item.component.as_deref())
@@ -3203,7 +3256,7 @@ fn fold_delta_page_items(
         } = &mut *bucket_index;
         for bucket in bucket_map.values_mut() {
             bucket
-                .page_index
+                .block_index
                 .retain(live, |_, page| !covered_keys.contains(page.object_key.as_ref()));
         }
     }
@@ -3226,7 +3279,7 @@ fn fold_delta_page_items(
         bucket.object_index.insert(item.object_id);
         // The record's key is not carried into memory: the map assigns a handle, and the
         // record's spelling is only rebuilt when the index is written back out.
-        bucket.page_index.insert(
+        bucket.block_index.insert(
             BlockIndex {
                 object_key: Arc::from(item.object_key.clone()),
                 model_id: Arc::from(item.model_id.clone()),
@@ -3664,7 +3717,7 @@ fn now_ms() -> u64 {
 /// Returns true if it wrote a compression record. Entities are never touched.
 fn maybe_auto_compress_context_node(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     tenant_hash: u64,
@@ -3711,9 +3764,9 @@ fn maybe_auto_compress_context_node(
     };
     let compression_key = context_compression_key(tenant_hash, node_hash);
     let timeline_key = context_timeline_key(window.start_ms, compression_id_hash);
-    let routing_bucket = page_routing_bucket(&compression_key, start_routing_bucket, end_routing_bucket);
+    let routing_bucket = block_routing_bucket(&compression_key, start_routing_bucket, end_routing_bucket);
     let mut mutated = false;
-    if let Ok(addresses) = append_timestamped_kv_pages(
+    if let Ok(addresses) = append_timestamped_kv_blocks(
         cache,
         page_store,
         shard_id,
@@ -3988,7 +4041,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
         removed = true;
         control_rollup::forget(shard, key);
     }
-    removed |= shard.control_state_pages.remove(key).is_some();
+    removed |= shard.control_state_blocks.remove(key).is_some();
     removed |= shard.control_state_changes.remove(key).is_some();
     removed |= shard.control_state_change_sketch.remove(key).is_some();
     removed |= shard.control_state_selection.remove(key).is_some();
@@ -4021,7 +4074,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             continue;
         };
         let mut deleted_object_ids = BTreeSet::new();
-        bucket.page_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
             if &*page.object_key == key {
                 deleted_object_ids.insert(page.object_id());
                 removed = true;
@@ -4034,10 +4087,10 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             bucket.object_index.extend(deleted_object_ids.iter().copied());
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.dirty = true;
-            bucket.deleted = bucket.page_index.is_empty();
+            bucket.deleted = bucket.block_index.is_empty();
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.meta_loaded = true;
-            bucket.in_memory = !bucket.page_index.is_empty();
+            bucket.in_memory = !bucket.block_index.is_empty();
             update_bucket_layout(bucket);
         }
     }
@@ -4053,13 +4106,13 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // replaces was establishing the total on every delete, which hid that. So establish both
         // here on the first delete that finds them unset, and take the cheap path thereafter --
         // the same bargain the typed removal path makes.
-        if shard.bucket_index.object_page_lookup.is_empty()
-            || shard.bucket_index.object_component_page_refs.is_none()
+        if shard.bucket_index.object_block_lookup.is_empty()
+            || shard.bucket_index.object_component_block_refs.is_none()
         {
-            shard.bucket_index.rebuild_object_page_lookup();
+            shard.bucket_index.rebuild_object_block_lookup();
         } else {
             for kind in storage_model_kinds() {
-                shard.bucket_index.remove_object_from_page_lookup(kind, key);
+                shard.bucket_index.remove_object_from_block_lookup(kind, key);
             }
         }
     }
@@ -4067,34 +4120,34 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
-    if shard.bucket_index.object_page_lookup.is_empty() {
+    if shard.bucket_index.object_block_lookup.is_empty() {
         return shard.bucket_index.bucket_map.keys().copied().collect();
     }
     let mut buckets = BTreeSet::new();
     for kind in storage_model_kinds() {
-        if let Some(entry) = shard.bucket_index.object_page_refs(kind, key) {
-            buckets.extend(entry.all_refs().map(|page_ref| page_ref.routing_bucket));
+        if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
+            buckets.extend(entry.all_refs().map(|block_ref| block_ref.routing_bucket));
         }
     }
     buckets
 }
 
-fn mark_bucket_index_page_deleted(
+fn mark_bucket_index_block_deleted(
     shard: &mut ShardState,
     shard_id: ShardId,
     model_id: &str,
     key: &str,
     component: Option<&str>,
 ) -> bool {
-    mark_bucket_index_page_deleted_with(shard, shard_id, model_id, key, component, true)
+    mark_bucket_index_block_deleted_with(shard, shard_id, model_id, key, component, true)
 }
 
 /// The same, with a say over whether an outcome is staged for the record.
 ///
 /// Replay INSTALLS a removal that was already recorded; staging another from inside the install
 /// would record the recovery as a write of its own. Same shape as
-/// `upsert_bucket_index_page_with`, and the same reason.
-fn mark_bucket_index_page_deleted_with(
+/// `upsert_bucket_index_block_with`, and the same reason.
+fn mark_bucket_index_block_deleted_with(
     shard: &mut ShardState,
     shard_id: ShardId,
     model_id: &str,
@@ -4110,8 +4163,8 @@ fn mark_bucket_index_page_deleted_with(
             kind: model_id.to_string(),
             object_key: key.to_string(),
             component: component.map(str::to_string),
-            object_id: stable_page_object_id(shard_id, model_id, key, component),
-            routing_bucket: page_routing_bucket(key, 0, u32::MAX),
+            object_id: stable_block_object_id(shard_id, model_id, key, component),
+            routing_bucket: block_routing_bucket(key, 0, u32::MAX),
             address: None,
             value: None,
             ttl: None,
@@ -4120,7 +4173,7 @@ fn mark_bucket_index_page_deleted_with(
         });
     }
     let mut removed = false;
-    let target_buckets = if shard.bucket_index.object_page_lookup.is_empty() {
+    let target_buckets = if shard.bucket_index.object_block_lookup.is_empty() {
         shard
             .bucket_index
             .bucket_map
@@ -4130,11 +4183,11 @@ fn mark_bucket_index_page_deleted_with(
     } else {
         shard
             .bucket_index
-            .page_refs_for(model_id, key, component)
-            .map(|page_refs| {
-                page_refs
+            .block_refs_for(model_id, key, component)
+            .map(|block_refs| {
+                block_refs
                     .iter()
-                    .map(|page_ref| page_ref.routing_bucket)
+                    .map(|block_ref| block_ref.routing_bucket)
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default()
@@ -4145,7 +4198,7 @@ fn mark_bucket_index_page_deleted_with(
         };
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
-        bucket.page_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
             let matches = page.model_id.as_ref() == model_id
                 && &*page.object_key == key
                 && page.component.as_deref() == component;
@@ -4162,17 +4215,17 @@ fn mark_bucket_index_page_deleted_with(
             bucket.object_index.extend(deleted_object_ids.iter().copied());
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.dirty = true;
-            bucket.deleted = bucket.page_index.is_empty();
+            bucket.deleted = bucket.block_index.is_empty();
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.meta_loaded = true;
-            bucket.in_memory = !bucket.page_index.is_empty();
+            bucket.in_memory = !bucket.block_index.is_empty();
             update_bucket_layout(bucket);
         }
     }
     if removed {
         // Removes exactly the entry it deleted, instead of rebuilding the whole lookup.
         //
-        // `rebuild_object_page_lookup` clears `object_page_lookup` and `object_component_lookup`
+        // `rebuild_object_block_lookup` clears `object_page_lookup` and `object_component_lookup`
         // and re-inserts one entry per page in the shard -- 58 696 of them on a 250 MB store --
         // and this ran once per deleted page. A purge deleting five fields paid it five times.
         // That is why deleting an identical, freshly created memory cost 41.7 ms against a 20 MB
@@ -4181,14 +4234,14 @@ fn mark_bucket_index_page_deleted_with(
         // time, all of it spent rebuilding a lookup to the same shape it already had minus one
         // entry.
         //
-        // This is the exact inverse of the `insert_object_page_lookup` the page went in through,
+        // This is the exact inverse of the `insert_object_block_lookup` the page went in through,
         // keyed on the same (model_id, object_key, component) -- which is how the upsert path
         // has always maintained the lookup. The whole-object deleter above still rebuilds; it
         // drops every component of a key at once, so the entry-at-a-time inverse does not apply
         // to it unchanged.
         shard
             .bucket_index
-            .remove_object_page_lookup_entry(model_id, key, component);
+            .remove_object_block_lookup_entry(model_id, key, component);
     }
     removed
 }
@@ -4260,10 +4313,10 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     // Omitting it let a slab holding only a control-state page be reclaimed while the index
     // still referenced it -> DataLoss on the next read. keeps any model's live pages
     // counted in the zone's used_bytes so the zone is never destroyed while referenced. The
-    // sibling collect_model_live_page_entries already includes it -- the two lists had drifted.
+    // sibling collect_model_live_block_entries already includes it -- the two lists had drifted.
     ids.extend(
         shard
-            .control_state_pages
+            .control_state_blocks
             .values()
             .map(|address| address.block_slab_id),
     );
@@ -4272,7 +4325,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
 
 fn append_value(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
@@ -4298,9 +4351,9 @@ fn append_value(
                 block_in_wal::stage(object_id, bytes);
             }
         }
-        return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
+        return page_store.append_with_block_metadata(bytes, object_id, routing_bucket);
     }
-    let address = BlockAddress::from_parts(HOT_BLOCK_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id);
+    let address = BlockAddress::from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id);
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if page_store.block_in_wal() {
@@ -4321,9 +4374,9 @@ fn append_value(
     Ok(address)
 }
 
-fn persist_control_state_page(
+fn persist_control_state_block(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     key: &str,
@@ -4332,7 +4385,7 @@ fn persist_control_state_page(
     async_storage: bool,
 ) -> bool {
     let Some(series) = shard.control_state.get(key) else {
-        shard.control_state_pages.remove(key);
+        shard.control_state_blocks.remove(key);
         return false;
     };
     // Coalesced-persistence mode: the counter series is durable via the index snapshot
@@ -4345,8 +4398,8 @@ fn persist_control_state_page(
     let Ok(bytes) = serde_json::to_vec(series) else {
         return false;
     };
-    let object_id = stable_page_object_id(shard_id, "control_state", key, None);
-    let routing_bucket = page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    let object_id = stable_block_object_id(shard_id, "control_state", key, None);
+    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     if let Ok(address) = append_value(
         cache,
         page_store,
@@ -4356,8 +4409,8 @@ fn persist_control_state_page(
         Some(routing_bucket),
         async_storage,
     ) {
-        upsert_bucket_index_page(shard, shard_id, "control_state", key, None, address.clone(), true);
-        shard.control_state_pages.insert(key.to_string(), address);
+        upsert_bucket_index_block(shard, shard_id, "control_state", key, None, address.clone(), true);
+        shard.control_state_blocks.insert(key.to_string(), address);
         true
     } else {
         false
@@ -4379,9 +4432,9 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
-    let bucket_index_exists = if shard.bucket_index.object_page_lookup.is_empty() {
+    let bucket_index_exists = if shard.bucket_index.object_block_lookup.is_empty() {
         shard.bucket_index.bucket_map.values().any(|bucket| {
-            bucket.page_index
+            bucket.block_index
                 .values()
                 .any(|page| &*page.object_key == key && !page.deleted)
         })
@@ -4389,14 +4442,14 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         storage_model_kinds().iter().any(|kind| {
             shard
                 .bucket_index
-                .object_page_refs(kind, key)
-                .map(|page_refs| {
-                    page_refs.all_refs().any(|page_ref| {
+                .object_block_refs(kind, key)
+                .map(|block_refs| {
+                    block_refs.all_refs().any(|block_ref| {
                         shard
                             .bucket_index
                             .bucket_map
-                            .get(&page_ref.routing_bucket)
-                            .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
+                            .get(&block_ref.routing_bucket)
+                            .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
                             .map(|page| {
                                 !page.deleted && page.model_id.as_ref() == *kind && &*page.object_key == key
                             })
@@ -4416,7 +4469,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.seen.contains_key(key)
         || shard.features.contains_key(key)
         || shard.control_state.contains_key(key)
-        || shard.control_state_pages.contains_key(key)
+        || shard.control_state_blocks.contains_key(key)
         || shard.control_state_changes.contains_key(key)
         || shard.control_state_selection.contains_key(key)
         || shard.context_nodes.contains_key(key)
@@ -4484,9 +4537,9 @@ fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) 
     let _ = cache.invalidate_record(shard_id, "feature", key);
 }
 
-fn read_page_bytes(
+fn read_block_bytes(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
 ) -> Option<Vec<u8>> {
@@ -4519,7 +4572,7 @@ fn read_page_bytes(
             if let Some(bytes) =
                 address
                     .object_id()
-                    .and_then(|object_id| block_in_wal::read_page(page_store, shard_id, object_id))
+                    .and_then(|object_id| block_in_wal::read_block(page_store, shard_id, object_id))
             {
                 let _ = cache.put(cache_key, bytes.clone());
                 return Some(bytes);
@@ -4548,7 +4601,7 @@ fn read_page_bytes(
     if page_store.block_in_wal() {
         if let Some(bytes) = address
             .object_id()
-            .and_then(|object_id| block_in_wal::read_page(page_store, shard_id, object_id))
+            .and_then(|object_id| block_in_wal::read_block(page_store, shard_id, object_id))
         {
             let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
@@ -4559,16 +4612,16 @@ fn read_page_bytes(
 
 /// The page's bytes, shared rather than copied.
 ///
-/// `read_page_bytes` hands back a `Vec<u8>` the cache built by copying the `Arc<[u8]>` it already
+/// `read_block_bytes` hands back a `Vec<u8>` the cache built by copying the `Arc<[u8]>` it already
 /// holds. A caller that parses the bytes and drops them pays that memcpy and that allocation for
 /// nothing -- once per retrieval candidate on the node fetch.
 ///
-/// Identical to `read_page_bytes` in every other way: same key, same lookup, same spill and log
+/// Identical to `read_block_bytes` in every other way: same key, same lookup, same spill and log
 /// fallbacks, same promotion. It differs only in not owning the result. Callers that keep or mutate
-/// the bytes should keep using `read_page_bytes`.
-fn read_page_shared(
+/// the bytes should keep using `read_block_bytes`.
+fn read_block_shared(
     cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
+    page_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
 ) -> Option<std::sync::Arc<[u8]>> {
@@ -4582,12 +4635,12 @@ fn read_page_shared(
         return Some(bytes);
     }
     // Every path below writes to the cache and hands back what it wrote, so going through
-    // `read_page_bytes` keeps the spill redirect, the in-log read and the block-store read in one
+    // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
     // place rather than duplicating three fallbacks that must not drift apart.
-    read_page_bytes(cache, page_store, shard_id, address).map(std::sync::Arc::from)
+    read_block_bytes(cache, page_store, shard_id, address).map(std::sync::Arc::from)
 }
 
-fn read_page_bytes_cold(page_store: &LocalBlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
+fn read_block_bytes_cold(page_store: &BlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
     page_store.read(address).ok()
 }
 
@@ -4629,20 +4682,20 @@ fn object_manager_stats(
     end_routing_bucket: u32,
 ) -> ObjectManagerStats {
     if !shard.bucket_index.bucket_map.is_empty() {
-        let (bucket_object_count, bucket_page_ref_count, bucket_dirty_object_count) =
-            if !shard.bucket_index.object_page_lookup.is_empty() {
+        let (bucket_object_count, bucket_block_ref_count, bucket_dirty_object_count) =
+            if !shard.bucket_index.object_block_lookup.is_empty() {
                 (
                     // The map is keyed by OBJECT now, so its length is the object count directly.
                     // It used to be the length of a second map kept alongside this one, which is
                     // the question that stopped that map from simply being deleted.
-                    shard.bucket_index.object_page_lookup.len(),
+                    shard.bucket_index.object_block_lookup.len(),
                     // Maintained incrementally; the walk is the fallback for an index that has
                     // been deserialized but not yet rebuilt. This runs on the heartbeat timer
                     // under the shard read lock, so walking here shows up as write contention.
-                    shard.bucket_index.object_component_page_refs.unwrap_or_else(|| {
+                    shard.bucket_index.object_component_block_refs.unwrap_or_else(|| {
                         shard
                             .bucket_index
-                            .object_page_lookup
+                            .object_block_lookup
                             .values()
                             .map(crate::engine::state::ObjectBlockRefs::total_refs)
                             .sum::<usize>()
@@ -4650,14 +4703,14 @@ fn object_manager_stats(
                     shard.dirty_objects.len(),
                 )
             } else {
-                let live_pages = shard
+                let live_blocks = shard
                     .bucket_index
                     .bucket_map
                     .values()
-                    .flat_map(|bucket| bucket.page_index.values())
+                    .flat_map(|bucket| bucket.block_index.values())
                     .filter(|page| !page.deleted)
                     .collect::<Vec<_>>();
-                let bucket_object_count = live_pages
+                let bucket_object_count = live_blocks
                     .iter()
                     .map(|page| {
                         (
@@ -4670,7 +4723,7 @@ fn object_manager_stats(
                     })
                     .collect::<BTreeSet<_>>()
                     .len();
-                let bucket_dirty_object_count = live_pages
+                let bucket_dirty_object_count = live_blocks
                     .iter()
                     .filter(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()))
                     .map(|page| {
@@ -4684,7 +4737,7 @@ fn object_manager_stats(
                     })
                     .collect::<BTreeSet<_>>()
                     .len();
-                (bucket_object_count, live_pages.len(), bucket_dirty_object_count)
+                (bucket_object_count, live_blocks.len(), bucket_dirty_object_count)
             };
         let secondary_object_count = shard.strings.len()
             + shard.hashes.len()
@@ -4704,7 +4757,7 @@ fn object_manager_stats(
             + shard.context_compressions.len();
         let object_count = bucket_object_count.max(secondary_object_count);
         let dirty_object_count = bucket_dirty_object_count.max(shard.dirty_objects.len());
-        let secondary_page_ref_count = shard.strings.len()
+        let secondary_block_ref_count = shard.strings.len()
             + shard.hashes.values().map(HashMap::len).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
             + shard.lists.values().map(BTreeMap::len).sum::<usize>()
@@ -4742,7 +4795,7 @@ fn object_manager_stats(
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>();
-        let dirty_bucket_count = if !shard.bucket_index.object_page_lookup.is_empty() {
+        let dirty_bucket_count = if !shard.bucket_index.object_block_lookup.is_empty() {
             let mut dirty_buckets = shard
                 .bucket_index
                 .bucket_map
@@ -4779,7 +4832,7 @@ fn object_manager_stats(
                 .values()
                 .filter(|bucket| {
                     bucket.dirty
-                        || bucket.page_index.values().any(|page| {
+                        || bucket.block_index.values().any(|page| {
                             page.dirty || shard.dirty_objects.contains(page.object_key.as_ref())
                         })
                 })
@@ -4787,7 +4840,7 @@ fn object_manager_stats(
         };
         return ObjectManagerStats {
             object_count,
-            page_ref_count: bucket_page_ref_count.max(secondary_page_ref_count),
+            block_ref_count: bucket_block_ref_count.max(secondary_block_ref_count),
             dirty_object_count,
             dirty_bucket_count,
             routing_bucket_count: routing_bucket_count(start_routing_bucket, end_routing_bucket),
@@ -4809,7 +4862,7 @@ fn object_manager_stats(
         + shard.context_children.len()
         + shard.context_summaries.len()
         + shard.context_compressions.len();
-    let page_ref_count = shard.strings.len()
+    let block_ref_count = shard.strings.len()
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.lists.values().map(BTreeMap::len).sum::<usize>()
@@ -4855,12 +4908,12 @@ fn object_manager_stats(
         .filter_map(|(bucket, node)| node.dirty.then_some(*bucket))
         .collect::<BTreeSet<_>>();
     // The buckets the dirty index already holds these objects under. This was a hash per dirty
-    // key to recompute `page_routing_bucket(key, start, end)`, which is the same function, with
+    // key to recompute `block_routing_bucket(key, start, end)`, which is the same function, with
     // the same arguments, that recorded them.
     dirty_buckets.extend(shard.dirty_objects.bucket_ids());
     ObjectManagerStats {
         object_count,
-        page_ref_count,
+        block_ref_count,
         dirty_object_count: shard.dirty_objects.len(),
         dirty_bucket_count: dirty_buckets.len(),
         routing_bucket_count,

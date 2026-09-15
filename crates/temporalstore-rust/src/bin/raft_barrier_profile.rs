@@ -33,7 +33,7 @@ fn scratch(scenario: &str) -> PathBuf {
 fn writes() -> u64 {
     std::env::var("TS_BARRIER_PROFILE_WRITES")
         .ok()
-        .and_then(|raw| raw.parse().ok())
+        .and_then(|raw| raw.trim().parse().ok())
         .unwrap_or(50)
 }
 

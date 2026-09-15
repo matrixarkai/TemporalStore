@@ -228,7 +228,7 @@ impl TemporalEngine {
         }
         // object_*_lookup is a derived serving accelerator and is no longer persisted;
         // rebuild it before reconcile/promotion and before returning a loaded shard.
-        shard.bucket_index.rebuild_object_page_lookup();
+        shard.bucket_index.rebuild_object_block_lookup();
         // No base and nothing to fold -> genuinely nothing persisted yet.
         if !base_present
             && shard.bucket_index.bucket_map.is_empty()
@@ -255,7 +255,7 @@ impl TemporalEngine {
         // resurrecting a stale persisted dirty flag.
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.dirty = false;
-            for page in bucket.page_index.pages_mut_unaccounted() {
+            for page in bucket.block_index.blocks_mut_unaccounted() {
                 page.dirty = false;
             }
         }
@@ -305,7 +305,7 @@ impl TemporalEngine {
                 continue;
             }
             let covered = delta_record_covered_keys(record);
-            fold_delta_page_items(&mut shard.bucket_index, &covered, &record.items, record.upsert);
+            fold_delta_block_items(&mut shard.bucket_index, &covered, &record.items, record.upsert);
             apply_key_states(shard, &record.key_states);
             max_anchor = max_anchor.max(record_anchor);
             applied = true;
@@ -314,7 +314,7 @@ impl TemporalEngine {
             for bucket in shard.bucket_index.bucket_map.values_mut() {
                 update_bucket_layout(bucket);
             }
-            shard.bucket_index.rebuild_object_page_lookup();
+            shard.bucket_index.rebuild_object_block_lookup();
             shard.applied_wal_sequence = Some(max_anchor);
         }
         Ok(())
@@ -576,7 +576,7 @@ impl TemporalEngine {
         if let Ok(mut shards) = self.shards.write() {
             if let Some(shard) = shards.get_mut(&shard_id) {
                 shard
-                    .wal_resident_pages
+                    .wal_resident_blocks
                     .retain(|_, placement| placement.sequence > wal_anchor);
             }
         }
@@ -796,12 +796,12 @@ impl TemporalEngine {
                 object_manager: object_manager.clone(),
             };
             let storage = crate::control::ShardCanonicalStorageStats {
-                page_index_entries: object_manager.page_ref_count as u64,
+                page_index_entries: object_manager.block_ref_count as u64,
                 // Live refs, NOT `page_store.writes`: that counter only ever increases, so
                 // publishing it as an entry count meant the number could never fall after a GC
                 // or a compaction reclaimed anything. `block_*` mirrors `page_*` here the same
                 // way `block_reads` mirrors `page_reads`.
-                block_index_entries: object_manager.page_ref_count as u64,
+                block_index_entries: object_manager.block_ref_count as u64,
                 object_index_entries: object_manager.object_count as u64,
                 bucket_entries: object_manager.routing_bucket_count as u64,
                 // `bucket_entries` above is the routing RANGE (the hash modulus), which is

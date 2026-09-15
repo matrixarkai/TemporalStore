@@ -200,7 +200,8 @@ pub struct GetInfoResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectManagerStats {
     pub object_count: usize,
-    pub page_ref_count: usize,
+    #[serde(rename = "page_ref_count")]
+    pub block_ref_count: usize,
     pub dirty_object_count: usize,
     #[serde(rename = "dirty_slot_count")]
     pub dirty_bucket_count: usize,

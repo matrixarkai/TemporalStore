@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! LocalBlockStore garbage-collection methods, extracted from block_store.rs.
+//! BlockStore garbage-collection methods, extracted from block_store.rs.
 
 use super::*;
 
-impl LocalBlockStore {
+impl BlockStore {
     /// Take the per-slab live tally the INDEX maintains.
     ///
     /// Publishing rather than deriving, because the store has no way to derive it: a page dies
@@ -14,19 +14,19 @@ impl LocalBlockStore {
     ///
     /// Idempotent, and the last publish wins. Cheap: one map, once per maintenance round, sized
     /// by SLABS rather than by pages.
-    pub fn publish_live_page_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
+    pub fn publish_live_block_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .live_page_bytes = Some(live);
+            .live_block_bytes = Some(live);
     }
 
     /// What was last published, or `None` if nothing ever was.
-    pub fn published_live_page_bytes(&self) -> Option<BTreeMap<u64, BlockStoreSlabLive>> {
+    pub fn published_live_block_bytes(&self) -> Option<BTreeMap<u64, BlockStoreSlabLive>> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .live_page_bytes
+            .live_block_bytes
             .clone()
     }
 
@@ -42,7 +42,7 @@ impl LocalBlockStore {
     /// stand, so a caller can tell "no live pages" from "no tally".
     pub fn slab_live_fractions(&self) -> Result<Vec<BlockStoreSlabLiveFraction>, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let published = inner.live_page_bytes.clone().unwrap_or_default();
+        let published = inner.live_block_bytes.clone().unwrap_or_default();
         let mut out = Vec::new();
         for block_slab_id in slab_ids_at(&inner.root)? {
             let physical_bytes = slab_path(&inner.root, block_slab_id)
@@ -69,7 +69,7 @@ impl LocalBlockStore {
                 block_slab_id,
                 physical_bytes,
                 logical_bytes,
-                live_page_refs: live.live_page_refs,
+                live_block_refs: live.live_block_refs,
                 live_bytes,
                 live_basis_points,
                 garbage_basis_points: 10_000_u64.saturating_sub(live_basis_points),
@@ -302,7 +302,7 @@ impl LocalBlockStore {
     ) -> Result<Vec<BlockStoreGcUtilityCandidate>, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let current_block_slab_id = inner.block_slab_id;
-        let published_live = inner.live_page_bytes.clone();
+        let published_live = inner.live_block_bytes.clone();
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let slab_ids = slab_ids_at(&inner.root)?;
         let mut slab_total_bytes = BTreeMap::<u64, u64>::new();
@@ -467,11 +467,13 @@ impl LocalBlockStore {
         let mut delayed_destroy_ids = Vec::new();
         let mut retained_live = Vec::new();
         let mut retained_current = Vec::new();
+        let mut retained_live_bytes = Vec::new();
         let mut removed_physical_bytes = 0;
         let mut retained_physical_bytes = 0;
         let mut delayed_destroy_physical_bytes = 0;
         let mut retained_live_physical_bytes = 0;
         let mut retained_current_physical_bytes = 0;
+        let mut retained_live_bytes_physical_bytes = 0;
         for block_slab_id in slab_ids_at(&inner.root)? {
             let slab_physical_bytes = slab_path(&inner.root, block_slab_id)
                 .metadata()
@@ -484,7 +486,44 @@ impl LocalBlockStore {
                 .as_ref()
                 .map(|selected| selected.contains(&block_slab_id))
                 .unwrap_or(true);
-            if below_retention_floor && !is_current && !is_live && is_selected {
+            // ASK THE TALLY ONE LAST TIME, IMMEDIATELY BEFORE THE IRREVERSIBLE STEP.
+            //
+            // The header on `live_block_bytes` states the rule this enforces: the tally "only ever
+            // KEEPS a slab; it never grants permission to delete one". Nothing made that true. The
+            // only consumer was the garbage floor in `gc_policy_plan`, and a floor is a THRESHOLD
+            // -- at the shipped 4,000 basis points a slab the tally credits with 200 live bytes out
+            // of 1,000 is 8,000 bp of garbage, clears the floor, and is selected for destruction.
+            // So the tally could keep a slab only once it was more than 60% live, and below that it
+            // was silently overruled in exactly the case it exists to notice.
+            //
+            // The two reclaim entries that take no policy at all -- `gc_slabs_before_with_live_refs`
+            // and its delayed-destroy sibling, which is what the operator reclaim RPC calls -- never
+            // consulted it in any form.
+            //
+            // The constructor doc on `with_slab_garbage_floor` states the invariant from the other
+            // side: a collector candidate is a slab no live page points at, "so its maintained live
+            // bytes are genuinely zero". That was asserted in prose and nowhere in code. It is a
+            // claim about two INDEPENDENT derivations agreeing -- `live_block_slab_ids` is walked
+            // fresh from the index at every call, while the tally is maintained incrementally on the
+            // index's own mutation path and has a drift check of its own -- so the case where they
+            // disagree is real, and the direction that matters is the tally saying live where the
+            // walk said dead.
+            //
+            // `None` (nobody has published) reads as zero and the check is inert, which is the only
+            // reading that is safe: a store with no tally must reclaim exactly as it did before.
+            let tallied_live_bytes = inner
+                .live_block_bytes
+                .as_ref()
+                .and_then(|published| published.get(&block_slab_id))
+                .map(|live| live.live_bytes)
+                .unwrap_or_default();
+            let holds_tallied_live_bytes = tallied_live_bytes > 0;
+            if below_retention_floor
+                && !is_current
+                && !is_live
+                && is_selected
+                && !holds_tallied_live_bytes
+            {
                 removed_physical_bytes += slab_physical_bytes;
                 if delayed_destroy {
                     move_slab_to_delayed_destroy_unsynced(&inner.root, block_slab_id)?;
@@ -512,6 +551,17 @@ impl LocalBlockStore {
                 if below_retention_floor && is_live {
                     retained_live.push(block_slab_id);
                     retained_live_physical_bytes += slab_physical_bytes;
+                }
+                // Everything the destroy branch required EXCEPT the tally. Reported on its own so
+                // a slab held back by the disagreement cannot be read as an ordinary retention.
+                if below_retention_floor
+                    && !is_current
+                    && !is_live
+                    && is_selected
+                    && holds_tallied_live_bytes
+                {
+                    retained_live_bytes.push(block_slab_id);
+                    retained_live_bytes_physical_bytes += slab_physical_bytes;
                 }
                 retained_physical_bytes += slab_physical_bytes;
                 retained.push(block_slab_id);
@@ -558,6 +608,8 @@ impl LocalBlockStore {
             retained_live_physical_bytes,
             retained_current_block_slab_ids: retained_current,
             retained_current_physical_bytes,
+            retained_live_bytes_block_slab_ids: retained_live_bytes,
+            retained_live_bytes_physical_bytes,
         })
     }
 }
