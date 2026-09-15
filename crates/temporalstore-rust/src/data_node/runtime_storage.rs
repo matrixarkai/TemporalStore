@@ -44,6 +44,148 @@ pub(crate) fn eviction_loop_live_stopping_conditions(threshold: u64) -> &'static
     }
 }
 
+/// How many ROUNDS the evict stage may take, derived from the victim-count budget.
+///
+/// A round that is doing its job takes at least one victim, so after `count_limit` rounds the
+/// victim budget is spent anyway and this bound has changed nothing. It exists for the round
+/// that takes NONE -- see `eviction_loop_terms_for_batch`.
+pub(crate) fn eviction_loop_round_limit(count_limit: usize) -> usize {
+    count_limit
+}
+
+/// The four terms, computed FROM a batch report -- the wiring, as opposed to the predicate.
+///
+/// WHY THIS IS A FUNCTION. The predicate had unit tests, and they construct `EvictionLoopTerms`
+/// directly: nothing exercised the step that turns a report into terms, and that step is where
+/// the loop could fail to terminate. Forcing `made_progress` true there spins the stage for ever
+/// -- 27 of 29 tests in the area still passed, two ran unbounded, and libtest has no per-test
+/// timeout, so the run was CANCELLED rather than failed. A cancelled run names no test.
+///
+/// WHY `more_budget` COUNTS ROUNDS AS WELL AS VICTIMS. `taken` is `victims.len()`, and victims
+/// only grow when a batch returns some. A batch that returns NONE leaves `taken` exactly where
+/// it was, so at the shipped budget of 100 the term `count_limit > taken` never goes false
+/// however many times the loop goes round: the budget bounds WORK TAKEN, not WORK ATTEMPTED.
+/// With `still_over` and `pressure_gate_open` both vacuous at the shipped threshold of 0, that
+/// left `made_progress` as the entire termination argument -- one term, untested at this
+/// boundary. The round bound makes the budget bound iterations too, so the worst a broken
+/// progress term can now do is run `count_limit` rounds and stop, which a test can assert on.
+pub(crate) fn eviction_loop_terms_for_batch(
+    report: &crate::engine::reports::StorageEvictionReport,
+    threshold: u64,
+    count_limit: usize,
+    taken: usize,
+    rounds: usize,
+) -> EvictionLoopTerms {
+    EvictionLoopTerms {
+        pressure_gate_open: report.pressure_gate_open,
+        more_budget: count_limit > taken && rounds < eviction_loop_round_limit(count_limit),
+        still_over: report.pressure_after >= threshold,
+        // A batch that freed nothing, or found nobody, means the next will not do better.
+        made_progress: !report.cooldown && !report.selected_victims.is_empty(),
+    }
+}
+
+/// What the evict STAGE did, accumulated across its batches.
+///
+/// The stage reports what the STAGE did, not what its last batch did. Returning the final report
+/// alone would describe the batch that stopped the loop -- usually the unproductive one that
+/// tripped `cooldown` -- and hide every victim the earlier batches took, which is the shape of
+/// misreporting #1453-#1455 fixed elsewhere.
+pub(crate) struct EvictionStageTally {
+    pub(crate) victims: Vec<crate::engine::reports::StorageEvictionVictim>,
+    pub(crate) dump_manifest_ids: Vec<String>,
+    pub(crate) cache_entries_removed: usize,
+    pub(crate) cache_disk_bytes_removed: u64,
+    pub(crate) dropped_object_count: usize,
+    /// Batches taken AFTER the first. Bounded by `eviction_loop_round_limit`, and the number a
+    /// termination guard asserts on.
+    pub(crate) rounds: usize,
+    pub(crate) first_pressure_before: u64,
+    pub(crate) last: crate::engine::reports::StorageEvictionReport,
+}
+
+impl EvictionStageTally {
+    /// The stage's report: counts accumulated, `pressure_before` from the FIRST batch and
+    /// `pressure_after` from the last.
+    pub(crate) fn into_stage_report(self) -> crate::engine::reports::StorageEvictionReport {
+        let first_pressure_before = self.first_pressure_before;
+        crate::engine::reports::StorageEvictionReport {
+            pressure_before: first_pressure_before,
+            selected_victims: self.victims,
+            dump_manifest_ids: self.dump_manifest_ids,
+            cache_entries_removed: self.cache_entries_removed,
+            cache_disk_bytes_removed: self.cache_disk_bytes_removed,
+            dropped_object_count: self.dropped_object_count,
+            // `cooldown` means the STAGE freed nothing, not that its last batch did.
+            cooldown: self.last.pressure_after >= first_pressure_before,
+            ..self.last
+        }
+    }
+}
+
+/// Take batches until the pressure is back under the threshold, the budget is spent, or a batch
+/// stops helping. `next_batch` is handed the remaining victim budget and returns the next batch.
+///
+/// The loop lives here, apart from the engine, so that a test can drive it with a batch sequence
+/// of its own and assert how many ROUNDS it ran. Driving the real control rather than a copy of
+/// it is the point: a test that re-implemented the decision would agree with itself whatever the
+/// stage did.
+pub(crate) fn run_eviction_stage<F>(
+    threshold: u64,
+    count_limit: usize,
+    first: crate::engine::reports::StorageEvictionReport,
+    mut next_batch: F,
+) -> EvictionStageTally
+where
+    F: FnMut(usize) -> crate::engine::reports::StorageEvictionReport,
+{
+    let mut tally = EvictionStageTally {
+        victims: first.selected_victims.clone(),
+        dump_manifest_ids: first.dump_manifest_ids.clone(),
+        cache_entries_removed: first.cache_entries_removed,
+        cache_disk_bytes_removed: first.cache_disk_bytes_removed,
+        dropped_object_count: first.dropped_object_count,
+        rounds: 0,
+        first_pressure_before: first.pressure_before,
+        last: first,
+    };
+    let round_limit = eviction_loop_round_limit(count_limit);
+    loop {
+        let taken = tally.victims.len();
+        let terms =
+            eviction_loop_terms_for_batch(&tally.last, threshold, count_limit, taken, tally.rounds);
+        debug_assert!(
+            terms.stops_only_on_live_conditions(threshold),
+            "eviction loop stopped on a condition that cannot fire at threshold {threshold}: {terms:?}",
+        );
+        if !terms.should_continue() {
+            break;
+        }
+        debug_assert!(
+            tally.rounds < round_limit,
+            "the eviction loop ran {} rounds against a limit of {round_limit}",
+            tally.rounds,
+        );
+        let report = next_batch(count_limit.saturating_sub(taken));
+        tally.rounds = tally.rounds.saturating_add(1);
+        tally.victims.extend(report.selected_victims.iter().cloned());
+        tally
+            .dump_manifest_ids
+            .extend(report.dump_manifest_ids.iter().cloned());
+        tally.cache_entries_removed = tally
+            .cache_entries_removed
+            .saturating_add(report.cache_entries_removed);
+        tally.cache_disk_bytes_removed = tally
+            .cache_disk_bytes_removed
+            .saturating_add(report.cache_disk_bytes_removed);
+        tally.dropped_object_count = tally
+            .dropped_object_count
+            .saturating_add(report.dropped_object_count);
+        tally.last = report;
+    }
+    tally
+}
+
 impl EvictionLoopTerms {
     /// Take another batch only if every term holds.
     pub(crate) fn should_continue(self) -> bool {
@@ -492,7 +634,12 @@ impl DataNodeRuntime {
         // guard as stronger than it is, so the terms are named in `EvictionLoopTerms` and the
         // count is asserted rather than described.
         //
-        //   `more_budget`        -- bounds the work. Live at every threshold.
+        //   `more_budget`        -- bounds the work: the victim budget AND the round count.
+        //                           It has to be both. `taken` is `victims.len()`, which only
+        //                           grows when a batch RETURNS victims, so a batch that returns
+        //                           none leaves the victim half of this term exactly where it
+        //                           was -- at a budget of 100 it never goes false, however many
+        //                           rounds the loop takes. Live at every threshold.
         //   `made_progress`      -- a batch that freed nothing (`cooldown`) or found no victims
         //                           means the next will not do better; this is what stops the loop
         //                           spinning on a shard whose memory eviction cannot reclaim.
@@ -512,77 +659,29 @@ impl DataNodeRuntime {
         // while the threshold is 0, because at 0 it cannot terminate anything -- the guard below
         // pins that, and `eviction_loop_live_stopping_conditions` is its denominator.
         let eviction = options.enable_evict.then(|| {
-            let mut report = self.inner.engine.apply_storage_eviction(
+            let first = self.inner.engine.apply_storage_eviction(
                 shard_id,
                 options.eviction_memory_pressure_threshold,
                 options.eviction_batch_limit,
                 options.eviction_dump_before_evict,
                 options.eviction_delete_drop,
             );
-            // The stage reports what the STAGE did, not what its last batch did.
-            //
-            // Returning the final report alone would describe the batch that stopped the loop --
-            // usually the unproductive one that tripped `cooldown` -- and hide every victim the
-            // earlier batches took. That is the shape of misreporting #1453-#1455 fixed
-            // elsewhere, so the counts are accumulated and `pressure_before` is kept from the
-            // FIRST batch while `pressure_after` comes from the last.
-            let first_pressure_before = report.pressure_before;
-            let mut victims = report.selected_victims.clone();
-            let mut dump_manifest_ids = report.dump_manifest_ids.clone();
-            let mut cache_entries_removed = report.cache_entries_removed;
-            let mut cache_disk_bytes_removed = report.cache_disk_bytes_removed;
-            let mut dropped_object_count = report.dropped_object_count;
-            loop {
-                let taken = victims.len();
-                let terms = EvictionLoopTerms {
-                    pressure_gate_open: report.pressure_gate_open,
-                    more_budget: options.eviction_count_limit > taken,
-                    still_over: report.pressure_after
-                        >= options.eviction_memory_pressure_threshold,
-                    // A batch that freed nothing, or found nobody, means the next will not do
-                    // better.
-                    made_progress: !report.cooldown && !report.selected_victims.is_empty(),
-                };
-                debug_assert!(
-                    terms.stops_only_on_live_conditions(
-                        options.eviction_memory_pressure_threshold
-                    ),
-                    "eviction loop stopped on a condition that cannot fire at threshold {}: {:?}",
-                    options.eviction_memory_pressure_threshold,
-                    terms,
-                );
-                if !terms.should_continue() {
-                    break;
-                }
-                report = self.inner.engine.apply_storage_eviction(
-                    shard_id,
-                    options.eviction_memory_pressure_threshold,
-                    options
-                        .eviction_batch_limit
-                        .min(options.eviction_count_limit.saturating_sub(taken)),
-                    options.eviction_dump_before_evict,
-                    options.eviction_delete_drop,
-                );
-                victims.extend(report.selected_victims.iter().cloned());
-                dump_manifest_ids.extend(report.dump_manifest_ids.iter().cloned());
-                cache_entries_removed =
-                    cache_entries_removed.saturating_add(report.cache_entries_removed);
-                cache_disk_bytes_removed =
-                    cache_disk_bytes_removed.saturating_add(report.cache_disk_bytes_removed);
-                dropped_object_count =
-                    dropped_object_count.saturating_add(report.dropped_object_count);
-            }
-            crate::engine::reports::StorageEvictionReport {
-                pressure_before: first_pressure_before,
-                selected_victims: victims,
-                dump_manifest_ids,
-                cache_entries_removed,
-                cache_disk_bytes_removed,
-                dropped_object_count,
-                // `cooldown` now means the STAGE freed nothing, not that its last batch did.
-                cooldown: report.pressure_after >= first_pressure_before,
-                ..report
-            }
+            let engine = &self.inner.engine;
+            run_eviction_stage(
+                options.eviction_memory_pressure_threshold,
+                options.eviction_count_limit,
+                first,
+                |remaining_budget| {
+                    engine.apply_storage_eviction(
+                        shard_id,
+                        options.eviction_memory_pressure_threshold,
+                        options.eviction_batch_limit.min(remaining_budget),
+                        options.eviction_dump_before_evict,
+                        options.eviction_delete_drop,
+                    )
+                },
+            )
+            .into_stage_report()
         });
         if eviction.is_some() {
             executed_stages.push("evict".to_string());
@@ -1837,6 +1936,188 @@ mod eviction_loop_terms_tests {
         assert_eq!(
             stopped_by, 4,
             "all four terms must be able to stop the loop once the threshold is raised",
+        );
+    }
+}
+
+
+/// Guards that the evict stage's batch loop TERMINATES, and in how many rounds.
+///
+/// WHY THESE EXIST. Forcing `made_progress` true at the point the terms are computed from a
+/// batch report made this loop run for ever. 27 of 29 tests in the area still passed; two ran
+/// unbounded. libtest has no per-test timeout, so nothing FAILED -- the run was cancelled, which
+/// reads as infrastructure trouble rather than a defect, and names no test. The test written to
+/// cover the loop's stopping conditions passed too: it catches "stopped too early" and never
+/// "never stops".
+///
+/// The predicate `EvictionLoopTerms` had unit tests already. They construct the struct directly,
+/// so the step that turns a report INTO terms -- where the spin lives -- was not reached by any
+/// of them. These guards drive the real loop through the real wiring and assert the round count.
+#[cfg(test)]
+mod eviction_loop_termination_guards {
+    use super::{eviction_loop_round_limit, eviction_loop_terms_for_batch, run_eviction_stage};
+    use crate::engine::reports::{StorageEvictionReport, StorageEvictionVictim};
+
+    /// The shipped victim budget, which is also the round limit derived from it.
+    const BUDGET: usize = crate::data_node::DEFAULT_EVICTION_COUNT_LIMIT;
+
+    /// A batch that took `victims` victims, was not in cooldown, and did not take the pressure
+    /// gate's early return -- i.e. every term except `made_progress` says continue.
+    fn batch(victims: usize) -> StorageEvictionReport {
+        StorageEvictionReport {
+            pressure_gate_open: true,
+            cooldown: false,
+            selected_victims: vec![StorageEvictionVictim::default(); victims],
+            ..StorageEvictionReport::default()
+        }
+    }
+
+    /// THE TERMINATION GUARD. A batch that finds nobody must stop the stage, in a stated number
+    /// of rounds. Forcing `made_progress` true is what this exists to catch: before the round
+    /// bound that mutation spun here instead of failing, and an unbounded test is a cancelled CI
+    /// run with no named failure. Now the same mutation stops at the round limit and this fails
+    /// on the number.
+    #[test]
+    fn a_batch_that_takes_no_victims_stops_the_stage_without_another_round() {
+        let mut calls = 0usize;
+        let tally = run_eviction_stage(0, BUDGET, batch(0), |_remaining| {
+            calls += 1;
+            batch(0)
+        });
+        assert_eq!(
+            tally.rounds, 0,
+            "expected 0 further rounds after a batch that found nobody, ran {}",
+            tally.rounds,
+        );
+        assert_eq!(calls, 0, "the stage took {calls} more batches after finding nobody");
+        assert!(tally.victims.is_empty(), "{} victims from empty batches", tally.victims.len());
+    }
+
+    /// A batch that freed nothing stops it too, by the other half of the same term.
+    #[test]
+    fn a_batch_in_cooldown_stops_the_stage_without_another_round() {
+        let mut calls = 0usize;
+        let seed = StorageEvictionReport { cooldown: true, ..batch(1) };
+        let tally = run_eviction_stage(0, BUDGET, seed, |_remaining| {
+            calls += 1;
+            batch(1)
+        });
+        assert_eq!(tally.rounds, 0, "expected 0 further rounds after a cooldown batch");
+        assert_eq!(calls, 0, "the stage took {calls} more batches after a cooldown batch");
+    }
+
+    /// The productive case, on a number: a stage whose every batch takes one victim spends the
+    /// budget exactly and stops. This is the denominator for the two guards above -- without it
+    /// they would pass on a loop that never ran a round at all.
+    #[test]
+    fn the_stage_spends_its_victim_budget_and_then_stops() {
+        let mut calls = 0usize;
+        let tally = run_eviction_stage(0, BUDGET, batch(1), |_remaining| {
+            calls += 1;
+            batch(1)
+        });
+        assert_eq!(
+            tally.victims.len(),
+            BUDGET,
+            "expected the stage to take exactly its budget of {BUDGET} victims",
+        );
+        assert_eq!(
+            tally.rounds,
+            BUDGET - 1,
+            "expected {} rounds after the seed batch, ran {}",
+            BUDGET - 1,
+            tally.rounds,
+        );
+        assert_eq!(calls, BUDGET - 1, "batches taken and rounds counted disagree");
+    }
+
+    /// The ROUND half of `more_budget`, asserted where the victim half cannot reach it: `taken`
+    /// has not moved, so `count_limit > taken` is still true and only the round count can stop
+    /// the loop. This is the term that turns a spin into a bounded run.
+    #[test]
+    fn the_round_bound_stops_a_loop_whose_victim_budget_never_advances() {
+        let productive = batch(1);
+
+        let below = eviction_loop_terms_for_batch(&productive, 0, BUDGET, 0, BUDGET - 1);
+        assert!(
+            below.more_budget,
+            "round {} of {BUDGET} must still have budget",
+            BUDGET - 1,
+        );
+        assert!(below.should_continue());
+
+        let at_limit = eviction_loop_terms_for_batch(&productive, 0, BUDGET, 0, BUDGET);
+        assert!(
+            !at_limit.more_budget,
+            "round {BUDGET} of {BUDGET} still had budget with 0 victims taken -- the budget \
+             bounds victims only, which is what let the stage spin",
+        );
+        assert!(!at_limit.should_continue());
+        assert_eq!(
+            eviction_loop_round_limit(BUDGET),
+            BUDGET,
+            "the round limit is derived from the victim budget",
+        );
+    }
+
+    /// THE WIRING. Exactly one of three batch shapes reads as progress. The predicate's own unit
+    /// tests construct `EvictionLoopTerms` directly and so cannot see this step at all.
+    #[test]
+    fn exactly_one_of_three_batch_shapes_reads_as_progress() {
+        let probes: [(&str, StorageEvictionReport, bool); 3] = [
+            ("took a victim", batch(1), true),
+            ("found nobody", batch(0), false),
+            (
+                "in cooldown",
+                StorageEvictionReport { cooldown: true, ..batch(1) },
+                false,
+            ),
+        ];
+        let progressed = probes
+            .iter()
+            .filter(|(_, report, _)| {
+                eviction_loop_terms_for_batch(report, 0, BUDGET, 0, 0).made_progress
+            })
+            .count();
+        assert_eq!(
+            progressed,
+            1,
+            "expected exactly 1 of {} batch shapes to read as progress, got {progressed}",
+            probes.len(),
+        );
+        for (name, report, expected) in &probes {
+            assert_eq!(
+                eviction_loop_terms_for_batch(report, 0, BUDGET, 0, 0).made_progress,
+                *expected,
+                "batch shape {name} read the wrong way",
+            );
+        }
+    }
+
+    /// The accumulation the stage report is built from, so a bounded loop cannot buy termination
+    /// by losing what the earlier batches did.
+    #[test]
+    fn the_stage_report_accumulates_every_batch_not_only_the_last() {
+        let mut calls = 0usize;
+        let seed = StorageEvictionReport {
+            pressure_before: 1_775_000,
+            cache_entries_removed: 3,
+            ..batch(1)
+        };
+        let tally = run_eviction_stage(0, 4, seed, |_remaining| {
+            calls += 1;
+            StorageEvictionReport { cache_entries_removed: 2, ..batch(1) }
+        });
+        assert_eq!(tally.rounds, 3, "expected 3 rounds against a budget of 4");
+        let report = tally.into_stage_report();
+        assert_eq!(report.selected_victims.len(), 4, "the stage lost victims");
+        assert_eq!(
+            report.cache_entries_removed, 9,
+            "expected 3 + 3 * 2 cache entries across the stage",
+        );
+        assert_eq!(
+            report.pressure_before, 1_775_000,
+            "pressure_before must come from the FIRST batch",
         );
     }
 }
