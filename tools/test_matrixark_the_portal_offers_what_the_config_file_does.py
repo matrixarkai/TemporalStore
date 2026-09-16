@@ -116,19 +116,11 @@ class TheNewSettingsAreRealTest(unittest.TestCase):
 
     ADDED = (
         "limits.backend_readiness_timeout_ms",
-        "limits.backend_readiness_backoff_ms",
-        "limits.direct_record_bundle_max_bytes",
         "limits.direct_record_hot_cache_max_records",
         "retrieval.cross_session_max_candidates",
         "retrieval.cross_session_min_score",
-        "retrieval.cross_session_parallelism",
-        "retrieval.cross_session_profile_max_sessions",
         "retrieval.max_children_scored_per_parent",
-        "retrieval.shared_context_min_score",
-        "retrieval.mode_dependent_quota",
-        "extraction.entity_merge_operator",
         "extraction.enable_llm_merge_operator",
-        "extraction.time_compression_min_events",
         "extraction.time_compression_max_raw_events_per_node",
     )
 

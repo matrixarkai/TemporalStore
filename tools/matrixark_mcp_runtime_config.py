@@ -31,7 +31,7 @@ MAX_PRIOR_CHARS = 4096
 # honoured the environment variable) and 1024 in the engine, so which records a scan could see
 # depended on which module opened it.
 DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "").strip() or "256")
-DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "").strip() or "65536")
+DIRECT_RECORD_BUNDLE_MAX_BYTES = 65536
 DIRECT_RECORD_HOT_CACHE_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS", "").strip() or "20000")
 DIRECT_WRITE_RETRIES = 3
 DIRECT_WRITE_BACKOFF_MS = 25
@@ -56,7 +56,7 @@ SUMMARY_REFRESH_MAX_DUTY = 0.2
 SUMMARY_REFRESH_MAX_BACKOFF_MS = 300000
 
 BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "").strip() or "30000")
-BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "").strip() or "200")
+BACKEND_READINESS_BACKOFF_MS = 200
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = 1000
 
 MATRIXARK_MCP_PROFILE = (os.environ.get("MATRIXARK_MCP_PROFILE", "").strip().lower() or "dev")
@@ -152,7 +152,7 @@ DEFAULT_CONTEXT_SOURCE_MODE = (os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "
 #   remote_only: remote must also reconstruct the working context, so cross-session takes the
 #       minority (current-session reconstruction fills the majority of the remote budget).
 # Flip on with MATRIXARK_MODE_DEPENDENT_QUOTA=1 once the three-arm study validates it.
-MODE_DEPENDENT_QUOTA_ENABLED = env_bool("MATRIXARK_MODE_DEPENDENT_QUOTA", False)
+MODE_DEPENDENT_QUOTA_ENABLED = False
 DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO = float("0.60")
 DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO = float("0.30")
 
@@ -236,7 +236,7 @@ DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDA
 # the engine used 24, so the number a deployment got depended on which surface it came from.
 # test_the_ref_cap_has_one_value pins all of them together.
 DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "").strip() or "1000")
-DEFAULT_BUDGET_FILL_POLICY = (os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "").strip().lower() or "quality_first")
+DEFAULT_BUDGET_FILL_POLICY = ('quality_first')
 # Near-duplicate suppression in ref selection. A candidate whose token set has a
 # Jaccard similarity >= this ratio with an already-selected (higher-ranked) ref
 # is dropped before packing, so the richer default packs (top_k 24, cross-session
@@ -254,16 +254,16 @@ DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float("0.15")
 DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = 0.30  # build default; live_float reads the environment
 DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = 327680  # build default; live_int reads the environment
-DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "").strip() or "3")
+DEFAULT_CROSS_SESSION_MAX_SESSIONS = 3
 DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "").strip() or "24")
 DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int("2")
-DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "").strip() or "4")
+DEFAULT_CROSS_SESSION_PARALLELISM = 4
 DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "").strip() or "256")
 DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "").strip() or "0.20")
 DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float("0.45")
 DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO = 0.60  # the guard, not the setting: the share below is what decides
-DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_SESSIONS", "").strip() or "6")
+DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS = 6
 DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", "").strip() or "48")
 DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int("3")
 DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
@@ -363,7 +363,7 @@ DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = 262144  # build default; live_int re
 DEFAULT_SHARED_SKILL_BUDGET_RATIO = 0.10  # build default; live_float reads the environment
 DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
 DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
-DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "").strip() or "0.20")
+DEFAULT_SHARED_CONTEXT_MIN_SCORE = 0.2
 
 # Conditional follow-up query rewriting: rewrite the RETRIEVAL query (ranking only) from
 # recent session turns so anaphora ("that"/"the ones") carries its referent terms. It does
@@ -385,15 +385,15 @@ SKILL_DISCOVERY_MIN_SUPPORT = 2
 SKILL_DISCOVERY_MAX_SKILLS = 8
 
 TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "").strip() or "256")
-TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "").strip() or "64")
-TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "").strip() or "8")
+TIME_COMPRESSION_WINDOW_EVENTS = 64
+TIME_COMPRESSION_MIN_EVENTS = 8
 TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH = 4
 TIME_COMPRESSION_MIN_EVENT_AGE_MS = 0
 TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = 2592000000
 TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = 2592000000
 
 ENABLE_LLM_MERGE_OPERATOR = env_bool("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", False)
-DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
+DEFAULT_ENTITY_MERGE_OPERATOR = 'EUA_MERGE'
 
 DEFAULT_BUSINESS_TYPE_WEIGHTS: dict[str, float] = {
     "confirmation": 1.0,

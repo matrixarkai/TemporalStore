@@ -66,7 +66,7 @@ LEAF_DIFFERS = {
 }
 
 #: How many differ only in the SECTION, the same leaf under two taxonomies.
-SECTION_ONLY = 26
+SECTION_ONLY = 25
 
 
 def _env_map():

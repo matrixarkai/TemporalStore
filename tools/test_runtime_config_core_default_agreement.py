@@ -174,9 +174,13 @@ class RuntimeConfigAgreesWithCore(unittest.TestCase):
         # The comparison must be about real values. It was not: reading the second argument of
         # os.environ.get gave "" for 42 of these 43, so the agreement below held between two empty
         # strings. A count of how many carry a real literal is the thing to hold.
+        # Retiring a knob takes its constant out of this population too: the read becomes the
+        # literal, so there is no fallback argument left to extract and the constant stops being
+        # "shared with a value". Eleven went at once and took this to exactly 20. Moved down
+        # rather than tracking the count, for the reason given above.
         with_a_value = [n for n in shared if self.core[n][1] != ""]
         self.assertGreater(
-            len(with_a_value), 20,
+            len(with_a_value), 12,
             "only %d of %d shared constants resolve to a real fallback literal. The rest compare "
             "\"\" against \"\", which is an agreement assertion that cannot fail -- see "
             "_or_fallback." % (len(with_a_value), len(shared)))

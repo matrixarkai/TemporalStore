@@ -122,9 +122,15 @@ KNOWN_DISAGREEMENTS: Dict[str, str] = {
 EXPECTED_NUMERIC_READ_FLOOR = 60
 
 #: And a positive control the count cannot give: matrixark_mcp_runtime_config is where these
-#: constants are being consolidated TO, so its own numeric reads only grow. 38 sites today. If the
-#: scan stops seeing that module it has stopped working, whatever the global count says.
-EXPECTED_RUNTIME_CONFIG_READ_FLOOR = 20
+#: constants are consolidated, so if the scan stops seeing that module it has stopped working,
+#: whatever the global count says.
+#:
+#: "only grow" was the reasoning and it was wrong in one direction: RETIRING a knob replaces its
+#: read with the literal it resolved to, so the module's numeric reads fall. Eleven went that way
+#: at once and took this from 20 to 19 -- this file failing on work that removes configuration on
+#: purpose, which is the same shape its own floor note warns about two paragraphs up. The floor is
+#: back where that note says it belongs: far from both failure modes rather than beside the count.
+EXPECTED_RUNTIME_CONFIG_READ_FLOOR = 8
 
 
 def _production_sources() -> List[str]:

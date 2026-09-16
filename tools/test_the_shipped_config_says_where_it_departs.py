@@ -142,8 +142,12 @@ class ShippedConfigDeparturesTest(unittest.TestCase):
             len(shipped), 50,
             "read %d keys from %s -- the file has ~86; the parser or the path is wrong"
             % (len(shipped), CONFIG_FILE))
+        # Retiring a knob removes the shipped key AND the portal row together, so this
+        # population shrinks by one per knob retired. Eleven went at once and took it to exactly
+        # 40. The floor is for a parser that stopped matching -- which finds approximately
+        # nothing -- so it sits well below the count rather than beside it.
         self.assertGreater(
-            len(comparable), 40,
+            len(comparable), 25,
             "only %d of %d shipped keys resolve to a portal setting to compare against; "
             "the comparison is too thin to mean anything" % (len(comparable), len(shipped)))
 
