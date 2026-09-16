@@ -6290,4 +6290,318 @@ const RETIRED_NAMES: &[&str] = &[
             "every installed slab must still be there after a reopen"
         );
     }
+
+    /// The roll predicate answered at its threshold, which nothing asked it before.
+    ///
+    /// `should_roll_before_append` is called on EVERY append, and the shipped slab target is a
+    /// GiB. Every test in this crate writes a few KB into a tempdir, so
+    /// `write_offset + record_len > slab_target_bytes` is false in all of them and only the
+    /// `write_offset > 0` conjunct is ever exercised. Measured by mutation: replacing the whole
+    /// predicate with `false` -- an append that can never roll, one slab for ever -- leaves all
+    /// 82 block-store tests green, while replacing it with the bare `write_offset > 0` is caught
+    /// at once. So the half that decides WHEN to roll was untested and the half that decides
+    /// whether a slab is empty was not.
+    ///
+    /// This asks the predicate directly, at numbers a fixture cannot reach, which is the only way
+    /// to reach the threshold without seeding a gibibyte. Both predicates are here because they
+    /// are deliberately different and the difference is the thing worth pinning: one asks "will
+    /// THIS record overflow", the other "is the slab full enough to roll now".
+    #[test]
+    fn the_roll_predicates_answer_at_their_thresholds() {
+        // THE EMPTY-SLAB GUARD. A freshly rolled slab must not roll again, however large the
+        // record: without this a background cycle mints an empty slab every pass.
+        assert!(
+            !should_roll_before_append(0, 10_000, 100),
+            "an empty slab never rolls, even for a record larger than the whole target"
+        );
+        assert!(!slab_is_at_target(0, 100), "an empty slab is never at target");
+
+        // THE THRESHOLD ITSELF, asserted on both sides of the boundary and ON it. A record that
+        // exactly fills the target is written where it is; the first byte past it rolls.
+        assert!(
+            !should_roll_before_append(90, 10, 100),
+            "a record that exactly fills the target does not roll: 90 + 10 == 100"
+        );
+        assert!(
+            should_roll_before_append(90, 11, 100),
+            "the first byte past the target rolls: 90 + 11 > 100"
+        );
+        assert!(
+            should_roll_before_append(100, 1, 100),
+            "a slab already at target rolls for any non-empty record"
+        );
+        assert!(
+            !should_roll_before_append(100, 0, 100),
+            "and a zero-length record at the target does not"
+        );
+
+        // `slab_is_at_target` answers the OTHER question, with no record in hand, and its
+        // boundary is inclusive where the one above is exclusive.
+        assert!(
+            !slab_is_at_target(99, 100),
+            "under target is not at target"
+        );
+        assert!(
+            slab_is_at_target(100, 100),
+            "exactly at target IS at target -- inclusive, unlike should_roll_before_append"
+        );
+        assert!(slab_is_at_target(101, 100), "and past it stays at target");
+
+        // THE DENOMINATOR FOR WHY THIS TEST HAS TO ASK DIRECTLY: the shipped target is large
+        // enough that no tempdir fixture in this crate crosses it.
+        let shipped = effective_block_slab_target_bytes();
+        assert!(
+            shipped >= 1 << 20,
+            "the shipped slab target is {shipped} bytes; a fixture-driven roll test would have \
+             to write that much, which is why this one asks the predicate instead"
+        );
+    }
+
+    /// A roll never hands back an id a slab file on disk already holds.
+    ///
+    /// THIS IS WHAT MAKES A STALE ADDRESS SAFE. A block address names (slab, offset, length); if
+    /// a roll could mint an id a file already occupies, a reader holding an address into the old
+    /// slab would resolve into a DIFFERENT record's bytes at the same offset. The record header
+    /// carries only the block ordinal -- `parse_block_record_header` returns `slab_id: None`, so
+    /// the slab-id cross-check in `decode_block_record` can never fire -- which leaves monotonic
+    /// ids and the payload checksum as the whole of the defence.
+    ///
+    /// `roll_slab_inner` derives the next id TWICE, from the in-memory id and from the highest id
+    /// on disk, and takes the larger. Both derivations were unguarded: dropping the disk half
+    /// (`next_from_current.max(next_from_disk)` -> `next_from_current`) left all 82 block-store
+    /// tests green. A `max` over two derivations is caught only when BOTH are broken, so the disk
+    /// half needs a case where it is the one that wins -- which is this one.
+    #[test]
+    fn a_roll_never_mints_an_id_a_slab_file_already_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        store.append(b"the first record").unwrap();
+
+        // A slab file the store does not know about, above the active id. A metadata-only
+        // restore, a checkpoint install and a crash mid-roll all reach this state: files on disk
+        // whose ids run ahead of the id the store is holding.
+        let stranded = 5u64;
+        let stranded_bytes = b"bytes that must survive the roll".to_vec();
+        fs::write(slab_path(dir.path(), stranded), &stranded_bytes).unwrap();
+
+        // DENOMINATORS, before the roll: the store's own id is BELOW the stranded one, so the
+        // disk half of the derivation is the half that has to win here. Without this the test
+        // would pass on a store that never needed the disk scan at all.
+        let active_before = store.slab_ids().unwrap();
+        assert!(
+            active_before.contains(&stranded),
+            "the stranded slab really is on disk: {active_before:?}"
+        );
+        assert!(
+            active_before.iter().copied().max().unwrap() == stranded,
+            "and it really is the highest id present: {active_before:?}"
+        );
+
+        let report = store.roll_slab().unwrap();
+
+        assert!(
+            report.new_block_slab_id > stranded,
+            "the roll must mint an id above every slab file on disk, not {} which sits at or \
+             below the stranded {stranded}",
+            report.new_block_slab_id
+        );
+        assert_eq!(
+            fs::read(slab_path(dir.path(), stranded)).unwrap(),
+            stranded_bytes,
+            "and the stranded slab's bytes must be untouched -- a reused id overwrites them"
+        );
+
+        // The ids only ever go up from here: a second roll must clear the first.
+        let second = store.roll_slab().unwrap();
+        assert!(
+            second.new_block_slab_id > report.new_block_slab_id,
+            "slab ids are monotonic: {} then {}",
+            report.new_block_slab_id,
+            second.new_block_slab_id
+        );
+    }
+
+    /// A blocked restore costs the purge a walk, never a unit of its budget.
+    ///
+    /// THE BUDGET IS SPENT ON WORK DONE, and `purge_delayed_destroy_slabs_capped` names three
+    /// reasons a slab is skipped -- not named by the caller's list, not old enough yet, and
+    /// live-but-blocked. `a_capped_purge_is_not_starved_by_the_slabs_it_must_skip` passes
+    /// `min_age_ms` of 0 and an empty live set, so it reaches exactly ONE of the three: the
+    /// caller's-list skip. The other two were unmeasured, and the live-but-blocked one is the
+    /// one with a six-line comment defending the decision. Adding `processed += 1` to the
+    /// blocked-restore branch -- the exact inversion that comment forbids -- left all 82
+    /// block-store tests green.
+    ///
+    /// `restore_blocked_block_slab_ids` was asserted in one place in the crate, and asserted
+    /// EMPTY, so no test had ever produced a blocked restore at all.
+    ///
+    /// The invariant asserted per round is the one that cannot be satisfied by accident:
+    /// `processed_block_slabs` equals the slabs that LEFT the trash directory this round, which
+    /// is restores plus destroys and nothing else. A budget charged for a skip breaks it
+    /// immediately, whatever order `read_dir` happens to hand the entries back in.
+    #[test]
+    fn a_blocked_restore_does_not_spend_the_purge_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let slabs = 50u64;
+        let blocked = 8u64;
+        let budget = 5usize;
+        quarantine_fixture(dir.path(), slabs);
+
+        // Occupy the destination of the first `blocked` ids. `restore_slab_from_delayed_destroy_
+        // unsynced` returns false without moving anything when a file already sits where the
+        // slab would land, so these are live, reached, and cannot be restored.
+        let mut occupied = BTreeSet::new();
+        let mut id = 0u64;
+        while id < blocked {
+            fs::write(slab_path(dir.path(), id), b"an id already in use").unwrap();
+            occupied.insert(id);
+            id += 1;
+        }
+
+        // DENOMINATORS, both halves, before the run.
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len() as u64,
+            slabs,
+            "every slab is in quarantine"
+        );
+        assert_eq!(
+            store.slab_ids().unwrap().len() as u64,
+            blocked,
+            "and exactly the blocked ids are already occupied in the store"
+        );
+
+        let restorable = slabs - blocked;
+        let predicted_rounds = (restorable as usize).div_ceil(budget);
+        assert_ne!(
+            restorable as usize % budget,
+            0,
+            "the budget must not divide the work, or the last round's report depends on where in \
+             directory order the final actionable slab sits"
+        );
+        let allowed_rounds = predicted_rounds + 5;
+
+        let live = (0..slabs).collect::<Vec<_>>();
+        let mut rounds = 0usize;
+        let mut restored = BTreeSet::new();
+        let mut blocked_seen = BTreeSet::new();
+        loop {
+            let report = store
+                .purge_delayed_destroy_slabs_capped(0, live.clone(), None, budget)
+                .unwrap();
+            // THE HALF THAT CATCHES THE INVERSION, asserted every round: budget is charged for
+            // slabs that LEFT the directory, and a blocked restore left nothing.
+            assert_eq!(
+                report.processed_block_slabs,
+                report.restored_block_slab_ids.len() + report.purged_block_slab_ids.len(),
+                "budget is spent on work done; a blocked restore moved nothing and must not be \
+                 charged for: {report:?}"
+            );
+            assert!(
+                report.purged_block_slab_ids.is_empty(),
+                "every slab here is live, so none may be destroyed: {report:?}"
+            );
+            restored.extend(report.restored_block_slab_ids.iter().copied());
+            blocked_seen.extend(report.restore_blocked_block_slab_ids.iter().copied());
+            rounds += 1;
+            if !report.budget_exhausted {
+                break;
+            }
+            assert!(
+                rounds <= allowed_rounds,
+                "after {rounds} rounds {} of {restorable} slabs have been restored; a budget \
+                 charged for the blocked slabs it walks past would look exactly like this",
+                restored.len()
+            );
+        }
+
+        // THE OTHER HALF: the drain finished in the rounds the budget predicts, so the eight
+        // blocked slabs cost the loop a walk and nothing else.
+        assert_eq!(
+            rounds, predicted_rounds,
+            "the blocked slabs must cost the loop a walk, never a unit of budget"
+        );
+        assert_eq!(
+            restored.len() as u64,
+            restorable,
+            "every restorable slab came back out of quarantine"
+        );
+        assert_eq!(
+            blocked_seen, occupied,
+            "and every blocked slab was reported blocked, not restored and not destroyed"
+        );
+        assert_eq!(
+            store.delayed_destroy_slab_ids().unwrap().len() as u64,
+            blocked,
+            "the blocked slabs stay in quarantine: not destroyed, not restored"
+        );
+    }
+
+    /// A store whose manifest still carries the legacy name loads its descriptors.
+    ///
+    /// `page_zone_manifest.json` is how the tree notices a store written before the slab manifest
+    /// was renamed, and `the_on_disk_names_are_the_ones_the_readers_parse` asserts the constant
+    /// still spells it. That guards the NAME and not the WIRING, which is the half that fails
+    /// silently: the fallback in `load_slab_manifest_at` and the existence probe in
+    /// `BlockStore::with_options` can each be removed with all 82 block-store tests still green.
+    /// A store that stops reading the legacy file does not error -- it finds no manifest, falls
+    /// through to `rebuild_slab_manifest_at`, and succeeds, which is exactly the silent miss the
+    /// name assertion was written to prevent.
+    ///
+    /// THE DISCRIMINATOR IS A SLAB WITH NO FILE. `rebuild_slab_manifest_at` walks the slab files
+    /// on disk, so a descriptor for a slab whose file is gone cannot come from a rebuild; it can
+    /// only come from a manifest that was read. `slab_manifest_reconciled_on_open` will NOT do
+    /// the job here -- reconcile re-inspects the freshly written descriptors either way and
+    /// reports `true` whether or not the legacy file was opened, so a test resting on it passes
+    /// on both sides of the wiring it means to pin.
+    #[test]
+    fn a_store_written_under_the_legacy_manifest_name_still_loads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let first = store.append(b"first-slab").unwrap();
+        store.roll_slab().unwrap();
+        let second = store.append(b"second-slab").unwrap();
+        drop(store);
+
+        // The first slab's FILE goes; the manifest still names it. Nothing on disk does.
+        fs::remove_file(slab_path(dir.path(), first.block_slab_id)).unwrap();
+
+        // Age the store back to the spelling a pre-rename deployment wrote.
+        let current = slab_manifest_path(dir.path());
+        let legacy = legacy_zone_manifest_path(dir.path());
+        assert!(current.exists(), "denominator: the store wrote a manifest");
+        fs::rename(&current, &legacy).unwrap();
+        assert!(
+            !current.exists(),
+            "denominator: the new name is gone, so anything found came from the legacy one"
+        );
+        assert!(
+            legacy.exists(),
+            "denominator: the legacy name is what is on disk"
+        );
+
+        let reopened = BlockStore::new(dir.path());
+        let descriptors = reopened.slab_descriptors();
+
+        // THE HALF A REBUILD CANNOT FAKE.
+        assert!(
+            descriptors.iter().any(|slab| slab.block_slab_id == first.block_slab_id
+                && slab.state == BlockStoreSlabState::Purged),
+            "the legacy manifest must be READ: a slab with no file on disk is knowable only from \
+             a manifest, and a store that missed it rebuilds around the hole and looks perfectly \
+             healthy: {descriptors:?}"
+        );
+        // THE OTHER HALF, asserted separately: the slab that does have a file is still described
+        // and still reads, so the first half is not passing on a store that failed to open.
+        assert!(
+            descriptors.iter().any(|slab| slab.block_slab_id == second.block_slab_id
+                && slab.state == BlockStoreSlabState::Active),
+            "the surviving slab must still be active: {descriptors:?}"
+        );
+        assert_eq!(
+            reopened.read(&second).unwrap(),
+            b"second-slab".to_vec(),
+            "and its records still read"
+        );
+    }
 }
