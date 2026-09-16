@@ -148,20 +148,60 @@ class OneDefinitionTest(unittest.TestCase):
     """The serving path and the surfaces run the same code, not equivalent code."""
 
     def test_the_serving_path_uses_the_accessor_the_surfaces_use(self) -> None:
-        """Compared by code object, not by identity.
+        """Compared by SOURCE LOCATION, not by object identity and not by code object.
 
-        ``import tools.x`` and ``import x`` build two different module objects holding two
-        different function objects for one ``def``, so ``is`` answers no for functions that are
-        the same function. The code object is shared.
+        ``import tools.x`` and ``import x`` execute the file twice and build two of everything --
+        two module objects, two function objects, and two CODE objects. An earlier version of this
+        compared ``__code__`` on the belief that the code object at least was shared. It is not:
+        this passed alone, with one module object in the process, and failed under the full suite,
+        where something has already imported the package path. That is the very duplication the
+        accessor module exists to escape, reappearing in the test for it.
+
+        ``co_filename`` needs normalising for the same reason -- with both ``.`` and ``tools`` on
+        ``sys.path`` one file is recorded as ``tools/x.py`` and ``./tools/x.py``.
+
+        What the claim means is that the serving path's accessor is the one defined in
+        matrixark_retrieval_effective: same file, same line, however many times Python ran it.
         """
         import matrixark_mcp_local_adapter  # noqa: F401 - the cycle must be entered from the top
         import matrixark_local_adapter_retrieval as serving
+
+        def where(fn):
+            code = fn.__code__
+            return (os.path.realpath(code.co_filename), code.co_name, code.co_firstlineno)
+
         for name in ("onebox_embedding_first", "flag_enabled", "retrieval_scan_projection"):
             with self.subTest(name=name):
-                self.assertIs(getattr(serving, name).__code__,
-                              getattr(eff, name).__code__,
-                              "%s on the serving path is a second copy of the one the surfaces "
-                              "call, and two copies of a rule agree until one is edited" % name)
+                mine, theirs = where(getattr(serving, name)), where(getattr(eff, name))
+                self.assertEqual(theirs, mine,
+                                 "%s on the serving path is defined somewhere other than the "
+                                 "accessor module, so it is a second copy of the rule -- and two "
+                                 "copies agree until one is edited" % name)
+                self.assertEqual(
+                    os.path.basename(mine[0]), "matrixark_retrieval_effective.py",
+                    "%s is not defined in the accessor module at all" % name)
+
+    def test_the_serving_path_and_the_surfaces_agree_on_every_value(self) -> None:
+        """The property the location check stands in for, asserted directly.
+
+        Same-file-same-line is strong evidence of one definition, but the thing that actually
+        matters is that the serving path and the surfaces answer alike -- including for the
+        unrecognised values where the two old parses came apart.
+        """
+        import matrixark_mcp_local_adapter  # noqa: F401
+        import matrixark_local_adapter_retrieval as serving
+        original = os.environ.get("MATRIXARK_ONEBOX_EMBEDDING_FIRST")
+        self.addCleanup(lambda: (os.environ.__setitem__("MATRIXARK_ONEBOX_EMBEDDING_FIRST",
+                                                        original)
+                                 if original is not None
+                                 else os.environ.pop("MATRIXARK_ONEBOX_EMBEDDING_FIRST", None)))
+        for raw in VALUE_SPACE:
+            with self.subTest(value=raw):
+                os.environ["MATRIXARK_ONEBOX_EMBEDDING_FIRST"] = raw
+                self.assertEqual(eff.onebox_embedding_first(),
+                                 serving.onebox_embedding_first(),
+                                 "with the variable set to %r the serving path and the accessor "
+                                 "the surfaces call disagree" % raw)
 
     def test_the_budget_rule_is_one_rule(self) -> None:
         import matrixark_mcp_local_adapter  # noqa: F401
