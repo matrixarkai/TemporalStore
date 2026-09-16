@@ -1435,7 +1435,7 @@ impl TemporalEngine {
                     if shard
                         .expires_at_ms
                         .get(key)
-                        .map(|expires_at| *expires_at <= now_ms())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
                         return None;
@@ -1449,7 +1449,7 @@ impl TemporalEngine {
                     if shard
                         .expires_at_ms
                         .get(key)
-                        .map(|expires_at| *expires_at <= now_ms())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
                         return None;
@@ -3870,7 +3870,7 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
     associated_record_keys(key)
         .into_iter()
         .filter_map(|record_key| shard.expires_at_ms.get(&record_key).copied())
-        .map(|expires_at| expires_at.saturating_sub(now_ms()) as i64)
+        .map(|expires_at| expires_at.saturating_sub(resolve_now_ms()) as i64)
         .min()
         .unwrap_or(-1)
 }

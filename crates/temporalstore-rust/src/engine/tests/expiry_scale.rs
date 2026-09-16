@@ -3165,7 +3165,7 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
 /// That obligation was stated in two comments and enforced nowhere. One arm disagreed:
 /// `Command::CommonTtl` tested its deadline against the bare `now_ms()` while the collection it
 /// performed one line later, through `ttl_ms` -> `remove_if_expired`, used the replay-aware one.
-/// Eleven of the twelve clock reads in the file were already right; that was the twelfth.
+/// Ten of the eleven clock reads in the file were already right; that was the eleventh.
 ///
 /// LATENT, AND SAID SO PLAINLY. `CommonTtl` is classified as a read
 /// (`is_raft_read_command`, `is_write_command`), so it is never appended to the WAL and therefore
@@ -3179,28 +3179,10 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
 fn every_clock_read_in_execute_on_shard_is_replay_aware() {
     const SOURCE: &str = include_str!("../execute_on_shard.rs");
 
-    // The classifier. Used on the file AND on the controls below, so a control can never be
-    // checked by different code than the subject.
-    fn classify(text: &str) -> (usize, Vec<(usize, String)>) {
-        let mut replay_aware = 0usize;
-        let mut live: Vec<(usize, String)> = Vec::new();
-        for (index, line) in text.lines().enumerate() {
-            if line.trim_start().starts_with("//") {
-                continue;
-            }
-            let mut offset = 0usize;
-            while let Some(at) = line[offset..].find("now_ms()") {
-                let absolute = offset + at;
-                if line[..absolute].ends_with("resolve_") {
-                    replay_aware += 1;
-                } else {
-                    live.push((index + 1, line.trim().to_string()));
-                }
-                offset = absolute + "now_ms()".len();
-            }
-        }
-        (replay_aware, live)
-    }
+    // The classifier is `classify_clock_reads`, shared with the serving-read-path guard below.
+    // Used on the file AND on the controls, so a control can never be checked by different
+    // code than the subject, and so the two guards cannot drift apart.
+    let classify = classify_clock_reads;
 
     // ---- POSITIVE CONTROL: the classifier can tell the two spellings apart ---------------
     // Without this, a scan that matched nothing would report every file clean, and that would
@@ -3245,5 +3227,354 @@ fn every_clock_read_in_execute_on_shard_is_replay_aware() {
         live.len(),
         replay_aware + live.len(),
         rendered.join("\n"),
+    );
+}
+
+
+/// The classifier both replay-aware clock guards use.
+///
+/// Returns the count of `resolve_now_ms()` reads and every bare `now_ms()` read as
+/// (line-within-the-scanned-text, trimmed source). Lines that START a comment are skipped, so a
+/// doc comment naming a spelling is not counted as a reading of it.
+///
+/// Shared rather than copied so a control can never be checked by different code than the
+/// subject, and so a fix to one guard's classifier cannot leave the other's behind.
+fn classify_clock_reads(text: &str) -> (usize, Vec<(usize, String)>) {
+    let mut replay_aware = 0usize;
+    let mut live: Vec<(usize, String)> = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let mut offset = 0usize;
+        while let Some(at) = line[offset..].find("now_ms()") {
+            let absolute = offset + at;
+            if line[..absolute].ends_with("resolve_") {
+                replay_aware += 1;
+            } else {
+                live.push((index + 1, line.trim().to_string()));
+            }
+            offset = absolute + "now_ms()".len();
+        }
+    }
+    (replay_aware, live)
+}
+
+/// Lift one function body out of a source file: from `signature` to the first later line that
+/// is EXACTLY `closing`.
+///
+/// The signature must occur exactly once. A second definition of the same name would otherwise
+/// let this read one body while the crate compiles the other, and the guard would be watching a
+/// function nothing calls.
+fn function_body(source: &str, signature: &str, closing: &str) -> String {
+    assert_eq!(
+        source.matches(signature).count(),
+        1,
+        "VACUITY: `{signature}` must appear exactly once in the scanned source; it appeared {}. \
+         This guard cannot know which definition it is reading.",
+        source.matches(signature).count(),
+    );
+    let start = source.find(signature).expect("checked above");
+    let mut body = String::new();
+    for (index, line) in source[start..].lines().enumerate() {
+        body.push_str(line);
+        body.push('\n');
+        if index > 0 && line == closing {
+            break;
+        }
+    }
+    body
+}
+
+fn render_live_reads(live: &[(usize, String)], scope: &str) -> String {
+    live.iter()
+        .map(|(line, text)| format!("  {scope} (+{line} lines): {text}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every clock read on the SERVING READ path in `engine.rs` asks the REPLAY-AWARE clock.
+///
+/// WHY A SECOND GUARD, AND WHAT THE FIRST ONE CANNOT SEE.
+/// `every_clock_read_in_execute_on_shard_is_replay_aware` states this rule for exactly one
+/// file, and that file is the SLOW path. The route a deployment answers `GET` and `HGETALL`
+/// from is `execute_read_only_fast_path`, which lives in `engine.rs` and is outside everything
+/// that guard can read: `RecordStore::Local` reads through `execute_durable`, `execute_durable`
+/// passes a storage override, and the override is the whole entry condition for the fast path --
+/// it is tried BEFORE `execute_on_shard` is ever reached. Three deadline reads there asked the
+/// bare `now_ms()`.
+///
+/// NOT LATENT -- THIS ONE IS REACHED, AND IT WAS MEASURED. Counting every entry into the fast
+/// path across this suite gave 7 963 entries, of which 228 ran with a leader clock already
+/// installed: all of them `StringGet`, all with `raft_applying` true, every one arriving through
+/// `execute_raft_apply_batch_at` -> `execute_with_storage_override` -> the fast path, driven by
+/// `raft::apply_committed_recording` under the follower pipeline. So a committed READ entry does
+/// reach this code with the leader's stamp in force. `is_raft_read_command`, which keeps reads
+/// out of the log, lives in the SERVER BINARY's routing layer -- not in the engine and not in
+/// the raft library -- so it cannot be what makes this safe here.
+///
+/// WHAT THE BARE CLOCK COSTS. Each replica applies the same committed entry at its own moment
+/// and against its own wall clock, so one log entry can be answered differently on each replica:
+/// the one whose clock has passed the deadline declines the fast path and the slow path hides
+/// the key, while the one whose clock has not serves the value straight out of the fast path.
+/// That is the divergence `execute_raft_apply_at` already exists to prevent for writes -- its own
+/// doc says one committed entry must not produce as many answers as there are replicas -- and the
+/// read path was not holding to it.
+///
+/// SCOPED BY FUNCTION, NOT BY FILE, AND WITH NO EXEMPTION LIST. `engine.rs` reads the live clock
+/// for things that are not deadlines -- LRU bucket recency, the temporal-compression window --
+/// and those are right to. Scanning the whole file would need a list of blessed lines, and a
+/// list is where a real one hides. So this takes the two functions that decide whether a
+/// DEADLINE has passed and holds every clock read inside them to the rule.
+///
+/// It fails on a NUMBER, not on a shape: the count of non-replay-aware clock reads.
+#[test]
+fn every_clock_read_on_the_serving_read_path_is_replay_aware() {
+    const SOURCE: &str = include_str!("../../engine.rs");
+
+    // ---- POSITIVE CONTROL: the classifier can tell the two spellings apart ---------------
+    // Without this, a scan that matched nothing would report the path clean, and that looks
+    // exactly like the result this guard exists to produce.
+    let (control_aware, control_live) =
+        classify_clock_reads("let a = resolve_now_ms();\nlet b = now_ms();");
+    assert_eq!(
+        (control_aware, control_live.len()),
+        (1, 1),
+        "CONTROL: the classifier must read one replay-aware and one live clock read out of a \
+         line of each; it read {control_aware} and {}.",
+        control_live.len(),
+    );
+    let (_, commented) = classify_clock_reads("// this mentions now_ms() only in prose");
+    assert!(
+        commented.is_empty(),
+        "CONTROL: a mention inside a comment must not count as a clock read.",
+    );
+
+    // ---- THE SUBJECTS -------------------------------------------------------------------
+    let fast_path = function_body(SOURCE, "    fn execute_read_only_fast_path(", "    }");
+    let ttl = function_body(SOURCE, "fn ttl_ms(", "}");
+
+    // ---- VACUITY, ON THE SCAN RATHER THAN ON THE OUTCOME --------------------------------
+    // A landmark from INSIDE each body, so a function that was renamed, moved or truncated
+    // fails here loudly instead of reading as clean. A truncated scan reads exactly like a
+    // clean one, which is the failure this pair of assertions exists to prevent.
+    assert!(
+        fast_path.contains("FastPathRead::String"),
+        "VACUITY: the extracted `execute_read_only_fast_path` body ({} lines) does not contain \
+         its own `FastPathRead::String` arm, so the extraction is reading the wrong span.",
+        fast_path.lines().count(),
+    );
+    assert!(
+        ttl.contains("remove_if_expired"),
+        "VACUITY: the extracted `ttl_ms` body ({} lines) does not contain its \
+         `remove_if_expired` call, so the extraction is reading the wrong span.",
+        ttl.lines().count(),
+    );
+
+    let (fast_aware, fast_live) = classify_clock_reads(&fast_path);
+    let (ttl_aware, ttl_live) = classify_clock_reads(&ttl);
+    let scanned = fast_aware + fast_live.len() + ttl_aware + ttl_live.len();
+    assert!(
+        scanned >= 3,
+        "VACUITY: only {scanned} clock reads were found across the serving read path \
+         (`execute_read_only_fast_path` + `ttl_ms`), and there are at least 3 deadline reads \
+         there. A body moved or a spelling changed, and this guard is reading nothing.",
+    );
+
+    // ---- THE CLAIM, HALVES ASSERTED SEPARATELY ------------------------------------------
+    // One combined count reads full from whichever half is fixed first.
+    assert_eq!(
+        fast_live.len(),
+        0,
+        "HALF ONE: {} of {} clock reads in `execute_read_only_fast_path` bypass the \
+         replay-aware clock:\n{}\n\nThis is the route `RecordStore::Local` answers GET and \
+         HGETALL from, and the one a committed read entry reaches under raft apply with the \
+         leader's stamp installed. Use `resolve_now_ms()`.",
+        fast_live.len(),
+        fast_aware + fast_live.len(),
+        render_live_reads(&fast_live, "execute_read_only_fast_path"),
+    );
+    assert_eq!(
+        ttl_live.len(),
+        0,
+        "HALF TWO: {} of {} clock reads in `ttl_ms` bypass the replay-aware clock:\n{}\n\n\
+         `ttl_ms` already COLLECTS through `remove_if_expired`, which resolves against the \
+         replay clock; the remaining-time arithmetic beside it must ask the same clock, or the \
+         two disagree about the same deadline in the same call.",
+        ttl_live.len(),
+        ttl_aware + ttl_live.len(),
+        render_live_reads(&ttl_live, "ttl_ms"),
+    );
+}
+
+/// A committed READ entry resolves its deadline against the LEADER's clock, not this node's.
+///
+/// WHY A SOURCE SCAN IS NOT ENOUGH. The guard above counts spellings. This one pins the
+/// BEHAVIOUR those spellings buy, through the same public entry point production uses, so a
+/// rewrite that keeps the name and loses the meaning still fails.
+///
+/// WHY THE DEADLINE SITS BETWEEN THE TWO CLOCKS. The fast path's expiry test only DECLINES --
+/// `return None` hands the command to the slow path, which re-decides through `remove_if_expired`
+/// on the replay-aware clock. So when the leader's stamp is BEHIND this node's clock a bare
+/// `now_ms()` merely over-declines and the slow path still answers correctly: nothing to observe.
+/// The observable direction is the other one -- a leader stamp AHEAD of this node's clock, which
+/// is ordinary inter-node skew on an apply path. There the fast path is the last word: it decides
+/// the key has not expired and serves the value, never reaching the slow path that would have
+/// hidden it. So the deadline here is placed strictly between the two: not yet passed by this
+/// node's clock, already passed at leader time.
+///
+/// HALVES ASSERTED SEPARATELY. `StringGet`, `HashGetAll` and the remaining-time arithmetic in
+/// `ttl_ms` are three sites in the same shape and all three were bare; one combined claim reads
+/// full from whichever is fixed first.
+#[test]
+fn a_committed_read_resolves_its_deadline_against_the_leader_clock() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    for command in [
+        Command::StringSet {
+            key: "skew:string".to_string(),
+            value: b"v".to_vec(),
+        },
+        Command::StringSet {
+            key: "ttl:string".to_string(),
+            value: b"v".to_vec(),
+        },
+        Command::HashSet {
+            key: "skew:hash".to_string(),
+            field: "f".to_string(),
+            value: b"v".to_vec(),
+        },
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: command.clone(),
+        });
+        assert!(
+            response.status.ok,
+            "the write must land before the deadline is armed: {command:?} -> {}",
+            response.status.message,
+        );
+    }
+
+    // No replay clock is installed here, so this is this node's own clock.
+    let local_now = crate::engine::resolve_now_ms();
+    let deadline = local_now.saturating_add(60_000);
+    let leader_past_deadline = local_now.saturating_add(120_000);
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+        crate::engine::set_expiry(shard, "skew:string".to_string(), deadline);
+        crate::engine::set_expiry(shard, "skew:hash".to_string(), deadline);
+        crate::engine::set_expiry(shard, "ttl:string".to_string(), deadline);
+    }
+
+    // The entry point production uses: `execute_raft_apply_batch_at` installs exactly this
+    // clock per entry, and a committed `StringGet` was measured arriving here 228 times.
+    fn applied_at(engine: &TemporalEngine, command: Command, leader_ms: u64) -> CommandResponse {
+        let response = engine.execute_raft_apply_at(
+            ExecuteRequest {
+                shard_id: 1,
+                command,
+            },
+            Some(leader_ms),
+        );
+        assert!(
+            response.status.ok,
+            "the raft-apply read route must answer, and it failed: {}",
+            response.status.message,
+        );
+        response.response
+    }
+
+    // ---- DENOMINATOR: at a leader stamp BEFORE the deadline, both are served -------------
+    // Without this, the two "hidden" assertions below would also be produced by the route
+    // being broken, the keys never having been written, or the deadline being wrong.
+    assert_eq!(
+        CommandResponse::Bytes {
+            value: Some(b"v".to_vec())
+        },
+        applied_at(
+            &engine,
+            Command::StringGet {
+                key: "skew:string".to_string()
+            },
+            local_now,
+        ),
+        "DENOMINATOR: at a leader stamp 60s before the deadline the string must be served. It \
+         was not, so the rest of this test proves nothing.",
+    );
+    assert!(
+        matches!(
+            applied_at(
+                &engine,
+                Command::HashGetAll {
+                    key: "skew:hash".to_string()
+                },
+                local_now,
+            ),
+            CommandResponse::HashEntries { ref entries } if !entries.is_empty()
+        ),
+        "DENOMINATOR: at a leader stamp 60s before the deadline the hash must be served.",
+    );
+
+    // ---- HALF ONE: StringGet ------------------------------------------------------------
+    assert_eq!(
+        CommandResponse::Bytes { value: None },
+        applied_at(
+            &engine,
+            Command::StringGet {
+                key: "skew:string".to_string()
+            },
+            leader_past_deadline,
+        ),
+        "HALF ONE: the fast path served a string whose deadline had already passed at leader \
+         time ({deadline} <= {leader_past_deadline}). It compared the deadline against this \
+         node's clock instead of the leader's stamp, decided the key was live, and answered \
+         from the fast path -- so the slow path that would have hidden it never ran, and a \
+         replica whose clock had passed {deadline} answered the same entry differently.",
+    );
+
+    // ---- HALF TWO: HashGetAll -----------------------------------------------------------
+    let hash_at_leader_time = applied_at(
+        &engine,
+        Command::HashGetAll {
+            key: "skew:hash".to_string(),
+        },
+        leader_past_deadline,
+    );
+    assert!(
+        matches!(
+            hash_at_leader_time,
+            CommandResponse::HashEntries { ref entries } if entries.is_empty()
+        ),
+        "HALF TWO: the fast path served a hash whose deadline had already passed at leader time \
+         ({deadline} <= {leader_past_deadline}); it asked this node's clock instead of the \
+         leader's stamp. Got {hash_at_leader_time:?}",
+    );
+
+    // ---- HALF THREE: CommonTtl, the remaining-time arithmetic in `ttl_ms` ----------------
+    // Not a fast-path read -- `CommonTtl` runs in `execute_on_shard`, whose arm already COLLECTS
+    // on the replay-aware clock through `drop_if_expired`. The remaining time it reports beside
+    // that collection is the third deadline read in the pair of functions this change touches,
+    // and it was asking a different clock than the collection one line above it. A leader stamp
+    // 30s after this node's clock, against a deadline 60s after it, makes the right answer
+    // exactly 30_000 and the wrong one about 60_000 -- a difference no scheduling jitter can
+    // close, and the assertion is exact rather than a range because the leader stamp is fixed.
+    let leader_before_deadline = local_now.saturating_add(30_000);
+    assert_eq!(
+        CommandResponse::Integer { value: 30_000 },
+        applied_at(
+            &engine,
+            Command::CommonTtl {
+                key: "ttl:string".to_string()
+            },
+            leader_before_deadline,
+        ),
+        "HALF THREE: TTL must be the distance from the LEADER's stamp \
+         ({leader_before_deadline}) to the deadline ({deadline}), which is exactly 30000ms. \
+         Reading this node's clock instead reports about 60000ms, so one committed entry tells \
+         each replica a different remaining time.",
     );
 }
