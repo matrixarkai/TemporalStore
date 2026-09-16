@@ -295,9 +295,26 @@ pub struct ShardCanonicalStorageStats {
     pub storage_slab_used_bytes: u64,
     #[serde(rename = "storage_zone_stale_bytes")]
     pub storage_slab_stale_bytes: u64,
+    /// How many times the block store was CALLED to read, summed over the shard's lifetime.
+    ///
+    /// One per call, not one per byte and not one per page: a four-megabyte object read cold
+    /// counts one, the same as a five-hundred-byte one, and a read served from the memory or
+    /// disk cache counts none because it never reaches the store. Incremented at three sites
+    /// in `block_store/read.rs` -- `read`, `read_range`, `read_logical_range`.
     pub page_reads: u64,
+    /// How many times the block store was CALLED to append, summed over the shard's lifetime.
+    /// Two increment sites, both in `block_store/append.rs`.
     pub page_writes: u64,
+    /// The SAME number as `page_reads`, not a second measurement.
+    ///
+    /// Block and page are one concept under two names while the rename is in flight, and
+    /// `engine/persistence.rs` assigns both fields from `block_store.reads` four lines apart.
+    /// A committed fixture once recorded `page_reads: 4` beside `block_reads: 2`, which reads
+    /// as two measurements and would make a rename halve a real number; no code path can
+    /// produce that, and `engine::tests::page_and_block_counter_ratio` asserts the ratio is
+    /// one over nine shaped workloads so the claim cannot rot back in.
     pub block_reads: u64,
+    /// The SAME number as `page_writes`, on the same terms as `block_reads` above.
     pub block_writes: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,

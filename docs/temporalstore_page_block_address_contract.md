@@ -873,6 +873,13 @@ Both and Rust should expose the same metric names:
 metric set is present in the shared contract and in conformance scale report
 artifacts.
 
+`page_reads` and `block_reads` are one measurement under two names, and so are
+`page_writes` and `block_writes`: the block store keeps a single read counter and
+a single write counter, and `engine/persistence.rs` publishes each under both
+spellings. They are equal by construction and a report in which they differ is
+wrong, whichever half is read. Each counts CALLS into the store -- not bytes, not
+pages, and not reads that the memory or disk cache served without reaching it.
+
 ## Storage Lifecycle Metrics
 
 Stream, zone, eviction, GC, reclaim, compaction, and StorageManager reports must
