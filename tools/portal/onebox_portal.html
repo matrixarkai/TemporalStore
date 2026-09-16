@@ -280,6 +280,12 @@
      page body carries that width: at 375px this page's document scrolled to 579px. The table
      scrolls inside its own panel instead. */
   .tablewrap{overflow-x:auto;max-width:100%}
+  /* The table must be allowed to EXCEED the wrapper, or the wrapper has nothing to scroll and the
+     table squeezes instead. `.inv` is width:100%, which a browser treats as preferred and exceeds
+     only as far as minimum content widths force -- and `.inv th` is nowrap while `.inv td` breaks
+     anywhere, so the settled shape is "row header in full, value in a sliver". Measured at 271px
+     before this rule: a 199px header, a 7px value cell, and one row 865px tall. */
+  .tablewrap .inv{min-width:28rem}
   .inv{width:100%;border-collapse:collapse;font-size:13.5px;margin-bottom:16px}
   .inv th{width:1%;white-space:nowrap;text-align:left;padding:6px 14px 6px 0;font-weight:500;
           color:var(--muted);text-transform:none;letter-spacing:0;font-size:13.5px}
@@ -470,8 +476,10 @@
     <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   </header>
   <p class="lede">What this deployment does when it answers a question, and what each choice
-    costs. Every control here is edited where it lives -- this page gathers them, because the
-    three that decide recall sit on three different surfaces.</p>
+    costs. Read in the order a retrieve asks them: how a candidate is scored, what bounds how many
+    survive, when that bound is set aside, and last what the whole thing is running over. Every
+    control is edited where it lives -- this page gathers them, because the three that decide
+    recall sit on three different surfaces.</p>
 
   <section>
     <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
@@ -493,6 +501,13 @@
   </section>
 
   <section>
+    <h2>What decides recall</h2>
+    <p class="hint" style="margin-top:0">The three caps that bound a retrieve, and which of them was
+      doing the cutting. Raising the others changed nothing in that measurement. Each shows the
+      value in force and the build default it fell back to, so an override is visible as one.</p>
+    <div id="caps"><div class="empty">Enter an admin key to read the limits.</div></div>
+  </section>
+  <section>
     <h2>Returning everything</h2>
     <p class="hint" style="margin-top:0">A store small enough to fit the answer's budget does not
       need ranking to choose for it. Measured on this build: eighty short facts, one question, an
@@ -510,13 +525,6 @@
     <div id="vectors"><div class="empty">Enter an admin key to read the store.</div></div>
   </section>
 
-  <section>
-    <h2>What decides recall</h2>
-    <p class="hint" style="margin-top:0">The three caps that bound a retrieve, and which of them was
-      doing the cutting. Raising the others changed nothing in that measurement. Each shows the
-      value in force and the build default it fell back to, so an override is visible as one.</p>
-    <div id="caps"><div class="empty">Enter an admin key to read the limits.</div></div>
-  </section>
 
 </main>
 <script>

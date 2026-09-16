@@ -28,6 +28,7 @@ rendering a default that looks like a reading.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -369,6 +370,55 @@ class WhichLevelSuppliedItTest(unittest.TestCase):
             with self.subTest(scope=scope):
                 value, _ = tp.explicit_int_with_source(self.KNOB, scope, 1000)
                 self.assertEqual(tp.explicit_int(self.KNOB, scope, 1000), value)
+
+
+class AWideTableDoesNotWreckThePageTest(unittest.TestCase):
+    """Two rules, both found by measuring the rendered page rather than reading the markup.
+
+    `.inv th` is `white-space: nowrap`, which is right -- a setting name broken across two lines is
+    harder to read than one that runs on -- but it means a table is at least as wide as its widest
+    row header, and without a scroll container the PAGE BODY carries that width. Measured on the
+    shipped page: at a 375px viewport the document scrolled to 579px.
+
+    A wrapper alone does not finish the job, which is the part that had to be measured twice.
+    `.inv` is `width:100%`, and a browser treats that as preferred and exceeds it only as far as
+    minimum content widths force -- `th` is nowrap, `td` breaks anywhere -- so the table settles at
+    "row header in full, value in a sliver" and squeezes instead of scrolling. Measured at a 271px
+    viewport before the second rule: a 199px row header, a **7px** value cell, and one row **865px
+    tall** because its sentence wrapped one character per line. That six-row table rendered 1800px
+    against 333-662px for every other panel on the page.
+
+    The floor is a fixed width rather than `max-content`: max-content tells every cell never to
+    wrap, and one long sentence took the table to **19,888px**. At desktop width the floor is below
+    the panel and does nothing.
+    """
+
+    def setUp(self) -> None:
+        with io.open(os.path.join(PORTAL, "onebox_portal.html"), encoding="utf-8") as handle:
+            self.page = handle.read()
+
+    def test_a_wide_table_scrolls_inside_its_own_panel(self) -> None:
+        self.assertIn(".tablewrap{overflow-x:auto", self.page,
+                      "without this the page body carries the width of its widest table")
+
+    def test_a_wrapped_table_may_exceed_its_wrapper(self) -> None:
+        """Without this the wrapper has nothing to scroll and the table squeezes instead."""
+        self.assertIn(".tablewrap .inv{min-width:", self.page,
+                      "a wrapped table pinned to width:100% collapses its value column to a "
+                      "sliver at narrow widths instead of letting the wrapper scroll")
+
+    def test_the_floor_is_bounded(self) -> None:
+        """`max-content` stops every cell wrapping, which took one table to 19,888px."""
+        self.assertNotIn(".tablewrap .inv{min-width:max-content}", self.page)
+
+    def test_the_panels_that_render_tables_are_wrapped(self) -> None:
+        """The rules above do nothing for a table nobody wrapped."""
+        for renderer in ("renderProfile", "renderCaps", "renderVectors", "renderPolicy"):
+            with self.subTest(renderer=renderer):
+                body = self.page[self.page.index("function %s(" % renderer):]
+                body = body[:body.index("\n  function ")] if "\n  function " in body else body[:4000]
+                self.assertIn("tablewrap", body,
+                              "%s builds a table that nothing wraps" % renderer)
 
 
 class ThePageRendersItTest(unittest.TestCase):

@@ -280,6 +280,12 @@
      page body carries that width: at 375px this page's document scrolled to 579px. The table
      scrolls inside its own panel instead. */
   .tablewrap{overflow-x:auto;max-width:100%}
+  /* The table must be allowed to EXCEED the wrapper, or the wrapper has nothing to scroll and the
+     table squeezes instead. `.inv` is width:100%, which a browser treats as preferred and exceeds
+     only as far as minimum content widths force -- and `.inv th` is nowrap while `.inv td` breaks
+     anywhere, so the settled shape is "row header in full, value in a sliver". Measured at 271px
+     before this rule: a 199px header, a 7px value cell, and one row 865px tall. */
+  .tablewrap .inv{min-width:28rem}
   .inv{width:100%;border-collapse:collapse;font-size:13.5px;margin-bottom:16px}
   .inv th{width:1%;white-space:nowrap;text-align:left;padding:6px 14px 6px 0;font-weight:500;
           color:var(--muted);text-transform:none;letter-spacing:0;font-size:13.5px}
