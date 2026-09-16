@@ -90,21 +90,31 @@ def compact_context_embedding_record(record: Json) -> Json:
     return compact_hot_context_embedding_record(record)
 
 
+_CODEX_ATTACH_MEMORY_LAYER = None
+
+
 def attach_memory_layer(record: Json) -> Json:
-    """Stamp the retrieval layer on newly materialized memory records."""
-    if str(record.get("record_type") or "") not in {
-        "context_event",
-        "context_entity",
-        "context_segment",
-        "context_summary",
-        "context_compression_event",
-        "context_embedding",
-    }:
-        return record
-    layer = candidate_memory_layer_name(record)
-    if not layer or layer == "unknown":
-        return record
-    return {**record, "memory_layer": layer}
+    """Stamp the retrieval layer on newly materialized memory records.
+
+    The one implementation lives in matrixark_codex_hook. This module held a second copy carrying
+    the record_type allowlist that the live one lacked -- `candidate_memory_layer_name` decides from
+    `ref_type`, so without it any record with a ref_type came back stamped. That guard is now on the
+    live copy, which left these two identical, and a production helper written twice is what
+    `test_there_is_one_copy_of_each_helper` forbids.
+
+    Delegates in the idiom this tree already uses for the same situation, see
+    `matrixark_mcp_recall_scoring.packing_sort_key`: resolved on FIRST CALL and cached, because
+    matrixark_codex_hook is a large import and nothing else here needs it at module scope.
+    """
+    global _CODEX_ATTACH_MEMORY_LAYER
+    delegate = _CODEX_ATTACH_MEMORY_LAYER
+    if delegate is None:
+        try:  # package path
+            from tools.matrixark_codex_hook import attach_memory_layer as delegate
+        except ImportError:  # Direct script execution from tools/.
+            from matrixark_codex_hook import attach_memory_layer as delegate
+        _CODEX_ATTACH_MEMORY_LAYER = delegate
+    return delegate(record)
 
 
 ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS = [
