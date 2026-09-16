@@ -14,7 +14,8 @@ that growth in three layers, applied in this order:
    event postings. The index stays dense for recent turns and sparse-summarized for old ones; old
    content stays retrievable through its summary.
 
-0. **Lossless dedup** (``MATRIXARK_DEDUPE_INDEX_POSTINGS``, default ON) -- collapse postings that
+0. **Lossless dedup** (knob ``dedupe_index_postings`` / ``MATRIXARK_DEDUPE_INDEX_POSTINGS``,
+   per tenant, default ON) -- collapse postings that
    repeat an identical (scope, term, ref set) across time buckets. Costs nothing and shrinks the
    index enough that the budgets below rarely have to bind.
 
@@ -518,9 +519,20 @@ def _sample_scope_for(by_scope: dict[str, list[tuple[int, Json]]], scope_keys: l
     return scope_keys[0] if scope_keys else ""
 
 
-def dedupe_index_postings_enabled() -> bool:
-    """Lever 0 gate (default ON). Lossless, so it runs before any lever that can cost recall."""
-    return _env_flag("MATRIXARK_DEDUPE_INDEX_POSTINGS", True)
+def dedupe_index_postings_enabled(scope: Any = None) -> bool:
+    """Lever 0 gate, resolved for `scope`'s tenant (tenant override -> env -> default ON).
+
+    This read ``MATRIXARK_DEDUPE_INDEX_POSTINGS`` directly, which turned a knob the registry
+    offers per-tenant into one process-wide value: ``resolve()`` returned exactly what the tenant
+    set and this function never asked. ``test_matrixark_policy_gates_wired`` recorded that in
+    ``KNOWN_UNREAD_KNOBS`` rather than fixing it, and asks to be struck off when it is wired.
+
+    The environment layer is unchanged: ``resolve()`` reads the same variable, treats an empty
+    value as absent the same way, and uses the same falsey set {"0", "false", "no", "off"}. A
+    deployment with no tenant policy therefore resolves to exactly what ``_env_flag`` gave it.
+    What is added is the tenant layer above it.
+    """
+    return bool(resolve_tenant_policy("dedupe_index_postings", scope))
 
 
 def dedupe_index_postings(records: list[Json]) -> list[Json]:
@@ -535,13 +547,31 @@ def dedupe_index_postings(records: list[Json]) -> list[Json]:
     Lossless, and therefore the FIRST bound applied: it shrinks the index without touching any
     lookup path, which is what makes a genuinely small per-session budget affordable.
 
-    Returns `records` itself (identity) when disabled or nothing is duplicated."""
-    if not dedupe_index_postings_enabled():
-        return records
+    The lever is resolved per posting scope, so one tenant turning it off does not stop it for
+    another whose postings are in the same batch. Returns `records` itself (identity) when every
+    scope in the batch has it off, or nothing is duplicated."""
+    enabled_for: dict[str, bool] = {}
+
+    def _enabled(record: Json) -> bool:
+        """Lever 0, for the tenant that owns this posting.
+
+        Cached per scope_key: a batch is thousands of postings over a handful of scopes, and
+        `resolve()` stats the policy file on every call.
+        """
+        scope_key = str(record.get("scope_key") or "")
+        hit = enabled_for.get(scope_key)
+        if hit is None:
+            scope = record.get("scope") if isinstance(record.get("scope"), dict) else scope_key
+            hit = dedupe_index_postings_enabled(scope or None)
+            enabled_for[scope_key] = hit
+        return hit
+
     newest: dict[tuple, int] = {}
     duplicates = 0
     for position, record in enumerate(records):
         if str(record.get("record_type") or "") != "context_index":
+            continue
+        if not _enabled(record):
             continue
         refs = tuple(sorted(str(ref) for ref in _posting_ref_hashes(record)))
         if not refs:
@@ -569,6 +599,12 @@ def dedupe_index_postings(records: list[Json]) -> list[Json]:
     output: list[Json] = []
     for position, record in enumerate(records):
         if str(record.get("record_type") or "") != "context_index":
+            output.append(record)
+            continue
+        if not _enabled(record):
+            # This tenant turned lever 0 off. Its postings were never offered to `newest`, so
+            # they are not in `keep` -- without this they would be dropped instead of skipped,
+            # which is the opposite of what turning the lever off asks for.
             output.append(record)
             continue
         refs = tuple(sorted(str(ref) for ref in _posting_ref_hashes(record)))

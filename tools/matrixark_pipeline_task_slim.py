@@ -10,7 +10,10 @@ that the SAME task state is re-appended over and over. Measured on that store: *
 distinct ``task_hash`` values** -- 168 of them re-stamps of ``summary_completed``, one per task per
 summary refresh.
 
-## Lever A -- collapse re-stamps (``MATRIXARK_COLLAPSE_PIPELINE_TASK_ROWS``, default ON)
+## Lever A -- collapse re-stamps
+
+Knob ``collapse_pipeline_task_rows`` / ``MATRIXARK_COLLAPSE_PIPELINE_TASK_ROWS``, per tenant,
+default ON.
 
 Keep, per ``(task_hash, status)``, the NEWEST row by time and the newest by log position; drop the
 rest. Every distinct state a task passed through survives -- only duplicate stampings of a state the
@@ -99,6 +102,11 @@ try:  # the implementation lives in matrixark_index_growth_bound; this module re
 except ImportError:  # Direct script execution from tools/.
     from matrixark_index_growth_bound import _env_flag
 
+try:
+    from .matrixark_tenant_policy import resolve as resolve_tenant_policy
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_tenant_policy import resolve as resolve_tenant_policy
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
@@ -110,8 +118,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def collapse_pipeline_task_rows_enabled() -> bool:
-    return _env_flag("MATRIXARK_COLLAPSE_PIPELINE_TASK_ROWS", True)
+def collapse_pipeline_task_rows_enabled(scope: Any = None) -> bool:
+    """Lever A gate, resolved for `scope`'s tenant (tenant override -> env -> default ON).
+
+    Same shape, and the same fix, as ``dedupe_index_postings_enabled``: this read
+    ``MATRIXARK_COLLAPSE_PIPELINE_TASK_ROWS`` directly, so the per-tenant knob the registry
+    offers resolved to one process-wide value. ``test_matrixark_policy_gates_wired`` listed it in
+    ``KNOWN_UNREAD_KNOBS`` with that exact description.
+
+    The environment layer is unchanged -- see that function for why -- so a deployment with no
+    tenant policy keeps the behaviour it had.
+    """
+    return bool(resolve_tenant_policy("collapse_pipeline_task_rows", scope))
 
 
 def slim_terminal_pipeline_tasks_enabled() -> bool:
@@ -140,14 +158,28 @@ def _task_time(record: Json) -> int:
 def collapse_pipeline_task_rows(records: list[Json]) -> list[Json]:
     """Drop re-stamps of a pipeline-task state, keeping every distinct (task, status) it reached.
 
-    Returns `records` itself (identity) when the flag is off or nothing is duplicated."""
-    if not collapse_pipeline_task_rows_enabled():
-        return records
+    The lever is resolved per row scope, so one tenant turning it off does not stop it for
+    another whose rows are in the same batch. Returns `records` itself (identity) when every scope
+    in the batch has it off, or nothing is duplicated."""
+    enabled_for: dict[str, bool] = {}
+
+    def _enabled(record: Json) -> bool:
+        """Lever A, for the tenant that owns this task row. Cached per scope_key."""
+        scope_key = str(record.get("scope_key") or "")
+        hit = enabled_for.get(scope_key)
+        if hit is None:
+            scope = record.get("scope") if isinstance(record.get("scope"), dict) else scope_key
+            hit = collapse_pipeline_task_rows_enabled(scope or None)
+            enabled_for[scope_key] = hit
+        return hit
+
     newest_by_time: dict[tuple[str, str], int] = {}
     newest_by_position: dict[tuple[str, str], int] = {}
     duplicates = 0
     for position, record in enumerate(records):
         if str(record.get("record_type") or "") != PIPELINE_TASK_RECORD_TYPE:
+            continue
+        if not _enabled(record):
             continue
         identity = _task_identity(record)
         if not identity:
@@ -168,6 +200,10 @@ def collapse_pipeline_task_rows(records: list[Json]) -> list[Json]:
     output: list[Json] = []
     for position, record in enumerate(records):
         if str(record.get("record_type") or "") != PIPELINE_TASK_RECORD_TYPE:
+            output.append(record)
+            continue
+        if not _enabled(record):
+            # This tenant turned lever A off; see the note in `dedupe_index_postings`.
             output.append(record)
             continue
         if not _task_identity(record) or position in keep:

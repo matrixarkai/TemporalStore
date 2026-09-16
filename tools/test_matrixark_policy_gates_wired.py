@@ -15,6 +15,7 @@ silently stay wrong is the same failure one level up.
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -48,7 +49,6 @@ GATES_MODULE = os.path.join(TOOLS, "matrixark_index_growth_bound.py")
 # included, only the order things are packed in -- which is what decides what survives when the
 # budget does bite.
 KNOWN_UNWIRED: Set[str] = {
-    "dedupe_index_postings_enabled",
     "embed_node_path_prefix_enabled",
     "generate_l1_summaries_enabled",
     "summarize_aggregation_only_nodes_enabled",
@@ -67,18 +67,19 @@ EXPECTED_GATE_FLOOR = 14
 # Three were sitting in exactly that shadow. They are tenant-visible controls that resolve
 # correctly and change nothing, which is the same defect this file was written for.
 KNOWN_UNREAD_KNOBS: Set[str] = {
-    # Its gate exists, in `matrixark_pipeline_task_slim.py`, and reads the process environment
-    # directly rather than resolving the knob -- so the registry offers a per-tenant control over
-    # a process-wide value. Default True: collapsing duplicate pipeline-task rows stays on.
-    "collapse_pipeline_task_rows",
-    # Same module, same shape. Default False, so nothing is happening that a tenant did not ask
-    # for; what they cannot do is ask for it.
+    # `collapse_pipeline_task_rows` and `dedupe_index_postings` were here, both described as a
+    # gate that "reads the process environment directly rather than resolving the knob -- so the
+    # registry offers a per-tenant control over a process-wide value". Both now resolve through
+    # `resolve()`, per posting scope, so they are struck off as this file asks.
+    #
+    # `slim_terminal_pipeline_tasks` stays: same module and the same shape, but it is NOT offered
+    # on the portal (`_knob_settings` emits no `behaviour.` row for it), so there is no per-tenant
+    # promise being broken. Wiring it is a product call about whether to offer it at all, not a
+    # correction, and it is left for that call rather than swept in here.
     "slim_terminal_pipeline_tasks",
     # No gate at all. Nothing in production names it, and no function exists to. Wiring it means
     # building the path, not attaching a gate.
     "write_secondary_index",
-    # Already listed above by its gate name; repeated here because this check is keyed by knob.
-    "dedupe_index_postings",
 }
 
 # Asserted for the same reason as EXPECTED_GATE_FLOOR: if the registry moves or the parse stops
@@ -164,8 +165,70 @@ def _production_sources() -> List[str]:
             and os.path.basename(path) != defining]
 
 
+def _in_module_call_graph() -> Dict[str, Set[str]]:
+    """Top-level function -> every name called anywhere inside it, in the defining module."""
+    with open(GATES_MODULE, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+    graph: Dict[str, Set[str]] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names: Set[str] = set()
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call):
+                    name = getattr(inner.func, "id", None) or getattr(inner.func, "attr", None)
+                    if name:
+                        names.add(name)
+            graph[node.name] = names
+    return graph
+
+
+def _functions_reaching(gate: str, graph: Dict[str, Set[str]]) -> Set[str]:
+    """Functions in the defining module that TRANSITIVELY call `gate`.
+
+    ONE HOP IS NOT ENOUGH, which is why this walks to a fixed point. The wired chain for lever 0
+    is ``enforce_secondary_index_bounds -> dedupe_index_postings -> dedupe_index_postings_enabled``
+    and the middle function has no caller outside this module, so a direct-bridge check finds
+    nothing and calls a gate that production genuinely reaches unwired. It did: the gate sat in
+    KNOWN_UNWIRED on the strength of it.
+    """
+    closure: Set[str] = set()
+    frontier = {gate}
+    while frontier:
+        target = frontier.pop()
+        for function, names in graph.items():
+            if target in names and function != target and function not in closure:
+                closure.add(function)
+                frontier.add(function)
+    return closure
+
+
+def _calls_to(name: str) -> List[str]:
+    """Call sites for a plain function name, outside the module that defines the gates."""
+    sites: List[str] = []
+    call = re.compile(r"(?<![\w.])%s\s*\(" % re.escape(name))
+    assign = re.compile(r"(?<![\w.])%s\s*=" % re.escape(name))
+    for path in _production_sources():
+        try:
+            with open(os.path.join(REPO, path), encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith(("import ", "from ", "#")):
+                continue
+            if call.search(line) and not assign.search(line):
+                sites.append("%s:%d" % (path, number))
+    return sites
+
+
 def _callers() -> Dict[str, List[str]]:
-    """Production call sites per gate. A definition, an import and a comment are not calls."""
+    """Production call sites per gate. A definition, an import and a comment are not calls.
+
+    A gate with no DIRECT external caller is then re-checked through the call chain inside the
+    defining module: if some function that transitively calls it is itself called from production,
+    the gate is reached and is reported wired, naming the bridge.
+    """
     gates = _gates()
     found: Dict[str, List[str]] = {gate: [] for gate in gates}
     for path in _production_sources():
@@ -207,6 +270,14 @@ def _callers() -> Dict[str, List[str]]:
                 if re.search(r"(?<![\w.])%s\s*=" % re.escape(gate), line):
                     continue
                 found[gate].append("%s:%d" % (path, number))
+
+    graph = _in_module_call_graph()
+    for gate, sites in found.items():
+        if sites:
+            continue
+        for bridge in sorted(_functions_reaching(gate, graph)):
+            for site in _calls_to(bridge):
+                found[gate].append("%s (via %s)" % (site, bridge))
     return found
 
 
