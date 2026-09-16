@@ -170,7 +170,6 @@ skill_discovery = 0                          # MATRIXARK_SKILL_DISCOVERY  1 = en
 # -----------------------------------------------------------------------------
 [extraction]
 summary_refresh_interval_ms = 1000     # MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS  ms between summary refresh passes
-summary_refresh_limit = 64             # MATRIXARK_SUMMARY_REFRESH_LIMIT  max nodes refreshed per pass
 time_compression_max_raw_events_per_node = 1024  # MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE  raw-event retention cap per node
 enable_llm_merge_operator = 0          # MATRIXARK_ENABLE_LLM_MERGE_OPERATOR  1 = use the LLM merge operator
 embed_drainer = 0                      # MATRIXARK_EMBED_DRAINER  1 = run the background embedding drainer

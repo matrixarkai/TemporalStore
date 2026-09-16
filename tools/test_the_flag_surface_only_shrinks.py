@@ -110,7 +110,7 @@ _IDENTITY = re.compile(
 #: 46 is offered on the operator page.
 #: 457 since the eight controls the page offered and nothing read lost their variable. The whole
 #: of `KNOBS_READ_BY_NOTHING` went with them, so the count and the register moved together.
-MAXIMUM_FLAGS_READ = 457
+MAXIMUM_FLAGS_READ = 456
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
@@ -348,7 +348,7 @@ def _is_tooling(module):
 #: which moves when a benchmark gains a knob. This one bounds what an OPERATOR is offered, and it
 #: is the number that answers "how many knobs does this thing have". They move independently and a
 #: single ceiling would hide one behind the other.
-MAXIMUM_CONFIGURABLE = 124
+MAXIMUM_CONFIGURABLE = 123
 
 #: Flags a deployment can set that decide whether a code path RUNS -- the number "how many features
 #: can this thing be asked to turn off" is asking for, and the one the under-a-hundred target is
@@ -361,6 +361,11 @@ MAXIMUM_CONFIGURABLE = 124
 #: ratchet that only bounds from above reads a fall as progress -- verified by mutation: stopping
 #: `_flag_read_in` from following helpers took it to 43 and every test still passed. So the scan is
 #: asserted as well as the count, in `test_the_helper_derivation_finds_the_readers_it_is_for`.
+#:
+#: STILL 55 after the summary-refresh ceiling was retired, and that was MEASURED rather than left
+#: alone. It supplies a number and is not the subject of an `if`, so `deployment_configurable` fell
+#: by one and this did not move. A retirement that moves both is a different kind of change from
+#: one that moves only the first, and the only way to tell them apart is to look each time.
 MAXIMUM_GATING_CONFIGURABLE = 55
 
 #: Scan results that cost a tree walk, computed once per process.

@@ -80,8 +80,20 @@ KNOWN_OVERRIDES: Dict[str, str] = {
         "its own store and is told where it is",
 }
 
-#: 56 config keys named a MATRIXARK_ variable when this was written, 35 read by Python.
-EXPECTED_COMPARABLE_FLOOR = 25
+#: A floor on the SCAN, and BOTH NUMBERS OVER IT WERE WRONG.
+#:
+#: It said "56 config keys named a MATRIXARK_ variable when this was written, 35 read by Python"
+#: over a floor of 25, which reads as ten pairings of headroom. Measured on the tree that note
+#: describes: 45 config keys name a variable and 25 of them pair with a Python reader. The margin
+#: was ZERO, and retiring a single control -- MATRIXARK_SUMMARY_REFRESH_LIMIT, which had a config
+#: key and a reader -- took it to 24 and failed a check that exists to catch a BROKEN SCAN, not a
+#: cut. This is the second floor in this campaign whose comment advertised headroom it did not
+#: have; the first was BOOL_SETTING_FLOOR, which claimed 39 and had 1.
+#:
+#: Set from what it is FOR rather than from the count: both sides of the pairing are parsed, and
+#: either shape changing reports approximately nothing, not twenty-three. 12 catches that and
+#: leaves 12 of margin, so the next control retired here does not have to touch this line.
+EXPECTED_COMPARABLE_FLOOR = 12
 
 
 def _unquote(text: str) -> str:

@@ -651,9 +651,6 @@ SETTINGS: List[Setting] = [
             "Summary refresh interval (ms)", "int", "1000", "restart",
             "How often the background refresher rebuilds node summaries. Longer means summaries "
             "lag further behind new events; shorter costs more model calls."),
-    Setting("ingestion.summary_refresh_limit", "ingestion", "MATRIXARK_SUMMARY_REFRESH_LIMIT",
-            "Summaries refreshed per pass", "int", "64", "restart",
-            "Ceiling on how many nodes one refresh pass touches."),
     # ---- storage engine -------------------------------------------------------------------
     # These are TS_* knobs the engine reads directly. Seven of eighty, chosen rather than exported:
     # directories, bind addresses, cluster identity and the metaserver admin token are set by

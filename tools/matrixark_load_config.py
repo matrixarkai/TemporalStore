@@ -154,7 +154,6 @@ ENV_MAP: Dict[str, str] = {
     "retrieval.skill_discovery": "MATRIXARK_SKILL_DISCOVERY",
     # ---- [extraction] -------------------------------------------------------
     "extraction.summary_refresh_interval_ms": "MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS",
-    "extraction.summary_refresh_limit": "MATRIXARK_SUMMARY_REFRESH_LIMIT",
     "extraction.time_compression_max_raw_events_per_node": "MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE",
     "extraction.enable_llm_merge_operator": "MATRIXARK_ENABLE_LLM_MERGE_OPERATOR",
     "extraction.embed_drainer": "MATRIXARK_EMBED_DRAINER",

@@ -46,7 +46,7 @@ ENABLE_CONTEXT_REPLAY = env_bool("MATRIXARK_ENABLE_REPLAY", False)
 ENABLE_SUMMARY_REFRESH_AUDIT = env_bool("MATRIXARK_SUMMARY_REFRESH_AUDIT", False)
 ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS = env_bool("MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS", False)
 SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "").strip() or "1000")
-SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "").strip() or "64")
+SUMMARY_REFRESH_LIMIT = 64  # was MATRIXARK_SUMMARY_REFRESH_LIMIT, retired
 # Largest share of wall-clock the background summary refresher may occupy. A refresh pass
 # costs O(store) -- it reads the whole record log and writes the refreshed summaries back
 # through the same proxy lane the request path uses -- so at a fixed interval a pass that

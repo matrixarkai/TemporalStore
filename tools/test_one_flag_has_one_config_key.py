@@ -66,7 +66,13 @@ LEAF_DIFFERS = {
 }
 
 #: How many differ only in the SECTION, the same leaf under two taxonomies.
-SECTION_ONLY = 25
+#:
+#: 24 since MATRIXARK_SUMMARY_REFRESH_LIMIT was retired, and it was one of these: the portal called
+#: it `ingestion.summary_refresh_limit` and the loader mapped `extraction.summary_refresh_limit`.
+#: That mismatch is also why removing it by CONFIG KEY silently missed the loader entry on the
+#: first attempt -- the two sides only agreed on the variable, so the removal matches on the
+#: variable. A recorded count, so it moves when the population does; 26 before matrixarkai#1786.
+SECTION_ONLY = 24
 
 
 def _env_map():
