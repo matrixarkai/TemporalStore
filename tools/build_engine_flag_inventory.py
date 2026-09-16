@@ -15,7 +15,7 @@ accessor count: the one number that was hardcoded went stale the first time a fl
 
 Being generated is not the same as being complete, which is the harder lesson here. Regenerating
 byte-identically proves the document matches the SCAN, not the engine -- and a scan that knew one
-way of reading a flag (`env::var("TS_X")`) missed every helper-mediated read and every non-`TS_`
+way of reading a flag (`env::var("TS_<NAME>")`) missed every helper-mediated read and every non-`TS_`
 prefix, listing 94 of 313. `test_matrixark_engine_flag_inventory.py` now checks the document
 against the source with a rule simpler than this one, and states how much source it read.
 """
@@ -72,8 +72,8 @@ NEWLINE = chr(10)
 # Every place a flag name is written down, not one way of writing it down.
 #
 # This used to match `env::var("TS_...")` only. The engine also reads flags through helpers that
-# take the name as an argument -- `env_flag_default_on("TS_X")`, `env_bool("TS_X", default)`,
-# `raft_env_flag_default_on("TS_X")` -- and a regex for one idiom cannot see the others. It listed
+# take the name as an argument -- `env_flag_default_on("TS_<NAME>")`, `env_bool("TS_<NAME>", default)`,
+# `raft_env_flag_default_on("TS_<NAME>")` -- and a regex for one idiom cannot see the others. It listed
 # 94 of the 240 `TS_*` names the engine writes down, and missed every metaserver, proxy and
 # raft-tuning knob there is: whole subsystems absent from the one document that claims to list
 # them all, with nothing to notice, because a generator that under-counts still regenerates
@@ -682,7 +682,7 @@ SETTERS = [
 #:
 #: Kept out of the Python scan because there the same characters are a KEYWORD ARGUMENT:
 #: `MATRIXARK_SESSION_ID=item.session_id` passes a value to a function and sets no environment.
-#: Anchored on a boundary so `${TS_X:-...}`, a read, does not match, and followed by a lookahead
+#: Anchored on a boundary so `${TS_<NAME>:-...}`, a read, does not match, and followed by a lookahead
 #: for something a value can start with -- `TS_MATRIXOBJECT_ENDPOINT=<host:port>` inside an echo is
 #: telling an operator the shape, and `<` cannot begin a value.
 SHELL_SETTERS = [
@@ -710,8 +710,8 @@ SET_ROOTS = [
 # column said "nothing" for flags a shipped harness sets on every run.
 #
 # It is read from the AST rather than by pattern, and the reason is a defect this repository has
-# already had. A decision list writes `{"TS_X": "why it is kept"}` and an env dict writes
-# `{"TS_X": "1"}` -- the same shape. A guard that matched the shape once fed itself its own list
+# already had. A decision list writes `{"TS_<NAME>": "why it is kept"}` and an env dict writes
+# `{"TS_<NAME>": "1"}` -- the same shape. A guard that matched the shape once fed itself its own list
 # and went red on merge (mx#910). So the question asked here is not what the dict LOOKS like but
 # what it IS: assigned to a name meaning environment, passed as `env=`, merged into one, the value
 # of an "env" key, or built inside or handed to a function whose own name says environment.

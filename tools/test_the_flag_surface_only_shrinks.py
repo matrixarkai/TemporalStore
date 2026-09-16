@@ -108,7 +108,7 @@ _IDENTITY = re.compile(
 #: Banked here in the same breath, because a ratchet that does not bank a reduction is the
 #: reduction nobody can see was made. `deployment configurable` is untouched at 146: none of the
 #: 46 is offered on the operator page.
-MAXIMUM_FLAGS_READ = 480
+MAXIMUM_FLAGS_READ = 479
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
