@@ -1858,6 +1858,12 @@ def _override_layers_by_env() -> Dict[str, List[str]]:
     for knob in policy.KNOBS.values():
         layers = ["tenant"] + (["user"] if knob.layer == "read" else [])
         for name in (knob.env,) + tuple(knob.env_aliases):
+            # A knob with no environment variable joins nothing. Several settings choose their
+            # variable at runtime and carry `env=""` until they do -- extraction.model,
+            # extraction.api_key, embedding.api_key -- so an empty key here hands all of them
+            # a tenant-override badge they have not got.
+            if not name:
+                continue
             out[name] = layers
     return out
 

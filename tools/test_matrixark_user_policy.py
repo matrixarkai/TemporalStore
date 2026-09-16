@@ -664,7 +664,10 @@ class OverrideBadgeTest(_PolicyTest):
     def test_every_policy_knob_setting_says_a_tenant_can_override_it(self) -> None:
         import matrixark_gateway_config as cfg
 
-        knob_envs = {k.env for k in tp.KNOBS.values()}
+        # `if k.env` because a knob may have none. Without it the set contains "", every
+        # setting whose variable is resolved at runtime matches it, and this asserts a tenant
+        # badge on three settings that are not policy knobs at all.
+        knob_envs = {k.env for k in tp.KNOBS.values() if k.env}
         fields = self.fields()
         checked = 0
         for setting in cfg.SETTINGS:

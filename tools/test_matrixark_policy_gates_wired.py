@@ -90,7 +90,14 @@ REGISTRY_MODULE = os.path.join(TOOLS, "matrixark_tenant_policy.py")
 _RESOLVER = (r"(?:resolve_tenant_policy|explicit_bool|explicit_int|explicit_str)"
              r"\(\s*")
 
-_KNOB = re.compile(r'Knob\(\s*"([a-z0-9_]+)"\s*,\s*"(\w+)"\s*,\s*"([A-Z][A-Z0-9_]+)"')
+#: The third argument is the environment variable, and it may be EMPTY -- a knob whose only
+#: route is the tenant policy carries `""` there. Requiring `[A-Z][A-Z0-9_]+` made those knobs
+#: invisible to this file: it parsed 29 of 32, `test_the_registry_still_parses` failed on its own
+#: floor, and `test_every_listed_knob_is_still_registered` reported a knob that is registered as
+#: missing from the registry. What this file is about is whether a knob is READ or listed, which
+#: is a question about the knob, not about whether it has a variable.
+_KNOB = re.compile(
+    r'Knob\(\s*"([a-z0-9_]+)"\s*,\s*"(\w+)"\s*,\s*"([A-Z][A-Z0-9_]*|)"')
 
 
 def _registry_knobs() -> Dict[str, str]:
