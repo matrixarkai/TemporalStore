@@ -894,3 +894,214 @@ pub fn compaction_relocatable_block_refs(reclaim_candidates: &[StorageReclaimCan
         .map(|candidate| candidate.live_block_refs)
         .fold(0_u64, |total, refs| total.saturating_add(refs))
 }
+
+#[cfg(test)]
+mod compaction_selection_tests {
+    use super::*;
+
+    fn address_on(block_slab_id: u64, length: u64) -> BlockAddress {
+        BlockAddress::from_parts(block_slab_id, 0, length, Some(0), Some(1), Some(0), Some(0))
+    }
+
+    fn candidate(block_slab_id: u64, live_block_refs: u64) -> StorageReclaimCandidate {
+        StorageReclaimCandidate {
+            block_slab_id,
+            live_block_refs,
+            ..StorageReclaimCandidate::default()
+        }
+    }
+
+    /// A block left where it is because nobody asked for its slab is NOT work left behind.
+    ///
+    /// `should_relocate` tests the drain set BEFORE the budget, and the doc comment there says why
+    /// in one line: `left_work_behind` reads `skipped_by_budget`, and that flag is what keeps a
+    /// round OPEN for the next one. Charge a block nobody will ever want moved to the budget
+    /// counter and the round reports unfinished for ever -- on an idle shard, every thirty
+    /// seconds, each round persisting another whole served index.
+    ///
+    /// The existing drain tests cannot see this. They run on the shipped budget (2,048 refs)
+    /// against fixtures of ~1,200 refs, so the budget never binds and the two orders are
+    /// indistinguishable. Distinguishing them needs a round whose budget is ALREADY spent while
+    /// blocks outside the drain set remain -- which is what this asks for directly.
+    ///
+    /// Mutation-verified: swapping the two checks in `should_relocate` passed all twenty
+    /// compaction tests in the suite and fails here.
+    #[test]
+    fn a_spent_draining_round_charges_off_drain_set_blocks_to_the_drain_counter() {
+        let drained: BTreeSet<u64> = [7_u64].into_iter().collect();
+
+        // POSITIVE CONTROL: the budget counter can see an exhausted budget, because here is one.
+        // Without this the assertion below is satisfied just as well by a counter that never
+        // increments, and by a `left_work_behind` wired to a constant.
+        let mut spent_on_drain_set = CompactionRewriteStats::for_drain_round(99, 0, 0, drained.clone());
+        assert!(
+            !spent_on_drain_set.should_relocate(&address_on(7, 64)),
+            "a round with no budget left must decline a block even on a slab it wants emptied",
+        );
+        assert_eq!(
+            spent_on_drain_set.skipped_by_budget, 1,
+            "the budget counter did not move for a block ON the drain set, so this test cannot \
+             tell the two counters apart",
+        );
+        assert!(
+            spent_on_drain_set.left_work_behind(),
+            "a round that declined a block it wanted, for want of budget, must stay open",
+        );
+
+        // THE ASSERTION. Same exhausted budget, a block OUTSIDE the drain set.
+        let mut spent_off_drain_set = CompactionRewriteStats::for_drain_round(99, 0, 0, drained);
+        assert!(
+            !spent_off_drain_set.should_relocate(&address_on(3, 64)),
+            "a block on a slab nobody asked to empty must not move",
+        );
+        assert_eq!(
+            spent_off_drain_set.skipped_off_drain_set, 1,
+            "a block outside the drain set was not counted as declined",
+        );
+        assert_eq!(
+            spent_off_drain_set.skipped_by_budget, 0,
+            "a block outside the drain set was charged to the BUDGET counter. The drain-set test \
+             has to come first: `left_work_behind` reads this counter to keep the round open, and \
+             a round kept open by blocks nobody will ever want moved never closes",
+        );
+        assert!(
+            !spent_off_drain_set.left_work_behind(),
+            "declining a block off the drain set left the round open, so the periodic loop will \
+             re-issue it for ever on a shard nobody is writing to",
+        );
+    }
+
+    /// The two slab lists the relocation hint reports are answers to different questions, and a
+    /// slab cannot be in both.
+    ///
+    /// `drain_block_slab_ids` is "relocation can empty this", `collector_only_block_slab_ids` is
+    /// "nothing is left here to relocate, destroy it". The whole of #1627 is that those are
+    /// different, and the membership test that separates them is `live_block_refs > 0` in
+    /// `compaction_drain_block_slab_ids`. Dropping that filter puts every reclaim candidate in
+    /// both lists at once.
+    ///
+    /// Mutation-verified: dropping the filter passed all twenty compaction tests in the suite --
+    /// the gate reads a DIFFERENT function with its own copy of the same filter, and the hint's
+    /// per-object count is unchanged because an empty slab contributes no objects. Only the
+    /// reported sets move, and nothing was reading them.
+    #[test]
+    fn the_drain_set_and_the_collector_only_set_never_name_the_same_slab() {
+        let candidates = vec![
+            candidate(1, 4),
+            candidate(2, 0),
+            candidate(3, 7),
+            candidate(4, 0),
+        ];
+
+        let drain = compaction_drain_block_slab_ids(&candidates);
+        let collector_only = candidates
+            .iter()
+            .filter(|candidate| candidate.live_block_refs == 0)
+            .map(|candidate| candidate.block_slab_id)
+            .collect::<BTreeSet<_>>();
+
+        // DENOMINATORS. Two empty sets are trivially disjoint, and a plan with candidates of only
+        // one kind cannot show the split at all.
+        assert!(
+            !drain.is_empty(),
+            "no slab carries live refs, so the drain set is empty and disjointness proves nothing",
+        );
+        assert!(
+            !collector_only.is_empty(),
+            "no slab is empty, so there is no collector-only set to be disjoint FROM",
+        );
+
+        let both = drain.intersection(&collector_only).copied().collect::<Vec<_>>();
+        assert!(
+            both.is_empty(),
+            "slab(s) {both:?} are named as drainable AND as collector-only. A slab holding nothing \
+             but dead space has no block for a relocation to move: putting it in the drain set is \
+             how compaction comes to run on its own residue",
+        );
+        assert_eq!(
+            drain,
+            [1_u64, 3].into_iter().collect::<BTreeSet<_>>(),
+            "the drain set must be exactly the candidates some object still holds a block on",
+        );
+
+        // And the sum the gate reads agrees with the set, over the same plan.
+        assert_eq!(
+            compaction_relocatable_block_refs(&candidates),
+            11,
+            "the gate's count must be the live refs on the drain set and nothing else",
+        );
+    }
+
+    /// A round must still hold the shard write guard when it PUBLISHES its durable index, not
+    /// merely when it encodes it.
+    ///
+    /// `the_compaction_flush_stays_inside_its_write_guard` pins the invariant by counting encodes
+    /// taken inside the region, and an encode is the first of three steps: encode, persist the
+    /// base index, append to the index log. Dropping the guard after the encode satisfies that
+    /// count exactly and still opens the window the invariant exists to close -- a concurrent
+    /// `storage_lifecycle_plan` reading a volatile live set that no longer names the vacated
+    /// slabs, while the durable index that does name them has not been written yet. Compaction
+    /// advances no `applied_wal_sequence` and emits no record, so a crash there is unrecoverable.
+    ///
+    /// Mutation-verified: inserting `drop(shards)` between the encode and `persist_index_bytes`
+    /// passed all twenty compaction tests in the suite, the named guard among them.
+    #[test]
+    fn a_compaction_round_publishes_its_durable_index_under_the_write_guard() {
+        const RECORDS: usize = 64;
+
+        // POSITIVE CONTROL: the predicate the seam reads is capable of saying `false`, because
+        // here it does. Without this, `Some(true)` below is satisfied by a predicate stuck on.
+        assert!(
+            !crate::engine::recovery_sweep_compact::shard_write_guard_held_for_test(),
+            "this thread holds a shard write guard before the round even starts, so the \
+             observation below cannot distinguish the region from its outside",
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = crate::engine::TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..RECORDS {
+            let response = engine.execute(crate::types::ExecuteRequest {
+                shard_id: 1,
+                command: crate::types::Command::StringSet {
+                    key: format!("publish-guard-{index:05}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+
+        crate::engine::recovery_sweep_compact::reset_compaction_flush_publish_observation_for_test();
+        let report = engine
+            .compact_shard_blocks(1)
+            .expect("compaction round must succeed");
+
+        // DENOMINATOR. A round that published nothing, or moved nothing, says nothing about where
+        // the publish happened.
+        assert!(
+            report.rewritten_block_refs > 0,
+            "the round relocated no block refs, so this measures nothing",
+        );
+        let observed =
+            crate::engine::recovery_sweep_compact::compaction_flush_published_under_guard_for_test();
+        assert!(
+            observed.is_some(),
+            "the round never reached its publish, so the observation is vacuous",
+        );
+
+        // THE ASSERTION.
+        assert_eq!(
+            observed,
+            Some(true),
+            "compaction published its durable index with the shard write guard already dropped. \
+             The encode being inside the region is not enough: the relocations this publishes are \
+             in NO log, so between the drop and the write a storage cycle can reclaim the slabs \
+             this round vacated while the on-disk index still names them",
+        );
+    }
+}

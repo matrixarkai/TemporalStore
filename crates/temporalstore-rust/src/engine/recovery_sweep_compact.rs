@@ -4,6 +4,52 @@
 //! Index install/recovery + expiry sweep + page compaction methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+/// OBSERVATION SEAM: was the shard-table write guard still held when a round PUBLISHED its
+/// durable index?
+///
+/// `the_compaction_flush_stays_inside_its_write_guard` counts served-index ENCODES taken under
+/// the guard, and the encode is only the first third of the flush. Dropping the guard between the
+/// encode and `persist_index_bytes` leaves that count untouched -- the encode still happened
+/// inside the region -- while opening the entire window the invariant exists to close: from the
+/// moment the guard drops, `storage_lifecycle_plan` can take its own read lock, derive stale
+/// slabs from a live set that no longer names the slabs this round vacated, and reclaim them,
+/// while the durable index on disk is still the PRE-compaction one that does name them.
+/// Compaction advances no `applied_wal_sequence` and emits no record, so nothing replays that
+/// back.
+///
+/// Measured rather than asserted structurally because the guard is an RAII value: whether it is
+/// still alive at a given statement is a fact about the generated code, and reading the
+/// write-guard depth at the publish point is the only way to ask.
+#[cfg(test)]
+thread_local! {
+    static FLUSH_PUBLISHED_UNDER_GUARD: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Record the write-guard depth at the moment the round publishes. Called once per round.
+#[cfg(test)]
+fn note_compaction_flush_publish() {
+    let held = super::shard_write_guard::held();
+    FLUSH_PUBLISHED_UNDER_GUARD.with(|cell| cell.set(Some(held)));
+}
+
+/// `None` until a round has published since the last reset; then whether the guard was held.
+#[cfg(test)]
+pub(crate) fn compaction_flush_published_under_guard_for_test() -> Option<bool> {
+    FLUSH_PUBLISHED_UNDER_GUARD.with(|cell| cell.get())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_compaction_flush_publish_observation_for_test() {
+    FLUSH_PUBLISHED_UNDER_GUARD.with(|cell| cell.set(None));
+}
+
+/// The same predicate the seam reads, exposed so a test can show it is capable of saying `false`.
+#[cfg(test)]
+pub(crate) fn shard_write_guard_held_for_test() -> bool {
+    super::shard_write_guard::held()
+}
+
 /// What an expiry round hands to its flush: a description of what the round REMOVED, or the
 /// whole served index.
 ///
@@ -1541,6 +1587,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // slab. The cost is real and measured; it buys the invariant.
         let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        // The PUBLISH, not just the encode, is what has to happen inside the region. See
+        // `FLUSH_PUBLISHED_UNDER_GUARD`.
+        #[cfg(test)]
+        note_compaction_flush_publish();
         self.persist_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
