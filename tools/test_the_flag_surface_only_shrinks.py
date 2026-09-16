@@ -336,18 +336,30 @@ def _is_tooling(module):
     return stem.startswith(_TOOLING_PREFIXES) or any(m in stem for m in _TOOLING_MARKERS)
 
 
-#: The configurable surface's ceiling, and the only number on this page with a TARGET under it.
+#: The configurable surface's ceiling: what an OPERATOR is offered, the number that answers "how
+#: many knobs does this thing have".
 #:
-#: 99, and it must stay under 100. That is not a round number chosen after the fact: the surface
-#: was 103 when it was first measured, and it reached 99 by two changes that are recorded in the
-#: commits -- two switches folded whose only off-state effect was to write a duplicate back, and a
-#: rule of this file corrected to stop counting a container's environment block as configuration
-#: when it already excluded a script's exports for the same reason.
+#: THIS IS NOT THE NUMBER THE UNDER-A-HUNDRED TARGET IS ASSERTED OF, and the note that used to
+#: stand here said it was. It read "99, and it must stay under 100", describing a surface of 103
+#: brought to 99 by two recorded changes -- and it went on saying so while this constant rose
+#: through 146 to 123. A reader who stopped here, as the number in the phrase "under a hundred"
+#: invites them to, would conclude the configurable surface was 99 and bounded under 100. It is
+#: neither, and it never was: `test_the_configurable_surface_stays_under_a_hundred` records that
+#: the 97 measured back then was an UNDERCOUNT BY 31 -- the scan could not yet follow a flag name
+#: into `live_int("MATRIXARK_X", 8)` or through `env = os.environ`. The real figure was 128.
+#:
+#: Under a hundred is asserted of MAXIMUM_GATING_CONFIGURABLE (55) -- flags a deployment can set
+#: that decide whether a path RUNS, which is what the phrase always described -- and that test
+#: asserts the CEILING stays under 100 too, so the target cannot be met by raising it.
+#:
+#: This one may only come down, and it has: 146 -> 123 across matrixarkai#1786, #1791, #1808 and
+#: #1813. Getting it under a hundred means deciding to take controls off the operator page, which
+#: is a product decision and not a cleanup -- see that test's docstring for why the three levers a
+#: scan can find are spent.
 #:
 #: WHY A SEPARATE CEILING FROM MAXIMUM_FLAGS_READ. That one bounds what production Python reads,
-#: which moves when a benchmark gains a knob. This one bounds what an OPERATOR is offered, and it
-#: is the number that answers "how many knobs does this thing have". They move independently and a
-#: single ceiling would hide one behind the other.
+#: which moves when a benchmark gains a knob. This one bounds what an operator is offered. They
+#: move independently and a single ceiling would hide one behind the other.
 MAXIMUM_CONFIGURABLE = 123
 
 #: Flags a deployment can set that decide whether a code path RUNS -- the number "how many features
