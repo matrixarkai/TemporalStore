@@ -644,10 +644,16 @@ fn the_census_reads_every_map_that_holds_an_address() {
 /// like live corruption detectors, and three live detectors would be a strong reason to keep the
 /// fields regardless of what they cost.
 ///
-/// They are not three. The record header carries only the block id; `object_id`, `routing_bucket`
-/// and `slab_id` are deliberately NOT in it, because the index holds them -- so two of those three
+/// They are not three. The record header carries only the block id; `object_id` and
+/// `routing_bucket` are deliberately NOT in it, because the index holds them -- so both of those
 /// `if let` pairs can never match and the checks they guard never run. This test pins which is
 /// which, because the difference decides what a compact form would actually be giving up.
+///
+/// A FOURTH arm used to sit beside them, comparing `address.slab_id()` against a slab id in the
+/// record header, and it is gone. It was not merely unable to fire: `BlockAddress::slab_id()`
+/// returns the address's own `block_slab_id`, which is the slab file `BlockStore::read` opened to
+/// get these bytes, so the address side was never an independent claim. An assertion below pins
+/// that, because it is the reason reinstating the field would have bought nothing.
 ///
 /// It cannot pass by finding nothing: the honest address must read back first, the live check must
 /// REFUSE a tampered address, and the inert ones must ACCEPT one. An arm that stopped firing would
@@ -731,6 +737,17 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
         }
     }
 
+    // The arm that was deleted, and why it is not the same case as the two above. `slab_id()` is
+    // derived, not stored: it hands back the address's own `block_slab_id`, and that is the slab
+    // file the read just opened. A cross-check against it could only ever have asked whether the
+    // slab a reader opened is the slab a reader opened -- true in every state, including one where
+    // a slab id has been reused and a record in the new slab stamps the reused number.
+    assert_eq!(
+        Some(good.block_slab_id),
+        good.slab_id(),
+        "the address's slab id IS its block_slab_id, so it cannot disagree with the file it named"
+    );
+
     // The one live check is presence-gated: strip the field and it stops running altogether.
     let mut stripped = good.clone();
     stripped.set_block_id(None);
@@ -761,6 +778,110 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
         stripped_reads,
         "the live check is presence-gated: an address that omits page_id reads through UNCHECKED \
          rather than failing, so dropping the field would disable the detector silently"
+    );
+}
+
+/// The payload checksum cannot tell one record from another record at the same address.
+///
+/// WHY THIS EXISTS. The safety argument for releasing the shard read guard across serving block
+/// I/O is that compaction relocates by append-and-repoint, that slab ids are strictly monotonic so
+/// a stale address can never resolve to a different record, and that a lost race "fails block-id +
+/// checksum and answers absent". The last clause is the one worth testing, because
+/// `only_one_of_the_three_address_cross_checks_on_a_read_can_fire` has already shown that the
+/// object-id and routing-bucket arms cannot fire -- which leaves the block ordinal and the
+/// checksum holding the whole of it.
+///
+/// The checksum holds none of it. `block_record_checksum_field` is a CRC32C over the payload
+/// alone, stored in that record's own header. It binds a record to ITSELF. Any intact record
+/// verifies, whoever it belongs to and whoever asked for it, so it detects corruption and is
+/// structurally incapable of detecting misdirection. This test shows that with two stores: an
+/// address minted against one record is served a DIFFERENT record, in full, with no error, from
+/// the same (slab, offset, length) in another store.
+///
+/// WHAT THIS DOES AND DOES NOT SAY. It does NOT say the read path is unsafe today. Slab ids are
+/// monotonic -- `a_roll_never_mints_an_id_a_slab_file_already_holds` in `block_store.rs` now pins
+/// the half of that derivation which was unguarded -- so the state this test constructs by using
+/// two stores is not reachable through one. What it says is WHERE the safety comes from: from
+/// monotonic slab ids, from the stored-length check, and from the block ordinal. Not from the
+/// checksum. Anything that weakens monotonicity has no second line behind it, and a reader who
+/// takes "checksum" in that argument to mean "the bytes are bound to the address they came from"
+/// is reading a guarantee that was never written.
+///
+/// NON-VACUITY. The two payloads must differ and must be the same length; the two addresses must
+/// agree on slab, offset, length and block ordinal and must DISAGREE on object id -- that last is
+/// the field whose cross-check is dead, so it is what a live one would have caught. Each store
+/// must also read its own record back first, or the test would be asserting against a read path
+/// that cannot serve anything.
+#[test]
+fn the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address() {
+    let first_dir = tempfile::tempdir().expect("tempdir");
+    let second_dir = tempfile::tempdir().expect("tempdir");
+    let first_store = BlockStore::new(first_dir.path());
+    let second_store = BlockStore::new(second_dir.path());
+
+    // Equal length, different content, both under the compression floor so the stored length is
+    // the payload length and nothing here depends on what zstd decides to do.
+    let first_payload = b"the record an address was minted for---".to_vec();
+    let second_payload = b"a different record, same length, same!!".to_vec();
+    assert_eq!(
+        first_payload.len(),
+        second_payload.len(),
+        "denominator: the two payloads must be the same length, or the addresses cannot collide"
+    );
+    assert_ne!(
+        first_payload, second_payload,
+        "denominator: the two payloads must differ, or a wrong read would look like a right one"
+    );
+
+    let stale = first_store
+        .append_block_of_object(&first_payload, Some(111), Some(7), 3)
+        .expect("append");
+    let live = second_store
+        .append_block_of_object(&second_payload, Some(222), Some(9), 3)
+        .expect("append");
+
+    // The two addresses agree on everything a read uses to FIND bytes.
+    assert_eq!(
+        stale.block_slab_id, live.block_slab_id,
+        "denominator: same slab id"
+    );
+    assert_eq!(stale.offset, live.offset, "denominator: same offset");
+    assert_eq!(stale.length, live.length, "denominator: same length");
+    assert_eq!(
+        stale.block_id(),
+        live.block_id(),
+        "denominator: same block ordinal, so the one live cross-check reads through"
+    );
+    // And they disagree on exactly the field whose cross-check cannot fire.
+    assert_ne!(
+        stale.object_id(),
+        live.object_id(),
+        "denominator: the object ids differ -- this is what a live object-id check would catch"
+    );
+
+    // Denominator: each address reads its own record back before anything is crossed over.
+    assert_eq!(
+        first_payload,
+        first_store.read(&stale).expect("the first address reads its own record"),
+        "denominator: the honest read works in the first store"
+    );
+    assert_eq!(
+        second_payload,
+        second_store.read(&live).expect("the second address reads its own record"),
+        "denominator: the honest read works in the second store"
+    );
+
+    let served = second_store
+        .read(&stale)
+        .expect("the misdirected read SUCCEEDS -- that is the finding, not a failure of the test");
+    assert_eq!(
+        second_payload, served,
+        "an address minted for object 111 was served object 222's record, in full, with no error: \
+         the CRC32C verified that record against itself and nothing compared it to the address"
+    );
+    assert_ne!(
+        first_payload, served,
+        "and what came back is not the record the address was minted for"
     );
 }
 

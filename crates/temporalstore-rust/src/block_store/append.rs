@@ -61,30 +61,22 @@ impl BlockStore {
         fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
         let block_id = u64::from(block_ordinal);
-        let mut stored_slab_id = inner.block_slab_id;
-        let mut record = encode_block_record(
-            bytes,
-            block_id,
-            object_id,
-            routing_bucket,
-            stored_slab_id,
-            inner.options,
-        )?;
+        // ENCODED ONCE, INCLUDING ACROSS A ROLL. This used to re-encode the whole record after
+        // rolling, to restamp the slab id it was landing in -- a slab id `encode_block_record`
+        // then discarded, so the second call re-ran zstd over the same payload and produced
+        // byte-identical bytes. Measured on this box at load 1.92, release build, 1,244-byte
+        // soak-corpus payload compressing to a 418-byte record: 5,277 ns per encode against
+        // 16,237 ns per append, and one roll per 2,568,760 appends at the shipped 1 GiB slab
+        // target -- 1.3e-7 of append time, which is noise by any measure. It is removed because
+        // it re-encoded for a field nothing keeps, not because it cost anything.
+        let record =
+            encode_block_record(bytes, block_id, object_id, routing_bucket, inner.options)?;
         if should_roll_before_append(
             inner.write_offset,
             record.bytes.len() as u64,
             slab_target_bytes,
         ) {
             roll_slab_inner(&mut inner)?;
-            stored_slab_id = inner.block_slab_id;
-            record = encode_block_record(
-                bytes,
-                block_id,
-                object_id,
-                routing_bucket,
-                stored_slab_id,
-                inner.options,
-            )?;
         }
         let path = slab_path(&inner.root, inner.block_slab_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -152,15 +144,9 @@ impl BlockStore {
 
         for (bytes, object_id, routing_bucket, block_ordinal) in records {
             let block_id = u64::from(block_ordinal);
-            let mut stored_slab_id = inner.block_slab_id;
-            let mut record = encode_block_record(
-                bytes,
-                block_id,
-                object_id,
-                routing_bucket,
-                stored_slab_id,
-                inner.options,
-            )?;
+            // Encoded once, including across a roll -- see the note on the single-record path.
+            let record =
+                encode_block_record(bytes, block_id, object_id, routing_bucket, inner.options)?;
             if should_roll_before_append(
                 inner.write_offset,
                 record.bytes.len() as u64,
@@ -171,15 +157,6 @@ impl BlockStore {
                     current.sync_data()?;
                 }
                 roll_slab_inner(&mut inner)?;
-                stored_slab_id = inner.block_slab_id;
-                record = encode_block_record(
-                    &bytes,
-                    block_id,
-                    object_id,
-                    routing_bucket,
-                    stored_slab_id,
-                    inner.options,
-                )?;
             }
             if file.is_none() {
                 let path = slab_path(&inner.root, inner.block_slab_id);

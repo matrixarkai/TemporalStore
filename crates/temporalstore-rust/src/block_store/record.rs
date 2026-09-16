@@ -166,7 +166,6 @@ struct BlockRecordHeader {
     block_id: Option<u64>,
     object_id: Option<u64>,
     routing_bucket: Option<u32>,
-    slab_id: Option<u64>,
     pub(super) compression: BlockRecordCompression,
 }
 
@@ -196,7 +195,6 @@ pub(super) fn encode_block_record(
     block_id: u64,
     object_id: Option<u64>,
     routing_bucket: Option<u32>,
-    slab_id: u64,
     options: BlockStoreOptions,
 ) -> Result<EncodedBlockRecord, BlockStoreError> {
     let checksum_field = block_record_checksum_field(payload);
@@ -222,10 +220,11 @@ pub(super) fn encode_block_record(
             format!("block of {block_size} bytes does not fit a block size field"),
         ));
     }
-    // The object id, the routing bucket and the slab id are the index's to remember. The slab id
-    // was derivable from the record's own position on top of that. None of them are written here
-    // any more.
-    let _ = (object_id, routing_bucket, slab_id);
+    // The object id and the routing bucket are the index's to remember, and neither is written
+    // here. They stay in the signature because the callers hold them and a future format that
+    // carries one would take it from exactly here; see the note in `decode_block_record` on what
+    // not carrying them costs a read.
+    let _ = (object_id, routing_bucket);
     let codec = match compression {
         BlockRecordCompression::None => u32::from(BLOCK_RECORD_COMPRESSION_NONE),
         BlockRecordCompression::Zstd => u32::from(BLOCK_RECORD_COMPRESSION_ZSTD),
@@ -314,6 +313,34 @@ pub(super) fn decode_block_record(
             ));
         }
     }
+    // THE TWO CHECKS BELOW CANNOT FIRE, AND THE ONE THAT USED TO SIT UNDER THEM IS GONE.
+    //
+    // `parse_block_record_header` returns `object_id: None` and `routing_bucket: None` -- the
+    // record header carries neither -- so both `if let` pairs below fail to match on every read
+    // ever taken. Mutating each to fail unconditionally (`|| true`) left 89 of 89 block-store and
+    // address-footprint tests green; the same mutation on the block-id arm above turned 23 of
+    // those 89 red, so the harness does notice a check that breaks.
+    //
+    // THEY ARE LEFT IN PLACE RATHER THAN DELETED, because the payload checksum does NOT cover
+    // what they name. `block_record_checksum_field` is a CRC32C over the payload alone: it binds
+    // a record to ITSELF, never to the address that reached it. An intact record belonging to a
+    // different object verifies perfectly. So the object-id arm is the one detector here worth
+    // having, and reinstating it means carrying the object id on the wire -- a FORMAT change and
+    // a decision for whoever owns the format, not a tidy-up. The routing bucket is a many-to-one
+    // function of the object, so it can only ever catch a subset of what the object id catches,
+    // for four more bytes on every record; if one of the two is ever carried it should be the
+    // object id.
+    //
+    // WHAT WAS DELETED, and why it is not the same case: a third arm compared
+    // `address.slab_id()` against `header.slab_id`. That one was vacuous by construction rather
+    // than merely dead. `BlockAddress::slab_id()` returns `Some(self.block_slab_id)`
+    // unconditionally, and `block_slab_id` is the slab file `BlockStore::read` just opened, so
+    // the address side of the comparison was never an independent claim -- it was "which file am
+    // I holding". The record side, had it been written, came from the same variable the file path
+    // came from (`append_block_of_object` builds both from `inner.block_slab_id`). The two sides
+    // agree in every reachable state INCLUDING a reused slab id, where a record in the new slab
+    // stamps the reused number and a stale address naming that number compares it against itself.
+    // Carrying the field would have bought no discrimination at any offset in the format.
     if let (Some(address_object_id), Some(record_object_id)) = (address.object_id(), header.object_id)
     {
         if address_object_id != record_object_id {
@@ -337,17 +364,12 @@ pub(super) fn decode_block_record(
             ));
         }
     }
-    if let (Some(address_slab_id), Some(record_slab_id)) = (address.slab_id(), header.slab_id)
-    {
-        if address_slab_id != record_slab_id {
-            return Err(corrupt_block_envelope(
-                address,
-                format!(
-                    "slab id mismatch: address {address_slab_id}, record {record_slab_id}"
-                ),
-            ));
-        }
-    }
+    // The length check below is not an identity check, but it IS the only thing besides the block
+    // ordinal that stands between a stale address and a different record's bytes: the address
+    // hands `read_range` a length, and a record at that offset whose header states a different
+    // stored size is refused here. A misdirected read therefore has to land on an exact record
+    // boundary AND match that record's total encoded length before the block ordinal is even
+    // consulted.
     if record.len() != header.header_len + header.stored_len {
         return Err(corrupt_block_envelope(
             address,
@@ -515,7 +537,6 @@ fn parse_block_record_header(
         // The index holds these. A record that repeated them could only ever agree or be wrong.
         object_id: None,
         routing_bucket: None,
-        slab_id: None,
         compression,
     })
 }
@@ -875,7 +896,10 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                     compact_slab_address: address.compact_slab_address(),
                     compact_slab_id: address.compact_slab_id(),
                     compact_slab_offset: address.compact_slab_offset(),
-                    storage_slab_id: header.slab_id,
+                    // Always `None`: the record header carries no slab id, and the slab a record
+                    // sits in is `block_slab_id` two lines up. A report field that restated it
+                    // would be the same number twice.
+                    storage_slab_id: None,
                     object_id: header.object_id,
                     model_id: None,
                     block_id: header.block_id,
@@ -971,7 +995,6 @@ mod block_record_format_tests {
             block_id,
             Some(0x99AA_BBCC_DDEE_F001),
             Some(0x0BAD_C0DE),
-            0x0102_0304,
             BlockStoreOptions::default(),
         )
         .expect("encode");
@@ -986,7 +1009,6 @@ mod block_record_format_tests {
         assert_eq!(header.stored_len, payload.len());
         assert_eq!(header.object_id, None, "the index holds the object id");
         assert_eq!(header.routing_bucket, None, "the index holds the routing bucket");
-        assert_eq!(header.slab_id, None, "the index holds the slab the record sits in");
         let decoded = decode_block_record(&encoded.bytes, &address()).expect("decode");
         assert_eq!(decoded.payload, payload);
     }
@@ -997,7 +1019,7 @@ mod block_record_format_tests {
         let payload = b"offsets are constants";
         let block_id: u64 = u64::from(u16::MAX);
         let encoded =
-            encode_block_record(payload, block_id, None, None, 0, BlockStoreOptions::default())
+            encode_block_record(payload, block_id, None, None, BlockStoreOptions::default())
                 .expect("encode");
 
         let at = BLOCK_RECORD_BLOCK_ID_OFFSET;
@@ -1023,7 +1045,7 @@ mod block_record_format_tests {
     fn the_checksum_is_a_crc32c_of_the_payload() {
         let payload = b"page payload that is long enough to be interesting";
         let encoded =
-            encode_block_record(payload, 7, None, None, 3, BlockStoreOptions::default())
+            encode_block_record(payload, 7, None, None, BlockStoreOptions::default())
                 .expect("encode");
         let at = BLOCK_RECORD_CHECKSUM_OFFSET;
         let stored = u32::from_le_bytes(
@@ -1040,7 +1062,7 @@ mod block_record_format_tests {
     fn a_corrupted_record_is_rejected() {
         let payload = b"payload that will be corrupted after the fact";
         let mut encoded =
-            encode_block_record(payload, 1, None, None, 0, BlockStoreOptions::default())
+            encode_block_record(payload, 1, None, None, BlockStoreOptions::default())
                 .expect("encode");
         let last = encoded.bytes.len() - 1;
         encoded.bytes[last] ^= 0xFF;
@@ -1056,7 +1078,7 @@ mod block_record_format_tests {
     fn a_truncated_header_is_rejected() {
         let payload = b"truncation payload";
         let encoded =
-            encode_block_record(payload, 1, None, None, 0, BlockStoreOptions::default())
+            encode_block_record(payload, 1, None, None, BlockStoreOptions::default())
                 .expect("encode");
         for keep in [0, 1, BLOCK_RECORD_HEADER_LEN - 1] {
             let err = parse_block_record_header(&encoded.bytes[..keep], &address())
@@ -1084,7 +1106,6 @@ mod reused_zstd_context_tests {
             // The record no longer carries these; the index does.
             object_id: None,
             routing_bucket: None,
-            slab_id: None,
             compression: BlockRecordCompression::Zstd,
         }
     }

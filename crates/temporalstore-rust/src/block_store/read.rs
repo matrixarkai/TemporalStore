@@ -17,11 +17,14 @@ impl BlockStore {
             address.length,
         )?;
         let decoded = decode_block_record(&bytes, address)?;
-        // `decode_block_record` just verified this payload against the digest stored in the
-        // page envelope, and cross-checked the record header's page id, object id and routing
-        // slot against this address. A second comparison against a digest carried in the index
-        // added nothing to either: the first covers corruption, the second covers an entry
-        // pointing at the wrong page.
+        // `decode_block_record` just verified this payload against the CRC32C stored in the
+        // record envelope, and cross-checked the record header's page id against this address.
+        // It cross-checks NOTHING ELSE: the header carries no object id and no routing bucket, so
+        // the two arms that name them cannot match -- read the note in `decode_block_record`
+        // before relying on either. A second comparison against a digest carried in the index
+        // added nothing here: the CRC covers corruption of these bytes, and it is the page id and
+        // the stored-length check, not the CRC, that stand against an entry pointing at the wrong
+        // page.
         let bytes = decoded.payload;
         inner.stats.reads += 1;
         inner.stats.bytes_read += address.length;

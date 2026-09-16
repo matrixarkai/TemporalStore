@@ -6362,9 +6362,17 @@ const RETIRED_NAMES: &[&str] = &[
     /// THIS IS WHAT MAKES A STALE ADDRESS SAFE. A block address names (slab, offset, length); if
     /// a roll could mint an id a file already occupies, a reader holding an address into the old
     /// slab would resolve into a DIFFERENT record's bytes at the same offset. The record header
-    /// carries only the block ordinal -- `parse_block_record_header` returns `slab_id: None`, so
-    /// the slab-id cross-check in `decode_block_record` can never fire -- which leaves monotonic
-    /// ids and the payload checksum as the whole of the defence.
+    /// carries only the block ordinal: the object-id and routing-bucket cross-checks in
+    /// `decode_block_record` cannot fire, and the slab-id one has been removed as vacuous -- it
+    /// compared the slab a reader opened against itself. That leaves monotonic ids, the
+    /// stored-length check and the block ordinal.
+    ///
+    /// IT DOES NOT LEAVE THE PAYLOAD CHECKSUM, whatever the shape of the sentence suggests. The
+    /// checksum is a CRC32C over a record's own payload, so any intact record verifies no matter
+    /// who asked for it;
+    /// `the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address` in
+    /// `engine::tests::address_footprint` serves an address a different record and shows it comes
+    /// back clean. So this derivation is not one defence of several -- under it there is nothing.
     ///
     /// `roll_slab_inner` derives the next id TWICE, from the in-memory id and from the highest id
     /// on disk, and takes the larger. Both derivations were unguarded: dropping the disk half
