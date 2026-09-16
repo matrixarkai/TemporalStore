@@ -461,12 +461,6 @@ SETTINGS: List[Setting] = [
     Setting("skills.chunks_per_skill", "skills", "MATRIXARK_SKILL_CHUNKS_PER_SKILL",
             "Chunks per skill", "int", "3", "live",
             "How many sections of one skill a pack may carry."),
-    Setting("skills.description_always", "skills", "MATRIXARK_SKILL_DESCRIPTION_ALWAYS",
-            "Always list skill descriptions", "bool", "1", "live",
-            "Include every visible skill's name and description in each pack even when no section "
-            "matches. A description is 5-30 tokens, so the model learns a skill EXISTS cheaply and "
-            "its content is fetched only when a section actually matches. This is what makes "
-            "hundreds of skills affordable."),
     Setting("skills.discovery", "skills", "MATRIXARK_SKILL_DISCOVERY",
             "Skill discovery", "bool", "0", "restart",
             "Let a retrieve surface skills the query did not name, from the skill index rather "
@@ -1523,19 +1517,30 @@ def model_catalogue(target: str, provider: Optional[str] = None) -> List[Json]:
 # for by name -- and fails if this disagrees with it in EITHER direction. Wiring one up forces its
 # removal from here; a knob that quietly stops being read forces its addition.
 #
-# Not a reason to hide the control. A deployment may already have one of these set, and a field
-# that vanishes takes its value out of view while leaving it in the file.
-KNOBS_READ_BY_NOTHING = frozenset({
-    "embed_node_path_prefix",
-    "generate_l1_summaries",
-    "max_event_text_chars",
-    "max_summary_text_chars",
-    "recall_reinforcement",
-    "skill_description_always",
-    "summarize_aggregation_only_nodes",
-    "summary_levels",
-    "write_secondary_index",
-})
+# EMPTY NOW, and the two ways it emptied are different and both worth reading.
+#
+# EIGHT WERE RETIRED. `_knob_settings` skips a knob whose `env` is empty, so taking the variable
+# off the `Knob(...)` takes the generated row with it. The knob is untouched -- a tenant policy
+# file still sets every one of them -- and what goes is the row that told an operator this build
+# would act on it. The standing argument for keeping the field was that a deployment may already
+# have a value stored and a vanishing field takes it out of view while leaving it in the file.
+# That argument is real and it was overridden deliberately: it asks a page to keep showing a
+# control that does nothing so that a value which does nothing stays visible. The policy screen
+# still lists the knob and still clears an override, which is where a stored value is actually
+# reachable from.
+#
+# ONE WAS NEVER DEAD. `recall_reinforcement` was in this set and a tenant's `off` has been
+# honoured since matrixarkai#616: `matrixark_local_adapter_retrieve` asks for it by name through
+# `explicit_bool`, and the pack builder skips the marker write. The derivation above knew
+# `resolve` and `resolve_tenant_policy` and did not know the three `explicit_*` helpers that
+# `test_matrixark_policy_gates_wired._RESOLVER` has known all along -- so a working control was
+# badged, on the operator's own screen, as one this build does not read. The detector is widened
+# where it lives and the name is struck off here.
+#
+# The set emptying does NOT make this dead weight: it is what catches the next knob that stops
+# being read, and the badge renderer is exercised against a synthetic knob rather than against
+# this set, so nothing here goes vacuous when it is empty.
+KNOBS_READ_BY_NOTHING: frozenset = frozenset()
 
 
 _UNREAD_ENVS: Optional[frozenset] = None

@@ -35,10 +35,23 @@ import matrixark_tenant_policy as tp  # noqa: E402
 
 class TheKnobsTheScreenOffersTest(unittest.TestCase):
 
-    def test_the_policy_layer_offers_knobs_nothing_reads(self) -> None:
-        """The premise. If it offered none of them there would be nothing to mark."""
+    def test_the_dead_set_is_a_subset_of_the_registry(self) -> None:
+        """A FLOOR WAS REMOVED HERE, and this is what replaced it.
+
+        It read `assertGreater(len(dead), 5)` -- the premise that there is something to mark. That
+        is a floor on the GROUP, and the group emptying is the outcome the work aimed at: eight
+        knobs lost the variable that generated their row and `recall_reinforcement` turned out to
+        be read all along, so `KNOBS_READ_BY_NOTHING` is empty and the old floor would fail on
+        success. Lowering it to nothing would have left a number that says nothing.
+
+        What keeps this file honest with an empty register is `TheControlIsMarkedNotWithdrawnTest`
+        below: it renders the control from a SYNTHETIC knob carrying `read_by_nothing`, never
+        consults the register, and still fails if the marking is dropped or applied to everything.
+        The premise moved to where it can still be false.
+        """
         dead = sorted(set(tp.KNOBS) & set(cfg.KNOBS_READ_BY_NOTHING))
-        self.assertGreater(len(dead), 5, dead)
+        self.assertEqual(sorted(cfg.KNOBS_READ_BY_NOTHING), dead,
+                         "the register names something that is not a knob at all")
         self.assertLess(len(dead), len(tp.KNOBS),
                         "every knob is dead, which would make the marking meaningless")
 

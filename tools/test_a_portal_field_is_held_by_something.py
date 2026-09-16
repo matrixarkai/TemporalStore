@@ -121,15 +121,12 @@ EXPECTED_HOLD_FLOOR = 20
 #: directions: a new unheld field fails here, and one that becomes held fails here too, because a
 #: list allowed to go stale describes a page that no longer exists.
 UNHELD = {
-    # The tenant-knob family. `KNOBS_READ_BY_NOTHING` already decides these three the other way
-    # and says why beside itself: a deployment may have one set, and a field that vanishes takes
-    # its value out of view while leaving it in the file. That is a recorded decision.
-    "MATRIXARK_MAX_EVENT_TEXT_CHARS":
-        "badged read-by-nothing; the badge is the point, not an oversight",
-    "MATRIXARK_MAX_SUMMARY_TEXT_CHARS":
-        "badged read-by-nothing; the badge is the point, not an oversight",
-    "MATRIXARK_SUMMARY_LEVELS":
-        "badged read-by-nothing; the badge is the point, not an oversight",
+    # The tenant-knob family stood here: max_event_text_chars, max_summary_text_chars and
+    # summary_levels, held by nothing but the recorded decision that a badged field stays visible
+    # for a deployment that already has a value stored. All three have since been retired -- the
+    # variable is off the `Knob(...)`, `_knob_settings` no longer generates a row, and there is no
+    # field left for this page to hold. They are removed rather than re-described, because an
+    # entry here about a field that does not exist is a record of a page that no longer exists.
     # Refused by name when they were tried:
     # test_matrixark_knobs_apply_live.test_the_wired_storage_knobs_are_advertised_live. Both are
     # wired to what gets stored, that suite measures each one flipping mid-flight, and the portal

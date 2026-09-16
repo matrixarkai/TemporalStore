@@ -130,7 +130,7 @@ KNOBS: dict[str, Knob] = _registry(
              "no store-wide total on purpose: a global budget would let one tenant evict another.",
              aliases=("secondary_index_hard_ceiling",),
              env_aliases=("MATRIXARK_SECONDARY_INDEX_HARD_CEILING",)),
-        Knob("summary_levels", "choice", "MATRIXARK_SUMMARY_LEVELS", "auto",
+        Knob("summary_levels", "choice", "", "auto",
              "Which node summaries to generate, explicitly: 'auto' keeps today's content-driven "
              "rule (L0 always, L1 when the node has child summaries / >=3 events / >=180 tokens), "
              "'l0' never generates L1, 'l0_l1' always generates both regardless of the rule, 'none' "
@@ -143,7 +143,7 @@ KNOBS: dict[str, Knob] = _registry(
              "trigger_evidence). Older rows keep identity, scope, status and timing -- which is all "
              "the ingest and retrieval paths read -- and are marked payload_slimmed. 0 = keep every "
              "payload forever. Measured: these payloads are ~11% of resident memory."),
-        Knob("summarize_aggregation_only_nodes", "bool", "MATRIXARK_SUMMARIZE_AGGREGATION_ONLY_NODES", True,
+        Knob("summarize_aggregation_only_nodes", "bool", "", True,
              "Summarize nodes that hold no events of their own (tenant / user / profile). ON by "
              "default, i.e. the skip is opt-in, because the first framing of this lever was wrong: "
              "the argument was that the traversal visits these nodes unconditionally, so a summary "
@@ -177,7 +177,7 @@ KNOBS: dict[str, Knob] = _registry(
              "Returning the best 3 costs about 60 tokens and is more accurate, because the three "
              "relevant chapters beat forty of which thirty-seven are noise. 0 returns every "
              "section (the old behaviour)."),
-        Knob("skill_description_always", "bool", "MATRIXARK_SKILL_DESCRIPTION_ALWAYS", True,
+        Knob("skill_description_always", "bool", "", True,
              "Include each visible skill's name + description in every pack, even when no section "
              "matches. This is what makes many skills affordable: a description is ~5-30 tokens, "
              "so the model learns a skill EXISTS for a few tokens and its content is fetched only "
@@ -271,18 +271,18 @@ KNOBS: dict[str, Knob] = _registry(
              "does not create it.\n\n"
              "Turn it off only for a tenant whose nodes are always summarised before their first "
              "retrieve, and verify with a cold-start check, not a warm one."),
-        Knob("embed_node_path_prefix", "bool", "MATRIXARK_EMBED_NODE_PATH_PREFIX", False,
+        Knob("embed_node_path_prefix", "bool", "", False,
              "Include the node path in the text that node summaries are EMBEDDED from. Off by "
              "default: the path is near-identical across siblings, so it injects a shared component "
              "into every node vector -- measured, two nodes sharing nothing went from cos 0.0000 to "
              "0.3636 once prefixed, and the right-node margin shrank in both queries tested. The "
              "stored summary_text keeps the prefix; only the embedded text drops it."),
-        Knob("generate_l1_summaries", "bool", "MATRIXARK_GENERATE_L1_SUMMARIES", True,
+        Knob("generate_l1_summaries", "bool", "", True,
              "Generate the richer node_l1 overview alongside the mandatory node_l0. L0 is what "
              "traversal needs; L1 adds routing detail for nodes with a lot under them. Node "
              "summaries are bounded by tree size (3 + one per session), so this is a small, safe "
              "knob -- the linear-growing summary is batch_l0, one per ingest batch."),
-        Knob("write_secondary_index", "bool", "MATRIXARK_WRITE_SECONDARY_INDEX", True,
+        Knob("write_secondary_index", "bool", "", True,
              "Store context_index postings at all. A tenant whose corpus is small enough to scan "
              "can turn the index off entirely and pay nothing to maintain it."),
         Knob("dedupe_index_postings", "bool", "MATRIXARK_DEDUPE_INDEX_POSTINGS", True,
@@ -291,11 +291,11 @@ KNOBS: dict[str, Knob] = _registry(
              "Store a context_event's summary_text. Off by default: it is a whitespace-collapsed "
              "truncation of text (no LLM), so it duplicates text for any event under the limit, and "
              "every reader already falls back to text."),
-        Knob("max_summary_text_chars", "int", "MATRIXARK_MAX_SUMMARY_TEXT_CHARS", 0,
+        Knob("max_summary_text_chars", "int", "", 0,
              "Cap a context_summary's summary_text; 0 = the built-in budget (220 for L0, 1200 for "
              "L1). Measured: this is where noisy tool output actually persists -- an event drops it, "
              "the node summary keeps up to 1200 chars of it per row."),
-        Knob("max_event_text_chars", "int", "MATRIXARK_MAX_EVENT_TEXT_CHARS", 0,
+        Knob("max_event_text_chars", "int", "", 0,
              "Clip each message's content to this many characters BEFORE extraction; 0 = unlimited. "
              "Bounds what a noisy tool-output turn can cost across the event, its extraction, its "
              "embedding and its index postings -- all of which read the clipped text."),

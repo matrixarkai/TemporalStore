@@ -108,7 +108,9 @@ _IDENTITY = re.compile(
 #: Banked here in the same breath, because a ratchet that does not bank a reduction is the
 #: reduction nobody can see was made. `deployment configurable` is untouched at 146: none of the
 #: 46 is offered on the operator page.
-MAXIMUM_FLAGS_READ = 465
+#: 457 since the eight controls the page offered and nothing read lost their variable. The whole
+#: of `KNOBS_READ_BY_NOTHING` went with them, so the count and the register moved together.
+MAXIMUM_FLAGS_READ = 457
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
@@ -346,7 +348,7 @@ def _is_tooling(module):
 #: which moves when a benchmark gains a knob. This one bounds what an OPERATOR is offered, and it
 #: is the number that answers "how many knobs does this thing have". They move independently and a
 #: single ceiling would hide one behind the other.
-MAXIMUM_CONFIGURABLE = 132
+MAXIMUM_CONFIGURABLE = 124
 
 #: Flags a deployment can set that decide whether a code path RUNS -- the number "how many features
 #: can this thing be asked to turn off" is asking for, and the one the under-a-hundred target is

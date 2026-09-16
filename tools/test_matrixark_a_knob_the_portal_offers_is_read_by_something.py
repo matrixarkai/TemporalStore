@@ -40,6 +40,18 @@ import matrixark_tenant_policy as tp  # noqa: E402
 
 GROWTH_BOUND = "matrixark_index_growth_bound.py"
 
+#: Every way production asks the policy for a knob BY NAME. The first version of this knew
+#: `resolve` and `resolve_tenant_policy` and stopped there, and the three `explicit_*` helpers are
+#: the same question asked with a type attached. `recall_reinforcement` is read through
+#: `explicit_bool` in matrixark_local_adapter_retrieve and was reported dead for the whole time --
+#: badged on the operator's screen as a control this build does not read, while a tenant's `off`
+#: was being honoured. `test_matrixark_policy_gates_wired._RESOLVER` has listed all four since it
+#: was written; two files asking the same question of the same code disagreed because one of them
+#: spelled the question shorter.
+_RESOLVER_CALL = re.compile(
+    r'(?:resolve|resolve_tenant_policy|explicit_bool|explicit_int|explicit_str)'
+    r'\(\s*["\']([a-z0-9_]+)["\']')
+
 # Where a knob is DECLARED rather than used. A mention here is not a consumer.
 DECLARING = {GROWTH_BOUND, "matrixark_tenant_policy.py", "matrixark_gateway_config.py"}
 
@@ -134,7 +146,7 @@ def _resolved_by_name() -> set:
     """
     asked = set()
     for name, src in _production_sources().items():
-        for match in re.finditer(r'resolve(?:_tenant_policy)?\(\s*["\']([a-z0-9_]+)["\']', src):
+        for match in _RESOLVER_CALL.finditer(src):
             asked.add(match.group(1))
     # ...and from the reachable half of the growth-bound module itself.
     reachable = _reachable_accessors()
@@ -146,7 +158,8 @@ def _resolved_by_name() -> set:
             if not isinstance(sub, ast.Call):
                 continue
             called = getattr(sub.func, "id", None) or getattr(sub.func, "attr", None)
-            if called in ("resolve", "resolve_tenant_policy") and sub.args:
+            if called in ("resolve", "resolve_tenant_policy",
+                          "explicit_bool", "explicit_int", "explicit_str") and sub.args:
                 first = sub.args[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     asked.add(first.value)
@@ -237,12 +250,30 @@ class TheScreenSaysSoTest(unittest.TestCase):
                                                       len(marked), sorted(marked)))
 
     def test_the_match_is_by_variable_not_by_key_prefix(self) -> None:
-        """The discriminator. Ten of the eleven surface as `behaviour.<knob>`; this one does not,
-        and a prefix rule marked ten and left it looking like a working control."""
-        marked = {f["key"] for f in self._fields() if f.get("read_by_nothing")}
-        self.assertIn("skills.description_always", marked)
-        self.assertNotIn("behaviour.skill_description_always",
-                         {f["key"] for f in self._fields()})
+        """The discriminator, now asked of a SYNTHETIC entry rather than of a live knob.
+
+        It used to name `skills.description_always`: ten of the eleven badged knobs surfaced as
+        `behaviour.<knob>` and that one did not, so a prefix rule marked ten and left the eleventh
+        looking like a working control. That field has been retired, and a test whose only example
+        is gone is a test that cannot fail -- with the register empty, `assertIn` on a live key
+        would simply have been deleted along with the thing it protected.
+
+        So the register is injected instead. `setting_is_read` is consulted at snapshot time, so
+        pointing `_UNREAD_ENVS` at one variable and asking which field came back marked answers
+        the same question and keeps answering it when the register is empty: a prefix rule marks
+        nothing here, because `embedding.dims` is not `behaviour.anything`.
+        """
+        before = _cfg._UNREAD_ENVS
+        try:
+            _cfg._UNREAD_ENVS = frozenset({"MATRIXARK_EMBEDDING_DIMS"})
+            marked = {f["key"] for f in self._fields() if f.get("read_by_nothing")}
+        finally:
+            _cfg._UNREAD_ENVS = before
+        self.assertEqual(
+            {"embedding.dims"}, marked,
+            "the badge follows the portal KEY rather than the variable: marking a field whose key "
+            "shares no prefix with any knob name is the case a prefix rule gets wrong, and it is "
+            "the case that cost an operator a control that looked live")
 
     def test_nothing_else_is_marked(self) -> None:
         """A badge on every field is a badge on none."""
@@ -252,15 +283,14 @@ class TheScreenSaysSoTest(unittest.TestCase):
         for field in fields:
             self.assertIn("read_by_nothing", field, field["key"])
 
-    def test_the_control_is_still_offered(self) -> None:
-        """Not hidden. A deployment may already have one set, and a field that vanishes takes its
-        value out of view while leaving it in the file."""
-        keys = {f["key"] for f in self._fields()}
-        for name in _cfg.KNOBS_READ_BY_NOTHING:
-            self.assertTrue(
-                any(f.get("env") and f["env"].endswith(name.upper()) for f in self._fields())
-                or ("behaviour." + name) in keys,
-                "%s is no longer offered at all" % name)
+    # `test_the_control_is_still_offered` stood here. It iterated KNOBS_READ_BY_NOTHING and
+    # required each name to still have a field, on the argument that a deployment may already have
+    # one set and a vanishing field takes its value out of view. With the register empty it
+    # iterated nothing and could not fail, and the argument it encoded is the one this change
+    # overrode deliberately rather than forgot: it asks the page to keep showing controls that do
+    # nothing so that values which do nothing stay visible. The policy screen still lists every
+    # knob and still clears an override, which is where a stored value is reachable from. Deleted
+    # rather than left passing on an empty loop.
 
 
 if __name__ == "__main__":

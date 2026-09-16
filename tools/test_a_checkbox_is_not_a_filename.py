@@ -51,8 +51,22 @@ SINK_CALLS = {
     "pathlib.Path", "Path", "urlopen", "urllib.request.urlopen", "socket.create_connection",
 }
 
-#: 79 today. A floor, not a count.
-BOOL_SETTING_FLOOR = 40
+#: A floor, not a count -- and the number beside it was WRONG, not merely stale.
+#:
+#: It said "79 today" over a floor of 40, which reads as thirty-nine settings of headroom. The
+#: real population was 41. The margin was ONE, and the first cut to take five bool settings off
+#: the page went straight through it: eight controls the page offered and nothing read were
+#: retired, five of them bools, 41 -> 36, and this failed on a reduction it exists to be
+#: indifferent to. Anyone reading the old note -- including the change that broke it -- would have
+#: concluded there was room.
+#:
+#: MEASURED: 41 before that retirement, 36 after. The floor is set from what it is FOR rather than
+#: from either number: this check goes blind when `cfg.SETTINGS` stops parsing or `kind` stops
+#: being spelled "bool", and both of those report approximately nothing, not thirty-five. 20
+#: catches that and leaves 16 of margin, so the next operator control retired here does not have
+#: to touch this line. If you are reading this because it failed anyway, the population has
+#: halved and that is worth looking at rather than lowering.
+BOOL_SETTING_FLOOR = 20
 
 GETTERS = {"os.environ.get", "os.getenv", "environ.get"}
 

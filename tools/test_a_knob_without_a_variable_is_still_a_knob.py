@@ -48,19 +48,39 @@ sys.path.insert(0, TOOLS)
 import matrixark_tenant_policy as policy  # noqa: E402
 import matrixark_gateway_config as gateway  # noqa: E402
 
-#: The seven, by knob name. Fixed on purpose -- see the note above.
+#: Every knob whose variable has been retired, by knob name. Fixed on purpose -- see the note
+#: above. Three from matrixarkai#1791; the other eight are the controls the page offered and
+#: nothing read, whose whole register `KNOBS_READ_BY_NOTHING` this emptied.
 RETIRED = (
     "audit_payload_retain_per_scope",
     "node_path_embeddings",
     "traverse_sibling_sessions",
+    "embed_node_path_prefix",
+    "generate_l1_summaries",
+    "max_event_text_chars",
+    "max_summary_text_chars",
+    "skill_description_always",
+    "summarize_aggregation_only_nodes",
+    "summary_levels",
+    "write_secondary_index",
 )
 
 #: What each one's variable used to be, so "setting it does nothing" can be tested by setting it.
+#: `generate_l1_summaries` sat here without being in RETIRED: matrixarkai#1791 set out to do seven
+#: and stopped at three, and the map kept an entry the tuple did not. The two are asserted to
+#: agree below rather than left to drift again.
 RETIRED_VARIABLE = {
     "audit_payload_retain_per_scope": "MATRIXARK_AUDIT_PAYLOAD_RETAIN_PER_SCOPE",
-    "generate_l1_summaries": "MATRIXARK_GENERATE_L1_SUMMARIES",
     "node_path_embeddings": "MATRIXARK_NODE_PATH_EMBEDDINGS",
     "traverse_sibling_sessions": "MATRIXARK_TRAVERSE_SIBLING_SESSIONS",
+    "embed_node_path_prefix": "MATRIXARK_EMBED_NODE_PATH_PREFIX",
+    "generate_l1_summaries": "MATRIXARK_GENERATE_L1_SUMMARIES",
+    "max_event_text_chars": "MATRIXARK_MAX_EVENT_TEXT_CHARS",
+    "max_summary_text_chars": "MATRIXARK_MAX_SUMMARY_TEXT_CHARS",
+    "skill_description_always": "MATRIXARK_SKILL_DESCRIPTION_ALWAYS",
+    "summarize_aggregation_only_nodes": "MATRIXARK_SUMMARIZE_AGGREGATION_ONLY_NODES",
+    "summary_levels": "MATRIXARK_SUMMARY_LEVELS",
+    "write_secondary_index": "MATRIXARK_WRITE_SECONDARY_INDEX",
 }
 
 PROBE = r"""
@@ -88,9 +108,28 @@ def _resolve_in_subprocess(extra=None):
 
 
 def _opposite(knob):
+    """A value the knob does not already hold, in the spelling its variable would carry.
+
+    `choice` arrived with `summary_levels` and needs the registry's own vocabulary: `int()` of
+    "auto" raises, and a probe that raises is a probe that proves nothing.
+    """
     if knob.kind == "bool":
         return "0" if knob.default else "1"
+    if knob.kind == "choice":
+        other = sorted(c for c in knob.choices if c != knob.default)
+        if not other:
+            raise AssertionError("%s is a choice with one choice" % knob.name)
+        return other[0]
     return str(int(knob.default) + 99)
+
+
+def _other_value(knob):
+    """The same, as the TYPE the policy file stores rather than as an environment string."""
+    if knob.kind == "bool":
+        return not knob.default
+    if knob.kind == "choice":
+        return _opposite(knob)
+    return int(knob.default) + 7
 
 
 class AKnobWithoutAVariableTest(unittest.TestCase):
@@ -102,6 +141,13 @@ class AKnobWithoutAVariableTest(unittest.TestCase):
                 self.assertIn(name, policy.KNOBS)
                 self.assertEqual("", policy.KNOBS[name].env,
                                  "%s still names an environment variable" % name)
+
+    def test_the_two_lists_agree(self) -> None:
+        """A name in the tuple with no variable recorded cannot be probed, and a variable recorded
+        for a name not in the tuple is never set -- both are silent, and one of them had already
+        happened before this file was extended."""
+        self.assertEqual(sorted(RETIRED), sorted(RETIRED_VARIABLE),
+                         "RETIRED and RETIRED_VARIABLE have drifted apart")
 
     def test_most_knobs_still_have_one(self) -> None:
         """The floor. If the registry ever went all-empty this file would pass on a tree where
@@ -124,8 +170,7 @@ class AKnobWithoutAVariableTest(unittest.TestCase):
         """The route that has to survive, measured rather than asserted."""
         wanted = {}
         for name in RETIRED:
-            knob = policy.KNOBS[name]
-            wanted[name] = (not knob.default) if knob.kind == "bool" else int(knob.default) + 7
+            wanted[name] = _other_value(policy.KNOBS[name])
         directory = tempfile.mkdtemp(prefix="matrixark-knob-route-")
         path = os.path.join(directory, "tenant_policy.json")
         with open(path, "w", encoding="utf-8") as handle:

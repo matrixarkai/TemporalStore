@@ -662,12 +662,35 @@ class OverrideBadgeTest(_PolicyTest):
         return out
 
     def test_every_policy_knob_setting_says_a_tenant_can_override_it(self) -> None:
+        """A FLOOR MOVED HERE, off the group and onto the scans and the join.
+
+        It was `assertGreater(checked, 20)` -- a floor on how many policy-knob rows the page
+        happens to carry. Retiring the eight controls the page offered and nothing read took that
+        population from 22 to 14, and the floor failed on a reduction it was never meant to
+        object to. Lowering it to 13 would only postpone the same failure to the next retirement.
+
+        What the floor was FOR is that this loop still joins something: the registry supplies the
+        variables, the page supplies the rows, and a change to either spelling silently leaves
+        `checked` at zero with both inputs looking healthy. So the two scans are floored
+        separately and the join is asserted EXACTLY -- every knob that has a variable and is not
+        internal has one row, so `checked` must equal that number and cannot drift with the
+        population.
+        """
         import matrixark_gateway_config as cfg
 
         # `if k.env` because a knob may have none. Without it the set contains "", every
         # setting whose variable is resolved at runtime matches it, and this asserts a tenant
         # badge on three settings that are not policy knobs at all.
         knob_envs = {k.env for k in tp.KNOBS.values() if k.env}
+        self.assertGreater(len(knob_envs), 10,
+                           "only %d knobs still name a variable; the registry scan has stopped "
+                           "matching and the join below would be empty for that reason rather "
+                           "than because the page changed" % len(knob_envs))
+        self.assertGreater(len(cfg.SETTINGS), 50,
+                           "only %d settings were built; the page scan has stopped matching"
+                           % len(cfg.SETTINGS))
+        eligible = {k.env for name, k in tp.KNOBS.items()
+                    if k.env and name not in cfg.INTERNAL_KNOBS}
         fields = self.fields()
         checked = 0
         for setting in cfg.SETTINGS:
@@ -676,7 +699,13 @@ class OverrideBadgeTest(_PolicyTest):
             checked += 1
             with self.subTest(setting=setting.key):
                 self.assertIn("tenant", fields[setting.key]["overridable_by"])
-        self.assertGreater(checked, 20, "almost nothing was checked, so this passed vacuously")
+        self.assertEqual(
+            len(eligible), checked,
+            "%d knobs have a variable and are not internal, and %d rows matched one. Every such "
+            "knob has exactly one row -- generated, or hand-written and suppressing the generated "
+            "one -- so a difference means the two sides have stopped agreeing about what a "
+            "variable is spelled like, which is the failure a count could not tell from a cut."
+            % (len(eligible), checked))
 
     def test_a_read_path_knob_also_says_a_user_can(self) -> None:
         fields = self.fields()

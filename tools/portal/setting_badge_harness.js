@@ -80,12 +80,15 @@ ok("the renderer shows what it is given, so the flag is the thing to get right",
    behaves the same either way. */
 const unread = /not read by this build/;
 
-html = fieldHtml(field({ key: "behaviour.summary_levels", env: "MATRIXARK_SUMMARY_LEVELS",
+/* Synthetic on purpose. This named behaviour.summary_levels until that knob's variable was
+   retired, and a harness whose example has been deleted from the product renders a field nobody
+   can reach -- which reads exactly like a harness that still covers something. */
+html = fieldHtml(field({ key: "behaviour.a_knob_nothing_reads", env: "MATRIXARK_A_KNOB_NOTHING_READS",
                          applies: "live", read_by_nothing: true }));
 ok("a control nothing reads says so", unread.test(html), html.slice(0, 300));
 ok("and it is styled as something to look at", /badge failed/.test(html), html.slice(0, 300));
 ok("and the field is still drawn, so a stored value stays visible",
-   /MATRIXARK_SUMMARY_LEVELS/.test(html), html.slice(0, 300));
+   /MATRIXARK_A_KNOB_NOTHING_READS/.test(html), html.slice(0, 300));
 
 /* The floor. Every other field must NOT carry it, or the badge says nothing. */
 ok("FLOOR: an ordinary setting does not carry it", !unread.test(fieldHtml(field({}))));
