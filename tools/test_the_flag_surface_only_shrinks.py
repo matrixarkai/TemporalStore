@@ -1998,13 +1998,31 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         Every candidate is a flag no one can be shown to set and no sentence tells anyone to set.
         Cutting one still needs the suites to be run -- `test_matrixark_knobs_apply_live` refused
         two by name for being wired to what gets stored, which no rule here can see.
+
+        THIS LIST IS NOT A TO-DO LIST, AND IT USED TO READ LIKE ONE. "Nothing selects it" is a
+        statement about the environment variable, not about the control. Of the seven printed
+        before this change, FIVE were offered by the portal -- a deployment sets those through the
+        tenant policy, so the variable is redundant and the control is reachable -- and a sixth,
+        MATRIXARK_SKILL_RESERVED_REFS, is read a second time by matrixark_v1_gateway, which the
+        EXAMINED note above already records. Exactly one was free to remove.
+
+        So each row now carries what decides that: whether the portal or the loader offers it, and
+        how many production sites read it. A candidate the portal offers is redundant but
+        reachable; one read in two places cannot lose its variable in only one of them.
         """
         candidates = sorted(self.groups["candidate"])
         self.assertIsInstance(candidates, list)
         if candidates:
-            print("\n  %d flags nothing selects and no sentence instructs:" % len(candidates))
+            offered = _portal_offers() | _loader_maps()
+            print("\n  %d flags nothing selects and no sentence instructs." % len(candidates))
+            print("  'offered' means a deployment reaches it another way, so the variable is "
+                  "redundant rather than removable:")
+            print("     %-52s %-9s %-6s %s" % ("flag", "offered", "reads", "read at"))
             for name in candidates[:40]:
-                print("     %-56s %s" % (name, ", ".join(sorted(self.reads[name]))[:60]))
+                sites = sorted(self.reads[name])
+                print("     %-52s %-9s %-6d %s"
+                      % (name, "PORTAL" if name in offered else "-", len(sites),
+                         ", ".join(sites)[:46]))
 
 
 if __name__ == "__main__":
