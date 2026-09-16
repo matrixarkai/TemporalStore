@@ -488,13 +488,13 @@ def run_benchmark(args: argparse.Namespace) -> Json:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark synchronous MatrixArk dual-write ingestion QPS and latency.")
-    parser.add_argument("--mode", choices=["local", "direct"], default=(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MODE", "").strip() or "local"))
-    parser.add_argument("--records", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_RECORDS", "").strip() or "10000"))
-    parser.add_argument("--workers", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_WORKERS", "").strip() or "4"))
-    parser.add_argument("--batch-size", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_BATCH_SIZE", "").strip() or "128"))
-    parser.add_argument("--payload-bytes", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_PAYLOAD_BYTES", "").strip() or "128"))
-    parser.add_argument("--scope-key", default=(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_SCOPE_KEY", "").strip() or "benchmark:tenant=1001"))
-    parser.add_argument("--local-write-delay-us", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_LOCAL_WRITE_DELAY_US", "").strip() or "0"))
+    parser.add_argument("--mode", choices=["local", "direct"], default=('local'))
+    parser.add_argument("--records", type=int, default=10000)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--payload-bytes", type=int, default=128)
+    parser.add_argument("--scope-key", default=('benchmark:tenant=1001'))
+    parser.add_argument("--local-write-delay-us", type=int, default=0)
     parser.add_argument("--storage-prefix", default=(os.environ.get("MATRIXARK_STORAGE_PREFIX", "").strip() or "matrixark:mcp:bench"))
     parser.add_argument("--raw-storage-prefix", default=os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", ""))
     parser.add_argument(
@@ -505,7 +505,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--raw-backends",
-        default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_RAW_BACKENDS", ""),
+        default='',
         help="Run a backend sweep for temporalstore, matrixkv, both, or a comma-separated subset. Empty means --raw-backend only.",
     )
     # The production default, imported rather than restated. This argument used to
@@ -521,12 +521,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--library-path", default=os.environ.get("TEMPORALSTORE_LIBRARY_PATH", ""))
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_REQUEST_TIMEOUT_MS", "").strip() or "20000"))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_IO_TIMEOUT_MS", "").strip() or "20000"))
-    parser.add_argument("--min-ingestion-qps", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MIN_INGESTION_QPS", "").strip() or "0"), help="optional release gate for minimum caller-visible records per second")
-    parser.add_argument("--max-batch-p95-ms", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MAX_BATCH_P95_MS", "").strip() or "0"), help="optional release gate for maximum p95 append_many latency in milliseconds, 0 disables")
-    parser.add_argument("--min-backend-qps-ratio", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MIN_BACKEND_QPS_RATIO", "").strip() or "0"), help="sweep-mode gate: slowest selected raw backend QPS must be at least this fraction of fastest selected backend QPS")
-    parser.add_argument("--require-dual-write-counts", type=int, choices=[0, 1], default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_REQUIRE_COUNTS", "").strip() or "0"), help="require local-mode proof that both raw and serving append paths completed before return")
-    parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_JSON", ""))
-    parser.add_argument("--prometheus-output", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_PROMETHEUS", ""), help="optional Prometheus-compatible metrics output path")
+    parser.add_argument("--min-ingestion-qps", type=float, default=0.0, help="optional release gate for minimum caller-visible records per second")
+    parser.add_argument("--max-batch-p95-ms", type=float, default=0.0, help="optional release gate for maximum p95 append_many latency in milliseconds, 0 disables")
+    parser.add_argument("--min-backend-qps-ratio", type=float, default=0.0, help="sweep-mode gate: slowest selected raw backend QPS must be at least this fraction of fastest selected backend QPS")
+    parser.add_argument("--require-dual-write-counts", type=int, choices=[0, 1], default=0, help="require local-mode proof that both raw and serving append paths completed before return")
+    parser.add_argument("--json-output", default='')
+    parser.add_argument("--prometheus-output", default='', help="optional Prometheus-compatible metrics output path")
     return parser
 
 

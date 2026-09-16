@@ -98,7 +98,17 @@ _IDENTITY = re.compile(
 #:
 #: Raised deliberately and said out loud, which is what the failure message asks for. The switch
 #: is the one that decides; the other two are only meaningful once it is on.
-MAXIMUM_FLAGS_READ = 538
+#:
+#: 492 now: 46 benchmark knobs stopped being environment variables. Each was read in exactly one
+#: place -- the `default=` of an `add_argument` call whose `--option` already existed -- so the
+#: tools still take every one of those settings, on the command line, which is how the CI gate
+#: passes them. Nothing in the tree set any of them. The 97 argparse defaults across the three
+#: tools evaluate identically before and after.
+#:
+#: Banked here in the same breath, because a ratchet that does not bank a reduction is the
+#: reduction nobody can see was made. `deployment configurable` is untouched at 146: none of the
+#: 46 is offered on the operator page.
+MAXIMUM_FLAGS_READ = 492
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
