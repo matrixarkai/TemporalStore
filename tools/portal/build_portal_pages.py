@@ -33,8 +33,11 @@ NAV_CSS_END = "  /* end shared portal css */"
 style_src = io.open(os.path.join(PORTAL, "ingestion_portal.html"), encoding="utf-8").read()
 match = re.search(r"<style>\n(.*?)\n</style>", style_src, re.S)
 if not match:
-    print("could not extract the ingestion portal stylesheet")
-    sys.exit(1)
+    # Raised, not sys.exit(1). This runs at MODULE SCOPE, so it happens on import as well as on a
+    # run, and SystemExit from an import ends whatever imported this file instead of failing one
+    # test. A RuntimeError still exits 1 when run as a script.
+    raise RuntimeError("could not extract the ingestion portal stylesheet from "
+                       "ingestion_portal.html: no <style> block")
 BASE_CSS = match.group(1)
 
 # The stylesheet this is read from is one `inject()` writes the shared block INTO, so a naive
