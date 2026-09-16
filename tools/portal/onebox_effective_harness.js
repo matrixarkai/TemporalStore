@@ -41,11 +41,18 @@ function extract(marker) {
 const sandbox = {};
 const source = [
   extract("function esc(s)"),
+  /* Both cap and policy rows go through one level map now, so it has to come along or every row
+     throws on an undefined helper. Extracted rather than restated: a harness with its own copy of
+     the labels would agree with itself forever. */
+  extract("var LEVEL = {"),
+  extract("function levelBadge(source)"),
   extract("function unreadable(data, what)"),
   extract("function renderProfile(data)"),
   extract("function renderCaps(data)"),
+  extract("function renderPolicy(knobs)"),
   "sandbox.renderProfile = renderProfile;",
-  "sandbox.renderCaps = renderCaps;"
+  "sandbox.renderCaps = renderCaps;",
+  "sandbox.renderPolicy = renderPolicy;"
 ].join("\n");
 new Function("sandbox", source)(sandbox);
 
@@ -106,7 +113,7 @@ function atLevel(source) {
   return sandbox.renderCaps(copy);
 }
 
-const fromEnv = atLevel("environment");
+const fromEnv = atLevel("env");
 const fromTenant = atLevel("tenant");
 const overriddenOut = fromEnv;
 
@@ -157,6 +164,33 @@ ok("blended scoring shows both weights",
    blendedOut.indexOf("0.72") >= 0 && blendedOut.indexOf("0.28") >= 0, blendedOut);
 ok("blended scoring is reported as not the default",
    /this was set/.test(blendedOut), blendedOut);
+
+/* ---------- the return-all panel names its level too ---------- */
+/* /v1/admin/policy has always sent `source` for every knob and this panel dropped it, so a row
+   read as "this is the value" without saying who set it -- the same thing the cap panel was doing,
+   except here the answer was already on the wire. */
+const POLICY_KNOBS = {
+  return_all_candidates: { value: true, source: "tenant", description: "Return every candidate." },
+  return_all_candidate_threshold: { value: 80, source: "env", description: "At or below this." }
+};
+const policyOut = sandbox.renderPolicy(POLICY_KNOBS);
+ok("a return-all knob set by tenant policy says so", /set by tenant policy/.test(policyOut));
+ok("a return-all knob set by the variable says so", /set by the variable/.test(policyOut));
+ok("the return-all values still render",
+   policyOut.indexOf("80") >= 0, policyOut.slice(0, 200));
+
+const POLICY_DEFAULTS = {
+  return_all_candidates: { value: false, source: "default", description: "Return every candidate." }
+};
+ok("a return-all knob nobody set carries no level badge",
+   !/set by tenant policy|set by the variable|set for this user/
+      .test(sandbox.renderPolicy(POLICY_DEFAULTS)));
+
+/* One vocabulary across both panels: the same source word must produce the same words on screen,
+   or a reader has to learn two dialects of one idea on one page. */
+const capTenant = atLevel("tenant");
+ok("one source word reads the same in both panels",
+   /set by tenant policy/.test(capTenant) && /set by tenant policy/.test(policyOut));
 
 /* ---------- the positive control ---------- */
 /* Every assertion above is about text appearing in a string. A renderer returning one long string

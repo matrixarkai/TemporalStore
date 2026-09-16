@@ -117,7 +117,10 @@ def tenant_retrieval_limit(name: str, scope: Any, fallback: int) -> int:
 
 
 def tenant_retrieval_limit_with_source(name: str, scope: Any, fallback: int) -> tuple:
-    """The budget, with the level that supplied it: (value, "tenant"|"environment"|"default").
+    """The budget, with the level that supplied it: (value, "tenant"|"env"|"default").
+
+    The same three words ``describe_effective_policy`` uses, so the one-box page can render a cap
+    and a policy knob through one map instead of translating between two vocabularies.
 
     Asked of the function that decides, never worked out here. A tenant override beats the
     environment variable, and a tenant policy carrying a zero or a non-number for the knob is

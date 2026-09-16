@@ -970,7 +970,8 @@ def explicit_int(name: str, scope: Any, fallback: int) -> int:
 def explicit_int_with_source(name: str, scope: Any, fallback: int) -> tuple:
     """`explicit_int`'s answer, with the level that supplied it: (value, source).
 
-    ``source`` is one of ``tenant``, ``environment`` or ``default``.
+    ``source`` is one of ``tenant``, ``env`` or ``default`` -- the same words
+    ``describe_effective_policy`` uses, so a surface showing both speaks one vocabulary.
 
     This exists because a surface reporting a budget has to say where it came from, and could not
     work that out from outside without keeping a second copy of the precedence -- which would be
@@ -1000,7 +1001,10 @@ def explicit_int_with_source(name: str, scope: Any, fallback: int) -> tuple:
     if env_name:
         from_env = _positive(os.environ.get(env_name))
         if from_env is not None:
-            return from_env, "environment"
+            # `env`, the word describe_effective_policy already uses for this. Two
+            # spellings of one level on one page is a vocabulary nobody can read
+            # without knowing both.
+            return from_env, "env"
     return fallback, "default"
 
 

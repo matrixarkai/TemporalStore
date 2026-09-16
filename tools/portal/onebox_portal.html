@@ -700,6 +700,26 @@
 
      /v1/admin/retrieval runs the resolution the serving path runs. A value it could not read
      comes back as known:false, and is shown as unread rather than as a default. */
+  /* Which level supplied a value, in the words both endpoints use. The caps come from
+     /v1/admin/retrieval and the return-all knobs from /v1/admin/policy, and both answer with the
+     same three: a per-user override, a tenant override, the environment variable, or nothing set
+     at all -- which gets no badge, because "the build decided" is the quiet case and a badge on
+     every row is a badge nobody reads.
+
+     The neutral bordered badge, not the amber "restart" one: nothing here needs a restart, both
+     levels resolve per call, and an amber badge on a healthy deployment teaches a reader to stop
+     seeing amber. */
+  var LEVEL = {
+    user: "set for this user",
+    tenant: "set by tenant policy",
+    env: "set by the variable"
+  };
+
+  function levelBadge(source) {
+    return LEVEL[source]
+      ? '<span class="badge override">' + esc(LEVEL[source]) + "</span>" : "";
+  }
+
   function unreadable(data, what) {
     if (data && data.known === false) {
       return '<div class="msg err">' + esc(data.detail || what) + "</div>";
@@ -749,9 +769,7 @@
          The neutral badge, not the amber "restart" one: nothing here needs a restart -- both
          levels resolve per call -- and an amber badge on a healthy deployment is a small
          permanent falsehood that teaches the reader to stop seeing amber. */
-      var LEVEL = { tenant: "set by tenant policy", environment: "set by the variable" };
-      var set = LEVEL[c.source]
-        ? '<span class="badge override">' + esc(LEVEL[c.source]) + "</span>" : "";
+      var set = levelBadge(c.source);
       var flag = c.cuts
         ? '<span class="badge essential">this is the one that cut it</span>' : "";
       return "<tr><th>" + esc(c.name) + set + flag + "</th><td class='mono'>" + esc(c.value)
@@ -806,7 +824,10 @@
       if (!k) { return ""; }
       var inert = k.read_by_nothing
         ? '<span class="badge restart">not read by this build</span>' : "";
-      return "<tr><th>" + esc(name) + inert + "</th><td class='mono'>"
+      /* The endpoint has always sent `source` for every knob and this panel dropped it, so a row
+         read as "this is the value" without saying who set it -- the same thing the cap panel was
+         doing, except here the answer was already on the wire. */
+      return "<tr><th>" + esc(name) + inert + levelBadge(k.source) + "</th><td class='mono'>"
         + esc(k.value == null ? k["default"] : k.value) + "</td><td class='hint'>"
         + esc(String(k.description || "").split("\n")[0]) + "</td></tr>";
     }).join("");

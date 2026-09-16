@@ -328,7 +328,7 @@ class WhichLevelSuppliedItTest(unittest.TestCase):
         os.environ[self.ENV] = "77"
         cap = self._cap("level_env")
         self.assertEqual(77, cap["value"])
-        self.assertEqual("environment", cap["source"])
+        self.assertEqual("env", cap["source"])
 
     def test_a_tenant_override_is_reported_as_the_tenant(self) -> None:
         self._set_policy("level_tenant", {self.KNOB: 55})
@@ -357,9 +357,47 @@ class WhichLevelSuppliedItTest(unittest.TestCase):
         self._set_policy("level_zero", {self.KNOB: 0})
         cap = self._cap("level_zero")
         self.assertEqual(77, cap["value"])
-        self.assertEqual("environment", cap["source"],
+        self.assertEqual("env", cap["source"],
                          "a policy that mentions the knob without supplying a usable value is "
                          "being reported as the level in force")
+
+    def test_both_producers_of_a_level_use_the_same_words(self) -> None:
+        """One page renders levels from two endpoints, so the two must agree on the vocabulary.
+
+        They did not. ``describe_effective_policy`` has always said ``env``; the accessor added for
+        the caps said ``environment``. Nothing broke -- the page simply had two words for one
+        concept, and any renderer showing both had to know both. This pins them together so a
+        third spelling cannot arrive quietly.
+        """
+        import matrixark_tenant_policy as tp
+        policy_words = set()
+        described = tp.describe_effective_policy("vocab_tenant")
+        for knob in (described.get("knobs") or {}).values():
+            if isinstance(knob, dict) and knob.get("source"):
+                policy_words.add(knob["source"])
+        self.assertTrue(policy_words, "the policy description reported no levels at all")
+
+        # Both levels, deliberately. Read with nothing set, every cap answers `default`, and the
+        # assertion below is then true of a one-word set containing the least interesting word --
+        # a mutation reintroducing a second spelling on the ENV branch passed it untouched.
+        cap_words = {cap["source"] for cap in eff.effective_retrieval("vocab_tenant")["caps"]}
+        os.environ[self.ENV] = "77"
+        cap_words |= {cap["source"] for cap in eff.effective_retrieval("vocab_tenant")["caps"]}
+        self._set_policy("vocab_tenant", {self.KNOB: 55})
+        cap_words |= {cap["source"] for cap in eff.effective_retrieval("vocab_tenant")["caps"]}
+        self.assertTrue(cap_words, "the caps reported no levels at all")
+        self.assertGreater(len(cap_words), 1,
+                           "only one level was ever observed (%s), so this compares a vocabulary "
+                           "against itself" % sorted(cap_words))
+
+        # Each side need not use every word -- only words the other side would recognise.
+        known = {"user", "tenant", "env", "default"}
+        self.assertLessEqual(policy_words, known,
+                             "the policy description uses a level word nothing else knows: %s"
+                             % sorted(policy_words - known))
+        self.assertLessEqual(cap_words, known,
+                             "the caps use a level word nothing else knows: %s"
+                             % sorted(cap_words - known))
 
     def test_the_value_half_is_unchanged(self) -> None:
         """explicit_int is now the first element of explicit_int_with_source. It must still answer
