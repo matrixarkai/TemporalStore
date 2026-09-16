@@ -5740,6 +5740,7 @@ fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_control_state_increment_costs_as_the_counter_grows -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_one_control_state_increment_costs_as_the_counter_grows() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);

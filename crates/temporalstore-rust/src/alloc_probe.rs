@@ -163,3 +163,135 @@ mod tests {
         );
     }
 }
+// The counting allocator is installed only under `alloc-probe`, so a test that reads these counters
+// without that feature measures a process where they never move. Twenty-eight such tests carried
+// `#[cfg(feature = "alloc-probe")]` and thirty-one did not: the thirty-one compiled into every
+// build, appeared in `--ignored --list`, and twenty-nine of them aborted on their first line with
+// "the counting allocator is not installed". The other two printed a table of zeros instead, which
+// is the same defect with the alarm taken out. Running the ignored set on a default build therefore
+// produced failures that meant nothing, which teaches everyone to discount that run.
+//
+// Same class of probe, so: same gate. This asserts it stays that way.
+#[cfg(test)]
+mod counting_allocator_gate {
+    use std::path::Path;
+
+    const GATE: &str = "#[cfg(feature = \"alloc-probe\")]";
+    const MARKERS: [&str; 6] = [
+        "alloc_probe::Probe::start",
+        "alloc_probe::ALLOC_CALLS",
+        "alloc_probe::ALLOC_BYTES",
+        "alloc_probe::FREE_CALLS",
+        "alloc_probe::FREE_BYTES",
+        "alloc_probe::AllocCounts",
+    ];
+
+    /// Every test that reads the counting allocator carries the feature gate that installs it.
+    #[test]
+    fn every_counting_allocator_probe_is_gated_on_the_feature_that_installs_it() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut pending = vec![root];
+        let mut files_read = 0_usize;
+        let mut excised = 0_usize;
+        let mut probe_tests = 0_usize;
+        let mut violations: Vec<String> = Vec::new();
+
+        while let Some(path) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    pending.push(entry_path);
+                    continue;
+                }
+                if entry_path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                // This file holds the marker strings themselves, so it is taken out of its own
+                // haystack -- and the removal is asserted below. If this module is ever moved,
+                // the scan reads its own literals, finds them under an ungated `#[test]`, and
+                // FAILS. A guard that stops excluding itself should get louder, not quieter.
+                if entry_path.file_name().and_then(|n| n.to_str()) == Some("alloc_probe.rs") {
+                    excised += 1;
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&entry_path) else {
+                    continue;
+                };
+                files_read += 1;
+                let lines: Vec<&str> = text.lines().collect();
+                let mut anchors_seen: Vec<usize> = Vec::new();
+                for (index, line) in lines.iter().enumerate() {
+                    if !MARKERS.iter().any(|marker| line.contains(marker)) {
+                        continue;
+                    }
+                    // Walk BACK to the enclosing `#[test]`. Deliberately not brace counting: a
+                    // `{` inside a string literal drifts a depth counter, and this crate writes
+                    // plenty of them. A first pass at this guard did count braces, saw 23 of the
+                    // 82 probe tests, and named two functions that do not touch the probe at all.
+                    let mut anchor = index as isize;
+                    while anchor >= 0 && lines[anchor as usize].trim() != "#[test]" {
+                        anchor -= 1;
+                    }
+                    if anchor < 0 {
+                        violations.push(format!(
+                            "{}:{}: the counting allocator is read outside any test",
+                            entry_path.display(),
+                            index + 1
+                        ));
+                        continue;
+                    }
+                    let anchor = anchor as usize;
+                    if anchors_seen.contains(&anchor) {
+                        continue;
+                    }
+                    anchors_seen.push(anchor);
+                    probe_tests += 1;
+                    let mut top = anchor;
+                    while top > 0 && lines[top - 1].trim().starts_with("#[") {
+                        top -= 1;
+                    }
+                    let mut bottom = anchor;
+                    while bottom + 1 < lines.len() && lines[bottom + 1].trim().starts_with("#[") {
+                        bottom += 1;
+                    }
+                    if !lines[top..=bottom].iter().any(|line| line.trim() == GATE) {
+                        violations.push(format!(
+                            "{}:{}: reads the counting allocator and is not gated on \
+                             `alloc-probe`, so it compiles into every build and measures a \
+                             process where the counters never move",
+                            entry_path.display(),
+                            anchor + 1
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Denominators first. Every assertion below is about a set, and a set that came back empty
+        // satisfies all of them.
+        assert!(
+            files_read > 100,
+            "the source walk found {files_read} files; this guard would pass over nothing"
+        );
+        assert_eq!(
+            1, excised,
+            "expected to take exactly one file out of the scan (this one); took {excised}"
+        );
+        assert!(
+            probe_tests >= 60,
+            "found only {probe_tests} tests reading the counting allocator across {files_read} \
+             files; there were 82 when this was written, so the scan has broken rather than the \
+             tests having gone away"
+        );
+        assert!(
+            violations.is_empty(),
+            "{} of {probe_tests} counting-allocator tests are not gated on the feature that \
+             installs the allocator:\n{}",
+            violations.len(),
+            violations.join("\n")
+        );
+    }
+}

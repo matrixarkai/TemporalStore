@@ -3619,6 +3619,7 @@ mod tests {
     ///   cargo test --features alloc-probe --lib what_a_proxy_request_allocates -- --ignored --nocapture --test-threads=1
     #[test]
     #[ignore]
+    #[cfg(feature = "alloc-probe")]
     fn what_a_proxy_request_allocates() {
         // Without the feature the allocator is not installed and every count reads zero, which
         // would pass any budget. Fail loudly instead.

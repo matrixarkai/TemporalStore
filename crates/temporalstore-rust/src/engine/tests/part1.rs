@@ -3720,6 +3720,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_reading_one_summary_actually_costs -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_reading_one_summary_actually_costs() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -4432,6 +4433,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib which_write_primitive_grows_with_the_store -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn which_write_primitive_grows_with_the_store() {
     use crate::context_workflow::{
         ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
@@ -4596,6 +4598,7 @@ fn which_write_primitive_grows_with_the_store() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_post_write_maintenance_costs_per_key_kind -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_post_write_maintenance_costs_per_key_kind() {
     use crate::context_workflow::{
         ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
@@ -5809,6 +5812,7 @@ fn what_a_block_read_costs_hit_against_miss() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_two_halves_of_a_node_fetch_cost -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_the_two_halves_of_a_node_fetch_cost() {
     use crate::context_workflow::{
         ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
@@ -6082,6 +6086,7 @@ fn how_much_resident_memory_is_the_allocator_holding() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_each_field_of_a_node_costs_to_decode -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_each_field_of_a_node_costs_to_decode() {
     use crate::types::{ContextNode, ContextWire};
 
@@ -6268,6 +6273,7 @@ fn a_sized_vector_decodes_exactly_what_a_grown_one_did() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_encoding_a_record_costs -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_encoding_a_record_costs() {
     use crate::types::{ContextNode, ContextSummary, ContextWire};
 
@@ -6366,6 +6372,7 @@ fn what_encoding_a_record_costs() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_node_write_spends_its_allocations_on -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_a_node_write_spends_its_allocations_on() {
     use crate::context_workflow::{
         ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
@@ -6518,6 +6525,7 @@ fn what_a_node_write_spends_its_allocations_on() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_capturing_a_writes_key_states_costs -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_capturing_a_writes_key_states_costs() {
     use crate::context_workflow::{
         ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
@@ -6755,6 +6763,7 @@ fn does_a_cached_node_carry_its_vector_twice() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib which_piece_of_the_write_machinery_costs -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn which_piece_of_the_write_machinery_costs() {
     use crate::context_workflow::{
         ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
@@ -6900,6 +6909,7 @@ fn which_piece_of_the_write_machinery_costs() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib does_reading_a_history_scale_with_the_history -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn does_reading_a_history_scale_with_the_history() {
     const TENANT: u64 = 8221;
     const NODE: u64 = 4_242_424;
@@ -7027,6 +7037,7 @@ fn does_reading_a_history_scale_with_the_history() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib do_the_batch_reads_scale_with_the_batch -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn do_the_batch_reads_scale_with_the_batch() {
     use crate::context_workflow::{
         ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,

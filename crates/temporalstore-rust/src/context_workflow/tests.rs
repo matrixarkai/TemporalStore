@@ -3344,6 +3344,7 @@ fn omitting_inline_payload_still_means_the_payload_is_held_inline() {
 ///   cargo test --features alloc-probe --lib what_the_discarded_node_text_costs -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_the_discarded_node_text_costs() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -3454,6 +3455,7 @@ fn what_the_discarded_node_text_costs() {
 ///   cargo test --features alloc-probe --lib which_ingest_write_grows_with_the_store -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn which_ingest_write_grows_with_the_store() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -3593,6 +3595,7 @@ fn which_ingest_write_grows_with_the_store() {
 ///   cargo test --features alloc-probe --lib does_the_per_ingest_reconstruct_explain_the_growth -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn does_the_per_ingest_reconstruct_explain_the_growth() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -3688,6 +3691,7 @@ fn does_the_per_ingest_reconstruct_explain_the_growth() {
 ///   cargo test --features alloc-probe --lib where_does_an_adds_corpus_proportional_cost_live -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn where_does_an_adds_corpus_proportional_cost_live() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -3809,6 +3813,7 @@ fn where_does_an_adds_corpus_proportional_cost_live() {
 ///   cargo test --features alloc-probe --lib what_one_add_allocates_as_the_corpus_grows -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_one_add_allocates_as_the_corpus_grows() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -3900,9 +3905,10 @@ fn what_one_add_allocates_as_the_corpus_grows() {
 /// Counted, not timed, and counted with a global allocator rather than inferred from RSS -- most of
 /// this process's resident memory is allocator retention, which no request-level change will move.
 ///
-///   cargo test -p temporalstore-rust --lib what_a_retrieve_allocates -- --ignored --nocapture --test-threads=1
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_retrieve_allocates -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_a_retrieve_allocates() {
     // Without `--features alloc-probe` the counting allocator is not installed, every counter stays
     // at zero, and this prints a tidy table of zeros that reads as "this path allocates nothing".
@@ -5081,6 +5087,7 @@ fn a_copy_from_a_replaced_encoder_is_declined_and_counted() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_summary_write_rebuild_the_whole_index -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn does_a_summary_write_rebuild_the_whole_index() {
     const TENANT: u64 = 7907;
 
@@ -5235,6 +5242,7 @@ fn does_a_summary_write_rebuild_the_whole_index() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_every_api_costs_on_the_same_store -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_every_api_costs_on_the_same_store() {
     const TENANT: u64 = 6607;
 

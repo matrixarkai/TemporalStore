@@ -14034,6 +14034,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_feature_window_cost_the_window_or_the_series -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn does_a_feature_window_cost_the_window_or_the_series() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -14164,6 +14165,7 @@ fn does_a_feature_window_cost_the_window_or_the_series() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib does_appending_one_point_cost_the_series -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn does_appending_one_point_cost_the_series() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -14282,6 +14284,7 @@ fn does_appending_one_point_cost_the_series() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_sequence_count_narrow_the_read -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn does_a_sequence_count_narrow_the_read() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -14412,6 +14415,7 @@ fn does_a_sequence_count_narrow_the_read() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_score_ordered_zset_reads_cost -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_the_score_ordered_zset_reads_cost() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -14688,6 +14692,7 @@ fn score_ordered_zset_reads_answer_the_same_before_and_after() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib is_a_push_expensive_because_of_the_list_or_the_cache -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn is_a_push_expensive_because_of_the_list_or_the_cache() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -14788,6 +14793,7 @@ fn is_a_push_expensive_because_of_the_list_or_the_cache() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_fixed_list_slice_costs_as_the_list_grows -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_a_fixed_list_slice_costs_as_the_list_grows() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -14903,6 +14909,7 @@ fn what_a_fixed_list_slice_costs_as_the_list_grows() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_hash_family_costs_as_a_hash_grows -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn what_the_hash_family_costs_as_a_hash_grows() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -15202,6 +15209,7 @@ fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_write_cost_track_an_objects_component_count -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn does_a_write_cost_track_an_objects_component_count() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
@@ -15345,6 +15353,7 @@ fn does_a_write_cost_track_an_objects_component_count() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib why_a_membership_test_costs_more_than_a_write -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn why_a_membership_test_costs_more_than_a_write() {
     println!(
         "
@@ -15446,6 +15455,7 @@ fn why_a_membership_test_costs_more_than_a_write() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib which_commands_rebuild_the_whole_index_per_call -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
+#[cfg(feature = "alloc-probe")]
 fn which_commands_rebuild_the_whole_index_per_call() {
     // Build a store of `size` unrelated string keys, then measure ONE call of `command`,
     // reporting allocations and pages visited.
