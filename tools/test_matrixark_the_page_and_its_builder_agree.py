@@ -26,7 +26,10 @@ BUILDER = os.path.join(PORTAL, "build_portal_pages.py")
 
 #: The builder writes some pages whole and only injects a nav into others. `emit(...)` generates;
 #: `inject(...)` edits a page it does not otherwise own.
-_EMITTED = re.compile(r'^emit\(\s*"([a-z_]+_portal\.html)"', re.M)
+# Leading whitespace allowed: the builder's emit calls moved inside main() when its work
+# went behind a __main__ guard, and an anchor at column 0 then matched NOTHING -- the floor
+# in test_every_generated_page_is_checked_not_only_the_first is what reported it.
+_EMITTED = re.compile(r'^\s*emit\(\s*"([a-z_]+_portal\.html)"', re.M)
 
 
 def _pages() -> list:

@@ -6502,16 +6502,6 @@ def emit(filename, title, body, js, active):
     print("wrote %s (%d bytes)" % (path, len(html)))
 
 
-emit("overview_portal.html", "MatrixArk", OVERVIEW_BODY, OVERVIEW_JS, "/v1/admin")
-emit("api_portal.html", "MatrixArk — API", API_BODY, API_JS, "/v1/admin/api")
-emit("explore_portal.html", "MatrixArk — Explore", EXPLORE_BODY, EXPLORE_JS, "/v1/admin/explore")
-emit("setup_portal.html", "MatrixArk — Setup & Metrics", SETUP_BODY, SETUP_JS, "/v1/admin/setup")
-emit("onebox_portal.html", "MatrixArk — One-box", ONEBOX_BODY, ONEBOX_JS,
-     "/v1/admin/onebox")
-emit("mem0_portal.html", "MatrixArk — mem0 API", MEM0_BODY, MEM0_JS,
-     "/v1/admin/mem0")
-emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CATALOG_JS,
-     "/v1/admin/catalog")
 
 
 # ---- add the nav to the two existing pages ------------------------------------------------------
@@ -6661,7 +6651,34 @@ def inject(filename, anchor, active):
     print("nav added to %s" % filename)
 
 
-inject("ingestion_portal.html",
+
+
+def main() -> None:
+    """Write the portal pages. Both callers run this file, so this still runs.
+
+    These nine writes used to happen at module scope, which made importing this file
+    rewrite nine tracked HTML files -- and `inject` calls sys.exit(1) on a missing
+    anchor, so an import could end the importing process instead of failing a test.
+
+    The order matters and is unchanged: every page is emitted first, because `inject`
+    reads the shared CSS and nav out of what `emit` has just written.
+    """
+    emit("overview_portal.html", "MatrixArk", OVERVIEW_BODY, OVERVIEW_JS, "/v1/admin")
+    emit("api_portal.html", "MatrixArk — API", API_BODY, API_JS, "/v1/admin/api")
+    emit("explore_portal.html", "MatrixArk — Explore", EXPLORE_BODY, EXPLORE_JS, "/v1/admin/explore")
+    emit("setup_portal.html", "MatrixArk — Setup & Metrics", SETUP_BODY, SETUP_JS, "/v1/admin/setup")
+    emit("onebox_portal.html", "MatrixArk — One-box", ONEBOX_BODY, ONEBOX_JS,
+     "/v1/admin/onebox")
+    emit("mem0_portal.html", "MatrixArk — mem0 API", MEM0_BODY, MEM0_JS,
+     "/v1/admin/mem0")
+    emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CATALOG_JS,
+     "/v1/admin/catalog")
+
+    inject("ingestion_portal.html",
        '''    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   </header>''', "/v1/admin/ingestion")
-inject("api_key_portal.html", "<main class=\"wrap\">", "/v1/admin/portal")
+    inject("api_key_portal.html", "<main class=\"wrap\">", "/v1/admin/portal")
+
+
+if __name__ == "__main__":
+    main()
