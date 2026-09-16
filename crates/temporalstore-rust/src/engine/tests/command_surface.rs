@@ -862,3 +862,339 @@ fn expireat_drift_measured() {
         total as f64 / ROUNDS as f64,
     );
 }
+
+/// A deadline EQUAL to the instant has already passed.
+///
+/// WHY THIS IS ITS OWN TEST. Every arm of `execute_on_shard` reaches lazy expiry through
+/// `remove_if_expired`, and the whole question it answers is one comparison:
+/// `*expires_at <= now`. The boundary is the millisecond where `<=` and `<` disagree, and it
+/// is the only millisecond where they disagree at all. A test that arms a deadline and then
+/// sleeps past it is satisfied by either spelling, so the entire suite ran green with `<`:
+/// changing that one character failed nothing in 201 selected tests, including every test
+/// named for expiry.
+///
+/// WHY THE CLOCK IS FROZEN. The instant cannot be hit by timing. `resolve_now_ms` answers the
+/// replay clock when one is installed, so `ReplayClockGuard` pins it and the comparison is
+/// then exact rather than a race. That is also the honest shape: the boundary is a property of
+/// the comparison, not of how fast the test runs.
+///
+/// THE THREE CASES ARE ASSERTED SEPARATELY. One combined "expired" count reads full from the
+/// past case alone and says nothing about the other two, which is how the boundary survived.
+#[test]
+fn a_deadline_equal_to_the_instant_has_already_passed() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    // ---- DENOMINATOR: the keys are really there before anything can collect them --------
+    for key in ["boundary:past", "boundary:equal", "boundary:future"] {
+        assert_eq!(
+            RespValue::SimpleString("OK".to_string()),
+            resp(&engine, &["SET", key, "v"]),
+            "DENOMINATOR: {key} must exist before a deadline can be tested against it",
+        );
+    }
+
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+
+    // One instant, used for the deadlines AND for the collector, so the comparison is exact.
+    let instant = crate::engine::resolve_now_ms();
+    crate::engine::set_expiry(shard, "boundary:past".to_string(), instant - 1);
+    crate::engine::set_expiry(shard, "boundary:equal".to_string(), instant);
+    crate::engine::set_expiry(shard, "boundary:future".to_string(), instant + 1);
+
+    // Freeze the clock the collector reads. Held across all three calls below.
+    let _clock = crate::engine::ReplayClockGuard::enter(Some(instant));
+
+    // ---- CONTROL: a deadline one millisecond BEHIND the instant is collected -----------
+    // Without this, a collector that had stopped collecting anything at all would satisfy the
+    // "future" claim below and look like a result.
+    assert!(
+        crate::engine::remove_if_expired(shard, "boundary:past"),
+        "CONTROL: a deadline one millisecond before the instant must be collected. It was not, \
+         so lazy expiry is not running here and nothing else below means anything.",
+    );
+
+    // ---- THE CLAIM: the instant itself counts as passed -------------------------------
+    assert!(
+        crate::engine::remove_if_expired(shard, "boundary:equal"),
+        "a deadline EQUAL to the instant has passed and the key must be collected. It was not, \
+         so the comparison is `<` where it has to be `<=`, and a key whose deadline is exactly \
+         now stays readable for the millisecond it was supposed to stop being readable.",
+    );
+
+    // ---- CONTROL: a deadline one millisecond AHEAD is NOT collected -------------------
+    // Without this, a collector that removed unconditionally would satisfy both claims above.
+    assert!(
+        !crate::engine::remove_if_expired(shard, "boundary:future"),
+        "CONTROL: a deadline one millisecond after the instant has NOT passed and the key must \
+         stay. It did not, so the comparison collects keys that are still live.",
+    );
+
+    // ---- and the shard agrees with the answers -----------------------------------------
+    assert!(
+        !shard.strings.contains_key("boundary:past"),
+        "the collected key must leave `strings`, not just answer that it did",
+    );
+    assert!(
+        !shard.strings.contains_key("boundary:equal"),
+        "the key whose deadline equals the instant must leave `strings` too",
+    );
+    assert!(
+        shard.strings.contains_key("boundary:future"),
+        "the key that has not reached its deadline must still be in `strings`",
+    );
+}
+
+/// The read-only fast path hides a key whose deadline has passed.
+///
+/// WHERE THIS PATH IS. `execute` does not take it: `execute_read_only_fast_path` runs only when
+/// `execute_with_storage_override` was given a storage override, which is what
+/// `execute_durable`, `execute_replicated` and the raft-apply routes do -- and
+/// `RecordStore::Local` serves reads through `execute_durable`. So `GET` and `HGETALL` as a
+/// deployment answers them go through a deadline test that no test through `engine.execute`
+/// can reach, and every command test in this file uses `engine.execute`.
+///
+/// WHAT THAT COST. The fast path has its own expiry test, separate from the one in
+/// `execute_on_shard`, for each of its two commands. Inverting either of them -- so that a
+/// LIVE key takes the slow path and an EXPIRED key is served from the fast one -- failed
+/// nothing in 201 selected tests. The fast path would hand back the value of a key whose
+/// deadline had passed, which is the one thing lazy expiry exists to prevent.
+///
+/// HALVES ASSERTED SEPARATELY. `StringGet` and `HashGetAll` are two tests in the same shape
+/// and were both unguarded; one combined claim reads full from whichever is fixed first.
+#[test]
+fn the_read_only_fast_path_hides_a_key_whose_deadline_has_passed() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    /// Arm a deadline well in the past WITHOUT letting any command collect the key first --
+    /// going through `EXPIRE` would run the slow path and answer the question there instead.
+    fn backdate(engine: &TemporalEngine, key: &str) {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+        let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
+        crate::engine::set_expiry(shard, key.to_string(), past);
+    }
+
+    fn durable(engine: &TemporalEngine, command: Command) -> CommandResponse {
+        let response = engine.execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(
+            response.status.ok,
+            "the durable route must answer, and it failed: {}",
+            response.status.message,
+        );
+        response.response
+    }
+
+    // ---- DENOMINATOR: the fast path answers a LIVE key with its value ------------------
+    // Without this, every "absent" assertion below would also be produced by the route being
+    // broken, or by the key never having been written.
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "fast:string", "v"]),
+    );
+    assert_eq!(RespValue::Integer(1), resp(&engine, &["HSET", "fast:hash", "f", "v"]));
+    assert_eq!(
+        CommandResponse::Bytes {
+            value: Some(b"v".to_vec())
+        },
+        durable(
+            &engine,
+            Command::StringGet {
+                key: "fast:string".to_string()
+            }
+        ),
+        "DENOMINATOR: the durable read route must serve a live string",
+    );
+    assert!(
+        matches!(
+            durable(
+                &engine,
+                Command::HashGetAll {
+                    key: "fast:hash".to_string()
+                }
+            ),
+            CommandResponse::HashEntries { ref entries } if !entries.is_empty()
+        ),
+        "DENOMINATOR: the durable read route must serve a live hash",
+    );
+
+    // ---- HALF ONE: StringGet ----------------------------------------------------------
+    backdate(&engine, "fast:string");
+    assert_eq!(
+        CommandResponse::Bytes { value: None },
+        durable(
+            &engine,
+            Command::StringGet {
+                key: "fast:string".to_string()
+            }
+        ),
+        "the durable read route must not serve a string whose deadline has passed. It did, so \
+         the fast path's own deadline test is not the one it needs to be.",
+    );
+
+    // ---- HALF TWO: HashGetAll ---------------------------------------------------------
+    backdate(&engine, "fast:hash");
+    assert!(
+        matches!(
+            durable(
+                &engine,
+                Command::HashGetAll {
+                    key: "fast:hash".to_string()
+                }
+            ),
+            CommandResponse::HashEntries { ref entries } if entries.is_empty()
+        ),
+        "the durable read route must not serve a hash whose deadline has passed",
+    );
+}
+
+/// The hash-increment validator steps aside for a key whose deadline has passed.
+///
+/// WHAT IT IS FOR. `validate_command` pre-checks `HINCRBY`: it reads the stored field and
+/// refuses a value that is not an integer, or an increment that would overflow, BEFORE the
+/// write runs. A key whose deadline has passed is about to be collected, so the stored bytes
+/// are not the caller's to be refused over -- the validator returns early instead, and the
+/// increment starts from nothing.
+///
+/// WHY IT NEEDED A TEST. Every existing test of this validator writes a hash with NO deadline,
+/// so `expires_at_ms.get(key)` is `None` and the comparison inside the `map` never runs at all.
+/// Inverting it -- `>` for `<=` -- failed nothing in 201 selected tests, including the two
+/// tests named for this validator: with no deadline armed, the comparison is indistinguishable
+/// from a literal `false`, and any predicate would do. Arming one is the whole difference.
+///
+/// HALVES ASSERTED SEPARATELY. Live-and-refused and lapsed-and-allowed are the two sides of one
+/// comparison, and a single claim about either passes while the other is inverted.
+#[test]
+fn the_hash_increment_validator_steps_aside_for_a_lapsed_deadline() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    // ---- HALF ONE / DENOMINATOR: a LIVE non-integer field is refused ------------------
+    // This is also the denominator for half two: without it, an error-free answer below could
+    // just as well mean the validator never refuses anything.
+    assert_eq!(
+        RespValue::Integer(1),
+        resp(&engine, &["HSET", "incr:lapsed", "f", "notanumber"]),
+    );
+    assert_eq!(
+        RespValue::Error("ERR hash value is not an integer".to_string()),
+        resp(&engine, &["HINCRBY", "incr:lapsed", "f", "1"]),
+        "DENOMINATOR: a live field holding something that is not an integer must be refused",
+    );
+
+    // ---- HALF TWO: the same field, once its deadline has passed ----------------------
+    // Armed directly so that nothing collects the key on the way in -- the point is to reach
+    // the validator with the stale bytes still in `hashes` and the deadline already behind.
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+        let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
+        crate::engine::set_expiry(shard, "incr:lapsed".to_string(), past);
+    }
+    assert_eq!(
+        RespValue::Integer(1),
+        resp(&engine, &["HINCRBY", "incr:lapsed", "f", "1"]),
+        "a key whose deadline has passed is already gone as far as every read is concerned, so \
+         the increment must start from nothing and answer 1 -- not be refused over bytes the \
+         caller can no longer see.",
+    );
+}
+
+/// What a command of one type does to a key of another, TODAY.
+///
+/// THIS RECORDS A BEHAVIOUR; IT DOES NOT ENDORSE ONE. There is no type check on this surface --
+/// the word `WRONGTYPE` appears nowhere in the tree -- and whether to add one is a decision
+/// that has not been made. What was missing was any statement of what happens without it, so a
+/// change to it happened silently. Deleting this test is the right move the day a type check
+/// lands; until then it is the only place that says what a caller gets.
+///
+/// THREE THINGS, ASSERTED SEPARATELY:
+///
+///   ONE. A command of the wrong type answers this type's EMPTY value -- nil, an empty array, a
+///   zero -- and never an error. It reads exactly like a key that is not there.
+///
+///   TWO. The types COEXIST. A string, a hash, a list, a set and a sorted set can all live
+///   under one key at the same time, each readable through its own commands, because each is a
+///   separate map on the shard keyed by the same string.
+///
+///   THREE. `TYPE` names only the FIRST of them it finds, in its probe order, so it reports
+///   `string` for a key holding five things. `DEL` and the deadline, by contrast, cover all of
+///   them at once -- `delete_record_exact` clears every map.
+#[test]
+fn a_command_of_one_type_answers_empty_for_a_key_of_another() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    // ---- ONE: the wrong type reads as absent, not as an error -------------------------
+    assert_eq!(
+        RespValue::SimpleString("OK".to_string()),
+        resp(&engine, &["SET", "mixed", "sv"]),
+    );
+    assert_eq!(
+        RespValue::SimpleString("string".to_string()),
+        resp(&engine, &["TYPE", "mixed"]),
+        "DENOMINATOR: the key is a string and nothing else yet",
+    );
+    assert_eq!(RespValue::Array(Vec::new()), resp(&engine, &["HGETALL", "mixed"]));
+    assert_eq!(RespValue::Bulk(None), resp(&engine, &["HGET", "mixed", "f"]));
+    assert_eq!(RespValue::Array(Vec::new()), resp(&engine, &["LRANGE", "mixed", "0", "-1"]));
+    assert_eq!(RespValue::Array(Vec::new()), resp(&engine, &["SMEMBERS", "mixed"]));
+    assert_eq!(RespValue::Bulk(None), resp(&engine, &["ZSCORE", "mixed", "m"]));
+    assert_eq!(RespValue::Integer(0), resp(&engine, &["LLEN", "mixed"]));
+
+    // ---- TWO: five types under one key, all readable ---------------------------------
+    assert_eq!(RespValue::Integer(1), resp(&engine, &["HSET", "mixed", "f", "hv"]));
+    assert_eq!(RespValue::Integer(1), resp(&engine, &["LPUSH", "mixed", "lv"]));
+    assert_eq!(RespValue::Integer(1), resp(&engine, &["SADD", "mixed", "m"]));
+    assert_eq!(RespValue::Integer(1), resp(&engine, &["ZADD", "mixed", "1", "z"]));
+    assert_eq!(
+        Some(b"sv".to_vec()),
+        get(&engine, "mixed"),
+        "the string is still there after four writes of other types over the same key",
+    );
+    assert_eq!(
+        RespValue::Array(vec![
+            RespValue::Bulk(Some(b"f".to_vec())),
+            RespValue::Bulk(Some(b"hv".to_vec())),
+        ]),
+        resp(&engine, &["HGETALL", "mixed"]),
+        "and so is the hash",
+    );
+    assert_eq!(
+        RespValue::Array(vec![RespValue::Bulk(Some(b"lv".to_vec()))]),
+        resp(&engine, &["LRANGE", "mixed", "0", "-1"]),
+        "and the list",
+    );
+    assert_eq!(
+        RespValue::Array(vec![RespValue::Bulk(Some(b"m".to_vec()))]),
+        resp(&engine, &["SMEMBERS", "mixed"]),
+        "and the set",
+    );
+
+    // ---- THREE: TYPE names one of the five; DEL covers all of them -------------------
+    assert_eq!(
+        RespValue::SimpleString("string".to_string()),
+        resp(&engine, &["TYPE", "mixed"]),
+        "`TYPE` probes string first and returns on the first hit, so it names the string and \
+         says nothing about the four other collections under the same key",
+    );
+    assert_eq!(RespValue::Integer(1), resp(&engine, &["DEL", "mixed"]));
+    assert_eq!(None, get(&engine, "mixed"), "DEL cleared the string");
+    assert_eq!(RespValue::Array(Vec::new()), resp(&engine, &["HGETALL", "mixed"]), "and the hash");
+    assert_eq!(
+        RespValue::Array(Vec::new()),
+        resp(&engine, &["LRANGE", "mixed", "0", "-1"]),
+        "and the list",
+    );
+    assert_eq!(RespValue::Array(Vec::new()), resp(&engine, &["SMEMBERS", "mixed"]), "and the set");
+    assert_eq!(
+        RespValue::SimpleString("none".to_string()),
+        resp(&engine, &["TYPE", "mixed"]),
+        "and `TYPE` has nothing left to name",
+    );
+}
