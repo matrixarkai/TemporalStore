@@ -734,16 +734,29 @@
     var rows = caps.map(function (c) {
       /* An applied value differing from the build default means somebody set it -- which the old
          registry view could not show at all, because it only ever had the declared number. */
-      /* The neutral badge, not the amber "restart" one. Nothing here needs a restart -- both
+      /* WHICH level set it, not merely that something did. A tenant override beats the
+         environment variable, so naming the variable beside a value the variable did not supply
+         sends an operator to change something that will not take effect.
+
+         The neutral badge, not the amber "restart" one: nothing here needs a restart -- both
          levels resolve per call -- and an amber badge on a healthy deployment is a small
          permanent falsehood that teaches the reader to stop seeing amber. */
-      var set = String(c.value) !== String(c.build_default)
-        ? '<span class="badge override">set for this deployment</span>' : "";
+      var LEVEL = { tenant: "set by tenant policy", environment: "set by the variable" };
+      var set = LEVEL[c.source]
+        ? '<span class="badge override">' + esc(LEVEL[c.source]) + "</span>" : "";
       var flag = c.cuts
         ? '<span class="badge essential">this is the one that cut it</span>' : "";
       return "<tr><th>" + esc(c.name) + set + flag + "</th><td class='mono'>" + esc(c.value)
         + "</td><td class='mono'>" + esc(c.build_default) + "</td><td class='mono'>"
         + esc(c.env || "") + "</td></tr>"
+        /* Said on the row it applies to. A tenant override makes the variable in the last
+           column inert, and a reader who does not know that reads the column as the way to
+           change the number. */
+        + (c.source === "tenant"
+           ? "<tr><td colspan='4' class='hint'>A tenant override supplies this, so "
+             + esc(c.env) + " is not consulted. Change it under Retrieval settings on the Setup "
+             + "page, or clear the override for the variable to apply again.</td></tr>"
+           : "")
         + (c.help ? "<tr><td colspan='4' class='hint'>" + esc(c.help) + "</td></tr>" : "");
     }).join("");
     return "<div class='tablewrap'><table class='inv'><thead><tr><th>Cap</th>"

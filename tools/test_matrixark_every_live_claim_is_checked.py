@@ -125,23 +125,74 @@ def _rust_per_call_env_names() -> set:
     return names
 
 def _resolver_environ_scopes() -> dict:
-    """resolver name -> True when its os.environ read happens inside the function body.
+    """resolver name -> True when its os.environ read happens per call.
 
     An import-time read would mean the registry captured the value once, and every setting this
     file calls live on the registry's account would be wrong at the same moment.
+
+    A resolver may delegate. `explicit_int` is the value half of `explicit_int_with_source`, so a
+    surface can report which level supplied a budget without keeping a second copy of the
+    precedence; its body is a call and contains no `os.environ`. A call executes per call, so the
+    claim survives -- provided whatever it delegates to reads per call too.
+
+    So the delegation is followed TRANSITIVELY, with a visited set and a depth cap. One hop would
+    accept `a -> b -> captured at import` as live, which is this guard's own failure wearing one
+    more layer. The chain has to END in a body that reads the environment.
     """
     import matrixark_tenant_policy as policy
 
     with open(policy.__file__, encoding="utf-8", errors="replace") as handle:
         tree = ast.parse(handle.read())
-    found = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef) or node.name not in RESOLVERS:
-            continue
-        reads = [d for d in ast.walk(node)
-                 if isinstance(d, ast.Attribute) and d.attr == "environ"]
-        found[node.name] = bool(reads)
-    return found
+
+    bodies = {node.name: node for node in ast.walk(tree)
+              if isinstance(node, ast.FunctionDef)}
+
+    def reads_environ(node) -> bool:
+        return any(isinstance(d, ast.Attribute) and d.attr == "environ"
+                   for d in ast.walk(node))
+
+    def delegates_to(node):
+        """The function this one is a THIN WRAPPER for, or None.
+
+        Deliberately narrow. Following every call instead accepts an `os.environ` read found
+        anywhere in the call graph -- and every resolver here calls `tenant_policy`, which reads
+        the environment for the POLICY FILE PATH, which has nothing to do with the knob being
+        resolved. A version of this that followed all calls passed a mutated resolver whose knob
+        value came from a dict captured at import, which is precisely what this test is for.
+
+        A wrapper is one `return <call>`, optionally subscripted -- `return f(a, b)[0]`. Anything
+        with branches, assignments or more than one statement is doing work of its own and must
+        show the read in its own body.
+        """
+        statements = [s for s in node.body if not (isinstance(s, ast.Expr)
+                                                   and isinstance(s.value, ast.Constant))]
+        if len(statements) != 1 or not isinstance(statements[0], ast.Return):
+            return None
+        value = statements[0].value
+        if isinstance(value, ast.Subscript):
+            value = value.value
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            return value.func.id if value.func.id in bodies else None
+        return None
+
+    def live(name: str, seen: frozenset = frozenset(), depth: int = 0) -> bool:
+        """True when this resolver's own value is read from the environment per call.
+
+        A wrapper is followed, transitively and with a visited set, because a call runs per call
+        and the claim survives it. One hop would accept `a -> b -> captured at import`; the chain
+        must END in a body that reads the environment itself.
+        """
+        if name in seen or depth > 8 or name not in bodies:
+            return False
+        node = bodies[name]
+        if reads_environ(node):
+            return True
+        target = delegates_to(node)
+        if target is None:
+            return False
+        return live(target, seen | {name}, depth + 1)
+
+    return {name: live(name) for name in RESOLVERS if name in bodies}
 
 
 class EveryLiveClaimIsCheckedTest(unittest.TestCase):
@@ -160,6 +211,76 @@ class EveryLiveClaimIsCheckedTest(unittest.TestCase):
                 self.assertTrue(scopes[name],
                                 "%s does not read os.environ inside its body, so a registry knob "
                                 "cannot be called live on its account" % name)
+
+    def test_the_delegation_follow_still_rejects_a_dead_chain(self) -> None:
+        """The follow added above must not turn into a way to pass.
+
+        A resolver that delegates to something which never reads the environment has to fail, or
+        the loosening here is just the original bug with an extra function in front of it. Checked
+        against a synthetic module rather than by reasoning about the real one, because the real
+        one currently passes and would prove nothing either way.
+        """
+        import ast as _ast
+        source = (
+            "import os\n"
+            "def captured_at_import():\n"
+            "    return _FROZEN\n"
+            "def middle():\n"
+            "    return captured_at_import()\n"
+            "def explicit_int():\n"
+            "    return middle()\n"
+            "def reads_live():\n"
+            "    return os.environ.get('X')\n"
+            "def explicit_bool():\n"
+            "    return reads_live()\n"
+            # The case that fooled the first version of the follow: a resolver doing real work,
+            # whose own value is captured at import, but which happens to call something that
+            # reads the environment for an unrelated reason.
+            "def unrelated_env_read():\n"
+            "    return os.environ.get('POLICY_FILE')\n"
+            "def resolver_with_a_frozen_value():\n"
+            "    other = unrelated_env_read()\n"
+            "    if other:\n"
+            "        pass\n"
+            "    return _FROZEN.get('X')\n"
+        )
+        tree = _ast.parse(source)
+        bodies = {n.name: n for n in _ast.walk(tree) if isinstance(n, _ast.FunctionDef)}
+
+        def reads_environ(node):
+            return any(isinstance(d, _ast.Attribute) and d.attr == "environ"
+                       for d in _ast.walk(node))
+
+        def delegates_to(node):
+            statements = [s for s in node.body if not (isinstance(s, _ast.Expr)
+                                                       and isinstance(s.value, _ast.Constant))]
+            if len(statements) != 1 or not isinstance(statements[0], _ast.Return):
+                return None
+            value = statements[0].value
+            if isinstance(value, _ast.Subscript):
+                value = value.value
+            if isinstance(value, _ast.Call) and isinstance(value.func, _ast.Name):
+                return value.func.id if value.func.id in bodies else None
+            return None
+
+        def live(name, seen=frozenset(), depth=0):
+            if name in seen or depth > 8 or name not in bodies:
+                return False
+            node = bodies[name]
+            if reads_environ(node):
+                return True
+            target = delegates_to(node)
+            return live(target, seen | {name}, depth + 1) if target else False
+
+        self.assertFalse(live("explicit_int"),
+                         "a chain ending in an import-time capture was accepted as live")
+        self.assertTrue(live("explicit_bool"),
+                        "a chain ending in a per-call read was rejected")
+        self.assertFalse(
+            live("resolver_with_a_frozen_value"),
+            "a resolver whose own value is captured at import was accepted as live because it "
+            "calls something that reads the environment for an unrelated reason -- this is what "
+            "the first version of the follow did to the real module")
 
     def test_every_live_setting_is_classified_by_something(self) -> None:
         registry = _registry_env_names()

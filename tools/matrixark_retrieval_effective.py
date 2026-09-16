@@ -113,14 +113,28 @@ def tenant_retrieval_limit(name: str, scope: Any, fallback: int) -> int:
     to the build default: a budget that came out empty would return nothing at all, which is worse
     than ignoring a bad setting.
     """
+    return tenant_retrieval_limit_with_source(name, scope, fallback)[0]
+
+
+def tenant_retrieval_limit_with_source(name: str, scope: Any, fallback: int) -> tuple:
+    """The budget, with the level that supplied it: (value, "tenant"|"environment"|"default").
+
+    Asked of the function that decides, never worked out here. A tenant override beats the
+    environment variable, and a tenant policy carrying a zero or a non-number for the knob is
+    ignored and falls through to it -- so "the policy names this knob" and "the policy supplied
+    this value" are different questions, and only the resolver can answer the second.
+
+    Falls back to ``default`` for the source whenever the value fell back too, so a surface never
+    shows a level that did not actually answer.
+    """
     try:
-        from matrixark_tenant_policy import explicit_int
+        from matrixark_tenant_policy import explicit_int_with_source
     except Exception:  # pragma: no cover - policy module absent
-        return fallback
+        return fallback, "default"
     try:
-        return explicit_int(name, scope, fallback)
+        return explicit_int_with_source(name, scope, fallback)
     except Exception:  # pragma: no cover - a malformed policy must not break retrieval
-        return fallback
+        return fallback, "default"
 
 
 # The three caps a reader asks about, each with the build default it falls back to. Ordered as
@@ -141,6 +155,22 @@ RETRIEVAL_CAPS = (
 THE_CAP_THAT_CUTS = "max_selected_refs"
 
 
+def _cap(name: str, scope: Any, fallback: int, help_text: str) -> Dict[str, Any]:
+    value, source = tenant_retrieval_limit_with_source(name, scope, fallback)
+    return {
+        "name": name,
+        "value": value,
+        "build_default": fallback,
+        "env": "MATRIXARK_" + name.upper(),
+        # Which level answered. Without it the page can name the variable beside a value the
+        # variable did not supply: a tenant override wins, so an operator can set that variable,
+        # watch nothing change, and have nothing on the page to explain why.
+        "source": source,
+        "cuts": name == THE_CAP_THAT_CUTS,
+        "help": help_text,
+    }
+
+
 def effective_retrieval(scope: Optional[Any] = None) -> Dict[str, Any]:
     """Everything a surface needs to say what this deployment does when it answers a question.
 
@@ -159,14 +189,7 @@ def effective_retrieval(scope: Optional[Any] = None) -> Dict[str, Any]:
             "scan_projection": retrieval_scan_projection(),
         },
         "caps": [
-            {
-                "name": name,
-                "value": tenant_retrieval_limit(name, scope, fallback),
-                "build_default": fallback,
-                "env": "MATRIXARK_" + name.upper(),
-                "cuts": name == THE_CAP_THAT_CUTS,
-                "help": help_text,
-            }
+            _cap(name, scope, fallback, help_text)
             for name, fallback, help_text in RETRIEVAL_CAPS
         ],
     }

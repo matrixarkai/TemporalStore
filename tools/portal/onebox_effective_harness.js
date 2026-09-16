@@ -68,6 +68,9 @@ for (const cap of live.caps) {
   ok("cap " + cap.name + " shows the build default (" + cap.build_default + ")",
      caps.indexOf(">" + cap.build_default + "<") >= 0);
   ok("cap " + cap.name + " names its variable", caps.indexOf(cap.env) >= 0);
+  ok("cap " + cap.name + " says which level supplied it",
+     ["tenant", "environment", "default"].indexOf(cap.source) >= 0,
+     "source was " + JSON.stringify(cap.source));
 }
 
 ok("the cap the measurement blamed is marked as such",
@@ -93,25 +96,55 @@ ok("unreadable caps render no table", unreadCaps.indexOf("<table") < 0, unreadCa
 /* ---------- an override is visible as an override ---------- */
 /* The registry view could not show this at all: it only ever held the declared number, so a
    deployment running a cap somebody had set looked identical to one running the default. */
-const overridden = JSON.parse(JSON.stringify(live));
-overridden.caps[0].value = overridden.caps[0].build_default + 7;
-const overriddenOut = sandbox.renderCaps(overridden);
-ok("a cap set for this deployment is marked",
-   /set for this deployment/.test(overriddenOut));
-ok("a cap at its build default is not marked",
-   !/set for this deployment/.test(caps), caps.slice(0, 300));
+/* One payload per level. The badge names WHICH level supplied the value, because a tenant
+   override beats the environment variable: naming the variable beside a value the variable did
+   not supply sends an operator to change something that will not take effect. */
+function atLevel(source) {
+  const copy = JSON.parse(JSON.stringify(live));
+  copy.caps[0].value = copy.caps[0].build_default + 7;
+  copy.caps[0].source = source;
+  return sandbox.renderCaps(copy);
+}
+
+const fromEnv = atLevel("environment");
+const fromTenant = atLevel("tenant");
+const overriddenOut = fromEnv;
+
+ok("a cap set by the variable says so", /set by the variable/.test(fromEnv));
+ok("a cap set by tenant policy says so", /set by tenant policy/.test(fromTenant));
+ok("the two levels are not described the same way",
+   !/set by tenant policy/.test(fromEnv) && !/set by the variable/.test(fromTenant));
+
+/* The whole point of separating them. A tenant override makes the variable in the last column
+   inert, and a reader who does not know that reads the column as the way to change the number. */
+ok("a tenant override says the variable is not consulted",
+   /is not consulted/.test(fromTenant), fromTenant.slice(0, 400));
+/* And says WHY, not just that. "MATRIXARK_X is not consulted" tells a reader the variable is
+   being ignored without telling them what is doing the ignoring, so they have no way to find the
+   thing they actually need to change. The first version of this assertion matched only the
+   second half of the sentence, and a mutation deleting the cause survived it. */
+ok("a tenant override names the override as the cause",
+   /tenant override supplies this/.test(fromTenant), fromTenant.slice(0, 400));
+ok("a tenant override names the variable it makes inert",
+   fromTenant.indexOf(live.caps[0].env) >= 0);
+ok("a value from the variable does not say that",
+   !/is not consulted/.test(fromEnv));
+
+ok("a cap at its build default is marked with no level at all",
+   !/set by the variable|set by tenant policy/.test(caps), caps.slice(0, 300));
 
 /* The two columns carry different numbers ONLY when somebody has set one, so this is the only
    payload in which "shows the value in force" and "shows the build default" are distinguishable
    assertions. Against the live payload, where every cap sits at its default, a renderer printing
    the default twice satisfies both -- which is how a mutation that did exactly that survived the
    first mutation run. */
+const setValue = live.caps[0].build_default + 7;
 ok("an overridden cap shows the value IN FORCE, not the default it replaced",
-   overriddenOut.indexOf(">" + overridden.caps[0].value + "<") >= 0,
-   "expected the set value " + overridden.caps[0].value + " in the rendered row");
+   overriddenOut.indexOf(">" + setValue + "<") >= 0,
+   "expected the set value " + setValue + " in the rendered row");
 ok("an overridden cap still shows the default it replaced",
-   overriddenOut.indexOf(">" + overridden.caps[0].build_default + "<") >= 0,
-   "expected the build default " + overridden.caps[0].build_default + " beside it");
+   overriddenOut.indexOf(">" + live.caps[0].build_default + "<") >= 0,
+   "expected the build default " + live.caps[0].build_default + " beside it");
 
 /* ---------- the blended profile renders as blended ---------- */
 const blended = JSON.parse(JSON.stringify(live));

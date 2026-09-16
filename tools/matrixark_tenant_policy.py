@@ -964,6 +964,23 @@ def explicit_int(name: str, scope: Any, fallback: int) -> int:
     the caller's default: a budget that resolved to nothing would return nothing at all, which is a
     worse failure than ignoring a bad setting.
     """
+    return explicit_int_with_source(name, scope, fallback)[0]
+
+
+def explicit_int_with_source(name: str, scope: Any, fallback: int) -> tuple:
+    """`explicit_int`'s answer, with the level that supplied it: (value, source).
+
+    ``source`` is one of ``tenant``, ``environment`` or ``default``.
+
+    This exists because a surface reporting a budget has to say where it came from, and could not
+    work that out from outside without keeping a second copy of the precedence -- which would be
+    wrong in a way that is hard to see. A tenant policy carrying a zero or a non-number for the
+    knob is IGNORED here and falls through to the environment, so "the tenant policy mentions this
+    name" and "the tenant policy supplied this value" are different questions, and only this
+    function is in a position to answer the second.
+
+    `explicit_int` is the value half of this and is unchanged in signature and behaviour.
+    """
     def _positive(value: Any):
         try:
             parsed = int(value)
@@ -976,15 +993,15 @@ def explicit_int(name: str, scope: Any, fallback: int) -> int:
     except Exception:  # pragma: no cover - a malformed policy must not break retrieval
         override = None
     if override is not None:
-        return override
+        return override, "tenant"
 
     knob = KNOBS.get(name)
     env_name = getattr(knob, "env", "") if knob is not None else ""
     if env_name:
         from_env = _positive(os.environ.get(env_name))
         if from_env is not None:
-            return from_env
-    return fallback
+            return from_env, "environment"
+    return fallback, "default"
 
 
 def explicit_bool(name: str, scope: Any, fallback: bool) -> bool:

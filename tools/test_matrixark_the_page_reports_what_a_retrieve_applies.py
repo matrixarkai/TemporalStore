@@ -272,6 +272,105 @@ class TheEndpointTest(unittest.TestCase):
         self.assertEqual(["max_selected_refs"], cuts)
 
 
+class WhichLevelSuppliedItTest(unittest.TestCase):
+    """A cap names an environment variable, and a tenant override beats that variable.
+
+    Without the level, the page can print `MATRIXARK_MAX_SELECTED_REFS` beside a number that
+    variable did not supply, and an operator sets it, sees nothing change, and has nothing on the
+    page to explain why.
+
+    The page must not work the level out for itself -- that would be a second copy of the
+    precedence, which is the defect this whole change removes. It also cannot be done correctly
+    from outside: see the fall-through case below. So the resolver reports what it chose.
+    """
+
+    KNOB = "max_selected_refs"
+    ENV = "MATRIXARK_MAX_SELECTED_REFS"
+
+    def setUp(self) -> None:
+        self.original = os.environ.get(self.ENV)
+        self.addCleanup(self._restore)
+        os.environ.pop(self.ENV, None)
+
+    def _restore(self) -> None:
+        if self.original is None:
+            os.environ.pop(self.ENV, None)
+        else:
+            os.environ[self.ENV] = self.original
+
+    @staticmethod
+    def _set_policy(tenant, knobs) -> None:
+        """Set the policy on EVERY loaded copy of the module.
+
+        Under `unittest discover` it is imported under two names in one process -- plain and
+        `tools.`-prefixed -- and each copy keeps its own record store. Setting it on the copy this
+        test imported while the resolver's lazy import binds the other makes the override vanish,
+        and the failure reads as "the knob is not wired", which is exactly what it is not.
+        """
+        for module in list(sys.modules.values()):
+            if (getattr(module, "__name__", "").endswith("matrixark_tenant_policy")
+                    and hasattr(module, "set_tenant_policy")):
+                module.set_tenant_policy(tenant, knobs)
+
+    def _cap(self, scope):
+        for cap in eff.effective_retrieval(scope)["caps"]:
+            if cap["name"] == self.KNOB:
+                return cap
+        raise AssertionError("%s is not among the reported caps" % self.KNOB)
+
+    def test_nothing_set_is_reported_as_the_build_default(self) -> None:
+        cap = self._cap("level_none")
+        self.assertEqual("default", cap["source"])
+        self.assertEqual(cap["build_default"], cap["value"])
+
+    def test_the_environment_is_reported_as_the_environment(self) -> None:
+        os.environ[self.ENV] = "77"
+        cap = self._cap("level_env")
+        self.assertEqual(77, cap["value"])
+        self.assertEqual("environment", cap["source"])
+
+    def test_a_tenant_override_is_reported_as_the_tenant(self) -> None:
+        self._set_policy("level_tenant", {self.KNOB: 55})
+        cap = self._cap("level_tenant")
+        self.assertEqual(55, cap["value"])
+        self.assertEqual("tenant", cap["source"])
+
+    def test_the_tenant_beats_the_variable_and_the_report_says_so(self) -> None:
+        """The case the page exists to explain. Both are set; only one is in force."""
+        os.environ[self.ENV] = "77"
+        self._set_policy("level_both", {self.KNOB: 55})
+        cap = self._cap("level_both")
+        self.assertEqual(55, cap["value"], "the tenant override did not win")
+        self.assertEqual("tenant", cap["source"],
+                         "the variable is named on the page beside a value it did not supply")
+
+    def test_a_policy_that_names_the_knob_but_supplies_nothing_falls_through(self) -> None:
+        """Why the page cannot work this out for itself.
+
+        A tenant policy carrying a zero for the knob is IGNORED by the resolver -- a budget of
+        nothing returns nothing at all, which is worse than ignoring a bad setting -- so the
+        environment supplies the value. A surface asking "does the policy mention this knob?"
+        would answer "tenant" here and be wrong. Only the resolver knows which level it used.
+        """
+        os.environ[self.ENV] = "77"
+        self._set_policy("level_zero", {self.KNOB: 0})
+        cap = self._cap("level_zero")
+        self.assertEqual(77, cap["value"])
+        self.assertEqual("environment", cap["source"],
+                         "a policy that mentions the knob without supplying a usable value is "
+                         "being reported as the level in force")
+
+    def test_the_value_half_is_unchanged(self) -> None:
+        """explicit_int is now the first element of explicit_int_with_source. It must still answer
+        exactly as before for every level, or this refactor moved a serving-path number."""
+        import matrixark_tenant_policy as tp
+        self._set_policy("level_same", {self.KNOB: 55})
+        for scope in ("level_same", "level_none", None):
+            with self.subTest(scope=scope):
+                value, _ = tp.explicit_int_with_source(self.KNOB, scope, 1000)
+                self.assertEqual(tp.explicit_int(self.KNOB, scope, 1000), value)
+
+
 class ThePageRendersItTest(unittest.TestCase):
     """The shipped page JS, run against what the endpoint really returns."""
 
