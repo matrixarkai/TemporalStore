@@ -420,7 +420,7 @@ pub fn native_api_golden_corpus_report() -> GoldenCorpusReport {
         &mut cases,
         "native_admin_storage_readiness_report",
         storage_readiness.production_ready
-            && storage_readiness.page_store_bytes_written > 0
+            && storage_readiness.block_store_bytes_written > 0
             && storage_readiness.feature_block_layout.packed_feature_blocks >= 1,
         "Admin/storage readiness report is queryable after mixed API corpus writes",
     );

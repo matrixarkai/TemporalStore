@@ -36,7 +36,7 @@ pub(super) const COMPACTION_ROUND_BLOCK_REFS: usize = 2_048;
 
 /// Blocks per slab, counted by header walk.
 ///
-/// Both callers below read `page_count` and nothing else off a slab report, and `slab_reports()`
+/// Both callers below read `block_count` and nothing else off a slab report, and `slab_reports()`
 /// reaches that by calling `decode_block_record` on every record in the store -- a CRC32C verify
 /// and a decompress each. The compaction phase builds a utility report and a model-layout report
 /// BEFORE and AFTER the relocation, so that was four whole-store decodes per round to populate a
@@ -562,13 +562,13 @@ pub(super) fn compaction_timestamped_layout(
     {
         *ref_counts.entry(address).or_default() += 1;
     }
-    let packed_pages = ref_counts.values().filter(|count| **count > 1).count();
+    let packed_blocks = ref_counts.values().filter(|count| **count > 1).count();
     compaction_layout_from_addresses(
         kind,
         timelines.len(),
         ref_counts.keys().cloned(),
         slab_page_counts,
-        Some(packed_pages),
+        Some(packed_blocks),
     )
     .with_index_refs(ref_counts.values().sum())
 }
@@ -578,7 +578,7 @@ pub(super) fn compaction_layout_from_addresses(
     object_count: usize,
     addresses: impl IntoIterator<Item = BlockAddress>,
     slab_page_counts: &BTreeMap<u64, u64>,
-    packed_pages: Option<usize>,
+    packed_blocks: Option<usize>,
 ) -> ShardCompactionModelLayoutReport {
     let addresses = addresses.into_iter().collect::<Vec<_>>();
     let unique_addresses = addresses
@@ -601,7 +601,7 @@ pub(super) fn compaction_layout_from_addresses(
         })
         .sum::<u64>();
     let unique_block_refs = unique_addresses.len();
-    let packed_timestamped_blocks = packed_pages.unwrap_or_default();
+    let packed_timestamped_blocks = packed_blocks.unwrap_or_default();
     let live_ref_density_basis_points = if total_blocks_in_live_slabs == 0 {
         0
     } else {

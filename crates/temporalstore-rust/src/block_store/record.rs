@@ -817,7 +817,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
     }
     if slab.len() < BLOCK_RECORD_HEADER_LEN || !slab.starts_with(BLOCK_RECORD_MAGIC) {
         report.logical_bytes = slab.len() as u64;
-        report.page_count = 1;
+        report.block_count = 1;
         report.readable_prefix_physical_bytes = slab.len() as u64;
         return report;
     }
@@ -864,7 +864,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
         address.set_routing_bucket(header.routing_bucket);
         match decode_block_record(&remaining[..record_len], &address) {
             Ok(decoded) => {
-                report.page_count = report.page_count.saturating_add(1);
+                report.block_count = report.block_count.saturating_add(1);
                 report.logical_bytes = report
                     .logical_bytes
                     .saturating_add(decoded.logical_len as u64);

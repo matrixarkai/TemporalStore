@@ -2050,10 +2050,10 @@ impl TemporalEngine {
         if !storage_manager_merged_dump_load_api_ready {
             blockers.push("storage_manager_merged_dump_load_api_incomplete".to_string());
         }
-        let legacy_page_zone_aliases_ready = true;
+        let legacy_block_slab_aliases_ready = true;
         StorageDataStructureApiParityReport {
             shard_id,
-            ready: blockers.is_empty() && legacy_page_zone_aliases_ready,
+            ready: blockers.is_empty() && legacy_block_slab_aliases_ready,
             bucket_object_block_authority_ready: physical_index.bucket_index_authority
                 && ownership.first_class_index_present
                 && !ownership.derived_from_model_maps,
@@ -2062,12 +2062,12 @@ impl TemporalEngine {
             block_address_api_ready,
             block_store_slab_api_ready: block_index_count > 0,
             stream_backed_slab_api_ready,
-            legacy_page_zone_aliases_ready,
+            legacy_block_slab_aliases_ready,
             storage_manager_phase_api_ready,
             storage_manager_pressure_api_ready,
             storage_manager_merged_dump_load_api_ready,
             bucket_count: physical_index.bucket_count,
-            page_index_count: physical_index.page_index_count,
+            page_index_count: physical_index.block_index_count,
             block_index_count,
             stream_slab_count: slab_report
                 .as_ref()

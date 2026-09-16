@@ -3234,8 +3234,8 @@ fn storage_block_format_compatibility_report_counts_zones_and_header_gaps() {
     assert_eq!(report.sealed_slabs, 1);
     assert_eq!(report.active_slabs, 1);
     assert!(report.live_physical_bytes > 0);
-    assert!(report.page_store_writes > 0);
-    assert!(report.page_store_bytes_written > 0);
+    assert!(report.block_store_writes > 0);
+    assert!(report.block_store_bytes_written > 0);
     assert!(report.logical_bytes_written >= 512);
     assert!(report.compressed_records_written > 0);
     assert!(report
@@ -4425,7 +4425,7 @@ fn bucket_runtime_flags_match_full_sweep() {
         has_ttl: bool,
         layout: String,
         object_index: Vec<u64>,
-        page_count: usize,
+        block_count: usize,
     }
 
     let capture = |engine: &TemporalEngine| -> std::collections::BTreeMap<u32, BucketFlags> {
@@ -4445,7 +4445,7 @@ fn bucket_runtime_flags_match_full_sweep() {
                         has_ttl: bucket.ttl_ms.is_some(),
                         layout: format!("{:?}", bucket.layout),
                         object_index: bucket.object_index.iter().copied().collect(),
-                        page_count: bucket.block_index.len(),
+                        block_count: bucket.block_index.len(),
                     },
                 )
             })
@@ -8259,7 +8259,7 @@ fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
 /// counter around its own call; it resets immediately before measuring.
 #[test]
 fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
-    fn scan_volume_for(page_count: usize, sampled: bool) -> (u64, usize) {
+    fn scan_volume_for(block_count: usize, sampled: bool) -> (u64, usize) {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -8268,7 +8268,7 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        for index in 0..page_count {
+        for index in 0..block_count {
             engine.execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::StringSet {

@@ -396,7 +396,6 @@ pub enum StreamKind {
     IndexLog,
     Wal,
     Block,
-    Page,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -333,7 +333,6 @@ impl TemporalEngine {
             bucket_dump_manifest_count,
             cache_memory_bytes: cache.memory_bytes,
             cache_disk_bytes: cache.disk_bytes,
-            page_store_bytes_written: block_store.bytes_written,
             block_store_bytes_written: block_store.bytes_written,
             boundary,
             object_lifecycle: recovery.object_lifecycle,
@@ -414,8 +413,8 @@ impl TemporalEngine {
             delayed_destroy_slabs: summary.delayed_destroy_slabs,
             live_physical_bytes: summary.live_physical_bytes,
             reclaimable_physical_bytes: summary.reclaimable_physical_bytes,
-            page_store_writes: stats.writes,
-            page_store_bytes_written: stats.bytes_written,
+            block_store_writes: stats.writes,
+            block_store_bytes_written: stats.bytes_written,
             logical_bytes_written: stats.logical_bytes_written,
             compressed_records_written: stats.compressed_records_written,
             compatibility_gaps: vec![

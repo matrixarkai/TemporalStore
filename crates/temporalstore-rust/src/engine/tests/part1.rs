@@ -2031,7 +2031,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     assert!(report.block_address_api_ready);
     assert!(report.block_store_slab_api_ready);
     assert!(report.stream_backed_slab_api_ready);
-    assert!(report.legacy_page_zone_aliases_ready);
+    assert!(report.legacy_block_slab_aliases_ready);
     assert!(report.storage_manager_phase_api_ready);
     assert!(report.storage_manager_pressure_api_ready);
     assert!(report.storage_manager_merged_dump_load_api_ready);
@@ -2355,7 +2355,7 @@ fn crash_recovery_report_covers_wal_index_block_and_slab_manifest() {
     );
     assert_eq!(report.block_slab_live_reports.len(), 2);
     assert_eq!(report.block_slab_live_reports[0].block_slab_id, 0);
-    assert_eq!(report.block_slab_live_reports[0].page_count, 1);
+    assert_eq!(report.block_slab_live_reports[0].block_count, 1);
     assert_eq!(report.block_slab_live_reports[0].live_block_refs, 1);
     assert_eq!(
         report.block_slab_live_reports[0].readable_live_block_refs,
@@ -2477,7 +2477,7 @@ fn crash_recovery_report_marks_stale_slab_density_after_overwrite() {
         // physically holds extra stale pages (same single live object, reclaimed by GC). On a real
         // power cut the un-synced pages are gone and replay rebuilds them cleanly. Physical density
         // is therefore not asserted under the flag.
-        assert_eq!(slab.page_count, 2);
+        assert_eq!(slab.block_count, 2);
         assert_eq!(slab.stale_block_estimate, 1);
         assert_eq!(slab.live_ref_density_basis_points, 5_000);
     }

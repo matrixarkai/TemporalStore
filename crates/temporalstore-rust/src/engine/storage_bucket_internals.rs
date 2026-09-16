@@ -150,7 +150,7 @@ pub(super) fn storage_reclaim_candidates_from_slab_reports(
         .filter_map(|report| {
             let fully_stale = fully_stale_slab_ids.contains(&report.block_slab_id);
             let stale_block_estimate = if fully_stale {
-                report.page_count
+                report.block_count
             } else {
                 report.stale_block_estimate
             };
@@ -173,7 +173,7 @@ pub(super) fn storage_reclaim_candidates_from_slab_reports(
                 physical_bytes: report.physical_bytes,
                 live_physical_bytes: report.live_physical_bytes,
                 stale_physical_bytes,
-                page_count: report.page_count,
+                block_count: report.block_count,
                 live_block_refs: report.live_block_refs,
                 stale_block_estimate,
                 live_ref_density_basis_points: report.live_ref_density_basis_points,
@@ -1702,7 +1702,7 @@ pub(super) fn release_bucket_blocks(
                 )
             })
             .collect();
-        let page_count = dropped.len();
+        let block_count = dropped.len();
         if lookup_established {
             for (model_id, object_key, component) in &dropped {
                 shard.bucket_index.remove_object_block_lookup_entry(
@@ -1726,7 +1726,7 @@ pub(super) fn release_bucket_blocks(
         bucket.layout = classify_bucket_layout(bucket.object_index.len(), 0);
         shard.bucket_index.released_buckets.insert(routing_bucket);
         outcome.released_buckets.push(routing_bucket);
-        outcome.released_blocks = outcome.released_blocks.saturating_add(page_count);
+        outcome.released_blocks = outcome.released_blocks.saturating_add(block_count);
     }
     outcome
 }
