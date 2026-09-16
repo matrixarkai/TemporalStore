@@ -868,7 +868,7 @@ pub enum SlabCatalogState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlabCatalogEntry {
     #[serde(alias = "zone_id")]
-    #[serde(rename = "page_slab_id")]
+    #[serde(alias = "page_slab_id")]
     pub block_slab_id: u64,
     pub state: SlabCatalogState,
     #[serde(alias = "total_bytes")]
@@ -909,7 +909,7 @@ pub struct MetaItem {
     pub timestamp_ms: u64,
     #[serde(rename = "zones", default)]
     pub slabs: Vec<SlabCatalogEntry>,
-    #[serde(rename = "zone_version", default)]
+    #[serde(alias = "zone_version", default)]
     pub slab_version: u64,
 }
 
@@ -3403,7 +3403,14 @@ mod tests {
         assert_eq!(object.get("version").unwrap(), 7);
         assert_eq!(object.get("start_wal_sequence").unwrap(), 11);
         assert_eq!(object.get("timestamp_ms").unwrap(), 22);
-        assert_eq!(object.get("zone_version").unwrap(), 0);
+        // Present, not skipped, and spelled the new way. The `unwrap` IS the presence
+        // check: a key that stopped being written fails here rather than reading as an
+        // absent zero, which is the shape that lets a renamed key pass unnoticed.
+        assert_eq!(object.get("slab_version").unwrap(), 0);
+        assert!(
+            object.get("zone_version").is_none(),
+            "the retired spelling is a read alias now, not something written"
+        );
         // And it round-trips.
         let back: MetaItem = serde_json::from_value(value).unwrap();
         assert_eq!(back, meta);

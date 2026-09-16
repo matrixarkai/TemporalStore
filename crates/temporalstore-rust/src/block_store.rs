@@ -376,7 +376,7 @@ pub struct BlockStoreStats {
     /// cost n manifests -- and each install cost time proportional to how many slabs already
     /// existed. Counted rather than timed, because a count says the same thing on a busy machine.
     #[serde(default)]
-    #[serde(rename = "band_manifest_writes")]
+    #[serde(alias = "band_manifest_writes")]
     pub slab_manifest_writes: u64,
     /// Slabs fetched on-demand from a shared-storage read-through source (conformance
     /// lazy recovery). Each shared slab is fetched at most once, only when a read
@@ -436,13 +436,13 @@ impl Default for BlockStoreOptions {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcReport {
     #[serde(alias = "retain_from_page_segment_id")]
-    #[serde(rename = "retain_from_page_slab_id")]
+    #[serde(alias = "retain_from_page_slab_id")]
     pub retain_from_block_slab_id: u64,
     #[serde(alias = "removed_page_segment_ids")]
-    #[serde(rename = "removed_page_slab_ids")]
+    #[serde(alias = "removed_page_slab_ids")]
     pub removed_block_slab_ids: Vec<u64>,
     #[serde(alias = "retained_page_segment_ids")]
-    #[serde(rename = "retained_page_slab_ids")]
+    #[serde(alias = "retained_page_slab_ids")]
     pub retained_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub removed_physical_bytes: u64,
@@ -450,19 +450,19 @@ pub struct BlockStoreGcReport {
     pub retained_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "delayed_destroy_page_segment_ids")]
-    #[serde(rename = "delayed_destroy_page_slab_ids")]
+    #[serde(alias = "delayed_destroy_page_slab_ids")]
     pub delayed_destroy_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub delayed_destroy_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "retained_live_page_segment_ids")]
-    #[serde(rename = "retained_live_page_slab_ids")]
+    #[serde(alias = "retained_live_page_slab_ids")]
     pub retained_live_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_live_physical_bytes: u64,
     #[serde(default)]
     #[serde(alias = "retained_current_page_segment_ids")]
-    #[serde(rename = "retained_current_page_slab_ids")]
+    #[serde(alias = "retained_current_page_slab_ids")]
     pub retained_current_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_current_physical_bytes: u64,
@@ -475,7 +475,7 @@ pub struct BlockStoreGcReport {
     /// each other about the same slab. Non-empty is an alarm, and the point of the check is that
     /// the disagreement costs a round of reclaim instead of the bytes.
     #[serde(default)]
-    #[serde(rename = "retained_live_bytes_page_slab_ids")]
+    #[serde(alias = "retained_live_bytes_page_slab_ids")]
     pub retained_live_bytes_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_live_bytes_physical_bytes: u64,
@@ -488,7 +488,7 @@ pub struct BlockStoreGcReport {
 /// outside, through [`BlockStore::publish_live_block_bytes`], and the store only reads it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabLive {
-    #[serde(rename = "live_page_refs")]
+    #[serde(alias = "live_page_refs")]
     pub live_block_refs: u64,
     /// Sum of the lengths of the live pages on the slab. LOGICAL bytes -- the same quantity the
     /// slab descriptor's `logical_bytes` totals over every page ever appended to it, which is why
@@ -509,7 +509,7 @@ pub struct BlockStoreSlabLiveFraction {
     /// Total logical bytes ever appended to this slab. Only ever grows, which is correct FOR A
     /// DENOMINATOR and was the bug when the same field was read as a live figure.
     pub logical_bytes: u64,
-    #[serde(rename = "live_page_refs")]
+    #[serde(alias = "live_page_refs")]
     pub live_block_refs: u64,
     pub live_bytes: u64,
     /// `live_bytes * 10_000 / logical_bytes`, or 0 when the slab has no logical bytes.
@@ -556,7 +556,7 @@ pub struct BlockStoreGcPolicy {
     /// behavior). The garbage-ratio gate (reclaim the most-garbage zones),
     /// expressed against Rust slabs.
     #[serde(default)]
-    #[serde(rename = "min_band_garbage_basis_points")]
+    #[serde(alias = "min_band_garbage_basis_points")]
     pub min_slab_garbage_basis_points: Option<u64>,
 }
 
@@ -629,10 +629,10 @@ impl BlockStoreGcPolicy {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcPolicyPlan {
     #[serde(alias = "retain_from_page_segment_id")]
-    #[serde(rename = "retain_from_page_slab_id")]
+    #[serde(alias = "retain_from_page_slab_id")]
     pub retain_from_block_slab_id: u64,
     #[serde(alias = "selected_page_segment_ids")]
-    #[serde(rename = "selected_page_slab_ids")]
+    #[serde(alias = "selected_page_slab_ids")]
     pub selected_block_slab_ids: Vec<u64>,
     pub selected_physical_bytes: u64,
     #[serde(default)]
@@ -700,7 +700,7 @@ pub(crate) const DELAYED_DESTROY_MAX_SLABS_PER_ROUND: usize = 1_000;
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStorePurgeDelayedDestroyReport {
     #[serde(alias = "purged_page_segment_ids")]
-    #[serde(rename = "purged_page_slab_ids")]
+    #[serde(alias = "purged_page_slab_ids")]
     pub purged_block_slab_ids: Vec<u64>,
     pub purged_physical_bytes: u64,
     /// Slabs left in quarantine because they had not been there long enough yet.
@@ -831,16 +831,16 @@ pub struct BlockStoreSlabDescriptor {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabSummary {
     #[serde(alias = "active_zones")]
-    #[serde(rename = "active_bands")]
+    #[serde(alias = "active_bands")]
     pub active_slabs: u64,
     #[serde(alias = "sealed_zones")]
-    #[serde(rename = "sealed_bands")]
+    #[serde(alias = "sealed_bands")]
     pub sealed_slabs: u64,
     #[serde(alias = "delayed_destroy_zones")]
-    #[serde(rename = "delayed_destroy_bands")]
+    #[serde(alias = "delayed_destroy_bands")]
     pub delayed_destroy_slabs: u64,
     #[serde(alias = "purged_zones")]
-    #[serde(rename = "purged_bands")]
+    #[serde(alias = "purged_bands")]
     pub purged_slabs: u64,
     pub active_physical_bytes: u64,
     pub sealed_physical_bytes: u64,
@@ -854,42 +854,42 @@ pub struct BlockStoreSlabSummary {
         alias = "oldest_known_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(rename = "oldest_known_band_unix_ms")]
+    #[serde(alias = "oldest_known_band_unix_ms")]
     pub oldest_known_slab_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_known_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(rename = "oldest_known_band_age_ms")]
+    #[serde(alias = "oldest_known_band_age_ms")]
     pub oldest_known_slab_age_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_live_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(rename = "oldest_live_band_unix_ms")]
+    #[serde(alias = "oldest_live_band_unix_ms")]
     pub oldest_live_slab_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_live_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(rename = "oldest_live_band_age_ms")]
+    #[serde(alias = "oldest_live_band_age_ms")]
     pub oldest_live_slab_age_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_reclaimable_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(rename = "oldest_reclaimable_band_unix_ms")]
+    #[serde(alias = "oldest_reclaimable_band_unix_ms")]
     pub oldest_reclaimable_slab_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_reclaimable_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(rename = "oldest_reclaimable_band_age_ms")]
+    #[serde(alias = "oldest_reclaimable_band_age_ms")]
     pub oldest_reclaimable_slab_age_ms: Option<u64>,
 }
 
@@ -899,7 +899,7 @@ pub struct BlockStoreSlabUsage {
     pub stored_slab_id: u64,
     #[serde(rename = "page_segment_id")]
     pub block_slab_id: u64,
-    #[serde(rename = "storage_zone_id", default)]
+    #[serde(alias = "storage_zone_id", default)]
     pub storage_slab_id: u64,
     #[serde(default)]
     #[serde(alias = "stream_segment_id")]
@@ -913,13 +913,13 @@ pub struct BlockStoreSlabUsage {
     pub reclaimable_bytes: u64,
     #[serde(default)]
     pub purged_bytes: u64,
-    #[serde(rename = "page_store_used_bytes")]
+    #[serde(alias = "page_store_used_bytes")]
     pub block_store_used_bytes: u64,
-    #[serde(rename = "live_page_store_used_bytes")]
+    #[serde(alias = "live_page_store_used_bytes")]
     pub live_block_store_used_bytes: u64,
-    #[serde(rename = "reclaimable_page_store_used_bytes")]
+    #[serde(alias = "reclaimable_page_store_used_bytes")]
     pub reclaimable_block_store_used_bytes: u64,
-    #[serde(rename = "purged_page_store_used_bytes")]
+    #[serde(alias = "purged_page_store_used_bytes")]
     pub purged_block_store_used_bytes: u64,
     #[serde(rename = "first_page_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
@@ -931,25 +931,25 @@ pub struct BlockStoreSlabUsage {
 pub struct StreamBackedSlabRuntimeReport {
     pub runtime_ready: bool,
     #[serde(default)]
-    #[serde(rename = "band_lifecycle_states")]
+    #[serde(alias = "band_lifecycle_states")]
     pub slab_lifecycle_states: Vec<String>,
-    #[serde(rename = "band_count", alias = "extent_count", alias = "zone_count")]
+    #[serde(alias = "band_count", alias = "extent_count", alias = "zone_count")]
     pub slab_count: u64,
     #[serde(alias = "active_zones")]
-    #[serde(rename = "active_bands")]
+    #[serde(alias = "active_bands")]
     pub active_slabs: u64,
     #[serde(alias = "sealed_zones")]
-    #[serde(rename = "sealed_bands")]
+    #[serde(alias = "sealed_bands")]
     pub sealed_slabs: u64,
     #[serde(alias = "delayed_destroy_zones")]
-    #[serde(rename = "delayed_destroy_bands")]
+    #[serde(alias = "delayed_destroy_bands")]
     pub delayed_destroy_slabs: u64,
     #[serde(alias = "purged_zones")]
-    #[serde(rename = "purged_bands")]
+    #[serde(alias = "purged_bands")]
     pub purged_slabs: u64,
-    #[serde(rename = "zone_stats_ready", default)]
+    #[serde(alias = "zone_stats_ready", default)]
     pub slab_stats_ready: bool,
-    #[serde(rename = "zone_usage", default)]
+    #[serde(alias = "zone_usage", default)]
     pub slab_usage: Vec<BlockStoreSlabUsage>,
     #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
@@ -961,43 +961,43 @@ pub struct StreamBackedSlabRuntimeReport {
     pub first_block_id: Option<u64>,
     #[serde(rename = "last_page_id", default)]
     pub last_block_id: Option<u64>,
-    #[serde(rename = "page_id_continuity_ready", default)]
+    #[serde(alias = "page_id_continuity_ready", default)]
     pub block_id_continuity_ready: bool,
     #[serde(default)]
     pub logical_stream_bytes_read: u64,
     #[serde(default)]
-    #[serde(rename = "band_state_transition_count")]
+    #[serde(alias = "band_state_transition_count")]
     pub slab_state_transition_count: u64,
     pub logical_stream_read_ready: bool,
     pub append_roll_ready: bool,
     #[serde(alias = "extent_manifest_ready", alias = "zone_manifest_ready")]
-    #[serde(rename = "band_manifest_ready")]
+    #[serde(alias = "band_manifest_ready")]
     pub slab_manifest_ready: bool,
     #[serde(default)]
-    #[serde(rename = "band_manifest_rebuild_ready")]
+    #[serde(alias = "band_manifest_rebuild_ready")]
     pub slab_manifest_rebuild_ready: bool,
     #[serde(default)]
-    #[serde(rename = "band_manifest_reconciled_on_open")]
+    #[serde(alias = "band_manifest_reconciled_on_open")]
     pub slab_manifest_reconciled_on_open: bool,
     #[serde(default)]
-    #[serde(rename = "band_manifest_disk_consistent")]
+    #[serde(alias = "band_manifest_disk_consistent")]
     pub slab_manifest_disk_consistent: bool,
     #[serde(default)]
-    #[serde(rename = "manifest_missing_stream_bands")]
+    #[serde(alias = "manifest_missing_stream_bands")]
     pub manifest_missing_stream_slabs: u64,
     #[serde(default)]
-    #[serde(rename = "manifest_extra_stream_bands")]
+    #[serde(alias = "manifest_extra_stream_bands")]
     pub manifest_extra_stream_slabs: u64,
     #[serde(default)]
-    #[serde(rename = "corrupt_band_count")]
+    #[serde(alias = "corrupt_band_count")]
     pub corrupt_slab_count: u64,
     #[serde(default)]
-    #[serde(rename = "partial_band_count")]
+    #[serde(alias = "partial_band_count")]
     pub partial_slab_count: u64,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
     #[serde(default)]
-    #[serde(rename = "partial_band_recovery_ready")]
+    #[serde(alias = "partial_band_recovery_ready")]
     pub partial_slab_recovery_ready: bool,
     pub envelope_checksum_ready: bool,
     pub compression_stream_ready: bool,
@@ -1024,7 +1024,7 @@ pub struct BlockStoreSlabReport {
     #[serde(default)]
     pub object_count: u64,
     #[serde(default)]
-    #[serde(rename = "routing_slot_count")]
+    #[serde(alias = "routing_slot_count")]
     pub routing_bucket_count: u64,
     pub compressed_records: u64,
     #[serde(rename = "first_page_id", default, skip_serializing_if = "Option::is_none")]
@@ -1032,10 +1032,10 @@ pub struct BlockStoreSlabReport {
     #[serde(rename = "last_page_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "first_routing_slot")]
+    #[serde(alias = "first_routing_slot")]
     pub first_routing_bucket: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "last_routing_slot")]
+    #[serde(alias = "last_routing_slot")]
     pub last_routing_bucket: Option<u32>,
     #[serde(default, alias = "page_index_count")]
     pub block_index_count: u64,
@@ -1049,7 +1049,7 @@ pub struct BlockStoreSlabReport {
 pub struct BlockStoreBlockIndexReport {
     #[serde(alias = "page_segment_id")]
     #[serde(alias = "block_segment_id")]
-    #[serde(rename = "page_slab_id")]
+    #[serde(alias = "page_slab_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -1104,10 +1104,10 @@ struct BlockStoreSlabManifest {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreRollReport {
     #[serde(alias = "previous_page_segment_id")]
-    #[serde(rename = "previous_page_slab_id")]
+    #[serde(alias = "previous_page_slab_id")]
     pub previous_block_slab_id: u64,
     #[serde(alias = "new_page_segment_id")]
-    #[serde(rename = "new_page_slab_id")]
+    #[serde(alias = "new_page_slab_id")]
     pub new_block_slab_id: u64,
 }
 
@@ -2311,14 +2311,25 @@ mod tests {
         // Every serde `rename`/`alias` in the crate that carries the old vocabulary, as of the
         // change that added this test.
         const DURABLE_NAMES: &[&str] = &[
+        "active_bands",
         "active_storage_zones",
         "active_zones",
+        "band_count",
+        "band_lifecycle_states",
+        "band_manifest_disk_consistent",
+        "band_manifest_ready",
+        "band_manifest_rebuild_ready",
+        "band_manifest_reconciled_on_open",
+        "band_manifest_writes",
+        "band_state_transition_count",
         "block_segment_id",
         "block_segment_target_bytes",
         "block_store_segment_api_ready",
         "compact_segment_address",
         "compact_segment_id",
         "compact_segment_offset",
+        "corrupt_band_count",
+        "delayed_destroy_bands",
         "delayed_destroy_page_segment_ids",
         "delayed_destroy_page_slab_ids",
         "delayed_destroy_purged_segments",
@@ -2337,17 +2348,29 @@ mod tests {
         "first_routing_slot",
         "interrupted_slot_dump_installs",
         "last_routing_slot",
+        "live_page_refs",
+        "live_page_store_used_bytes",
+        "manifest_extra_stream_bands",
+        "manifest_missing_stream_bands",
         "max_destroy_segments",
+        "min_band_garbage_basis_points",
         "new_page_segment_id",
         "new_page_slab_id",
+        "oldest_known_band_age_ms",
+        "oldest_known_band_unix_ms",
         "oldest_known_zone_age_ms",
         "oldest_known_zone_unix_ms",
+        "oldest_live_band_age_ms",
+        "oldest_live_band_unix_ms",
         "oldest_live_zone_age_ms",
         "oldest_live_zone_unix_ms",
+        "oldest_reclaimable_band_age_ms",
+        "oldest_reclaimable_band_unix_ms",
         "oldest_reclaimable_zone_age_ms",
         "oldest_reclaimable_zone_unix_ms",
         "page",
         "page_id",
+        "page_id_continuity_ready",
         "page_in_log",
         "page_index_count",
         "page_index_entries",
@@ -2358,23 +2381,31 @@ mod tests {
         "page_segments_reclaimed",
         "page_size",
         "page_slab_id",
+        "page_store_used_bytes",
+        "partial_band_count",
+        "partial_band_recovery_ready",
         "previous_page_segment_id",
         "previous_page_slab_id",
+        "purged_bands",
         "purged_page_segment_ids",
         "purged_page_slab_ids",
+        "purged_page_store_used_bytes",
         "purged_zones",
+        "reclaimable_page_store_used_bytes",
         "removed_page_segment_ids",
         "removed_page_slab_ids",
         "retain_from_page_segment_id",
         "retain_from_page_slab_id",
         "retained_current_page_segment_ids",
         "retained_current_page_slab_ids",
+        "retained_live_bytes_page_slab_ids",
         "retained_live_page_segment_ids",
         "retained_live_page_slab_ids",
         "retained_page_segment_ids",
         "retained_page_slab_ids",
         "routing_slot",
         "routing_slot_count",
+        "sealed_bands",
         "sealed_segment_count",
         "sealed_storage_zones",
         "sealed_zones",
