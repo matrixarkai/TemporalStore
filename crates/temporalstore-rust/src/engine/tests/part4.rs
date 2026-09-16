@@ -1086,11 +1086,19 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("page_segment_") && name.ends_with(".seg"))
+                .map(|name| name.starts_with("block_segment_") && name.ends_with(".seg"))
                 .unwrap_or(false)
         })
         .collect::<Vec<_>>();
     slabs.sort();
+    // A non-zero denominator. The filter above names a file ON DISK; if that name moves it
+    // matches nothing, and everything below would run over an empty set.
+    assert!(
+        slabs.len() >= 2,
+        "expected at least two slab files under {} after the roll, found {}",
+        pages.display(),
+        slabs.len()
+    );
     let k2_slab = slabs.last().expect("at least two page slabs after the roll").clone();
     fs::write(&k2_slab, b"").unwrap();
 
@@ -3824,17 +3832,28 @@ fn cross_shard_block_reclaim_retains_another_shards_live_slab() {
     assert!(response.status.ok, "{response:?}");
 
     // Identify the slab file backing shard B's page (the only .seg under the pages root).
-    let shard_b_slab_path = fs::read_dir(&pages)
+    let shard_b_slabs = fs::read_dir(&pages)
         .unwrap()
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .find(|path| {
+        .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("page_segment_") && name.ends_with(".seg"))
+                .map(|name| name.starts_with("block_segment_") && name.ends_with(".seg"))
                 .unwrap_or(false)
         })
-        .expect("shard B write must create a page slab");
+        .collect::<Vec<_>>();
+    // The comment above promises exactly one, so count it rather than taking the first that
+    // happens to match: a filter over an on-disk name that has moved finds none, and `find`
+    // would report that as "shard B never wrote" instead of "the name moved".
+    assert_eq!(
+        shard_b_slabs.len(),
+        1,
+        "expected exactly one slab file under {}, found {:?}",
+        pages.display(),
+        shard_b_slabs
+    );
+    let shard_b_slab_path = shard_b_slabs.into_iter().next().unwrap();
 
     // Seal slab 0 so future appends go to a fresh slab, then write shard A into slab 1. Slab 0 is
     // now a non-current slab that is live ONLY in shard B.

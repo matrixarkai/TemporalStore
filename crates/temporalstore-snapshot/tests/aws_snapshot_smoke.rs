@@ -123,7 +123,7 @@ async fn sample_snapshot(root: &Path) -> LocalSnapshot {
         .unwrap();
     let index_path = shard_root.join("index.bin");
     let checksums_path = shard_root.join("checksums.json");
-    let slab_path = shard_root.join("page_segments/0001.seg");
+    let slab_path = shard_root.join("block_segments/0001.seg");
     tokio::fs::write(&index_path, b"aws-index").await.unwrap();
     tokio::fs::write(&checksums_path, b"[]").await.unwrap();
     tokio::fs::write(&slab_path, b"aws-page-segment")
@@ -161,7 +161,7 @@ async fn aws_s3_snapshot_round_trip() {
         .await
         .unwrap();
     let mut restored_slab =
-        tokio::fs::File::open(restored.root_dir.join("page_segments/0001.seg"))
+        tokio::fs::File::open(restored.root_dir.join("block_segments/0001.seg"))
             .await
             .unwrap();
     let mut bytes = Vec::new();

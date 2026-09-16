@@ -1527,7 +1527,7 @@ impl BlockStore {
                 continue;
             };
             if let Some(id) = name
-                .strip_prefix("page_segment_")
+                .strip_prefix("block_segment_")
                 .and_then(|name| name.strip_suffix(".seg"))
                 .and_then(|id| id.parse::<u64>().ok())
             {
@@ -2291,6 +2291,70 @@ mod address_size_tests {
 #[cfg(test)]
 mod tests {
 
+    /// The on-disk names, and the readers that have to agree with them.
+    ///
+    /// A rename that edits the BUILDERS and leaves the READERS behind produces a store the
+    /// engine writes and then cannot find, and nothing goes red: a directory scan that
+    /// matches nothing returns an empty list, not an error, so the store simply looks new.
+    /// That is what PR #1333 did to two tests for six days. The builders are pinned to
+    /// literal spellings here, and the quarantine parser is round-tripped against the
+    /// builder, so moving one without the other fails.
+    ///
+    /// `page_zone_manifest.json` is deliberately NOT renamed and is asserted to keep its
+    /// old spelling. It is how the tree notices a store written before the slab manifest
+    /// existed; pointed at a new name it would look for a file that has never existed, and
+    /// the caller falls through to a rebuild and succeeds, so the miss would be silent.
+    #[test]
+    fn the_on_disk_names_are_the_ones_the_readers_parse() {
+        use crate::block_store::paths::{
+            delayed_destroy_dir, delayed_destroy_path, legacy_zone_manifest_path,
+            slab_manifest_path, slab_path,
+        };
+        use crate::block_store::slab_ids::{delayed_destroy_slab_id_from_name, slab_ids_at};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        assert_eq!(
+            slab_path(root, 7).file_name().unwrap(),
+            "block_segment_00000000000000000007.seg"
+        );
+        assert_eq!(
+            slab_manifest_path(root).file_name().unwrap(),
+            "block_extent_manifest.json"
+        );
+        assert_eq!(
+            delayed_destroy_dir(root).file_name().unwrap(),
+            ".block_segment_trash"
+        );
+        assert_eq!(
+            legacy_zone_manifest_path(root).file_name().unwrap(),
+            "page_zone_manifest.json",
+            "the legacy detector must keep naming the legacy file, or it detects nothing"
+        );
+
+        // The quarantine parser must read what the quarantine builder writes. Move one
+        // without the other and this round trip stops resolving.
+        let trashed = delayed_destroy_path(root, 3);
+        assert_eq!(
+            delayed_destroy_slab_id_from_name(trashed.file_name().unwrap()),
+            Some(3),
+            "the quarantine parser must read the name the builder writes: {trashed:?}"
+        );
+
+        // And the directory scan must find a real file written under the real name. A
+        // NON-ZERO count, not merely an Ok: an empty scan is what a half-rename looks like.
+        std::fs::write(slab_path(root, 0), b"x").unwrap();
+        std::fs::write(slab_path(root, 1), b"y").unwrap();
+        let found = slab_ids_at(root).unwrap();
+        assert_eq!(
+            found,
+            vec![0, 1],
+            "the slab scan must find the slabs the builder just wrote, under {}",
+            root.display()
+        );
+    }
+
     /// A rename may not quietly drop a durable name.
     ///
     /// The vocabulary migration -- page to block, zone to slab, slot to bucket -- is deliberate and
@@ -2941,7 +3005,7 @@ const RETIRED_NAMES: &[&str] = &[
         // MANIFEST-CONFORMANCE FOLD no-O(n) proof: on the default single-barrier path the per-append
         // slab-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
         // write, growing with the slab count) is OFF the write path. Appending many records must
-        // NOT rewrite `page_extent_manifest.json` each time; the catalog is deferred and made
+        // NOT rewrite `block_extent_manifest.json` each time; the catalog is deferred and made
         // durable in one shot at sync_durable()/seal. Proven by the manifest file bytes staying
         // byte-identical across a burst of appends, then changing exactly once at sync_durable.
         let dir = tempfile::tempdir().unwrap();
@@ -4638,7 +4702,7 @@ const RETIRED_NAMES: &[&str] = &[
         let trash = delayed_destroy_dir(dir.path());
         fs::create_dir_all(&trash).unwrap();
         fs::write(
-            trash.join(format!("page_segment_{ORPHAN:020}.seg.deleted.1")),
+            trash.join(format!("block_segment_{ORPHAN:020}.seg.deleted.1")),
             b"orphaned-by-a-crash",
         )
         .unwrap();
@@ -4765,7 +4829,7 @@ const RETIRED_NAMES: &[&str] = &[
         fs::create_dir_all(&trash).unwrap();
         for id in 0..slabs {
             fs::write(
-                trash.join(format!("page_segment_{id:020}.seg.deleted.{id}")),
+                trash.join(format!("block_segment_{id:020}.seg.deleted.{id}")),
                 b"slab",
             )
             .unwrap();
@@ -4841,7 +4905,7 @@ const RETIRED_NAMES: &[&str] = &[
         fs::create_dir_all(&trash).unwrap();
         for id in 0..slabs {
             fs::write(
-                trash.join(format!("page_segment_{id:020}.seg.deleted.{id}")),
+                trash.join(format!("block_segment_{id:020}.seg.deleted.{id}")),
                 b"slab",
             )
             .unwrap();
@@ -4914,7 +4978,7 @@ const RETIRED_NAMES: &[&str] = &[
         fs::create_dir_all(&trash).unwrap();
         for id in 0..slabs {
             fs::write(
-                trash.join(format!("page_segment_{id:020}.seg.deleted.{id}")),
+                trash.join(format!("block_segment_{id:020}.seg.deleted.{id}")),
                 b"slab",
             )
             .unwrap();

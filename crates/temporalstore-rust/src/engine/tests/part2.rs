@@ -3520,10 +3520,17 @@ fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
     drop(engine);
     // Delete the slab-manifest file: the catalog must come back from the index-log fold, not the
     // per-write file.
-    let manifest = block_dir.join("page_extent_manifest.json");
-    if manifest.exists() {
-        std::fs::remove_file(&manifest).unwrap();
-    }
+    let manifest = block_dir.join("block_extent_manifest.json");
+    // Unconditional, and it has to have been there. `if exists { remove }` skips in silence
+    // when the file is renamed out from under it, and the test would then prove the catalog
+    // comes back from the index-log fold while the per-write file it meant to delete was
+    // still on disk -- green, and testing nothing.
+    assert!(
+        manifest.exists(),
+        "the slab manifest must exist before this test deletes it: {}",
+        manifest.display()
+    );
+    std::fs::remove_file(&manifest).unwrap();
     let restarted = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-b"),

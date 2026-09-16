@@ -135,7 +135,7 @@ pub(crate) fn delayed_destroy_slab_reports_at(
 pub(crate) fn delayed_destroy_slab_id_from_name(name: &std::ffi::OsStr) -> Option<u64> {
     let name = name.to_str()?;
     let id = name
-        .strip_prefix("page_segment_")?
+        .strip_prefix("block_segment_")?
         .strip_suffix(name.split_once(".seg.deleted.")?.1)?
         .strip_suffix(".seg.deleted.")?;
     id.parse::<u64>().ok()
@@ -166,7 +166,7 @@ pub(crate) fn slab_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
             continue;
         };
         if let Some(id) = name
-            .strip_prefix("page_segment_")
+            .strip_prefix("block_segment_")
             .and_then(|name| name.strip_suffix(".seg"))
             .and_then(|id| id.parse::<u64>().ok())
         {

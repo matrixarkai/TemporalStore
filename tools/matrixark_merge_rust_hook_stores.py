@@ -23,8 +23,8 @@ from typing import Any
 
 
 INDEX = Path("indexes/shard-1.index.json")
-MANIFEST = Path("pages/page_extent_manifest.json")
-SEGMENT0 = Path("pages/page_segment_00000000000000000000.seg")
+MANIFEST = Path("pages/block_extent_manifest.json")
+SEGMENT0 = Path("pages/block_segment_00000000000000000000.seg")
 
 
 def _load_json(path: Path, default: Any) -> Any:

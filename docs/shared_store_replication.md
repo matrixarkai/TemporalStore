@@ -8,16 +8,16 @@ The Rust code now has a first shared-store replication path for WAL, index, and 
 <cluster_id>/shards/<shard_id>/shared/
   index/
     shard.index.json
-  page_segments/
-    page_segment_<page_segment_id>.seg
+  block_segments/
+    block_segment_<block_segment_id>.seg
   wal/
     wal_<wal_index>.json
   checkpoints/
     <checkpoint_id>/
       index/
         shard.index.json
-      page_segments/
-        page_segment_<page_segment_id>.seg
+      block_segments/
+        block_segment_<block_segment_id>.seg
       manifest.json
 ```
 

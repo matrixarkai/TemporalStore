@@ -2621,7 +2621,7 @@ fn crash_recovery_rebuilds_missing_slab_manifest_from_block_stream() {
             .ok
     );
 
-    fs::remove_file(block_dir.join("page_extent_manifest.json")).unwrap();
+    fs::remove_file(block_dir.join("block_extent_manifest.json")).unwrap();
     let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &block_dir, &index_dir);
     recovered.load_shard(1);
     let report = recovered.storage_recovery_report(1);
@@ -2631,7 +2631,7 @@ fn crash_recovery_rebuilds_missing_slab_manifest_from_block_stream() {
     assert!(report.slab_summary.live_physical_bytes > 0);
     // The slab manifest was rebuilt (from the page stream on the default path; from WAL-replayed
     // pages under the single barrier). Recovery of both acked writes is asserted by the reads below.
-    assert!(block_dir.join("page_extent_manifest.json").exists());
+    assert!(block_dir.join("block_extent_manifest.json").exists());
     if !crate::engine::wal_single_barrier() {
         // Default path: the delta fold reconstructs the exact on-disk page layout at the original
         // addresses, so the sealed(slab 0)+active(slab 1) split from the out-of-band roll_slab()

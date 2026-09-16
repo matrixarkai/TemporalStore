@@ -70,7 +70,7 @@ fn recover_and_print(root: PathBuf) {
 fn corrupt_first_block_slab(root: PathBuf) {
     let slab_path = root
         .join("pages")
-        .join("page_segment_00000000000000000000.seg");
+        .join("block_segment_00000000000000000000.seg");
     let mut file = fs::OpenOptions::new()
         .read(true)
         .write(true)

@@ -399,7 +399,7 @@ async fn upload_snapshot_inner<O: ObjectStore>(
         let name = block_slab.file_name().unwrap().to_string_lossy();
         put_file(
             object_store,
-            &format!("{temp_prefix}page_segments/{name}"),
+            &format!("{temp_prefix}block_segments/{name}"),
             block_slab,
         )
         .await?;
@@ -548,7 +548,7 @@ async fn block_slab_manifests(
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
         out.push(BlockSlabManifest {
             block_slab_id: file_name.trim_end_matches(".seg").to_string(),
-            relative_path: format!("page_segments/{file_name}"),
+            relative_path: format!("block_segments/{file_name}"),
             byte_size: bytes.len() as u64,
             sha256: sha256_hex(&bytes),
         });
@@ -702,7 +702,7 @@ mod tests {
 
         assert_eq!(restored.manifest.shard_id, 7);
         assert_eq!(
-            tokio::fs::read(restored.root_dir.join("page_segments/0001.seg"))
+            tokio::fs::read(restored.root_dir.join("block_segments/0001.seg"))
                 .await
                 .unwrap(),
             b"page-segment-bytes"

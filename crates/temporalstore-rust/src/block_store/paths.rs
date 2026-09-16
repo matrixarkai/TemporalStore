@@ -30,11 +30,11 @@ pub(crate) fn directory_fsyncs() -> u64 {
 }
 
 pub(super) fn slab_path(root: &Path, block_slab_id: u64) -> PathBuf {
-    root.join(format!("page_segment_{block_slab_id:020}.seg"))
+    root.join(format!("block_segment_{block_slab_id:020}.seg"))
 }
 
 pub(super) fn slab_manifest_path(root: &Path) -> PathBuf {
-    root.join("page_extent_manifest.json")
+    root.join("block_extent_manifest.json")
 }
 
 pub(super) fn legacy_zone_manifest_path(root: &Path) -> PathBuf {
@@ -42,7 +42,7 @@ pub(super) fn legacy_zone_manifest_path(root: &Path) -> PathBuf {
 }
 
 pub(super) fn delayed_destroy_dir(root: &Path) -> PathBuf {
-    root.join(".page_segment_trash")
+    root.join(".block_segment_trash")
 }
 
 pub(super) fn delayed_destroy_path(root: &Path, block_slab_id: u64) -> PathBuf {
@@ -51,7 +51,7 @@ pub(super) fn delayed_destroy_path(root: &Path, block_slab_id: u64) -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     delayed_destroy_dir(root).join(format!(
-        "page_segment_{block_slab_id:020}.seg.deleted.{nanos}"
+        "block_segment_{block_slab_id:020}.seg.deleted.{nanos}"
     ))
 }
 

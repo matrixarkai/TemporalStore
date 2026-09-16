@@ -1002,7 +1002,7 @@ where
         let mut uploaded_slab_ids = std::collections::BTreeSet::new();
         for block_slab_id in block_store.slab_ids()? {
             let bytes = block_store.read_slab(block_slab_id)?;
-            let key = format!("{prefix}page_segments/page_segment_{block_slab_id:020}.seg");
+            let key = format!("{prefix}block_segments/block_segment_{block_slab_id:020}.seg");
             self.object_store
                 .put(&key, Bytes::from(bytes.clone()))
                 .await?;
@@ -1646,12 +1646,12 @@ where
     }
 
     fn block_slab_prefix(&self, shard_id: ShardId) -> String {
-        format!("{}page_segments/", self.shard_prefix(shard_id))
+        format!("{}block_segments/", self.shard_prefix(shard_id))
     }
 
     fn block_slab_key(&self, shard_id: ShardId, block_slab_id: u64) -> String {
         format!(
-            "{}page_segment_{block_slab_id:020}.seg",
+            "{}block_segment_{block_slab_id:020}.seg",
             self.block_slab_prefix(shard_id)
         )
     }
@@ -2451,7 +2451,7 @@ where
 fn parse_block_slab_id(key: &str) -> Option<u64> {
     key.rsplit('/')
         .next()?
-        .strip_prefix("page_segment_")?
+        .strip_prefix("block_segment_")?
         .strip_suffix(".seg")?
         .parse()
         .ok()
@@ -3778,7 +3778,7 @@ mod tests {
         let slab0 = dir
             .path()
             .join("primary-pages")
-            .join("page_segment_00000000000000000000.seg");
+            .join("block_segment_00000000000000000000.seg");
         std::fs::remove_file(&slab0).unwrap();
         assert!(!primary.block_store().slab_ids().unwrap().contains(&0));
 
