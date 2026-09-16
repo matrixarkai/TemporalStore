@@ -281,19 +281,19 @@ pub struct ShardCanonicalStorageStats {
     /// 4,294,967,295 per shard no matter how large the index really was.
     #[serde(default)]
     pub bucket_index_resident_entries: u64,
-    #[serde(rename = "storage_zone_count")]
+    #[serde(alias = "storage_zone_count")]
     pub storage_slab_count: u64,
-    #[serde(rename = "active_storage_zones")]
+    #[serde(alias = "active_storage_zones")]
     pub active_storage_slabs: u64,
-    #[serde(rename = "sealed_storage_zones")]
+    #[serde(alias = "sealed_storage_zones")]
     pub sealed_storage_slabs: u64,
     #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
-    #[serde(rename = "storage_zone_total_bytes")]
+    #[serde(alias = "storage_zone_total_bytes")]
     pub storage_slab_total_bytes: u64,
-    #[serde(rename = "storage_zone_used_bytes")]
+    #[serde(alias = "storage_zone_used_bytes")]
     pub storage_slab_used_bytes: u64,
-    #[serde(rename = "storage_zone_stale_bytes")]
+    #[serde(alias = "storage_zone_stale_bytes")]
     pub storage_slab_stale_bytes: u64,
     /// How many times the block store was CALLED to read, summed over the shard's lifetime.
     ///
@@ -342,7 +342,7 @@ pub struct ShardStats {
     #[serde(default)]
     pub storage: ShardCanonicalStorageStats,
     pub cache: CacheStats,
-    #[serde(default, rename = "page_store")]
+    #[serde(default, alias = "page_store")]
     pub block_store_compat: BlockStoreStats,
     #[serde(default)]
     pub block_store_slabs_compat: BlockStoreSlabSummary,

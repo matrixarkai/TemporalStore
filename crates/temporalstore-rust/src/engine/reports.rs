@@ -239,7 +239,7 @@ pub struct ShardExpirySweepRequest {
 pub struct RustStorageObservation {
     pub shard_id: ShardId,
     pub cache: CacheStats,
-    #[serde(rename = "page_store")]
+    #[serde(alias = "page_store")]
     pub block_store: BlockStoreStats,
     pub observed_memory_hit: bool,
     pub observed_block_cache_hit: bool,
@@ -289,7 +289,7 @@ pub struct StorageRecoveryReport {
     /// call, which starts at the beginning and reads everything.
     #[serde(default)]
     pub readable_probe_cursor: usize,
-    #[serde(rename = "unreadable_page_refs", default)]
+    #[serde(alias = "unreadable_page_refs", default)]
     pub unreadable_block_refs: Vec<StorageRecoveryBlockError>,
     #[serde(default)]
     pub owner_mismatch_block_refs: Vec<StorageRecoveryBlockOwnerMismatch>,
@@ -647,7 +647,7 @@ pub struct StoragePhysicalBlockIndex {
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
-    #[serde(default, rename = "page_id", skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "page_id", skip_serializing_if = "Option::is_none")]
     pub block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
@@ -999,7 +999,7 @@ pub struct BucketDumpRaftSnapshotRetentionBlock {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecyclePlan {
     pub shard_id: ShardId,
-    #[serde(rename = "dirty_slots")]
+    #[serde(alias = "dirty_slots")]
     pub dirty_buckets: Vec<u32>,
     pub selected_dump_buckets: Vec<u32>,
     #[serde(rename = "undumped_wal_records", default)]
@@ -1140,7 +1140,7 @@ pub struct PublicStorageContract {
     /// published entry rather than rename a field -- a wire change wearing a rename's clothes.
     /// Everywhere else in the crate a band is spelled slab; here the older name is the payload.
     pub band: String,
-    #[serde(rename = "slot")]
+    #[serde(alias = "slot")]
     pub bucket: String,
     pub append_watermark: String,
     pub compaction_watermark: String,
@@ -1199,7 +1199,7 @@ pub struct PublicStorageFeatureShapes {
     pub slab_fields: Vec<String>,
     /// NOT folded into [`Self::slab_fields`], for the reason on [`PublicStorageContract::band`].
     pub band_fields: Vec<String>,
-    #[serde(rename = "slot_fields")]
+    #[serde(alias = "slot_fields")]
     pub bucket_fields: Vec<String>,
     pub append_watermark_fields: Vec<String>,
     pub compaction_watermark_fields: Vec<String>,
@@ -1890,7 +1890,7 @@ pub fn default_storage_safety_snapshot() -> StorageSafetySnapshot {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageAppendWatermarkSample {
     pub shard_id: ShardId,
-    #[serde(rename = "slot_id")]
+    #[serde(alias = "slot_id")]
     pub bucket_id: u32,
     pub log_index: u64,
     pub timestamp_ms: u64,
@@ -2036,7 +2036,7 @@ pub struct StoragePageAddressSample {
     pub stored_slab_id: u64,
     #[serde(alias = "segment_id")]
     pub slab_id: u64,
-    #[serde(rename = "page_id")]
+    #[serde(alias = "page_id")]
     pub block_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -2058,7 +2058,7 @@ pub struct StorageBlockAddressSample {
 pub struct StoragePageIndexEntrySample {
     pub logical_key: String,
     pub timestamp_range: Option<(u64, u64)>,
-    #[serde(rename = "page_addresses")]
+    #[serde(alias = "page_addresses")]
     pub block_addresses: Vec<StoragePageAddressSample>,
     pub append_watermark: u64,
     pub generation: u64,
@@ -2079,7 +2079,7 @@ pub struct StorageObjectIndexEntrySample {
     pub model: String,
     pub table: String,
     pub object_key: String,
-    #[serde(rename = "page_chain")]
+    #[serde(alias = "page_chain")]
     pub block_chain: Vec<StoragePageAddressSample>,
     #[serde(rename = "tombstone")]
     pub delete_marker: bool,
@@ -2091,15 +2091,15 @@ pub struct StorageIndexSnapshot {
     pub page_index_entry_count: u64,
     pub block_index_entry_count: u64,
     pub object_index_entry_count: u64,
-    #[serde(rename = "slot_index_entry_count")]
+    #[serde(alias = "slot_index_entry_count")]
     pub bucket_index_entry_count: u64,
-    #[serde(rename = "slot_object_ref_count")]
+    #[serde(alias = "slot_object_ref_count")]
     pub bucket_object_ref_count: u64,
-    #[serde(rename = "slot_page_ref_count")]
+    #[serde(alias = "slot_page_ref_count")]
     pub bucket_block_ref_count: u64,
-    #[serde(rename = "page_address_count")]
+    #[serde(alias = "page_address_count")]
     pub block_address_count: u64,
-    #[serde(rename = "unreadable_page_refs")]
+    #[serde(alias = "unreadable_page_refs")]
     pub unreadable_block_refs: u64,
     pub checksum_mismatches: u64,
     pub missing_owner_ref_count: u64,
@@ -2192,11 +2192,11 @@ pub struct StorageSlabSlabSample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBucketSample {
-    #[serde(rename = "slot_id")]
+    #[serde(alias = "slot_id")]
     pub bucket_id: u32,
     pub dirty_generation: u64,
     pub object_refs: Vec<u64>,
-    #[serde(rename = "page_refs")]
+    #[serde(alias = "page_refs")]
     pub block_refs: Vec<StoragePageAddressSample>,
     #[serde(rename = "tombstones")]
     pub delete_markers: Vec<String>,
@@ -2205,11 +2205,11 @@ pub struct StorageBucketSample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTopologySnapshot {
-    #[serde(rename = "storage_zone_count")]
+    #[serde(alias = "storage_zone_count")]
     pub storage_slab_count: u64,
-    #[serde(rename = "active_storage_zones")]
+    #[serde(alias = "active_storage_zones")]
     pub active_storage_slabs: u64,
-    #[serde(rename = "sealed_storage_zones")]
+    #[serde(alias = "sealed_storage_zones")]
     pub sealed_storage_slabs: u64,
     #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
@@ -2218,11 +2218,11 @@ pub struct StorageTopologySnapshot {
     #[serde(alias = "segment_sealed_count")]
     pub slab_sealed_count: u64,
     pub delayed_destroy_backlog: u64,
-    #[serde(rename = "storage_zone_total_bytes")]
+    #[serde(alias = "storage_zone_total_bytes")]
     pub storage_slab_total_bytes: u64,
-    #[serde(rename = "storage_zone_used_bytes")]
+    #[serde(alias = "storage_zone_used_bytes")]
     pub storage_slab_used_bytes: u64,
-    #[serde(rename = "storage_zone_stale_bytes")]
+    #[serde(alias = "storage_zone_stale_bytes")]
     pub storage_slab_stale_bytes: u64,
     pub append_log_replay_records: u64,
     pub append_log_reclaimed_records: u64,
@@ -2237,7 +2237,7 @@ pub struct StorageTopologySnapshot {
     #[serde(default)]
     pub slab_range_samples: Vec<StorageSlabSlabSample>,
     #[serde(default)]
-    #[serde(rename = "slot_samples")]
+    #[serde(alias = "slot_samples")]
     pub bucket_samples: Vec<StorageBucketSample>,
 }
 
@@ -3079,7 +3079,7 @@ pub struct StorageMergedDumpLoadPolicyReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageCacheWarmupReport {
     pub shard_id: ShardId,
-    #[serde(rename = "selected_slots")]
+    #[serde(alias = "selected_slots")]
     pub selected_buckets: Vec<u32>,
     pub considered_block_refs: usize,
     pub skipped_block_refs: usize,
@@ -3431,7 +3431,7 @@ pub struct StorageManagerStageReport {
     #[serde(default)]
     pub stale_bytes: u64,
     #[serde(default)]
-    #[serde(rename = "selected_slots")]
+    #[serde(alias = "selected_slots")]
     pub selected_buckets: Vec<u32>,
     #[serde(default)]
     pub selected_block_slab_ids: Vec<u64>,
@@ -3629,7 +3629,7 @@ pub struct StorageManagerLoopRequest {
     pub apply: bool,
     #[serde(default)]
     pub expire_records: bool,
-    #[serde(rename = "compact_pages", default)]
+    #[serde(alias = "compact_pages", default)]
     pub compact_blocks: bool,
     #[serde(default)]
     pub lifecycle: StorageLifecycleRequest,
