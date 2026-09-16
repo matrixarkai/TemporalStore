@@ -4456,7 +4456,7 @@ def _engine_footprint(text: Optional[str]) -> Json:
         found = True
         cache[tier] = cache.get(tier, 0.0) + value
     logical = physical = 0.0
-    for labels, value in _prom_samples(text, "temporalstore_storage_slot_bytes"):
+    for labels, value in _prom_samples(text, "temporalstore_storage_bucket_bytes"):
         kind = labels.get("kind") or ""
         if kind == "logical":
             found = True

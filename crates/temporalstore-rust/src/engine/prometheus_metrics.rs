@@ -25,18 +25,8 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_cache_operations_total counter\n");
         out.push_str("# HELP temporalstore_cache_bytes Cache bytes by shard and tier.\n");
         out.push_str("# TYPE temporalstore_cache_bytes gauge\n");
-        out.push_str("# HELP temporalstore_page_store_operations_total Page store operation counters by shard and kind.\n");
-        out.push_str("# TYPE temporalstore_page_store_operations_total counter\n");
-        out.push_str("# HELP temporalstore_page_store_bytes_total Page store byte counters by shard and kind.\n");
-        out.push_str("# TYPE temporalstore_page_store_bytes_total counter\n");
-        out.push_str("# HELP temporalstore_page_store_zone_count Page-store zone counts by shard and lifecycle state.\n");
-        out.push_str("# TYPE temporalstore_page_store_zone_count gauge\n");
-        out.push_str("# HELP temporalstore_page_store_zone_bytes Page-store physical bytes by shard and lifecycle kind.\n");
-        out.push_str("# TYPE temporalstore_page_store_zone_bytes gauge\n");
-        out.push_str("# HELP temporalstore_page_store_zone_oldest_unix_ms Oldest page-store zone timestamp by shard and lifecycle scope.\n");
-        out.push_str("# TYPE temporalstore_page_store_zone_oldest_unix_ms gauge\n");
-        out.push_str("# HELP temporalstore_page_store_zone_oldest_age_ms Oldest page-store zone age by shard and lifecycle scope.\n");
-        out.push_str("# TYPE temporalstore_page_store_zone_oldest_age_ms gauge\n");
+        out.push_str("# HELP temporalstore_block_store_bytes_total Block store byte counters by shard and kind.\n");
+        out.push_str("# TYPE temporalstore_block_store_bytes_total counter\n");
         out.push_str("# HELP temporalstore_shard_rate_limit_total Commands allowed and refused by a rate limit. Absent for a shard with no limit, which is not the same as a limit that has refused nothing.\n");
         out.push_str("# TYPE temporalstore_shard_rate_limit_total counter\n");
         out.push_str("# HELP temporalstore_shard_index_lag_records Records appended to the log that the durable index has not yet accounted for, by shard. High values mean a longer restart and reclaim that cannot advance.\n");
@@ -55,28 +45,34 @@ impl TemporalEngine {
             "# HELP temporalstore_object_manager_objects Logical hot objects tracked by shard.\n",
         );
         out.push_str("# TYPE temporalstore_object_manager_objects gauge\n");
-        out.push_str("# HELP temporalstore_object_manager_page_refs Page-address references tracked by shard.\n");
-        out.push_str("# TYPE temporalstore_object_manager_page_refs gauge\n");
+        out.push_str("# HELP temporalstore_object_manager_block_refs Block-address references tracked by shard.\n");
+        out.push_str("# TYPE temporalstore_object_manager_block_refs gauge\n");
         out.push_str("# HELP temporalstore_object_manager_dirty_objects Dirty logical objects tracked by shard.\n");
         out.push_str("# TYPE temporalstore_object_manager_dirty_objects gauge\n");
-        out.push_str("# HELP temporalstore_object_manager_dirty_slots Dirty routing slots tracked by shard.\n");
-        out.push_str("# TYPE temporalstore_object_manager_dirty_slots gauge\n");
-        out.push_str("# HELP temporalstore_storage_slot_page_refs Live page refs by shard and routing slot.\n");
-        out.push_str("# TYPE temporalstore_storage_slot_page_refs gauge\n");
-        out.push_str("# HELP temporalstore_storage_slot_bytes Live bytes by shard, routing slot, and kind.\n");
-        out.push_str("# TYPE temporalstore_storage_slot_bytes gauge\n");
-        out.push_str("# HELP temporalstore_storage_slot_dirty_objects Dirty objects by shard and routing slot.\n");
-        out.push_str("# TYPE temporalstore_storage_slot_dirty_objects gauge\n");
-        out.push_str("# HELP temporalstore_storage_slot_series_omitted Routing slots on this shard when per-slot series were suppressed by TS_METRICS_MAX_SLOT_SERIES.\n");
-        out.push_str("# TYPE temporalstore_storage_slot_series_omitted gauge\n");
+        out.push_str("# HELP temporalstore_object_manager_dirty_buckets Dirty routing buckets tracked by shard.\n");
+        out.push_str("# TYPE temporalstore_object_manager_dirty_buckets gauge\n");
+        out.push_str("# HELP temporalstore_storage_bucket_block_refs Live block refs by shard and routing bucket.\n");
+        out.push_str("# TYPE temporalstore_storage_bucket_block_refs gauge\n");
+        out.push_str("# HELP temporalstore_storage_bucket_bytes Live bytes by shard, routing bucket, and kind.\n");
+        out.push_str("# TYPE temporalstore_storage_bucket_bytes gauge\n");
+        out.push_str("# HELP temporalstore_storage_bucket_dirty_objects Dirty objects by shard and routing bucket.\n");
+        out.push_str("# TYPE temporalstore_storage_bucket_dirty_objects gauge\n");
+        out.push_str("# HELP temporalstore_storage_bucket_series_omitted Routing buckets on this shard when per-bucket series were suppressed by TS_METRICS_MAX_SLOT_SERIES.\n");
+        out.push_str("# TYPE temporalstore_storage_bucket_series_omitted gauge\n");
         out.push_str("# HELP temporalstore_block_store_operations_total Canonical block-store operation counters by shard.\n");
         out.push_str("# TYPE temporalstore_block_store_operations_total counter\n");
-        out.push_str("# HELP temporalstore_block_store_band_bytes Canonical block-store band bytes by shard and kind.\n");
-        out.push_str("# TYPE temporalstore_block_store_band_bytes gauge\n");
+        out.push_str("# HELP temporalstore_block_store_slab_bytes Canonical block-store slab bytes by shard and kind.\n");
+        out.push_str("# TYPE temporalstore_block_store_slab_bytes gauge\n");
+        out.push_str("# HELP temporalstore_block_store_slab_count Canonical block-store slab counts by shard and lifecycle state.\n");
+        out.push_str("# TYPE temporalstore_block_store_slab_count gauge\n");
+        out.push_str("# HELP temporalstore_block_store_slab_oldest_unix_ms Oldest block-store slab timestamp by shard and lifecycle scope.\n");
+        out.push_str("# TYPE temporalstore_block_store_slab_oldest_unix_ms gauge\n");
+        out.push_str("# HELP temporalstore_block_store_slab_oldest_age_ms Oldest block-store slab age by shard and lifecycle scope.\n");
+        out.push_str("# TYPE temporalstore_block_store_slab_oldest_age_ms gauge\n");
         out.push_str(
-            "# HELP temporalstore_partition_routing_slots Routing slots owned by shard.\n",
+            "# HELP temporalstore_partition_routing_buckets Routing buckets owned by shard.\n",
         );
-        out.push_str("# TYPE temporalstore_partition_routing_slots gauge\n");
+        out.push_str("# TYPE temporalstore_partition_routing_buckets gauge\n");
         out.push_str(
             "# HELP temporalstore_ingestion_records_total Ingestion record counters by outcome.\n",
         );
@@ -280,15 +276,6 @@ impl TemporalEngine {
             ] {
                 push_metric(
                     &mut out,
-                    "temporalstore_page_store_operations_total",
-                    &[
-                        ("shard_id", stats.shard_id.to_string()),
-                        ("kind", kind.into()),
-                    ],
-                    value,
-                );
-                push_metric(
-                    &mut out,
                     "temporalstore_block_store_operations_total",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
@@ -309,7 +296,7 @@ impl TemporalEngine {
             ] {
                 push_metric(
                     &mut out,
-                    "temporalstore_page_store_bytes_total",
+                    "temporalstore_block_store_bytes_total",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("kind", kind.into()),
@@ -328,16 +315,7 @@ impl TemporalEngine {
             ] {
                 push_metric(
                     &mut out,
-                    "temporalstore_page_store_zone_count",
-                    &[
-                        ("shard_id", stats.shard_id.to_string()),
-                        ("state", state.into()),
-                    ],
-                    value,
-                );
-                push_metric(
-                    &mut out,
-                    "temporalstore_block_store_band_count",
+                    "temporalstore_block_store_slab_count",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("state", state.into()),
@@ -365,16 +343,7 @@ impl TemporalEngine {
             ] {
                 push_metric(
                     &mut out,
-                    "temporalstore_page_store_zone_bytes",
-                    &[
-                        ("shard_id", stats.shard_id.to_string()),
-                        ("kind", kind.into()),
-                    ],
-                    value,
-                );
-                push_metric(
-                    &mut out,
-                    "temporalstore_block_store_band_bytes",
+                    "temporalstore_block_store_slab_bytes",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("kind", kind.into()),
@@ -393,16 +362,7 @@ impl TemporalEngine {
                 if let Some(value) = value {
                     push_metric(
                         &mut out,
-                        "temporalstore_page_store_zone_oldest_unix_ms",
-                        &[
-                            ("shard_id", stats.shard_id.to_string()),
-                            ("scope", scope.into()),
-                        ],
-                        value,
-                    );
-                    push_metric(
-                        &mut out,
-                        "temporalstore_block_store_band_oldest_unix_ms",
+                        "temporalstore_block_store_slab_oldest_unix_ms",
                         &[
                             ("shard_id", stats.shard_id.to_string()),
                             ("scope", scope.into()),
@@ -422,16 +382,7 @@ impl TemporalEngine {
                 if let Some(value) = value {
                     push_metric(
                         &mut out,
-                        "temporalstore_page_store_zone_oldest_age_ms",
-                        &[
-                            ("shard_id", stats.shard_id.to_string()),
-                            ("scope", scope.into()),
-                        ],
-                        value,
-                    );
-                    push_metric(
-                        &mut out,
-                        "temporalstore_block_store_band_oldest_age_ms",
+                        "temporalstore_block_store_slab_oldest_age_ms",
                         &[
                             ("shard_id", stats.shard_id.to_string()),
                             ("scope", scope.into()),
@@ -460,7 +411,7 @@ impl TemporalEngine {
             );
             push_metric(
                 &mut out,
-                "temporalstore_object_manager_page_refs",
+                "temporalstore_object_manager_block_refs",
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.object_manager.block_ref_count as u64,
             );
@@ -472,7 +423,7 @@ impl TemporalEngine {
             );
             push_metric(
                 &mut out,
-                "temporalstore_object_manager_dirty_slots",
+                "temporalstore_object_manager_dirty_buckets",
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.object_manager.dirty_bucket_count as u64,
             );
@@ -493,7 +444,7 @@ impl TemporalEngine {
             if bucket_summaries.len() > max_bucket_series {
                 push_metric(
                     &mut out,
-                    "temporalstore_storage_slot_series_omitted",
+                    "temporalstore_storage_bucket_series_omitted",
                     &[("shard_id", stats.shard_id.to_string())],
                     bucket_summaries.len() as u64,
                 );
@@ -501,7 +452,7 @@ impl TemporalEngine {
             for summary in bucket_summaries.iter().take(max_bucket_series) {
                 push_metric(
                     &mut out,
-                    "temporalstore_storage_slot_page_refs",
+                    "temporalstore_storage_bucket_block_refs",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("slot", summary.routing_bucket.to_string()),
@@ -514,7 +465,7 @@ impl TemporalEngine {
                 ] {
                     push_metric(
                         &mut out,
-                        "temporalstore_storage_slot_bytes",
+                        "temporalstore_storage_bucket_bytes",
                         &[
                             ("shard_id", stats.shard_id.to_string()),
                             ("slot", summary.routing_bucket.to_string()),
@@ -525,7 +476,7 @@ impl TemporalEngine {
                 }
                 push_metric(
                     &mut out,
-                    "temporalstore_storage_slot_dirty_objects",
+                    "temporalstore_storage_bucket_dirty_objects",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("slot", summary.routing_bucket.to_string()),
@@ -535,7 +486,7 @@ impl TemporalEngine {
             }
             push_metric(
                 &mut out,
-                "temporalstore_partition_routing_slots",
+                "temporalstore_partition_routing_buckets",
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.object_manager.routing_bucket_count as u64,
             );

@@ -71,7 +71,7 @@ mean the proxy has taken a backend out of rotation.
 Object and page lifecycle, slot occupancy, and cache pressure.
 
 `temporalstore_object_manager_objects` and `_page_refs` are the working-set size;
-`temporalstore_storage_slot_bytes` is what that costs on disk. Cache miss pressure is the metric
+`temporalstore_storage_bucket_bytes` is what that costs on disk. Cache miss pressure is the metric
 that moves before read latency does, which makes it the useful early signal.
 
 **Alerts:** `TemporalStoreStorageCacheBlockers`, `TemporalStoreBlockStoreReadErrors`,

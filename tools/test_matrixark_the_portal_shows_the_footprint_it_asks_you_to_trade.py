@@ -41,10 +41,10 @@ SAMPLE = "\n".join([
     'temporalstore_cache_bytes{shard_id="2",tier="memory"} 23456',
     'temporalstore_cache_bytes{shard_id="1",tier="disk"} 999',
     'temporalstore_cache_bytes{shard_id="1",tier="compression_saved"} 4096',
-    'temporalstore_storage_slot_bytes{shard_id="1",slot="0",kind="logical"} 1000000',
-    'temporalstore_storage_slot_bytes{shard_id="1",slot="1",kind="logical"} 200000',
-    'temporalstore_storage_slot_bytes{shard_id="1",slot="0",kind="physical"} 250000',
-    'temporalstore_storage_slot_bytes{shard_id="1",slot="1",kind="physical"} 50000',
+    'temporalstore_storage_bucket_bytes{shard_id="1",slot="0",kind="logical"} 1000000',
+    'temporalstore_storage_bucket_bytes{shard_id="1",slot="1",kind="logical"} 200000',
+    'temporalstore_storage_bucket_bytes{shard_id="1",slot="0",kind="physical"} 250000',
+    'temporalstore_storage_bucket_bytes{shard_id="1",slot="1",kind="physical"} 50000',
     'temporalstore_storage_backend{backend="shared",replication="none"} 1',
 ])
 
@@ -115,7 +115,7 @@ class AnUnpublishedFootprintIsNotAZeroTest(unittest.TestCase):
     def test_the_ratio_is_absent_when_it_would_be_meaningless(self) -> None:
         """A ratio against a zero denominator is not a compression figure, and 0.0 beside
         'compression' reads as 'none', which is a different claim."""
-        only_logical = 'temporalstore_storage_slot_bytes{shard_id="1",slot="0",kind="logical"} 10'
+        only_logical = 'temporalstore_storage_bucket_bytes{shard_id="1",slot="0",kind="logical"} 10'
         found = gateway._engine_footprint(only_logical)
         self.assertTrue(found["available"])
         self.assertNotIn("store_compression_ratio", found)
@@ -213,7 +213,7 @@ class TheSeriesAreTheOnesTheEngineEmitsTest(unittest.TestCase):
         """The floor: the rule above passes on an empty intersection if the panel stopped naming
         any series, which is exactly what a silent rename would look like."""
         emitted = self.series_in_the_crate()
-        for name in ("temporalstore_cache_bytes", "temporalstore_storage_slot_bytes"):
+        for name in ("temporalstore_cache_bytes", "temporalstore_storage_bucket_bytes"):
             self.assertIn(name, emitted)
 
 

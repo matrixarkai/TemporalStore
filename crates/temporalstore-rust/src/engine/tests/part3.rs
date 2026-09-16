@@ -1876,32 +1876,32 @@ fn prometheus_metrics_include_records_cache_block_and_wal() {
     ));
     assert!(metrics.contains("temporalstore_block_store_operations_total"));
     assert!(metrics
-        .contains("temporalstore_block_store_band_count{shard_id=\"1\",state=\"sealed\"} 1"));
+        .contains("temporalstore_block_store_slab_count{shard_id=\"1\",state=\"sealed\"} 1"));
     assert!(
-        metrics.contains("temporalstore_block_store_band_bytes{shard_id=\"1\",kind=\"live\"}")
+        metrics.contains("temporalstore_block_store_slab_bytes{shard_id=\"1\",kind=\"live\"}")
     );
     assert!(metrics
-        .contains("temporalstore_block_store_band_bytes{shard_id=\"1\",kind=\"total_known\"}"));
+        .contains("temporalstore_block_store_slab_bytes{shard_id=\"1\",kind=\"total_known\"}"));
     assert!(metrics.contains(
-        "temporalstore_block_store_band_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"
+        "temporalstore_block_store_slab_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"
     ));
     assert!(metrics.contains(
-        "temporalstore_block_store_band_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"
+        "temporalstore_block_store_slab_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"
     ));
     assert!(metrics.contains(
-        "temporalstore_block_store_band_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"
+        "temporalstore_block_store_slab_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"
     ));
     assert!(metrics
-        .contains("temporalstore_block_store_band_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
+        .contains("temporalstore_block_store_slab_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
     assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
-    assert!(metrics.contains("temporalstore_object_manager_page_refs{shard_id=\"1\"} 1"));
+    assert!(metrics.contains("temporalstore_object_manager_block_refs{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_dirty_objects{shard_id=\"1\"} 1"));
-    assert!(metrics.contains("temporalstore_storage_slot_page_refs{shard_id=\"1\""));
-    assert!(metrics.contains("temporalstore_storage_slot_bytes{shard_id=\"1\""));
-    assert!(metrics.contains("temporalstore_storage_slot_dirty_objects{shard_id=\"1\""));
-    assert!(metrics.contains("temporalstore_partition_routing_slots{shard_id=\"1\"} 4294967295"));
+    assert!(metrics.contains("temporalstore_storage_bucket_block_refs{shard_id=\"1\""));
+    assert!(metrics.contains("temporalstore_storage_bucket_bytes{shard_id=\"1\""));
+    assert!(metrics.contains("temporalstore_storage_bucket_dirty_objects{shard_id=\"1\""));
+    assert!(metrics.contains("temporalstore_partition_routing_buckets{shard_id=\"1\"} 4294967295"));
 }
 
 #[test]

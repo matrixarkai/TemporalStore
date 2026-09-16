@@ -95,19 +95,19 @@
           "expr": "temporalstore_object_manager_objects"
         },
         {
-          "expr": "temporalstore_object_manager_page_refs"
+          "expr": "temporalstore_object_manager_block_refs"
         },
         {
-          "expr": "temporalstore_object_manager_dirty_slots"
+          "expr": "temporalstore_object_manager_dirty_buckets"
         },
         {
-          "expr": "temporalstore_storage_slot_page_refs"
+          "expr": "temporalstore_storage_bucket_block_refs"
         },
         {
-          "expr": "temporalstore_storage_slot_bytes"
+          "expr": "temporalstore_storage_bucket_bytes"
         },
         {
-          "expr": "temporalstore_partition_routing_slots"
+          "expr": "temporalstore_partition_routing_buckets"
         }
       ]
     },
@@ -125,7 +125,7 @@
           "expr": "sum by (kind) (temporalstore_block_store_operations_total)"
         },
         {
-          "expr": "temporalstore_block_store_band_bytes"
+          "expr": "temporalstore_block_store_slab_bytes"
         }
       ]
     },

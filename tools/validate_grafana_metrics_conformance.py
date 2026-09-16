@@ -164,12 +164,12 @@ METRIC_FAMILIES = {
     "storage_cache": {
         "dashboard": [
             "temporalstore_object_manager_objects",
-            "temporalstore_object_manager_page_refs",
-            "temporalstore_storage_slot_page_refs",
-            "temporalstore_storage_slot_bytes",
+            "temporalstore_object_manager_block_refs",
+            "temporalstore_storage_bucket_block_refs",
+            "temporalstore_storage_bucket_bytes",
             "temporalstore_cache_operations_total",
             "temporalstore_block_store_operations_total",
-            "temporalstore_block_store_band_bytes",
+            "temporalstore_block_store_slab_bytes",
         ],
         "alerts": [
             "TemporalStoreStorageCacheBlockers",
@@ -178,14 +178,14 @@ METRIC_FAMILIES = {
         ],
         "rust": [
             "temporalstore_object_manager_objects",
-            "temporalstore_object_manager_page_refs",
-            "temporalstore_object_manager_dirty_slots",
-            "temporalstore_storage_slot_page_refs",
-            "temporalstore_storage_slot_bytes",
+            "temporalstore_object_manager_block_refs",
+            "temporalstore_object_manager_dirty_buckets",
+            "temporalstore_storage_bucket_block_refs",
+            "temporalstore_storage_bucket_bytes",
             "temporalstore_cache_operations_total",
             "temporalstore_cache_bytes",
             "temporalstore_block_store_operations_total",
-            "temporalstore_block_store_band_bytes",
+            "temporalstore_block_store_slab_bytes",
         ],
     },
     "data_node": {
@@ -432,7 +432,7 @@ def check_dashboard_metrics_are_emitted(declared: set) -> list:
 
     The alert side of this was added first and found two rules that could never fire. The dashboard
     side was still using the loose test -- name appears somewhere in the Rust source -- and it hid a
-    quieter version of the same defect: `temporalstore_block_store_band_oldest_age_ms`, one target
+    quieter version of the same defect: `temporalstore_block_store_slab_oldest_age_ms`, one target
     among five on a panel that therefore rendered with four series and no sign the fifth was
     impossible. A blank panel is at least visible. A missing series is not.
     """

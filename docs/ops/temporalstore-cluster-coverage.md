@@ -52,6 +52,6 @@ validator now enforces that across **all** dashboards rather than one. It previo
 `temporalstore-dashboard.json`, so a panel added to any other file was checked by nothing.
 
 That strict check found one live defect on the way in:
-`temporalstore_block_store_band_oldest_age_ms`, one target among five on the page-store panel, is
+`temporalstore_block_store_slab_oldest_age_ms`, one target among five on the page-store panel, is
 declared nowhere. The panel rendered with four series and no indication the fifth was impossible —
 a missing series is less visible than a blank panel, not more. That target is removed.
