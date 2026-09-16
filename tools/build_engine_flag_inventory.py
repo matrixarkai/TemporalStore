@@ -1008,27 +1008,42 @@ if sdk_only:
         lines.append("- `%s`" % name)
     lines.append("")
 
-# A flag read at two production sites that disagree about its default is a coin flip on whichever
-# code path resolved it first, and an env-var search finds nothing wrong because the variable IS
-# read. Nothing else looks for this: the row below reports one default per flag.
-_conflicts = []
-for _name, _entry in sorted(flags.items()):
-    _seen = _entry.get("site_defaults") or {}
-    _answers = {v for v in _seen.values() if v}
-    if len(_answers) > 1:
-        _conflicts.append(
-            "%s: %s" % (_name, "; ".join("%s at %s:%d" % (v, r, l)
-                                         for (r, l), v in sorted(_seen.items()))))
-if _conflicts:
-    raise SystemExit(
-        "two production sites disagree about a flag's default, so this document would report\n"
-        "whichever was reached first:\n  %s\n\n"
-        "Decide which is right and make both sites say it, or give them different names."
-        % "\n  ".join(_conflicts))
 
-OUT.parent.mkdir(parents=True, exist_ok=True)
-io.open(OUT, "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
-print("  wrote %s" % OUT)
-print("  flags: %d   offered: %d   legacy-shaped: %d   set by nothing: %d"
-      % (len(rows), sum(1 for r in rows if r["offered"]), sum(1 for r in rows if r["legacy"]),
-         sum(1 for r in rows if not r["set_by"])))
+def main() -> None:
+    """Check for conflicting defaults, then write the document.
+
+    These three statements used to run at MODULE SCOPE, so importing this file created a
+    directory and wrote a document, and a default conflict raised SystemExit into whatever
+    had imported it rather than failing the build that asked for it.
+
+    Everything above stays where it is: it is pure computation that builds `rows` and
+    `lines`, and several of those module-level names are read by the functions above.
+    """
+    # A flag read at two production sites that disagree about its default is a coin flip on whichever
+    # code path resolved it first, and an env-var search finds nothing wrong because the variable IS
+    # read. Nothing else looks for this: the row below reports one default per flag.
+    _conflicts = []
+    for _name, _entry in sorted(flags.items()):
+        _seen = _entry.get("site_defaults") or {}
+        _answers = {v for v in _seen.values() if v}
+        if len(_answers) > 1:
+            _conflicts.append(
+                "%s: %s" % (_name, "; ".join("%s at %s:%d" % (v, r, l)
+                                             for (r, l), v in sorted(_seen.items()))))
+    if _conflicts:
+        raise SystemExit(
+            "two production sites disagree about a flag's default, so this document would report\n"
+            "whichever was reached first:\n  %s\n\n"
+            "Decide which is right and make both sites say it, or give them different names."
+            % "\n  ".join(_conflicts))
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    io.open(OUT, "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
+    print("  wrote %s" % OUT)
+    print("  flags: %d   offered: %d   legacy-shaped: %d   set by nothing: %d"
+          % (len(rows), sum(1 for r in rows if r["offered"]), sum(1 for r in rows if r["legacy"]),
+             sum(1 for r in rows if not r["set_by"])))
+
+
+if __name__ == "__main__":
+    main()
