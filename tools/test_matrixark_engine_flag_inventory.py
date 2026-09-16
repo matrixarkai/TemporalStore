@@ -37,8 +37,13 @@ DOC = os.path.join(ROOT, "docs", "ops", "temporalstore-engine-flags.md")
 def _builder_prelude() -> dict:
     """The builder's helpers, without running it.
 
-    The script does its work at module level -- importing it regenerates the document -- so only
-    the part above that work is executed.
+    Only the part above the work is executed, and the reason has changed. It used to be that the
+    script did its work at MODULE LEVEL, so importing it regenerated the document; that write is
+    now behind a `__main__` guard and an import is inert.
+
+    What is still true is the cost: the builder scans the repository at module scope to build its
+    rows, which takes about 24 seconds. This helper wants the constants and the functions, so it
+    stops at the scan rather than paying for it.
     """
     with io.open(BUILDER, encoding="utf-8") as handle:
         head = handle.read().split("sources = {}")[0]
