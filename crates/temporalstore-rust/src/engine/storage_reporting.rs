@@ -492,7 +492,7 @@ pub(super) fn storage_physical_index_report(
         bucket.native_packed_bucket_node_len = NATIVE_PACKED_BUCKET_NODE_SIZE;
         bucket.native_packed_bucket_node_hex = hex::encode(native_packed_bucket_node_bytes(bucket));
     }
-    let page_index_count = buckets
+    let block_index_count = buckets
         .values()
         .map(|bucket| bucket.block_indexes.len())
         .sum::<usize>();
@@ -518,7 +518,7 @@ pub(super) fn storage_physical_index_report(
         bucket_index_authority: !shard.bucket_index.bucket_map.is_empty(),
         secondary_views_reconciled_from_bucket_index: !shard.bucket_index.bucket_map.is_empty(),
         bucket_count: buckets.len(),
-        page_index_count,
+        block_index_count,
         dirty_bucket_count: buckets.values().filter(|bucket| bucket.dirty).count(),
         missing_object_id_count,
         missing_routing_bucket_count,
@@ -940,7 +940,7 @@ pub(super) fn storage_feature_block_layout_report(
                     PackedFeatureBlockDecode::Packed(points) => {
                         report.packed_timestamped_blocks =
                             report.packed_timestamped_blocks.saturating_add(1);
-                        family.packed_pages = family.packed_pages.saturating_add(1);
+                        family.packed_blocks = family.packed_blocks.saturating_add(1);
                         if kind == "feature" {
                             report.packed_feature_blocks =
                                 report.packed_feature_blocks.saturating_add(1);
@@ -1059,7 +1059,7 @@ pub(super) fn storage_feature_block_layout_report(
                 PackedFeatureBlockDecode::Packed(points) => {
                     report.packed_timestamped_blocks =
                         report.packed_timestamped_blocks.saturating_add(1);
-                    family.packed_pages = family.packed_pages.saturating_add(1);
+                    family.packed_blocks = family.packed_blocks.saturating_add(1);
                     if &*entry.kind == "feature" {
                         report.packed_feature_blocks = report.packed_feature_blocks.saturating_add(1);
                     }

@@ -712,7 +712,7 @@ fn recovery_validates_all_timestamped_kv_block_families() {
     ] {
         let family = families.get(kind).expect("timestamped family report");
         assert!(family.indexed_points > 0, "{kind}");
-        assert!(family.packed_pages > 0, "{kind}");
+        assert!(family.packed_blocks > 0, "{kind}");
         assert_eq!(family.corrupt_blocks, 0, "{kind}");
         assert_eq!(family.mismatch_count, 0, "{kind}");
     }
@@ -2046,7 +2046,7 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
 
     let physical_before_reload = engine.storage_physical_index_report(1);
     assert!(physical_before_reload.bucket_index_authority);
-    assert_eq!(physical_before_reload.page_index_count, 2);
+    assert_eq!(physical_before_reload.block_index_count, 2);
     assert_eq!(physical_before_reload.dirty_bucket_count, 1);
     assert_eq!(physical_before_reload.missing_object_id_count, 0);
     assert_eq!(physical_before_reload.missing_routing_bucket_count, 0);
@@ -2074,7 +2074,7 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
     assert_eq!(ownership.owner_mismatch_block_ref_count, 0);
     let physical = engine.storage_physical_index_report(1);
     assert!(physical.bucket_index_authority);
-    assert_eq!(physical.page_index_count, 2);
+    assert_eq!(physical.block_index_count, 2);
     assert_eq!(physical.dirty_bucket_count, 1);
 
     engine.unload_shard(1);
@@ -2090,7 +2090,7 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
     });
     let physical_after_reload = engine.storage_physical_index_report(1);
     assert!(physical_after_reload.bucket_index_authority);
-    assert_eq!(physical_after_reload.page_index_count, 2);
+    assert_eq!(physical_after_reload.block_index_count, 2);
     assert_eq!(physical_after_reload.dirty_bucket_count, 0);
     assert!(physical_after_reload
         .bucket_nodes
@@ -2104,7 +2104,7 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
     assert_eq!(reloaded_ownership.owner_mismatch_block_ref_count, 0);
     let reloaded_physical = engine.storage_physical_index_report(1);
     assert!(reloaded_physical.bucket_index_authority);
-    assert_eq!(reloaded_physical.page_index_count, 2);
+    assert_eq!(reloaded_physical.block_index_count, 2);
 }
 
 // shared-corpus: storage_dump_load_recovery
@@ -2258,7 +2258,7 @@ fn legacy_model_maps_are_promoted_to_bucket_index_authority() {
     );
     let physical = engine.storage_physical_index_report(1);
     assert!(physical.bucket_index_authority);
-    assert_eq!(physical.page_index_count, 1);
+    assert_eq!(physical.block_index_count, 1);
     assert_eq!(physical.missing_object_id_count, 0);
     assert_eq!(physical.missing_routing_bucket_count, 0);
 }
@@ -2739,9 +2739,9 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
 
     // The boundary that keeps the fix from swallowing the genuinely empty case: zero objects
     // stays empty at every page count, which is what stops this from being "never say empty".
-    for page_count in 0..4usize {
+    for block_count in 0..4usize {
         assert_eq!(
-            classify_bucket_layout(0, page_count),
+            classify_bucket_layout(0, block_count),
             BucketLayoutState::Empty,
             "a bucket holding no objects is empty whatever its page count"
         );
@@ -3039,7 +3039,7 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
 
     let page_here = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         block_slab_id: 0,
         start_offset: 0,
         end_offset: 64,
@@ -3092,7 +3092,7 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
 
     let page_past = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         block_slab_id: 0,
         start_offset: PAST,
         end_offset: PAST + 64,

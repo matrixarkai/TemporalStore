@@ -137,7 +137,7 @@ KNOBS: dict[str, Knob] = _registry(
              "generates neither. NOTE 'none' also disables index compaction, which only fires once "
              "an event has been rolled up -- so per-event postings then live forever.",
              choices=("auto", "l0", "l0_l1", "none")),
-        Knob("audit_payload_retain_per_scope", "int", "MATRIXARK_AUDIT_PAYLOAD_RETAIN_PER_SCOPE", 20,
+        Knob("audit_payload_retain_per_scope", "int", "", 20,
              "How many audit / batch-commit records per scope keep their diagnostic payload "
              "(outputs, schema, profile_promotion_summary, memory_layers_written, summary_refresh, "
              "trigger_evidence). Older rows keep identity, scope, status and timing -- which is all "
@@ -191,7 +191,7 @@ KNOBS: dict[str, Knob] = _registry(
              "session and profile memory did. Reserving slots is the same shape as guaranteeing "
              "the current session: the thing that must be present is admitted, and ranking decides "
              "the rest. 0 disables the reservation and returns skills to competing on score."),
-        Knob("traverse_sibling_sessions", "bool", "MATRIXARK_TRAVERSE_SIBLING_SESSIONS", True,
+        Knob("traverse_sibling_sessions", "bool", "", True,
              "Descend into other sessions' subtrees during retrieval. A pack is built from the "
              "CURRENT session (matched by session_id, and admitted unconditionally) plus the "
              "durable PROFILE, which is the aggregate that carries cross-session memory. Measured "
@@ -255,7 +255,7 @@ KNOBS: dict[str, Knob] = _registry(
              "candidates; above it, fall back to the indexed + scored path. 0 = off. This is the "
              "self-tuning form of return_all_candidates: small stores pay nothing for ranking, "
              "large ones keep it."),
-        Knob("node_path_embeddings", "bool", "MATRIXARK_NODE_PATH_EMBEDDINGS", True,
+        Knob("node_path_embeddings", "bool", "", True,
              "Embed a context_node's PATH when the node is created. ON by default, and turning it "
              "off is a correctness risk, not just a memory trade.\n\n"
              "A path is not content, so embedding it looked like pure waste -- it puts the "

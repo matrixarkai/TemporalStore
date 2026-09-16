@@ -7,7 +7,7 @@ use super::*;
 impl TemporalEngine {
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
-            StreamKind::Block | StreamKind::Page => self
+            StreamKind::Block => self
                 .block_store
                 .read_logical_range(request.block_slab_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
@@ -97,7 +97,7 @@ impl TemporalEngine {
                         max_bytes,
                     )
                     .map_err(|err| err.to_string()),
-                StreamKind::Index | StreamKind::Block | StreamKind::Page => unreachable!(),
+                StreamKind::Index | StreamKind::Block => unreachable!(),
             };
             return match records {
                 // `truncated` is the whole point of asking: the walk stops both when the window

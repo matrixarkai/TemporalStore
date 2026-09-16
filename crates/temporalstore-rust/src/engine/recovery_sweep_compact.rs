@@ -209,7 +209,7 @@ impl TemporalEngine {
                     StorageRecoverySlabLiveReport {
                         block_slab_id: *block_slab_id,
                         physical_bytes: *physical_bytes,
-                        page_count: *block_count,
+                        block_count: *block_count,
                         ..StorageRecoverySlabLiveReport::default()
                     },
                 )
@@ -258,11 +258,11 @@ impl TemporalEngine {
             .into_values()
             .map(|mut report| {
                 report.stale_block_estimate =
-                    report.page_count.saturating_sub(report.live_block_refs);
-                report.live_ref_density_basis_points = if report.page_count == 0 {
+                    report.block_count.saturating_sub(report.live_block_refs);
+                report.live_ref_density_basis_points = if report.block_count == 0 {
                     0
                 } else {
-                    report.live_block_refs.saturating_mul(10_000) / report.page_count
+                    report.live_block_refs.saturating_mul(10_000) / report.block_count
                 };
                 report
             })
@@ -350,7 +350,7 @@ impl TemporalEngine {
 
         // stale_object_ids is the per-slab shortfall of live refs against the slab's own page
         // count, summed. An address naming a slab the store has no report for contributes
-        // nothing (the report path gives it page_count 0, so its shortfall saturates to 0).
+        // nothing (the report path gives it block_count 0, so its shortfall saturates to 0).
         let mut live_block_refs_by_slab = BTreeMap::<u64, u64>::new();
         for entry in &entries {
             *live_block_refs_by_slab
@@ -507,7 +507,7 @@ impl TemporalEngine {
                         block_slab_id: report.block_slab_id,
                         physical_bytes: report.physical_bytes,
                         logical_bytes: report.logical_bytes,
-                        page_count: report.page_count,
+                        block_count: report.block_count,
                         ..StorageRecoverySlabLiveReport::default()
                     },
                 )
@@ -590,11 +590,11 @@ impl TemporalEngine {
             .into_values()
             .map(|mut report| {
                 report.stale_block_estimate =
-                    report.page_count.saturating_sub(report.live_block_refs);
-                report.live_ref_density_basis_points = if report.page_count == 0 {
+                    report.block_count.saturating_sub(report.live_block_refs);
+                report.live_ref_density_basis_points = if report.block_count == 0 {
                     0
                 } else {
-                    report.live_block_refs.saturating_mul(10_000) / report.page_count
+                    report.live_block_refs.saturating_mul(10_000) / report.block_count
                 };
                 report
             })

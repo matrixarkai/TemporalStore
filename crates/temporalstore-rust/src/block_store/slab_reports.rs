@@ -189,7 +189,7 @@ impl BlockStore {
         };
         let stream_slab_count = slab_reports
             .iter()
-            .filter(|report| report.page_count > 0 || report.physical_bytes > 0)
+            .filter(|report| report.block_count > 0 || report.physical_bytes > 0)
             .count() as u64;
         let live_slab_ids = slab_reports
             .iter()
@@ -223,7 +223,7 @@ impl BlockStore {
             .sum::<u64>();
         let stream_record_count = slab_reports
             .iter()
-            .map(|report| report.page_count)
+            .map(|report| report.block_count)
             .sum::<u64>();
         let corrupt_slab_count = slab_reports
             .iter()
@@ -257,7 +257,7 @@ impl BlockStore {
             (Some(first), Some(last)) => stream_record_count > 0 && last >= first,
             _ => stream_record_count == 0,
         };
-        let logical_stream_read_ready = slab_reports.iter().any(|report| report.page_count > 0);
+        let logical_stream_read_ready = slab_reports.iter().any(|report| report.block_count > 0);
         let append_roll_ready = summary.active_slabs == 1
             && summary
                 .sealed_slabs
@@ -302,7 +302,7 @@ impl BlockStore {
                 });
         let envelope_checksum_ready = slab_reports
             .iter()
-            .filter(|report| report.page_count > 0)
+            .filter(|report| report.block_count > 0)
             .all(|report| !report.has_corruption && report.logical_bytes > 0);
         let compression_stream_ready = options.compression_enabled
             && slab_reports

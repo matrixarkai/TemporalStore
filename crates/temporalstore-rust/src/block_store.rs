@@ -1014,7 +1014,7 @@ pub struct BlockStoreSlabReport {
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
-    pub page_count: u64,
+    pub block_count: u64,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
     #[serde(default)]
@@ -2467,6 +2467,7 @@ const RETIRED_NAMES: &[&str] = &[
         "interrupted_slot_dump_install_count",
         "last_compacted_zone",
         "last_selected_slots",
+        "legacy_page_zone_aliases_ready",
         "live_page_segment_count",
         "live_page_segment_ids",
         "live_page_slab_count",
@@ -2505,6 +2506,8 @@ const RETIRED_NAMES: &[&str] = &[
         "orphan_page_segment_ids",
         "orphan_page_slab_count",
         "orphan_page_slab_ids",
+        "packed_pages",
+        "page_count",
         "page_gc_checkpoint_floor_segment_id",
         "page_gc_raft_install_floor_segment_id",
         "page_segment_ids",
@@ -2531,6 +2534,7 @@ const RETIRED_NAMES: &[&str] = &[
         "page_slabs_retained_live_physical_bytes",
         "page_slabs_retained_physical_bytes",
         "page_store_bytes_written",
+        "page_store_writes",
         "prepared_slot_dump_install_count",
         "prune_slot_dump_manifests",
         "reclaimable_page_segment_ids",
@@ -4220,7 +4224,7 @@ const RETIRED_NAMES: &[&str] = &[
             reports[0].logical_bytes,
             (first_payload.len() + second_payload.len()) as u64
         );
-        assert_eq!(reports[0].page_count, 2);
+        assert_eq!(reports[0].block_count, 2);
         assert_eq!(reports[0].compressed_records, 2);
         assert_eq!(
             reports[0].readable_prefix_physical_bytes,
@@ -4279,7 +4283,7 @@ const RETIRED_NAMES: &[&str] = &[
         let reports = store.slab_reports().unwrap();
 
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].page_count, 1);
+        assert_eq!(reports[0].block_count, 1);
         assert_eq!(reports[0].logical_bytes, b"healthy".len() as u64);
         assert_eq!(reports[0].readable_prefix_physical_bytes, first.length);
         assert!(reports[0].has_corruption);

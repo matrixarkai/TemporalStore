@@ -2783,10 +2783,10 @@ fn what_the_slab_survey_costs() {
         .slab_reports()
         .unwrap_or_default()
         .iter()
-        .map(|report| report.page_count)
+        .map(|report| report.block_count)
         .sum();
     let walk_blocks: u64 = counts.iter().map(|entry| entry.2).sum();
-    eprintln!("    page_count: slab_reports={survey_blocks} header_walk={walk_blocks} {}",
+    eprintln!("    block_count: slab_reports={survey_blocks} header_walk={walk_blocks} {}",
         if survey_blocks == walk_blocks { "AGREE" } else { "DISAGREE" });
 }
 

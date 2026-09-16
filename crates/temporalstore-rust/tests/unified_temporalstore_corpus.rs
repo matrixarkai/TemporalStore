@@ -4438,7 +4438,7 @@ fn verify_random_size_reopen_scan() {
 
     let page = reopened.read_stream(StreamReadRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         block_slab_id: 0,
         offset: 0,
         size: 1024 * 1024,
@@ -4455,7 +4455,7 @@ fn verify_random_size_reopen_scan() {
 
     let scan = reopened.scan_stream(ScanStreamRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         block_slab_id: 0,
         start_offset: 0,
         end_offset: u64::MAX,
@@ -4522,7 +4522,7 @@ fn verify_cross_block_large_values() {
 
     let first_chunk = reopened.read_stream(StreamReadRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         block_slab_id: 0,
         offset: 0,
         size: 256 * 1024,
@@ -4532,7 +4532,7 @@ fn verify_cross_block_large_values() {
 
     let second_chunk = reopened.read_stream(StreamReadRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         block_slab_id: 0,
         offset: 256 * 1024,
         size: 256 * 1024,

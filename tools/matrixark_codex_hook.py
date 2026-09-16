@@ -149,6 +149,27 @@ def compact_context_embedding_record(record: Json) -> Json:
 
 
 def attach_memory_layer(record: Json) -> Json:
+    """Stamp the retrieval layer on newly materialized memory records.
+
+    The record_type check is not defensive tidying. `candidate_memory_layer_name` decides from
+    `ref_type`, NOT from `record_type`, so without it any record carrying a ref_type comes back with
+    a real layer: measured, 5,760 of 6,720 non-memory shapes, including a
+    matrixark_async_pipeline_task with ref_type "event", which is stamped session_neutral_event.
+
+    Both callers here pass a memory record today -- context_embedding below and the context_event
+    at the fast-hook projection -- so nothing is mis-stamped now. The guard is what keeps that true
+    of the next caller. It was already written, in the copy in
+    matrixark_mcp_local_batch_extract_runtime, which production cannot reach.
+    """
+    if str(record.get("record_type") or "") not in {
+        "context_event",
+        "context_entity",
+        "context_segment",
+        "context_summary",
+        "context_compression_event",
+        "context_embedding",
+    }:
+        return record
     layer = candidate_memory_layer_name(record)
     if not layer or layer == "unknown":
         return record

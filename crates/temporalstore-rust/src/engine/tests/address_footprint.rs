@@ -20,9 +20,12 @@
 //!
 //! WHAT THESE PROBES ARE NOT. They are `#[ignore]`d because they seed tens of thousands of
 //! records and read process RSS, which is neither fast nor meaningful under a parallel test run.
-//! Run them by name. The one test here that is NOT ignored is
-//! `an_address_is_fifty_six_bytes_and_twenty_eight_of_them_are_optional`, which is a cheap guard:
-//! it pins the width so that widening the struct is noticed rather than absorbed.
+//! Run them by name. Two tests here are NOT ignored, and both are cheap:
+//! `an_address_is_fifty_six_bytes_and_twenty_eight_of_them_are_optional` pins the width so that
+//! widening the struct is noticed rather than absorbed, and
+//! `only_one_of_the_three_address_cross_checks_on_a_read_can_fire` pins how many of the address
+//! cross-checks on the read path can actually fire, which is the count that decides what dropping
+//! an optional field would cost.
 //!
 //! NON-VACUITY. Every count below is printed beside its denominator, and every census asserts its
 //! maps are populated BEFORE it reports an occupancy. A census that walked an empty shard would
@@ -649,8 +652,14 @@ fn the_census_reads_every_map_that_holds_an_address() {
 /// It cannot pass by finding nothing: the honest address must read back first, the live check must
 /// REFUSE a tampered address, and the inert ones must ACCEPT one. An arm that stopped firing would
 /// flip a count, not fall silent.
+///
+/// NOT ignored. It writes ONE page into a tempdir and asserts three halves separately, in
+/// hundredths of a second -- no seeding, no RSS reading, no timing, so nothing about it ever
+/// needed a run-by-name budget. It was parked with the measurement probes around it and stayed
+/// there, which left the claim it carries -- that of the address cross-checks on the read path
+/// exactly ONE can fire -- documented and unenforced. Every argument about dropping an optional
+/// field from the address rests on that count, so it belongs in the gate.
 #[test]
-#[ignore = "touches the filesystem; run by name"]
 fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = BlockStore::new(dir.path());
@@ -658,9 +667,20 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     let payload = b"a page whose header states which block of its object it is".to_vec();
     let object_id = 0x0123_4567_89ab_cdefu64;
     let routing_bucket = 4_155_475_953u32;
+
+    // The page under test is block THREE of its object, not block zero. Stripping the optional
+    // field leaves the address carrying None, and if the page it names were block zero then an
+    // implementation that DEFAULTED the absent field to 0 rather than skipping the check would
+    // compare 0 against 0 and read through -- indistinguishable from the presence-gated behaviour
+    // the last assertion claims to pin. A non-zero ordinal is what lets that half tell them apart.
     let good = store
-        .append_with_block_metadata(&payload, Some(object_id), Some(routing_bucket))
+        .append_block_of_object(&payload, Some(object_id), Some(routing_bucket), 3)
         .expect("append");
+    assert_eq!(
+        Some(3),
+        good.block_id(),
+        "denominator: the page under test must not be block zero, or the presence half below          cannot tell a skipped check from one that defaults the absent field to zero"
+    );
 
     // DENOMINATOR: the honest address reads back, and really carries all three fields under test.
     assert_eq!(
@@ -1387,9 +1407,10 @@ fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
 /// THE FREE GUARD over the decision above: the bucket index holds ONE page inline, and the
 /// timestamped series maps do not.
 ///
-/// WHY THIS IS THE THING TO PIN. The probes in this module are `#[ignore]`d -- they read process
-/// RSS and seed tens of thousands of records -- so on a normal run nothing here executes. This
-/// one is free and always runs, and it pins the two structural facts the recommendation rests on:
+/// WHY THIS IS THE THING TO PIN. The MEASUREMENT probes in this module are `#[ignore]`d -- they
+/// read process RSS and seed tens of thousands of records -- so on a normal run none of those
+/// execute. This one is free and always runs, and it pins the two structural facts the
+/// recommendation rests on:
 ///
 ///   1. `BlockIndexMap` carries its single-page case INLINE. That is what makes it cost 73.0
 ///      bytes for a one-entry index where a `BTreeMap<u64, BlockAddress>` costs 764.3 -- a
