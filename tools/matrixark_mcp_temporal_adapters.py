@@ -3577,8 +3577,15 @@ class MatrixArkRustCdylibClient(_AppendRecordsViaBatch):
     def metrics_prometheus(self) -> str:
         metrics = self.metrics_snapshot()
         return "\n".join([
+            # Both families published a type and no description. A half-declared family still
+            # scrapes, so nothing downstream complained -- it just arrived nameless in every
+            # panel and alert that touched it.
+            '# HELP matrixark_rust_direct_cdylib_commands_total '
+            'Commands the direct cdylib adapter has run.',
             '# TYPE matrixark_rust_direct_cdylib_commands_total counter',
             f'matrixark_rust_direct_cdylib_commands_total {metrics["commands_total"]}',
+            '# HELP matrixark_rust_direct_cdylib_errors_total '
+            'Commands the direct cdylib adapter failed to run.',
             '# TYPE matrixark_rust_direct_cdylib_errors_total counter',
             f'matrixark_rust_direct_cdylib_errors_total {metrics["commands_failed_total"]}',
         ]) + "\n"

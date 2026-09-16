@@ -78,6 +78,132 @@ def _discover_rust_sources() -> list:
 RUST_SOURCES = _discover_rust_sources()
 
 
+FAMILY = r"(?:temporalstore|matrixark)_[A-Za-z0-9_]+"
+
+# A declaration as it appears in the exposition text the process writes. The trailing lookahead
+# rejects a templated family: the metaserver declares one whose name ends in a `{name}` placeholder
+# filled at runtime, and recording the prefix as a family invents one that is never published.
+EXPOSITION_DECLARATION = re.compile(
+    r"#\s*(HELP|TYPE)\s+(%s)(?![{A-Za-z0-9_])(?:\s+(\w+))?" % FAMILY)
+# The declaration text on a line, so the rest of that line can be read for a sample.
+DECLARATION_ON_LINE = re.compile(r"#\s*(?:HELP|TYPE)\s+%s" % FAMILY)
+
+CFG_TEST_ATTRIBUTE = re.compile(r"^\s*#\[cfg\(test\)\]\s*$")
+
+# Modules that render exposition text today. Kept as a FLOOR for the same reason RUST_SOURCE_FLOOR
+# is: if renderer discovery stops returning one, the emission check below has narrowed and every
+# family that module publishes would start reading as "not emitted" -- or, worse, a narrowing that
+# removes the whole check would read as a clean run.
+RENDERER_FLOOR = (
+    "bin/metaserver.rs",
+    "bin/server/metrics.rs",
+    "engine/prometheus_metrics.rs",
+    "matrixark_rust_proxy_impl.rs",
+    "meta/subsystem_metrics.rs",
+    "proxy/prometheus.rs",
+    "raft.rs",
+)
+
+# 480 sample sites across 363 families when this was measured. Both floors sit far below that: they
+# catch a scan that has broken, not a release that trimmed a metric. Without them a scan returning
+# nothing reports every family as unemitted, and a scan whose regex stopped matching reports every
+# family as emitted -- the second failure is silent, which is the one worth a floor.
+SAMPLE_SITE_FLOOR = 300
+EMITTED_FAMILY_FLOOR = 250
+
+
+def strip_test_modules(text: str) -> str:
+    """The source with `#[cfg(test)] mod ... { ... }` bodies removed.
+
+    A test asserting `metrics.contains("temporalstore_proxy_serving_mode{mode=...")` writes the
+    family name in exactly the shape a renderer does. Counting it would let the emission check
+    below pass on a family that only a test produces, which is the defect this whole pass is
+    about wearing different clothes.
+    """
+    lines = text.splitlines()
+    kept, index, total = [], 0, len(lines)
+    while index < total:
+        if CFG_TEST_ATTRIBUTE.match(lines[index]):
+            cursor = index + 1
+            while cursor < total and "{" not in lines[cursor]:
+                cursor += 1
+            if cursor >= total:
+                break
+            depth = 0
+            while cursor < total:
+                depth += lines[cursor].count("{") - lines[cursor].count("}")
+                cursor += 1
+                if depth <= 0:
+                    break
+            index = cursor
+            continue
+        kept.append(lines[index])
+        index += 1
+    return "\n".join(kept)
+
+
+def _renderer_bodies() -> dict:
+    """path -> test-stripped source, for every discovered file that renders exposition text.
+
+    A file with no `# HELP`/`# TYPE` line of its own is not an exposition renderer, and the names it
+    mentions are not emissions: `proxy.rs` carries a family-to-panel mapping table and
+    `bin/ops_scale_readiness_harness.rs` a hardcoded list of families it EXPECTS to find. Both state
+    an intention. Scoping the emission scan to renderers is what keeps a name in either list from
+    standing in for a series nothing writes.
+    """
+    bodies = {}
+    for path in RUST_SOURCES:
+        try:
+            body = strip_test_modules(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        if EXPOSITION_DECLARATION.search(body):
+            bodies[path] = body
+    return bodies
+
+
+RENDERERS = _renderer_bodies()
+
+
+def emitted_metric_names(bodies: dict = None) -> tuple:
+    """(family -> renderer files writing a sample for it, number of sample sites).
+
+    This is the check the family loop below needs and did not have. It asked whether the family
+    name appeared ANYWHERE in the Rust source -- and a `# HELP` line carries the name, so a family
+    whose sample lines were deleted while its declaration stayed still answered yes. Measured on
+    #1785: blinding a dashboard PANEL failed the validator correctly, and deleting the EMITTER did
+    not fail it at all. The one failure the tool exists to catch -- a series that silently stops
+    being produced while a panel keeps asking for it -- was the one it could not see.
+
+    A sample site is the family name on a renderer line once the declaration text on that line is
+    removed: the `push(&mut out, "family", ..)` argument, the `out.push_str("family{kind=\"")`
+    prefix, the `format!("family{{..}} {}")` template. Comment lines are skipped -- prose naming a
+    family is not a series either.
+    """
+    bodies = RENDERERS if bodies is None else bodies
+    found, sites = {}, 0
+    for path, body in bodies.items():
+        for line in body.splitlines():
+            if line.strip().startswith("//"):
+                continue
+            for match in re.finditer(FAMILY, DECLARATION_ON_LINE.sub(" ", line)):
+                found.setdefault(match.group(0), set()).add(str(path))
+                sites += 1
+    return found, sites
+
+
+def declaration_pairs(chunks) -> tuple:
+    """(families with a `# HELP` line, family -> type from its `# TYPE` line)."""
+    helps, kinds = set(), {}
+    for chunk in chunks:
+        for word, name, kind in EXPOSITION_DECLARATION.findall(chunk):
+            if word == "HELP":
+                helps.add(name)
+            else:
+                kinds[name] = kind
+    return helps, kinds
+
+
 METRIC_FAMILIES = {
     "readiness": {
         "dashboard": [
@@ -314,6 +440,64 @@ def expand_component_series(declared: set, kinds: dict) -> set:
     return expanded
 
 
+def expand_emitted_component_series(emitted: set, kinds: dict) -> set:
+    """`emitted`, spelled both ways for every histogram or summary that writes any of its series.
+
+    A histogram publishes `_bucket`, `_sum` and `_count`; there is no series under the base name, so
+    a renderer that writes the components has emitted the family even though the bare name never
+    appears on a sample line. Deliberately conditional: a family whose sample lines are all gone
+    gains nothing here, which is the case the emission check has to keep failing.
+    """
+    expanded = set(emitted)
+    for name, kind in kinds.items():
+        if kind not in ("histogram", "summary"):
+            continue
+        if name in emitted or any(name + suffix in emitted for suffix in COMPONENT_SUFFIXES):
+            expanded.add(name)
+            expanded.update(name + suffix for suffix in COMPONENT_SUFFIXES)
+    return expanded
+
+
+def check_emission_scan_extent(emitted: set, sites: int, renderers: dict) -> list:
+    """The emission check is worthless if its scan comes back empty or nearly so.
+
+    A tool that checks zero metrics passes beautifully. Worse here than for the declaration scan: a
+    narrowed emission scan fails loudly (everything reads unemitted) while a BROKEN one -- a regex
+    that stopped matching, a renderer set that grew to include a file of intentions -- passes
+    quietly. Both floors and the renderer list are asserted before anything derived from them is
+    believed.
+    """
+    failures = []
+    found = {str(path.relative_to(RUST_SRC_ROOT)).replace("\\", "/") for path in renderers}
+    failures.extend("renderer_no_longer_discovered:%s" % name
+                    for name in RENDERER_FLOOR if name not in found)
+    if sites < SAMPLE_SITE_FLOOR:
+        failures.append("emission_scan_narrowed:sites_%d_expected_at_least_%d"
+                        % (sites, SAMPLE_SITE_FLOOR))
+    if len(emitted) < EMITTED_FAMILY_FLOOR:
+        failures.append("emission_scan_narrowed:families_%d_expected_at_least_%d"
+                        % (len(emitted), EMITTED_FAMILY_FLOOR))
+    return failures
+
+
+def check_declarations_are_paired(label: str, helps: set, kinds: dict) -> list:
+    """Every family states both a `# HELP` and a `# TYPE` line.
+
+    Cheap, and a real defect twice over: three slab families kept a declaration after the series
+    behind them was collapsed, and the gateway publishes two cdylib counters with a `# TYPE` line
+    and no `# HELP` at all. A half-declared family still scrapes, so nothing downstream notices --
+    it just arrives with no description, or with no type, and a counter read as a gauge rates
+    wrongly in every panel that touches it.
+
+    The two halves are reported separately on purpose: they fail for opposite reasons and a single
+    combined count would let one hide behind the other.
+    """
+    if not helps and not kinds:
+        return ["declaration_pairing_scan_empty:%s" % label]
+    return (["help_without_type:%s:%s" % (label, name) for name in sorted(helps - set(kinds))]
+            + ["type_without_help:%s:%s" % (label, name) for name in sorted(set(kinds) - helps)])
+
+
 def python_metric_text() -> str:
     """Every Python module under tools/ that could publish metrics, tests excluded.
 
@@ -508,7 +692,9 @@ def main() -> int:
     rust = rust_metric_text()
     dash_names = metric_names(dash)
     alert_names = metric_names(alerts)
-    rust_names = metric_names(rust)
+    sample_sites, sample_site_count = emitted_metric_names()
+    rust_helps, rust_kinds = declaration_pairs(RENDERERS.values())
+    emitted = expand_emitted_component_series(set(sample_sites), rust_kinds)
     missing: list[str] = []
     family_reports = {}
     for family, requirements in METRIC_FAMILIES.items():
@@ -520,7 +706,8 @@ def main() -> int:
             if name not in alerts:
                 family_missing.append(f"alert:{name}")
         for name in requirements["rust"]:
-            if name not in rust_names:
+            # EMITTED, not "the name occurs somewhere in the crate". See emitted_metric_names.
+            if name not in emitted:
                 family_missing.append(f"rust:{name}")
         if family not in docs:
             family_missing.append(f"doc_family:{family}")
@@ -544,7 +731,12 @@ def main() -> int:
     engine_and_gateway = rust + "\n" + python_metric_text()
     declared = expand_component_series(declared_metric_names(engine_and_gateway),
                                       declared_kinds(engine_and_gateway))
+    python_text = python_metric_text()
+    python_helps, python_kinds = declaration_pairs([python_text])
     alert_failures = (check_declaration_extent(declared)
+                      + check_emission_scan_extent(emitted, sample_site_count, RENDERERS)
+                      + check_declarations_are_paired("engine", rust_helps, rust_kinds)
+                      + check_declarations_are_paired("gateway", python_helps, python_kinds)
                       + check_dashboard_extent()
                       + check_dashboard_metrics_are_emitted(declared)
                       + check_no_bare_histogram_targets(declared_kinds(engine_and_gateway))
@@ -557,6 +749,21 @@ def main() -> int:
         "alerts": str(ALERTS.relative_to(ROOT)),
         "doc": str(DOC.relative_to(ROOT)),
         "families": family_reports,
+        # The denominators. A run that checked nothing reports the same "ready" as a run that
+        # checked everything, and only these numbers tell the two apart.
+        "counts": {
+            "dashboard_metrics_checked":
+                sum(len(r["dashboard"]) for r in METRIC_FAMILIES.values()),
+            "alert_rules_checked": sum(len(r["alerts"]) for r in METRIC_FAMILIES.values()),
+            "emitter_metrics_checked": sum(len(r["rust"]) for r in METRIC_FAMILIES.values()),
+            "renderer_files": len(RENDERERS),
+            "sample_sites_found": sample_site_count,
+            "families_with_a_sample_site": len(sample_sites),
+            "engine_families_declaring_help": len(rust_helps),
+            "engine_families_declaring_type": len(rust_kinds),
+            "gateway_families_declaring_help": len(python_helps),
+            "gateway_families_declaring_type": len(python_kinds),
+        },
         # Scoped to family parity, which is what it has always meant. The checks below can fail
         # while this is true, and the exit code -- not this flag -- is the gate.
         "grafana_metrics_parity_ready": not missing,
@@ -567,6 +774,10 @@ def main() -> int:
         "checks_failed": alert_failures,
     }
     print(json.dumps(report, indent=2, sort_keys=True))
+    print("checked %d emitter metrics against %d sample sites in %d renderer modules "
+          "(%d families write a sample); %d engine and %d gateway families declare HELP"
+          % (report["counts"]["emitter_metrics_checked"], sample_site_count, len(RENDERERS),
+             len(sample_sites), len(rust_helps), len(python_helps)), file=sys.stderr)
     for failure in alert_failures:
         print("ALERT CANNOT FIRE: %s" % failure, file=sys.stderr)
     lost = check_scan_extent()
