@@ -4726,6 +4726,130 @@ mod tests {
         }
     }
 
+    /// The size strip is CONDITIONAL, and the condition is the entire content of it.
+    ///
+    /// Every item the engine writes today sets `size` to `address.length` -- both production
+    /// construction sites in `engine.rs` do -- so an unconditional `self.size = 0` round-trips
+    /// every item this crate produces and looks correct everywhere it is exercised. Mutation
+    /// testing found exactly that: dropping the equality check left the whole index-log and
+    /// block-store suite green.
+    ///
+    /// The check is there for the item that does NOT hold, and `restore_size_repeat` is why it
+    /// has to be. The restore can only put back `address.length`; it has no other source. So a
+    /// size stripped while it was something else is not recoverable -- the reader invents
+    /// `address.length` and cannot tell it did.
+    ///
+    /// Driven through the real writer and the real reader. A strip/restore pair called directly
+    /// agrees with itself under the unconditional form too, which is the shape that hid this.
+    #[test]
+    fn a_size_that_disagrees_with_the_address_is_not_stripped() {
+        let address = crate::block_store::BlockAddress::from_parts(
+            7, 4096, 832, Some(3), None, None, None,
+        );
+        let item = |size: u64| IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 1024,
+            block_ref_key: "k".to_string(),
+            object_key: "tenant/1/object/9".to_string(),
+            model_id: "feature".to_string(),
+            component: Some("a".to_string()),
+            object_id: 0,
+            block_id: 3,
+            address: Some(address.clone()),
+            size,
+            in_log: false,
+            deleted: false,
+        };
+
+        // POSITIVE CONTROL: the strip is live. Without this the round trip below is satisfied
+        // just as well by a writer that stopped stripping altogether, which is the opposite
+        // defect and reads identically from the reader's side.
+        let mut agrees = item(address.length);
+        agrees.strip_size_repeat();
+        assert_eq!(
+            agrees.size, 0,
+            "a size the address already states must still be dropped, or this test is measuring \
+a writer that gave up rather than one that is careful",
+        );
+
+        // THE ASSERTION. A size the address does NOT state survives the round trip as itself.
+        let disagrees = item(999);
+        assert_ne!(
+            disagrees.size, address.length,
+            "the case only exists while these differ",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(11, vec![disagrees.clone()], Vec::new(), Some(1), None, false, true)
+            .unwrap();
+        let read = store.read_delta_records(11, 0).unwrap();
+        assert_eq!(read.len(), 1, "expected one record");
+        assert_eq!(
+            read[0].items[0].size, disagrees.size,
+            "a size that disagrees with the address was stripped, and the reader put back \
+`address.length` in its place: the strip's equality check is the only thing standing between \
+this item and a silently rewritten size",
+        );
+    }
+
+    /// `budget_exhausted` is a claim about what is LEFT OVER, and the boundary is the claim.
+    ///
+    /// A round whose removable count is exactly its budget removes all of it and leaves nothing,
+    /// so the flag is false. One off here tells the caller in `storage_lifecycle_methods` that
+    /// there is more to do on a log that is already down to its retained tail. Mutation testing
+    /// found the boundary unguarded: flipping `>` to `>=` left the whole index-log suite green.
+    ///
+    /// Both sides are asserted, with a denominator -- a round that removed nothing would satisfy
+    /// a one-sided version of this while saying nothing about either side.
+    #[test]
+    fn the_index_log_budget_says_exhausted_only_when_records_are_left_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for value in 1..=10u64 {
+            store
+                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .unwrap();
+        }
+
+        // Sequences 1..=5 sit below the floor, so five records are removable.
+        const REMOVABLE: usize = 5;
+
+        // AT the budget: all five go, nothing is left, the flag is false.
+        let exact = store.gc_before_sequence_limited(5, 6, REMOVABLE).unwrap();
+        assert_eq!(
+            exact.dropped_segments, 0,
+            "this measures the ACTIVE piece; a rolled log would put the records somewhere the \
+budget does not apply and the boundary below would be about nothing",
+        );
+        assert_eq!(
+            exact.removable_records_before_budget, REMOVABLE,
+            "denominator: the round has to have found the five removable records",
+        );
+        assert_eq!(exact.records_removed, REMOVABLE, "and removed all of them");
+        assert!(
+            !exact.budget_exhausted,
+            "a round that removed every removable record left nothing over, so the budget was \
+not exhausted -- reporting otherwise schedules another round to find an empty log",
+        );
+
+        // BELOW the budget: one record is left over, and the flag says so.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for value in 1..=10u64 {
+            store
+                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .unwrap();
+        }
+        let capped = store.gc_before_sequence_limited(5, 6, REMOVABLE - 1).unwrap();
+        assert_eq!(capped.removable_records_before_budget, REMOVABLE);
+        assert!(
+            capped.budget_exhausted,
+            "five removable records against a budget of four leaves one over, which is what the \
+flag exists to say",
+        );
+    }
+
     /// What the address repeats costs, per index item.
     ///
     /// `BlockAddress` carries `object_id` and `routing_bucket`, and the item carries both again as
