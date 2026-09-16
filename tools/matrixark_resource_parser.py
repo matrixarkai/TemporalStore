@@ -80,9 +80,34 @@ def encoder_window_tokens(model: str | None = None) -> int:
 #
 # The encoder's window bounds this from ABOVE -- never embed more than the model will read -- but
 # it is a ceiling, not a target.
-DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(
-    os.environ.get("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "").strip() or str(encoder_window_tokens())
-)
+def embedding_text_max_tokens() -> int:
+    """The ceiling as it stands NOW: the explicit override, else the active encoder's window.
+
+    Resolved per call rather than once, because the encoder can change under a running process --
+    `embedding.model` is labelled `live` on the operator page, and `encoder_window_tokens()` above
+    already answers per call. The constant below did not, so the two parted company the moment the
+    model moved, which is the only circumstance in which the relationship this module exists to
+    keep can break at all. Measured in one process, writing the variable the way the portal does:
+
+        model                    encoder_window_tokens()   the constant
+        MiniLM   (at import)                         512            512
+        bge-m3   (after a write)                    8192            512
+        mpnet    (after a write)                     384            512
+
+    At 384 that is the over-feeding the comment on `encoder_window_tokens` names: text past the
+    model's window is truncated by its tokenizer and never reaches the vector.
+    """
+    return int(
+        os.environ.get("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "").strip()
+        or str(encoder_window_tokens())
+    )
+
+
+#: The DECLARED default -- what the operator page shows for `embedding.text_max_tokens`, and what
+#: `test_a_computed_default_is_compared_too` compares against. Read at import on purpose: a
+#: declared default is a fact about how this build starts, not about what it is doing now. The
+#: value in USE comes from the function above.
+DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = embedding_text_max_tokens()
 # Chunk size is the dominant lever on ingest cost: for a 1.41 MB markdown file,
 # 240-token chunks are 2126 records and 27.8 MB resident, 2000-token chunks are
 # 204 records and 8.9 MB. It had no knob, so no deployment could reach it.
@@ -376,7 +401,7 @@ def build_embedding_text(
     slice of the window. ``max_tokens=0`` restores the unbounded field dump.
     """
     if max_tokens is None:
-        max_tokens = DEFAULT_EMBEDDING_TEXT_MAX_TOKENS
+        max_tokens = embedding_text_max_tokens()
     if max_tokens <= 0:
         return _build_embedding_text_unbounded(text, metadata, source_ref)
 

@@ -96,19 +96,24 @@ _LAYER_THE_SETTING_DOES_NOT_DESCRIBE = {
 # A capture at import that is a PRODUCT question, not a wiring one, recorded here instead of
 # being decided in a test.
 #
-# `matrixark_resource_parser` computes DEFAULT_EMBEDDING_TEXT_MAX_TOKENS at import, and the
-# fallback is `encoder_window_tokens()` -- which reads MATRIXARK_EMBEDDING_MODEL. So the window
-# one vector's worth of text is measured against follows the model named when the module was
-# imported, and the page calls that setting `live`.
+# `matrixark_resource_parser` reads MATRIXARK_EMBEDDING_MODEL at import, through
+# `embedding_text_max_tokens()` and `encoder_window_tokens()`, to compute
+# DEFAULT_EMBEDDING_TEXT_MAX_TOKENS.
 #
-# Changing the embedding model under a running process is not a labelling question. The encoder
-# is loaded once, vectors already written were produced by the old model, and this repository
-# has a model_hash guard for exactly that. Relabelling the setting `restart` would say something
-# true about this reader and something misleading about the several that resolve the model per
-# call; leaving it `live` says the opposite. Neither is this file's decision.
+# That constant is the DECLARED DEFAULT: what the operator page shows for
+# `embedding.text_max_tokens`, and what `test_a_computed_default_is_compared_too` compares
+# against. A declared default is a fact about how this build starts, so reading it once, at
+# import, is what it is for.
 #
-# Asserted in BOTH directions below, so it cannot quietly stop being true: the capture must still
-# be there, and the label must still be the one recorded.
+# The value in USE is not that constant -- `build_embedding_text` calls
+# `embedding_text_max_tokens()` per call, so the text built for a vector follows the encoder even
+# when it changes under a running worker. That was measured by asking the builder: at a
+# 384-token encoder it produced 349 words where it used to produce 465, and at an 8192-token one
+# 7,447 where it used to produce 465.
+#
+# So the capture is real and the `live` label is true, which is why this is recorded rather than
+# fixed or relabelled. Asserted in BOTH directions below, so it cannot quietly stop being either:
+# the capture must still be there, and the label must still be the one recorded.
 _RECORDED_IMPORT_TIME_CAPTURE = {
     ("embedding.model", "matrixark_resource_parser.py"): "live",
 }
@@ -163,8 +168,21 @@ def _is_main_guard(node) -> bool:
                     for c in node.test.comparators))
 
 
+def _calls_within(node) -> set:
+    """Plain-name calls anywhere inside this node."""
+    return {c.func.id for c in ast.walk(node)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+
+
 def _called_at_import(tree) -> set:
-    """Functions this module CALLS while the module body runs, so their reads are import-time."""
+    """Functions this module CALLS while the module body runs, so their reads are import-time.
+
+    TRANSITIVE, and that is not tidiness. The rule was one level deep, and one level is exactly
+    what a refactor steps over: moving a read from `X = encoder_window_tokens()` to
+    `X = embedding_text_max_tokens()`, where that helper calls `encoder_window_tokens` itself,
+    leaves the read just as import-time and puts it out of a one-level rule's sight. A fix that
+    removes the site from the scan watching it is the failure this file has now seen twice.
+    """
     called = set()
 
     def walk(node, in_function):
@@ -180,9 +198,17 @@ def _called_at_import(tree) -> set:
             walk(child, in_function)
 
     walk(tree, False)
-    defined = {n.name for n in ast.walk(tree)
-               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    return called & defined
+    bodies = {n.name: n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    reached = called & set(bodies)
+    queue = list(reached)
+    while queue:
+        name = queue.pop()
+        for callee in _calls_within(bodies[name]) & set(bodies):
+            if callee not in reached:
+                reached.add(callee)
+                queue.append(callee)
+    return reached
 
 
 # Full qualnames. `make_v1_app` is the app FACTORY -- its own body runs once per worker -- but the
