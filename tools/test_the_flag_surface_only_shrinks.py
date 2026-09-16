@@ -108,7 +108,7 @@ _IDENTITY = re.compile(
 #: Banked here in the same breath, because a ratchet that does not bank a reduction is the
 #: reduction nobody can see was made. `deployment configurable` is untouched at 146: none of the
 #: 46 is offered on the operator page.
-MAXIMUM_FLAGS_READ = 492
+MAXIMUM_FLAGS_READ = 480
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
@@ -152,22 +152,6 @@ EXAMINED = {
         "the MCP server's admission control: the per-tool deadlines and concurrency caps an operator turns when a deployment is overloaded. MATRIXARK_MAX_CONCURRENT_RETRIEVE even defaults to max(4, min(8, cpu_count)), which is a value that wants overriding on a box the formula guesses wrong about",
     "MATRIXARK_AUDIT_WORKERS":
         "the MCP server's admission control: the per-tool deadlines and concurrency caps an operator turns when a deployment is overloaded. MATRIXARK_MAX_CONCURRENT_RETRIEVE even defaults to max(4, min(8, cpu_count)), which is a value that wants overriding on a box the formula guesses wrong about",
-    "MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO":
-        "cross-session retrieval tuning in matrixark_mcp_core: the ratios and minimums that decide how much of a pack comes from other sessions. Changing what a pack contains is the reason a deployment reaches for a knob at all",
-    "MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO":
-        "cross-session retrieval tuning in matrixark_mcp_core: the ratios and minimums that decide how much of a pack comes from other sessions. Changing what a pack contains is the reason a deployment reaches for a knob at all",
-    "MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO":
-        "cross-session retrieval tuning in matrixark_mcp_core: the ratios and minimums that decide how much of a pack comes from other sessions. Changing what a pack contains is the reason a deployment reaches for a knob at all",
-    "MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS":
-        "cross-session retrieval tuning in matrixark_mcp_core: the ratios and minimums that decide how much of a pack comes from other sessions. Changing what a pack contains is the reason a deployment reaches for a knob at all",
-    "MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE":
-        "cross-session retrieval tuning in matrixark_mcp_core: the ratios and minimums that decide how much of a pack comes from other sessions. Changing what a pack contains is the reason a deployment reaches for a knob at all",
-    "MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS":
-        "cross-session retrieval tuning in matrixark_mcp_core: the ratios and minimums that decide how much of a pack comes from other sessions. Changing what a pack contains is the reason a deployment reaches for a knob at all",
-    "MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES":
-        "cross-session retrieval tuning in matrixark_mcp_core: the ratios and minimums that decide how much of a pack comes from other sessions. Changing what a pack contains is the reason a deployment reaches for a knob at all",
-    "MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT":
-        "cross-session retrieval tuning in matrixark_mcp_core: the ratios and minimums that decide how much of a pack comes from other sessions. Changing what a pack contains is the reason a deployment reaches for a knob at all",
     "MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT":
         "an index-width bound; its neighbours in the same family are offered on the portal and this one bounds what they produce",
     "MATRIXARK_EMBEDDING_VECTOR_DECIMALS":
@@ -240,14 +224,6 @@ EXAMINED = {
         "how many batches one drain pass takes, which bounds how long it holds the lane",
     "MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS":
         "the floor between idle drains; raising it is what an operator does when the drain is competing with request work",
-    "MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO":
-        "the share of a pack an augmenting cross-session query may take",
-    "MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO":
-        "the same share for a remote-only deployment, which has a different cost per candidate",
-    "MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS":
-        "how many events a precision question may expand to, bounding the widest pack it can ask for",
-    "MATRIXARK_QUERY_REWRITE_WINDOW":
-        "how many recent turns the follow-up rewrite reads, so a question saying 'that' carries its subject; it does nothing unless the rewrite itself is on",
     "MATRIXARK_RESOURCE_MAX_CHUNK_CHARS":
         "the character ceiling on a resource chunk, computed from the token ceiling when unset",
     "MATRIXARK_RESOURCE_OVERLAP_CHARS":

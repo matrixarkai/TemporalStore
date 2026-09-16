@@ -153,8 +153,8 @@ DEFAULT_CONTEXT_SOURCE_MODE = (os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "
 #       minority (current-session reconstruction fills the majority of the remote budget).
 # Flip on with MATRIXARK_MODE_DEPENDENT_QUOTA=1 once the three-arm study validates it.
 MODE_DEPENDENT_QUOTA_ENABLED = env_bool("MATRIXARK_MODE_DEPENDENT_QUOTA", False)
-DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO", "").strip() or "0.60")
-DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO", "").strip() or "0.30")
+DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO = float("0.60")
+DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO = float("0.30")
 
 
 def resolve_context_source_mode(args: dict | None, *, default_mode: str | None = None) -> str:
@@ -215,7 +215,7 @@ CONTEXT_PACK_DEBUG_REFS = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", False)
 AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
 
 DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "").strip() or "100000")
-HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "").strip() or "100000")
+HARD_MAX_CHILDREN_SCORED_PER_PARENT = int("100000")
 RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", "").strip() or str(2 * 1024 * 1024))
 RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = 200000
 RESOURCE_ASYNC_DEFAULT_PATH_COUNT = 32
@@ -248,27 +248,27 @@ DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = float(
 )
 
 DEFAULT_CROSS_SESSION_BUDGET_RATIO = 0.12  # build default; live_float reads the environment
-DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "").strip() or "0.20")
-DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO", "").strip() or "0.20")
-DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "").strip() or "0.15")
+DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float("0.20")
+DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float("0.20")
+DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float("0.15")
 DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = 0.30  # build default; live_float reads the environment
 DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = 327680  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "").strip() or "3")
 DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "").strip() or "24")
-DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "").strip() or "2")
+DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int("2")
 DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "").strip() or "4")
 DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "").strip() or "256")
 DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "").strip() or "0.20")
-DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE", "").strip() or "0.45")
+DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float("0.45")
 DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO = 0.60  # the guard, not the setting: the share below is what decides
 DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_SESSIONS", "").strip() or "6")
 DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", "").strip() or "48")
-DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS", "").strip() or "3")
+DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int("3")
 DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
     item.strip()
-    for item in (os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "").strip() or "entity,summary,compression").split(",")
+    for item in ("entity,summary,compression").split(",")
     if item.strip()
 )
 
@@ -369,13 +369,13 @@ DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEX
 # recent session turns so anaphora ("that"/"the ones") carries its referent terms. It does
 # NOT change the pack fed to the model, so it adds ZERO model tokens. Ships OFF.
 QUERY_REWRITE_ENABLED = env_bool("MATRIXARK_QUERY_REWRITE", False)
-QUERY_REWRITE_WINDOW = int(os.environ.get("MATRIXARK_QUERY_REWRITE_WINDOW", "").strip() or "3")
+QUERY_REWRITE_WINDOW = int("3")
 
 # Precision-expand: for exact-fact queries, expand matched segments/summaries to their source
 # raw events (recovers exact hashes/numbers/commands that summaries drop). Ships OFF. Adds tokens
 # (raw > summary), so intended for remote-only exact-fact queries where accuracy is the priority.
 PACK_PRECISION_EXPAND_ENABLED = env_bool("MATRIXARK_PACK_PRECISION_EXPAND", False)
-PACK_PRECISION_EXPAND_MAX_EVENTS = int(os.environ.get("MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS", "").strip() or "12")
+PACK_PRECISION_EXPAND_MAX_EVENTS = int("12")
 PACK_PRECISION_EXPAND_QUESTION_TYPES = {"fact", "multi_hop", "evidence", "benchmark_quality", "date"}
 
 # Auto skill discovery on session commit (mine reusable tool-procedures -> skill records).
