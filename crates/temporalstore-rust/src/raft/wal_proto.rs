@@ -526,7 +526,7 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
                     .map_err(io::Error::other)?,
                 state_image: image.map(|image| v1::WalStateImage {
                     index: image.index_bytes,
-                    next_page_id: image.next_block_id,
+                    next_block_id: image.next_block_id,
                     slabs: image
                         .slabs
                         .into_iter()
@@ -629,7 +629,7 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
                 serde_json::from_slice(&snapshot.snapshot_sans_image).map_err(io::Error::other)?;
             decoded.state_image = snapshot.state_image.map(|image| RaftSnapshotStateImage {
                 index_bytes: image.index,
-                next_block_id: image.next_page_id,
+                next_block_id: image.next_block_id,
                 slabs: image
                     .slabs
                     .into_iter()

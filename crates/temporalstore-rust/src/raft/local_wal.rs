@@ -109,7 +109,7 @@ impl LocalRaftWal {
             }
             let message = crate::sdk::v1::WalStateImage {
                 index: image.index_bytes.clone(),
-                next_page_id: image.next_block_id,
+                next_block_id: image.next_block_id,
                 slabs: image
                     .slabs
                     .iter()
@@ -186,7 +186,7 @@ impl LocalRaftWal {
             .map_err(io::Error::other)?;
         snapshot.state_image = Some(RaftSnapshotStateImage {
             index_bytes: message.index,
-            next_block_id: message.next_page_id,
+            next_block_id: message.next_block_id,
             slabs: message
                 .slabs
                 .into_iter()

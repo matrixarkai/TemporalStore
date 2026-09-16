@@ -375,7 +375,7 @@ fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::
         generation: address.generation(),
         // Derivable from the slab id, so the log stops restating it. The proto field keeps its
         // original name: `temporalstore.proto` is the wire, and nothing in this fold touches it.
-        band_id: None,
+        slab_id: None,
         // The digest, not its transcription. Half the bytes, same value.
         checksum: None,
         // In memory the digest is already the 32 bytes this field wants, so there is no

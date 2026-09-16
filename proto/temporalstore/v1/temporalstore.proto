@@ -464,7 +464,7 @@ message WalStateImageSlab {
 // is O(state) and the log behind it can actually be dropped.
 message WalStateImage {
   bytes index = 1;
-  uint64 next_page_id = 2;
+  uint64 next_block_id = 2;
   repeated WalStateImageSlab slabs = 3;
 }
 
@@ -551,7 +551,7 @@ message WalBlockAddress {
   optional uint64 object_id = 5;
   optional uint32 routing_bucket = 6;
   optional uint64 generation = 7;
-  optional uint64 band_id = 8;
+  optional uint64 slab_id = 8;
   // Field 9 is the hex form, kept readable for records written before field 10 existed. New
   // records write the digest itself: thirty-two bytes rather than sixty-four characters.
   optional string checksum = 9;
@@ -605,7 +605,7 @@ message EngineWalItem {
   // set member, and stops doubling as a number.
   optional uint64 timestamp_ms = 16;
   // A second key for an entry the index keys by something other than its timestamp -- a context
-  // event, whose page packs by time and whose index keys by event id.
+  // event, whose block packs by time and whose index keys by event id.
   optional uint64 entry_id = 17;
   // The whole object is gone, not one component of it.
   //
