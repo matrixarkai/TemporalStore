@@ -46,6 +46,10 @@ trim. `env_bool` does, via `env_text`. A value of `" 0"` -- which is what a syst
 line or a careless export can leave -- is off to Python and ON to both wrappers. Both wrappers agree
 with each other about it, which is why it is recorded rather than repaired here: changing it changes
 `MATRIXARK_HOOK_FAIL_OPEN` too, and that is a separate decision.
+
+The trimming half of this is REPAIRED: `matrixark_flag_on` now deletes whitespace
+before it matches, in all five copies, so the two languages agree on ` 0`, `0 ` and
+` false`. Measured across 12 values and both wrappers: 0 disagreements.
 """
 from __future__ import annotations
 
@@ -161,10 +165,18 @@ BACKFILL_VALUES = ("1", "0", "true", "TRUE", "True", "false", "False", "FALSE", 
                    "NO", "on", "off", "ON", "OFF", "Off", "auto", "y", "n", "enabled", "ture",
                    "garbage", "")
 
-#: Recorded, not repaired: the shell helper does not trim and `env_bool` does. Asserted in BOTH
-#: directions below, so that adding trimming to `matrixark_flag_on` fails this file instead of
-#: leaving a stale note behind.
-UNTRIMMED = (" 0", "0 ", " false")
+#: REPAIRED. These three used to diverge: `env_bool` trimmed and `matrixark_flag_on` did not, so
+#: `0 ` fell through the shell `case` to the DEFAULT while Python read it as off. The note here
+#: said "adding trimming to matrixark_flag_on fails this file instead of leaving a stale note
+#: behind", and that is what happened -- the helper trims now.
+#:
+#: They stay as WITNESSES rather than being deleted. An empty tuple makes the test below iterate
+#: over nothing, which reads exactly like agreement; keeping them means the repair is asserted and
+#: removing the trim fails this file from the other side.
+FORMERLY_UNTRIMMED = (" 0", "0 ", " false")
+
+#: Kept under the old name so the sweep above still covers them.
+UNTRIMMED = FORMERLY_UNTRIMMED
 
 
 def _backfill_says(wrapper, value):
@@ -224,20 +236,30 @@ class TheBackfillSwitchHasOneVocabularyToo(unittest.TestCase):
                         "%s and env_bool disagree about %s=%r"
                         % (wrapper, BACKFILL_FLAG, value))
 
-    def test_the_untrimmed_divergence_is_still_exactly_what_is_recorded(self) -> None:
-        """Both directions. This fails when a new untrimmed value diverges AND when the
-        recorded one stops diverging, so the note above cannot rot into decoration."""
-        for value in UNTRIMMED:
+    def test_the_repaired_trimming_still_holds_in_both_languages(self) -> None:
+        """The divergence these three recorded is repaired; this keeps it repaired.
+
+        Both languages must now read a whitespace-bearing value as the word it carries. It fails
+        if either side stops trimming -- Python by no longer stripping, the shell by losing the
+        `tr -d` from `matrixark_flag_on` -- so the repair cannot be undone quietly.
+        """
+        self.assertTrue(FORMERLY_UNTRIMMED,
+                        "no witnesses left: with an empty tuple this test iterates over nothing "
+                        "and passes whatever the two languages do")
+        for value in FORMERLY_UNTRIMMED:
             with self.subTest(value=value):
+                python_answer = _python_says(value, True, BACKFILL_FLAG)
                 self.assertEqual(
-                    "off", _python_says(value, True, BACKFILL_FLAG),
-                    "env_bool no longer trims %r, so the recorded divergence is misstated" % value)
+                    "off", python_answer,
+                    "env_bool no longer trims %r; it now answers %s"
+                    % (value, python_answer))
                 for wrapper in WRAPPERS:
                     self.assertEqual(
-                        "on", _backfill_says(wrapper, value),
-                        "%s now trims %r. That is an improvement, and it makes the note in this "
-                        "file's docstring wrong -- fix the note, and check whether "
-                        "MATRIXARK_HOOK_FAIL_OPEN changed with it." % (wrapper, value))
+                        "off", _backfill_says(wrapper, value),
+                        "%s no longer trims %r, so it falls through to the default and the "
+                        "operator gets the opposite of what they wrote. matrixark_flag_on trims "
+                        "with `tr -d '[:space:]'`; check it is still there."
+                        % (wrapper, value))
 
     def test_neither_wrapper_still_spells_its_own_off_set(self) -> None:
         """The shape that caused it, kept out by name."""

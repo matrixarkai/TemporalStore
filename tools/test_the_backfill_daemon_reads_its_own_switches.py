@@ -18,7 +18,10 @@ nothing in the tree would have told an operator that the other three words were 
 `REEMIT_ON_FRESH=off` and `SORT_JSONL_BY_SESSION=off` read as ON -- `off` is in the shared
 FALSE_VALUES, and this file simply did not list it.
 
-All four now go through `matrixark_flag_on`, the function the two wrappers already share.
+All four now go through `matrixark_flag_on`, the function the two wrappers already share, and
+that helper now TRIMS as well: it used to case-fold the value without stripping it, so ` 1`
+was on in Python and off in the shell. The trimming divergence this file recorded as open is
+closed, and the witnesses below are what hold it closed.
 
 That makes three copies of one function in three files. They are copies because all three are
 standalone scripts: the wrappers are hook entry points and this one is launched with
@@ -58,9 +61,13 @@ FLAGS = {
 VALUES = ("1", "0", "true", "TRUE", "True", "false", "False", "FALSE", "yes", "YES", "no", "No",
           "NO", "on", "ON", "On", "off", "OFF", "Off", "auto", "y", "n", "ture", "garbage")
 
-#: Recorded, not repaired: the shell copy does not trim and `env_bool` does. Asserted in both
-#: directions so that adding trimming fails this file rather than leaving a stale note.
-UNTRIMMED = (" 1", "1 ", " 0")
+#: REPAIRED. The shell copy did not trim and `env_bool` did, so a value carrying a stray
+#: space -- what a .env line or a compose `environment:` entry produces without anyone seeing
+#: it -- was read one way by the daemon and the other way by Python. All four carriers now
+#: trim, so these three are kept as WITNESSES of a closed divergence rather than a record of
+#: an open one: they are what the assertion below iterates over, and an empty tuple would
+#: make it pass without comparing anything.
+FORMERLY_UNTRIMMED = (" 1", "1 ", " 0")
 
 
 def _helper_text(name):
@@ -147,19 +154,33 @@ class TheBackfillDaemonReadsItsOwnSwitches(unittest.TestCase):
                         "%s=%r does not fall back to the flag's own default (%s)"
                         % (flag, value, default))
 
-    def test_the_untrimmed_divergence_is_still_exactly_what_is_recorded(self) -> None:
-        """Both directions, so the note in the docstring cannot rot into decoration."""
-        for value in UNTRIMMED:
+    def test_the_repaired_trimming_holds_in_both_languages(self) -> None:
+        """The divergence this file recorded is closed; this is what keeps it closed.
+
+        It used to assert that the shell copy did NOT trim, in both directions, so that repairing
+        it would fail here rather than leave a stale note. It was repaired, and this failed --
+        which is the guard working, not a regression. The record is now the AGREEMENT, asserted
+        the same way in both directions: each language must give the same answer for a value
+        carrying a stray space.
+
+        Compared against `value.strip()` rather than a literal, so a witness can be added to the
+        tuple above without editing an expected answer beside it.
+        """
+        self.assertTrue(
+            FORMERLY_UNTRIMMED,
+            "no witnesses left in FORMERLY_UNTRIMMED, so this test compares nothing and would "
+            "pass against any behaviour at all")
+        for value in FORMERLY_UNTRIMMED:
             with self.subTest(value=value):
+                expected = "on" if value.strip() == "1" else "off"
                 self.assertEqual(
-                    "on" if value.strip() == "1" else "off",
-                    _python_says("MATRIXARK_BACKFILL_FORCE", value, "0"),
-                    "env_bool no longer trims %r" % value)
+                    expected, _python_says("MATRIXARK_BACKFILL_FORCE", value, "0"),
+                    "env_bool has stopped trimming %r" % value)
                 self.assertEqual(
-                    "off", _daemon_says(value, "0"),
-                    "the shell copy now trims %r. That is an improvement, and it makes this "
-                    "file's docstring wrong -- fix the note, and check the two wrappers with "
-                    "it." % value)
+                    expected, _daemon_says(value, "0"),
+                    "the shell copy has stopped trimming %r, so the daemon and env_bool disagree "
+                    "about a value with a stray space again -- the divergence this file records "
+                    "as CLOSED is open. Check every file in CARRIERS." % value)
 
     def test_no_switch_still_spells_its_own_word_list(self) -> None:
         """The shape that caused it, kept out by name.

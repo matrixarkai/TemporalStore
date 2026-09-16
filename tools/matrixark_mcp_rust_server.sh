@@ -45,7 +45,11 @@ export MATRIXARK_TEMPORALSTORE_DISK_FALLBACK="${MATRIXARK_TEMPORALSTORE_DISK_FAL
 #   MATRIXARK_TEMPORALSTORE_DISK_FALLBACK == "1" | "true" | "yes"    no `on`, lowercase only
 #
 matrixark_flag_on() {  # $1 = value, $2 = default ("1" means on)
-  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+  # Whitespace is deleted before the match, not merely case-folded. A shell export, a systemd
+  # Environment= line and a heredoc all leave it behind, and `1 ` matched none of the words below,
+  # so it fell through to the default -- writing a flag ON left it OFF, and writing one OFF left it
+  # ON. No value this accepts contains whitespace, so deleting it cannot hide one.
+  case "$(printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on) return 0 ;;
     0|false|no|off) return 1 ;;
     *) [ "${2:-1}" = "1" ] ;;
