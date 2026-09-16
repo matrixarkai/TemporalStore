@@ -37,11 +37,32 @@ PREVIOUSLY_MISREAD = [
     ("MATRIXARK_LOCAL_READ_CACHE_COPY", "off", False, True),
 ]
 
-# The shape that caused it: a literal env read, lowercased, tested against a set written in place.
+# The shape that caused it: a literal env read, lowercased, tested against a word list written in
+# place.
+#
+# It spelled the READ one way, and the membership one way. Python spells the read three ways and
+# this tree uses all three; the list is sometimes a tuple. Counted over 286 non-test modules:
+#
+#     os.environ.get(...) ... in {set}          24   <- all the shipped shape could see
+#     + os.getenv(...) and os.environ[...]      28
+#     + membership against a tuple or list      33
+#
+# The nine it could not see were checked one at a time and every one holds the settled
+# vocabulary, so nothing was wrong behind the blind spot. That is not a reason to leave it: the
+# rule below asks whether five named flags are parsed BY HAND again, and `os.getenv` is by hand.
+#
+# `.strip()` and `.lower()` in either order, or only one of them, or `.casefold()` -- the
+# normalising chain is not part of the claim, only that the value is folded before it is matched.
 INLINE_PARSE = re.compile(
-    r"""os\.environ\.get\(\s*["'](?P<name>[A-Z][A-Z0-9_]+)["'][^)]*\)"""
-    r"""\s*\.strip\(\)\s*\.lower\(\)\s*(?:not\s+in|in)\s*\{"""
+    r"""(?:os\.environ\.get|os\.getenv)\(\s*["'](?P<name>[A-Z][A-Z0-9_]+)["'][^)]*\)"""
+    r"""(?:\s*\.(?:strip|lower|casefold)\(\))+\s*(?:not\s+in|in)\s*[\{\(\[]"""
+    r"""|os\.environ\[\s*["'](?P<subscript>[A-Z][A-Z0-9_]+)["']\s*\]"""
+    r"""(?:\s*\.(?:strip|lower|casefold)\(\))+\s*(?:not\s+in|in)\s*[\{\(\[]"""
 )
+
+#: What the scan found when it was widened. A narrowing takes this down and is caught; the shipped
+#: shape scored 24 against it.
+EXPECTED_INLINE_PARSE_FLOOR = 28
 
 
 def _answers_a_boolean(node):
@@ -272,11 +293,61 @@ class EnvFlagVocabulary(unittest.TestCase):
                 continue
             scanned += 1
             for match in INLINE_PARSE.finditer(path.read_text(encoding="utf-8", errors="replace")):
-                if match.group("name") in misread:
-                    offenders.append(f"{path.name}: {match.group('name')}")
+                name = match.group("name") or match.group("subscript")
+                if name in misread:
+                    offenders.append(f"{path.name}: {name}")
         self.assertGreater(scanned, 100,
                            "the scan covered almost no modules -- it is not proving anything")
         self.assertEqual(offenders, [], "these flags are parsed by hand again")
+
+
+
+class TheHandParseScanSeesEverySpellingTest(unittest.TestCase):
+    """`INLINE_PARSE` decides only about what it matches.
+
+    The rule it serves is "these five flags are not parsed by hand again", and `os.getenv` is by
+    hand. Spelling the read one way meant a third of the inline parses in this tree were outside
+    the shape -- and a scan that stops matching reads exactly like a clean one.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.sites = []
+        for path in sorted(TOOLS.glob("*.py")):
+            if path.name.startswith("test_"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for match in INLINE_PARSE.finditer(text):
+                cls.sites.append((path.name,
+                                  match.group("name") or match.group("subscript"),
+                                  match.group(0)))
+
+    def test_the_scan_still_finds_the_hand_parses(self) -> None:
+        self.assertGreaterEqual(
+            len(self.sites), EXPECTED_INLINE_PARSE_FLOOR,
+            "found %d inline boolean parses, expected at least %d -- the shape has been narrowed "
+            "and the rule above is deciding about less of the tree than it reads"
+            % (len(self.sites), EXPECTED_INLINE_PARSE_FLOOR))
+
+    def test_every_read_spelling_this_tree_uses_is_in_scope(self) -> None:
+        """Otherwise one alternative could be dropped and the floor would still be met."""
+        found = {
+            "environ.get": any("environ.get" in src for _f, _n, src in self.sites),
+            "getenv": any("getenv" in src for _f, _n, src in self.sites),
+        }
+        missing = sorted(k for k, seen in found.items() if not seen)
+        self.assertEqual(
+            [], missing,
+            "the scan matches no read written as %s, and this tree writes some that way"
+            % ", ".join(missing))
+
+    def test_both_a_set_and_a_sequence_are_in_scope(self) -> None:
+        """`in ("0", "false")` is the same claim as `in {"0", "false"}` and was out of scope."""
+        self.assertTrue(any(src.rstrip().endswith("{") for _f, _n, src in self.sites),
+                        "no membership against a set literal is being matched")
+        self.assertTrue(any(src.rstrip().endswith(("(", "[")) for _f, _n, src in self.sites),
+                        "no membership against a tuple or list is being matched, and this tree "
+                        "writes some that way")
 
 
 if __name__ == "__main__":
