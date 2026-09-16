@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 299 of them, read by 99 functions.
+There are 311 of them, read by 99 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,17 +60,17 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 299 |
+| total | 311 |
 | booleans whose default this could read off the source | 53 |
-| numbers whose default this could read off the source | 71 |
+| numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 7 |
 | offered on the portal | 27 |
-| **that nothing in this repository sets** | 168 |
+| **that nothing in this repository sets** | 177 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 40 |
 
-## topology (39)
+## topology (42)
 
 Where this node is and what it talks to. Set by whoever provisions the node; not tenant-facing and not tuning.
 
@@ -89,6 +89,7 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `MATRIXARK_RUST_PROXY_HTTP_ADDR` | — | nothing | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_ADDR` | — | nothing | 1 | — |
 | `TS_BLOB_STORE_DIR` | — | config, launch, script | 1 | — |
+| `TS_BLOCK_STORE_DIR` | — | launch, script | 1 | — |
 | `TS_CACHE_DIR` | — | config, launch, script | 1 | — |
 | `TS_CLUSTER_ID` | — | launch | 1 | — |
 | `TS_DISTRIBUTED` | — | config, launch, script | 1 | — |
@@ -98,7 +99,7 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_MATRIXOBJECT_STORE_DIR` | — | config | 1 | — |
 | `TS_META_BIND_ADDR` | — | config, launch | 1 | — |
 | `TS_META_RAFT_NODE_ID` | 1 | nothing | 1 | — |
-| `TS_PAGE_STORE_DIR` | — | config, launch, script | 1 | — |
+| `TS_PAGE_STORE_DIR` | — | config | 1 | — |
 | `TS_PROXY_ADVERTISED_ADDR` | — | config, launch | 1 | — |
 | `TS_PROXY_BIND_ADDR` | — | config, launch | 1 | — |
 | `TS_PROXY_LOCATION` | — | nothing | 1 | — |
@@ -109,6 +110,8 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_SERVER_BIND_ADDR` | — | config, launch, script | 1 | — |
 | `TS_SERVER_LOCATION` | — | config | 1 | — |
 | `TS_SERVER_NODE_ID` | — | config, launch | 1 | — |
+| `TS_SHARD_END_ROUTING_BUCKET` | — | nothing | 1 | — |
+| `TS_SHARD_START_ROUTING_BUCKET` | — | nothing | 1 | — |
 | `TS_SHARD_URI` | — | test | 1 | — |
 | `TS_SHARED_STORE_CLUSTER_ID` | — | launch, script | 1 | — |
 | `TS_SHARED_STORE_DIR` | — | config, script | 1 | — |
@@ -174,7 +177,7 @@ Secrets. Never a form field, never in a launch artifact.
 | `TS_API_AUTH_TOKEN` | — | nothing | 1 | — |
 | `TS_META_ADMIN_TOKEN` | — | nothing | 1 | — |
 
-## durability (23)
+## durability (24)
 
 What is written, when it is flushed, and what is reclaimed. The escape hatches here trade throughput for a more conservative barrier.
 
@@ -201,7 +204,8 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS` | — | test | 1 | — |
 | `TS_WAL_RECLAIM_MIN_COPY_BYTES` | — | nothing | 1 | — |
 | `TS_WAL_RECLAIM_MIN_FREED_PERCENT` | 25 | nothing | 1 | — |
-| `TS_WAL_RESIDENT_PAGES` | 4096 | test | 1 | — |
+| `TS_WAL_RESIDENT_BLOCKS` | — | nothing | 1 | — |
+| `TS_WAL_RESIDENT_PAGES` | — | test | 1 | — |
 | `TS_WAL_SEGMENT_BYTES` | 262144 | nothing | 1 | — |
 
 ## format (6)
@@ -217,13 +221,14 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
 | `TS_VECTOR_SCALED` | on | launch, test, portal | 1 | — |
 
-## capacity (80)
+## capacity (84)
 
 Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `TS_RAFT_HEARTBEAT_INTERVAL_MS` | 100 | harness, script | 3 | — |
+| `TS_BLOCK_STORE_COMPRESSION_MIN_BYTES` | 256 | nothing | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_MIN_BYTES` | 256 | config, test | 2 | — |
 | `TS_PROXY_CONTEXT_IO_TIMEOUT_MS` | 30000 | nothing | 2 | — |
 | `TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT` | 256 | nothing | 2 | — |
@@ -235,6 +240,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `MATRIXARK_EMBED_DRAINER_MAX_EVENTS` | — | nothing | 1 | — |
 | `MATRIXARK_EMBED_DRAINER_MAX_NODES_PER_PASS` | — | nothing | 1 | — |
 | `MATRIXARK_RETRIEVAL_MAX_CANDIDATES` | 64 | nothing | 1 | — |
+| `MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES` | 256 | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_CACHE_BYTES` | — | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES` | 256 | test | 1 | — |
 | `MATRIXARK_RUST_PROXY_TRIM_BYTES` | — | nothing | 1 | — |
@@ -249,7 +255,8 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_BLOCK_SLAB_TARGET_BYTES` | 1073741824 | config, test, portal | 1 | — |
 | `TS_CACHE_MEMORY_BYTES` | — | config, launch | 1 | — |
 | `TS_COMPACTION_WATERMARK_BYTES` | 268435456 | config, test, portal | 1 | — |
-| `TS_CONTEXT_PAGE_TARGET_BYTES` | 65536 | config, test, portal | 1 | — |
+| `TS_CONTEXT_BLOCK_TARGET_BYTES` | 65536 | config, portal | 1 | — |
+| `TS_CONTEXT_PAGE_TARGET_BYTES` | — | config, test | 1 | — |
 | `TS_DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG` | 0 | nothing | 1 | — |
 | `TS_DATA_RAFT_READ_INDEX_TIMEOUT_MS` | 1000 | nothing | 1 | — |
 | `TS_DISTRIBUTED_RAFT_CATCHUP_TIMEOUT_SECS` | 30 | nothing | 1 | — |
@@ -283,7 +290,8 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_META_TASK_SCHEDULER_MAX_INFLIGHT` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_MAX_POSTPONE_MS` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_MAX_RETRY_TIMES` | — | nothing | 1 | — |
-| `TS_METRICS_MAX_SLOT_SERIES` | 1024 | portal | 1 | — |
+| `TS_METRICS_MAX_BUCKET_SERIES` | — | portal | 1 | — |
+| `TS_METRICS_MAX_SLOT_SERIES` | — | nothing | 1 | — |
 | `TS_PAGE_INDEX_CACHE_BYTES` | 67108864 | config, test, portal | 1 | — |
 | `TS_PROXY_AUTO_REGISTER_MIN_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_PROXY_CONNECT_TIMEOUT_MS` | — | config | 1 | — |
@@ -374,7 +382,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | script | 1 | — |
 
-## behaviour (65)
+## behaviour (69)
 
 Everything else that changes what the engine does.
 
@@ -389,10 +397,14 @@ Everything else that changes what the engine does.
 | `TS_RAFT_RPC_RETRIES` | 2 | harness, script | 3 | — |
 | `MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE` | — | config, test | 2 | — |
 | `TEMPORALSTORE_RUST_CODEX_HOOK_ROOT` | — | launch | 2 | — |
-| `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, launch, test | 2 | — |
+| `TS_BLOCK_STORE_COMPRESSION_ENABLED` | — | launch | 2 | — |
+| `TS_BLOCK_STORE_COMPRESSION_LEVEL` | — | nothing | 2 | — |
+| `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, test | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_LEVEL` | — | config, test | 2 | — |
 | `MATRIXARK_ENGINE_COMPACT_SERVING_REFS` | on | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_ASYNC_STORAGE` | off | launch, script, test | 1 | — |
+| `MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED` | — | nothing | 1 | — |
+| `MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL` | — | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_HTTP_CONCURRENT` | off | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED` | — | test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL` | — | test | 1 | — |
@@ -441,7 +453,7 @@ Everything else that changes what the engine does.
 | `TS_SHARD_READONLY` | — | test | 1 | — |
 | `TS_SHARD_READ_BURST` | — | nothing | 1 | — |
 | `TS_SHARD_READ_QPS` | — | nothing | 1 | — |
-| `TS_SHARD_START_ROUTING_SLOT` | 0 | test | 1 | — |
+| `TS_SHARD_START_ROUTING_SLOT` | — | test | 1 | — |
 | `TS_SHARD_WRITE_BURST` | — | nothing | 1 | — |
 | `TS_SHARD_WRITE_QPS` | — | nothing | 1 | — |
 | `TS_TABLE_NAME` | — | test | 1 | — |

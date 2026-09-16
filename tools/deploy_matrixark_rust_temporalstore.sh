@@ -149,7 +149,7 @@ start_all() {
     TS_SERVER_ADVERTISE_ADDR="$DATANODE_ADDR" \
     TS_SHARD_ID="$SHARD_ID" \
     TS_CACHE_DIR="$DATA_DIR/cache" \
-    TS_PAGE_STORE_DIR="$DATA_DIR/pages" \
+    TS_BLOCK_STORE_DIR="$DATA_DIR/pages" \
     TS_INDEX_DIR="$DATA_DIR/indexes" \
     "$DATANODE_BIN"
   wait_tcp "$DATANODE_ADDR" matrixark_rust_datanode

@@ -123,7 +123,7 @@ export TS_SERVER_ADDR=127.0.0.1:17002
 export TS_META_ADDR=127.0.0.1:17001
 export TS_SHARD_ID=1
 export TS_CACHE_DIR=/tmp/temporalstore-context-manual/cache
-export TS_PAGE_STORE_DIR=/tmp/temporalstore-context-manual/pages
+export TS_BLOCK_STORE_DIR=/tmp/temporalstore-context-manual/pages
 export TS_INDEX_DIR=/tmp/temporalstore-context-manual/indexes
 
 cargo run -p temporalstore-rust --bin server

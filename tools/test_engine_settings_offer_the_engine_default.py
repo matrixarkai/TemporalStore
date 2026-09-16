@@ -204,6 +204,19 @@ class TheShippedConfigMatchesTheEngineTest(unittest.TestCase):
 ENGINE_SRC = os.path.join(REPO, "crates", "temporalstore-rust", "src")
 
 _READ_SITE = re.compile(r'std::env::var\s*\(\s*"([A-Z0-9_]+)"\s*\)')
+
+#: A SECOND read shape, and it had to be taught rather than exempted. A knob whose name the
+#: first milestone renamed reads the current spelling first and each previous spelling after it,
+#: through `env_flag::env_number_first(&["TS_CURRENT", "TS_PREVIOUS"], 1024)`. None of those
+#: names appears beside `std::env::var`, so the scan above returns nothing for them -- and a
+#: knob with no comparable read is exactly what this file refuses to let onto the page. Adding
+#: it to UNCOMPARED_ENGINE_SETTINGS would have hidden a knob that IS compared; the scan learns
+#: the shape instead. Every name in the list shares the default, because every name reaches the
+#: same fallback.
+_READ_SITE_FIRST = re.compile(
+    r"env_(?:number|bool)_first\(\s*&\[(?P<names>[^\]]*)\]\s*,\s*(?P<default>[^,)]+?)\s*,?\s*\)",
+    re.S)
+_FIRST_NAME = re.compile(r'"([A-Z0-9_]+)"')
 _WORD_SET = re.compile(r'(?:"[a-z0-9]+"\s*\|\s*)+"[a-z0-9]+"')
 _UNWRAP_OR = re.compile(r'\.unwrap_or\s*\(\s*([0-9_]+)\s*\)')
 
@@ -293,6 +306,16 @@ def _read_site_defaults() -> Dict[str, str]:
                     if number:
                         value = str(int(number.group(1).replace("_", "")))
                 if value is not None:
+                    sites.setdefault(variable, set()).add(value)
+            for found in _READ_SITE_FIRST.finditer(text):
+                raw = found.group("default").strip()
+                if re.fullmatch(r"[0-9_]+", raw):
+                    value = str(int(raw.replace("_", "")))
+                elif raw in ("true", "false"):
+                    value = "1" if raw == "true" else "0"
+                else:
+                    continue
+                for variable in _FIRST_NAME.findall(found.group("names")):
                     sites.setdefault(variable, set()).add(value)
     return {variable: next(iter(values))
             for variable, values in sites.items() if len(values) == 1}

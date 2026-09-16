@@ -44,7 +44,7 @@ services:
       TS_SHARD_ID: "1"
       TS_DATA_DIR: "/var/lib/temporalstore"
       TS_CACHE_DIR: "/var/lib/temporalstore/cache"
-      TS_PAGE_STORE_DIR: "/var/lib/temporalstore/pages"
+      TS_BLOCK_STORE_DIR: "/var/lib/temporalstore/pages"
       TS_INDEX_DIR: "/var/lib/temporalstore/indexes"
     volumes:
       - temporalstore-data:/var/lib/temporalstore

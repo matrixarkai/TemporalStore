@@ -517,6 +517,23 @@ configs, or environment readers internally.
 | `TS_PAGE_INDEX_CACHE_BYTES` | Page-index cache budget for object/range lookup metadata. | `67108864` |
 | `TS_BLOCK_INDEX_CACHE_BYTES` | Block-index cache budget for physical address metadata. | `67108864` |
 
+Names the first milestone moved. The engine reads the CURRENT spelling first and the previous
+one only when the current is unset, so a deployment setting either keeps working. The table and
+report shape above still name the previous spellings, because that is what a report recorded
+before the milestone carries.
+
+| current | previous | read by |
+|---|---|---|
+| `TS_CONTEXT_BLOCK_TARGET_BYTES` | `TS_CONTEXT_PAGE_TARGET_BYTES` | `StorageTuningConfig::from_getter` |
+| `TS_BLOCK_STORE_DIR` | `TS_PAGE_STORE_DIR` | the server's block-store directory |
+| `TS_BLOCK_STORE_COMPRESSION_ENABLED` | `TS_PAGE_STORE_COMPRESSION_ENABLED` | `block_store_options_from_env` |
+| `TS_BLOCK_STORE_COMPRESSION_MIN_BYTES` | `TS_PAGE_STORE_COMPRESSION_MIN_BYTES` | `block_store_options_from_env` |
+| `TS_BLOCK_STORE_COMPRESSION_LEVEL` | `TS_PAGE_STORE_COMPRESSION_LEVEL` | `block_store_options_from_env` |
+| `TS_SHARD_START_ROUTING_BUCKET` | `TS_SHARD_START_ROUTING_SLOT` | `startup_load_shard_request` |
+| `TS_SHARD_END_ROUTING_BUCKET` | `TS_SHARD_END_ROUTING_SLOT` | `startup_load_shard_request` |
+| `TS_METRICS_MAX_BUCKET_SERIES` | `TS_METRICS_MAX_SLOT_SERIES` | `max_bucket_series_per_shard` |
+| `TS_WAL_RESIDENT_BLOCKS` | `TS_WAL_RESIDENT_PAGES` | `wal_resident_block_limit` |
+
 Required report shape:
 
 ```json

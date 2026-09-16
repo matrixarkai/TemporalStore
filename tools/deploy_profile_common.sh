@@ -83,16 +83,16 @@ ts_profile_perf_flags() {
   export MATRIXARK_EMBED_DRAINER_INTERVAL_MS="${MATRIXARK_EMBED_DRAINER_INTERVAL_MS:-500}"
 
   # Page store compression.
-  export TS_PAGE_STORE_COMPRESSION_ENABLED="${TS_PAGE_STORE_COMPRESSION_ENABLED:-1}"
+  export TS_BLOCK_STORE_COMPRESSION_ENABLED="${TS_BLOCK_STORE_COMPRESSION_ENABLED:-${TS_PAGE_STORE_COMPRESSION_ENABLED:-1}}"
 }
 
 # --- data directories --------------------------------------------------------
 ts_profile_dirs() {
-  export TS_PAGE_STORE_DIR="${TS_PAGE_STORE_DIR:-${TS_PROFILE_DATA}/pages}"
+  export TS_BLOCK_STORE_DIR="${TS_BLOCK_STORE_DIR:-${TS_PAGE_STORE_DIR:-${TS_PROFILE_DATA}/pages}}"
   export TS_CACHE_DIR="${TS_CACHE_DIR:-${TS_PROFILE_DATA}/cache}"
   export TS_INDEX_DIR="${TS_INDEX_DIR:-${TS_PROFILE_DATA}/index}"
   export TS_BLOB_STORE_DIR="${TS_BLOB_STORE_DIR:-${TS_PROFILE_DATA}/pages/blobs}"
-  mkdir -p "$TS_PAGE_STORE_DIR" "$TS_CACHE_DIR" "$TS_INDEX_DIR" "$TS_BLOB_STORE_DIR" \
+  mkdir -p "$TS_BLOCK_STORE_DIR" "$TS_CACHE_DIR" "$TS_INDEX_DIR" "$TS_BLOB_STORE_DIR" \
            "$(dirname "$TS_PROFILE_LOG")"
 }
 

@@ -270,7 +270,7 @@ def plan(shape: str, storage: str = "", nodes: int = 0, root: str = "",
             blocking.append("Unknown storage tier %r for the %s shape." % (choice, shape))
         else:
             base = _clean(root) or tier["default_root"]
-            env["TS_PAGE_STORE_DIR"] = base + "/pages"
+            env["TS_BLOCK_STORE_DIR"] = base + "/pages"
             env["TS_BLOB_STORE_DIR"] = base + "/blobs"
             env["TS_INDEX_DIR"] = base + "/index"
             env["TS_CACHE_DIR"] = base + "/cache"
@@ -405,7 +405,7 @@ def cloud_init(plan_doc: Json, repo: str = PUBLIC_REPO, ref: str = "main") -> st
     storage = str(plan_doc.get("storage") or "")
     disk = _DEVICE.get(storage, _DEVICE["local"])
     root = ""
-    for name in ("TS_PAGE_STORE_DIR", "TS_BLOB_STORE_DIR"):
+    for name in ("TS_BLOCK_STORE_DIR", "TS_BLOB_STORE_DIR"):
         if env.get(name):
             root = str(env[name]).rsplit("/", 1)[0]
             break

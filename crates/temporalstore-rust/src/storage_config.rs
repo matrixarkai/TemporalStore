@@ -3,7 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const TS_CONTEXT_BLOCK_TARGET_BYTES: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";
+pub const TS_CONTEXT_BLOCK_TARGET_BYTES: &str = "TS_CONTEXT_BLOCK_TARGET_BYTES";
+/// Previous name for [`TS_CONTEXT_BLOCK_TARGET_BYTES`], still honoured so a deployment that
+/// sets it keeps working. Read only when the current name is unset.
+///
+/// The constant was renamed to `BLOCK` and kept the `PAGE` spelling as its VALUE, so the name in
+/// the source and the name an operator sets had drifted apart -- the same drift
+/// [`TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME`] below was written to close.
+pub const TS_CONTEXT_BLOCK_TARGET_BYTES_PREVIOUS_NAME: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";
 pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SLAB_TARGET_BYTES";
 pub const TS_STREAM_MAX_BLOB_SIZE: &str = "TS_STREAM_MAX_BLOB_SIZE";
 pub const TS_COMPACTION_WATERMARK_BYTES: &str = "TS_COMPACTION_WATERMARK_BYTES";
@@ -121,7 +128,8 @@ impl StorageTuningConfig {
         let defaults = Self::default();
         Self {
             context_block_target_bytes: parse_usize(
-                get(TS_CONTEXT_BLOCK_TARGET_BYTES),
+                get(TS_CONTEXT_BLOCK_TARGET_BYTES)
+                    .or_else(|| get(TS_CONTEXT_BLOCK_TARGET_BYTES_PREVIOUS_NAME)),
                 defaults.context_block_target_bytes,
             )
             .max(1024),
@@ -178,9 +186,10 @@ impl StorageTuningConfig {
             .max(self.stream_max_blob_size)
     }
 
-    pub fn env_names() -> [&'static str; 12] {
+    pub fn env_names() -> [&'static str; 13] {
         [
             TS_CONTEXT_BLOCK_TARGET_BYTES,
+            TS_CONTEXT_BLOCK_TARGET_BYTES_PREVIOUS_NAME,
             TS_BLOCK_SLAB_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME,
             TS_STREAM_MAX_BLOB_SIZE,
@@ -292,6 +301,7 @@ mod tests {
         assert_eq!(
             StorageTuningConfig::env_names(),
             [
+                "TS_CONTEXT_BLOCK_TARGET_BYTES",
                 "TS_CONTEXT_PAGE_TARGET_BYTES",
                 "TS_BLOCK_SLAB_TARGET_BYTES",
                 "TS_BLOCK_SEGMENT_TARGET_BYTES",
@@ -306,6 +316,33 @@ mod tests {
                 "TS_INDEX_GC_MIN_RECLAIMABLE_BYTES",
             ]
         );
+    }
+
+    #[test]
+    fn the_previous_context_target_env_name_still_configures_the_knob() {
+        // The rename this milestone makes, and the reason it is not a clean break. Nothing
+        // errors when a variable stops being read: the knob turns OFF, the default applies, and
+        // a deployment sized for 32 KiB blocks silently starts cutting 64 KiB ones.
+        let previous = HashMap::from([(TS_CONTEXT_BLOCK_TARGET_BYTES_PREVIOUS_NAME, "32768")]);
+        let config =
+            StorageTuningConfig::from_getter(|name| previous.get(name).map(|v| v.to_string()));
+        assert_eq!(
+            config.context_block_target_bytes, 32768,
+            "the previous spelling must still configure the knob, not fall back to the default"
+        );
+        assert_ne!(
+            config.context_block_target_bytes, DEFAULT_CONTEXT_BLOCK_TARGET_BYTES,
+            "a value read from the previous name must differ from the default, or this proves \
+             nothing"
+        );
+
+        // And the current spelling wins over it.
+        let both = HashMap::from([
+            (TS_CONTEXT_BLOCK_TARGET_BYTES, "16384"),
+            (TS_CONTEXT_BLOCK_TARGET_BYTES_PREVIOUS_NAME, "32768"),
+        ]);
+        let config = StorageTuningConfig::from_getter(|name| both.get(name).map(|v| v.to_string()));
+        assert_eq!(config.context_block_target_bytes, 16384);
     }
 
     #[test]

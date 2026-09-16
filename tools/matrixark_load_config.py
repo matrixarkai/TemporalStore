@@ -78,16 +78,16 @@ ENV_MAP: Dict[str, str] = {
     "storage.object_store_bucket": "TS_MATRIXOBJECT_BUCKET",
     "storage.object_store_dir": "TS_MATRIXOBJECT_STORE_DIR",
     "storage.shared_store_dir": "TS_SHARED_STORE_DIR",
-    "storage.context_page_target_bytes": "TS_CONTEXT_PAGE_TARGET_BYTES",
+    "storage.context_page_target_bytes": "TS_CONTEXT_BLOCK_TARGET_BYTES",
     "storage.block_slab_target_bytes": "TS_BLOCK_SLAB_TARGET_BYTES",
     "storage.stream_max_blob_size": "TS_STREAM_MAX_BLOB_SIZE",
     "storage.compaction_watermark_bytes": "TS_COMPACTION_WATERMARK_BYTES",
     "storage.page_index_cache_bytes": "TS_PAGE_INDEX_CACHE_BYTES",
     "storage.block_index_cache_bytes": "TS_BLOCK_INDEX_CACHE_BYTES",
     "storage.cold_scan_no_cache_fill": "TS_COLD_SCAN_NO_CACHE_FILL",
-    "storage.page_store_compression_enabled": "TS_PAGE_STORE_COMPRESSION_ENABLED",
-    "storage.page_store_compression_level": "TS_PAGE_STORE_COMPRESSION_LEVEL",
-    "storage.page_store_compression_min_bytes": "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
+    "storage.page_store_compression_enabled": "TS_BLOCK_STORE_COMPRESSION_ENABLED",
+    "storage.page_store_compression_level": "TS_BLOCK_STORE_COMPRESSION_LEVEL",
+    "storage.page_store_compression_min_bytes": "TS_BLOCK_STORE_COMPRESSION_MIN_BYTES",
     # Offered by the config file, commented out, and mapped by nothing -- so uncommenting the line
     # would have set nothing. The flag is live: default ON, read in eight places.
     # The engine reads TS_INDEX_DUMP_WAL_GAP_BYTES first and falls back to

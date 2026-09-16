@@ -5213,6 +5213,8 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
     BlockStoreOptions {
         compression_enabled: env_bool_any(
             &[
+                "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED",
+                "TS_BLOCK_STORE_COMPRESSION_ENABLED",
                 "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED",
                 "TS_PAGE_STORE_COMPRESSION_ENABLED",
             ],
@@ -5220,6 +5222,8 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
         ),
         compression_min_bytes: env_usize_any(
             &[
+                "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES",
+                "TS_BLOCK_STORE_COMPRESSION_MIN_BYTES",
                 "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES",
                 "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
             ],
@@ -5236,6 +5240,8 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
         ),
         compression_level: env_i32_any(
             &[
+                "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL",
+                "TS_BLOCK_STORE_COMPRESSION_LEVEL",
                 "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL",
                 "TS_PAGE_STORE_COMPRESSION_LEVEL",
             ],

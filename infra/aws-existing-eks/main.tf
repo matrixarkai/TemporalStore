@@ -171,7 +171,7 @@ resource "kubernetes_deployment_v1" "server" {
             value = "/var/lib/temporalstore/cache"
           }
           env {
-            name  = "TS_PAGE_STORE_DIR"
+            name  = "TS_BLOCK_STORE_DIR"
             value = "/var/lib/temporalstore/pages"
           }
           env {

@@ -112,6 +112,16 @@ def _rust_per_call_env_names() -> set:
             names.update(re.findall(
                 r'pub const TS_[A-Z0-9_]+\s*:\s*&(?:\'static\s+)?str\s*=\s*"(TS_[A-Z0-9_]+)"',
                 text))
+            # A THIRD route, and the same blind spot one more time. A knob the first milestone
+            # renamed reads the current spelling first and each previous spelling after it,
+            # through `env_flag::env_value_any` / `env_number_first` / `env_bool_first`. Those
+            # names appear beside none of the shapes above, so a knob that had a per-call reader
+            # before the rename would read as having none after it -- the reader is unchanged and
+            # only its spelling moved. Every name in the list is read per call, current and
+            # previous alike.
+            for call in re.finditer(
+                    r"env_(?:value_any|number_first|bool_first)\(\s*&\[([^\]]*)\]", text, re.S):
+                names.update(re.findall(r'"([A-Z0-9_]+)"', call.group(1)))
     return names
 
 def _resolver_environ_scopes() -> dict:

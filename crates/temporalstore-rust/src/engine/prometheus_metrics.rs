@@ -4,16 +4,17 @@
 //! Prometheus metrics rendering for TemporalEngine, split from engine.rs.
 use super::*;
 
-/// TS_METRICS_MAX_SLOT_SERIES: how many routing slots may emit per-slot series on one shard.
+/// TS_METRICS_MAX_BUCKET_SERIES: how many routing buckets may emit per-bucket series on one
+/// shard. `TS_METRICS_MAX_SLOT_SERIES` is the previous spelling and is still read.
 ///
-/// A routing slot is derived per key, so per-slot metrics scale with record count rather than
-/// with topology. Past this many slots the per-slot detail is dropped in favour of the shard
-/// totals, which are emitted unconditionally.
+/// A routing bucket is derived per key, so per-bucket metrics scale with record count rather
+/// than with topology. Past this many buckets the per-bucket detail is dropped in favour of the
+/// shard totals, which are emitted unconditionally.
 fn max_bucket_series_per_shard() -> usize {
-    std::env::var("TS_METRICS_MAX_SLOT_SERIES")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(1024)
+    crate::env_flag::env_number_first(
+        &["TS_METRICS_MAX_BUCKET_SERIES", "TS_METRICS_MAX_SLOT_SERIES"],
+        1024,
+    )
 }
 
 impl TemporalEngine {
@@ -57,7 +58,7 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_storage_bucket_bytes gauge\n");
         out.push_str("# HELP temporalstore_storage_bucket_dirty_objects Dirty objects by shard and routing bucket.\n");
         out.push_str("# TYPE temporalstore_storage_bucket_dirty_objects gauge\n");
-        out.push_str("# HELP temporalstore_storage_bucket_series_omitted Routing buckets on this shard when per-bucket series were suppressed by TS_METRICS_MAX_SLOT_SERIES.\n");
+        out.push_str("# HELP temporalstore_storage_bucket_series_omitted Routing buckets on this shard when per-bucket series were suppressed by TS_METRICS_MAX_BUCKET_SERIES.\n");
         out.push_str("# TYPE temporalstore_storage_bucket_series_omitted gauge\n");
         out.push_str("# HELP temporalstore_block_store_operations_total Canonical block-store operation counters by shard.\n");
         out.push_str("# TYPE temporalstore_block_store_operations_total counter\n");

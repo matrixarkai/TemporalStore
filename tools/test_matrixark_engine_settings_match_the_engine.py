@@ -168,7 +168,36 @@ def engine_defaults() -> dict:
                 defaults[name] = "1"     # matches the OFF words, so it is on unless switched off
             elif '"1" | "true" | "yes" | "on"' in squashed:
                 defaults[name] = "0"     # matches the ON words, so it is off unless switched on
+        # A THIRD shape, and the reason this scanner had to learn it rather than go quiet: a knob
+        # whose name was renamed reads the CURRENT spelling first and the previous one after it,
+        # through `env_number_first(&[..], default)` / `env_bool_first(&[..], default)`. That name
+        # never appears beside `env::var`, so a scan that only knows the first two shapes reports
+        # the knob as unread and its default as underivable -- which is what it did.
+        for match in _FIRST_OF_CALL.finditer(text):
+            names = re.findall(r'"(TS_[A-Z0-9_]+)"', match.group("names"))
+            if not names:
+                continue
+            default = match.group("default").strip()
+            current = names[0]
+            if current in defaults:
+                continue
+            if re.fullmatch(r"\d+", default):
+                defaults[current] = default
+            elif default in ("true", "false"):
+                defaults[current] = "1" if default == "true" else "0"
     return defaults
+
+
+#: `env_number_first(&["TS_CURRENT", "TS_PREVIOUS"], 1024)` -- the current spelling first, each
+#: previous spelling after it, and the default last. See `env_flag::env_value_any`.
+_FIRST_OF_CALL = re.compile(
+    r"env_(?:number|bool)_first\(\s*&\[(?P<names>[^\]]*)\]\s*,\s*(?P<default>[^,)]+?)\s*,?\s*\)",
+    re.S,
+)
+
+#: Every `TS_*` name read through one of the first-wins helpers, current and previous alike.
+_FIRST_OF_NAMES = re.compile(
+    r"env_(?:value_any|number_first|bool_first)\(\s*&\[(?P<names>[^\]]*)\]", re.S)
 
 
 class TheEnginesDefaultIsWhatThePortalShowsTest(unittest.TestCase):
@@ -241,6 +270,10 @@ class TheEnginesDefaultIsWhatThePortalShowsTest(unittest.TestCase):
             read.update(re.findall(
                 r'pub const TS_[A-Z0-9_]+\s*:\s*&(?:\'static\s+)?str\s*=\s*"(TS_[A-Z0-9_]+)"',
                 text))
+            # And the first-wins helpers, which carry a renamed knob's current spelling and every
+            # previous one in a single list. All of them are read.
+            for match in _FIRST_OF_NAMES.finditer(text):
+                read.update(re.findall(r'"(TS_[A-Z0-9_]+)"', match.group("names")))
         for setting in self.engine_settings:
             with self.subTest(env=setting.env):
                 self.assertIn(

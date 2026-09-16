@@ -69,7 +69,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # test_matrixark_clamped_settings_say_so derives the same floors from the Rust accessor and fails if
 # this map and the engine disagree, so it cannot quietly go stale.
 _ENGINE_MINIMUMS: Dict[str, int] = {
-    "TS_CONTEXT_PAGE_TARGET_BYTES": 1024,
+    "TS_CONTEXT_BLOCK_TARGET_BYTES": 1024,
     "TS_BLOCK_SLAB_TARGET_BYTES": 1024,
     "TS_STREAM_MAX_BLOB_SIZE": 1024,
 }
@@ -671,7 +671,7 @@ SETTINGS: List[Setting] = [
     # closure -- so they never appear beside env::var and a name-literal scan of the engine does
     # not see them at all. Eighteen knobs hide that way; these nine are the tuning family.
     Setting("storage_engine.context_page_target_bytes", "storage_engine",
-            "TS_CONTEXT_PAGE_TARGET_BYTES",
+            "TS_CONTEXT_BLOCK_TARGET_BYTES",
             "Target size of a context page", "int", "65536", "live",
             "How large a page grows before the engine starts another. Smaller pages read less per "
             "lookup and cost more of them; larger pages amortise better and waste more on a partial "
@@ -779,7 +779,7 @@ SETTINGS: List[Setting] = [
             "index -- so an unbounded history meant one index copy retained per dump for the life "
             "of the node. Raise it to keep more history, at that cost per entry."),
     Setting("storage_engine.metrics_max_slot_series", "storage_engine",
-            "TS_METRICS_MAX_SLOT_SERIES",
+            "TS_METRICS_MAX_BUCKET_SERIES",
             "Per-slot metric series allowed per shard", "int", "1024", "live",
             "A routing slot is derived per key, so per-slot metrics grow with key count rather "
             "than with anything bounded. This caps how many a single shard may emit; lower it if "

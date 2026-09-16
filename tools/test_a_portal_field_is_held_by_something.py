@@ -147,8 +147,12 @@ UNHELD = {
     # it is the flag that file exists to pin, the one whose config key kept the older
     # spelling -- so "a test names its portal key" holds it and the record no longer
     # applies. The field itself is untouched and still on the page.
+    # TS_METRICS_MAX_SLOT_SERIES was here, recorded as held by nothing but the engine mirror's
+    # comparison. It is now TS_METRICS_MAX_BUCKET_SERIES, and the milestone's rename table in
+    # `docs/temporalstore_page_block_address_contract.md` names it beside the previous spelling
+    # an operator may still have set -- so "a hand-written document names it" holds it and the
+    # record no longer applies. The field itself is untouched and still on the page.
     "TS_MAX_RETAINED_FINISHED_JOBS": "compared against its read site by the engine mirror",
-    "TS_METRICS_MAX_SLOT_SERIES": "compared against its read site by the engine mirror",
     "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT":
         "compared against its read site by the engine mirror",
 }

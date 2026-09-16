@@ -70,7 +70,7 @@ python3 tools/validate_no_duplicate_tests.py
 Rust exposes the same public production tuning surface used by benchmark and
 deployment profiles. `StorageTuningConfig::from_env()` reads:
 
-- `TS_CONTEXT_PAGE_TARGET_BYTES`: target bytes for packed context timestamp pages.
+- `TS_CONTEXT_BLOCK_TARGET_BYTES`: target bytes for packed context timestamp blocks. `TS_CONTEXT_PAGE_TARGET_BYTES` is the previous name and is still read when this one is unset.
 - `TS_BLOCK_SLAB_TARGET_BYTES`: target local block segment size before rolling.
 - `TS_STREAM_MAX_BLOB_SIZE`: stream blob cap; the block store rolls at the lower
   of this value and `TS_BLOCK_SLAB_TARGET_BYTES`.
@@ -81,7 +81,7 @@ deployment profiles. `StorageTuningConfig::from_env()` reads:
   lookups.
 
 The block store consumes the segment/blob knobs directly for append rolling, and
-context packed pages consume `TS_CONTEXT_PAGE_TARGET_BYTES`. The remaining knobs
+context packed blocks consume `TS_CONTEXT_BLOCK_TARGET_BYTES`. The remaining knobs
 are part of the shared lifecycle/cold-scan config surface so and Rust
 benchmarks can run with the same named production profile.
 

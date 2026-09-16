@@ -109,8 +109,12 @@ fn main() {
         .unwrap_or(1);
     let cache_dir =
         std::env::var("TS_CACHE_DIR").unwrap_or_else(|_| "target/temporalstore-cache".to_string());
-    let block_store_dir = std::env::var("TS_PAGE_STORE_DIR")
-        .unwrap_or_else(|_| "target/temporalstore-pages".to_string());
+    // `TS_BLOCK_STORE_DIR` is the name; `TS_PAGE_STORE_DIR` is the previous spelling and is
+    // still read. The DEFAULT is deliberately left where it was: changing it would move where
+    // an operator who sets neither name keeps their blocks.
+    let block_store_dir =
+        temporalstore_rust::env_flag::env_value_any(&["TS_BLOCK_STORE_DIR", "TS_PAGE_STORE_DIR"])
+            .unwrap_or_else(|| "target/temporalstore-pages".to_string());
     // Directory for the streamed attachment/blob tier (POST/GET /blob/<key>);
     // computed here so it does not outlive the move of `block_store_dir`.
     let blob_store_dir =
@@ -2319,16 +2323,27 @@ fn raft_config_from_env() -> RaftConfig {
 fn block_store_options_from_env() -> BlockStoreOptions {
     let defaults = BlockStoreOptions::default();
     BlockStoreOptions {
-        compression_enabled: env_bool(
-            "TS_PAGE_STORE_COMPRESSION_ENABLED",
+        // Current spelling first, previous spelling after it: a rename that simply dropped the
+        // old name would turn the knob off in every deployment still setting it, silently.
+        compression_enabled: temporalstore_rust::env_flag::env_bool_first(
+            &[
+                "TS_BLOCK_STORE_COMPRESSION_ENABLED",
+                "TS_PAGE_STORE_COMPRESSION_ENABLED",
+            ],
             defaults.compression_enabled,
         ),
-        compression_min_bytes: env_usize(
-            "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
+        compression_min_bytes: temporalstore_rust::env_flag::env_number_first(
+            &[
+                "TS_BLOCK_STORE_COMPRESSION_MIN_BYTES",
+                "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
+            ],
             defaults.compression_min_bytes,
         ),
-        compression_level: env_i32(
-            "TS_PAGE_STORE_COMPRESSION_LEVEL",
+        compression_level: temporalstore_rust::env_flag::env_number_first(
+            &[
+                "TS_BLOCK_STORE_COMPRESSION_LEVEL",
+                "TS_PAGE_STORE_COMPRESSION_LEVEL",
+            ],
             defaults.compression_level,
         ),
     }

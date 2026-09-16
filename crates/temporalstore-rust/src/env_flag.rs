@@ -111,6 +111,35 @@ pub fn env_value(name: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+/// The value of the FIRST of `names` that holds one, or `None` when none of them does.
+///
+/// The milestone vocabulary rename moves operator-facing flag names, and an environment
+/// variable is the one surface where a rename cannot be a clean break: nothing errors when a
+/// name stops being read. The flag simply turns OFF, the built-in default applies, and a
+/// deployment that was setting the old name keeps running with different behaviour and no
+/// message. Spelling the previous name after the current one keeps such a deployment working.
+///
+/// Order is precedence: put the CURRENT name first and each previous spelling after it. Reads
+/// go through [`env_value`], so a current name that is present but BLANK falls through to the
+/// previous one rather than shadowing it with nothing.
+pub fn env_value_any(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| env_value(name))
+}
+
+/// [`env_bool`] over a list of names, current spelling first. See [`env_value_any`].
+pub fn env_bool_first(names: &[&str], default: bool) -> bool {
+    env_value_any(names)
+        .and_then(|raw| parse_bool(&raw))
+        .unwrap_or(default)
+}
+
+/// [`env_number`] over a list of names, current spelling first. See [`env_value_any`].
+pub fn env_number_first<T: std::str::FromStr>(names: &[&str], default: T) -> T {
+    env_value_any(names)
+        .and_then(|raw| parse_number::<T>(&raw))
+        .unwrap_or(default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +216,42 @@ mod tests {
                    "and a real newer value still wins");
         std::env::remove_var(new);
         std::env::remove_var(old);
+    }
+
+    #[test]
+    fn a_previous_spelling_is_still_read_when_the_current_one_is_unset() {
+        // What the milestone rename would otherwise cost. Renaming a `TS_*` flag does not
+        // error: the flag stops being read, the default applies, and a deployment setting the
+        // old name quietly gets different behaviour. These three helpers are the reason it
+        // does not.
+        let current = "TS_ENV_FLAG_FIRST_CURRENT";
+        let previous = "TS_ENV_FLAG_FIRST_PREVIOUS";
+        std::env::remove_var(current);
+        std::env::remove_var(previous);
+
+        // Nothing set: the default, and NOT a zero or a false pulled out of thin air.
+        assert_eq!(9usize, env_number_first(&[current, previous], 9usize));
+        assert!(env_bool_first(&[current, previous], true));
+        assert_eq!(None, env_value_any(&[current, previous]));
+
+        // Only the previous name set -- the deployment that has not been updated. It must read
+        // the value it set, not the default.
+        std::env::set_var(previous, "4096");
+        assert_eq!(4096usize, env_number_first(&[current, previous], 9usize));
+        std::env::set_var(previous, "off");
+        assert!(!env_bool_first(&[current, previous], true));
+
+        // Both set: the current name wins.
+        std::env::set_var(current, "8192");
+        std::env::set_var(previous, "4096");
+        assert_eq!(8192usize, env_number_first(&[current, previous], 9usize));
+
+        // The current name set but BLANK must not shadow the previous one with nothing.
+        std::env::set_var(current, "  ");
+        assert_eq!(4096usize, env_number_first(&[current, previous], 9usize));
+
+        std::env::remove_var(current);
+        std::env::remove_var(previous);
     }
 
     #[test]

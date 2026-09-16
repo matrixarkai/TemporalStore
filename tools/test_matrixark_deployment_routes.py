@@ -129,7 +129,7 @@ class DeploymentPlanRouteTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(plan["ok"], plan["blocking"])
         self.assertEqual("1", plan["env"]["TS_STANDALONE"])
-        self.assertIn("TS_PAGE_STORE_DIR=", plan["env_file"])
+        self.assertIn("TS_BLOCK_STORE_DIR=", plan["env_file"])
         self.assertIn("TS_STANDALONE=1", plan["env_file"])
 
     def test_an_even_raft_count_is_refused_with_the_reason(self) -> None:

@@ -74,8 +74,8 @@ bash tools/run_ssd_blockcache_smoke_ubuntu22.sh
 
 | Environment variable | Default | Meaning |
 | --- | ---: | --- |
-| `TS_SHARD_START_ROUTING_SLOT` | `0` | First routing slot this shard owns. |
-| `TS_SHARD_END_ROUTING_SLOT` | `4294967295` | Last routing slot this shard owns. |
+| `TS_SHARD_START_ROUTING_BUCKET` | `0` | First routing bucket this shard owns. `TS_SHARD_START_ROUTING_SLOT` is the previous name and is still read. |
+| `TS_SHARD_END_ROUTING_BUCKET` | `4294967295` | Last routing bucket this shard owns. `TS_SHARD_END_ROUTING_SLOT` is the previous name and is still read. |
 
 A routing slot is derived by hashing the key, so with the full `u32` range every
 key lands in a slot of its own and each one materializes a `BucketNode` carrying
@@ -86,7 +86,7 @@ slots — one per record.
 Narrowing the range makes records share slots. Measured on 40,000 records, a
 4-CPU node, resident memory sampled after the writes drained:
 
-| `TS_SHARD_END_ROUTING_SLOT` | slots | resident / record (256 B values) | resident / record (1.2 KB values) | disk / record |
+| `TS_SHARD_END_ROUTING_BUCKET` | buckets | resident / record (256 B values) | resident / record (1.2 KB values) | disk / record |
 | --- | ---: | ---: | ---: | ---: |
 | default | 4294967295 | 5552 B | 5843 B | unchanged |
 | `1023` | 1024 | **3071 B** | **3195 B** | unchanged |
@@ -97,8 +97,8 @@ Narrowing the range makes records share slots. Measured on 40,000 records, a
 records that is roughly 24 GB against 13 GB.
 
 ```bash
-TS_SHARD_START_ROUTING_SLOT=0 \
-TS_SHARD_END_ROUTING_SLOT=1023 \
+TS_SHARD_START_ROUTING_BUCKET=0 \
+TS_SHARD_END_ROUTING_BUCKET=1023 \
 matrixark_rust_datanode
 ```
 

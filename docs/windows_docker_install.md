@@ -235,7 +235,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass ^
 ```powershell
 docker exec -i temporalstore-rust-win `
   -e TS_CACHE_DIR=/var/lib/temporalstore/cache `
-  -e TS_PAGE_STORE_DIR=/var/lib/temporalstore/pages `
+  -e TS_BLOCK_STORE_DIR=/var/lib/temporalstore/pages `
   -e TS_INDEX_DIR=/var/lib/temporalstore/indexes `
   -e TS_REPLICA_REPLAY_CURSOR_DIR=/var/lib/temporalstore/replica-replay-cursors `
   matrixark_rust_proxy --serve

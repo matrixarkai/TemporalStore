@@ -251,10 +251,11 @@ pub struct TemporalEngine {
 pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// TS_WAL_RESIDENT_PAGES: how many log-resident pages one shard may hold before the oldest are
-/// written out to the block store. Zero disables the bound entirely.
+/// TS_WAL_RESIDENT_BLOCKS: how many log-resident blocks one shard may hold before the oldest are
+/// written out to the block store. Zero disables the bound entirely. `TS_WAL_RESIDENT_PAGES` is
+/// the previous spelling and is still read.
 ///
-/// Resident pages are bounded because an unbounded set costs twice. Each one is a registration,
+/// Resident blocks are bounded because an unbounded set costs twice. Each one is a registration,
 /// which is memory; each one also pins `min_registered_sequence`, and reclaim may not truncate
 /// below the lowest registration — so a set that only grows is a log that can never be reclaimed
 /// whatever the retention policy says. Measured on an ingest of distinct keys, registrations
@@ -264,10 +265,7 @@ pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
 /// written moments ago is the one a read is most likely to want, and its bytes are already in the
 /// record just written. This is a ceiling on how far behind the dump can fall, not a cache policy.
 fn wal_resident_block_limit() -> usize {
-    std::env::var("TS_WAL_RESIDENT_PAGES")
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
-        .unwrap_or(4096)
+    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 4096)
 }
 
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not

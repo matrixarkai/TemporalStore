@@ -60,7 +60,7 @@ backend = "auto"                       # TS_STORAGE_BACKEND  auto | shared | raf
 # object_store_bucket = ""             # TS_MATRIXOBJECT_BUCKET    object-store bucket name (enterprise)
 # object_store_dir = ""                # TS_MATRIXOBJECT_STORE_DIR  on-disk object-store root (enterprise, single-node)
 # shared_store_dir = ""                # TS_SHARED_STORE_DIR   shared-path backend root directory
-context_page_target_bytes = 65536      # TS_CONTEXT_PAGE_TARGET_BYTES  target context page size (bytes, 64 KiB)
+context_page_target_bytes = 65536      # TS_CONTEXT_BLOCK_TARGET_BYTES  target context block size (bytes, 64 KiB). TS_CONTEXT_PAGE_TARGET_BYTES is the previous variable name, still honoured by the engine when this one is unset
 block_slab_target_bytes = 1073741824   # TS_BLOCK_SLAB_TARGET_BYTES  data-slab seal size (bytes, 1 GiB)
 # stream_max_blob_size = 0             # TS_STREAM_MAX_BLOB_SIZE  max inline blob before streaming tier (0/unset = engine default)
 # compaction_watermark_bytes = 0       # TS_COMPACTION_WATERMARK_BYTES  dead-bytes watermark that triggers compaction

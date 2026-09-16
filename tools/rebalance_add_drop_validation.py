@@ -69,7 +69,7 @@ def dn_env(shard_id, page, index, cache, extra=None):
     e = {
         "TS_META_ADDR": META, "TS_DISTRIBUTED": "1",
         "TS_SHARD_ID": str(shard_id),
-        "TS_PAGE_STORE_DIR": page, "TS_INDEX_DIR": index, "TS_CACHE_DIR": cache,
+        "TS_BLOCK_STORE_DIR": page, "TS_INDEX_DIR": index, "TS_CACHE_DIR": cache,
         "TS_STORAGE_BACKEND": "shared", "TS_SHARED_STORE_DIR": SHARED,
         "TS_SHARED_STORE_CLUSTER_ID": CLUSTER,
         "TS_AUTO_REBALANCE_DATA_MOVE": "1",
