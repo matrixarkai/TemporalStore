@@ -40,7 +40,6 @@ pub struct AppendBlobReceipt {
     pub end_offset: u64,
     pub bytes_written: u64,
     pub object_length: u64,
-    #[serde(rename = "physical_band_count")]
     pub physical_slab_count: usize,
     pub first_physical_offset: Option<u64>,
 }

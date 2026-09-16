@@ -295,7 +295,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     // The bucket-index page entries serialize under abbreviated field names on some builds
     // and full names on others, so accept either: what is being asserted is that the hash
     // write is recorded with the right page address, not how the fields are spelled.
-    let hash_block = served["slot_index"]["slot_map"]
+    let hash_block = served["slot_index"]["bucket_map"]
         .as_object()
         .expect("served index carries the bucket map")
         .values()
@@ -2376,7 +2376,7 @@ fn core_index_loads_legacy_bucket_page_field_names() {
         "slots": {
             "7": {
                 "routing_slot": 7,
-                "layout": "SinglePageObject",
+                "layout": "SingleBlockObject",
                 "dirty": false,
                 "meta_loaded": true,
                 "loading": false,

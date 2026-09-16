@@ -12,13 +12,9 @@ pub(super) struct ObjectRuntimeState {
     pub routing_bucket: u32,
     pub object_keys: Vec<String>,
     pub model_ids: Vec<String>,
-    #[serde(rename = "page_ref_count")]
     pub block_ref_count: usize,
-    #[serde(rename = "hot_page_ref_count")]
     pub hot_block_ref_count: usize,
-    #[serde(rename = "cold_page_ref_count")]
     pub cold_block_ref_count: usize,
-    #[serde(rename = "deleted_page_ref_count")]
     pub deleted_block_ref_count: usize,
     pub residency: String,
     pub dirty: bool,
@@ -31,10 +27,8 @@ pub(super) struct ObjectRuntimeState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ObjectManagerRuntimeReport {
     pub object_manager_runtime_module: bool,
-    #[serde(rename = "slot_index_authority")]
     pub bucket_index_authority: bool,
     pub live_object_count: usize,
-    #[serde(rename = "live_page_ref_count")]
     pub live_block_ref_count: usize,
     pub missing_object_owner_refs: usize,
     pub reused_object_ids: usize,
@@ -43,7 +37,6 @@ pub(super) struct ObjectManagerRuntimeReport {
     pub hot_object_count: usize,
     pub cold_object_count: usize,
     pub mixed_residency_object_count: usize,
-    #[serde(rename = "object_page_transition_count")]
     pub object_block_transition_count: usize,
     pub loading_object_count: usize,
     pub in_memory_object_count: usize,

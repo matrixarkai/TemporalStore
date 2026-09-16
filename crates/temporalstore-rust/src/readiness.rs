@@ -81,8 +81,6 @@ pub struct StorageCacheDependencyMatrixReport {
     pub shared_store_checkpoint_manifest_ready: bool,
     #[serde(rename = "wal_cursor_retention_ready")]
     pub wal_cursor_retention_ready: bool,
-    #[serde(alias = "page_segment_manifest_ready")]
-    #[serde(rename = "page_slab_manifest_ready")]
     pub block_slab_manifest_ready: bool,
     pub follower_cursor_retention_ready: bool,
     pub raft_snapshot_manifest_retention_ready: bool,
@@ -103,7 +101,6 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub memory_read_through_ready: bool,
     pub disk_block_cache_ready: bool,
     pub admission_eviction_counters_ready: bool,
-    #[serde(rename = "slot_warmup_ready")]
     pub bucket_warmup_ready: bool,
     pub cache_invalidation_ready: bool,
     pub local_tiny_cache_pressure_harness_ready: bool,
@@ -161,40 +158,29 @@ pub struct StorageProductionPostureReport {
     pub rust_storage_lifecycle_behavior_ready: bool,
     #[serde(default)]
     pub rust_storage_lifecycle_behavior_evidence: Vec<String>,
-    #[serde(rename = "orphan_page_detection_ready")]
     pub orphan_block_detection_ready: bool,
-    #[serde(rename = "missing_page_ref_detection_ready")]
     pub missing_block_ref_detection_ready: bool,
-    #[serde(rename = "stale_page_ref_detection_ready")]
     pub stale_block_ref_detection_ready: bool,
-    #[serde(rename = "corrupt_page_index_wal_snapshot_evidence_ready")]
     pub corrupt_block_index_wal_snapshot_evidence_ready: bool,
     pub follower_cursor_safe_gc_ready: bool,
     pub cache_pressure_and_refill_ready: bool,
     pub shared_store_sync_async_replay_ready: bool,
     pub unified_storage_corpus_ready: bool,
-    #[serde(rename = "first_class_slot_object_page_index_ready")]
     pub first_class_bucket_object_block_index_ready: bool,
     #[serde(default)]
-    #[serde(rename = "first_class_slot_object_page_index_evidence")]
     pub first_class_bucket_object_block_index_evidence: Vec<String>,
     pub native_object_manager_runtime_ready: bool,
     #[serde(default)]
     pub native_object_manager_runtime_evidence: Vec<String>,
     #[serde(default)]
     pub native_object_manager_runtime_blockers: Vec<String>,
-    #[serde(rename = "native_slot_store_layout_transition_ready")]
     pub native_bucket_store_layout_transition_ready: bool,
     #[serde(default)]
-    #[serde(rename = "native_slot_store_layout_transition_evidence")]
     pub native_bucket_store_layout_transition_evidence: Vec<String>,
-    #[serde(rename = "stream_backed_band_runtime_ready")]
     pub stream_backed_slab_runtime_ready: bool,
     #[serde(default)]
-    #[serde(rename = "stream_backed_band_runtime_evidence")]
     pub stream_backed_slab_runtime_evidence: Vec<String>,
     #[serde(default)]
-    #[serde(rename = "stream_backed_band_runtime_blockers")]
     pub stream_backed_slab_runtime_blockers: Vec<String>,
     pub model_layout_compaction_ready: bool,
     #[serde(default)]

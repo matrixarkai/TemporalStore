@@ -462,9 +462,7 @@ pub struct ClientPartitionSetReport {
 pub struct ClientPartitionMemberReport {
     pub partition_id: ShardId,
     pub shard_id: ShardId,
-    #[serde(rename = "start_slot")]
     pub start_bucket: u64,
-    #[serde(rename = "end_slot")]
     pub end_bucket: u64,
     pub primary_addr: Option<String>,
     pub replica_addrs: Vec<String>,
@@ -566,9 +564,7 @@ pub struct ClientRouteCacheEntryReport {
     pub shard_id: ShardId,
     pub table: String,
     pub partition_id: ShardId,
-    #[serde(rename = "start_slot")]
     pub start_bucket: u64,
-    #[serde(rename = "end_slot")]
     pub end_bucket: u64,
     pub partition_version: u32,
     pub primary_addr: String,

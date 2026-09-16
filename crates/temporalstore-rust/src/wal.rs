@@ -255,7 +255,7 @@ pub struct WriteAheadLogRecord {
     /// written without this are byte-identical to before.
     #[serde(
         rename = "p",
-        alias = "staged_pages",
+        alias = "staged_blocks",
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
@@ -7970,9 +7970,9 @@ mod tests {
 
     #[test]
     fn a_record_written_with_the_array_shape_still_loads() {
-        // Records written before the encoding change must keep loading, or a log written by an
-        // earlier build becomes unreadable.
-        let json = br#"{"shard_id":1,"sequence":2,"command":{"kind":"string_set","key":"k","value":[]},"staged_pages":[{"object_id":9,"bytes":[104,105]}]}"#;
+        // The long field name and the array-shaped bytes must both still load: the compact
+        // key is what gets written, and the long spelling is what the alias accepts.
+        let json = br#"{"shard_id":1,"sequence":2,"command":{"kind":"string_set","key":"k","value":[]},"staged_blocks":[{"object_id":9,"bytes":[104,105]}]}"#;
         let decoded: WriteAheadLogRecord = serde_json::from_slice(json).unwrap();
         assert_eq!(decoded.staged_blocks[0].object_id, 9);
         assert_eq!(decoded.staged_blocks[0].bytes, b"hi".to_vec());

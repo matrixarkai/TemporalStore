@@ -73,7 +73,6 @@ struct StorageProductionCaseSummary {
     #[serde(rename = "cache_warmup_page_refs")]
     cache_warmup_block_refs: usize,
     cache_warmup_block_store_reads: usize,
-    #[serde(rename = "cache_warmup_failed_page_refs")]
     cache_warmup_failed_block_refs: usize,
     cache_memory_hits: u64,
     cache_disk_hits: u64,
@@ -93,23 +92,13 @@ struct StorageProductionCaseSummary {
 
 #[derive(Debug, Serialize)]
 struct StorageRecoveryErrorSummary {
-    #[serde(alias = "orphan_page_segment_count")]
-    #[serde(rename = "orphan_page_slab_count")]
     orphan_block_slab_count: usize,
-    #[serde(rename = "stale_page_ref_count")]
     stale_block_ref_count: usize,
-    #[serde(alias = "corrupt_page_segment_count")]
-    #[serde(rename = "corrupt_page_slab_count")]
     corrupt_block_slab_count: usize,
-    #[serde(rename = "unreadable_page_ref_count")]
     unreadable_block_ref_count: usize,
-    #[serde(rename = "unreadable_page_bytes")]
     unreadable_block_bytes: u64,
-    #[serde(rename = "owner_mismatch_page_ref_count")]
     owner_mismatch_block_ref_count: usize,
-    #[serde(rename = "missing_owner_page_ref_count")]
     missing_owner_block_ref_count: usize,
-    #[serde(rename = "corrupt_packed_feature_pages")]
     corrupt_packed_feature_blocks: usize,
     missing_indexed_timestamps: usize,
     orphan_packed_timestamps: usize,

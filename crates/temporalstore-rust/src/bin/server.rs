@@ -1217,7 +1217,6 @@ struct PublishShardCheckpointResponse {
     #[serde(default)]
     checkpoint_id: Option<String>,
     #[serde(default)]
-    #[serde(rename = "page_slab_count")]
     block_slab_count: usize,
     #[serde(default)]
     checkpoint_wal_index: u64,

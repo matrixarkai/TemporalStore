@@ -109,9 +109,7 @@ pub struct LoadShardRequest {
     #[serde(default)]
     pub local_node_id: Option<u64>,
     pub shard_uri: String,
-    #[serde(rename = "start_routing_slot")]
     pub start_routing_bucket: u32,
-    #[serde(rename = "end_routing_slot")]
     pub end_routing_bucket: u32,
     pub readonly: bool,
     pub table_name: String,
@@ -161,9 +159,7 @@ pub struct ShardInfo {
     pub loaded: bool,
     pub table_name: String,
     pub shard_uri: String,
-    #[serde(rename = "start_routing_slot")]
     pub start_routing_bucket: u32,
-    #[serde(rename = "end_routing_slot")]
     pub end_routing_bucket: u32,
     pub readonly: bool,
     pub load_version: u64,
@@ -200,12 +196,9 @@ pub struct GetInfoResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectManagerStats {
     pub object_count: usize,
-    #[serde(rename = "page_ref_count")]
     pub block_ref_count: usize,
     pub dirty_object_count: usize,
-    #[serde(rename = "dirty_slot_count")]
     pub dirty_bucket_count: usize,
-    #[serde(rename = "routing_slot_count")]
     pub routing_bucket_count: u32,
 }
 
@@ -217,9 +210,7 @@ pub struct ShardStatInfo {
     pub load_version: u64,
     pub table_name: String,
     pub shard_uri: String,
-    #[serde(rename = "start_routing_slot")]
     pub start_routing_bucket: u32,
-    #[serde(rename = "end_routing_slot")]
     pub end_routing_bucket: u32,
     pub total_records: usize,
     pub storage_bytes: u64,
@@ -238,7 +229,6 @@ pub struct ShardCanonicalStorageStats {
     /// of buckets that exist. A default shard covers the whole space, so this reads 4,294,967,295
     /// on an empty one. Read `bucket_index_resident_bytes_floor` below if you want a number that
     /// tracks what is actually resident.
-    #[serde(rename = "slot_entries")]
     pub bucket_entries: u64,
     /// A FLOOR on what the bucket index costs in memory: one `BucketNode` per RESIDENT bucket,
     /// and nothing else.
@@ -337,12 +327,10 @@ pub struct ShardStats {
     pub cache: CacheStats,
     #[serde(default, rename = "page_store")]
     pub block_store_compat: BlockStoreStats,
-    #[serde(default, rename = "page_store_zones")]
+    #[serde(default)]
     pub block_store_slabs_compat: BlockStoreSlabSummary,
     pub block_store: BlockStoreStats,
     #[serde(default)]
-    #[serde(alias = "block_store_zones")]
-    #[serde(rename = "block_store_bands")]
     pub block_store_slabs: BlockStoreSlabSummary,
     pub write_ahead_log: WriteAheadLogStats,
 }

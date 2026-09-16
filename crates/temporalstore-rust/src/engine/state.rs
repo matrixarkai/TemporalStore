@@ -68,7 +68,7 @@ pub(super) struct ShardState {
     /// A stale entry costs a miss, never wrong bytes. The resolver reads the record at that log
     /// id and looks for the object inside it, so a reclaimed record or a superseded page simply
     /// is not found, and the read falls through exactly as it did before this existed.
-    #[serde(rename = "wal_resident_pages", default)]
+    #[serde(default)]
     pub(super) wal_resident_blocks: BTreeMap<u64, WalResidentBlock>,
     /// Routing buckets whose derived runtime flags may be stale, so a write can refresh the
     /// buckets it touched instead of sweeping the shard.
@@ -154,7 +154,7 @@ pub(super) struct ShardState {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(super) sequences: HashMap<String, BTreeMap<u64, BlockAddress>>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
-    #[serde(rename = "control_state_pages", default)]
+    #[serde(default)]
     pub(super) control_state_blocks: HashMap<String, BlockAddress>,
     #[serde(default)]
     pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
@@ -305,7 +305,6 @@ pub(super) struct ShardState {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct CoreIndex {
     #[serde(default, alias = "slots")]
-    #[serde(rename = "slot_map")]
     pub(super) bucket_map: BucketMap,
     /// Per-slab live page refs and live bytes, maintained by every mutation of the map above.
     ///
@@ -323,7 +322,7 @@ pub(super) struct CoreIndex {
     // Derived lookup tables rebuilt from the bucket map on load. Persisting them duplicates
     // page references already carried by the bucket index and made large context backfill
     // checkpoints tens of MB larger without adding authoritative recovery state.
-    #[serde(rename = "object_page_lookup", default, skip_serializing)]
+    #[serde(default, skip_serializing)]
     pub(super) object_block_lookup: ObjectBlockLookup,
     /// One shared copy of each page kind, so a page holds a pointer rather than its own string.
     ///
@@ -353,7 +352,7 @@ pub(super) struct CoreIndex {
     /// recomputed by `rebuild_object_block_lookup`. `None` means "not established yet" (a
     /// freshly deserialized index, before any rebuild) and the reader falls back to the walk,
     /// so a missing value costs time rather than correctness.
-    #[serde(rename = "object_component_page_refs", skip)]
+    #[serde(skip)]
     pub(super) object_component_block_refs: Option<usize>,
     /// Buckets whose page list has been released: present in `bucket_map`, `in_memory: false`,
     /// `page_index` empty, reloadable from the model maps on demand.
@@ -1600,7 +1599,6 @@ impl From<BlockRefs> for Vec<BlockLookupRef> {
 pub(super) struct BlockLookupRef {
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    #[serde(rename = "page_ref_key")]
     pub(super) block_ref_key: u64,
 }
 
@@ -1830,9 +1828,7 @@ pub(super) enum BucketLayoutState {
     #[default]
     Empty,
     SingleObject,
-    #[serde(rename = "SinglePageObject")]
     SingleBlockObject,
-    #[serde(rename = "MultiPageObject")]
     MultiBlockObject,
     MultiObject,
 }

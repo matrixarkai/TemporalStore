@@ -28,9 +28,7 @@ struct WorkflowReport {
     root: String,
     workflow: String,
     records_written: usize,
-    #[serde(rename = "write_page_store_writes")]
     write_block_store_writes: u64,
-    #[serde(rename = "write_page_store_bytes")]
     write_block_store_bytes: u64,
     context_count_before_restart: ContextDataCount,
     hot_read: ReadProbe,
@@ -82,14 +80,12 @@ struct ReadProbe {
     cache_disk_hits: u64,
     cache_memory_evictions: u64,
     page_store_reads: u64,
-    #[serde(rename = "page_store_bytes_read")]
     block_store_bytes_read: u64,
     object_count: u64,
     hot_object_count: u64,
     cold_object_count: u64,
     mixed_residency_object_count: u64,
     dirty_object_count: u64,
-    #[serde(rename = "cache_slot_entry_count")]
     cache_bucket_entry_count: usize,
 }
 
@@ -109,14 +105,12 @@ struct ResidencyProbe {
     cache_disk_hits: u64,
     cache_memory_evictions: u64,
     page_store_reads: u64,
-    #[serde(rename = "page_store_bytes_read")]
     block_store_bytes_read: u64,
     object_count: u64,
     hot_object_count: u64,
     cold_object_count: u64,
     mixed_residency_object_count: u64,
     dirty_object_count: u64,
-    #[serde(rename = "cache_slot_entry_count")]
     cache_bucket_entry_count: usize,
 }
 
@@ -127,14 +121,10 @@ struct AsyncWarmupProbe {
     batch_size: usize,
     latency_us: u128,
     reports: Vec<StorageCacheWarmupReport>,
-    #[serde(rename = "considered_page_refs")]
     considered_block_refs: usize,
-    #[serde(rename = "warmed_page_refs")]
     warmed_block_refs: usize,
-    #[serde(rename = "already_cached_page_refs")]
     already_cached_block_refs: usize,
     block_store_reads: usize,
-    #[serde(rename = "failed_page_refs")]
     failed_block_refs: usize,
     warmed_bytes: u64,
 }
@@ -148,7 +138,6 @@ struct Verification {
     restart_reloaded_from_physical_store: bool,
     disk_block_cache_used_after_restart: bool,
     serving_available_while_async_warmup_running: bool,
-    #[serde(rename = "async_warmup_loaded_pages_without_foreground_query")]
     async_warmup_loaded_blocks_without_foreground_query: bool,
     context_total_count_survives_restart: bool,
     post_restart_append_increased_total_count: bool,

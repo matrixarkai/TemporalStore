@@ -6505,6 +6505,7 @@ fn the_index_wire_keys_are_what_they_were() {
         listed,
         vec![
             "address",
+            "bucket_map",
             // "b", the older grouping id, is gone: a slab IS the unit, so an address derives it from
             // `block_slab_id` rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
@@ -6535,7 +6536,6 @@ fn the_index_wire_keys_are_what_they_were() {
             "ps",
             "routing_slot",
             "rs",
-            "slot_map",
             "ttl_ms",
         ],
         "the index writes different keys than it did; a rename or a serde attribute reached the format"
@@ -7049,9 +7049,9 @@ fn one_component_is_held_without_a_vector() {
 fn a_bucket_summary_reads_short_field_names_too() {
     use crate::engine::reports::BucketStorageSummary;
 
-    let long = r#"{"routing_slot":7,"object_count":1,"page_ref_count":2,"logical_bytes":3,
+    let long = r#"{"routing_slot":7,"object_count":1,"block_ref_count":2,"logical_bytes":3,
         "physical_bytes":4,"dirty_object_count":5,"dirty_generation":6,"last_dump_sequence":8,
-        "page_slab_ids":[9]}"#;
+        "block_slab_ids":[9]}"#;
     let short = r#"{"rs":7,"oc":1,"prc":2,"lb":3,"pb":4,"doc":5,"dg":6,"lds":8,"psi":[9]}"#;
 
     let from_long: BucketStorageSummary =
@@ -7113,7 +7113,7 @@ fn a_manifest_written_as_an_array_of_numbers_still_loads() {
         .collect::<Vec<_>>()
         .join(",");
     let document = format!(
-        r#"{{"version":1,"shard_id":1,"manifest_id":"m-1","created_unix_ms":0,"slot_ids":[7],"page_slab_ids":[],"wal_sequence":3,"index_log_sequence":4,"live_page_refs":0,"logical_bytes":0,"physical_bytes":0,"slot_summaries":[],"index_bytes":[{as_numbers}],"index_sha256":"","checksum":""}}"#
+        r#"{{"version":1,"shard_id":1,"manifest_id":"m-1","created_unix_ms":0,"bucket_ids":[7],"block_slab_ids":[],"wal_sequence":3,"index_log_sequence":4,"live_block_refs":0,"logical_bytes":0,"physical_bytes":0,"bucket_summaries":[],"index_bytes":[{as_numbers}],"index_sha256":"","checksum":""}}"#
     );
 
     let loaded: BucketDumpManifest =
@@ -9952,7 +9952,7 @@ fn omitting_the_commit_before_truncate_guard_still_commits_before_truncating() {
     let removed = body
         .as_object_mut()
         .unwrap()
-        .remove("index_gc_commit_dirty_slots_before_truncation");
+        .remove("index_gc_commit_dirty_buckets_before_truncation");
     assert!(removed.is_some(), "the guard should be present in a serialised request");
 
     let silent: StorageManagerCycleRequest = serde_json::from_value(body).unwrap();
@@ -9967,7 +9967,7 @@ fn omitting_the_commit_before_truncate_guard_still_commits_before_truncating() {
     let mut off: serde_json::Value =
         serde_json::to_value(StorageManagerCycleRequest::default()).unwrap();
     off.as_object_mut().unwrap().insert(
-        "index_gc_commit_dirty_slots_before_truncation".to_string(),
+        "index_gc_commit_dirty_buckets_before_truncation".to_string(),
         serde_json::Value::Bool(false),
     );
     let explicit: StorageManagerCycleRequest = serde_json::from_value(off).unwrap();
@@ -18140,7 +18140,7 @@ fn the_delete_marker_rename_did_not_move_any_wire_name() {
 
     // And a payload written under the old names must still decode.
     let decoded: crate::engine::reports::StorageObjectLifecycleReport = serde_json::from_str(
-        r#"{"live_object_ids":1,"live_page_refs":1,"stale_object_ids":0,"tombstoned_object_ids":7,"reused_object_id_conflicts":0,"missing_owner_page_refs":0,"owner_mismatch_page_refs":0,"reused_object_ids":[],"tombstoned_object_keys":[]}"#,
+        r#"{"live_object_ids":1,"live_block_refs":1,"stale_object_ids":0,"tombstoned_object_ids":7,"reused_object_id_conflicts":0,"missing_owner_block_refs":0,"owner_mismatch_block_refs":0,"reused_object_ids":[],"tombstoned_object_keys":[]}"#,
     )
     .expect("an old-name payload must still decode");
     assert_eq!(decoded.delete_marked_object_ids, 7);

@@ -156,13 +156,10 @@ struct MatrixObjectCacheStatsReport {
     hits: u64,
     misses: u64,
     evictions: u64,
-    #[serde(rename = "direct_fill_pages")]
     direct_fill_blocks: u64,
     direct_fill_bytes: u64,
-    #[serde(rename = "compressed_fill_pages")]
     compressed_fill_blocks: u64,
     compressed_fill_bytes: u64,
-    #[serde(rename = "ec_fill_pages")]
     ec_fill_blocks: u64,
     ec_fill_bytes: u64,
     pressure: bool,

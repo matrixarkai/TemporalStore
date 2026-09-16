@@ -2311,14 +2311,124 @@ mod tests {
         // Every serde `rename`/`alias` in the crate that carries the old vocabulary, as of the
         // change that added this test.
         const DURABLE_NAMES: &[&str] = &[
-        "active_page_segment_ids",
-        "active_page_slab_ids",
         "active_storage_zones",
         "active_zones",
-        "actual_routing_slot",
         "block_segment_id",
         "block_segment_target_bytes",
         "block_store_segment_api_ready",
+        "compact_segment_address",
+        "compact_segment_id",
+        "compact_segment_offset",
+        "delayed_destroy_page_segment_ids",
+        "delayed_destroy_page_slab_ids",
+        "delayed_destroy_purged_segments",
+        "delayed_destroy_segment_count",
+        "delayed_destroy_zones",
+        "dirty_slot_count",
+        "dirty_slot_pressure",
+        "dirty_slots",
+        "dumped_slot_count",
+        "expired_slot_object_scan_debt",
+        "extent_count",
+        "extent_id",
+        "extent_manifest_ready",
+        "extents",
+        "fanout_segment_count",
+        "first_routing_slot",
+        "interrupted_slot_dump_installs",
+        "last_routing_slot",
+        "max_destroy_segments",
+        "new_page_segment_id",
+        "new_page_slab_id",
+        "oldest_known_zone_age_ms",
+        "oldest_known_zone_unix_ms",
+        "oldest_live_zone_age_ms",
+        "oldest_live_zone_unix_ms",
+        "oldest_reclaimable_zone_age_ms",
+        "oldest_reclaimable_zone_unix_ms",
+        "page",
+        "page_id",
+        "page_in_log",
+        "page_index_count",
+        "page_index_entries",
+        "page_ref_key",
+        "page_refs",
+        "page_segment_id",
+        "page_segment_stale_density_basis_points",
+        "page_segments_reclaimed",
+        "page_size",
+        "page_slab_id",
+        "previous_page_segment_id",
+        "previous_page_slab_id",
+        "purged_page_segment_ids",
+        "purged_page_slab_ids",
+        "purged_zones",
+        "removed_page_segment_ids",
+        "removed_page_slab_ids",
+        "retain_from_page_segment_id",
+        "retain_from_page_slab_id",
+        "retained_current_page_segment_ids",
+        "retained_current_page_slab_ids",
+        "retained_live_page_segment_ids",
+        "retained_live_page_slab_ids",
+        "retained_page_segment_ids",
+        "retained_page_slab_ids",
+        "routing_slot",
+        "routing_slot_count",
+        "sealed_segment_count",
+        "sealed_storage_zones",
+        "sealed_zones",
+        "segment",
+        "segment_count",
+        "segment_fields",
+        "segment_id",
+        "segment_integrity",
+        "segment_open_count",
+        "segment_samples",
+        "segment_sealed_count",
+        "segments",
+        "selected_page_segment_ids",
+        "selected_page_slab_ids",
+        "selected_slots",
+        "slot",
+        "slot_dump_manifest",
+        "slot_dump_manifest_id",
+        "slot_fields",
+        "slot_id",
+        "slot_index",
+        "slot_index_entry_count",
+        "slot_object_ref_count",
+        "slot_page_ref_count",
+        "slot_samples",
+        "slots",
+        "staged_pages",
+        "stale_page_segment_count",
+        "stale_page_segment_pressure",
+        "storage_segment_id",
+        "storage_zone_count",
+        "storage_zone_id",
+        "storage_zone_stale_bytes",
+        "storage_zone_total_bytes",
+        "storage_zone_used_bytes",
+        "stream_segment_count",
+        "stream_segment_id",
+        "zone_count",
+        "zone_id",
+        "zone_manifest_ready",
+        "zone_stats_ready",
+        "zone_usage",
+        "zone_version",
+        "zones",
+        ];
+
+        // Retired by the first milestone: the vocabulary reached the wire and
+        // these spellings were removed rather than aliased. The guard proves they
+        // stay gone, so coverage does not shrink by deleting them from the list
+        // above -- a retired name that quietly comes back fails here.
+const RETIRED_NAMES: &[&str] = &[
+        "active_page_segment_ids",
+        "active_page_slab_ids",
+        "actual_routing_slot",
         "block_store_zones",
         "blocked_page_segment_ids",
         "blocked_page_slab_ids",
@@ -2327,9 +2437,6 @@ mod tests {
         "candidate_page_segment_ids",
         "candidate_page_slab_ids",
         "cold_slots_scanned",
-        "compact_segment_address",
-        "compact_segment_id",
-        "compact_segment_offset",
         "compacted_page_segment_id",
         "compacted_page_slab_id",
         "configured_page_gc_raft_install_floor_segment_id",
@@ -2339,34 +2446,18 @@ mod tests {
         "corrupt_page_slab_count",
         "corrupt_page_slab_ids",
         "covered_slot_count",
-        "delayed_destroy_page_segment_ids",
-        "delayed_destroy_page_slab_ids",
-        "delayed_destroy_purged_segments",
-        "delayed_destroy_segment_count",
-        "delayed_destroy_zones",
         "deleted_slot_count",
-        "dirty_slot_count",
-        "dirty_slot_pressure",
-        "dirty_slots",
         "dirty_slots_committed_before_truncate",
         "discovered_page_segment_count",
         "discovered_page_slab_count",
-        "dumped_slot_count",
         "durable_slot_generation_frontier_index_log_sequence",
         "durable_slot_generation_frontier_wal_sequence",
         "empty_slots",
         "end_routing_slot",
         "end_slot",
         "expected_routing_slot",
-        "expired_slot_object_scan_debt",
-        "extent_count",
-        "extent_id",
-        "extent_manifest_ready",
-        "extents",
-        "fanout_segment_count",
         "first_class_slot_object_page_index_evidence",
         "first_class_slot_object_page_index_ready",
-        "first_routing_slot",
         "hot_slots_scanned",
         "in_memory_slot_count",
         "index_gc_commit_dirty_slots_before_truncation",
@@ -2374,9 +2465,7 @@ mod tests {
         "indexed_page_slab_count",
         "installed_slot_dump_install_count",
         "interrupted_slot_dump_install_count",
-        "interrupted_slot_dump_installs",
         "last_compacted_zone",
-        "last_routing_slot",
         "last_selected_slots",
         "live_page_segment_count",
         "live_page_segment_ids",
@@ -2390,7 +2479,6 @@ mod tests {
         "manifest_page_slab_ids",
         "manifest_slot_ids",
         "max_cold_slots_per_round",
-        "max_destroy_segments",
         "max_dirty_slots",
         "max_dump_slots_per_round",
         "max_expire_cold_slots_per_round",
@@ -2413,43 +2501,23 @@ mod tests {
         "native_packed_slot_node_size",
         "native_slot_store_layout_transition_evidence",
         "native_slot_store_layout_transition_ready",
-        "new_page_segment_id",
-        "new_page_slab_id",
-        "oldest_known_zone_age_ms",
-        "oldest_known_zone_unix_ms",
-        "oldest_live_zone_age_ms",
-        "oldest_live_zone_unix_ms",
-        "oldest_reclaimable_zone_age_ms",
-        "oldest_reclaimable_zone_unix_ms",
         "orphan_page_segment_count",
         "orphan_page_segment_ids",
         "orphan_page_slab_count",
         "orphan_page_slab_ids",
-        "page",
         "page_gc_checkpoint_floor_segment_id",
         "page_gc_raft_install_floor_segment_id",
-        "page_id",
-        "page_in_log",
-        "page_index_count",
-        "page_index_entries",
-        "page_ref_key",
-        "page_refs",
-        "page_segment_id",
         "page_segment_ids",
         "page_segment_live_reports",
         "page_segment_manifest_ready",
         "page_segment_reports",
-        "page_segment_stale_density_basis_points",
         "page_segments",
-        "page_segments_reclaimed",
         "page_segments_removed",
         "page_segments_removed_physical_bytes",
         "page_segments_retained_live",
         "page_segments_retained_live_physical_bytes",
         "page_segments_retained_physical_bytes",
-        "page_size",
         "page_slab_count",
-        "page_slab_id",
         "page_slab_ids",
         "page_slab_live_reports",
         "page_slab_manifest_ready",
@@ -2464,131 +2532,82 @@ mod tests {
         "page_slabs_retained_physical_bytes",
         "page_store_bytes_written",
         "prepared_slot_dump_install_count",
-        "previous_page_segment_id",
-        "previous_page_slab_id",
         "prune_slot_dump_manifests",
-        "purged_page_segment_ids",
-        "purged_page_slab_ids",
-        "purged_zones",
         "reclaimable_page_segment_ids",
         "reclaimable_page_slab_ids",
         "reclaimable_stale_page_segment_count",
         "reclaimable_stale_page_slab_count",
-        "removed_page_segment_ids",
-        "removed_page_slab_ids",
         "require_slot_dump_manifest",
-        "retain_from_page_segment_id",
-        "retain_from_page_slab_id",
         "retain_page_segments_from_id",
         "retain_page_slabs_from_id",
-        "retained_current_page_segment_ids",
-        "retained_current_page_slab_ids",
-        "retained_live_page_segment_ids",
-        "retained_live_page_slab_ids",
-        "retained_page_segment_ids",
-        "retained_page_slab_ids",
         "roll_forward_slot_dump_installs",
-        "routing_slot",
-        "routing_slot_count",
         "routing_slots_embedded",
-        "sealed_segment_count",
-        "sealed_storage_zones",
-        "sealed_zones",
         "secondary_views_reconciled_from_slot_index",
-        "segment",
-        "segment_count",
-        "segment_fields",
-        "segment_id",
-        "segment_integrity",
-        "segment_open_count",
-        "segment_samples",
-        "segment_sealed_count",
-        "segments",
         "selected_dirty_slot_count",
         "selected_dump_slots",
-        "selected_page_segment_ids",
-        "selected_page_slab_ids",
         "selected_routing_slots",
-        "selected_slots",
         "single_object_slots",
         "single_page_object_slots",
-        "slot",
         "slot_count",
-        "slot_dump_manifest",
         "slot_dump_manifest_block_count",
         "slot_dump_manifest_count",
-        "slot_dump_manifest_id",
         "slot_entries",
-        "slot_fields",
         "slot_first",
-        "slot_id",
         "slot_ids",
-        "slot_index",
         "slot_index_authority",
-        "slot_index_entry_count",
         "slot_layout_states_after",
         "slot_layout_transition_count",
         "slot_map",
         "slot_nodes",
         "slot_object_page_authority_ready",
-        "slot_object_ref_count",
-        "slot_page_ref_count",
-        "slot_samples",
         "slot_store_layout_api_ready",
         "slot_store_runtime_module",
         "slot_summaries",
         "slot_warmup_ready",
-        "slots",
         "source_manifest_slot_ids",
         "source_slot_coverage_missing_slot_ids",
-        "staged_pages",
-        "stale_page_segment_count",
         "stale_page_segment_ids",
-        "stale_page_segment_pressure",
         "stale_page_slab_count",
         "stale_page_slab_ids",
         "stale_page_slab_pressure",
         "start_routing_slot",
         "start_slot",
-        "storage_segment_id",
-        "storage_zone_count",
-        "storage_zone_id",
-        "storage_zone_stale_bytes",
-        "storage_zone_total_bytes",
-        "storage_zone_used_bytes",
-        "stream_segment_count",
-        "stream_segment_id",
         "total_segment_pages",
         "ttl_slot_count",
         "uncovered_slot_count",
         "unknown_slot_dump_install_count",
-        "zone_count",
         "zone_descriptors",
-        "zone_id",
-        "zone_manifest_ready",
-        "zone_stats_ready",
         "zone_summary",
-        "zone_usage",
-        "zone_version",
-        "zones",
         ];
 
         // The list above lives inside the tree this walk reads, so every entry would match its
         // own literal and the check would verify nothing. Excise the declaration from the text
         // before searching: a name must be found because some OTHER site spells it.
-        let marker = concat!("const ", "DURABLE_NAMES", ": &[&str] = &[");
+        let markers = [
+            concat!("const ", "DURABLE_NAMES", ": &[&str] = &["),
+            concat!("const ", "RETIRED_NAMES", ": &[&str] = &["),
+        ];
+        // Both list literals live in the tree this walk reads, so each name would match its
+        // own entry and every check would verify nothing. Excise both declarations before
+        // searching: a name must be found, or missed, because some OTHER site spells it.
         let strip_list_literal = |text: &str| -> (String, usize) {
-            let Some(open) = text.find(marker) else {
-                return (text.to_string(), 0);
-            };
-            let Some(close_rel) = text[open..].find("];") else {
-                return (text.to_string(), 0);
-            };
-            let close = open + close_rel + "];".len();
-            let mut kept = String::with_capacity(text.len());
-            kept.push_str(&text[..open]);
-            kept.push_str(&text[close..]);
-            (kept, close - open)
+            let mut kept = text.to_string();
+            let mut removed = 0_usize;
+            for marker in markers {
+                let Some(open) = kept.find(marker) else {
+                    continue;
+                };
+                let Some(close_rel) = kept[open..].find("];") else {
+                    continue;
+                };
+                let close = open + close_rel + "];".len();
+                removed += close - open;
+                let mut next = String::with_capacity(kept.len());
+                next.push_str(&kept[..open]);
+                next.push_str(&kept[close..]);
+                kept = next;
+            }
+            (kept, removed)
         };
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -2674,6 +2693,27 @@ mod tests {
              the old spelling as a `serde(alias = ...)` rather than replacing it; if the name is \
              genuinely dead, remove it from DURABLE_NAMES in the same change.",
             DURABLE_NAMES.len()
+        );
+
+        // The other direction: a retired spelling must not quietly come back. Without this,
+        // deleting a name from DURABLE_NAMES would be a way to make the guard stop looking.
+        assert!(
+            !RETIRED_NAMES.is_empty(),
+            "RETIRED_NAMES is empty; the retirement half of this guard checks nothing"
+        );
+        let mut resurrected = Vec::new();
+        for name in RETIRED_NAMES {
+            let quoted = format!("\"{name}\"");
+            if sources.contains(&quoted) {
+                resurrected.push(*name);
+            }
+        }
+        assert!(
+            resurrected.is_empty(),
+            "retired name(s) written again outside the list itself: {resurrected:?}\n\
+             The first milestone removed these spellings from the wire. Re-adding one means a\n\
+             client that was told the name was gone now sees it again; decide that on purpose\n\
+             and move the name back into DURABLE_NAMES in the same change."
         );
     }
 

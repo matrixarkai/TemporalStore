@@ -43,7 +43,6 @@ pub struct SnapshotManifest {
     pub last_applied_log_id: String,
     pub created_at: DateTime<Utc>,
     pub engine_version: String,
-    #[serde(rename = "page_segments")]
     pub block_slabs: Vec<BlockSlabManifest>,
     pub object_count: u64,
     pub record_count: u64,

@@ -379,21 +379,17 @@ pub struct ServerShardServingState {
     pub load_version: u64,
     pub table_name: String,
     pub shard_uri: String,
-    #[serde(rename = "start_routing_slot")]
     pub start_routing_bucket: u32,
-    #[serde(rename = "end_routing_slot")]
     pub end_routing_bucket: u32,
     pub total_records: usize,
     pub storage_bytes: u64,
     pub cache_memory_bytes: u64,
     #[serde(default)]
     pub storage: ShardCanonicalStorageStats,
-    #[serde(alias = "page_store_bytes_written")]
     pub block_store_bytes_written: u64,
     #[serde(rename = "wal_sequence")]
     pub wal_sequence: u64,
     pub dirty_object_count: u64,
-    #[serde(rename = "dirty_slot_count")]
     pub dirty_bucket_count: u64,
 }
 
@@ -994,9 +990,7 @@ pub struct TableMetaInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableShard {
     pub shard_id: ShardId,
-    #[serde(rename = "start_slot")]
     pub start_bucket: u64,
-    #[serde(rename = "end_slot")]
     pub end_bucket: u64,
     pub primary: Option<String>,
     pub replicas: Vec<String>,

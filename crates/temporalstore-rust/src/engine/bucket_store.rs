@@ -20,7 +20,6 @@ pub(super) struct BucketRuntimeState {
     pub routing_bucket: u32,
     pub layout: String,
     pub object_ids: Vec<u64>,
-    #[serde(rename = "page_ref_count")]
     pub block_ref_count: usize,
     pub dirty: bool,
     pub deleted: bool,
@@ -30,41 +29,25 @@ pub(super) struct BucketRuntimeState {
     pub ttl_ms: Option<u64>,
     pub dirty_generation: u64,
     pub last_dump_sequence: u64,
-    #[serde(rename = "deleted_page_ref_count")]
     pub deleted_block_ref_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct BucketStoreRuntimeReport {
-    #[serde(rename = "slot_store_runtime_module")]
     pub bucket_store_runtime_module: bool,
-    #[serde(rename = "slot_index_authority")]
     pub bucket_index_authority: bool,
-    #[serde(rename = "slot_count")]
     pub bucket_count: usize,
-    #[serde(rename = "page_ref_count")]
     pub block_ref_count: usize,
-    #[serde(rename = "dirty_slot_count")]
     pub dirty_bucket_count: usize,
-    #[serde(rename = "deleted_slot_count")]
     pub deleted_bucket_count: usize,
-    #[serde(rename = "empty_slots")]
     pub empty_buckets: usize,
-    #[serde(rename = "single_object_slots")]
     pub single_object_buckets: usize,
-    #[serde(rename = "single_page_object_slots")]
     pub single_block_object_buckets: usize,
-    #[serde(rename = "multi_page_object_slots")]
     pub multi_block_object_buckets: usize,
-    #[serde(rename = "multi_object_slots")]
     pub multi_object_buckets: usize,
-    #[serde(rename = "deleted_page_ref_count")]
     pub deleted_block_ref_count: usize,
-    #[serde(rename = "loading_slot_count")]
     pub loading_bucket_count: usize,
-    #[serde(rename = "in_memory_slot_count")]
     pub in_memory_bucket_count: usize,
-    #[serde(rename = "ttl_slot_count")]
     pub ttl_bucket_count: usize,
     pub max_dirty_generation: u64,
     #[serde(rename = "slots")]

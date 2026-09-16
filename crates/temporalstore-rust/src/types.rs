@@ -593,7 +593,6 @@ pub struct ContextModelDescriptor {
     pub model_id: u8,
     pub name: String,
     pub key_family: String,
-    #[serde(rename = "page_primitive")]
     pub block_primitive: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,

@@ -186,7 +186,7 @@ pub struct DataNodeRuntimeStats {
     pub storage_manager_reclaim_memory_runs: u64,
     #[serde(default)]
     pub storage_manager_expire_runs: u64,
-    #[serde(rename = "storage_manager_reclaim_page_runs", default)]
+    #[serde(default)]
     pub storage_manager_reclaim_block_runs: u64,
     #[serde(default)]
     pub storage_manager_compact_runs: u64,
@@ -705,7 +705,6 @@ pub struct DirtyObjectInfo {
 pub struct DumpShardRequest {
     pub shard_id: ShardId,
     #[serde(default)]
-    #[serde(rename = "selected_routing_slots")]
     pub selected_routing_buckets: Vec<u32>,
 }
 
@@ -716,7 +715,6 @@ pub struct DumpShardResponse {
     pub index_bytes: usize,
     pub dirty_objects_flushed: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "slot_dump_manifest")]
     pub bucket_dump_manifest: Option<BucketDumpManifest>,
 }
 
@@ -738,7 +736,7 @@ pub struct CompactionResponse {
     /// cannot say what a round cost.
     #[serde(default)]
     pub relocated_bytes: u64,
-    #[serde(rename = "rewritten_object_pages", default)]
+    #[serde(default)]
     pub rewritten_object_blocks: usize,
     #[serde(default)]
     #[serde(rename = "tombstoned_object_ids_before")]
@@ -749,16 +747,10 @@ pub struct CompactionResponse {
     #[serde(default)]
     pub model_layouts: Vec<ShardCompactionModelLayoutReport>,
     #[serde(default)]
-    #[serde(alias = "previous_page_segment_id")]
-    #[serde(rename = "previous_page_slab_id")]
     pub previous_block_slab_id: u64,
     #[serde(default)]
-    #[serde(alias = "compacted_page_segment_id")]
-    #[serde(rename = "compacted_page_slab_id")]
     pub compacted_block_slab_id: u64,
     #[serde(default)]
-    #[serde(alias = "stale_page_segment_ids")]
-    #[serde(rename = "stale_page_slab_ids")]
     pub stale_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub before: ShardCompactionUtilityReport,
@@ -774,15 +766,13 @@ pub struct GcRequest {
     #[serde(default)]
     pub retain_index_log_from_sequence: Option<u64>,
     #[serde(default)]
-    #[serde(alias = "retain_page_segments_from_id")]
-    #[serde(rename = "retain_page_slabs_from_id")]
     pub retain_block_slabs_from_id: Option<u64>,
     /// Move reclaimed slabs into quarantine instead of unlinking them there and then.
     ///
     /// Defaults to false, which is what this RPC has always done. The storage-manager cycle
     /// quarantines, and the periodic loop now asks for the same thing; an operator collecting by
     /// hand keeps the immediate unlink, because the space is usually why they called.
-    #[serde(rename = "page_gc_delayed_destroy", default)]
+    #[serde(default)]
     pub block_gc_delayed_destroy: bool,
     /// Invalidate only the cache entries for slabs this round actually reclaimed.
     ///
@@ -790,7 +780,7 @@ pub struct GcRequest {
     /// entry the shard holds, across all three tiers. That is defensible for an operator who
     /// asked for a collection by hand and wants the caches clean afterwards, so the RPC keeps
     /// it. It is harder to defend on a loop that runs every thirty seconds.
-    #[serde(rename = "page_gc_invalidate_removed_slabs_only", default)]
+    #[serde(default)]
     pub block_gc_invalidate_removed_slabs_only: bool,
 }
 
@@ -804,24 +794,14 @@ pub struct GcResponse {
     #[serde(rename = "wal_records_removed")]
     pub wal_records_removed: usize,
     pub index_log_records_removed: usize,
-    #[serde(alias = "page_segments_removed")]
-    #[serde(rename = "page_slabs_removed")]
     pub block_slabs_removed: usize,
     #[serde(default)]
-    #[serde(alias = "page_segments_removed_physical_bytes")]
-    #[serde(rename = "page_slabs_removed_physical_bytes")]
     pub block_slabs_removed_physical_bytes: u64,
     #[serde(default)]
-    #[serde(alias = "page_segments_retained_physical_bytes")]
-    #[serde(rename = "page_slabs_retained_physical_bytes")]
     pub block_slabs_retained_physical_bytes: u64,
     #[serde(default)]
-    #[serde(alias = "page_segments_retained_live")]
-    #[serde(rename = "page_slabs_retained_live")]
     pub block_slabs_retained_live: usize,
     #[serde(default)]
-    #[serde(alias = "page_segments_retained_live_physical_bytes")]
-    #[serde(rename = "page_slabs_retained_live_physical_bytes")]
     pub block_slabs_retained_live_physical_bytes: u64,
     /// The reclaims below were bounded by a durable-index proof: bucket dumps covering every
     /// live generation. False means the requested sequences were taken on trust, which is what
@@ -843,7 +823,6 @@ pub struct GcResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageManagerOptions {
     #[serde(default = "default_storage_manager_max_dump_buckets_per_round")]
-    #[serde(rename = "max_dump_slots_per_round")]
     pub max_dump_buckets_per_round: usize,
     /// How much log must be undumped before a dump is worth taking.
     ///
@@ -860,11 +839,8 @@ pub struct StorageManagerOptions {
     #[serde(default = "default_storage_manager_min_undumped_wal_bytes")]
     pub min_undumped_wal_bytes: u64,
     #[serde(default)]
-    #[serde(rename = "dirty_slot_pressure")]
     pub dirty_bucket_pressure: usize,
     #[serde(default)]
-    #[serde(alias = "stale_page_segment_pressure")]
-    #[serde(rename = "stale_page_slab_pressure")]
     pub stale_block_slab_pressure: usize,
     #[serde(default)]
     pub reclaimable_physical_bytes_pressure: u64,
@@ -880,9 +856,9 @@ pub struct StorageManagerOptions {
     pub enable_memory_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_expire: bool,
-    #[serde(rename = "enable_page_gc", default = "default_storage_manager_stage_enabled")]
+    #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_block_gc: bool,
-    #[serde(rename = "enable_page_compaction", default = "default_storage_manager_stage_enabled")]
+    #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_block_compaction: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_index_gc: bool,
@@ -934,11 +910,9 @@ pub struct StorageManagerOptions {
     /// Left at 0 by default so the shipped behaviour is unchanged: with no limit the window
     /// always reaches the end, so the cursor below stays `None` and nothing differs.
     #[serde(default)]
-    #[serde(rename = "max_expire_hot_slots_per_round")]
     pub max_expire_hot_buckets_per_round: usize,
     /// The cold half of the same bound. 0 means no limit.
     #[serde(default)]
-    #[serde(rename = "max_expire_cold_slots_per_round")]
     pub max_expire_cold_buckets_per_round: usize,
     /// How many index-log records one round may reclaim.
     ///
@@ -1175,9 +1149,7 @@ fn storage_manager_pressure_decision(
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageManagerPressureSnapshot {
     pub shard_id: ShardId,
-    #[serde(rename = "dirty_slot_count")]
     pub dirty_bucket_count: usize,
-    #[serde(rename = "selected_dirty_slot_count")]
     pub selected_dirty_bucket_count: usize,
     #[serde(rename = "undumped_wal_records")]
     pub undumped_wal_records: u64,
@@ -1185,14 +1157,10 @@ pub struct StorageManagerPressureSnapshot {
     pub wal_bytes: u64,
     #[serde(default)]
     pub index_log_bytes: u64,
-    #[serde(alias = "stale_page_segment_count")]
-    #[serde(rename = "stale_page_slab_count")]
     pub stale_block_slab_count: usize,
     pub reclaim_candidate_count: usize,
     pub reclaimable_physical_bytes: u64,
     #[serde(default)]
-    #[serde(alias = "page_segment_stale_density_basis_points")]
-    #[serde(rename = "page_slab_stale_density_basis_points")]
     pub block_slab_stale_density_basis_points: u64,
     /// The CACHE's resident bytes, and only the cache's.
     ///
@@ -1224,10 +1192,9 @@ pub struct StorageManagerPressureSnapshot {
     pub memory_cache_pressure_score: u64,
     /// See `engine::reports::StorageManagerPressureSnapshot::live_page_summaries_measured`:
     /// false means the debt beside it was never counted this round, not that it is zero.
-    #[serde(rename = "live_page_summaries_measured", default)]
+    #[serde(default)]
     pub live_block_summaries_measured: bool,
     #[serde(default)]
-    #[serde(rename = "expired_slot_object_scan_debt")]
     pub expired_bucket_object_scan_debt: usize,
     #[serde(default)]
     #[serde(alias = "delayed_destroy_segment_count")]
@@ -1378,18 +1345,15 @@ pub struct StorageManagerRuntimeReport {
     pub phase_wal_reclaim_enabled: bool,
     pub phase_expire_enabled: bool,
     pub phase_evict_enabled: bool,
-    #[serde(rename = "phase_page_gc_enabled")]
     pub phase_block_gc_enabled: bool,
     pub phase_compaction_enabled: bool,
     pub phase_index_gc_enabled: bool,
-    #[serde(rename = "bounded_max_dump_slots_per_round")]
     pub bounded_max_dump_buckets_per_round: usize,
     #[serde(default)]
     pub configured_follower_cursor_count: usize,
     #[serde(default)]
     pub configured_raft_snapshot_ref_count: usize,
     #[serde(default)]
-    #[serde(rename = "configured_page_gc_raft_install_floor_slab_id", alias = "configured_page_gc_raft_install_floor_segment_id")]
     pub configured_block_gc_raft_install_floor_slab_id: Option<u64>,
     #[serde(default)]
     pub last_completed_cycle: Option<StorageManagerCycleReport>,
@@ -1398,7 +1362,6 @@ pub struct StorageManagerRuntimeReport {
     #[serde(default)]
     pub last_phase_reports: Vec<StorageManagerStageReport>,
     #[serde(default)]
-    #[serde(rename = "last_selected_slots")]
     pub last_selected_buckets: Vec<u32>,
     #[serde(default)]
     pub last_skipped_reasons: Vec<String>,
