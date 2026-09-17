@@ -162,10 +162,19 @@ class ItIsChartedAndAlertedLikeTheOthersTest(unittest.TestCase):
         self.assertIn(SERIES + " == 0", text)
 
     def test_the_alert_says_what_is_happening_not_what_is_set(self) -> None:
+        """Anchored on the DEFINITION, not on the first mention of the name.
+
+        `text.index(name)` found whichever line wrote the name first. That was the alert until the
+        file's header began naming the alerts it describes, and then this read 700 characters of
+        prose about them and reported the description missing. `- alert: <name>` is where a
+        description actually begins.
+        """
         text = self._alerts()
-        start = text.index("MatrixArkSummariesNotUsingAModel")
-        block = text[start:start + 700]
-        self.assertIn("written by rules", block)
+        anchor = "- alert: MatrixArkSummariesNotUsingAModel"
+        self.assertIn(anchor, text, "the alert is gone, or is no longer declared as one")
+        block = text[text.index(anchor):][:700]
+        self.assertIn("written by rules", block,
+                      "the alert describes what is CONFIGURED rather than what is happening")
 
 
 if __name__ == "__main__":

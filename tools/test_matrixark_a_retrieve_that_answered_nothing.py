@@ -36,7 +36,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matrixark_gateway_metrics as metricsmod  # noqa: E402
 import matrixark_v1_gateway as gw  # noqa: E402
-from test_matrixark_v1_gateway import _FakeServer, _cfg, drive  # noqa: E402
+
+# The gateway fixtures live in another TEST module, and importing one of those at import time
+# reorders `unittest discover` -- which can fail tests this file has nothing to do with, in CI,
+# while passing locally. They are imported where they are used instead.
 
 # The shape measured on this stack, kept verbatim.
 SHED = {"context_pack_id": "p", "groups": [], "tokens": {},
@@ -47,18 +50,27 @@ SERVED = {"context_pack_id": "p", "groups": [{"refs": [{"text": "staging = 1.9.2
           "tokens": {"total": 7}}
 
 
-class _PackServer(_FakeServer):
-    """Answers every retrieve with one chosen pack."""
+def _pack_server(pack):
+    """A fake server that answers every retrieve with one chosen pack.
 
-    def __init__(self, pack):
-        super().__init__()
-        self.pack = pack
+    A factory rather than a module-level subclass: the base class lives in another test module, and
+    naming it at import time is what the cross-import guard forbids. Subclassing rather than
+    reimplementing, so this cannot drift from the fixture every other gateway test uses.
+    """
+    from test_matrixark_v1_gateway import _FakeServer
 
-    def call_tool(self, name, args):
-        self.calls.append((name, dict(args)))
-        if name == "matrixark_retrieve":
-            return dict(self.pack)
-        return {"ok": name}
+    class _PackServer(_FakeServer):
+        def __init__(self, chosen):
+            super().__init__()
+            self.pack = chosen
+
+        def call_tool(self, name, args):
+            self.calls.append((name, dict(args)))
+            if name == "matrixark_retrieve":
+                return dict(self.pack)
+            return {"ok": name}
+
+    return _PackServer(pack)
 
 
 def outcomes():
@@ -116,8 +128,8 @@ class ItIsActuallyWiredTest(unittest.TestCase):
     """
 
     def _drive(self, pack):
-        server = _PackServer(pack)
-        app = gw.make_v1_app(server, _cfg())
+        from test_matrixark_v1_gateway import _cfg, drive
+        app = gw.make_v1_app(_pack_server(pack), _cfg())
         before = outcomes()
         status, _, _ = drive(app, method="POST", path="/v1/retrieve",
                              headers={"Authorization": "Bearer k-acme"},
@@ -147,8 +159,8 @@ class ItIsActuallyWiredTest(unittest.TestCase):
         202 -- so the classifier never ran on it for a reason that had nothing to do with the path
         check, and a mutation making every route count as a retrieve sailed past.
         """
-        server = _PackServer(SERVED)
-        app = gw.make_v1_app(server, _cfg())
+        from test_matrixark_v1_gateway import _cfg, drive
+        app = gw.make_v1_app(_pack_server(SERVED), _cfg())
         status, _, _ = drive(app, method="POST", path="/v1/memories",
                              headers={"Authorization": "Bearer k-acme"},
                              body={"scope": {"user_id": "u"}})
