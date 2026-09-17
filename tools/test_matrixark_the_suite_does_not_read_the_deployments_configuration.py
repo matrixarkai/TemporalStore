@@ -88,7 +88,12 @@ class ThePortalIsolationIsDerivedFromTheRegistry(unittest.TestCase):
         # list would be as good as a derived one and none of this would matter.
         prefixes = {name.split("_", 1)[0] for name in self._declared()}
         self.assertGreater(len(prefixes), 1, sorted(prefixes))
-        self.assertGreater(len(self._declared()), 100, len(self._declared()))
+        # MEASURED 93, and 101 before matrixarkai#1823 took eight settings off the page. The floor
+        # stood at `> 100` with a margin of ONE against a registry every retirement shrinks, so it
+        # failed on a change that removes nothing it was written to catch -- the third floor in
+        # this campaign pinned to the portal population rather than to its own failure. A registry
+        # that has been renamed or built at runtime parses as ZERO, so 50 is what separates those.
+        self.assertGreater(len(self._declared()), 50, len(self._declared()))
 
     def test_no_declared_variable_survives_the_portal_setup(self) -> None:
         import test_matrixark_gateway_portal as portal

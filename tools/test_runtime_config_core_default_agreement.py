@@ -157,14 +157,22 @@ class RuntimeConfigAgreesWithCore(unittest.TestCase):
         # and the runtime module held 51, so folding away flags nothing sets -- a change that
         # removes env-backed constants on purpose and alters no value -- took the count to exactly
         # 50 and failed here. A vacuity floor pinned to a measurement tracks the tree instead of
-        # the property: an extractor that stopped matching returns approximately nothing, and 20
-        # fails loudly on that while surviving any legitimate move in the count.
-        self.assertGreater(len(self.core), 20, "core parse found too few constants")
-        self.assertGreater(len(self.runtime), 20, "runtime_config parse found too few")
+        # the property: an extractor that stopped matching returns approximately nothing.
+        #
+        # IT HAPPENED AGAIN AT 20, which is why these are 8 now. MEASURED before matrixarkai#1823:
+        # core 45, runtime 24, shared 21. Measured after it: core 41, runtime 21, shared 18. The
+        # shared floor of 20 had a margin of ONE and the runtime floor has one now, so the same
+        # move that was written about above failed here a second time, on a retirement that alters
+        # no value. Retiring a knob takes its constant out of this population by design -- the read
+        # becomes the literal and there is no fallback argument left to extract -- so every tier
+        # moves all three counts down and any floor set just under them is a tripwire. Eight is far
+        # from eighteen and far from zero, which is the only property these are for.
+        self.assertGreater(len(self.core), 8, "core parse found too few constants")
+        self.assertGreater(len(self.runtime), 8, "runtime_config parse found too few")
         shared = set(self.core) & set(self.runtime)
         self.assertGreater(
             len(shared),
-            20,
+            8,
             "expected a large shared constant set between the two modules",
         )
         # The shared set is now shared by IMPORT rather than by duplication, so this asserts the
@@ -178,15 +186,22 @@ class RuntimeConfigAgreesWithCore(unittest.TestCase):
         # literal, so there is no fallback argument left to extract and the constant stops being
         # "shared with a value". Eleven went at once and took this to exactly 20. Moved down
         # rather than tracking the count, for the reason given above.
+        #
+        # MEASURED 14, and 16 before matrixarkai#1823. Floor 6, down from 12: the count only ever
+        # falls, so a floor two below it is next tier's failure and not this property's.
         with_a_value = [n for n in shared if self.core[n][1] != ""]
         self.assertGreater(
-            len(with_a_value), 12,
+            len(with_a_value), 6,
             "only %d of %d shared constants resolve to a real fallback literal. The rest compare "
             "\"\" against \"\", which is an agreement assertion that cannot fail -- see "
             "_or_fallback." % (len(with_a_value), len(shared)))
+        # MEASURED 18, and 21 before matrixarkai#1823. Floor 8, down from 20, which had a margin of
+        # ONE and failed on that retirement. If the fold were undone the constants would be
+        # DUPLICATED rather than imported and this would read close to zero, which is the case
+        # worth separating -- not "three fewer than last tier".
         imported = _imported_from(TOOLS / "matrixark_mcp_core.py")
         self.assertGreater(
-            len(set(imported) & shared), 20,
+            len(set(imported) & shared), 8,
             "at most %d of the shared constants reach matrixark_mcp_core by import. They were "
             "folded into one definition on purpose; if they are being counted as shared because "
             "they are DUPLICATED again, that is the divergence this file exists to prevent."
