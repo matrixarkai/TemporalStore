@@ -83,6 +83,18 @@ _EXACT_ROUTES = frozenset({
 # taken from an open value is a cardinality bomb.
 STREAM_END_REASONS = ("stream_max_age", "server_error", "client_gone", "other")
 
+# What a retrieve actually answered with. Closed, for the same reason as the set above.
+#
+#   served  the pack carried at least one group
+#   empty   it carried none, and nothing said why
+#   shed    it carried none and said so: a backpressure warning, which is the gateway declining to
+#           retrieve at all and answering 200 in ~100 ms
+#
+# `empty` and `shed` are separated on purpose. Shed is load and clears when the load does;
+# empty-without-a-warning is a populated store returning nothing, which does not clear. One counter
+# for both would hide the second inside the first, and the second is the one nobody can see.
+RETRIEVE_OUTCOMES = ("served", "empty", "shed")
+
 # Routes that stream. Their wall-clock duration is the length of a subscription, not a latency.
 STREAMING_ROUTES = frozenset({"/v1/admin/events"})
 
@@ -183,6 +195,9 @@ class GatewayMetrics:
         # the request counter cannot tell a deployment whose tabs are open from one breaking a
         # stream every three seconds -- both are "one request on /v1/admin/events".
         self._stream_ends: Dict[str, int] = {}
+        # What retrieves answered with. Bounded by RETRIEVE_OUTCOMES, which is closed, so this
+        # dict can never hold more than three keys however many requests arrive.
+        self._retrieve: Dict[str, int] = {}
 
     # ---- recording -----------------------------------------------------------------------------
     def begin(self) -> None:
@@ -195,7 +210,8 @@ class GatewayMetrics:
                 self._in_flight -= 1
 
     def record(self, path: str, method: str, status: int, duration_s: float,
-               request_bytes: int = 0, response_bytes: int = 0, incident: str = "") -> None:
+               request_bytes: int = 0, response_bytes: int = 0, incident: str = "",
+               retrieve_outcome: str = "") -> None:
         route = route_label(path)
         # A long-lived stream is one request that lasts minutes. Its duration is not a latency and
         # putting it in the histogram poisons every quantile drawn across routes -- a p99 of ten
@@ -243,6 +259,11 @@ class GatewayMetrics:
                 self._req_bytes[route] = self._req_bytes.get(route, 0) + int(request_bytes)
             if response_bytes:
                 self._resp_bytes[route] = self._resp_bytes.get(route, 0) + int(response_bytes)
+            # Only a value from the closed set is counted. An unrecognised one is dropped rather
+            # than passed through: this is a metric label, and the caller is not a trusted source
+            # of label values.
+            if retrieve_outcome in RETRIEVE_OUTCOMES:
+                self._retrieve[retrieve_outcome] = self._retrieve.get(retrieve_outcome, 0) + 1
             try:
                 self._sample_locked(time.time(), resident)
             except Exception:  # pragma: no cover - the promise above, kept
@@ -291,6 +312,10 @@ class GatewayMetrics:
     def stream_ends(self) -> Dict[str, int]:
         with self._lock:
             return dict(self._stream_ends)
+
+    def retrieve_outcomes(self) -> Dict[str, int]:
+        with self._lock:
+            return dict(self._retrieve)
 
     # ---- reading -------------------------------------------------------------------------------
     def series(self) -> Json:
@@ -766,6 +791,31 @@ def stream_lines() -> List[str]:
     return lines
 
 
+def retrieve_lines() -> List[str]:
+    """What retrieves answered with, by outcome.
+
+    The one thing no other series here can say. Everything else is transport -- requests, duration,
+    bytes -- and a gateway that has stopped retrieving and started shedding looks not merely
+    healthy on those but FAST, because p50 improves as the packs empty out.
+
+    Every outcome is emitted, including the ones at zero, for the reason the stream counters above
+    are: a counter that appears only once it fires cannot be alerted on before it has fired, which
+    is the moment the alert was worth having. And `served` at zero beside a rising `shed` is the
+    shape somebody needs to see.
+    """
+    counts = METRICS.retrieve_outcomes()
+    lines = [
+        "# HELP matrixark_gateway_retrieve_outcomes_total Retrieves answered, by what the pack "
+        "carried: served (at least one group), empty (none, and nothing said why), shed (none, "
+        "with a backpressure warning -- the gateway declining to retrieve and answering 200).",
+        "# TYPE matrixark_gateway_retrieve_outcomes_total counter",
+    ]
+    for outcome in RETRIEVE_OUTCOMES:
+        lines.append('matrixark_gateway_retrieve_outcomes_total{outcome="%s"} %d'
+                     % (outcome, counts.get(outcome, 0)))
+    return lines
+
+
 def worker_lines() -> List[str]:
     """The footprint gauges, rendered here rather than appended by the route.
 
@@ -807,6 +857,7 @@ def prometheus_text(config_snapshot: Optional[Json] = None,
     lines += config_change_lines()
     lines += worker_lines()
     lines += stream_lines()
+    lines += retrieve_lines()
     lines += onebox_lines()
     if extra_lines:
         lines += extra_lines

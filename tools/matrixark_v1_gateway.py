@@ -3864,6 +3864,50 @@ def _ok_body(result: Any) -> Json:
     return result if isinstance(result, dict) else {"result": result}
 
 
+# How much of a retrieve response is kept in order to classify it. A pack with no groups is small
+# by construction -- the shed shape measured on this stack is ~471 bytes, against 42,000-62,000 for
+# a pack that carried something -- so anything past this cap answered with content and is counted
+# as served without being parsed. That is what keeps a full pack off the response path.
+_RETRIEVE_CLASSIFY_CAP = 16384
+
+
+def _retrieve_outcome(body: bytes, total_bytes: int) -> str:
+    """What the pack carried: "served", "empty" or "shed".
+
+    Read from the body's own fields. Under load this gateway stops retrieving and answers every
+    retrieve with HTTP 200 and an empty pack in about 100 ms, carrying
+    `warnings: ["...service_backpressure"]`, `partial` and `insufficient_context`. Nothing read
+    any of those, so on every series this build emits a deployment answering nothing looked
+    healthy -- and faster than usual, because latency improves as the packs empty.
+
+    `empty` and `shed` are separated because they are different problems: shed is load and clears
+    when the load does; empty with no warning is a populated store returning nothing, which does
+    not clear and is the one nobody could see.
+
+    Never raises -- it is called from the recording path, which promises never to fail a response.
+    An unparseable or over-cap body counts as served rather than inventing a fault.
+    """
+    if total_bytes > _RETRIEVE_CLASSIFY_CAP or not body:
+        return "served"
+    try:
+        parsed = json.loads(body)
+    except Exception:  # pragma: no cover - a body we cannot read is not evidence of a fault
+        return "served"
+    if not isinstance(parsed, dict):
+        return "served"
+    groups = parsed.get("groups")
+    if isinstance(groups, list) and groups:
+        return "served"
+    if groups is None and "context_pack_id" not in parsed:
+        # Not a pack at all -- some other 200 on this route. Not evidence of anything.
+        return "served"
+    warnings = parsed.get("warnings")
+    if isinstance(warnings, list) and any(
+            "backpressure" in str(item).lower() for item in warnings):
+        return "shed"
+    return "empty"
+
+
 def _failure_body(scope: Json, exc: Exception) -> Tuple[int, Json]:
     """The status AND the body for a failed backend call, in the words that fit whose fault it was.
 
@@ -6173,6 +6217,10 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             return await _serve(scope, receive, send)
         started = time.time()
         observed = {"status": 0, "response_bytes": 0, "request_bytes": 0}
+        # Only /v1/retrieve is classified, and the decision is made once here rather than per body
+        # chunk, so every other route pays one string comparison for the whole feature.
+        is_retrieve = scope.get("path", "") == "/v1/retrieve"
+        pack: list = []
 
         async def _observed_receive() -> Json:
             message = await receive()
@@ -6188,7 +6236,13 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 except (TypeError, ValueError):
                     observed["status"] = 0
             elif mtype == "http.response.body":
-                observed["response_bytes"] += len(message.get("body") or b"")
+                body = message.get("body") or b""
+                observed["response_bytes"] += len(body)
+                # Kept only up to the cap. A pack with no groups is small by construction, so a
+                # body that exceeds this carried content and needs no parsing -- which is also what
+                # keeps a 62 KB pack from being copied and parsed on the response path.
+                if is_retrieve and observed["response_bytes"] <= _RETRIEVE_CLASSIFY_CAP:
+                    pack.append(body)
             await send(message)
 
         _gwmetrics.METRICS.begin()
@@ -6202,7 +6256,10 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                     max(0.0, time.time() - started),
                     request_bytes=observed["request_bytes"],
                     response_bytes=observed["response_bytes"],
-                    incident=_INCIDENT.get(""))
+                    incident=_INCIDENT.get(""),
+                    retrieve_outcome=(
+                        _retrieve_outcome(b"".join(pack), observed["response_bytes"])
+                        if is_retrieve and observed["status"] == 200 else ""))
             except Exception:  # pragma: no cover - metrics must never break a response
                 pass
 

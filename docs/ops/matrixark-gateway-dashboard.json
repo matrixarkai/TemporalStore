@@ -788,6 +788,46 @@
           "legendFormat": "tenants the return-all lines do not speak for"
         }
       ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "What retrieves answered with",
+      "description": "The only series here that says whether the deployment is doing its job. Everything else is transport -- requests, duration, bytes -- and a gateway that has stopped retrieving and started shedding looks healthy on all of them, and faster than usual, because p50 improves as the packs empty. served carried at least one group; shed carried none and a backpressure warning, which is the gateway declining to retrieve and answering 200 in ~100ms; empty carried none and said nothing, which is a populated store returning nothing and does not clear on its own.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 52
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(matrixark_gateway_retrieve_outcomes_total{instance=~\"$instance\",outcome=\"served\"}[5m]))",
+          "legendFormat": "served"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(matrixark_gateway_retrieve_outcomes_total{instance=~\"$instance\",outcome=\"shed\"}[5m]))",
+          "legendFormat": "shed (backpressure)"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(matrixark_gateway_retrieve_outcomes_total{instance=~\"$instance\",outcome=\"empty\"}[5m]))",
+          "legendFormat": "empty (no reason given)"
+        }
+      ]
     }
   ]
 }

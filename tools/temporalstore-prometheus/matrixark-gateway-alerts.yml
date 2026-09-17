@@ -23,6 +23,41 @@ groups:
             over the total would fire on a healthy deployment. The gateway log carries an incident
             token for each one.
 
+  - name: matrixark-gateway-retrieval
+    rules:
+      - alert: MatrixArkRetrievesAreBeingShed
+        expr: >-
+          sum(rate(matrixark_gateway_retrieve_outcomes_total{outcome="shed"}[5m]))
+          / clamp_min(sum(rate(matrixark_gateway_retrieve_outcomes_total[5m])), 0.001) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Retrieves are being shed, not answered ({{ $labels.instance }})"
+          description: >-
+            Under load this gateway stops retrieving and answers every retrieve with HTTP 200 and
+            an empty pack in about 100 ms, carrying a service_backpressure warning. Latency and
+            error rate cannot show this -- p50 IMPROVES as the packs empty out, so the deployment
+            looks faster than one doing the work. A tenth of retrieves returning nothing is
+            already a product outage. The cooldown lives in gateway state and clears when the
+            load does; a restart clears it too.
+      - alert: MatrixArkRetrievesComeBackEmpty
+        expr: >-
+          sum(rate(matrixark_gateway_retrieve_outcomes_total{outcome="empty"}[15m]))
+          / clamp_min(sum(rate(matrixark_gateway_retrieve_outcomes_total[15m])), 0.001) > 0.25
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A quarter of retrieves return an empty pack with no reason ({{ $labels.instance }})"
+          description: >-
+            These carry no backpressure warning, so they are not shedding: the store is being
+            asked and is answering with nothing. Unlike shedding this does not clear on its own.
+            Check the one-box page (/v1/admin/onebox) for what the store holds and what bounds a
+            retrieve -- an empty pack from a populated store is a known condition on this stack.
+            A low rate is normal: a query genuinely matching nothing lands here too, which is why
+            this is a quarter over half an hour rather than anything tighter.
+
   - name: matrixark-gateway-config
     rules:
       - alert: MatrixArkRetrievalNotSemantic
