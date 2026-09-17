@@ -260,7 +260,7 @@ class LogIsWrittenInBlocksTest(unittest.TestCase):
         self.assertTrue(self.log.read_bytes().startswith(_SHARD_CONTAINER_MAGIC),
                         "the log was not a block stream, so the purge has nothing to keep")
 
-        result = adapter.purge_tombstones(force=True)
+        result = adapter.purge_tombstones()
         self.assertTrue(result.get("purged"),
                         "nothing was purged, so this asserts nothing about a rewrite")
         self.assertTrue(self.log.read_bytes().startswith(_SHARD_CONTAINER_MAGIC),

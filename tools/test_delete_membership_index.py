@@ -230,7 +230,7 @@ class MembershipIndexCase(unittest.TestCase):
             anchor = self._ingest(server, "Carol loves espresso and hiking in the Alps with dog Rex")
             server.call_tool("matrixark_delete", {"memory_id": anchor, "scope": _scope()})
             before = len(adapter._read_raw_records())
-            purge = adapter.purge_tombstones(force=True)
+            purge = adapter.purge_tombstones()
             self.assertTrue(purge["purged"])
             after_raw = adapter._read_raw_records()
             self.assertLess(len(after_raw), before)  # log shrank

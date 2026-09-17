@@ -7123,7 +7123,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._invalidate_event_member_index()
             self.append_many(tombstones)
             if force_purge:
-                purge = self.purge_tombstones(force=True)
+                purge = self.purge_tombstones()
             else:
                 purge = self._maybe_auto_purge()
         return {"swept": len(expired_ids), "expired_memory_ids": expired_ids, "purge": purge}
@@ -7294,7 +7294,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self.append(tombstone)
         # Reset is a bulk wipe -- reclaim space immediately by physically compacting the tombstoned
         # records + markers out of the log (crash-safe; the purged log replays to the same state).
-        purge = self.purge_tombstones(force=True)
+        purge = self.purge_tombstones()
         return {"reset": True, "tenant_hash": tenant_hash, "removed_count": removed, "purge": purge}
 
     def records_for_identity_key(self, identity_key: str) -> list[Json]:
@@ -7845,15 +7845,20 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         try:
             if self._count_raw_tombstones() < MEMORY_PURGE_THRESHOLD:
                 return None
-            return self.purge_tombstones(force=True)
+            return self.purge_tombstones()
         except OSError:
             return None
 
-    def purge_tombstones(self, *, force: bool = False) -> Json:
+    def purge_tombstones(self) -> Json:
         """Physically rewrite the JSONL event log without tombstoned records or tombstone markers,
         reclaiming space. No-op (``purged: false``) when the local JSONL is disabled or the log holds
-        no tombstone (and ``force`` only controls the threshold gate, not correctness). Crash-safe via
-        temp-write + fsync + atomic ``os.replace`` onto the primary shard."""
+        no tombstone. Crash-safe via temp-write + fsync + atomic ``os.replace`` onto the primary
+        shard.
+
+        Took a ``force`` argument until it was removed. The body never read it, and the sentence
+        here said it "only controls the threshold gate" -- there is no threshold gate: the log is
+        rewritten whenever it holds a tombstone. Every one of the six call sites passed
+        ``force=True``, so nothing changes; the argument had no effect to remove."""
         if not self._local_jsonl_enabled:
             return {"purged": False, "reason": "jsonl_disabled"}
         with self._event_log_lock:

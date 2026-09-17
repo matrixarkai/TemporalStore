@@ -245,7 +245,7 @@ class PhysicalPurgeBackendCase(unittest.TestCase):
             self.assertEqual(3, adapter._count_raw_tombstones())
             bytes_before = path.stat().st_size
 
-            purge = adapter.purge_tombstones(force=True)
+            purge = adapter.purge_tombstones()
             self.assertTrue(purge["purged"])
             self.assertEqual(3, purge["removed_tombstones"])
             self.assertLess(purge["records_after"], purge["records_before"])
