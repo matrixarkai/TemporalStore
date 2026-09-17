@@ -1800,6 +1800,30 @@ def _shared_budget_summary() -> Json:
     # The SHARE is the same on both paths; only what it comes to differs, so both are reported and
     # neither is called the answer.
     hook_total = runtime.hook_max_context_tokens()
+    # Which implementation that number came from, and whether the other one would agree.
+    #
+    # An agent hook has two backends. The shared python pipeline resolves the budget with
+    # runtime.hook_max_context_tokens() -- the number above. The self-contained offline engine,
+    # crates/temporalstore-rust/src/bin/codex_context_hook.rs, reads the same variable at its own
+    # site and falls back to its own number. With the variable UNSET the two resolve 128000 and
+    # 1024, a factor of 125, and which one an agent gets turns on whether a proxy binary exists on
+    # the machine the hook runs on -- which this process cannot see.
+    #
+    # So the panel reports the condition it CAN check rather than guessing the outcome: with the
+    # variable set, both backends read it and ordinary values agree; unset, they certainly differ.
+    # Measured over 18 environments, they agree only on a plain decimal integer within u32 --
+    # python also accepts `1_000`, non-ASCII digits and values past u32, and reads a second
+    # variable the offline engine never looks at.
+    # Asked, not read again. Reading os.environ here opened a SECOND site for a variable the
+    # resolver already reads, which grew the measured flag surface by one and is a second rule
+    # that can drift from the first.
+    #
+    # WHICH variable answered, not merely whether one did. The resolver falls back through
+    # MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS, and the offline engine never reads that one -- so a
+    # deployment that set only the general default still has its two backends disagreeing (64000
+    # against 1024, a row in the measured table). Only the hook variable is read by both.
+    hook_budget_is_set = (
+        runtime.hook_max_context_tokens_with_source()[1] == "MATRIXARK_HOOK_MAX_CONTEXT_TOKENS")
     paths = []
     for name, label, budget, variable in (
             ("api", "API callers", total, "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS"),
@@ -1826,6 +1850,10 @@ def _shared_budget_summary() -> Json:
         # Not a warning: on a default deployment they DO differ, and a warning that always fires is
         # noise. It is a fact the reader needs in order to read the rows above correctly.
         "paths_differ": hook_total != total,
+        # The agent-hook row is one number for two implementations. False here means the variable
+        # is unset, so the two backends fall back to different numbers and the row speaks for
+        # whichever one happened to run.
+        "hook_budget_is_set": hook_budget_is_set,
     }
 
 

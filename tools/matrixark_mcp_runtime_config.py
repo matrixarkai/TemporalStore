@@ -334,6 +334,28 @@ def hook_max_context_tokens() -> int:
     Both hooks carried this expression inline, which is why nothing could report it: a duplicated
     literal in two scripts is not something a panel can ask.
     """
+    return hook_max_context_tokens_with_source()[0]
+
+
+def hook_max_context_tokens_with_source() -> tuple:
+    """The hook budget, with the variable that supplied it: (value, source).
+
+    ``source`` is the environment variable's name, or ``""`` when nothing was set and the build
+    default answered.
+
+    This exists so a surface can say whether the number it shows was configured WITHOUT opening a
+    second read site for the same variable. The first attempt at that read ``os.environ`` in the
+    gateway and grew the measured flag surface by one -- 115 configurable to 116 -- which
+    `test_the_flag_surface_only_shrinks` exists to catch, and which would have been a poor trade
+    for a disclosure. A second site is also a second rule that can drift from this one.
+
+    It matters here because the two agent-hook backends do not resolve this alike. The offline
+    engine reads only the first variable and falls back to its own number, so an unset variable
+    means the two disagree -- measured over 18 environments, they agree only on a plain decimal
+    integer within u32.
+
+    ``hook_max_context_tokens`` is the value half of this and is unchanged.
+    """
     for variable in ("MATRIXARK_HOOK_MAX_CONTEXT_TOKENS", "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS"):
         raw = os.environ.get(variable)
         if raw is None:
@@ -343,8 +365,8 @@ def hook_max_context_tokens() -> int:
         except (TypeError, ValueError):
             continue
         if parsed > 0:
-            return parsed
-    return DEFAULT_HOOK_MAX_CONTEXT_TOKENS
+            return parsed, variable
+    return DEFAULT_HOOK_MAX_CONTEXT_TOKENS, ""
 
 
 def live_float(variable: str, fallback: float) -> float:

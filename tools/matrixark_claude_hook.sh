@@ -14,8 +14,14 @@
 # so retrieved context is injected into Claude. All other events print `{}`.
 #
 # Backends (MATRIXARK_CLAUDE_HOOK_BACKEND):
-#   rust   (default) -> self-contained, offline crate bin `codex_context_hook`
+#   auto   (default) -> the python pipeline when the rust proxy is present, else the offline
+#                       crate bin `codex_context_hook`. See the fuller note by the assignment.
 #   python           -> tools/matrixark_agent_hook.py --agent claude (full MCP pipeline)
+#   rust             -> self-contained, offline crate bin `codex_context_hook`
+#
+# This block said `rust (default)` while the assignment below has read `:-auto` -- two comments in
+# one file disagreeing about which backend a deployment gets, and they resolve different context
+# budgets from the same environment, so the difference is not cosmetic.
 #
 # Fail-open: on any internal failure it prints `{}` and exits 0 so a hook error
 # never blocks the Claude Code turn (override with MATRIXARK_HOOK_FAIL_OPEN=0).

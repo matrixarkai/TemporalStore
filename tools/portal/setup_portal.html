@@ -2537,6 +2537,20 @@ function liveStream(options) {
       note += '<p class="hint"><strong>The two callers run different budgets.</strong> '
             + "A token figure is only true for the row it is on.</p>";
     }
+    /* The agent-hook row is one number for two implementations. The shared pipeline resolves it
+       the way this panel does; the self-contained offline engine reads the same variable at its
+       own site and falls back to a different number. Which one an agent gets turns on whether a
+       proxy binary exists where the hook runs, which this deployment cannot see from here.
+
+       Said only when the variable is unset, because that is the case where they certainly differ.
+       With it set, both backends read it and ordinary values agree. */
+    if (budgets.hook_budget_is_set === false) {
+      note += '<p class="hint"><strong>The agent-hook budget is not set, so the two hook '
+            + "backends fall back to different numbers.</strong> This row is what the shared "
+            + "pipeline resolves; the self-contained offline engine falls back to its own. Set "
+            + '<span class="mono">MATRIXARK_HOOK_MAX_CONTEXT_TOKENS</span> to a plain whole '
+            + "number and both read it.</p>";
+    }
     $("budgets").innerHTML = "<table><tbody>" + rows + "</tbody></table>" + note;
   }
 
