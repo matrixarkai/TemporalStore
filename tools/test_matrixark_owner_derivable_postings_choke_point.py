@@ -13,6 +13,7 @@ postings nothing can replace, and that failure is silent -- the query simply mat
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -99,19 +100,24 @@ class PostingsTheOwnerCanDeriveAreDropped(unittest.TestCase):
             [_posting("entity_type:person", ref_type="batch_commit")])
         self.assertEqual(1, len(out))
 
-    def test_the_escape_hatch_keeps_everything(self):
-        os.environ["MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS"] = "0"
-        try:
-            importlib = _reload_flag_modules()
-            reloaded = importlib.import_module("matrixark_mcp_local_adapter")
-            owner = _owner()
-            out = reloaded.drop_owner_derivable_postings(
+    def test_the_off_branch_keeps_everything(self):
+        """Patched on the LOCAL ADAPTER, which holds its own binding of this flag.
+
+        matrixark_mcp_local_adapter takes `from ...ingest_resource_chunk_records import
+        INDEX_SKIP_OWNER_DERIVABLE_TERMS` at module level, so there are two bindings and
+        `drop_owner_derivable_postings` branches on the adapter's. Patching the emitter's would
+        leave this function reading the other copy and the test would pass over nothing.
+
+        Both bindings are the same literal since matrixarkai#1817 retired the variable, so they
+        can no longer disagree -- but the guard has to name the one the code under test reads.
+        """
+        import matrixark_mcp_local_adapter as adapter
+        owner = _owner()
+        with mock.patch.object(adapter, "INDEX_SKIP_OWNER_DERIVABLE_TERMS", False):
+            out = adapter.drop_owner_derivable_postings(
                 [owner, _posting(_derivable_term(owner))])
-            self.assertEqual(2, len(out))
-        finally:
-            os.environ.pop("MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS", None)
-            _reload_flag_modules()
-            importlib.import_module("matrixark_mcp_local_adapter")
+        self.assertEqual(2, len(out),
+                         "with the skip off the derivable posting is written again")
 
 
 if __name__ == "__main__":

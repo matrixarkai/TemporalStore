@@ -1075,13 +1075,6 @@ SETTINGS.extend([
             "reader from before this change finds no `vector` on a packed record and carries "
             "on without one -- lost recall, and no error anywhere. Turn it off only while "
             "older readers are still running against the same store."),
-    Setting("ingestion.local_durable_read_cache_compress", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS",
-            "Local durable read cache compress", "bool", "1", "restart",
-            "Stores the durable read cache in its compressed container rather than as JSON. "
-            "REVERSIBLE, and not a one-way door: reading never depends on this flag -- the "
-            "loader decides by what the bytes say they are -- so a store written across a "
-            "change of this setting reads either way, and anything written before it needs no "
-            "migration. It is rewritten in the container on the next full write."),
     Setting("ingestion.local_jsonl_block_log", "ingestion", "MATRIXARK_LOCAL_JSONL_BLOCK_LOG",
             "Local jsonl block log", "bool", "1", "restart",
             "Writes the local log in blocks rather than one record per line. REVERSIBLE: the "
@@ -1089,13 +1082,6 @@ SETTINGS.extend([
             "on still reads with it off. Nothing already on disk is converted -- the form is "
             "read from the file, so an existing plain log stays plain and only a fresh one "
             "adopts blocks."),
-    Setting("ingestion.local_jsonl_compress_sealed", "ingestion", "MATRIXARK_LOCAL_JSONL_COMPRESS_SEALED",
-            "Local jsonl compress sealed", "bool", "1", "restart",
-            "Compresses a shard once it is sealed, per block, carrying the base in the same "
-            "blocks as the tail. REVERSIBLE: the reader takes either form and a shard sealed "
-            "once never needs unsealing. The codec is a new codec BYTE rather than a new magic, "
-            "so a build from before this raises on an unknown codec and the loader answers by "
-            "re-deriving from the log."),
     Setting("retrieval.hook_additional_context_char_limit", "retrieval", "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT",
             "Hook additional context char limit", "int", "40000", "live",
             "How many characters of retrieved context one hook invocation may hand back. The "
@@ -1107,40 +1093,6 @@ SETTINGS.extend([
             "failing hook blocks the operation it was called from. On is the safer default for "
             "an agent hook: a memory write that cannot happen should not stop the work that "
             "produced it."),
-    Setting("storage_engine.index_keyword_limit", "storage_engine", "MATRIXARK_INDEX_KEYWORD_LIMIT",
-            "Index keyword limit", "int", "12", "restart",
-            "How many terms per chunk reach the lexical index. 12 covers little more than a "
-            "chunk's opening: a needle 97% of the way through a 215-token chunk matched NONE "
-            "of its keywords at 12 and all eight at 200. Complete coverage needs roughly 76 a "
-            "chunk, which is only affordable with MATRIXARK_INDEX_POSTING_LISTS on -- one "
-            "record per (chunk, term) was 41.3x amplification over only 160 distinct terms."),
-    Setting("storage_engine.index_only_consultable_terms", "storage_engine", "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS",
-            "Index only consultable terms", "bool", "1", "restart",
-            "Writes postings only for terms a query can actually consult. On a 1 MB skill the "
-            "dropped terms were 1,418 KB of a 1,471 KB index -- 15.7% of the ingest -- and "
-            "dropping them took write amplification from 8.6x to 7.2x, leaving embeddings as "
-            "the majority of the footprint. Set it off to write every term again."),
-    Setting("storage_engine.index_posting_lists", "storage_engine", "MATRIXARK_INDEX_POSTING_LISTS",
-            "Index posting lists", "bool", "1", "restart",
-            "Coalesces the index into one posting per term instead of one record per "
-            "(chunk, term) pair, which was 83.3% of everything a skill ingest writes -- 33,020 "
-            "of the 39,624 records a 1 MB skill produces. Measured on that document: records "
-            "-75.6%, bytes 18.4 MB to 6.9 MB, write amplification 17.5x to 6.6x. The index "
-            "CONTENT is unchanged -- the same terms carrying the same references."),
-    Setting("storage_engine.index_skip_owner_derivable_terms", "storage_engine", "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS",
-            "Index skip owner derivable terms", "bool", "1", "restart",
-            "Skips postings whose target the owner record derives for itself. Since the vector "
-            "fold the owner always carries its vector, which is the condition the prefilter's "
-            "owner branch is gated on, so that branch now reaches every chunk and the posting "
-            "is a restatement. Set it off to write them again."),
-    Setting("storage_engine.max_secondary_index_refs_per_posting", "storage_engine", "MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING",
-            "Max secondary index refs per posting", "int", "512", "restart",
-            "Maximum secondary index refs per posting. Defaults to 512. Frozen when the process starts. "
-            "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
-    Setting("storage_engine.max_secondary_index_terms_per_record", "storage_engine", "MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD",
-            "Max secondary index terms per record", "int", "10", "restart",
-            "Maximum secondary index terms per record. Defaults to 10. Frozen when the process starts. "
-            "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
 ])
 
 SETTINGS.extend(_knob_settings())

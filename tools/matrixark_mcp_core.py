@@ -326,13 +326,16 @@ DEFAULT_MAX_CONTEXT_TOKENS = _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS
 # noticed, and exactly what makes it a trap: a change to either definition in
 # matrixark_mcp_runtime_config would never have reached this module.
 
-MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "").strip() or "10")
+# Was MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD; see the note on refs per posting.
+MAX_SECONDARY_INDEX_TERMS_PER_RECORD = 10
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "").strip() or "60000")
 MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK", "").strip() or "6")
 MAX_INDEX_TERMS_PER_RESOURCE_CHUNK = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK", "").strip() or str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD))
 MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT", "").strip() or str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD))
 MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION = 128
-MAX_SECONDARY_INDEX_REFS_PER_POSTING = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING", "").strip() or "512")
+# Was MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING, retired in matrixarkai#1817;
+# matrixark_mcp_indexing holds the same literal, as it held the same variable.
+MAX_SECONDARY_INDEX_REFS_PER_POSTING = 512
 SECONDARY_INDEX_TIME_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_TIME_BUCKET_MS", "").strip() or "60000")
 # ------------------------------------------------------------------------------------------------
 # Secondary-index dimension pruning (Lever 2).

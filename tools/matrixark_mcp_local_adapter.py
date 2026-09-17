@@ -156,9 +156,10 @@ LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_
 #: `MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS=0` returns the JSON form, and reading never depends
 #: on the flag: the loader decides by what the bytes say they are, so a store written across a flip
 #: reads either way and turning it off again is not a one-way door.
-LOCAL_DURABLE_READ_CACHE_COMPRESS = os.environ.get(
-    "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS", "1"
-).strip().lower() not in ("0", "false", "no", "off")
+#: Was MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS, retired in matrixarkai#1817. Reading
+#: never depended on it -- the note above is unchanged -- so freezing the WRITE side on
+#: leaves every store readable either way.
+LOCAL_DURABLE_READ_CACHE_COMPRESS = True
 LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL = 6
 #: Container prefix. A JSON snapshot always starts with `{`, so this can never be mistaken for one,
 #: and the codec byte after it leaves room for another encoding without a second format.
@@ -207,9 +208,9 @@ LOCAL_JSONL_BLOCK_LOG = os.environ.get(
 ).strip().lower() not in ("0", "false", "no", "off")
 #: On, and reversible: the reader takes either form, so a store written with this on still reads
 #: with it off, and a shard sealed once never needs unsealing.
-LOCAL_JSONL_COMPRESS_SEALED = os.environ.get(
-    "MATRIXARK_LOCAL_JSONL_COMPRESS_SEALED", "1"
-).strip().lower() not in ("0", "false", "no", "off")
+#: Was MATRIXARK_LOCAL_JSONL_COMPRESS_SEALED, retired in matrixarkai#1817; the reader
+#: still takes either form and a shard sealed once never needs unsealing.
+LOCAL_JSONL_COMPRESS_SEALED = True
 #: The BASE in the same blocks as the tail. A new codec byte rather than a new magic: a build from
 #: before this raises on an unknown codec, and the loader answers that by re-deriving from the log.
 _SNAPSHOT_CODEC_BLOCKS = b"\x02"

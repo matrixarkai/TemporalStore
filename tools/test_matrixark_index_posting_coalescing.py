@@ -33,13 +33,6 @@ def _emit(coalesced, chunk_count=40):
     """Emit records for a synthetic multi-section skill under one posting mode."""
     os.environ.update({
         "MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS": "500000",
-        "MATRIXARK_INDEX_POSTING_LISTS": "1" if coalesced else "0",
-        # These tests are about the SHAPE of a posting -- coalescing, the ref cap, the
-        # singular/plural ref_hash rule -- not about which terms survive filtering. With the
-        # consultable-terms filter on, a small fixture emits one source_type posting carrying
-        # every chunk: no single-ref posting to assert on and the cap never approached. The
-        # filter has its own tests in test_matrixark_index_consultable_terms.
-        "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS": "0",
     })
     # Rebuild the three modules below so they re-read the flags just set -- and put every
     # other module's identity back afterwards.
@@ -59,6 +52,19 @@ def _emit(coalesced, chunk_count=40):
         parser = importlib.import_module("matrixark_resource_parser")
         emitter = importlib.import_module("matrixark_mcp_ingest_resource_chunk_records")
         core = importlib.import_module("matrixark_mcp_core")
+        # Both were MATRIXARK_ variables set in the environment above until matrixarkai#1817
+        # retired them. The emitter branches on these globals, so setting them on the freshly
+        # built module reaches the same two branches the environment used to choose between --
+        # and reaches them on the object this function returns, not on whatever copy another
+        # test file happens to hold.
+        #
+        # POSTING_LISTS is the subject: the comparison below is coalesced against flat.
+        # ONLY_CONSULTABLE_TERMS is off because these tests are about the SHAPE of a posting --
+        # coalescing, the ref cap, the singular/plural ref_hash rule -- not about which terms
+        # survive filtering. With the filter on, a small fixture emits one source_type posting
+        # carrying every chunk: no single-ref posting to assert on and the cap never approached.
+        emitter.INDEX_POSTING_LISTS = bool(coalesced)
+        emitter.INDEX_ONLY_CONSULTABLE_TERMS = False
     finally:
         # The locals above keep the freshly built modules, which is what this function needs;
         # sys.modules goes back to what the rest of the suite already has bound.

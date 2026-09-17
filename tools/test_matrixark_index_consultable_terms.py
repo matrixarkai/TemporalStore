@@ -120,42 +120,33 @@ class WhatAQueryCanAskFor(unittest.TestCase):
 
 
 MODULE = "matrixark_mcp_ingest_resource_chunk_records"
-VARIABLE = "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS"
 
 
 class TheFilterIsOnAndActuallyFilters(unittest.TestCase):
-    """Reading the flag's default means re-importing, which is only safe if it is undone.
+    """The filter is on, and on is a BUILD decision rather than a setting.
 
-    These tests drop the module from `sys.modules` so its import-time flag is evaluated again.
-    Leaving the replacement behind hands every later importer a different module object than the
-    one its collaborators already hold, and they fail for reasons unrelated to themselves. Both
-    the module table and the environment are put back.
+    It was reached by MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS until matrixarkai#1817 retired it.
+    This class held two tests: that the default was on, and that setting the variable to 0 turned
+    it off. The second recorded a decision that has now been reversed -- the escape hatch was the
+    thing removed -- so it is gone rather than rewritten, because the honest version of it asserts
+    only that a patch this test applied is visible to this test.
+
+    The OFF BRANCH itself is not lost and is not untested. `if INDEX_ONLY_CONSULTABLE_TERMS:` is
+    still in the emitter, and test_matrixark_index_posting_coalescing._emit sets this module's
+    global to False so the filter does not narrow the fixture it compares posting shapes in --
+    the same branch, reached the way a frozen flag's other side has to be reached now.
+
+    The measurement that chose ON is in the emitter beside the constant: on a 1 MB skill the
+    dropped terms were 1,418 KB of a 1,471 KB index, and dropping them took write amplification
+    from 8.6x to 7.2x.
     """
 
-    def setUp(self):
-        self._module = sys.modules.get(MODULE)
-        self._variable = os.environ.get(VARIABLE)
-
-    def tearDown(self):
-        sys.modules.pop(MODULE, None)
-        if self._module is not None:
-            sys.modules[MODULE] = self._module
-        os.environ.pop(VARIABLE, None)
-        if self._variable is not None:
-            os.environ[VARIABLE] = self._variable
-
-    def _reimport(self):
+    def test_the_build_value_is_on(self):
         import importlib
-        sys.modules.pop(MODULE, None)
-        return importlib.import_module(MODULE)
-
-    def test_the_default_is_on(self):
-        os.environ.pop(VARIABLE, None)
-        self.assertTrue(self._reimport().INDEX_ONLY_CONSULTABLE_TERMS)
-
-    def test_the_escape_hatch_works(self):
-        os.environ[VARIABLE] = "0"
-        self.assertFalse(self._reimport().INDEX_ONLY_CONSULTABLE_TERMS)
+        self.assertTrue(
+            importlib.import_module(MODULE).INDEX_ONLY_CONSULTABLE_TERMS,
+            "the emitter branches on this global. Off, the index regains every term the "
+            "measurement beside the constant weighed at 15.7% of a skill ingest.")
 
 
 class WhatTheIndexTermCapEverSees(unittest.TestCase):

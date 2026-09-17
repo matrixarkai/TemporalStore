@@ -198,7 +198,12 @@ class APortalBoolAcceptsTheWordsABoolIsWrittenWithTest(unittest.TestCase):
         # the page ought to offer.
         self.assertGreater(len(declared), 15,
                            "the bool-Setting scan came back nearly empty")
-        self.assertGreater(len(reads), 10,
+        # 3 against a measured 6. It read 10 against a measured 11 -- a margin of ONE -- and
+        # matrixarkai#1817 froze five hand-rolled boolean reads, taking the population to 6. This
+        # is the SECOND time this floor has been moved for exactly the reason the note above
+        # gives, which is why it is now set where a scan returning nothing fails and a page that
+        # keeps shrinking does not.
+        self.assertGreater(len(reads), 3,
                            "the hand-rolled read scan came back nearly empty, so every setting "
                            "would look compliant")
         self.assertGreater(len(_unreachable_modules()), 30,

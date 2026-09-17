@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -107,17 +108,21 @@ class APostingIsNotWrittenForWhatTheOwnerKnows(unittest.TestCase):
         for kind in ("unit_kind", "resource_type", "source_type"):
             self.assertIn(kind, kinds)
 
-    def test_the_escape_hatch_restores_every_posting(self):
-        import importlib
-        os.environ["MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS"] = "0"
-        try:
-            sys.modules.pop("matrixark_mcp_ingest_resource_chunk_records", None)
-            module = importlib.import_module("matrixark_mcp_ingest_resource_chunk_records")
-            self.assertFalse(module.INDEX_SKIP_OWNER_DERIVABLE_TERMS)
-        finally:
-            os.environ.pop("MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS", None)
-            sys.modules.pop("matrixark_mcp_ingest_resource_chunk_records", None)
-            importlib.import_module("matrixark_mcp_ingest_resource_chunk_records")
+    def test_the_off_branch_restores_every_posting(self):
+        """The skip is a build decision since matrixarkai#1817; the branch is still reachable.
+
+        This recorded a decision that has been reversed: it set
+        MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS=0, re-imported, and asserted the CONSTANT had
+        gone false -- which checked the flag reader, not the emitter. With the variable retired
+        the branch is reached at the global the emitter actually reads, and the assertion is now
+        about postings rather than about a boolean, so it covers strictly more than it did.
+        """
+        with mock.patch.object(ingest, "INDEX_SKIP_OWNER_DERIVABLE_TERMS", False):
+            kinds = _kinds(_ingest(skill_metadata={"triggers": ["refund_flow"]}))
+        for kind in ("heading_slug", "unit_kind", "resource_type", "source_type"):
+            self.assertIn(kind, kinds,
+                          "with the skip off every posting the owner could derive is written "
+                          "again, which is what the branch is for")
 
 
 if __name__ == "__main__":

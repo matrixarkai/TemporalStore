@@ -237,17 +237,17 @@ EXPECTED_READ_SITE_FLOOR = 20
 #: exactly, so a NEW engine knob arriving on the page without a comparable read fails here
 #: rather than joining a silent majority -- which is what fourteen of the twenty-two were.
 #:
-#: All six are MATRIXARK_ rather than TS_, and that is the reason: they are read by the Python
-#: index writer, not by the Rust engine. They sit in the storage_engine SECTION because that is
-#: what they decide about, not because the engine reads them.
-UNCOMPARED_ENGINE_SETTINGS = (
-    "MATRIXARK_INDEX_KEYWORD_LIMIT",
-    "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS",
-    "MATRIXARK_INDEX_POSTING_LISTS",
-    "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS",
-    "MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING",
-    "MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD",
-)
+#: EMPTY, and that is the STRICTEST this assertion can be rather than the weakest. It held six,
+#: and all six were MATRIXARK_ rather than TS_ -- read by the Python index writer, not by the
+#: Rust engine, and sitting in the storage_engine SECTION because that is what they decide
+#: about. matrixarkai#1817 took all six off the page and froze each at the value it shipped, so
+#: the section now holds only knobs the engine itself reads.
+#:
+#: An exemption list that has emptied is not a vacuous assertion here. `uncompared` is recomputed
+#: from the portal on every run and compared against this, so the next storage_engine setting
+#: that arrives with no findable read makes it non-empty and fails. The guard whose subject can
+#: disappear is the one that lists names and feeds on its own list; this one reads the portal.
+UNCOMPARED_ENGINE_SETTINGS = ()
 
 #: env name -> (what the read site applies, what the portal declares), with the reason beside it.
 #: Asserted exactly in both directions, like CONFIG_DISAGREES above.

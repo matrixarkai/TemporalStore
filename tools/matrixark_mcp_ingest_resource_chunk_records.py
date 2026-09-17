@@ -62,7 +62,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 # keywords_for_text defaults to 12 terms, which covers only a chunk's opening: a needle at
 # 97% through a 215-token chunk matched 0 of its keywords at 12 and all 8 at 200. Complete
 # coverage needs roughly 76 per chunk, which is only affordable with posting lists.
-INDEX_KEYWORD_LIMIT = int(os.environ.get("MATRIXARK_INDEX_KEYWORD_LIMIT", "").strip() or "12")
+# Was MATRIXARK_INDEX_KEYWORD_LIMIT, retired in matrixarkai#1817. The measurements that
+# chose 12 are the paragraphs above; they stay beside the code they describe.
+INDEX_KEYWORD_LIMIT = 12
 
 # Default ON. One index record per (chunk, term) pair is 83.3% of everything a skill ingest
 # writes -- 33,020 of the 39,624 records a 1 MB skill produces. Coalescing them into one posting
@@ -91,25 +93,22 @@ except ImportError:  # top-level path
 # (44.6% -> 53.0%), which is what an embedding-first store should look like.
 #
 # Set MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS=0 to write every term again.
-INDEX_ONLY_CONSULTABLE_TERMS = os.environ.get(
-    "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS", "1"
-).strip().lower() not in {"0", "false", "no", "off"}
+# Was MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS, retired in matrixarkai#1817; on is now the
+# build decision, and the measurement above is why.
+INDEX_ONLY_CONSULTABLE_TERMS = True
 
 # A posting whose target the owner derives for itself is a restatement. Since the fold the owner
 # always carries its vector, which is the condition the prefilter's owner branch is gated on, so
 # that branch now reaches every chunk. Set MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS=0 to write
 # them again.
-INDEX_SKIP_OWNER_DERIVABLE_TERMS = os.environ.get(
-    "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS", "1"
-).strip().lower() not in {"0", "false", "no", "off"}
+# Was MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS, retired in matrixarkai#1817.
+INDEX_SKIP_OWNER_DERIVABLE_TERMS = True
 
 #: Read like INDEX_ONLY_CONSULTABLE_TERMS above: case folded, whitespace stripped, and every
 #: FALSE_VALUES spelling accepted. It used to be `not in {"0", "false", "False", ""}` with no
 #: strip or lower, so `=off`, `=no` and `=FALSE` all read as TRUE and left the flag on --
 #: a false spelling turning it on rather than off.
-INDEX_POSTING_LISTS = os.environ.get(
-    "MATRIXARK_INDEX_POSTING_LISTS", "1"
-).strip().lower() not in {"0", "false", "no", "off"}
+INDEX_POSTING_LISTS = True
 
 # A skill chunk's text is written TWICE: once as `resource_chunk` and once as `skill_section`,
 # byte for byte. Measured on a 1.41 MB markdown skill: 411 chunks and 411 sections, and all 411
