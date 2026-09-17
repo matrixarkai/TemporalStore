@@ -257,6 +257,26 @@ pub(crate) fn execute_on_shard(
             // sweep's pending work must not resurrect a value whose deadline already passed.
             if remove_if_expired(shard, &key) {
                 mutated = true;
+                // The collection is a DELETION, and it has to be recorded as one. This branch
+                // reported a mutation and staged nothing, so `PERSIST` on a key whose deadline
+                // had passed but which the sweep had not yet reached hit the standing
+                // "changed the shard and recorded nothing" check in every debug build --
+                // `SET k v PX 5`, wait, `PERSIST k` panicked the shard on an unmodified tree.
+                // In a release build it is quieter and worse: the WAL entry for the command
+                // carries no item describing the removal, so recovery has to re-run the
+                // command against the restart clock instead of installing what it did.
+                // Staged exactly as `CommonDelete` stages its own removal, which is the same
+                // event reached by a different route.
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    None,
+                    true,
+                );
                 invalidate_record_all(cache, shard_id, &key);
                 CommandResponse::Integer { value: 0 }
             } else {
