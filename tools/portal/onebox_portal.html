@@ -748,6 +748,17 @@
     return found;
   }
 
+  /* How many workers this deployment was started with, off the same scrape.
+
+     Null when the series is absent. Today that renders the same as a count of 1, because the
+     sentence below only quantifies above one -- so this is not a distinction the panel currently
+     makes, and a test cannot see it. It is null anyway for the next reader: a fabricated 1 would
+     be wrong the moment somebody divides by it. */
+  function workerCount(text) {
+    var m = /^matrixark_gateway_workers\s+([0-9]+)/m.exec(String(text || ""));
+    return m ? Number(m[1]) : null;
+  }
+
   function renderAnswering(text) {
     var c = retrieveCounts(text);
     /* All three or none. A partial read means the build does not emit these, and showing two of
@@ -763,6 +774,13 @@
         + "nothing to report either way.</div>";
     }
     function pct(n) { return Math.round((n / total) * 100); }
+    /* The caveat, quantified where the scrape allows it. Not multiplied out: four workers do not
+       answer alike, and scaling one worker's counts by the worker count would invent a
+       deployment-wide total from one sample. */
+    var workers = workerCount(text);
+    var scope = workers && workers > 1
+      ? "This worker only, since it started \u2014 one of " + workers + "."
+      : "This worker only, since it started.";
     var rows = [
       ["Answered with something", c.served, ""],
       ["Came back empty", c.empty,
@@ -786,8 +804,9 @@
     }
     return head + "<div class='tablewrap'><table class='inv'><thead><tr><th>Outcome</th>"
       + "<th>Count</th><th>Share</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
-      + '<p class="hint">This worker only, since it started. Two workers no more add up to the '
-      + "deployment's answers than their resident sets do.</p>";
+      + '<p class="hint">' + esc(scope) + " Two workers no more add up to the deployment's "
+      + "answers than their resident sets do, so no total is offered here that would be wrong."
+      + "</p>";
   }
 
   function renderProfile(data) {

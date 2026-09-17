@@ -51,6 +51,7 @@ const source = [
   extract("function renderCaps(data)"),
   extract("function subjectLine(data)"),
   extract("function retrieveCounts(text)"),
+  extract("function workerCount(text)"),
   extract("function renderAnswering(text)"),
   extract("function renderPolicy(knobs)"),
   "sandbox.renderProfile = renderProfile;",
@@ -287,6 +288,28 @@ ok("an empty scrape is refused too",
 
 ok("the panel says it speaks for one worker",
    /This worker only/.test(healthy), healthy);
+
+/* Quantified where the scrape allows it. "This worker only" does not tell a reader whether they
+   are looking at most of the traffic or an eighth of it. */
+const fourWorkers = sandbox.renderAnswering(
+  scrape(10, 0, 0) + "\nmatrixark_gateway_workers 4");
+ok("with four workers it says one of four", /one of 4/.test(fourWorkers), fourWorkers);
+
+/* And still does no arithmetic. Four workers do not answer alike, so multiplying one worker's
+   counts by the worker count would invent a deployment-wide total out of one sample -- the exact
+   shape of surface this work has been removing. */
+ok("and still offers no deployment-wide total",
+   /no total is offered/.test(fourWorkers) && fourWorkers.indexOf(">40<") < 0, fourWorkers);
+
+ok("a single-worker deployment is not told it is one of one",
+   !/one of 1/.test(sandbox.renderAnswering(
+     scrape(10, 0, 0) + "\nmatrixark_gateway_workers 1")));
+
+/* A scrape without the worker series still reads correctly -- it just does not quantify. This
+   is NOT testing that null is kept distinct from 1: the sentence only quantifies above one, so
+   those render identically and no assertion here can tell them apart. */
+ok("a scrape without the worker series still reads correctly",
+   /This worker only/.test(healthy) && !/one of/.test(healthy), healthy);
 
 /* It must not be gated on the admin key: /v1/metrics needs none, and this is the one question
    here worth answering before somebody has found a key. */
