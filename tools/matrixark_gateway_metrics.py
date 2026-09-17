@@ -640,13 +640,28 @@ except ImportError:  # direct execution from tools/
 ONEBOX_PROFILE_DEFAULT = ONEBOX_EMBEDDING_FIRST_DEFAULT
 
 
+# The settings `onebox_lines` reports that a tenant can override. Closed on purpose: this drives a
+# COUNT, and it has to be the same set the gauges above it report or the count answers a different
+# question from the one the reader is asking.
+#
+# The profile is deliberately absent. It reads only the environment -- no scope -- so it is the
+# same for every tenant and there is nothing for a tenant to differ about.
+TENANT_VARIABLE_RETRIEVAL_SETTINGS = ("return_all_candidates", "return_all_candidate_threshold")
+
+
 def onebox_lines() -> List[str]:
     """The retrieval profile this deployment is serving on, and whether it returns everything.
 
-    Three gauges, because the three answer different questions. The profile says how a score is
-    computed; return-all says whether ranking is allowed to drop anything; the threshold says at
-    what size the second stops applying. A dashboard that shows the first without the others
-    explains half of a changed answer.
+    The profile says how a score is computed; return-all says whether ranking is allowed to drop
+    anything; the threshold says at what size the second stops applying. A dashboard that shows
+    the first without the others explains half of a changed answer.
+
+    **The return-all pair is the DEPLOYMENT DEFAULT, and both resolve per tenant.** Measured with
+    two tenants setting return-all on: retrieval honoured it for both and this still published 0,
+    so a dashboard read "off on this deployment" while that traffic returned everything. There is
+    no per-tenant series here and there must not be -- a label taken from a tenant id is a
+    cardinality bomb. `retrieval_tenant_overrides` answers the narrower question a reader actually
+    has: is the number above the whole story? Zero means yes.
 
     Every value is read here rather than captured at import, and every one is emitted even when it
     is at its default -- a gauge that appears only once somebody changes something cannot be
@@ -680,10 +695,30 @@ def onebox_lines() -> List[str]:
             return_all_candidate_threshold,
             return_all_candidates_enabled,
         )
+        # scope None: the deployment default. Both of these resolve per tenant, which is what the
+        # count below exists to disclose.
         return_all = 1 if return_all_candidates_enabled(None) else 0
         threshold = int(return_all_candidate_threshold(None) or 0)
     except Exception:  # pragma: no cover - policy module absent
         return_all, threshold = 0, 0
+
+    # How many tenants have set any of the settings reported above. Counted, never labelled: the
+    # tenant set is open, and an open value in a label is a cardinality bomb.
+    #
+    # -1 rather than 0 when the registry cannot be asked. Zero is a meaningful answer here -- "the
+    # gauges speak for everyone" -- and publishing it for a failed read would be the same mistake
+    # the profile gauge made when a caught ImportError became a confident 0.
+    tenant_overrides = -1
+    try:
+        from matrixark_tenant_policy import policy_overrides
+        reported = set()
+        for row in (policy_overrides() or {}).get("tenants") or []:
+            settings = (row or {}).get("settings") or {}
+            if any(name in settings for name in TENANT_VARIABLE_RETRIEVAL_SETTINGS):
+                reported.add(str(row.get("tenant") or ""))
+        tenant_overrides = len(reported)
+    except Exception:  # pragma: no cover - policy module absent
+        tenant_overrides = -1
 
     return [
         "# HELP matrixark_gateway_onebox_embedding_first 1 when a candidate's score is its vector "
@@ -696,13 +731,21 @@ def onebox_lines() -> List[str]:
         "# TYPE matrixark_gateway_onebox_profile_readable gauge",
         "matrixark_gateway_onebox_profile_readable %d" % profile_readable,
         "# HELP matrixark_gateway_return_all_candidates 1 when retrieval returns every candidate "
-        "and lets the token budget be the only limit.",
+        "and lets the token budget be the only limit. The DEPLOYMENT DEFAULT: this resolves per "
+        "tenant, and matrixark_gateway_retrieval_tenant_overrides says how many tenants it does "
+        "not speak for.",
         "# TYPE matrixark_gateway_return_all_candidates gauge",
         "matrixark_gateway_return_all_candidates %d" % return_all,
         "# HELP matrixark_gateway_return_all_candidate_threshold Candidate count at or below which "
         "retrieval returns everything. 0 means the rule is off.",
         "# TYPE matrixark_gateway_return_all_candidate_threshold gauge",
         "matrixark_gateway_return_all_candidate_threshold %d" % threshold,
+        "# HELP matrixark_gateway_retrieval_tenant_overrides Tenants that have set one of the "
+        "retrieval settings reported above, so the deployment-wide values do not speak for them. "
+        "0 means the gauges above are the whole story; -1 means the policy registry could not be "
+        "asked, which is not the same as nobody having overridden anything.",
+        "# TYPE matrixark_gateway_retrieval_tenant_overrides gauge",
+        "matrixark_gateway_retrieval_tenant_overrides %d" % tenant_overrides,
     ]
 
 

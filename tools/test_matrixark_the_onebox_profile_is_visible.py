@@ -108,11 +108,15 @@ class TheProfileIsPublishedTest(unittest.TestCase):
         they do, which is the moment the alert was worth having."""
         os.environ.pop("MATRIXARK_ONEBOX_EMBEDDING_FIRST", None)
         lines = gwm.onebox_lines()
-        # Four: the profile, whether the profile could be READ, return-all, and its threshold. The
-        # second exists because the first version of this gauge published a plausible 0 for a read
-        # that had failed, and a dashboard cannot tell that apart from a deployment running
-        # blended scoring.
-        self.assertEqual(4, len([l for l in lines if l.startswith("matrixark_gateway_")]))
+        # Five: the profile, whether the profile could be READ, return-all, its threshold, and how
+        # many tenants the return-all pair does not speak for.
+        #
+        # Two of the five exist only to say how far the others can be trusted, which is the shape
+        # this file keeps arriving at. The readable one is here because a caught ImportError once
+        # became a confident 0; the tenant count is here because return-all resolves per tenant
+        # and the gauge reports the deployment default, so two tenants running return-all showed
+        # up as "off on this deployment".
+        self.assertEqual(5, len([l for l in lines if l.startswith("matrixark_gateway_")]))
 
     def test_it_reaches_the_scrape(self) -> None:
         """The positive control: every assertion above passes on a function nothing calls."""

@@ -743,7 +743,7 @@
       "id": 20,
       "type": "timeseries",
       "title": "One-box retrieval profile",
-      "description": "How this deployment ranks. onebox_embedding_first is 1 when a candidate's score is its vector similarity alone and 0 when it is blended with a lexical match (0.72/0.28) -- it is on by default, and it decides every result. return_all_candidates is 1 when ranking is not allowed to drop anything and the token budget is the only limit; the threshold is the candidate count at or below which that applies on its own, 0 meaning off. Read together they answer 'why did the answers change', which no series could answer before. profile_readable is 1 when the profile line above was read by calling the same function retrieval calls, and 0 when it could not be read and that line is a placeholder rather than a reading. It exists because the first version of this gauge caught a failed read in an exception and published 0, so every dashboard confidently described the opposite of what was running; a profile line without this one beside it cannot be told apart from that.",
+      "description": "How this deployment ranks. onebox_embedding_first is 1 when a candidate's score is its vector similarity alone and 0 when it is blended with a lexical match (0.72/0.28) -- it is on by default, and it decides every result. return_all_candidates is 1 when ranking is not allowed to drop anything and the token budget is the only limit; the threshold is the candidate count at or below which that applies on its own, 0 meaning off. Read together they answer 'why did the answers change', which no series could answer before. profile_readable is 1 when the profile line above was read by calling the same function retrieval calls, and 0 when it could not be read and that line is a placeholder rather than a reading. It exists because the first version of this gauge caught a failed read in an exception and published 0, so every dashboard confidently described the opposite of what was running; a profile line without this one beside it cannot be told apart from that. retrieval_tenant_overrides counts tenants that have set one of the return-all settings, so those two lines are the deployment default rather than the whole story: 0 means they speak for everyone, and -1 means the policy registry could not be asked, which is not the same as nobody having overridden anything. There is deliberately no per-tenant series -- a label taken from a tenant id is a cardinality bomb.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -781,6 +781,11 @@
           "refId": "D",
           "expr": "matrixark_gateway_onebox_profile_readable{instance=~\"$instance\"}",
           "legendFormat": "profile was actually read"
+        },
+        {
+          "refId": "E",
+          "expr": "matrixark_gateway_retrieval_tenant_overrides{instance=~\"$instance\"}",
+          "legendFormat": "tenants the return-all lines do not speak for"
         }
       ]
     }
