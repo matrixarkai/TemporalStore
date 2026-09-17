@@ -1385,23 +1385,13 @@ _INGESTION_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
 
 def _ingestion_portal_html_bytes() -> bytes:
     """The ingestion portal page (cached), read from the committed file next to this module."""
-    cached = _INGESTION_PORTAL_CACHE.get("bytes")
-    if cached is not None:
-        return cached
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal", "ingestion_portal.html")
-    try:
-        with open(path, "rb") as handle:
-            data = handle.read()
-    except Exception:  # pragma: no cover - deployments without the file bundled
-        data = (
-            "<!doctype html><meta charset='utf-8'><title>MatrixArk Ingestion</title>"
-            "<h1>MatrixArk Ingestion</h1><p>The bundled page "
-            "(<code>tools/portal/ingestion_portal.html</code>) was not found. The JSON endpoints "
-            "still work: <code>POST /v1/admin/ingestion/jobs</code>, "
-            "<code>GET /v1/admin/ingestion/jobs</code>, and <code>GET /v1/metrics</code>.</p>"
-        ).encode("utf-8")
-    _INGESTION_PORTAL_CACHE["bytes"] = data
-    return data
+    return _portal_page(
+        _INGESTION_PORTAL_CACHE, "ingestion_portal.html",
+        "<!doctype html><meta charset='utf-8'><title>MatrixArk Ingestion</title>"
+        "<h1>MatrixArk Ingestion</h1><p>The bundled page "
+        "(<code>tools/portal/ingestion_portal.html</code>) was not found. The JSON endpoints "
+        "still work: <code>POST /v1/admin/ingestion/jobs</code>, "
+        "<code>GET /v1/admin/ingestion/jobs</code>, and <code>GET /v1/metrics</code>.</p>")
 
 
 _SETUP_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
@@ -1507,17 +1497,7 @@ def _catalog_portal_html_bytes() -> bytes:
 def _portal_html_bytes() -> bytes:
     """The portal HTML (cached). Reads the committed file next to this module; falls back to a small
     inline notice page so the route always returns valid HTML."""
-    cached = _PORTAL_HTML_CACHE.get("bytes")
-    if cached is not None:
-        return cached
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal", "api_key_portal.html")
-    try:
-        with open(path, "rb") as handle:
-            data = handle.read()
-    except Exception:  # pragma: no cover - fallback for deployments without the file bundled
-        data = _PORTAL_FALLBACK_HTML.encode("utf-8")
-    _PORTAL_HTML_CACHE["bytes"] = data
-    return data
+    return _portal_page(_PORTAL_HTML_CACHE, "api_key_portal.html", _PORTAL_FALLBACK_HTML)
 
 
 _STORE_SENTINELS = {"", "local", "none", "standalone", "off"}
