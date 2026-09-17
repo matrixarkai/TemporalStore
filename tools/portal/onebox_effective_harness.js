@@ -49,10 +49,12 @@ const source = [
   extract("function unreadable(data, what)"),
   extract("function renderProfile(data)"),
   extract("function renderCaps(data)"),
+  extract("function subjectLine(data)"),
   extract("function renderPolicy(knobs)"),
   "sandbox.renderProfile = renderProfile;",
   "sandbox.renderCaps = renderCaps;",
-  "sandbox.renderPolicy = renderPolicy;"
+  "sandbox.renderPolicy = renderPolicy;",
+  "sandbox.subjectLine = subjectLine;"
 ].join("\n");
 new Function("sandbox", source)(sandbox);
 
@@ -192,6 +194,44 @@ const capTenant = atLevel("tenant");
 ok("one source word reads the same in both panels",
    /set by tenant policy/.test(capTenant) && /set by tenant policy/.test(policyOut));
 
+/* ---------- whose numbers are these ---------- */
+/* The caps resolve per tenant, and a key bound to no tenant reads the deployment defaults --
+   which is exactly what a tenant with no override gets, so the two tables are identical on screen.
+   An operator holding the second reads the first unless told. */
+const forTenant = sandbox.subjectLine(
+  Object.assign({}, live, { known: true, answered_for: "tenant", tenant: "acme-corporation" }));
+ok("a tenant reading its own caps is told whose they are",
+   forTenant.indexOf("acme-corporation") >= 0, forTenant);
+ok("and warned that another tenant may differ",
+   /may be running different numbers/.test(forTenant), forTenant);
+
+const asDefaults = sandbox.subjectLine(
+  Object.assign({}, live, { known: true, answered_for: "deployment", tenant: null,
+                            tenants_overriding_caps: 2 }));
+ok("a keyless-tenant reading is called the deployment defaults",
+   /deployment defaults/.test(asDefaults), asDefaults);
+ok("and told how many tenants do not get them",
+   /2 tenants have overridden/.test(asDefaults), asDefaults);
+
+const nobodyDiffers = sandbox.subjectLine(
+  Object.assign({}, live, { known: true, answered_for: "deployment", tenant: null,
+                            tenants_overriding_caps: 0 }));
+ok("zero overrides is stated as such rather than left silent",
+   /No tenant has overridden/.test(nobodyDiffers), nobodyDiffers);
+
+const cannotTell = sandbox.subjectLine(
+  Object.assign({}, live, { known: true, answered_for: "deployment", tenant: null,
+                            tenants_overriding_caps: -1 }));
+/* The failure value has to READ as a failure. Rendering -1 as "no tenant has overridden" would be
+   the disclosure line telling the reassuring lie the whole line exists to prevent. */
+ok("a count that could not be taken says so, not zero",
+   /could not be checked/.test(cannotTell), cannotTell);
+ok("and does not claim nobody differs",
+   !/No tenant has overridden/.test(cannotTell), cannotTell);
+
+ok("an unreadable payload gets no subject line at all",
+   sandbox.subjectLine({ known: false, detail: "boom" }) === "");
+
 /* ---------- the positive control ---------- */
 /* Every assertion above is about text appearing in a string. A renderer returning one long string
    containing every word would satisfy a surprising number of them, and an extractor that silently
@@ -199,7 +239,7 @@ ok("one source word reads the same in both panels",
    no longer runs on the page would not. */
 ok("the page actually calls these renderers",
    /\$\("profile"\)\.innerHTML = renderProfile\(/.test(page)
-   && /\$\("caps"\)\.innerHTML = renderCaps\(/.test(page),
+   && /\$\("caps"\)\.innerHTML = subjectLine\(d\) \+ renderCaps\(/.test(page),
    "the renderers exist on the page but nothing assigns their output");
 ok("the page asks the endpoint that runs the serving path's resolution",
    page.indexOf('fetch("/v1/admin/retrieval"') >= 0);

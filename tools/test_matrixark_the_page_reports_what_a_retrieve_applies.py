@@ -410,6 +410,105 @@ class WhichLevelSuppliedItTest(unittest.TestCase):
                 self.assertEqual(tp.explicit_int(self.KNOB, scope, 1000), value)
 
 
+class WhoseNumbersTheseAreTest(unittest.TestCase):
+    """The endpoint scopes to the tenant on the key. It has to say which.
+
+    Two readings render identically:
+
+    * a key bound to a tenant sees THAT TENANT'S caps, an override included;
+    * a key bound to no tenant sees the DEPLOYMENT DEFAULTS, which is exactly what a tenant with
+      no override gets.
+
+    An operator holding the second reads the first -- "max_selected_refs 1000, no badge" becomes
+    "this deployment applies 1000 to everyone" when a tenant may be running 50. Saying which LEVEL
+    supplied a value, which #1807 added, does not answer which SUBJECT it was resolved for.
+    """
+
+    def setUp(self) -> None:
+        self._clear()
+        self.addCleanup(self._clear)
+
+    @staticmethod
+    def _clear() -> None:
+        for module in list(sys.modules.values()):
+            if getattr(module, "__name__", "").endswith("matrixark_tenant_policy"):
+                for attr in ("_RECORD_POLICIES", "_FILE_POLICIES"):
+                    store = getattr(module, attr, None)
+                    if isinstance(store, dict):
+                        store.clear()
+
+    @staticmethod
+    def _set_policy(tenant, knobs) -> None:
+        for module in list(sys.modules.values()):
+            if (getattr(module, "__name__", "").endswith("matrixark_tenant_policy")
+                    and hasattr(module, "set_tenant_policy")):
+                module.set_tenant_policy(tenant, knobs)
+
+    def test_a_tenant_reading_is_named(self) -> None:
+        body = eff.effective_retrieval("acme")
+        self.assertEqual("acme", body["tenant"])
+        self.assertEqual("tenant", body["answered_for"])
+
+    def test_a_deployment_reading_says_so(self) -> None:
+        body = eff.effective_retrieval(None)
+        self.assertIsNone(body["tenant"])
+        self.assertEqual("deployment", body["answered_for"])
+
+    def test_the_deployment_reading_discloses_who_it_does_not_speak_for(self) -> None:
+        self.assertEqual(0, eff.effective_retrieval(None)["tenants_overriding_caps"])
+        self._set_policy("acme", {"max_selected_refs": 50})
+        self.assertEqual(1, eff.effective_retrieval(None)["tenants_overriding_caps"],
+                         "a tenant running a different cap is not disclosed, so the defaults on "
+                         "screen read as what everybody gets")
+
+    def test_an_override_of_something_else_is_not_counted(self) -> None:
+        """A control must read the same set as its subject: the question is whether the CAPS on
+        screen speak for everyone, not whether anyone has configured anything."""
+        self._set_policy("acme", {"return_all_candidates": True})
+        self.assertEqual(0, eff.effective_retrieval(None)["tenants_overriding_caps"])
+
+    def test_the_counted_set_is_taken_from_the_reported_set(self) -> None:
+        """Taken from RETRIEVAL_CAPS rather than restated, so the two cannot drift into answering
+        different questions while both still look like numbers."""
+        import inspect
+        source = inspect.getsource(eff._tenants_overriding_caps)
+        self.assertIn("RETRIEVAL_CAPS", source,
+                      "the count names its settings separately from the table it qualifies")
+
+    def test_a_tenant_reading_does_not_carry_the_count(self) -> None:
+        """A tenant looking at its own caps already has its answer, and the number of OTHER
+        tenants that differ is not that key's business."""
+        self.assertEqual(-1, eff.effective_retrieval("acme")["tenants_overriding_caps"])
+
+    def test_a_count_that_cannot_be_taken_is_not_zero(self) -> None:
+        """Zero means "these speak for everyone", which is the reassuring answer. A failed read
+        must not borrow it -- the same mistake the profile gauge made when a caught ImportError
+        became a confident 0."""
+        import matrixark_tenant_policy  # noqa: F401
+        saved = sys.modules["matrixark_tenant_policy"]
+        sys.modules["matrixark_tenant_policy"] = None
+        try:
+            value = eff.effective_retrieval(None)["tenants_overriding_caps"]
+        finally:
+            sys.modules["matrixark_tenant_policy"] = saved
+        self.assertEqual(-1, value)
+
+    def test_the_endpoint_never_takes_the_tenant_from_the_request(self) -> None:
+        """The disclosure must not become a way to ASK for another tenant. The handler resolves
+        the tenant from _authorize and nothing else."""
+        import io as _io
+        with _io.open(os.path.join(TOOLS, "matrixark_v1_gateway.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        start = source.index('path == "/v1/admin/retrieval"')
+        body = source[start:start + 1600]
+        self.assertIn("_authorize(", body)
+        for taken in ('params.get("tenant', 'params.get("scope', 'payload.get("tenant'):
+            with self.subTest(source=taken):
+                self.assertNotIn(taken, body,
+                                 "the tenant is being taken from the request, so an admin key "
+                                 "could read another tenant's caps by naming it")
+
+
 class AWideTableDoesNotWreckThePageTest(unittest.TestCase):
     """Two rules, both found by measuring the rendered page rather than reading the markup.
 

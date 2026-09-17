@@ -174,6 +174,34 @@ def _cap(name: str, scope: Any, fallback: int, help_text: str) -> Dict[str, Any]
     }
 
 
+# The cap settings a tenant can override -- the same names RETRIEVAL_CAPS reports, taken from it
+# rather than restated, so the count below cannot come to answer a different question from the one
+# the table above it asks.
+def _tenants_overriding_caps() -> int:
+    """How many tenants have set one of the caps reported here. -1 when nobody can be asked.
+
+    Counted, never enumerated. This is served to an admin key, and which OTHER tenants exist and
+    what they have configured is not that key's business -- but whether the numbers on screen
+    speak for everyone is.
+
+    -1 rather than 0 for a failed read: 0 is a real answer here ("these caps are the whole story")
+    and a read that did not happen must not borrow it.
+    """
+    names = {name for name, _fallback, _help in RETRIEVAL_CAPS}
+    try:
+        from matrixark_tenant_policy import policy_overrides
+    except Exception:  # pragma: no cover - policy module absent
+        return -1
+    try:
+        differing = set()
+        for row in (policy_overrides() or {}).get("tenants") or []:
+            if names & set((row or {}).get("settings") or {}):
+                differing.add(str(row.get("tenant") or ""))
+        return len(differing)
+    except Exception:  # pragma: no cover - a malformed policy must not break the page
+        return -1
+
+
 def effective_retrieval(scope: Optional[Any] = None) -> Dict[str, Any]:
     """Everything a surface needs to say what this deployment does when it answers a question.
 
@@ -182,7 +210,16 @@ def effective_retrieval(scope: Optional[Any] = None) -> Dict[str, Any]:
     exactly where it would apply.
     """
     dense_only = onebox_embedding_first()
+    # Whose numbers these are. A key bound to a tenant reads that tenant's caps; a key bound to
+    # none reads the deployment defaults, and the two render identically -- so the answer has to
+    # be said rather than inferred from the values.
+    tenant = str(scope or "").strip()
     return {
+        "tenant": tenant or None,
+        "answered_for": "tenant" if tenant else "deployment",
+        # Only meaningful for the deployment-wide reading: it says whether the fallback on screen
+        # speaks for everyone. A tenant reading its own caps already has its answer.
+        "tenants_overriding_caps": -1 if tenant else _tenants_overriding_caps(),
         "profile": {
             "embedding_first": dense_only,
             "env": "MATRIXARK_ONEBOX_EMBEDDING_FIRST",

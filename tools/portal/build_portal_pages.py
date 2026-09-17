@@ -3769,6 +3769,33 @@ ONEBOX_JS = r"""<script>
       + "</tbody></table></div>";
   }
 
+  /* Whose numbers these are. The caps resolve per tenant, and a key bound to no tenant reads the
+     deployment defaults -- which is exactly what a tenant with no override gets, so the two tables
+     are identical on screen. An operator holding the second reads the first unless told.
+
+     The count is disclosure, not detail: which other tenants exist and what they have set is not
+     this key's business, but whether the numbers on screen speak for everyone is. */
+  function subjectLine(data) {
+    if (!data || data.known === false) { return ""; }
+    if (data.answered_for === "tenant") {
+      return '<p class="hint">Resolved for tenant <span class="mono">' + esc(data.tenant)
+        + "</span> &mdash; the tenant this key belongs to. Another tenant may be running "
+        + "different numbers.</p>";
+    }
+    var n = data.tenants_overriding_caps;
+    var differ = "";
+    if (n > 0) {
+      differ = " <strong>" + esc(n) + " tenant" + (n === 1 ? " has" : "s have")
+        + " overridden one of these</strong>, so these are not what those tenants get.";
+    } else if (n === 0) {
+      differ = " No tenant has overridden any of them, so these are what every tenant gets.";
+    } else {
+      differ = " Whether any tenant overrides them could not be checked.";
+    }
+    return '<p class="hint">This key is not bound to a tenant, so these are the '
+      + "<strong>deployment defaults</strong>." + differ + "</p>";
+  }
+
   function renderCaps(data) {
     var said = unreadable(data, "This deployment could not be asked what bounds a retrieve.");
     if (said) { return said; }
@@ -3863,7 +3890,7 @@ ONEBOX_JS = r"""<script>
       .then(function (d) {
         conn("live", "connected");
         $("profile").innerHTML = renderProfile(d);
-        $("caps").innerHTML = renderCaps(d);
+        $("caps").innerHTML = subjectLine(d) + renderCaps(d);
       })
       .catch(function (e) {
         var s = window.__matrixarkConnState(e);
