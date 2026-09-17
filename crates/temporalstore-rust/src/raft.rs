@@ -5843,6 +5843,47 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
     }
 }
 
+/// The engine status code an apply carries when its DURABLE WAL commit failed. Both the
+/// per-entry write and the coalesced raft-apply batch barrier report exactly this code.
+const WAL_COMMIT_FAILED_CODE: &str = "wal_commit_failed";
+
+/// Did this apply actually reach durable storage?
+///
+/// A command that fails DETERMINISTICALLY -- a wrong type, a rejected argument, a limit -- is a
+/// real applied outcome: every replica reaches the same answer from the same entry, and the apply
+/// floor must advance or one bad command wedges the whole group forever. A command whose durable
+/// WAL commit failed is not an outcome at all: the bytes are not on disk, so a crash loses them.
+/// `execute_raft_apply_batch_at` marks every response in a batch whose coalesced barrier failed
+/// so that raft apply "surfaces the durability failure instead of acking" -- this is the read of
+/// that mark. Advancing `max_applied_index` over such an entry would bar the raft-log replay that
+/// the non-fsync'd index-log tail is explicitly documented to rely on.
+fn apply_reached_durable_storage(response: &crate::types::ExecuteResponse) -> bool {
+    response.status.ok || response.status.code != WAL_COMMIT_FAILED_CODE
+}
+
+/// How many leading entries of `batch_indexes` are durably applied, and therefore may move the
+/// apply cursor and the exactly-once floor.
+///
+/// A PREFIX, not a filter: apply is ordered, so index N+1 cannot count as applied while N is not.
+/// The indexes past the prefix are pulled back out of `node.applied`, because the collection loop
+/// inserted them before the apply ran and `applied.insert` returning false is what would otherwise
+/// make a later pass skip them in silence -- leaving the cursor stuck below an entry nothing will
+/// ever re-batch.
+fn durable_apply_prefix(
+    node: &mut RaftNode,
+    batch_indexes: &[u64],
+    responses: &[crate::types::ExecuteResponse],
+) -> usize {
+    let prefix = responses
+        .iter()
+        .position(|response| !apply_reached_durable_storage(response))
+        .unwrap_or(responses.len());
+    for index in &batch_indexes[prefix.min(batch_indexes.len())..] {
+        node.applied.remove(index);
+    }
+    prefix
+}
+
 /// Apply newly committed entries, capturing the response of every index in `waiters` so each
 /// waiting proposer gets its own command's answer. The twin of [`apply_committed`] for the path
 /// where the applier is a sender thread and the interested parties are elsewhere; the exactly-
@@ -5885,7 +5926,8 @@ fn apply_committed_recording(
     }
     if !batch.is_empty() {
         let responses = node.engine.execute_raft_apply_batch_at(batch);
-        for (index, response) in batch_indexes.into_iter().zip(responses) {
+        let durable = durable_apply_prefix(node, &batch_indexes, &responses);
+        for (index, response) in batch_indexes.into_iter().zip(responses).take(durable) {
             node.applied_index = index;
             node.max_applied_index = node.max_applied_index.max(index);
             if waiters.contains(&index) {
@@ -5943,7 +5985,8 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
     }
     if !batch.is_empty() {
         let responses = node.engine.execute_raft_apply_batch_at(batch);
-        for (index, response) in batch_indexes.into_iter().zip(responses) {
+        let durable = durable_apply_prefix(node, &batch_indexes, &responses);
+        for (index, response) in batch_indexes.into_iter().zip(responses).take(durable) {
             node.applied_index = index;
             node.max_applied_index = node.max_applied_index.max(index);
             last_response = Some(response.response);
