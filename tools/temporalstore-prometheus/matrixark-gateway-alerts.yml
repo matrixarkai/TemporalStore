@@ -1,10 +1,21 @@
 # Alerts for the customer-facing MatrixArk gateway (`GET /v1/metrics`).
 #
-# The first two are the ones that do not exist anywhere else. Extraction and embedding both fall
-# back to a local deterministic path when they are unconfigured or unreachable; that path answers
-# 200 with rule-extracted memories and hash vectors, so a deployment in that state is
-# indistinguishable from a healthy one on latency, error rate, and every storage metric. Without
-# these rules the failure mode is silent for as long as nobody looks at retrieval quality.
+# Several of these exist because the state they describe is INVISIBLE on latency, error rate and
+# every storage metric -- the deployment answers 200 throughout. Named rather than counted, because
+# a sentence that says "the first two" stops being true the moment somebody inserts a group:
+#
+#   MatrixArkRetrievalNotSemantic, MatrixArkExtractionNotUsingAModel,
+#   MatrixArkSummariesNotUsingAModel
+#       Extraction and embedding both fall back to a local deterministic path when they are
+#       unconfigured or unreachable. That path answers 200 with rule-extracted memories and hash
+#       vectors, so the deployment is indistinguishable from a healthy one until somebody looks at
+#       retrieval quality.
+#
+#   MatrixArkRetrievesAreBeingShed, MatrixArkRetrievesComeBackEmpty
+#       Under load the gateway stops retrieving and answers every retrieve with an empty pack in
+#       ~100 ms. Latency cannot show this: p50 IMPROVES as the packs empty, so the deployment looks
+#       FASTER than one doing the work. The second is the same silence without the backpressure
+#       warning, which does not clear on its own.
 groups:
   - name: matrixark-gateway-stream
     rules:
