@@ -40,11 +40,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 try:
-    from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_metrics import MatrixArkServiceMetrics
-
-try:
     from tools.matrixark_mcp_session_policy import auto_batch_extract_enabled, session_boundary_commit_requested
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_session_policy import auto_batch_extract_enabled, session_boundary_commit_requested

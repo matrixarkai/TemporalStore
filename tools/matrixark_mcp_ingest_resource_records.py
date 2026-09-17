@@ -10,6 +10,8 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, clip_context_text, compact_embedding_vector, encode_stored_vector, embedding_model_name, stable_hash
 
+# Re-exported, not used here: matrixark_mcp_ingest_resource_chunk_records reaches it as
+# `resource_record_builders.skill_section_record`, which no import scan can see.
 try:
     from tools.matrixark_mcp_ingest_skill_records import (
         skill_section_record,

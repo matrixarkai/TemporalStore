@@ -4,7 +4,6 @@
 """Resource/skill chunk record append helpers for MatrixArk local ingest."""
 
 from __future__ import annotations
-import os
 
 from typing import Any
 
