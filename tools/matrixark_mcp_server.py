@@ -27,8 +27,6 @@ import time
 
 try:
     from tools.matrixark_mcp_core import (
-        MATRIXARK_ALLOW_LOCAL_BACKEND,
-        MATRIXARK_MCP_PROFILE,
         MATRIXARK_REQUIRE_BACKEND_READY,
         MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
         SUMMARY_REFRESH_INTERVAL_MS,
@@ -43,7 +41,6 @@ try:
         compact_context_pack_refs,
         canonical_entity_name,
         compact_dropped_refs_for_context_pack,
-        compact_context_pack_for_serving_flat as compact_context_pack_for_serving,
         candidate_access_scope,
         context_index_posting_record,
         embedding_model_ref_for_name,
@@ -71,7 +68,6 @@ try:
         production_profile_enabled,
     )
     from tools.matrixark_mcp_dispatch import dispatch_matrixark_tool
-    from tools.matrixark_mcp_requests import normalize_mcp_tool_request
     from tools.matrixark_mcp_server_request_policy import (
         MatrixArkBackpressureError,
         MatrixArkServerRequestPolicyMixin,
@@ -81,8 +77,6 @@ try:
     from tools.matrixark_mcp_summary_runtime import next_summary_refresh_delay_s
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
-        MATRIXARK_ALLOW_LOCAL_BACKEND,
-        MATRIXARK_MCP_PROFILE,
         MATRIXARK_REQUIRE_BACKEND_READY,
         MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
         SUMMARY_REFRESH_INTERVAL_MS,
@@ -97,7 +91,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         compact_context_pack_refs,
         canonical_entity_name,
         compact_dropped_refs_for_context_pack,
-        compact_context_pack_for_serving_flat as compact_context_pack_for_serving,
         candidate_access_scope,
         context_index_posting_record,
         embedding_model_ref_for_name,
@@ -120,7 +113,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         production_profile_enabled,
     )
     from matrixark_mcp_dispatch import dispatch_matrixark_tool
-    from matrixark_mcp_requests import normalize_mcp_tool_request
     from matrixark_mcp_server_request_policy import (
         MatrixArkBackpressureError,
         MatrixArkServerRequestPolicyMixin,
@@ -189,7 +181,6 @@ try:
     )
     from tools.matrixark_mcp_temporal_adapters import (
         MatrixArkRustCliClient,
-        MatrixArkRustProxyClient,
         MatrixArkTemporalStoreDirectAdapter,
         MatrixArkTemporalStoreRustDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
@@ -203,7 +194,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
     from matrixark_mcp_temporal_adapters import (
         MatrixArkRustCliClient,
-        MatrixArkRustProxyClient,
         MatrixArkTemporalStoreDirectAdapter,
         MatrixArkTemporalStoreRustDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,

@@ -12,16 +12,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 try:
     from tools.matrixark_mcp_ingest_skill_records import (
-        skill_manifest_record,
-        skill_parse_debug_record,
-        skill_registry_record,
         skill_section_record,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_ingest_skill_records import (
-        skill_manifest_record,
-        skill_parse_debug_record,
-        skill_registry_record,
         skill_section_record,
     )
 

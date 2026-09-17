@@ -12,7 +12,6 @@ except ImportError:  # Direct script execution from tools/.
 
 
 import json
-import os
 from typing import Any
 
 try:

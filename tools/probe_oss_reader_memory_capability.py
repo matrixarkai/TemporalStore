@@ -16,7 +16,6 @@ import json
 import re
 import time
 import urllib.request
-from pathlib import Path
 from typing import Any
 
 # probe_reader lives in run_live_oss_reader_validation, which defines it and guards its own entry

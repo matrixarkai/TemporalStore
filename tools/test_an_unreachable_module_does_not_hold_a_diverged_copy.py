@@ -95,7 +95,13 @@ from collections import defaultdict
 #: star-import delivers core_resource_io's, checked by asking the bound function's __globals__
 #: rather than by reading imports -- so this was latent, not a live leak. Adopting the re-export
 #: makes the two the same object, and _s3_client beside it went the same way while still verbatim.
-RECORDED_DIVERGED = 34
+#: 34 -> 35 and 40 -> 43 when `matrixark_mcp_text` joined the unreachable list. NOT a new copy:
+#: that module was only ever reached through `from matrixark_mcp_text import token_count` in
+#: matrixark_mcp_recall_scoring, where the name is never called, so removing the dead import
+#: revealed a module production had never reached. Its definitions then start counting as shadows
+#: of the live ones -- `token_count` is the single name that lands in `diverged`, the other three
+#: are verbatim. Nothing was copied and nothing diverged; the census grew by one module.
+RECORDED_DIVERGED = 35
 
 #: Total shadowed names (diverged + verbatim), recorded for the same reason.
 #:
@@ -106,7 +112,7 @@ RECORDED_DIVERGED = 34
 #: 42 on the tree this was last measured on against a ceiling of 45, and 40 now: the two helpers
 #: above account for the fall, and the three that were already slack are banked with them. A
 #: ceiling three above the truth passes a change that adds three.
-RECORDED_SHADOWED = 40
+RECORDED_SHADOWED = 43
 
 _CACHE: dict[str, object] = {}
 

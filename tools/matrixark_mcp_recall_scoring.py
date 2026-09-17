@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 try:
@@ -21,7 +20,6 @@ try:
         DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_TIME_WEIGHT,
     )
-    from tools.matrixark_mcp_text import token_count
     from tools.matrixark_mcp_validation import integer_arg, optional_object
     from tools.matrixark_mcp_scoring import (
         business_score_for_candidate,
@@ -42,7 +40,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_TIME_WEIGHT,
     )
-    from matrixark_mcp_text import token_count
     from matrixark_mcp_validation import integer_arg, optional_object
     from matrixark_mcp_scoring import (
         business_score_for_candidate,

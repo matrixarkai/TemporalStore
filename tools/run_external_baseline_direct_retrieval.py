@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import time
-import urllib.request
 from pathlib import Path
 from typing import Any
 

@@ -174,6 +174,14 @@ UNREACHABLE = {
         "matrixark_mcp_retrieve_index_terms",
         "matrixark_mcp_retrieve_metrics",
         "matrixark_mcp_session_runtime",
+        # Added when an unused import was removed, NOT because anything was un-wired. This scan
+        # counted it live on the strength of `from matrixark_mcp_text import token_count` in
+        # matrixark_mcp_recall_scoring, where `token_count` is never called. That was its only
+        # edge from a reachable module -- its four other importers (budget_pack,
+        # extraction_runtime, extraction_normalization, oss_understanding) are all on this list
+        # or unreachable themselves. So production never reached it; an import nobody used was
+        # standing in for a caller. Removing the import did not strand the module, it revealed it.
+        "matrixark_mcp_text",
         "oss_model_contract",
     ),
 }
