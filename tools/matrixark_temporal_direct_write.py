@@ -654,8 +654,13 @@ class _TemporalDirectWriteMixin:
             try:
                 fn()
                 return
-            except Exception:
+            except Exception as exc:
                 if attempt >= self._write_retries:
+                    # Which write gave up. Every caller names its operation and the loop used
+                    # to drop the name, so an exhausted retry reached the caller saying only
+                    # that a write failed. `raise` stays bare: what propagates is unchanged.
+                    _mcp_debug_log(
+                        f"matrixark direct write {op} failed after {attempt} retries: {exc}")
                     raise
                 sleep_s = self._write_backoff_s * (2**attempt)
                 if sleep_s > 0:

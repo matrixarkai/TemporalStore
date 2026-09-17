@@ -6936,7 +6936,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 return canonical
         return ""
 
-    def _apply_identity_upsert(self, result: Json, *, identity_key: str, envelope: Json) -> Json:
+    def _apply_identity_upsert(self, result: Json, *, identity_key: str) -> Json:
         """Keyed-upsert truth-rank guard for a just-ingested event.
 
         Finds OTHER live ``context_event``s that share ``identity_key`` within the SAME subject scope

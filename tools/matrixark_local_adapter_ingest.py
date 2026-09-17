@@ -269,7 +269,7 @@ class _LocalAdapterIngestMixin:
             self._pop_ingest_stamp()
         if isinstance(result, dict):
             if identity_key:
-                result = self._apply_identity_upsert(result, identity_key=identity_key, envelope=envelope)
+                result = self._apply_identity_upsert(result, identity_key=identity_key)
             if envelope.get("retention_cutoff_ms") is not None:
                 self._write_retention_cutoff(result, envelope)
             if envelope.get("ephemeral"):
