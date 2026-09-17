@@ -344,7 +344,7 @@ SETTINGS: List[Setting] = [
     # and MATRIXARK_SUMMARY_MODEL is no longer read; `_model_config_snapshot` says so if a launcher
     # has one set, because a variable that silently stopped mattering is worse than one that never
     # existed.
-    # summary.max_tokens was here, retired in matrixarkai#1823. The completion cap per summary call is
+    # summary.max_tokens was here, retired in matrixarkai#1829. The completion cap per summary call is
     # 900 in matrixark_mcp_core and in matrixark_mcp_summaries, which is what it was being set
     # to; the two copies are asserted equal by test_matrixark_one_answer_for_the_summary_model.
 
@@ -489,7 +489,7 @@ SETTINGS: List[Setting] = [
             "Transport I/O timeout (ms)", "int", "60000", "live",
             "The I/O timeout underneath the request timeout above. Same story, same fix."),
     # ---- offered by the config file since it existed; the portal caught up ----------------------
-    # limits.backend_readiness_timeout_ms was here, retired in matrixarkai#1823. The reason it gave for
+    # limits.backend_readiness_timeout_ms was here, retired in matrixarkai#1829. The reason it gave for
     # being adjustable stands and is now recorded beside the constant in
     # matrixark_mcp_runtime_config instead: a cold store with a large log takes tens of seconds
     # to load, so 30000 is chosen to sit above that rather than to be tuned down.
@@ -552,7 +552,7 @@ SETTINGS: List[Setting] = [
             "the installation manual sets to 10000, and matrixark_codex_dual_hook.sh "
             "passes its own 10000 without consulting this at all. Changing this does not "
             "change what a hook sends."),
-    # retrieval.gateway_default_max_context_tokens was here, retired in matrixarkai#1823. It existed to
+    # retrieval.gateway_default_max_context_tokens was here, retired in matrixarkai#1829. It existed to
     # let the gateway run a narrower budget than the backend default above; it never did, and
     # matrixark_http now simply follows that default.
     Setting("retrieval.context_source_mode", "retrieval", "MATRIXARK_CONTEXT_SOURCE_MODE",
@@ -567,12 +567,12 @@ SETTINGS: List[Setting] = [
             "more relevant context; lowering it fills the budget with weaker matches. Declared 0.20 "
             "until the readers were lowered to 0.05 and this was not; the panel showed a floor four "
             "times the one being applied."),
-    # retrieval.near_duplicate_overlap_threshold was here, retired in matrixarkai#1823. The threshold is
+    # retrieval.near_duplicate_overlap_threshold was here, retired in matrixarkai#1829. The threshold is
     # still a parameter of both packers and still decides what they select -- what goes is the
     # deployment's ability to change it. test_the_near_duplicate_setting_reaches_both_packers
     # keeps the whole mechanism under test against the build constant instead of against this
     # row, including the mx#959 shape it was written for.
-    # The two cross-session shares were here, retired together in matrixarkai#1823 -- 0.12 for an ordinary
+    # The two cross-session shares were here, retired together in matrixarkai#1829 -- 0.12 for an ordinary
     # query and 0.30 when the query is about the durable profile. They come off as a pair because
     # the second was only ever described as "the share used instead of the one above", so one
     # without the other would have left a field pointing at nothing. Both are build constants in
@@ -593,7 +593,7 @@ SETTINGS: List[Setting] = [
             "Every path the ingestion page accepts is resolved inside this directory. With it "
             "unset, submitting server-side paths is refused outright rather than defaulting to the "
             "whole filesystem — so bulk import does not work until you set it."),
-    # ingestion.resource_async_default_bytes was here, retired in matrixarkai#1823. 2 MiB decides whether a
+    # ingestion.resource_async_default_bytes was here, retired in matrixarkai#1829. 2 MiB decides whether a
     # resource is parsed in the background or inline; both arms stay live and the reason is
     # recorded beside the constant in matrixark_mcp_runtime_config.
     # ---- storage engine -------------------------------------------------------------------
@@ -748,7 +748,7 @@ SETTINGS: List[Setting] = [
     # and it flattened because rotation had begun. An operator sizing a box needs to see that
     # window, and the count below is what sets it.
     #
-    # ingestion.local_log_max_bytes was the other half and is retired in matrixarkai#1823. The shard size is
+    # ingestion.local_log_max_bytes was the other half and is retired in matrixarkai#1829. The shard size is
     # fixed at 64 MB in matrixark_mcp_local_adapter, so the window is now the count times a known
     # number rather than two numbers multiplied. The measurement above is unchanged and so is the
     # retention policy below, which is the half that decides whether records are DISCARDED.
@@ -969,7 +969,7 @@ def _knob_settings() -> List[Setting]:
 # and the shipped config pinned 500000 on the matching key. The file and the build already agreed
 # and the portal was the only one of the three saying otherwise, and the sweep could not see it
 # until it learned to FOLLOW A NAME THROUGH AN IMPORT FALLBACK. That setting is retired in
-# matrixarkai#1823 and the two entries below still exercise that path, so the capability the episode
+# matrixarkai#1829 and the two entries below still exercise that path, so the capability the episode
 # bought is still under test; the episode is recorded here because nothing else records it.
 _EXPLICIT_BUILD_DEFAULT = {
     "skills.shared_resource_budget_ratio": "DEFAULT_SHARED_RESOURCE_BUDGET_RATIO",

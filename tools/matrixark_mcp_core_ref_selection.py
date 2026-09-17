@@ -64,7 +64,7 @@ __all__ = ['dropped_candidate_audit_ref', 'record_dropped_candidate', 'diversify
 # moved to matrixark_mcp_scoring so matrixark_mcp_budget_pack can use them too: no production
 # path reaches that packer, and it had no near-duplicate suppression at all while the threshold
 # that governs it was 0.85 -- on. That threshold was MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
-# offered on the operator page until matrixarkai#1823 retired both; it is
+# offered on the operator page until matrixarkai#1829 retired both; it is
 # DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD in matrixark_mcp_runtime_config now, still 0.85 and
 # still on. This module could not be the shared home because it imports matrixark_mcp_core.
 try:

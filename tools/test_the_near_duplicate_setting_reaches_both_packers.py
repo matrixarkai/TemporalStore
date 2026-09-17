@@ -7,7 +7,7 @@
 twice for one fact.", and defaulted it to 0.85 -- on. `matrixark_load_config` mapped it to
 `MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD` and applied it to the environment.
 
-BOTH ARE RETIRED IN matrixarkai#1823 and this file did NOT go with them, although one assertion in it
+BOTH ARE RETIRED IN matrixarkai#1829 and this file did NOT go with them, although one assertion in it
 used to say it should. What that assertion protected is the mx#959 shape -- a surface advertising a
 knob nothing reads -- and the surface is what went. The threshold is still a parameter of both
 packers, still defaults to the build constant, and still decides what a pack contains, so every rule
@@ -113,7 +113,7 @@ class TheNearDuplicateSettingReachesBothPackersTest(unittest.TestCase):
 
     def test_the_setting_is_not_advertised_any_more(self) -> None:
         """The mx#959 shape from the other side. It read "a page and the code must not disagree";
-        the page has no such row since matrixarkai#1823, so what must hold is that NOTHING offers it --
+        the page has no such row since matrixarkai#1829, so what must hold is that NOTHING offers it --
         a row left behind in either registry would advertise a control that cannot be reached."""
         config = _import("matrixark_gateway_config")
         self.assertNotIn(

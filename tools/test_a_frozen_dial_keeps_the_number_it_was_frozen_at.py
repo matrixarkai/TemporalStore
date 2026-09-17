@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """A dial that stopped being deployment-configurable keeps the number it was frozen at.
 
-matrixarkai#1823 retired eight settings a deployment could set. Each was behaviour-neutral on the
+matrixarkai#1829 retired eight settings a deployment could set. Each was behaviour-neutral on the
 day: the value the shipped config carried already equalled the module constant, so freezing the
 constant changed nothing that was running.
 
@@ -22,7 +22,7 @@ all eight, because a reader asking "what pins this number" should find one answe
 
 THE LIST IS CLOSED AND THE FILE SAYS SO. A guard that lists names can feed on its own list: drop an
 entry and the rule still passes, smaller. Two things stop that here. The list is EXACTLY the eight
-that matrixarkai#1823 retired and gains an entry only when another retirement adds one, which is
+that matrixarkai#1829 retired and gains an entry only when another retirement adds one, which is
 what `test_the_list_is_the_size_it_says_it_is` holds it to. And the second rule is DERIVED rather
 than listed: none of the eight variables may be read by production Python again, which is what
 "retired" means and is read out of the tree rather than remembered.
@@ -68,7 +68,7 @@ FROZEN = {
 #: The second copy of the summary cap.
 SUMMARY_SECOND_COPY = ("matrixark_mcp_summaries", "SUMMARY_LLM_MAX_TOKENS", 900)
 
-#: How many matrixarkai#1823 retired. Moves when another retirement adds an entry, not otherwise.
+#: How many matrixarkai#1829 retired. Moves when another retirement adds an entry, not otherwise.
 RETIRED_IN_1823 = 8
 
 
@@ -148,11 +148,11 @@ class AFrozenDialKeepsItsNumberTest(unittest.TestCase):
 
     def test_the_list_is_the_size_it_says_it_is(self) -> None:
         """The floor for a file that lists names. Not a population count: this list is CLOSED at
-        the eight matrixarkai#1823 retired, so it may only grow, and shrinking is the failure --
+        the eight matrixarkai#1829 retired, so it may only grow, and shrinking is the failure --
         an entry dropped here takes its number's only statement with it."""
         self.assertGreaterEqual(
             len(FROZEN), RETIRED_IN_1823,
-            "%d dials are pinned here and matrixarkai#1823 retired %d. An entry has been dropped, "
+            "%d dials are pinned here and matrixarkai#1829 retired %d. An entry has been dropped, "
             "which leaves that number stated nowhere" % (len(FROZEN), RETIRED_IN_1823))
 
     def test_the_scan_it_derives_from_reads_the_tree(self) -> None:

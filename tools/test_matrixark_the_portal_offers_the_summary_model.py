@@ -39,7 +39,7 @@ import matrixark_gateway_config as cfg  # noqa: E402
 # key, so a separate model was a second name for the same call -- and the pair could be set to models
 # one endpoint does not both serve, with no screen showing both. The summary uses the extraction
 # model; what is left are choices ABOUT the summary rather than a second model.
-# summary.max_tokens followed it in matrixarkai#1823. The completion cap is 900 in
+# summary.max_tokens followed it in matrixarkai#1829. The completion cap is 900 in
 # matrixark_mcp_core and in matrixark_mcp_summaries, which is what the retired row declared, and
 # test_matrixark_one_answer_for_the_summary_model asserts the two copies agree. What a deployment
 # still chooses about a summary is the PROVIDER.
@@ -113,7 +113,7 @@ class AddingThemChangesNothingTest(unittest.TestCase):
         self.assertEqual("", cfg.SETTINGS_BY_KEY["summary.provider"].default)
 
     def test_the_budget_is_the_one_the_code_uses(self) -> None:
-        """No row declares it since matrixarkai#1823, so what must hold is that a gateway STARTED the
+        """No row declares it since matrixarkai#1829, so what must hold is that a gateway STARTED the
         way a gateway starts resolves the number the constant says -- the half of the old
         assertion that was about the build rather than about the page."""
         self.assertEqual(900, started_with()["max_tokens"])
@@ -162,7 +162,7 @@ class TheHelpTextIsTrueTest(unittest.TestCase):
                            MATRIXARK_SUMMARY_MODEL="deepseek-chat-lite",
                            MATRIXARK_SUMMARY_MAX_TOKENS="400")
         self.assertEqual("deepseek-chat", got["model"])
-        # 900, not 400: MATRIXARK_SUMMARY_MAX_TOKENS is retired in matrixarkai#1823 and setting it does
+        # 900, not 400: MATRIXARK_SUMMARY_MAX_TOKENS is retired in matrixarkai#1829 and setting it does
         # nothing. Asserted with the variable SET rather than by deleting the line, because a
         # deployment that still carries it has to get the build number and not a stale one.
         self.assertEqual(900, got["max_tokens"])
@@ -184,7 +184,7 @@ class TheHelpTextIsTrueTest(unittest.TestCase):
         provider_help = cfg.SETTINGS_BY_KEY["summary.provider"].help
         self.assertIn("Blank follows the extraction provider", provider_help)
         self.assertIn("anthropic", provider_help)
-        # There is no summary model control to describe, and since matrixarkai#1823 no token cap
+        # There is no summary model control to describe, and since matrixarkai#1829 no token cap
         # either. The provider help is the whole of what this page claims about summaries.
         self.assertNotIn("summary.max_tokens", cfg.SETTINGS_BY_KEY)
 

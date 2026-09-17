@@ -159,7 +159,7 @@ class RuntimeConfigAgreesWithCore(unittest.TestCase):
         # 50 and failed here. A vacuity floor pinned to a measurement tracks the tree instead of
         # the property: an extractor that stopped matching returns approximately nothing.
         #
-        # IT HAPPENED AGAIN AT 20, which is why these are 8 now. MEASURED before matrixarkai#1823:
+        # IT HAPPENED AGAIN AT 20, which is why these are 8 now. MEASURED before matrixarkai#1829:
         # core 45, runtime 24, shared 21. Measured after it: core 41, runtime 21, shared 18. The
         # shared floor of 20 had a margin of ONE and the runtime floor has one now, so the same
         # move that was written about above failed here a second time, on a retirement that alters
@@ -187,7 +187,7 @@ class RuntimeConfigAgreesWithCore(unittest.TestCase):
         # "shared with a value". Eleven went at once and took this to exactly 20. Moved down
         # rather than tracking the count, for the reason given above.
         #
-        # MEASURED 14, and 16 before matrixarkai#1823. Floor 6, down from 12: the count only ever
+        # MEASURED 14, and 16 before matrixarkai#1829. Floor 6, down from 12: the count only ever
         # falls, so a floor two below it is next tier's failure and not this property's.
         with_a_value = [n for n in shared if self.core[n][1] != ""]
         self.assertGreater(
@@ -195,7 +195,7 @@ class RuntimeConfigAgreesWithCore(unittest.TestCase):
             "only %d of %d shared constants resolve to a real fallback literal. The rest compare "
             "\"\" against \"\", which is an agreement assertion that cannot fail -- see "
             "_or_fallback." % (len(with_a_value), len(shared)))
-        # MEASURED 18, and 21 before matrixarkai#1823. Floor 8, down from 20, which had a margin of
+        # MEASURED 18, and 21 before matrixarkai#1829. Floor 8, down from 20, which had a margin of
         # ONE and failed on that retirement. If the fold were undone the constants would be
         # DUPLICATED rather than imported and this would read close to zero, which is the case
         # worth separating -- not "three fewer than last tier".

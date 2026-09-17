@@ -175,7 +175,7 @@ class TheShareCanBeRaisedTest(Case):
 
     def test_the_cross_session_shares_are_the_build_numbers_now(self) -> None:
         """Was two tests asserting the cross-session and profile shares could be RAISED by setting
-        their variables. Both variables are retired in matrixarkai#1823 and that decision is reversed
+        their variables. Both variables are retired in matrixarkai#1829 and that decision is reversed
         for these two lanes only: the skill and resource shares above still move, and they are the
         ones the episode in this file's docstring is about.
 
@@ -351,7 +351,7 @@ class TheLiveClaimIsEarnedTest(unittest.TestCase):
     """`live` is a promise the portal makes on save; here it is derived from where the read is."""
 
     def test_the_portal_says_live_for_every_share_and_guard(self) -> None:
-        # The two cross-session SHARES came off the page in matrixarkai#1823, after the two
+        # The two cross-session SHARES came off the page in matrixarkai#1829, after the two
         # cross-session guards had already gone, so what is left to make this claim about is the
         # skill and resource pair. SHARES itself is unchanged: every constant it names still
         # exists and the three-limit arrangement above is still checked for all four lanes.
@@ -420,7 +420,7 @@ class ThePortalDeclaresTheNumberTheBuildRunsTest(unittest.TestCase):
         nothing. Every share and guard this change offers has to be in it.
 
         MEASURED 3, floor 2. It was 8 against a population of exactly 8 -- no margin at all --
-        then 5 against a floor of 3, and matrixarkai#1823 retired the two cross-session shares it
+        then 5 against a floor of 3, and matrixarkai#1829 retired the two cross-session shares it
         counted, which would have left it sitting on its own population again. The floor is set
         from what the FAILURE looks like rather than from the population minus a cushion: a
         derivation that has stopped matching reports zero or one, not three. Two separates those

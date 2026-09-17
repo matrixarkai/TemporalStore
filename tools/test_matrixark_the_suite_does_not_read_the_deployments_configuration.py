@@ -88,7 +88,7 @@ class ThePortalIsolationIsDerivedFromTheRegistry(unittest.TestCase):
         # list would be as good as a derived one and none of this would matter.
         prefixes = {name.split("_", 1)[0] for name in self._declared()}
         self.assertGreater(len(prefixes), 1, sorted(prefixes))
-        # MEASURED 93, and 101 before matrixarkai#1823 took eight settings off the page. The floor
+        # MEASURED 93, and 101 before matrixarkai#1829 took eight settings off the page. The floor
         # stood at `> 100` with a margin of ONE against a registry every retirement shrinks, so it
         # failed on a change that removes nothing it was written to catch -- the third floor in
         # this campaign pinned to the portal population rather than to its own failure. A registry

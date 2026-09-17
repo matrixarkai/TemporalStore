@@ -285,7 +285,7 @@ DELEGATED_DEFAULTS = (
     "skills.shared_skill_budget_ratio",
     "skills.shared_skill_max_budget_ratio",
     "skills.shared_resource_budget_ratio",
-    # The two cross-session shares stood here until matrixarkai#1823. They were the reason
+    # The two cross-session shares stood here until matrixarkai#1829. They were the reason
     # `live_float` had to be admitted as a resolver at all; the skill and resource shares still
     # read through it, so the admission stays under test with three entries rather than five.
 )
@@ -341,7 +341,7 @@ class TheParseFoundSomethingTest(unittest.TestCase):
         literals, follows = read_shapes()
         # Named examples, one per shape the parser has to keep seeing: a delegated `live_float`
         # default and an ordinary `os.environ.get` one. It named
-        # MATRIXARK_CROSS_SESSION_BUDGET_RATIO for the first until matrixarkai#1823 retired it;
+        # MATRIXARK_CROSS_SESSION_BUDGET_RATIO for the first until matrixarkai#1829 retired it;
         # MATRIXARK_SHARED_SKILL_BUDGET_RATIO is the same shape and is not going anywhere, because
         # its guard carries the episode that made this whole file.
         self.assertIn("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", literals)
@@ -381,7 +381,7 @@ class EverySettingDeclaresWhatTheBuildRunsTest(unittest.TestCase):
         Without this it would go quiet the moment the parse stopped matching the code's shape, and
         read exactly the same as a clean result."""
         _wrong, compared, _exempt = classify()
-        # MEASURED 42, and 48 before matrixarkai#1823. Floor 30.
+        # MEASURED 42, and 48 before matrixarkai#1829. Floor 30.
         self.assertGreaterEqual(len(compared), 30,
                                 "the sweep is comparing %d settings" % len(compared))
 

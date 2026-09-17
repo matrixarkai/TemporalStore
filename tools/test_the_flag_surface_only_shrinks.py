@@ -110,7 +110,7 @@ _IDENTITY = re.compile(
 #: 46 is offered on the operator page.
 #: 457 since the eight controls the page offered and nothing read lost their variable. The whole
 #: of `KNOBS_READ_BY_NOTHING` went with them, so the count and the register moved together.
-#: 432 since eight more came off the page in matrixarkai#1823. Every one of those eight is still a
+#: 432 since eight more came off the page in matrixarkai#1829. Every one of those eight is still a
 #: constant under the same name in the same module -- what went is the `os.environ.get` around it,
 #: which is why this fell by exactly eight and no reader changed what it computes.
 MAXIMUM_FLAGS_READ = 432
@@ -363,7 +363,7 @@ def _is_tooling(module):
 #: WHY A SEPARATE CEILING FROM MAXIMUM_FLAGS_READ. That one bounds what production Python reads,
 #: which moves when a benchmark gains a knob. This one bounds what an operator is offered. They
 #: move independently and a single ceiling would hide one behind the other.
-#: 99 since matrixarkai#1823, which is the first time this number has been under a hundred. It is NOT
+#: 99 since matrixarkai#1829, which is the first time this number has been under a hundred. It is NOT
 #: the number the under-a-hundred target is asserted of -- that is the gating count below, and the
 #: paragraph above says why. Eight controls came off the operator page: an event-log shard size, an
 #: async-parse threshold, a near-duplicate threshold, a backend-readiness timeout, a summary token
@@ -393,7 +393,7 @@ MAXIMUM_CONFIGURABLE = 99
 #: mode, the retrieval audit sample rate and the resource share guard are each the subject of an
 #: `if`. Measured on both sides -- the two retirements before this one moved this number by ZERO,
 #: and a ceiling banked without looking would have recorded a fall it had not earned.
-#: 45 since matrixarkai#1823, and the ONE is the point. Eight settings were retired and this moved by
+#: 45 since matrixarkai#1829, and the ONE is the point. Eight settings were retired and this moved by
 #: one, because seven of the eight supply a NUMBER -- a size, a timeout, a token cap, three ratios
 #: and a threshold -- and are not the subject of an `if`. The eighth,
 #: MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES, is compared to decide whether a resource is parsed in
@@ -1871,7 +1871,7 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         # then falls silently -- which is the one way this report can be wrong in the direction
         # that looks like progress. Asserting the SET is non-empty does not catch it: the loader
         # and the config files alone still leave 60-odd flags.
-        # 60 against a measured 106, and 112 before matrixarkai#1823 took six ENV_MAP entries with the
+        # 60 against a measured 106, and 112 before matrixarkai#1829 took six ENV_MAP entries with the
         # settings they mapped. The floor is not population-minus-a-cushion: a dict that has been
         # renamed or built at runtime parses as ZERO entries, not as a hundred and five, so 60 is
         # set from what the FAILURE looks like and has room for this to keep falling.
@@ -1882,7 +1882,7 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             "has been renamed or built at runtime and the configurable surface is being "
             "under-reported -- the same failure as the portal parse below, one file along."
             % len(mapped))
-        # 50 against a measured 93, and 101 before matrixarkai#1823 took eight rows off the page. Same
+        # 50 against a measured 93, and 101 before matrixarkai#1829 took eight rows off the page. Same
         # shape as the floor above: a `Setting` call that has been renamed or wrapped parses as
         # ZERO, so the floor is set from the failure and not from today's population.
         offers = _portal_offers()
@@ -2081,8 +2081,8 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         # retiring eight settings that each had a comparable Python fallback took the population
         # under it. The number is set from what the FAILURE looks like: a scan that has stopped
         # recognising either shape reports near zero, not twenty-six. It was 47 when written, 32
-        # before matrixarkai#1817 and 29 before matrixarkai#1823, so it tracks the page down rather than
-        # pinning it. Three of the eight retired in matrixarkai#1823 were comparable, which is why this
+        # before matrixarkai#1817 and 29 before matrixarkai#1829, so it tracks the page down rather than
+        # pinning it. Three of the eight retired in matrixarkai#1829 were comparable, which is why this
         # fell by three and not by eight.
         self.assertGreater(
             len(comparable), 12,

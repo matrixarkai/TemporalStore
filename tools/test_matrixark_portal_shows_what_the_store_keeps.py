@@ -8,7 +8,7 @@ and then flattened, and it flattened because rotation had begun.
 
 None of it was offered on the portal, so none of it could be seen or tuned.
 
-THE SHARD SIZE CAME OFF AGAIN in matrixarkai#1823. This file recorded the decision to offer both halves
+THE SHARD SIZE CAME OFF AGAIN in matrixarkai#1829. This file recorded the decision to offer both halves
 of the window and that half is reversed: `ingestion.local_log_max_bytes` is retired and the shard
 size is fixed at 64 MB in the adapter. The measurement above is the reason the window has to be
 VISIBLE and it is unchanged; what an operator sets now is the count, which is the half that decides
@@ -25,7 +25,7 @@ import matrixark_mcp_local_adapter as adapter_module
 
 
 OFFERED = {
-    # ingestion.local_log_max_bytes was here until matrixarkai#1823; see the note above.
+    # ingestion.local_log_max_bytes was here until matrixarkai#1829; see the note above.
     "ingestion.local_log_retention_count": "MATRIXARK_LOCAL_JSONL_RETENTION_COUNT",
     "ingestion.durable_read_cache": "MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED",
     "ingestion.share_repeated_values": "MATRIXARK_SHARE_REPEATED_VALUES",

@@ -79,7 +79,7 @@ LEAF_DIFFERS = {
 #: -- the first attempt recorded 23 on the assumption that `retrieval.context_source_mode` was the
 #: only one, and it was not in the group at all. A recorded count, so it moves with the population
 #: -- 26 before matrixarkai#1786, 25 after, 24 after matrixarkai#1813.
-#: 21 since matrixarkai#1823. Exactly one of the eight it retired was in this group:
+#: 21 since matrixarkai#1829. Exactly one of the eight it retired was in this group:
 #: MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES, which the file called
 #: `limits.resource_async_default_bytes` and the page called
 #: `ingestion.resource_async_default_bytes`. The other seven were named the same way on both sides
@@ -130,7 +130,7 @@ class OneFlagHasOneConfigKey(unittest.TestCase):
 
     def test_both_registries_are_there_to_compare(self) -> None:
         """A floor. An empty ENV_MAP would make every assertion below pass over nothing."""
-        # BOTH floors stood at 100 against populations of 112 and 101, and matrixarkai#1823 took them
+        # BOTH floors stood at 100 against populations of 112 and 101, and matrixarkai#1829 took them
         # to 106 and 93 -- so the portal one FAILED on a change that removed nothing it was
         # written to catch, and the other had six left. A registry that has been renamed or built
         # at runtime parses as ZERO, so both are set from that and not from the population.

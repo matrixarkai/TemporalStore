@@ -766,7 +766,7 @@ def bool_env(name: str, default: bool = False) -> bool:
 PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = positive_int_env("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2)
 LOCAL_JSONL_ENABLED = bool_env("MATRIXARK_LOCAL_JSONL_ENABLED", True)
 LOCAL_JSONL_INCLUDE_BULKY_FIELDS = bool_env("MATRIXARK_LOCAL_JSONL_INCLUDE_BULKY_FIELDS", False)
-#: Was MATRIXARK_LOCAL_JSONL_MAX_BYTES, retired in matrixarkai#1823. 64 MB is the shard size the
+#: Was MATRIXARK_LOCAL_JSONL_MAX_BYTES, retired in matrixarkai#1829. 64 MB is the shard size the
 #: rotation, sealing and block-log paths were measured and tuned at; the retained WINDOW is
 #: still a deployment setting through MATRIXARK_LOCAL_JSONL_RETENTION_COUNT, which is the
 #: half that decides whether records are discarded.

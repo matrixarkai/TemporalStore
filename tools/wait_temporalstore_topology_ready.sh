@@ -7,7 +7,7 @@ METASERVER="${MATRIXARK_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}"
 NAMESPACE="${MATRIXARK_TEMPORALSTORE_NAMESPACE:-deploy_ns}"
 TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}"
 PREFIX="${MATRIXARK_TEMPORALSTORE_PREFIX:-matrixark:topology-ready}"
-# Was MATRIXARK_BACKEND_READINESS_TIMEOUT_MS, retired in matrixarkai#1823. --timeout-ms is still
+# Was MATRIXARK_BACKEND_READINESS_TIMEOUT_MS, retired in matrixarkai#1829. --timeout-ms is still
 # accepted and is how a caller changes the wait; the environment route is what went.
 TIMEOUT_MS="30000"
 REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS:-60000}"

@@ -164,7 +164,7 @@ class TheSummaryHasNoModelOfItsOwnTest(Case):
 
     def test_what_is_left_of_the_summary_group_is_not_a_model(self) -> None:
         """provider stays: a choice about the summary, not a second model. max_tokens was the other
-        survivor until matrixarkai#1823 retired it -- the cap is a build constant now, which does not
+        survivor until matrixarkai#1829 retired it -- the cap is a build constant now, which does not
         change this file's subject: what must not come back is a MODEL field."""
         remaining = sorted(k for k in cfg.SETTINGS_BY_KEY if k.startswith("summary."))
         self.assertEqual(["summary.provider"], remaining)

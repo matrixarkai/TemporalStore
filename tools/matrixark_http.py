@@ -30,7 +30,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         from matrixark_mcp_runtime_config import DEFAULT_MAX_CONTEXT_TOKENS as _BACKEND_DEFAULT_MAX_CONTEXT_TOKENS
     except Exception:
         _BACKEND_DEFAULT_MAX_CONTEXT_TOKENS = 500000
-# Was MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS, retired in matrixarkai#1823. It existed so the
+# Was MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS, retired in matrixarkai#1829. It existed so the
 # gateway could run a narrower budget than the backend default; with nothing set it already
 # followed that default, and the shipped config pinned the same 500000, so the three agreed.
 # The gateway now simply follows the backend default.

@@ -58,7 +58,7 @@ SUMMARY_REFRESH_LIMIT = 64  # was MATRIXARK_SUMMARY_REFRESH_LIMIT, retired
 SUMMARY_REFRESH_MAX_DUTY = 0.2
 SUMMARY_REFRESH_MAX_BACKOFF_MS = 300000
 
-#: Was MATRIXARK_BACKEND_READINESS_TIMEOUT_MS, retired in matrixarkai#1823. How long to keep waiting
+#: Was MATRIXARK_BACKEND_READINESS_TIMEOUT_MS, retired in matrixarkai#1829. How long to keep waiting
 #: for the store to answer a readiness probe before giving up on it. A cold store with a
 #: large log takes tens of seconds to load, which is what 30000 is chosen to sit above: a
 #: timeout below that turns a slow start into a failed one.
@@ -227,7 +227,7 @@ AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
 # still reads it.
 DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = 100000
 HARD_MAX_CHILDREN_SCORED_PER_PARENT = int("100000")
-#: Was MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES, retired in matrixarkai#1823. A resource larger than
+#: Was MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES, retired in matrixarkai#1829. A resource larger than
 #: this is parsed in the background instead of inline, so a big document does not hold the
 #: ingest call open. Both arms stay live: this is a threshold, not a switch.
 RESOURCE_ASYNC_DEFAULT_BYTES = 2 * 1024 * 1024
@@ -257,7 +257,7 @@ DEFAULT_BUDGET_FILL_POLICY = ('quality_first')
 # cands 200) do not spend budget on repetitive/near-identical refs. Jaccard (not
 # containment) is used so distinct refs that merely share a common prefix are
 # kept. 1.0 == only token-set-identical collapses; <= 0.0 disables entirely.
-# Was MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD, retired in matrixarkai#1823. Still the default of
+# Was MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD, retired in matrixarkai#1829. Still the default of
 # the `near_duplicate_overlap_threshold` parameter on BOTH packers, so a caller can still
 # pass 0.0 or 1.0 and the mechanism is still what decides a pack.
 DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = 0.85
