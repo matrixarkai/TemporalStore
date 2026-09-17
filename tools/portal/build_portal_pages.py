@@ -3645,11 +3645,11 @@ ONEBOX_BODY = """
     <h1>One-box</h1>
     <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   </header>
-  <p class="lede">What this deployment does when it answers a question, and what each choice
-    costs. Read in the order a retrieve asks them: how a candidate is scored, what bounds how many
-    survive, when that bound is set aside, and last what the whole thing is running over. Every
-    control is edited where it lives -- this page gathers them, because the three that decide
-    recall sit on three different surfaces.</p>
+  <p class="lede">Whether this deployment is answering at all, and then what it does when it
+    answers. The configuration below is read in the order a retrieve asks it: how a candidate is
+    scored, what bounds how many survive, when that bound is set aside, and last what the whole
+    thing is running over. Every control is edited where it lives -- this page gathers them,
+    because the three that decide recall sit on three different surfaces.</p>
 
   <section>
     <div class="sechead"><h2>Access</h2><span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></div>
@@ -3659,6 +3659,15 @@ ONEBOX_BODY = """
       &mdash; no page can mint it; it takes one command where the gateway runs.</p>
     <div class="hint">Reading this page needs a key with an admin scope; nothing here writes.</div>
     <div id="keyMsg" role="status" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>Whether it is answering</h2>
+    <p class="hint" style="margin-top:0">What retrieves came back with, on this worker, since it
+      started. Under load this gateway stops retrieving and answers every retrieve with an empty
+      pack in about 100 milliseconds &mdash; still HTTP 200, and <em>faster</em> than doing the
+      work, so nothing else on this page or any latency chart would tell you. Needs no key.</p>
+    <div id="answering"><div class="empty">Loading&hellip;</div></div>
   </section>
 
   <section>
@@ -3754,6 +3763,60 @@ ONEBOX_JS = r"""<script>
       return '<div class="msg err">' + esc(data.detail || what) + "</div>";
     }
     return "";
+  }
+
+  /* The three outcome counters out of the Prometheus text. A tiny parser rather than a
+     dependency: the format is one metric per line and this reads exactly the three names it
+     needs, so a line it does not recognise is ignored rather than guessed at. */
+  function retrieveCounts(text) {
+    var found = {};
+    String(text || "").split("\n").forEach(function (line) {
+      var m = /^matrixark_gateway_retrieve_outcomes_total\{outcome="(served|empty|shed)"\}\s+([0-9.eE+-]+)/.exec(line);
+      if (m) { found[m[1]] = Number(m[2]); }
+    });
+    return found;
+  }
+
+  function renderAnswering(text) {
+    var c = retrieveCounts(text);
+    /* All three or none. A partial read means the build does not emit these, and showing two of
+       three as though the third were zero would invent a clean bill of health. */
+    if (c.served === undefined || c.empty === undefined || c.shed === undefined) {
+      return '<div class="empty">This build does not report what retrieves came back with.</div>';
+    }
+    var total = c.served + c.empty + c.shed;
+    if (!total) {
+      /* Zero of everything is not health; it is no evidence. Saying "none shed" here would be a
+         clean bill of health issued about a worker that has answered nothing. */
+      return '<div class="empty">This worker has not answered a retrieve yet, so there is '
+        + "nothing to report either way.</div>";
+    }
+    function pct(n) { return Math.round((n / total) * 100); }
+    var rows = [
+      ["Answered with something", c.served, ""],
+      ["Came back empty", c.empty,
+       "No groups, and no reason given. A populated store returning nothing does not clear on "
+       + "its own."],
+      ["Shed under load", c.shed,
+       "The gateway declined to retrieve and answered 200 anyway. Clears when the load does."]
+    ].map(function (row) {
+      var bad = row[1] > 0 && row[0] !== "Answered with something";
+      return "<tr><th>" + esc(row[0]) + "</th><td class='mono'>" + esc(row[1])
+        + "</td><td class='mono'>" + esc(pct(row[1])) + "%</td></tr>"
+        + (row[2] && bad ? "<tr><td colspan='3' class='hint'>" + esc(row[2]) + "</td></tr>" : "");
+    }).join("");
+    var head = "";
+    if (c.served === 0) {
+      head = '<div class="msg err"><b>Nothing has been answered.</b> Every retrieve this worker '
+        + "has seen came back without a pack.</div>";
+    } else if (c.shed + c.empty > c.served) {
+      head = '<div class="msg err"><b>More retrieves came back without a pack than with one.</b>'
+        + "</div>";
+    }
+    return head + "<div class='tablewrap'><table class='inv'><thead><tr><th>Outcome</th>"
+      + "<th>Count</th><th>Share</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+      + '<p class="hint">This worker only, since it started. Two workers no more add up to the '
+      + "deployment's answers than their resident sets do.</p>";
   }
 
   function renderProfile(data) {
@@ -3895,6 +3958,18 @@ ONEBOX_JS = r"""<script>
       : '<div class="empty">This build does not offer them.</div>';
   }
 
+  /* Outside load(): /v1/metrics needs no key, and this is the one question on this page worth
+     answering before somebody has found one. */
+  function loadAnswering() {
+    fetch("/v1/metrics")
+      .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+      .then(function (t) { $("answering").innerHTML = renderAnswering(t); })
+      .catch(function (e) {
+        $("answering").innerHTML = '<div class="msg err">'
+          + esc(window.__matrixarkWhyFailed(e)) + "</div>";
+      });
+  }
+
   function load() {
     if (!$("key").value.trim()) { return; }
     /* One call for both panels, and a small one. This used to pull the whole settings registry
@@ -3955,6 +4030,7 @@ ONEBOX_JS = r"""<script>
       }
     } catch (e) { /* nothing to do */ }
   });
+  loadAnswering();
   load();
 }());
 </script>"""
