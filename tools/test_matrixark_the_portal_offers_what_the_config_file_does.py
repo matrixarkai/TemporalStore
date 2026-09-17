@@ -74,9 +74,14 @@ class TheTwoSurfacesAgreeTest(unittest.TestCase):
         """The rule above passes if the map goes empty or every section is called bootstrap. Both
         would read exactly like agreement."""
         mapped = env_map()
-        self.assertGreater(len(mapped), 100, "the config map has %d entries" % len(mapped))
+        # MEASURED 106, floor 50. It stood at `> 100` against 112, then 106 after matrixarkai#1823 took
+        # six entries -- a margin of six on a number every retirement moves down. A map that has
+        # been renamed or built at runtime parses as ZERO entries, not as ninety, so the floor
+        # belongs near the failure and not under the population.
+        self.assertGreater(len(mapped), 50, "the config map has %d entries" % len(mapped))
         serving = [k for k in mapped if k.split(".", 1)[0] not in BOOTSTRAP_SECTIONS]
-        # MEASURED 40 mapped-and-serving, floor 20. It stood at `> 40` against exactly 40 -- off by
+        # MEASURED 34 mapped-and-serving, 40 before matrixarkai#1823. Floor 20. It stood at `> 40`
+        # against exactly 40 -- off by
         # one, so the next retirement would have failed a check that exists to catch a SWALLOWED
         # section list, not a cut. The floor is set from what that failure looks like: a section
         # list that had swallowed the file leaves nothing serving, not thirty-nine. Twenty
@@ -120,7 +125,9 @@ class TheNewSettingsAreRealTest(unittest.TestCase):
     these was checked against the code before it was offered; this keeps that true."""
 
     ADDED = (
-        "limits.backend_readiness_timeout_ms",
+        # `limits.backend_readiness_timeout_ms` stood here until matrixarkai#1823, when it came off the
+        # page with seven others. Same rule as the two named below: an entry LEAVES this tuple
+        # when its setting is retired, rather than staying as a name nothing can resolve.
         "limits.direct_record_hot_cache_max_records",
         "retrieval.cross_session_max_candidates",
         # `retrieval.cross_session_min_score` and `retrieval.max_children_scored_per_parent` stood

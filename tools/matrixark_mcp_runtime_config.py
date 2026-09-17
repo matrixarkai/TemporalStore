@@ -58,7 +58,11 @@ SUMMARY_REFRESH_LIMIT = 64  # was MATRIXARK_SUMMARY_REFRESH_LIMIT, retired
 SUMMARY_REFRESH_MAX_DUTY = 0.2
 SUMMARY_REFRESH_MAX_BACKOFF_MS = 300000
 
-BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "").strip() or "30000")
+#: Was MATRIXARK_BACKEND_READINESS_TIMEOUT_MS, retired in matrixarkai#1823. How long to keep waiting
+#: for the store to answer a readiness probe before giving up on it. A cold store with a
+#: large log takes tens of seconds to load, which is what 30000 is chosen to sit above: a
+#: timeout below that turns a slow start into a failed one.
+BACKEND_READINESS_TIMEOUT_MS = 30000
 BACKEND_READINESS_BACKOFF_MS = 200
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = 1000
 
@@ -223,7 +227,10 @@ AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
 # still reads it.
 DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = 100000
 HARD_MAX_CHILDREN_SCORED_PER_PARENT = int("100000")
-RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", "").strip() or str(2 * 1024 * 1024))
+#: Was MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES, retired in matrixarkai#1823. A resource larger than
+#: this is parsed in the background instead of inline, so a big document does not hold the
+#: ingest call open. Both arms stay live: this is a threshold, not a switch.
+RESOURCE_ASYNC_DEFAULT_BYTES = 2 * 1024 * 1024
 RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = 200000
 RESOURCE_ASYNC_DEFAULT_PATH_COUNT = 32
 
@@ -250,15 +257,16 @@ DEFAULT_BUDGET_FILL_POLICY = ('quality_first')
 # cands 200) do not spend budget on repetitive/near-identical refs. Jaccard (not
 # containment) is used so distinct refs that merely share a common prefix are
 # kept. 1.0 == only token-set-identical collapses; <= 0.0 disables entirely.
-DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = float(
-    os.environ.get("MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD", "").strip() or "0.85"
-)
+# Was MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD, retired in matrixarkai#1823. Still the default of
+# the `near_duplicate_overlap_threshold` parameter on BOTH packers, so a caller can still
+# pass 0.0 or 1.0 and the mechanism is still what decides a pack.
+DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = 0.85
 
-DEFAULT_CROSS_SESSION_BUDGET_RATIO = 0.12  # build default; live_float reads the environment
+DEFAULT_CROSS_SESSION_BUDGET_RATIO = 0.12  # build constant; its variable is retired
 DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float("0.20")
 DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float("0.20")
 DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float("0.15")
-DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = 0.30  # build default; live_float reads the environment
+DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = 0.30  # build constant; its variable is retired
 DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = 327680  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_MAX_SESSIONS = 3

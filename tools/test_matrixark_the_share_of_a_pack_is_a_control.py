@@ -173,15 +173,21 @@ class TheShareCanBeRaisedTest(Case):
                 self.assertAlmostEqual(asked, ratio, places=6)
                 self.assertEqual(int(self.total * asked), tokens)
 
-    def test_the_cross_session_share_too(self) -> None:
-        os.environ["MATRIXARK_CROSS_SESSION_BUDGET_RATIO"] = "0.40"
-        ratio, _tokens = self.cross_session(profile=False)
-        self.assertAlmostEqual(0.40, ratio, places=6)
+    def test_the_cross_session_shares_are_the_build_numbers_now(self) -> None:
+        """Was two tests asserting the cross-session and profile shares could be RAISED by setting
+        their variables. Both variables are retired in matrixarkai#1823 and that decision is reversed
+        for these two lanes only: the skill and resource shares above still move, and they are the
+        ones the episode in this file's docstring is about.
 
-    def test_the_profile_share_too(self) -> None:
-        os.environ["MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO"] = "0.55"
-        ratio, _tokens = self.cross_session(profile=True)
-        self.assertAlmostEqual(0.55, ratio, places=6)
+        What is asserted instead is the half that still has to hold -- the lane resolves to the
+        build constant rather than to whatever the process was started with. Without this the
+        retirement could have frozen a lane at the wrong number and nothing here would notice.
+        """
+        for profile, constant in ((False, "DEFAULT_CROSS_SESSION_BUDGET_RATIO"),
+                                  (True, "DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO")):
+            with self.subTest(profile=profile):
+                ratio, _tokens = self.cross_session(profile=profile)
+                self.assertAlmostEqual(getattr(runtime, constant), ratio, places=6)
 
     def test_both_copies_of_the_shared_policy_honour_it(self) -> None:
         """Making one copy live and not the other is how a setting works on some requests. A
@@ -342,14 +348,16 @@ class TheLiveClaimIsEarnedTest(unittest.TestCase):
     """`live` is a promise the portal makes on save; here it is derived from where the read is."""
 
     def test_the_portal_says_live_for_every_share_and_guard(self) -> None:
-        for key in SHARES:
+        # The two cross-session SHARES came off the page in matrixarkai#1823, after the two
+        # cross-session guards had already gone, so what is left to make this claim about is the
+        # skill and resource pair. SHARES itself is unchanged: every constant it names still
+        # exists and the three-limit arrangement above is still checked for all four lanes.
+        for key in ("skills.shared_skill_budget_ratio", "skills.shared_resource_budget_ratio"):
             with self.subTest(setting=key):
                 self.assertEqual("live", cfg.SETTINGS_BY_KEY[key].applies)
-        # Three of the four guards this named are retired from the page: the resource guard and
-        # the two cross-session guards. This file recorded the decision to offer them and it is
-        # reversed deliberately. The skill guard STAYS, and not for symmetry -- its help carries
-        # the episode where it sat at exactly the share's own default, so raising the share did
-        # nothing, and that is written down nowhere else.
+        # The skill guard STAYS, and not for symmetry -- its help carries the episode where it sat
+        # at exactly the share's own default, so raising the share did nothing, and that is
+        # written down nowhere else.
         for key in ("skills.shared_skill_max_budget_ratio",):
             with self.subTest(setting=key):
                 self.assertEqual("live", cfg.SETTINGS_BY_KEY[key].applies)
@@ -408,11 +416,12 @@ class ThePortalDeclaresTheNumberTheBuildRunsTest(unittest.TestCase):
         """The floor: a naming change would empty the map above and the test would pass on
         nothing. Every share and guard this change offers has to be in it.
 
-        MEASURED 5, floor 3. It was 8 against a population of exactly 8 -- no margin at all -- and
-        this change retired three of the guards it counted. The new floor is set from what the
-        FAILURE looks like rather than from the population minus a cushion: a derivation that has
-        stopped matching reports zero or one, not four. Three separates those two cases and
-        survives the next retirement.
+        MEASURED 3, floor 2. It was 8 against a population of exactly 8 -- no margin at all --
+        then 5 against a floor of 3, and matrixarkai#1823 retired the two cross-session shares it
+        counted, which would have left it sitting on its own population again. The floor is set
+        from what the FAILURE looks like rather than from the population minus a cushion: a
+        derivation that has stopped matching reports zero or one, not three. Two separates those
+        cases and leaves the next retirement somewhere to go.
 
         Four recorded counts in this campaign turned out to advertise headroom they did not have --
         BOOL_SETTING_FLOOR said 79 against a real 41, EXPECTED_COMPARABLE_FLOOR said 56/35 against
@@ -420,8 +429,10 @@ class ThePortalDeclaresTheNumberTheBuildRunsTest(unittest.TestCase):
         population. A floor pinned to the population is a tripwire, not a floor.
         """
         found = self.pairs()
-        self.assertGreaterEqual(len(found), 3)
-        for key in SHARES:
+        self.assertGreaterEqual(len(found), 2)
+        # SHARES still names four lanes; two of them no longer have a portal row, so the map
+        # derived from SETTINGS cannot hold them. Asserted over what the page still offers.
+        for key in ("skills.shared_skill_budget_ratio", "skills.shared_resource_budget_ratio"):
             self.assertIn(key, found)
 
 

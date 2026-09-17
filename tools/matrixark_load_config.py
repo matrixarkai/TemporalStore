@@ -128,19 +128,15 @@ ENV_MAP: Dict[str, str] = {
     "recovery.bulk_ingest_replay_from_sequence": "MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE",
     # ---- [retrieval] --------------------------------------------------------
     "retrieval.default_max_context_tokens": "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS",
-    "retrieval.gateway_default_max_context_tokens": "MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS",
     "retrieval.context_source_mode": "MATRIXARK_CONTEXT_SOURCE_MODE",
     "retrieval.retrieval_min_score": "MATRIXARK_RETRIEVAL_MIN_SCORE",
     "retrieval.top_k_per_layer": "MATRIXARK_TOP_K_PER_LAYER",
     "retrieval.max_candidates_per_node": "MATRIXARK_MAX_CANDIDATES_PER_NODE",
     "retrieval.max_global_candidates": "MATRIXARK_MAX_GLOBAL_CANDIDATES",
     "retrieval.max_selected_refs": "MATRIXARK_MAX_SELECTED_REFS",
-    "retrieval.near_duplicate_overlap_threshold": "MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD",
-    "retrieval.cross_session_budget_ratio": "MATRIXARK_CROSS_SESSION_BUDGET_RATIO",
     "retrieval.cross_session_max_candidates": "MATRIXARK_CROSS_SESSION_MAX_CANDIDATES",
     "retrieval.cross_session_max_budget_tokens": "MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS",
     "retrieval.cross_session_profile_max_candidates": "MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES",
-    "retrieval.cross_session_profile_budget_ratio": "MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO",
     "retrieval.shared_resource_budget_ratio": "MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
     "retrieval.shared_skill_max_budget_ratio": "MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO",
     "retrieval.shared_skill_budget_ratio": "MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
@@ -188,8 +184,6 @@ ENV_MAP: Dict[str, str] = {
     "limits.quota_max_batch": "MATRIXARK_QUOTA_MAX_BATCH",
     "limits.quota_max_blob_bytes": "MATRIXARK_QUOTA_MAX_BLOB_BYTES",
     "limits.direct_record_hot_cache_max_records": "MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS",
-    "limits.backend_readiness_timeout_ms": "MATRIXARK_BACKEND_READINESS_TIMEOUT_MS",
-    "limits.resource_async_default_bytes": "MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES",
 }
 
 

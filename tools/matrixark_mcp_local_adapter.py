@@ -293,8 +293,8 @@ def _plain_run_lines(head: bytes, handle):
     while they decode and look like JSON, then leaves the handle positioned at the first byte that
     does not, for the caller to parse as a block.
 
-    A line at a time, because a shard runs to MATRIXARK_LOCAL_JSONL_MAX_BYTES and reading it whole
-    would undo the bound the streaming reader exists for.
+    A line at a time, because a shard runs to LOCAL_JSONL_MAX_BYTES and reading it whole would
+    undo the bound the streaming reader exists for.
 
     Yields nothing and restores the position when the first bytes are not text at all: that is the
     TORN-BLOCK case, and it must keep being dropped rather than read as garbage.
@@ -459,7 +459,7 @@ def _iter_shard_lines(path: Path):
     the ACTIVE one, so that is the common case, and the seven-byte sniff is one extra syscall.
 
     A sealed shard is decompressed in chunks rather than whole. A shard runs to
-    MATRIXARK_LOCAL_JSONL_MAX_BYTES -- 64 MB by default -- and four of this module's five readers
+    LOCAL_JSONL_MAX_BYTES -- 64 MB -- and four of this module's five readers
     scan it for one record type, so materialising the whole thing would trade the bytes this saves
     on disk for the same bytes in memory.
     """
@@ -766,7 +766,11 @@ def bool_env(name: str, default: bool = False) -> bool:
 PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = positive_int_env("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2)
 LOCAL_JSONL_ENABLED = bool_env("MATRIXARK_LOCAL_JSONL_ENABLED", True)
 LOCAL_JSONL_INCLUDE_BULKY_FIELDS = bool_env("MATRIXARK_LOCAL_JSONL_INCLUDE_BULKY_FIELDS", False)
-LOCAL_JSONL_MAX_BYTES = positive_int_env("MATRIXARK_LOCAL_JSONL_MAX_BYTES", 64 * 1024 * 1024)
+#: Was MATRIXARK_LOCAL_JSONL_MAX_BYTES, retired in matrixarkai#1823. 64 MB is the shard size the
+#: rotation, sealing and block-log paths were measured and tuned at; the retained WINDOW is
+#: still a deployment setting through MATRIXARK_LOCAL_JSONL_RETENTION_COUNT, which is the
+#: half that decides whether records are discarded.
+LOCAL_JSONL_MAX_BYTES = 64 * 1024 * 1024
 LOCAL_JSONL_RETENTION_COUNT = positive_int_env("MATRIXARK_LOCAL_JSONL_RETENTION_COUNT", 4)
 LOCAL_JSONL_RETENTION_AGE_MS = positive_int_env("MATRIXARK_LOCAL_JSONL_RETENTION_AGE_MS", 7 * 24 * 60 * 60 * 1000)
 

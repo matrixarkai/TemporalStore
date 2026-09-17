@@ -468,7 +468,11 @@ SUMMARY_LLM_PROVIDER = (
 # second name for a call made against the extraction endpoint with the extraction key -- so the two
 # could name models that endpoint does not both serve, and the portal offered no way to see that.
 SUMMARY_LLM_MODEL = EXTRACTION_LLM_MODEL
-SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "").strip() or "900")
+#: Was MATRIXARK_SUMMARY_MAX_TOKENS, retired in matrixarkai#1823. Completion cap per summary call,
+#: separate from the extraction cap because a summary is the shorter of the two and is paid
+#: for on every node. matrixark_mcp_summaries holds the same number under the same name and
+#: test_matrixark_one_answer_for_the_summary_model asserts the two agree.
+SUMMARY_LLM_MAX_TOKENS = 900
 # ENABLE_LLM_MERGE_OPERATOR comes from matrixark_mcp_runtime_config, above.
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}

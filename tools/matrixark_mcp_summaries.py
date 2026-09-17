@@ -50,7 +50,9 @@ SUMMARY_LLM_PROVIDER = (
 # matrixark_mcp_core. Spelled out rather than imported because these two modules deliberately do not
 # depend on each other, and a test pins that they still resolve to the same thing.
 SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_EXTRACTION_MODEL", (os.environ.get("OPENAI_MODEL", "").strip() or "qwen2.5:1.5b"))
-SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "").strip() or "900")
+#: Was MATRIXARK_SUMMARY_MAX_TOKENS, retired in matrixarkai#1823. The second of the two copies; see
+#: matrixark_mcp_core, which holds the same number under the same name.
+SUMMARY_LLM_MAX_TOKENS = 900
 
 
 try:  # the implementation lives in matrixark_mcp_core; this module re-exports it

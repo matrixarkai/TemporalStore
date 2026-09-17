@@ -163,9 +163,11 @@ class TheSummaryHasNoModelOfItsOwnTest(Case):
         self.assertNotIn("summary.model", cfg.SETTINGS_BY_KEY)
 
     def test_what_is_left_of_the_summary_group_is_not_a_model(self) -> None:
-        """provider and max_tokens stay: they are choices about the summary, not a second model."""
+        """provider stays: a choice about the summary, not a second model. max_tokens was the other
+        survivor until matrixarkai#1823 retired it -- the cap is a build constant now, which does not
+        change this file's subject: what must not come back is a MODEL field."""
         remaining = sorted(k for k in cfg.SETTINGS_BY_KEY if k.startswith("summary."))
-        self.assertEqual(["summary.max_tokens", "summary.provider"], remaining)
+        self.assertEqual(["summary.provider"], remaining)
 
     def test_a_launcher_that_still_sets_it_is_told(self) -> None:
         """It stopped mattering rather than never existing, which is the worse of the two to leave

@@ -302,8 +302,8 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     enabled = bool(config.get("enabled", default_enabled)) and cross_session_allowed and remote_budget_tokens > 0
     profile_budget_query = profile_memory_query or feature_memory_query
     if profile_budget_query:
-        default_ratio = live_float("MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO",
-                                   DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO)
+        # Build constant now; its variable is retired. The per-request route is `config`.
+        default_ratio = DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO
         question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
     elif normalized_question_type in {"current_state", "latest"}:
         default_ratio = DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO
@@ -318,8 +318,8 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         default_ratio = DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO
         question_budget_reason = "broad_or_evidence_queries_get_extra cross-session exploration"
     else:
-        default_ratio = live_float("MATRIXARK_CROSS_SESSION_BUDGET_RATIO",
-                                   DEFAULT_CROSS_SESSION_BUDGET_RATIO)
+        # Build constant now; its variable is retired. The per-request route is `config`.
+        default_ratio = DEFAULT_CROSS_SESSION_BUDGET_RATIO
         question_budget_reason = "normal_queries_keep_cross_session_small so current session/resources/skills dominate"
     # Mode-dependent quota (opt-in). Augment: local carries the current session, so route the
     # memory budget to cross-session + long-term profile. Remote-only: remote reconstructs the

@@ -2,10 +2,18 @@
 # Copyright 2026 MatrixArkAI
 """The near-duplicate setting reaches both packers, including the one the gateway uses.
 
-`matrixark_gateway_config` offers `retrieval.near_duplicate_overlap_threshold`, describes it as
+`matrixark_gateway_config` OFFERED `retrieval.near_duplicate_overlap_threshold`, described it as
 "A candidate this similar to an already-selected, higher-ranked one is dropped. Stops a pack paying
-twice for one fact.", and defaults it to 0.85 -- on. `matrixark_load_config` maps it to
-`MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD` and applies it to the environment.
+twice for one fact.", and defaulted it to 0.85 -- on. `matrixark_load_config` mapped it to
+`MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD` and applied it to the environment.
+
+BOTH ARE RETIRED IN matrixarkai#1823 and this file did NOT go with them, although one assertion in it
+used to say it should. What that assertion protected is the mx#959 shape -- a surface advertising a
+knob nothing reads -- and the surface is what went. The threshold is still a parameter of both
+packers, still defaults to the build constant, and still decides what a pack contains, so every rule
+here has the subject it always had and is now asked of
+`matrixark_mcp_runtime_config.DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD` instead of a portal row.
+The one thing no longer true is that a deployment can change it.
 
 `matrixark_mcp_budget_pack`, which the gateway reaches through `matrixark_mcp_budget_policies` from
 `matrixark_mcp_server`, had no near-duplicate logic at all -- the word did not appear in the file.
@@ -103,29 +111,31 @@ class TheNearDuplicateSettingReachesBothPackersTest(unittest.TestCase):
             "nothing should be dropped -- if something is, the comparison is not the ratio it "
             "claims to be")
 
-    def test_the_default_the_packer_uses_is_the_one_the_gateway_advertises(self) -> None:
-        """The mx#959 shape: a settings page and the code that consumes it must not disagree."""
-        import inspect
-
+    def test_the_setting_is_not_advertised_any_more(self) -> None:
+        """The mx#959 shape from the other side. It read "a page and the code must not disagree";
+        the page has no such row since matrixarkai#1823, so what must hold is that NOTHING offers it --
+        a row left behind in either registry would advertise a control that cannot be reached."""
         config = _import("matrixark_gateway_config")
-        declared = None
-        for setting in getattr(config, "SETTINGS", []):
-            if getattr(setting, "key", None) == SETTING:
-                declared = setting
-                break
-        self.assertIsNotNone(
-            declared, "%s is no longer offered by matrixark_gateway_config. If the setting was "
-                      "withdrawn, this file should go with it; if it was renamed, the packers "
-                      "need to follow it" % SETTING)
-        self.assertEqual(
-            ENV, getattr(declared, "env", None),
-            "the setting no longer maps to %s, which is the variable the default is read from" % ENV)
+        self.assertNotIn(
+            SETTING, {getattr(s, "key", None) for s in getattr(config, "SETTINGS", [])},
+            "%s is offered again. It was retired along with its variable, so a row here "
+            "advertises a knob nothing reads -- the defect this file exists for" % SETTING)
+        loader = _import("matrixark_load_config")
+        self.assertNotIn(
+            ENV, set(getattr(loader, "ENV_MAP", {}).values()),
+            "%s is mapped by the config loader again" % ENV)
+
+    def test_the_default_the_packers_use_is_the_build_constant(self) -> None:
+        """What the retired row used to anchor: both packers default to the one number, and that
+        number is the build constant now rather than a declared default."""
+        import inspect
 
         runtime = _import("matrixark_mcp_runtime_config")
         self.assertAlmostEqual(
-            float(declared.default), runtime.DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD, places=6,
-            msg="the gateway advertises a default of %s and the code applies %s"
-                % (declared.default, runtime.DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD))
+            0.85, runtime.DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD, places=6,
+            msg="the build constant is %s. It is 0.85 because that is what the shipped config "
+                "pinned and what both packers were measured at"
+                % runtime.DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD)
 
         for name, fn in (("gateway", self.gateway_packer), ("retrieve", self.retrieve_packer)):
             default = inspect.signature(fn).parameters["near_duplicate_overlap_threshold"].default

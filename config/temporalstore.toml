@@ -135,21 +135,17 @@ eager_cache_warm_on_load = 0           # MATRIXARK_EAGER_CACHE_WARM_ON_LOAD  1 =
 # -----------------------------------------------------------------------------
 [retrieval]
 default_max_context_tokens = 500000         # MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS  backend context-pack token ceiling
-gateway_default_max_context_tokens = 500000 # MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS  ceiling the /v1 gateway uses when the caller omits max_context_tokens (was hardcoded 10000; now == backend default). CEILING not target.
 context_source_mode = "auto"                # MATRIXARK_CONTEXT_SOURCE_MODE  auto | local | remote-only | augment
 retrieval_min_score = 0.05                  # MATRIXARK_RETRIEVAL_MIN_SCORE  drop refs scoring below this (keeps junk out even as caps rise)
 top_k_per_layer = 24                        # MATRIXARK_TOP_K_PER_LAYER  groups kept per layer (raised 8 -> 24 for richer default packs)
 max_candidates_per_node = 1024              # MATRIXARK_MAX_CANDIDATES_PER_NODE  candidate scan cap per node
 max_global_candidates = 2048                # MATRIXARK_MAX_GLOBAL_CANDIDATES  global candidate scan cap
 max_selected_refs = 1000                    # MATRIXARK_MAX_SELECTED_REFS  hard cap on refs in a pack
-near_duplicate_overlap_threshold = 0.85     # MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD  drop a candidate whose token-set Jaccard similarity with a higher-ranked already-selected ref is >= this (de-noise now that defaults return more). 1.0 = only token-identical collapses; 0 = disabled.
 # --- cross-session lane (breadth across other sessions) ---
-cross_session_budget_ratio = 0.12           # MATRIXARK_CROSS_SESSION_BUDGET_RATIO  fraction of the pack budget for cross-session refs
 cross_session_max_candidates = 200          # MATRIXARK_CROSS_SESSION_MAX_CANDIDATES  cross-session candidate cap (raised 24 -> 200; was the main breadth limiter)
 cross_session_max_budget_tokens = 500000    # MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS  absolute cap on cross-session tokens
 # --- profile lane (long-lived user profile) ---
 cross_session_profile_max_candidates = 200  # MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES  profile candidate cap (raised 48 -> 200 for consistency)
-cross_session_profile_budget_ratio = 0.30   # MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO  profile lane budget fraction
 # --- shared resource / skill lanes ---
 shared_resource_budget_ratio = 0.25         # MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO  shared-resource lane budget fraction
 shared_skill_budget_ratio = 0.10            # MATRIXARK_SHARED_SKILL_BUDGET_RATIO  shared-skill lane budget fraction
@@ -220,5 +216,3 @@ table = "deploy_table"                 # MATRIXARK_TABLE      logical table
 # quota_max_batch = 0                  # MATRIXARK_QUOTA_MAX_BATCH       max batch size per request
 # quota_max_blob_bytes = 0             # MATRIXARK_QUOTA_MAX_BLOB_BYTES  max blob size (bytes)
 direct_record_hot_cache_max_records = 20000    # MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS  hot-cache record cap
-backend_readiness_timeout_ms = 30000           # MATRIXARK_BACKEND_READINESS_TIMEOUT_MS  wait-for-backend timeout (ms)
-resource_async_default_bytes = 2097152         # MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES   async-resource inline threshold (bytes, 2 MiB)

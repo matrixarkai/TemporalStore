@@ -149,7 +149,7 @@ if ! bash "$ROOT/tools/wait_temporalstore_topology_ready.sh" \
   --table "$MATRIXARK_TEMPORALSTORE_TABLE" \
   --prefix "$MATRIXARK_TEMPORALSTORE_PREFIX" \
   --rust-cli "$(if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ]]; then printf '%s' "$MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK"; else printf '%s' "$MATRIXARK_TEMPORALSTORE_RUST_PROXY"; fi)" \
-  --timeout-ms "${MATRIXARK_BACKEND_READINESS_TIMEOUT_MS:-30000}" >&2; then
+  --timeout-ms 30000 >&2; then
   if matrixark_flag_on "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" "$fallback_default"; then
     echo "MatrixArk MCP Rust: TemporalStore is not ready; falling back to disk-backed retrieval." >&2
     start_disk_fallback "$@"

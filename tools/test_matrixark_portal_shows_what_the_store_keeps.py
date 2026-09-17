@@ -1,12 +1,19 @@
 """An operator sizing a deployment must be able to see what the store keeps.
 
-The event log rotates into fixed-size shards and keeps a bounded number of them, so those two
-numbers are the disk ceiling AND a retention policy: records in a dropped shard are gone. They are
-also what bounds ingest cost, because the retained window is what a read holds and compaction
-walks — measured on 1 MB documents, per-document ingest climbed 2.68 s, 4.83 s, 7.35 s at 15, 30
-and 60 documents and then flattened, and it flattened because rotation had begun.
+The event log rotates into fixed-size shards and keeps a bounded number of them, so the retained
+window is the disk ceiling AND a retention policy: records in a dropped shard are gone. It is also
+what bounds ingest cost, because that window is what a read holds and compaction walks — measured
+on 1 MB documents, per-document ingest climbed 2.68 s, 4.83 s, 7.35 s at 15, 30 and 60 documents
+and then flattened, and it flattened because rotation had begun.
 
-Neither was offered on the portal, so neither could be seen or tuned.
+None of it was offered on the portal, so none of it could be seen or tuned.
+
+THE SHARD SIZE CAME OFF AGAIN in matrixarkai#1823. This file recorded the decision to offer both halves
+of the window and that half is reversed: `ingestion.local_log_max_bytes` is retired and the shard
+size is fixed at 64 MB in the adapter. The measurement above is the reason the window has to be
+VISIBLE and it is unchanged; what an operator sets now is the count, which is the half that decides
+whether records are DISCARDED. Three subjects are left below rather than four, which is enough for
+every rule here to still have something to compare.
 """
 import sys
 import unittest
@@ -18,7 +25,7 @@ import matrixark_mcp_local_adapter as adapter_module
 
 
 OFFERED = {
-    "ingestion.local_log_max_bytes": "MATRIXARK_LOCAL_JSONL_MAX_BYTES",
+    # ingestion.local_log_max_bytes was here until matrixarkai#1823; see the note above.
     "ingestion.local_log_retention_count": "MATRIXARK_LOCAL_JSONL_RETENTION_COUNT",
     "ingestion.durable_read_cache": "MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED",
     "ingestion.share_repeated_values": "MATRIXARK_SHARE_REPEATED_VALUES",
@@ -51,10 +58,10 @@ class ThePortalShowsWhatTheStoreKeeps(unittest.TestCase):
 
     def test_the_defaults_match_what_the_store_actually_uses(self):
         """A portal that shows a default the code does not use is worse than showing nothing."""
-        self.assertEqual(
-            int(self.by_key["ingestion.local_log_max_bytes"].default),
-            adapter_module.LOCAL_JSONL_MAX_BYTES,
-        )
+        # The shard size is no longer a portal row, so there is no declared default to compare
+        # against. What still has to hold is that the number the window is computed from is a
+        # KNOWN one rather than whatever an environment happened to carry.
+        self.assertEqual(64 * 1024 * 1024, adapter_module.LOCAL_JSONL_MAX_BYTES)
         self.assertEqual(
             int(self.by_key["ingestion.local_log_retention_count"].default),
             adapter_module.LOCAL_JSONL_RETENTION_COUNT,
