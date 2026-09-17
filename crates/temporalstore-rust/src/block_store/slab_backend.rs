@@ -8,16 +8,46 @@
 //! through the `ObjectStore` backends -- so the two halves of a storage layer exist here, and
 //! the block store uses neither.
 //!
-//! This is the half the block store was missing: the operations it performs on a slab, named
-//! once, so a slab can live on a local file or on an object backend without the block store
-//! knowing which. It is deliberately NOT the object-store trait: that one is key-and-bytes with
-//! ranges, while a slab is appended to and read back by offset, and mapping one onto the other
-//! at every call site is what this exists to avoid.
+//! This names the operations the block store performs on a slab, once, instead of spelling
+//! each one inline at its call site. It is deliberately NOT the object-store trait: that one is
+//! key-and-bytes with ranges, while a slab is appended to and read back by offset, and mapping
+//! one onto the other at every call site is what this exists to avoid.
+//!
+//! WHAT THIS TRAIT IS NOT. It does not let a slab live on an object backend without the block
+//! store knowing which. `LocalSlabBackend` is its only implementation, nothing anywhere takes a
+//! `dyn SlabBackend` or is generic over `B: SlabBackend`, and both production call sites name
+//! the concrete type. A slab that lives remotely is handled by `SharedSlabSource` instead: a
+//! separate one-method trait, held as `Arc<dyn SharedSlabSource>`, with three implementations in
+//! `shared_store.rs`. Each fetches a whole slab and hands it to `BlockStore::install_slab`,
+//! which writes it to local disk -- so from the first read onward every operation on that slab
+//! is a local file operation. That is why a remote implementation of THIS trait has never been
+//! needed, and why adding methods here for the sake of one would be building for a caller that
+//! does not exist.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 /// One slab's worth of storage, addressed by the id the block store already uses.
+///
+/// WHICH OF THESE RUN. Only `read_range` and `read_all` have a production caller, both in
+/// `read.rs`. The other seven are reached only by this file's own tests. They are not dead
+/// code and not a contract held open for a remote backend (see the module note above): the
+/// block store still performs every one of those operations, inline, on its own handles. This
+/// trait was extracted and then only `read.rs` was moved onto it.
+///
+/// The work left is to move the remaining call sites here, so each of the seven is a target,
+/// not a leftover. Anyone doing that must carry the call site's behaviour across rather than
+/// assume these bodies already match it -- today three of them do not:
+///
+///   * `append` opens the slab file on every call, while the batched append in `append.rs`
+///     holds one handle open across many records; and it reports the offset from
+///     `metadata().len()`, while both production paths track `write_offset` themselves.
+///   * `sync` calls `sync_all`, while the append and slab-roll paths call `sync_data`.
+///   * `remove` deletes `slab_path(root, id)`, while the production delete in the
+///     delayed-destroy sweep removes an already-quarantined file by its own path.
+///
+/// `len`, `slab_ids` and `exists` do match what production does inline today
+/// (`metadata().len()`, `slab_ids_at(root)` and `slab_path(root, id).exists()` respectively).
 pub(crate) trait SlabBackend: Send + Sync {
     /// Append bytes to a slab, answering the offset they landed at.
     ///
@@ -35,7 +65,14 @@ pub(crate) trait SlabBackend: Send + Sync {
     /// How long the slab is, without reading it.
     fn len(&self, slab_id: u64) -> io::Result<u64>;
 
-    /// Cut a slab back to a length, which is how a torn tail is fenced on reopen.
+    /// Cut a slab back to a length.
+    ///
+    /// NOT the torn-tail fence, despite what this said before. That fence is in
+    /// `BlockStore::open` and calls `set_len` on a handle it opens itself, because it must also
+    /// `sync_all` the slab, `sync_all` the parent directory and record a durability barrier --
+    /// none of which happens here. Pointing that fence at this method as it stands would
+    /// quietly drop two fsyncs from a crash-recovery path, so whoever routes it through here
+    /// has to bring the durability with it.
     fn truncate(&self, slab_id: u64, length: u64) -> io::Result<()>;
 
     /// Forget a slab entirely.
@@ -193,5 +230,51 @@ mod tests {
         assert!(!backend.exists(3));
         let ids = backend.slab_ids().expect("list");
         assert_eq!(ids, vec![7]);
+    }
+
+    /// The local slab file name, spelled out.
+    ///
+    /// The other side of this format lives in `shared_store.rs`, which composes the remote
+    /// object key for the same slab and cannot see this function. A test there drives a real
+    /// block store and compares its on-disk name against the remote basename; this one pins
+    /// what that name is, so a rename shows up as two failures naming each other rather than
+    /// as a restore that silently finds nothing.
+    #[test]
+    fn a_slab_file_is_named_exactly_this_way() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalSlabBackend::new(dir.path());
+        backend.append(7, b"bytes").expect("append");
+
+        let mut on_disk: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read_dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        on_disk.sort();
+        assert_eq!(on_disk, vec!["block_segment_00000000000000000007.seg"]);
+    }
+
+    /// `sync` is the one method on this trait that NOTHING calls -- no production caller and,
+    /// until this test, no test either. Mutating it to do nothing at all left the whole lib
+    /// gate passing, which is what makes it different from its six uncalled siblings: each of
+    /// those is caught by one of the tests above.
+    ///
+    /// This does not prove durability; only that the call reaches a real file and reports the
+    /// failure when it cannot. Proving an fsync reached the device needs a crash harness, and
+    /// the block store's own durability barriers are counted in `paths.rs` rather than here.
+    #[test]
+    fn syncing_a_slab_reaches_a_real_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalSlabBackend::new(dir.path());
+        backend.append(2, b"durable-bytes").expect("append");
+
+        backend.sync(2).expect("syncing a slab that exists must succeed");
+
+        // The negative half: a slab that was never written has nothing to sync, and that is
+        // an error rather than a silent success.
+        let err = backend
+            .sync(404)
+            .expect_err("syncing a slab that does not exist must fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 }

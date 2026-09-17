@@ -870,6 +870,24 @@ where
                 std::io::ErrorKind::InvalidData,
                 format!("invalid WAL offset metadata range for shard {shard_id} index {wal_index}"),
             )))?;
+        // MEASURED, AND NOT COVERED. Removing this guard, or either half of the
+        // shard/index cross-check further down, leaves the entire lib gate passing:
+        // nothing drives this function's rejection paths. That is not a quiet corner --
+        // this is the WAL replay fast path (`replay_wal_from_offset_metadata`), and the
+        // cross-check below is what stops replay applying an entry that belongs to
+        // another shard.
+        //
+        // Why the hole is here: the test that most exercises the offset-index machinery,
+        // `shared_store_protobuf_append_blob_replays_matrixobject_blob`, sits behind
+        // `#[cfg(feature = "matrixobject")]`, which is off by default and therefore not
+        // compiled into the default gate at all.
+        //
+        // Covering it means writing a doctored offset-index object with
+        // `encode_wal_offset_metadata_frame` -- one whose recorded byte range points at a
+        // DIFFERENT entry than its own `wal_index` names, and one whose
+        // `wal_blob_bytes_written` disagrees with its own start/end range -- then asserting
+        // each guard rejects. Each arm has to leave the other conditions false, or one arm
+        // satisfies several guards at once and passes with any one of them deleted.
         if length != metadata.wal_blob_bytes_written {
             return Err(SharedStoreReplicationError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1002,7 +1020,10 @@ where
         let mut uploaded_slab_ids = std::collections::BTreeSet::new();
         for block_slab_id in block_store.slab_ids()? {
             let bytes = block_store.read_slab(block_slab_id)?;
-            let key = format!("{prefix}block_segments/block_segment_{block_slab_id:020}.seg");
+            let key = format!(
+                "{prefix}block_segments/{}",
+                block_slab_object_name(block_slab_id)
+            );
             self.object_store
                 .put(&key, Bytes::from(bytes.clone()))
                 .await?;
@@ -1651,8 +1672,9 @@ where
 
     fn block_slab_key(&self, shard_id: ShardId, block_slab_id: u64) -> String {
         format!(
-            "{}block_segment_{block_slab_id:020}.seg",
-            self.block_slab_prefix(shard_id)
+            "{}{}",
+            self.block_slab_prefix(shard_id),
+            block_slab_object_name(block_slab_id)
         )
     }
 
@@ -2895,6 +2917,21 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
         _ => return None,
     };
     Some(v1::Command { kind: Some(kind) })
+}
+
+/// The one spelling of a block slab's object basename.
+///
+/// Composed in two places under two different prefixes -- `block_slab_key` for the
+/// live shard layout and the checkpoint upload in `publish_checkpoint` -- and the
+/// second of those used to spell it inline, where no test could reach it. A padding
+/// change there survived the whole gate even once `block_slab_key` was pinned.
+///
+/// Two further spellings of this same format are still out of reach from here and
+/// cannot be folded in: `parse_block_slab_id` below reads it back apart (and is
+/// pinned against this one by a test), and `block_store::paths::slab_path` names the
+/// same slab on local disk from inside a module this one cannot see.
+fn block_slab_object_name(block_slab_id: u64) -> String {
+    format!("block_segment_{block_slab_id:020}.seg")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -5840,6 +5877,279 @@ mod tests {
                 })
                 .response,
             CommandResponse::Bytes { value: Some(b"value".to_vec()) }
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Object-key composition.
+    //
+    // MEASURED, not assumed. Running the whole lib gate with one key composer changed at a
+    // time: renaming the object in `index_key`, and narrowing the zero padding from 20 to 18
+    // in `block_slab_key` and in the checkpoint upload, each left all 1960 tests passing. The
+    // same padding change to `wal_key`, a swap of the two WAL blob names, and a rename of the
+    // `shared/` path segment were each caught immediately -- because the WAL family already
+    // had literal keys asserted in this module and the block-slab and index families did not.
+    // These close that difference.
+    //
+    // The hole was not visible by inspection, because a publish-then-restore round trip
+    // CANNOT see a key-format change: it moves the writer and the reader together, so the
+    // objects are simply written and read under the new name and everything agrees. Only a
+    // literal pin catches it, and what it catches is an old build's objects becoming
+    // unreachable to a new one -- a read that returns absence, not an error.
+    //
+    // The block-slab key is spelled in four independent places: `block_slab_key` here, inline
+    // in `publish_checkpoint`, in `parse_block_slab_id` which reads it back, and in
+    // `block_store::paths::slab_path` for the same slab on local disk. None can see another.
+
+    /// Every key this replicator composes, spelled out.
+    #[test]
+    fn every_composed_object_key_is_spelled_exactly_this_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_objects, replicator) = test_shared_store(dir.path());
+
+        assert_eq!(replicator.shard_prefix(1), "cluster-a/shards/1/shared/");
+        assert_eq!(
+            replicator.index_key(1),
+            "cluster-a/shards/1/shared/index/shard.index.json"
+        );
+        assert_eq!(
+            replicator.block_slab_prefix(1),
+            "cluster-a/shards/1/shared/block_segments/"
+        );
+        assert_eq!(
+            replicator.block_slab_key(1, 7),
+            "cluster-a/shards/1/shared/block_segments/block_segment_00000000000000000007.seg"
+        );
+        // The checkpoint upload composes the same basename under a different prefix.
+        // Both go through this helper, so a rename cannot reach only one of them --
+        // before they shared it, a padding change in the checkpoint copy survived the
+        // whole gate with `block_slab_key` already pinned.
+        assert_eq!(
+            block_slab_object_name(7),
+            "block_segment_00000000000000000007.seg"
+        );
+        assert_eq!(
+            replicator.wal_key(1, 3),
+            "cluster-a/shards/1/shared/wal/wal_00000000000000000003.json"
+        );
+        // The two WAL blobs sit in one prefix and differ only by name; asserted apart so a
+        // swap between them cannot read as a pass.
+        assert_eq!(
+            replicator.wal_blob_key(1),
+            "cluster-a/shards/1/shared/wal/wal.protobuf.blob"
+        );
+        assert_eq!(
+            replicator.wal_offset_index_blob_key(1),
+            "cluster-a/shards/1/shared/wal/wal.offset_index.protobuf.blob"
+        );
+        assert_eq!(
+            replicator.replay_cursor_key(1),
+            "cluster-a/shards/1/shared/replay_cursor.json"
+        );
+        assert_eq!(
+            replicator.checkpoints_prefix(1),
+            "cluster-a/shards/1/shared/checkpoints/"
+        );
+        assert_eq!(
+            replicator.checkpoint_prefix(1, "ckpt-a"),
+            "cluster-a/shards/1/shared/checkpoints/ckpt-a/"
+        );
+        assert_eq!(
+            replicator.checkpoint_manifest_key(1, "ckpt-a"),
+            "cluster-a/shards/1/shared/checkpoints/ckpt-a/manifest.json"
+        );
+        assert_eq!(
+            replicator.bucket_dump_prefix(1),
+            "cluster-a/shards/1/shared/slot_dumps/"
+        );
+        assert_eq!(
+            replicator.bucket_dump_manifest_key(1, "dump-a"),
+            "cluster-a/shards/1/shared/slot_dumps/dump-a.json"
+        );
+    }
+
+    /// The key `block_slab_key` writes is the key `parse_block_slab_id` reads back.
+    ///
+    /// `restore_index_and_blocks` runs these two against each other: it lists the slab prefix
+    /// and parses an id out of every key it finds. A rename of the prefix or the suffix on ONE
+    /// side alone makes that parse return `None` for every object, and the loop `continue`s
+    /// past all of them -- so the restore reports success having installed nothing at all.
+    /// Nothing raises an error on that path.
+    #[test]
+    fn the_block_slab_key_writer_and_reader_agree() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_objects, replicator) = test_shared_store(dir.path());
+
+        assert_eq!(parse_block_slab_id(&replicator.block_slab_key(1, 0)), Some(0));
+        assert_eq!(parse_block_slab_id(&replicator.block_slab_key(1, 7)), Some(7));
+        assert_eq!(
+            parse_block_slab_id(&replicator.block_slab_key(4, 1234)),
+            Some(1234)
+        );
+        // u64::MAX is exactly 20 digits, so this also pins that the padding is not truncating
+        // the widest id a slab can carry.
+        assert_eq!(
+            parse_block_slab_id(&replicator.block_slab_key(1, u64::MAX)),
+            Some(u64::MAX)
+        );
+
+        // A control: the sibling objects under the same shard must NOT parse as slabs, or the
+        // restore loop would try to install the index as though it were slab bytes.
+        assert_eq!(parse_block_slab_id(&replicator.index_key(1)), None);
+        assert_eq!(parse_block_slab_id(&replicator.replay_cursor_key(1)), None);
+    }
+
+    /// The remote object's basename and the local slab file's name are composed by two
+    /// functions that cannot see each other -- `block_slab_key` here and
+    /// `block_store::paths::slab_path` there. This drives the real block store to get the real
+    /// on-disk name rather than restating the format, so a rename applied to only one side
+    /// fails here instead of at a restore on someone's cluster.
+    #[test]
+    fn the_remote_slab_key_basename_matches_the_local_slab_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocks_root = dir.path().join("blocks");
+        let blocks = BlockStore::new(&blocks_root);
+        let address = blocks.append(b"one-record").unwrap();
+
+        let mut on_disk: Vec<String> = std::fs::read_dir(&blocks_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".seg"))
+            .collect();
+        on_disk.sort();
+        assert_eq!(
+            on_disk.len(),
+            1,
+            "expected exactly one slab file on disk, found {on_disk:?}"
+        );
+
+        let (_objects, replicator) = test_shared_store(dir.path());
+        let remote = replicator.block_slab_key(1, address.block_slab_id);
+        let basename = remote.rsplit('/').next().unwrap();
+        assert_eq!(
+            basename, on_disk[0],
+            "the remote object basename and the local slab file name have drifted apart"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The corrupt-slab guard, one half at a time.
+    //
+    // MEASURED: before these existed, deleting EITHER half of the condition in
+    // `SharedPathSlabSource::fetch_slab`, and either half of the identical condition in
+    // `MatrixObjectSlabSource::fetch_slab`, left all 1960 tests passing. Nothing in the crate
+    // exercised the guard that stops a corrupt shared slab being cached and served.
+    //
+    // The condition rejects a slab whose length OR whose digest disagrees with the address the
+    // checkpoint recorded. One test that corrupts the bytes AND changes the length satisfies
+    // both halves at once, so it passes with either half deleted; these two arms each leave
+    // one half false, and the third is the control that the source serves anything at all.
+    //
+    // ONLY `SharedPathSlabSource` IS COVERED HERE. That guard is spelled three times with
+    // byte-identical bodies, once per implementation: this one (a filesystem read),
+    // `MatrixObjectSlabSource` (a networked GET, which needs a server to drive) and
+    // `MatrixObjectLocalSlabSource` (behind the `matrixobject` feature, off by default, so it
+    // is not compiled in this gate at all). Covering one copy leaves the other two free to
+    // keep a defect this one cannot have.
+
+    /// Right length, wrong bytes: only the digest half of the guard can reject this.
+    #[tokio::test]
+    async fn a_shared_slab_with_the_right_length_and_the_wrong_bytes_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let objects = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let key = "cluster-a/shards/1/shared/block_segments/slab.seg";
+        let stored = b"aaaaaaaaaaaaaaaa".to_vec();
+        let expected = b"bbbbbbbbbbbbbbbb".to_vec();
+        assert_eq!(
+            stored.len(),
+            expected.len(),
+            "the arm is only meaningful while the two lengths agree"
+        );
+        objects.put(key, Bytes::from(stored.clone())).await.unwrap();
+
+        let mut slabs = BTreeMap::new();
+        slabs.insert(
+            0_u64,
+            SharedSlabAddress {
+                key: key.to_string(),
+                byte_size: expected.len() as u64,
+                sha256: sha256_hex(&expected),
+            },
+        );
+        let source = SharedPathSlabSource::new(objects, slabs);
+
+        let err = source
+            .fetch_slab(0)
+            .expect_err("a slab whose digest does not match its address must not be served");
+        assert!(
+            matches!(err, BlockStoreError::ChecksumMismatch { .. }),
+            "expected a checksum mismatch, got {err:?}"
+        );
+    }
+
+    /// Wrong length, and a digest that matches the bytes actually stored: only the length half
+    /// of the guard can reject this.
+    #[tokio::test]
+    async fn a_shared_slab_of_the_wrong_length_is_rejected_even_when_its_digest_is_self_consistent()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let objects = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let key = "cluster-a/shards/1/shared/block_segments/slab.seg";
+        let stored = b"short".to_vec();
+        objects.put(key, Bytes::from(stored.clone())).await.unwrap();
+
+        let mut slabs = BTreeMap::new();
+        slabs.insert(
+            0_u64,
+            SharedSlabAddress {
+                key: key.to_string(),
+                // The digest is of the bytes that ARE there, so the digest half is false and
+                // only the length half is left to fire.
+                sha256: sha256_hex(&stored),
+                byte_size: stored.len() as u64 + 1,
+            },
+        );
+        let source = SharedPathSlabSource::new(objects, slabs);
+
+        let err = source
+            .fetch_slab(0)
+            .expect_err("a slab shorter than its address says must not be served");
+        assert!(
+            matches!(err, BlockStoreError::ChecksumMismatch { .. }),
+            "expected a checksum mismatch, got {err:?}"
+        );
+    }
+
+    /// The control for the two arms above: the same source serves a slab that matches its
+    /// address on both counts, and answers absence for one it does not hold. Without this, a
+    /// `fetch_slab` that rejected EVERYTHING would pass both arms.
+    #[tokio::test]
+    async fn a_shared_slab_matching_its_address_is_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let objects = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let key = "cluster-a/shards/1/shared/block_segments/slab.seg";
+        let stored = b"the-actual-slab-bytes".to_vec();
+        objects.put(key, Bytes::from(stored.clone())).await.unwrap();
+
+        let mut slabs = BTreeMap::new();
+        slabs.insert(
+            0_u64,
+            SharedSlabAddress {
+                key: key.to_string(),
+                byte_size: stored.len() as u64,
+                sha256: sha256_hex(&stored),
+            },
+        );
+        let source = SharedPathSlabSource::new(objects, slabs);
+
+        assert_eq!(
+            source.fetch_slab(0).expect("a matching slab must be served"),
+            Some(stored)
+        );
+        assert_eq!(
+            source.fetch_slab(9).expect("an unknown slab is absence"),
+            None
         );
     }
 }

@@ -1021,8 +1021,16 @@ pub struct BlockStoreSlabReport {
     pub has_corruption: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_error_offset: Option<u64>,
+    /// ALWAYS 0 TODAY. `inspect_slab` fills this from `header.object_id`, and
+    /// `parse_block_record_header` hardcodes that to `None` because the record envelope
+    /// carries no object id -- the index holds it instead. The counting code in
+    /// `inspect_slab` sits behind `if let Some(..)` on that field, so it never runs.
+    /// Kept rather than removed: this is a serialised public field, so dropping it is a
+    /// surface change. Read it as "not reported", never as "this slab has no objects".
     #[serde(default)]
     pub object_count: u64,
+    /// ALWAYS 0 TODAY, for the same reason as `object_count`: `header.routing_bucket` is
+    /// hardcoded to `None` by the header parser.
     #[serde(default)]
     #[serde(alias = "routing_slot_count")]
     pub routing_bucket_count: u64,
@@ -1031,9 +1039,13 @@ pub struct BlockStoreSlabReport {
     pub first_block_id: Option<u64>,
     #[serde(rename = "last_page_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
+    /// ALWAYS `None` TODAY -- see `routing_bucket_count`. With
+    /// `skip_serializing_if = "Option::is_none"` this means the field is absent from the
+    /// serialised report entirely, rather than present and empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(alias = "first_routing_slot")]
     pub first_routing_bucket: Option<u32>,
+    /// ALWAYS `None` TODAY -- see `first_routing_bucket`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(alias = "last_routing_slot")]
     pub last_routing_bucket: Option<u32>,
@@ -1070,8 +1082,14 @@ pub struct BlockStoreBlockIndexReport {
     )]
     #[serde(alias = "storage_segment_id")]
     pub storage_slab_id: Option<u64>,
+    /// ALWAYS `None` TODAY. `inspect_slab` copies this straight from `header.object_id`,
+    /// which `parse_block_record_header` hardcodes to `None`: the record envelope carries no
+    /// object id, the index does. With `skip_serializing_if` the field is simply absent from
+    /// the serialised entry. Kept rather than removed -- a public serialised field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
+    /// ALWAYS `None` TODAY: `inspect_slab` writes the literal `None` here, as nothing in the
+    /// record envelope names a model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<u8>,
     #[serde(default, alias = "page_id", skip_serializing_if = "Option::is_none")]
@@ -1083,6 +1101,8 @@ pub struct BlockStoreBlockIndexReport {
     pub deleted: bool,
     #[serde(alias = "page_in_log")]
     pub block_in_log: bool,
+    /// ALWAYS `None` TODAY, for the same reason as `object_id`: `header.routing_bucket` is
+    /// hardcoded to `None` by the header parser.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "routing_slot")]
     pub routing_bucket: Option<u32>,
