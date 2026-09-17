@@ -93,6 +93,7 @@ mod serving_read_guard;
 mod poison_shard_guard;
 mod restore_serving_gate;
 mod page_and_block_counter_ratio;
+mod manifest_restore_model_maps;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,

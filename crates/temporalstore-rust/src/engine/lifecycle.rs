@@ -405,6 +405,29 @@ impl TemporalEngine {
                     // delta.
                     match crate::engine::decode_index_bytes(&manifest.index_bytes) {
                         Ok(mut restored) => {
+                            // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
+                            // for the reason `install_bucket_dump_manifest` states at its own call
+                            // to the same pair. Three of the maps
+                            // `collect_model_live_block_entries` walks are `skip_serializing`, so a
+                            // manifest index decodes with them EMPTY while its `bucket_map` --
+                            // which does serialize -- still names every page they owned.
+                            // `rebuild_bucket_block_ownership` clears `bucket_map` and repopulates
+                            // it FROM the model maps, so on its own here it deleted exactly the
+                            // pages only the index still knew about, and this restored state is
+                            // what becomes the shard.
+                            //
+                            // Measured before this line existed, on the DEFAULT recovery arm: a
+                            // shard dumped holding six hash fields and six strings came back
+                            // serving 0 of 6 hash fields and 6 of 6 strings. The install path has
+                            // always done this; only this arm did not.
+                            //
+                            // `hashes` is the map this re-derives. `context_events` and
+                            // `context_indexes` are keyed by timestamp and their index entries
+                            // carry `component: None`, so their keys are not recoverable from the
+                            // index and they stay dropped here -- the same hole the install path
+                            // carries, recorded at
+                            // `rebuild_unserialized_model_maps_from_bucket_index`.
+                            rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
                             rebuild_bucket_block_ownership(
                                 request.shard_id,
                                 &mut restored,
