@@ -183,11 +183,14 @@ class TheShareCanBeRaisedTest(Case):
         build constant rather than to whatever the process was started with. Without this the
         retirement could have frozen a lane at the wrong number and nothing here would notice.
         """
-        for profile, constant in ((False, "DEFAULT_CROSS_SESSION_BUDGET_RATIO"),
-                                  (True, "DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO")):
+        # The LITERAL, not `getattr(runtime, constant)`. Written the second way first and mutation
+        # caught it: reading the number back out of the module it lives in moves both sides of the
+        # assertion together, so changing the constant left this green. The lane and the number it
+        # is supposed to resolve to have to be stated independently or this proves nothing.
+        for profile, expected in ((False, 0.12), (True, 0.30)):
             with self.subTest(profile=profile):
                 ratio, _tokens = self.cross_session(profile=profile)
-                self.assertAlmostEqual(getattr(runtime, constant), ratio, places=6)
+                self.assertAlmostEqual(expected, ratio, places=6)
 
     def test_both_copies_of_the_shared_policy_honour_it(self) -> None:
         """Making one copy live and not the other is how a setting works on some requests. A
