@@ -247,9 +247,11 @@ stats, and stage latency budgets. They intentionally avoid raw selected/dropped
 text so the default operational view stays small.
 
 Use `MATRIXARK_CONTEXT_AUDIT_MODE=telemetry_only` for high-throughput production
-traffic that needs counters only. Use `MATRIXARK_CONTEXT_AUDIT_MODE=full` with
-`MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE=0.01` to keep always-on telemetry plus a
-1% rich replay sample. Benchmark/debug runs should use sample rate `1.0`.
+traffic that needs counters only. Use `MATRIXARK_CONTEXT_AUDIT_MODE=full` to keep
+always-on telemetry plus a rich replay sample; the sample is 1% of retrieves and is
+fixed in the build, because `MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE` has been retired.
+A benchmark or debug run that wants `1.0` passes `audit_sample_rate` on the request,
+which is the route that survived.
 Partial ContextPacks, insufficient context, and quality warnings force rich
 audit when `audit_mode=full`, even if the sample rate is low.
 

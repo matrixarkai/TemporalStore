@@ -39,10 +39,14 @@ import unittest
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 
 RETRIEVE = "matrixark_local_adapter_retrieve.py"
-CAPS = ("top_k_per_layer", "max_candidates_per_node", "max_global_candidates",
-        "max_children_scored_per_parent")
+# `max_children_scored_per_parent` was a fourth cap here. It has been retired from the operator
+# page, so there is no field left to carry the sentence this file requires; the sentence itself --
+# that these apply to the PYTHON retrieval path and do not bind on a temporalstore backend -- moved
+# to the constant in matrixark_mcp_runtime_config. This file recorded the decision to offer it and
+# that decision is reversed deliberately, not forgotten.
+CAPS = ("top_k_per_layer", "max_candidates_per_node", "max_global_candidates")
 CAP_ENVS = ("MATRIXARK_TOP_K_PER_LAYER", "MATRIXARK_MAX_CANDIDATES_PER_NODE",
-            "MATRIXARK_MAX_GLOBAL_CANDIDATES", "MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT")
+            "MATRIXARK_MAX_GLOBAL_CANDIDATES")
 
 
 def _tree():

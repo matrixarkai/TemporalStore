@@ -333,12 +333,12 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     elif _mode_quota and _mode == "remote_only":
         default_ratio = DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO
         question_budget_reason = "remote_only_reserves_majority_of_budget_for_current_session_reconstruction"
+    # Both guards are build constants now; their variables are retired. `config` still carries
+    # `max_budget_ratio` per request, which is the route that survives.
     default_max_budget_ratio = (
-        live_float("MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO",
-                   DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO)
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO
         if profile_budget_query
-        else live_float("MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO",
-                        DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO)
+        else DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO
     )
     if _mode_quota and _mode in {"local_and_remote", "remote_only"}:
         # do not let the profile/default max-ratio cap the mode-dependent cross-session allocation
@@ -348,8 +348,7 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     # Read per pack, so raising a ceiling applies to the next retrieve rather than the next
     # restart. The constant is the fallback.
     max_budget_default = (
-        live_int("MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS",
-                 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS)
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS
         if profile_budget_query
         else live_int("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS",
                       DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS)
@@ -469,8 +468,7 @@ def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_toke
     resource_max_budget_ratio = float_arg(
         config,
         "resource_max_budget_ratio",
-        live_float("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO",
-                   DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO),
+        DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO,
         minimum=0.0,
         maximum=1.0,
     )

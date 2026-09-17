@@ -1570,7 +1570,9 @@ class _TemporalDirectReadMixin:
         if audit_mode not in {"full", "telemetry_only", "off"}:
             audit_mode = "telemetry_only"
         try:
-            audit_sample_rate = clamp01(float(args.get("audit_sample_rate", os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 0.01))))
+            # MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE is retired; the per-request
+            # `audit_sample_rate` argument is untouched and is the route that survives.
+            audit_sample_rate = clamp01(float(args.get("audit_sample_rate", 0.01)))
         except (TypeError, ValueError):
             audit_sample_rate = 0.01
         audit_record = {

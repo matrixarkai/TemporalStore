@@ -1847,6 +1847,7 @@ def _model_config_snapshot() -> Json:
     def _env(name: str, default: str = "") -> str:
         return os.environ.get(name, default).strip()
 
+
     def _key_state(env_name: str) -> Json:
         return {
             "api_key_env": env_name,

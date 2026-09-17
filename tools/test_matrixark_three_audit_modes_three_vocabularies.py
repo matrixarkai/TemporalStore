@@ -38,7 +38,6 @@ import matrixark_mcp_retrieve_planning as planning  # noqa: E402
 import matrixark_mcp_runtime_config as runtime  # noqa: E402
 
 CONTEXT_KEY = "retrieval.context_audit_mode"
-RATE_KEY = "retrieval.context_audit_sample_rate"
 DIRECT_KEY = "limits.direct_audit_mode"
 ACCESS_KEY = "audit.mode"
 
@@ -208,23 +207,19 @@ class TheDeclaredDefaultsAreWhatTheBuildRunsTest(unittest.TestCase):
     def test_the_store_audit_default(self) -> None:
         self.assertEqual(runtime.DIRECT_AUDIT_MODE, cfg.SETTINGS_BY_KEY[DIRECT_KEY].default)
 
-    def test_the_sample_rate_default(self) -> None:
-        """Read out of the module that reads it, rather than retyped here."""
-        with open(os.path.join(TOOLS, "matrixark_mcp_retrieve_planning.py"),
-                  encoding="utf-8") as handle:
-            source = handle.read()
-        match = re.search(r'MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE",\s*([0-9.]+)', source)
-        self.assertIsNotNone(match, "the sample-rate default is not where this looked")
-        self.assertEqual(float(match.group(1)),
-                         float(cfg.SETTINGS_BY_KEY[RATE_KEY].default))
+    def test_one_is_live_and_one_is_not(self) -> None:
+        """Not a stylistic split. The retrieval control is read inside the call that uses it, so a
+        change lands on the next retrieve; the store one is bound when its module is imported, so
+        it does not. The labels say which, and `test_matrixark_gateway_config_audit` derives that
+        from where each read is -- it caught both of these labelled restart.
 
-    def test_two_are_live_and_one_is_not(self) -> None:
-        """Not a stylistic split. The two retrieval controls are read inside the call that uses
-        them, so a change lands on the next retrieve; the store one is bound when its module is
-        imported, so it does not. The labels say which, and `test_matrixark_gateway_config_audit`
-        derives that from where each read is -- it caught both of these labelled restart."""
+        WAS `test_two_are_live_and_one_is_not`, and asserted the same of
+        `retrieval.context_audit_sample_rate`. That control came off the operator page in the tier
+        that took nine dials with it, so the row went with it. The DISTINCTION is what this test is
+        for and it survives on the two that remain -- had only one been left, the test would have
+        had nothing to contrast and should have gone entirely.
+        """
         self.assertEqual("live", cfg.SETTINGS_BY_KEY[CONTEXT_KEY].applies)
-        self.assertEqual("live", cfg.SETTINGS_BY_KEY[RATE_KEY].applies)
         self.assertEqual("restart", cfg.SETTINGS_BY_KEY[DIRECT_KEY].applies)
 
     def test_the_retrieval_default_is_the_one_two_of_three_paths_use(self) -> None:

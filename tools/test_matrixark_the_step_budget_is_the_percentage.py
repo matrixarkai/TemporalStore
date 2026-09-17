@@ -54,9 +54,13 @@ SECTIONS = {
     "profile": ("DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO",
                 "DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS"),
 }
+#: `retrieval.cross_session_profile_max_budget_tokens` stood here until it came off the operator
+#: page. The property this file asserts -- a ceiling is a backstop and not the way to size a
+#: section -- is about the ceilings that ARE offered, and the three that remain still demonstrate
+#: it. Had the last one gone, the file would have had nothing to assert it of and should have gone
+#: with it.
 OFFERED = ("skills.shared_skill_max_budget_tokens", "skills.shared_resource_max_budget_tokens",
-           "retrieval.cross_session_max_budget_tokens",
-           "retrieval.cross_session_profile_max_budget_tokens")
+           "retrieval.cross_session_max_budget_tokens")
 
 
 class TheCeilingIsAboveWhatThePercentageYieldsTest(unittest.TestCase):

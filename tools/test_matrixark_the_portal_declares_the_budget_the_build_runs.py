@@ -271,17 +271,22 @@ def classify() -> tuple:
 
 
 # Settings whose default reaches the build only through a resolver. If the admission above is
-# removed, these fall out of the sweep entirely and eight declared defaults stop being checked
+# removed, these fall out of the sweep entirely and their declared defaults stop being checked
 # without a single test going red.
+#
+# EIGHT BEFORE, FIVE NOW. `skills.shared_resource_max_budget_ratio`,
+# `retrieval.cross_session_max_budget_ratio` and `retrieval.cross_session_profile_max_budget_ratio`
+# were the three share GUARDS, and they have been retired from the operator page: the variables are
+# gone, the resolver call is gone, and the constants are read directly. This list recorded the
+# decision to offer them and that decision is reversed deliberately. The five that remain include
+# all four SHARES, so the shape this file exists for -- a default handed to `live_float` rather
+# than written out -- is still exercised.
 DELEGATED_DEFAULTS = (
     "skills.shared_skill_budget_ratio",
     "skills.shared_skill_max_budget_ratio",
     "skills.shared_resource_budget_ratio",
-    "skills.shared_resource_max_budget_ratio",
     "retrieval.cross_session_budget_ratio",
-    "retrieval.cross_session_max_budget_ratio",
     "retrieval.cross_session_profile_budget_ratio",
-    "retrieval.cross_session_profile_max_budget_ratio",
 )
 
 

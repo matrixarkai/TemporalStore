@@ -193,7 +193,10 @@ def retrieval_audit_policy(args: Json, default: str = "telemetry_only") -> tuple
     elif audit_mode == "full":
         raw_audit_sample_rate = 1.0
     else:
-        raw_audit_sample_rate = os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 0.01)
+        # MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE is retired. The mode above still selects
+        # off / telemetry_only / full, and full still raises the rate to 1.0; what goes is
+        # the deployment-wide rate for the sampled case.
+        raw_audit_sample_rate = 0.01
     try:
         audit_sample_rate = clamp01(float(raw_audit_sample_rate))
     except (TypeError, ValueError):

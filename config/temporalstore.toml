@@ -143,13 +143,10 @@ max_candidates_per_node = 1024              # MATRIXARK_MAX_CANDIDATES_PER_NODE 
 max_global_candidates = 2048                # MATRIXARK_MAX_GLOBAL_CANDIDATES  global candidate scan cap
 max_selected_refs = 1000                    # MATRIXARK_MAX_SELECTED_REFS  hard cap on refs in a pack
 near_duplicate_overlap_threshold = 0.85     # MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD  drop a candidate whose token-set Jaccard similarity with a higher-ranked already-selected ref is >= this (de-noise now that defaults return more). 1.0 = only token-identical collapses; 0 = disabled.
-max_children_scored_per_parent = 100000     # MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT  fan-out scoring cap
 # --- cross-session lane (breadth across other sessions) ---
 cross_session_budget_ratio = 0.12           # MATRIXARK_CROSS_SESSION_BUDGET_RATIO  fraction of the pack budget for cross-session refs
 cross_session_max_candidates = 200          # MATRIXARK_CROSS_SESSION_MAX_CANDIDATES  cross-session candidate cap (raised 24 -> 200; was the main breadth limiter)
-cross_session_min_score = 0.20              # MATRIXARK_CROSS_SESSION_MIN_SCORE  min score for a cross-session ref
 cross_session_max_budget_tokens = 500000    # MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS  absolute cap on cross-session tokens
-cross_session_max_budget_ratio = 0.50       # MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO  the guard on the share above, not the share
 # --- profile lane (long-lived user profile) ---
 cross_session_profile_max_candidates = 200  # MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES  profile candidate cap (raised 48 -> 200 for consistency)
 cross_session_profile_budget_ratio = 0.30   # MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO  profile lane budget fraction
@@ -157,8 +154,6 @@ cross_session_profile_budget_ratio = 0.30   # MATRIXARK_CROSS_SESSION_PROFILE_BU
 shared_resource_budget_ratio = 0.25         # MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO  shared-resource lane budget fraction
 shared_skill_budget_ratio = 0.10            # MATRIXARK_SHARED_SKILL_BUDGET_RATIO  shared-skill lane budget fraction
 shared_skill_max_budget_ratio = 0.50        # MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO  the guard on the share above
-shared_resource_max_budget_ratio = 0.50     # MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO  the guard on the resource share
-cross_session_profile_max_budget_ratio = 0.60  # MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO  the guard on the profile share
 # --- optional retrieval features (ship OFF) ---
 query_rewrite = 0                            # MATRIXARK_QUERY_REWRITE  1 = enable query rewriting
 pack_precision_expand = 0                    # MATRIXARK_PACK_PRECISION_EXPAND  1 = precision expansion of raw events
@@ -169,7 +164,6 @@ skill_discovery = 0                          # MATRIXARK_SKILL_DISCOVERY  1 = en
 # [extraction] - summarization, time-compression, embeddings drainer
 # -----------------------------------------------------------------------------
 [extraction]
-summary_refresh_interval_ms = 1000     # MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS  ms between summary refresh passes
 time_compression_max_raw_events_per_node = 1024  # MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE  raw-event retention cap per node
 enable_llm_merge_operator = 0          # MATRIXARK_ENABLE_LLM_MERGE_OPERATOR  1 = use the LLM merge operator
 embed_drainer = 0                      # MATRIXARK_EMBED_DRAINER  1 = run the background embedding drainer

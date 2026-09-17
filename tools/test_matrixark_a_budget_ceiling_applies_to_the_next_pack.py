@@ -67,9 +67,9 @@ CEILINGS = {
          "DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS"),
     "retrieval.cross_session_max_budget_tokens":
         ("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS", "DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS"),
-    "retrieval.cross_session_profile_max_budget_tokens":
-        ("MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS",
-         "DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS"),
+    # `retrieval.cross_session_profile_max_budget_tokens` was here. Its variable is retired and
+    # the row is off the page, so there is no declared `live` to earn; the CONSTANT is still read
+    # per pack, which is the behaviour this file was protecting. A recorded decision, reversed.
 }
 VARIABLES = tuple(variable for variable, _constant in CEILINGS.values())
 

@@ -136,8 +136,15 @@ class ASettingSaysWhenItTakesEffectAndTheCodeAgreesTest(unittest.TestCase):
         # walks such a number down into the count.
         self.assertGreater(len(settings), 40, "the Setting scan came back nearly empty")
         self.assertGreater(len(scopes), 200, "the read scan came back nearly empty")
+        # MEASURED 48 live, floor 15. This third one did not follow the rule the comment above
+        # states: it stood at `> 50` against a portal holding exactly 50 live rows, so it was off
+        # by ONE before anything was retired, and the note directly above it says that retiring
+        # knobs "is exactly the legitimate move that walks such a number down into the count".
+        # The other two floors here obey the rule -- 40 against ~112 settings, 200 against the
+        # read scan. Set from what the FAILURE looks like: a scan that stopped recognising
+        # `applies="live"` reports zero or one, not forty-seven.
         self.assertGreater(
-            sum(1 for s in settings if s.applies == "live"), 50,
+            sum(1 for s in settings if s.applies == "live"), 15,
             "almost nothing is declared live, so the checks above are about nothing")
 
     def test_a_class_body_read_counts_as_frozen(self) -> None:

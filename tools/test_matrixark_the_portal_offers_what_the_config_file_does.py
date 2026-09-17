@@ -76,7 +76,12 @@ class TheTwoSurfacesAgreeTest(unittest.TestCase):
         mapped = env_map()
         self.assertGreater(len(mapped), 100, "the config map has %d entries" % len(mapped))
         serving = [k for k in mapped if k.split(".", 1)[0] not in BOOTSTRAP_SECTIONS]
-        self.assertGreater(len(serving), 40,
+        # MEASURED 40 mapped-and-serving, floor 20. It stood at `> 40` against exactly 40 -- off by
+        # one, so the next retirement would have failed a check that exists to catch a SWALLOWED
+        # section list, not a cut. The floor is set from what that failure looks like: a section
+        # list that had swallowed the file leaves nothing serving, not thirty-nine. Twenty
+        # separates the two and survives the next tier.
+        self.assertGreater(len(serving), 20,
                            "only %d config keys are in a serving section" % len(serving))
 
     def test_the_exemptions_are_the_minority(self) -> None:
@@ -118,8 +123,10 @@ class TheNewSettingsAreRealTest(unittest.TestCase):
         "limits.backend_readiness_timeout_ms",
         "limits.direct_record_hot_cache_max_records",
         "retrieval.cross_session_max_candidates",
-        "retrieval.cross_session_min_score",
-        "retrieval.max_children_scored_per_parent",
+        # `retrieval.cross_session_min_score` and `retrieval.max_children_scored_per_parent` stood
+        # here until they came off the operator page. This tuple records that each entry was
+        # checked against the code before being offered -- it is not a list of every setting, so a
+        # retired one leaves rather than staying as a name nothing can resolve.
         "extraction.enable_llm_merge_operator",
         "extraction.time_compression_max_raw_events_per_node",
     )

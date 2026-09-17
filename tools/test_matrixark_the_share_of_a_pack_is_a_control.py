@@ -345,10 +345,12 @@ class TheLiveClaimIsEarnedTest(unittest.TestCase):
         for key in SHARES:
             with self.subTest(setting=key):
                 self.assertEqual("live", cfg.SETTINGS_BY_KEY[key].applies)
-        for key in ("skills.shared_skill_max_budget_ratio",
-                    "skills.shared_resource_max_budget_ratio",
-                    "retrieval.cross_session_max_budget_ratio",
-                    "retrieval.cross_session_profile_max_budget_ratio"):
+        # Three of the four guards this named are retired from the page: the resource guard and
+        # the two cross-session guards. This file recorded the decision to offer them and it is
+        # reversed deliberately. The skill guard STAYS, and not for symmetry -- its help carries
+        # the episode where it sat at exactly the share's own default, so raising the share did
+        # nothing, and that is written down nowhere else.
+        for key in ("skills.shared_skill_max_budget_ratio",):
             with self.subTest(setting=key):
                 self.assertEqual("live", cfg.SETTINGS_BY_KEY[key].applies)
 
@@ -404,9 +406,21 @@ class ThePortalDeclaresTheNumberTheBuildRunsTest(unittest.TestCase):
 
     def test_the_derivation_actually_found_them(self) -> None:
         """The floor: a naming change would empty the map above and the test would pass on
-        nothing. Every share and guard this change offers has to be in it."""
+        nothing. Every share and guard this change offers has to be in it.
+
+        MEASURED 5, floor 3. It was 8 against a population of exactly 8 -- no margin at all -- and
+        this change retired three of the guards it counted. The new floor is set from what the
+        FAILURE looks like rather than from the population minus a cushion: a derivation that has
+        stopped matching reports zero or one, not four. Three separates those two cases and
+        survives the next retirement.
+
+        Four recorded counts in this campaign turned out to advertise headroom they did not have --
+        BOOL_SETTING_FLOOR said 79 against a real 41, EXPECTED_COMPARABLE_FLOOR said 56/35 against
+        45/25, the portal-parse floor stood at 100 against 108, and this one sat on its own
+        population. A floor pinned to the population is a tripwire, not a floor.
+        """
         found = self.pairs()
-        self.assertGreaterEqual(len(found), 8)
+        self.assertGreaterEqual(len(found), 3)
         for key in SHARES:
             self.assertIn(key, found)
 

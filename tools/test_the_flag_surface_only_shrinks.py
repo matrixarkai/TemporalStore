@@ -110,7 +110,7 @@ _IDENTITY = re.compile(
 #: 46 is offered on the operator page.
 #: 457 since the eight controls the page offered and nothing read lost their variable. The whole
 #: of `KNOBS_READ_BY_NOTHING` went with them, so the count and the register moved together.
-MAXIMUM_FLAGS_READ = 456
+MAXIMUM_FLAGS_READ = 448
 
 
 #: Candidates that have been read one at a time, with what was found. **Not a skip list**: the
@@ -360,7 +360,7 @@ def _is_tooling(module):
 #: WHY A SEPARATE CEILING FROM MAXIMUM_FLAGS_READ. That one bounds what production Python reads,
 #: which moves when a benchmark gains a knob. This one bounds what an operator is offered. They
 #: move independently and a single ceiling would hide one behind the other.
-MAXIMUM_CONFIGURABLE = 123
+MAXIMUM_CONFIGURABLE = 115
 
 #: Flags a deployment can set that decide whether a code path RUNS -- the number "how many features
 #: can this thing be asked to turn off" is asking for, and the one the under-a-hundred target is
@@ -378,7 +378,12 @@ MAXIMUM_CONFIGURABLE = 123
 #: alone. It supplies a number and is not the subject of an `if`, so `deployment_configurable` fell
 #: by one and this did not move. A retirement that moves both is a different kind of change from
 #: one that moves only the first, and the only way to tell them apart is to look each time.
-MAXIMUM_GATING_CONFIGURABLE = 55
+#: 52 since nine dials came off the page. THREE of the nine gate a path and six supply a number,
+#: which is why `deployment_configurable` fell by nine and this by three: the store audit write
+#: mode, the retrieval audit sample rate and the resource share guard are each the subject of an
+#: `if`. Measured on both sides -- the two retirements before this one moved this number by ZERO,
+#: and a ceiling banked without looking would have recorded a fall it had not earned.
+MAXIMUM_GATING_CONFIGURABLE = 52
 
 #: Scan results that cost a tree walk, computed once per process.
 _CACHE: dict = {}
@@ -1927,9 +1932,16 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
         tree = ast.parse(_text("tools/matrixark_gateway_config.py"))
         calls = [n for n in ast.walk(tree)
                  if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "Setting"]
-        self.assertGreater(len(calls), 100,
-                           "the portal registry stopped parsing as Setting(...) calls, which would "
-                           "empty this scan silently")
+        # MEASURED both sides rather than read off the old note: 108 `Setting(...)` calls before
+        # this tier, 99 after nine came off the page. The floor was 100 -- a margin of EIGHT
+        # against a campaign retiring controls in batches -- so it is set from what it is FOR
+        # instead: the registry ceasing to parse reports approximately nothing, not ninety-nine.
+        # 40 catches that and leaves 59 of margin.
+        self.assertGreater(len(calls), 40,
+                           "only %d Setting(...) calls parsed out of the portal registry; below "
+                           "this it has stopped parsing and the configurable surface is being "
+                           "under-reported, which is the failure that looks like a reduction"
+                           % len(calls))
         by_keyword = [n for n in calls if any(k.arg == "env" for k in n.keywords)]
         self.assertEqual(
             [], [n.lineno for n in by_keyword],

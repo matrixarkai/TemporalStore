@@ -443,11 +443,6 @@ SETTINGS: List[Setting] = [
             "Cross-session ceiling (tokens)", "int", "262144", "live",
             "A hard ceiling on what other sessions may contribute, whatever the cross-session "
             "percentage works out to."),
-    Setting("retrieval.cross_session_profile_max_budget_tokens", "retrieval",
-            "MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS",
-            "Profile ceiling (tokens)", "int", "327680", "live",
-            "The same backstop for the durable profile -- the aggregation that carries memory into "
-            "a fresh session, and the section most likely to want room."),
     Setting("skills.shared_skill_budget_ratio", "skills", "MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
             "Skill share of the context budget", "float", "0.10", "live",
             "Fraction of a context pack reserved for skill sections. Raise it and the next pack "
@@ -469,12 +464,6 @@ SETTINGS: List[Setting] = [
             "MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
             "Resource share of the context budget", "float", "0.25", "live",
             "Fraction of a pack reserved for shared resource chunks, separately from skills."),
-    Setting("skills.shared_resource_max_budget_ratio", "skills",
-            "MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO",
-            "Resource share guard", "float", "0.50", "live",
-            "The same guard for resources: the most of a pack they may take however high the "
-            "share above is set."),
-
     # ---- retrieval and context budget ----------------------------------------------------------
     Setting("retrieval.timeout_ms", "retrieval", "MATRIXARK_RETRIEVAL_TIMEOUT_MS",
             "Retrieval deadline (ms)", "int", "0", "live",
@@ -517,17 +506,6 @@ SETTINGS: List[Setting] = [
             "Cross-session candidates", "int", "24", "restart",
             "How many candidates a retrieve may draw from sessions other than the current one "
             "before ranking them. Each one costs a read."),
-    Setting("retrieval.cross_session_min_score", "retrieval",
-            "MATRIXARK_CROSS_SESSION_MIN_SCORE",
-            "Cross-session score floor", "float", "0.20", "restart",
-            "The score a candidate from another session must reach to be considered at all. "
-            "Raising it makes long-term memory pickier rather than smaller."),
-    Setting("retrieval.max_children_scored_per_parent", "retrieval",
-            "MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT",
-            "Children scored per parent", "int", "100000", "restart",
-            "How many children of one node a traversal will score. Scoring a child costs a page "
-            "read, so this is the ceiling on what one branch can cost."
-            " Applies to the PYTHON retrieval path. The native path returns its pack before these are read, and its request does not carry them, so on a deployment using a temporalstore backend this does not bind."),
     Setting("extraction.enable_llm_merge_operator", "extraction",
             "MATRIXARK_ENABLE_LLM_MERGE_OPERATOR",
             "Ask the model to merge entities", "bool", "0", "restart",
@@ -553,12 +531,6 @@ SETTINGS: List[Setting] = [
             "path and the direct read use telemetry_only, the local adapter uses off -- so "
             "setting this is how a deployment makes them agree.",
             ("off", "telemetry_only", "full")),
-    Setting("retrieval.context_audit_sample_rate", "retrieval",
-            "MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE",
-            "Retrieval audit sample rate", "float", "0.01", "live",
-            "What fraction of retrieves the mode above applies to. Selecting full raises this to "
-            "1.0 for the retrieves it keeps evidence for, so a deployment that wants full "
-            "auditing on a sample sets both."),
     Setting("limits.direct_audit_mode", "limits",
             "MATRIXARK_DIRECT_AUDIT_MODE",
             "Store audit write mode", "str", "buffered", "restart",
@@ -610,22 +582,12 @@ SETTINGS: List[Setting] = [
             "Cross-session share of the budget", "float", "0.12", "live",
             "Fraction of a pack that may come from sessions other than the current one. This is "
             "what carries long-term memory into a fresh session."),
-    Setting("retrieval.cross_session_max_budget_ratio", "retrieval",
-            "MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO",
-            "Cross-session share guard", "float", "0.50", "live",
-            "The most of a pack sessions other than the current one may take, whatever the share "
-            "above asks for."),
     Setting("retrieval.cross_session_profile_budget_ratio", "retrieval",
             "MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO",
             "Profile share of the budget", "float", "0.30", "live",
             "The cross-session share used instead of the one above when a query is asking about "
             "the durable profile rather than about recent work. Profile queries are the case "
             "where long-term memory IS the answer, so the share is larger."),
-    Setting("retrieval.cross_session_profile_max_budget_ratio", "retrieval",
-            "MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO",
-            "Profile share guard", "float", "0.60", "live",
-            "The guard on the profile share. Higher than the others because on a profile query "
-            "that section is what the caller came for."),
     Setting("retrieval.query_rewrite", "retrieval", "MATRIXARK_QUERY_REWRITE",
             "Query rewriting", "bool", "0", "restart",
             "Expand the caller's query before matching. Costs a model call per retrieve; helps "
@@ -646,11 +608,6 @@ SETTINGS: List[Setting] = [
             "Async parse threshold (bytes)", "int", "2097152", "restart",
             "A resource larger than this is parsed in the background instead of inline, so a big "
             "document does not hold the ingest call open."),
-    Setting("ingestion.summary_refresh_interval_ms", "ingestion",
-            "MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS",
-            "Summary refresh interval (ms)", "int", "1000", "restart",
-            "How often the background refresher rebuilds node summaries. Longer means summaries "
-            "lag further behind new events; shorter costs more model calls."),
     # ---- storage engine -------------------------------------------------------------------
     # These are TS_* knobs the engine reads directly. Seven of eighty, chosen rather than exported:
     # directories, bind addresses, cluster identity and the metaserver admin token are set by

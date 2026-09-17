@@ -45,7 +45,10 @@ ENABLE_CONTEXT_DEBUG_RECORDS = env_bool("MATRIXARK_CONTEXT_DEBUG_RECORDS", False
 ENABLE_CONTEXT_REPLAY = env_bool("MATRIXARK_ENABLE_REPLAY", False)
 ENABLE_SUMMARY_REFRESH_AUDIT = env_bool("MATRIXARK_SUMMARY_REFRESH_AUDIT", False)
 ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS = env_bool("MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS", False)
-SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "").strip() or "1000")
+# Was MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS. Longer meant summaries lagged further behind new
+# events and shorter cost more model calls; that trade is a build decision now. Its companion
+# ceiling SUMMARY_REFRESH_LIMIT was retired in matrixarkai#1813.
+SUMMARY_REFRESH_INTERVAL_MS = 1000
 SUMMARY_REFRESH_LIMIT = 64  # was MATRIXARK_SUMMARY_REFRESH_LIMIT, retired
 # Largest share of wall-clock the background summary refresher may occupy. A refresh pass
 # costs O(store) -- it reads the whole record log and writes the refreshed summaries back
@@ -214,7 +217,11 @@ def apply_remote_only_local_fallback(
 CONTEXT_PACK_DEBUG_REFS = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", False)
 AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
 
-DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "").strip() or "100000")
+# Was MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT. Its help carried the note that this applies
+# to the PYTHON retrieval path only -- the native path returns its pack before these are
+# read -- so on a temporalstore backend it never bound. Kept here because the Python path
+# still reads it.
+DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = 100000
 HARD_MAX_CHILDREN_SCORED_PER_PARENT = int("100000")
 RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", "").strip() or str(2 * 1024 * 1024))
 RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = 200000
@@ -259,7 +266,9 @@ DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSI
 DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int("2")
 DEFAULT_CROSS_SESSION_PARALLELISM = 4
 DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "").strip() or "256")
-DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "").strip() or "0.20")
+# Was MATRIXARK_CROSS_SESSION_MIN_SCORE. Raising it made long-term memory pickier rather
+# than smaller; that is now a build decision.
+DEFAULT_CROSS_SESSION_MIN_SCORE = 0.20
 DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float("0.45")
 DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO = 0.60  # the guard, not the setting: the share below is what decides

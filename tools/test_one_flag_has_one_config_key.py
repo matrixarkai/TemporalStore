@@ -72,7 +72,14 @@ LEAF_DIFFERS = {
 #: That mismatch is also why removing it by CONFIG KEY silently missed the loader entry on the
 #: first attempt -- the two sides only agreed on the variable, so the removal matches on the
 #: variable. A recorded count, so it moves when the population does; 26 before matrixarkai#1786.
-SECTION_ONLY = 24
+#: 22 since the tier that took nine dials off the page. TWO of the nine had a leaf name living
+#: under two sections, not one: `retrieval.shared_resource_max_budget_ratio` and
+#: `extraction.summary_refresh_interval_ms`. Measured 24 on main and 22 here, and the pair was
+#: named by diffing the two sets rather than by reasoning about which removal should have moved it
+#: -- the first attempt recorded 23 on the assumption that `retrieval.context_source_mode` was the
+#: only one, and it was not in the group at all. A recorded count, so it moves with the population
+#: -- 26 before matrixarkai#1786, 25 after, 24 after matrixarkai#1813.
+SECTION_ONLY = 22
 
 
 def _env_map():

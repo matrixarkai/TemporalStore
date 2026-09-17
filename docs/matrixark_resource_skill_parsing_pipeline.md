@@ -279,7 +279,7 @@ Resource, skill, event, entity, and summary records attach to the leaf `node_has
 Default summary refresh policy:
 
 - Event/resource/skill writes mark dirty node prefixes and return without regenerating parent summaries inline.
-- The MCP summary refresher wakes every `MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS`, default `1000` ms, and refreshes up to 64 dirty nodes per tick. That ceiling was `MATRIXARK_SUMMARY_REFRESH_LIMIT` and is a build constant now.
+- The MCP summary refresher wakes every 1000 ms and refreshes up to 64 dirty nodes per tick. Both were settings once -- `MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS` and `MATRIXARK_SUMMARY_REFRESH_LIMIT` -- and both are build constants now.
 - The worker writes versioned `ContextSummary(node_l0)` and `ContextEmbedding(node_l0)` for every refreshed node.
 - It writes `ContextSummary(node_l1)` and `ContextEmbedding(node_l1)` when the node has enough accumulated content, child summaries, or event volume to need a richer overview.
 - Session/resource boundaries may still call `matrixark_refresh_summaries` immediately when the caller needs freshness before retrieval.
