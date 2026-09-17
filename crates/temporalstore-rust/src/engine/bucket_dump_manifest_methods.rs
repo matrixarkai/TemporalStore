@@ -4,6 +4,28 @@
 //! Bucket-dump manifest lifecycle methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+/// Fault seam: stop `apply_bucket_dump_manifest_prune_with_retention_refs` dead between its two
+/// phases, as a crash there would.
+///
+/// The prune detaches the survivors whose parent it is about to remove, then unlinks the pruned
+/// manifests. Which of those happens first is a durability decision -- the wrong order leaves
+/// invented corruption on disk for the width of the window between them -- and nothing in
+/// production can stop the function between the two loops on demand, so that window is
+/// untestable without a seam. A guard that cannot be made to fail checks nothing, so here it is.
+///
+/// Thread-local, matching `fail_compaction_block_read_after_for_test`: a prune runs on its
+/// caller's thread, and a test arming this must not reach a prune another test is driving.
+#[cfg(test)]
+thread_local! {
+    static STOP_PRUNE_AFTER_FIRST_PHASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Arm (`true`) or disarm (`false`) the seam above.
+#[cfg(test)]
+pub(crate) fn stop_bucket_dump_prune_after_first_phase_for_test(stop: bool) {
+    STOP_PRUNE_AFTER_FIRST_PHASE.with(|cell| cell.set(stop));
+}
+
 impl TemporalEngine {
     pub fn create_bucket_dump_manifest(
         &self,
@@ -453,27 +475,41 @@ impl TemporalEngine {
             follower_cursors,
             raft_snapshot_refs,
         );
-        let mut removed_manifest_ids = Vec::new();
-        for manifest_id in &plan.prunable_manifest_ids {
-            let path = bucket_dump_manifest_path(&self.index_dir, shard_id, manifest_id);
-            if fs::remove_file(path).is_ok() {
-                removed_manifest_ids.push(manifest_id.clone());
-            }
-        }
-        // Pruning an ancestor leaves whatever survives pointing at a manifest that is no
-        // longer there, which `bucket_dump_manifest_chain_issues` would report as
-        // `missing_parent_manifest` -- indistinguishable from real corruption. Detach the
-        // survivors whose parent we just removed, so a dangling link keeps meaning exactly one
+        // DETACH FIRST, THEN UNLINK. Pruning an ancestor leaves whatever survives pointing at a
+        // manifest that is no longer there, which `bucket_dump_manifest_chain_issues` reports as
+        // `missing_parent_manifest` -- indistinguishable from real corruption, and a
+        // `broken_slot_dump_manifest_chain` blocker on the production-readiness report. Detach
+        // the survivors whose parent is about to go, so a dangling link keeps meaning exactly one
         // thing. Nothing reconstructs through the chain (each manifest embeds a complete
         // index), so dropping the link loses no recovery capability.
-        if !removed_manifest_ids.is_empty() {
-            let removed = removed_manifest_ids.iter().cloned().collect::<BTreeSet<_>>();
+        //
+        // The ORDER is the point, not just the detaching. These two phases were once the other
+        // way round, and a crash in the window between them left on disk exactly the invented
+        // corruption the paragraph above exists to prevent: manifests already unlinked, survivors
+        // not yet detached. Detach-then-unlink has no such window. A crash between the phases now
+        // leaves a survivor whose parent link is gone while its parent file is still present --
+        // which is indistinguishable from a prune that ran to completion, and consistent either
+        // way. A crash PART WAY THROUGH the unlink loop is equally safe for the same reason.
+        //
+        // Keyed on the PLAN rather than on what was actually unlinked, because the unlink has not
+        // happened yet. That makes the set a superset: a survivor whose parent removal then fails
+        // gets detached anyway. Over-detaching costs lineage metadata and nothing else;
+        // under-detaching is the defect this ordering exists to prevent, so the asymmetry is
+        // deliberate. Manifests that are themselves prunable are detached too -- if their own
+        // unlink fails while their parent's succeeds, they are survivors, and they are already
+        // consistent.
+        let pruned_manifest_ids = plan
+            .prunable_manifest_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !pruned_manifest_ids.is_empty() {
             if let Ok(surviving) = list_bucket_dump_manifests_at(&self.index_dir, shard_id) {
                 for mut manifest in surviving {
                     let parent_pruned = manifest
                         .parent_manifest_id
                         .as_ref()
-                        .is_some_and(|parent| removed.contains(parent));
+                        .is_some_and(|parent| pruned_manifest_ids.contains(parent));
                     if !parent_pruned {
                         continue;
                     }
@@ -484,6 +520,25 @@ impl TemporalEngine {
                         let _ = self.persist_bucket_dump_manifest(&manifest);
                     }
                 }
+            }
+        }
+        // The crash window itself. See `stop_bucket_dump_prune_after_first_phase_for_test`.
+        #[cfg(test)]
+        {
+            if STOP_PRUNE_AFTER_FIRST_PHASE.with(|cell| cell.get()) {
+                return BucketDumpManifestPruneReport {
+                    shard_id,
+                    plan,
+                    removed_manifest_ids: Vec::new(),
+                    removed_marker_files: 0,
+                };
+            }
+        }
+        let mut removed_manifest_ids = Vec::new();
+        for manifest_id in &plan.prunable_manifest_ids {
+            let path = bucket_dump_manifest_path(&self.index_dir, shard_id, manifest_id);
+            if fs::remove_file(path).is_ok() {
+                removed_manifest_ids.push(manifest_id.clone());
             }
         }
         let mut removed_marker_files = 0usize;

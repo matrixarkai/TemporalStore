@@ -636,8 +636,29 @@ impl TemporalEngine {
         let Some(manifest) = latest_bucket_dump_manifest_at(&self.index_dir, shard_id) else {
             return Ok(None);
         };
+        // The CHECKED loader, deliberately -- not the tolerant `load_index`.
+        //
+        // `load_index` is documented as the tolerant wrapper for probe callers: it turns a corrupt
+        // served-index delta into `None`. Read through it, this anchor became 0 on exactly that
+        // corruption, every manifest then compared as newer than a served index of 0, and the
+        // install below overwrote the durable index -- after which `load_shard_with` reached its
+        // own `load_index_checked` and refused the load anyway. So the load failed AFTER
+        // destroying the thing it was refusing to read, and the refusal is the case where the
+        // durable index matters most.
+        //
+        // The outcome is unchanged for every other input: this returns the same
+        // `index_log_delta_corruption` status that `load_shard_with` would have returned a few
+        // lines later, so a corrupt delta still refuses the load. It just refuses BEFORE the
+        // install rather than after it. An absent or undecodable BASE index is still `Ok(None)`
+        // in the loader and still anchors at 0 -- that is a fresh shard, not a swallowed error,
+        // and installing a manifest over it is the whole point of this function.
+        //
+        // The paragraph above about `served_anchor` being the delta-advanced anchor, at or above
+        // every manifest's `wal_sequence`, holds only when the delta actually loaded. It reasons
+        // about where a successful fold leaves the anchor and says nothing about the case where
+        // there is no fold to reason about, which is the case this guards.
         let served_anchor = self
-            .load_index(shard_id, false)
+            .load_index_checked(shard_id, false)?
             .and_then(|state| state.applied_wal_sequence)
             .unwrap_or(0);
         if manifest.wal_sequence <= served_anchor {
@@ -2026,6 +2047,18 @@ impl TemporalEngine {
                 }
             };
             if let Some(index_bytes) = index_bytes {
+                // Discarding this result is safe, and the reason is not local, so: nothing here
+                // truncates the WAL. `shard.applied_wal_sequence` was advanced in MEMORY a few
+                // lines up, but WAL reclaim does not read it -- `storage_wal_reclaim_plan` takes
+                // its floor from each bucket's `first_dirty_wal_sequence` and from the durable
+                // dump manifests. So a failed persist leaves the older anchor on disk with every
+                // record it covers still in the WAL, and the next load simply replays from that
+                // older anchor and re-derives the same pages. Replaying more than necessary is
+                // the safe direction here; the tail is applied exactly once from whatever anchor
+                // is found.
+                //
+                // What would make it unsafe is a WAL truncation keyed on the in-memory anchor.
+                // If one is ever added, this result has to be handled.
                 let _ = self.persist_index_bytes(shard_id, &index_bytes);
             }
         }
@@ -2062,6 +2095,12 @@ impl TemporalEngine {
                 .get(&request.shard_id)
                 .map(serialize_index);
             if let Some(index_bytes) = index_bytes {
+                // Discarding this result is safe for the same reason as on the replay-tail path
+                // above: unload truncates neither the WAL nor the index-log (the comment just
+                // above says so for the index-log, and the storage manager's consumer-aware GC
+                // owns that bound). A failed persist therefore leaves the older base on disk with
+                // everything after it still replayable, and the next cold load rebuilds from that
+                // base. The shard leaving memory below does not change what is recoverable.
                 let _ = self.persist_index_bytes_durable(request.shard_id, &index_bytes);
             }
         }
