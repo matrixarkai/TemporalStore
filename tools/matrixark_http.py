@@ -648,7 +648,17 @@ def _hook_collect(reader: _HookStoreReader, prefix: str, args: Json) -> Json:
     rows: list[Json] = []
     if record_count <= 0:
         return {"backend": reader.name, "prefix": prefix, "count_key": count_key, "record_count": record_count, "rows": rows, "status": "empty"}
-    first = max(1, record_count - scan_limit + 1)
+    # Sequences are ZERO-based: the writer assigns `sequence = count` before incrementing, so
+    # the first record a store ever writes is sequence 0 and the newest is `count - 1`. The floor
+    # here was `max(1, ...)`, which put sequence 0 outside every window this query can open -- so
+    # a store holding exactly one record answered "no_matching_rows", and every larger store was
+    # missing its oldest.
+    #
+    # The ceiling stays at `record_count` rather than `record_count - 1`. One probe of a sequence
+    # that does not exist costs a miss; lowering it would drop the newest record of any store that
+    # numbers from one, and the legacy unsharded layout this query still falls back to is not
+    # proven to number from zero.
+    first = max(0, record_count - scan_limit)
     for sequence in range(record_count, first - 1, -1):
         shard = sequence // _RECORD_LOG_SHARD_SIZE
         offset = sequence % _RECORD_LOG_SHARD_SIZE

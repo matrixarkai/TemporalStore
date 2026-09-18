@@ -185,5 +185,95 @@ class TheHookReaderAsksWhereTheWriterWrites(unittest.TestCase):
         )
 
 
+class TheScanWindowReachesTheFirstRecord(unittest.TestCase):
+    """Sequences are zero-based, and the window's floor was one.
+
+    The writer assigns `sequence = count` and then increments, so the first record a store ever
+    writes is sequence 0. `_hook_collect` floored its scan at `max(1, ...)`, which put sequence 0
+    outside every window it can open. A store holding exactly one record therefore answered
+    `no_matching_rows`, and every larger store was quietly missing its oldest.
+
+    This is the same failure shape as the addressing bug above and it compounded with it: one
+    made the newest records unaddressable, the other made the oldest unreachable.
+    """
+
+    def _query(self, store, count, scan_limit=500):
+        reader = _DictReader("native", store, count)
+        original_native = matrixark_http._NativeHookStoreReader
+        original_service = matrixark_http._RustServiceHookStoreReader
+        try:
+            matrixark_http._NativeHookStoreReader = lambda args: reader
+            matrixark_http._RustServiceHookStoreReader = lambda args: (_ for _ in ()).throw(
+                RuntimeError("one backend is enough for a window test")
+            )
+            return matrixark_http.query_codex_hook_messages(
+                {"backend": "native", "prefix": PREFIX, "top_k": 10, "scan_limit": scan_limit}
+            )
+        finally:
+            matrixark_http._NativeHookStoreReader = original_native
+            matrixark_http._RustServiceHookStoreReader = original_service
+
+    def _texts(self, result):
+        rows = []
+        for entry in result.get("results", []):
+            rows.extend(entry.get("rows", []))
+        return {row.get("text") for row in rows}
+
+    def test_a_store_of_one_record_is_not_reported_empty(self) -> None:
+        """The smallest store there is, and the one the old floor could never answer."""
+        store = _written_by_the_writer({0: "the only message"})
+        result = self._query(store, count=1)
+        self.assertIn(
+            "the only message",
+            self._texts(result),
+            "a store whose single record is sequence 0 answered as if it held nothing",
+        )
+
+    def test_the_oldest_record_is_reachable(self) -> None:
+        store = _written_by_the_writer({0: "oldest", 1: "middle", 2: "newest"})
+        self.assertEqual(
+            {"oldest", "middle", "newest"},
+            self._texts(self._query(store, count=3)),
+            "every record from sequence 0 up is reachable",
+        )
+
+    def test_the_window_still_bounds_what_it_reads(self) -> None:
+        """The floor moved; the window did not become unbounded.
+
+        Without this, moving the floor to 0 would be indistinguishable from removing the limit,
+        and a store of a million records would be walked in full on every query.
+
+         is 1 here, not 10: the effective limit is , so asking
+        for ten rows raises the walk to ten sequences no matter what scan_limit says, and the
+        first draft of this test asserted a bound the code never promised.
+        """
+        store = _written_by_the_writer({0: "oldest", 1: "middle", 2: "newest"})
+        reader = _DictReader("native", store, 3)
+        original_native = matrixark_http._NativeHookStoreReader
+        original_service = matrixark_http._RustServiceHookStoreReader
+        try:
+            matrixark_http._NativeHookStoreReader = lambda args: reader
+            matrixark_http._RustServiceHookStoreReader = lambda args: (_ for _ in ()).throw(
+                RuntimeError("one backend is enough")
+            )
+            result = matrixark_http.query_codex_hook_messages(
+                {"backend": "native", "prefix": PREFIX, "top_k": 1, "scan_limit": 1}
+            )
+        finally:
+            matrixark_http._NativeHookStoreReader = original_native
+            matrixark_http._RustServiceHookStoreReader = original_service
+        sequences = {int(field) % DIRECT_RECORD_LOG_SHARD_SIZE for _key, field in reader.asked}
+        self.assertNotIn(
+            0, sequences,
+            "with scan_limit=1 the walk must not reach sequence 0; it asked for %r"
+            % (sorted(sequences),),
+        )
+        texts = set()
+        for entry in result.get("results", []):
+            for row in entry.get("rows", []):
+                texts.add(row.get("text"))
+        self.assertNotIn("oldest", texts, "the limit still bounds what comes back")
+
+
 if __name__ == "__main__":
     unittest.main()
