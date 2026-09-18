@@ -953,8 +953,18 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         }
                     }
                 }
-                shard.applied_wal_sequence =
-                    Some(self.wal_store.stats(request.shard_id).last_sequence);
+                // Anchor off the O(1) CACHED last sequence, not `stats()` -- the same change, for
+                // the same reason, as the `delete_drop` round's anchor in
+                // `storage_lifecycle_methods.rs`. `stats()` takes a full-file rescan plus a walk
+                // of every sealed piece, and it was taking them under this write guard, right
+                // after this sweep's own appends. The write path reads the cached value under
+                // flat append; both logged-deletion paths now do too, so neither is the copy
+                // that kept the cost.
+                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
+                    self.wal_store.cached_last_sequence(request.shard_id)
+                } else {
+                    self.wal_store.stats(request.shard_id).last_sequence
+                });
             }
             // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
             // needed for the deletes and for anchoring `applied_wal_sequence`; it is not needed

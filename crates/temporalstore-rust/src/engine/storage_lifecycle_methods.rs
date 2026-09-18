@@ -42,6 +42,108 @@ pub(crate) static EVICTION_RECENCY_ENTRIES_CLONED: std::sync::atomic::AtomicU64 
 pub(crate) static EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// Where a `delete_drop` round's time under the shard-table write guard actually goes, split by
+/// phase, in nanoseconds.
+///
+/// The append counter above establishes that the tombstone loop runs once per dropped key. It
+/// does NOT establish that the loop is worth moving: lifting a phase that is 3% of the hold buys
+/// 3%, and the cost of moving it is an ordering argument about `applied_wal_sequence` that nobody
+/// has written down. These rows are what makes that question answerable instead of arguable.
+///
+/// Read as FRACTIONS of one round's own hold, never as absolute times. A fraction is a ratio of
+/// two clocks taken microseconds apart on the same thread, so it survives a loaded box in a way
+/// an absolute figure does not -- which is why the probe that reads these PRINTS them and asserts
+/// only on counts.
+///
+/// `total` is taken by its OWN clock spanning the whole guarded region -- from the write guard
+/// being acquired to it being dropped -- rather than by summing the rows. So `total` minus the
+/// rows is an independent residual and not an identity: work that drifts out of every phase lands
+/// in it, where a self-summing table would still balance.
+pub(crate) struct DeleteDropGuardNanos {
+    /// The whole hold, by its own clock.
+    pub total: std::sync::atomic::AtomicU64,
+    /// `collect_live_block_entries` + the victim-bucket filter: O(shard).
+    pub collect: std::sync::atomic::AtomicU64,
+    /// `delete_record`, once per key: the in-memory removal from the shard index. This is the
+    /// only half of the drop loop that actually needs the shard guard.
+    pub delete: std::sync::atomic::AtomicU64,
+    /// `invalidate_record_all`, once per key. Takes `&MultiLayerCache` and a key and touches
+    /// NOTHING on the shard -- so what it costs is charged to a guard it does not need.
+    pub invalidate: std::sync::atomic::AtomicU64,
+    /// The per-key WAL tombstone loop, including the mirror hand-off: once per dropped key.
+    pub wal_append: std::sync::atomic::AtomicU64,
+    /// Reading the sequence the round anchors `applied_wal_sequence` to: once per round.
+    pub anchor: std::sync::atomic::AtomicU64,
+    /// `shard.clone()`, the stamped snapshot the unlocked index flush is handed: once per round.
+    pub snapshot: std::sync::atomic::AtomicU64,
+}
+
+impl DeleteDropGuardNanos {
+    const fn zeroed() -> Self {
+        Self {
+            total: std::sync::atomic::AtomicU64::new(0),
+            collect: std::sync::atomic::AtomicU64::new(0),
+            delete: std::sync::atomic::AtomicU64::new(0),
+            invalidate: std::sync::atomic::AtomicU64::new(0),
+            wal_append: std::sync::atomic::AtomicU64::new(0),
+            anchor: std::sync::atomic::AtomicU64::new(0),
+            snapshot: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Process-wide, so a reader resets immediately before the round it is measuring, and the
+    /// suite it is read in runs single-threaded.
+    pub(crate) fn reset(&self) {
+        for cell in self.cells() {
+            cell.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn cells(&self) -> [&std::sync::atomic::AtomicU64; 7] {
+        [
+            &self.total,
+            &self.collect,
+            &self.delete,
+            &self.invalidate,
+            &self.wal_append,
+            &self.anchor,
+            &self.snapshot,
+        ]
+    }
+
+    /// `(total, collect, delete, invalidate, wal_append, anchor, snapshot)` in nanoseconds.
+    pub(crate) fn read(&self) -> (u64, u64, u64, u64, u64, u64, u64) {
+        let [total, collect, delete, invalidate, wal_append, anchor, snapshot] = self
+            .cells()
+            .map(|cell| cell.load(std::sync::atomic::Ordering::Relaxed));
+        (
+            total, collect, delete, invalidate, wal_append, anchor, snapshot,
+        )
+    }
+
+    /// The hold this round did not attribute to any phase above. Saturating, so an ordering
+    /// surprise reads as zero rather than as an enormous number.
+    pub(crate) fn unattributed(&self) -> u64 {
+        let (total, collect, delete, invalidate, wal_append, anchor, snapshot) = self.read();
+        total
+            .saturating_sub(collect)
+            .saturating_sub(delete)
+            .saturating_sub(invalidate)
+            .saturating_sub(wal_append)
+            .saturating_sub(anchor)
+            .saturating_sub(snapshot)
+    }
+
+    fn add_since(&self, cell: &std::sync::atomic::AtomicU64, since: std::time::Instant) {
+        cell.fetch_add(
+            since.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+pub(crate) static DELETE_DROP_GUARD_NANOS: DeleteDropGuardNanos = DeleteDropGuardNanos::zeroed();
+
 /// How many O(shard) plans one round builds, counted rather than timed.
 ///
 /// A round builds these in several stages and each walks the shard. Whether that is duplicated
@@ -1909,7 +2011,13 @@ impl TemporalEngine {
             // the writes happen after the guard is dropped.
             let mut pending_index_flush = None;
             let mut shards = self.shards.write().expect("shards lock poisoned");
+            // THE HOLD, by its own clock. Started after the guard is in hand and read after it is
+            // dropped, so it spans exactly the interval a serving read would queue behind -- and
+            // it is a SEPARATE clock from the phase rows below, which is what makes the residual
+            // between them mean something.
+            let guard_held = std::time::Instant::now();
             if let Some(shard) = shards.get_mut(&shard_id) {
+                let phase = std::time::Instant::now();
                 let object_keys = collect_live_block_entries(shard)
                     .into_iter()
                     .filter_map(|entry| {
@@ -1920,11 +2028,22 @@ impl TemporalEngine {
                         victim_buckets.contains(&bucket).then_some(entry.object_key)
                     })
                     .collect::<BTreeSet<_>>();
+                DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.collect, phase);
+                // The two halves of the drop loop are timed SEPARATELY because they need
+                // different things: `delete_record` mutates the shard and cannot leave this
+                // guard, while `invalidate_record_all` is handed `&self.cache` and a key and
+                // never touches `shard` at all.
                 let mut deleted_keys = Vec::new();
                 for key in object_keys {
-                    if delete_record(shard, &key) {
+                    let phase = std::time::Instant::now();
+                    let removed = delete_record(shard, &key);
+                    DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.delete, phase);
+                    if removed {
                         dropped_object_count = dropped_object_count.saturating_add(1);
+                        let phase = std::time::Instant::now();
                         invalidate_record_all(&self.cache, shard_id, &key);
+                        DELETE_DROP_GUARD_NANOS
+                            .add_since(&DELETE_DROP_GUARD_NANOS.invalidate, phase);
                         deleted_keys.push(key);
                     }
                 }
@@ -1942,6 +2061,7 @@ impl TemporalEngine {
                     // there is no analog; this aligns the Rust-only delete_drop path with the
                     // engine's own tombstone discipline.)
                     if !replaying_wal() {
+                        let phase = std::time::Instant::now();
                         // ONE mirror lookup for the whole run -- same reasoning as the expiry
                         // sweep, and this loop is inside the shard-table write guard too.
                         let mirror = self.maintenance_mirror_sink();
@@ -1961,16 +2081,41 @@ impl TemporalEngine {
                                 }
                             }
                         }
-                        shard.applied_wal_sequence =
-                            Some(self.wal_store.stats(shard_id).last_sequence);
+                        DELETE_DROP_GUARD_NANOS
+                            .add_since(&DELETE_DROP_GUARD_NANOS.wal_append, phase);
+                        let phase = std::time::Instant::now();
+                        // Anchor off the O(1) CACHED last sequence, not `stats()`. `stats()`
+                        // takes a full-file `last_wal_sequence_at` rescan plus a walk of every
+                        // sealed piece, and it was taking them HERE -- inside the shard-table
+                        // write guard, after this round's own appends, where a serving read waits
+                        // on it. The write path stopped doing exactly this (engine.rs, and the
+                        // batch path in stream_batch_methods.rs) and reads the cached value under
+                        // flat append; the two logged-deletion paths did not follow.
+                        //
+                        // The value is the same one: the cache is advanced by every append on
+                        // this store, the appends above are this round's own, and no other writer
+                        // can have appended in between because appending takes this same guard
+                        // (engine.rs: "WAL sequence order still equals in-memory apply order
+                        // because the reservation + byte-append stay under this same lock").
+                        // Without flat append the exact `stats()` value is kept, which is the
+                        // same conditional the write path uses.
+                        shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
+                            self.wal_store.cached_last_sequence(shard_id)
+                        } else {
+                            self.wal_store.stats(shard_id).last_sequence
+                        });
+                        DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.anchor, phase);
                     }
                     // Stamp here so the clone carries the current on-disk shape, then hand
                     // the snapshot out; the encode and both writes happen below, unlocked.
                     shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
+                    let phase = std::time::Instant::now();
                     pending_index_flush = Some(shard.clone());
+                    DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.snapshot, phase);
                 }
             }
             drop(shards);
+            DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.total, guard_held);
             if let Some(snapshot) = pending_index_flush {
                 let index_bytes = super::serialize_index(&snapshot);
                 let _ = self.persist_index_bytes(shard_id, &index_bytes);
@@ -2404,8 +2549,50 @@ mod eviction_round_scale {
     /// loop runs once per key in the shard -- which is what makes this a term that tracks the
     /// store rather than the batch.
     ///
-    /// REPORTED, NOT FIXED. Moving the appends out would have to carry `applied_wal_sequence` and
-    /// the index snapshot with them, in an order this measurement does not establish.
+    /// NOT FIXED, AND NOW WITH A REASON RATHER THAN AN ABSENCE OF ONE. The open question was
+    /// whether the appends could move out of the guard, which needs an ordering argument about
+    /// `applied_wal_sequence`. The argument does not hold, and this is where it is written down.
+    ///
+    /// WHAT THE SEQUENCE GUARANTEES. Replay keeps records whose `sequence` is strictly above the
+    /// durable anchor and then SORTS them by sequence (`engine/lifecycle.rs`), so a key's final
+    /// state is decided by the highest-sequence record naming it. WHERE IT IS ASSIGNED: inside
+    /// `append_with_sync_inner`, under the log's own mutex, at the moment the bytes are written --
+    /// `seq = last_sequence + 1`. There is no way to take a sequence now and write its bytes
+    /// later: `append_for_group_commit` reserves a sequence and writes the bytes in the SAME
+    /// critical section, deferring only the fsync. WHERE IT BECOMES DURABLE: later than either --
+    /// these tombstones append with `sync` false, so the bytes are in the page cache and the
+    /// deletion becomes durable when a subsequent barrier reaches them, or when the index
+    /// snapshot written below lands carrying an anchor above them.
+    ///
+    /// WHAT AN INTERLEAVED RE-WRITE DOES. Today it cannot interleave. `delete_record` and this
+    /// append are in one `shards.write()` section, and an ordinary write takes that same guard to
+    /// apply AND to append -- the engine states the invariant where it moved the fsync out and
+    /// deliberately left the byte-append in ("WAL sequence order still equals in-memory apply
+    /// order because the reservation + byte-append stay under this same lock", `engine.rs`). So a
+    /// re-write of a dropped key is wholly before the drop (its SET sorts below the tombstone;
+    /// the key stays deleted, which is right) or wholly after (its SET sorts above; the key comes
+    /// back with the new value, which is also right).
+    ///
+    /// Move the appends out and that stops being true. The in-memory delete happens under the
+    /// guard, the guard drops, a writer takes it and re-writes the key at sequence S_w, and the
+    /// deferred tombstone then appends at S_d > S_w. Replay sorts and applies the SET and then the
+    /// DELETE: a write that was acked after the drop is silently gone. Assigning the tombstone a
+    /// lower sequence under the guard does not rescue it -- a sequence is assigned at the
+    /// byte-append, and the log recovers its next sequence by scanning the file
+    /// (`last_wal_sequence_at`) and clamps reclaim to keep the highest-sequence record, both of
+    /// which read the file as monotonic in sequence.
+    ///
+    /// So the append IS the ordering, and the one order-independent thing (the fsync) is already
+    /// out -- these records take none. What remains available is BATCHING, which keeps every
+    /// record under the guard and takes one sequence for the round rather than N; that needs a
+    /// multi-key delete command, and there is none, so it is a replicated wire-format change and
+    /// not a tidy-up. Priced before being declined: with the loop moved out anyway, as a mutant,
+    /// the hold fell from 769 ms to 540 ms at 4,000 keys -- 29.8%.
+    ///
+    /// And the loop is not where the hold mostly goes:
+    /// `where_a_delete_drop_rounds_shard_guard_hold_actually_goes` splits it, and the largest
+    /// single term is `invalidate_record_all`, which takes `&MultiLayerCache` and a key and
+    /// touches no shard state at all.
     #[test]
     fn what_a_delete_drop_round_appends_to_the_wal_under_the_shard_write_guard() {
         use super::EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD as APPENDS;
@@ -2465,6 +2652,413 @@ mod eviction_round_scale {
             large_appends, large_dropped as u64,
             "a delete_drop round appended {large_appends} WAL records under the guard for \
              {large_dropped} dropped keys",
+        );
+    }
+
+    /// WHERE THE HOLD ACTUALLY GOES -- the in-order account of one `delete_drop` round.
+    ///
+    /// The probe above says the tombstone loop runs once per dropped key. That number on its own
+    /// argues for nothing: a loop that is 3% of the hold is worth 3%, and moving it costs an
+    /// ordering argument about `applied_wal_sequence` that is not free to make. This splits the
+    /// hold so the question can be settled before it is argued.
+    ///
+    /// WHAT IS ASSERTED AND WHAT IS ONLY PRINTED. The nanosecond rows are PRINTED. They are a
+    /// ratio of two clocks taken on one thread, which is the only form in which a timing on this
+    /// box means anything, and an assertion on them would be an assertion about the box's load.
+    /// What is ASSERTED is counts -- the WAL's own `writes`, `bytes_written`, `syncs`,
+    /// `append_full_scans` and `stats_full_scans`, read either side of the WHOLE call.
+    ///
+    /// IS THE PATH REACHED? Measured, not read. The note beside the probe above argues from two
+    /// `#[serde(default)]` fields that `delete_drop` is configurable; that is an argument about
+    /// what COULD happen. A counter at the `apply_storage_eviction` entry point, run over the
+    /// whole `--lib` suite single-threaded, says what DOES: 88 eviction rounds, 7 of them with
+    /// `delete_drop` true. Not zero, so the cost below is paid by something that runs.
+    ///
+    /// THE RESIDUAL IS INDEPENDENT. `wal_writes` is maintained inside `append_record_locked` --
+    /// the primitive that writes the bytes -- and is read here from OUTSIDE
+    /// `apply_storage_eviction`, so `wal_writes - appends` is records this round put in the log
+    /// through some path the tombstone counter does not see. It is asserted EQUAL ACROSS THE TWO
+    /// CORPUS SIZES rather than against a constant: equal means fixed per-round overhead, and a
+    /// residual that grew with the corpus would be a per-key path in no row, which is exactly the
+    /// drift a constant would have hidden.
+    #[test]
+    fn where_a_delete_drop_rounds_shard_guard_hold_actually_goes() {
+        use super::DELETE_DROP_GUARD_NANOS as NANOS;
+        use super::EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD as APPENDS;
+
+        #[derive(Debug)]
+        struct Round {
+            dropped: usize,
+            appends: u64,
+            wal_writes: u64,
+            wal_bytes: u64,
+            wal_syncs: u64,
+            append_scans: u64,
+            stats_scans: u64,
+            hold_ns: u64,
+            collect_ns: u64,
+            delete_ns: u64,
+            invalidate_ns: u64,
+            wal_ns: u64,
+            anchor_ns: u64,
+            snapshot_ns: u64,
+            unattributed_ns: u64,
+        }
+
+        impl Round {
+            /// Records this round appended that the tombstone counter did not see.
+            fn wal_residual(&self) -> u64 {
+                self.wal_writes.saturating_sub(self.appends)
+            }
+            fn pct(&self, part: u64) -> f64 {
+                if self.hold_ns == 0 {
+                    0.0
+                } else {
+                    part as f64 * 100.0 / self.hold_ns as f64
+                }
+            }
+        }
+
+        fn round(objects: usize) -> Round {
+            let (_dir, engine) = engine_with(objects);
+            engine.use_sampled_eviction_for_test();
+            APPENDS.store(0, Ordering::Relaxed);
+            NANOS.reset();
+            // OUTER counters, taken from the WAL's own primitive either side of the whole call.
+            // `raw_stats` is the non-scanning read, so taking it does not itself move
+            // `stats_full_scans` -- a probe whose apparatus perturbed the quantity it reads would
+            // be measuring itself.
+            let before = engine.wal_store.raw_stats(1);
+            let report = engine.apply_storage_eviction(1, 0, 0, false, true);
+            let after = engine.wal_store.raw_stats(1);
+            assert!(
+                report.pressure_gate_open,
+                "the round must have got past the pressure gate, or nothing was measured"
+            );
+            let (hold_ns, collect_ns, delete_ns, invalidate_ns, wal_ns, anchor_ns, snapshot_ns) =
+                NANOS.read();
+            Round {
+                dropped: report.dropped_object_count,
+                appends: APPENDS.load(Ordering::Relaxed),
+                wal_writes: after.writes.saturating_sub(before.writes),
+                wal_bytes: after.bytes_written.saturating_sub(before.bytes_written),
+                wal_syncs: after.syncs.saturating_sub(before.syncs),
+                append_scans: after
+                    .append_full_scans
+                    .saturating_sub(before.append_full_scans),
+                stats_scans: after.stats_full_scans.saturating_sub(before.stats_full_scans),
+                hold_ns,
+                collect_ns,
+                delete_ns,
+                invalidate_ns,
+                wal_ns,
+                anchor_ns,
+                snapshot_ns,
+                unattributed_ns: NANOS.unattributed(),
+            }
+        }
+
+        const SMALL: usize = 500;
+        const LARGE: usize = 4000;
+        let small = round(SMALL);
+        let large = round(LARGE);
+
+        let ratio = |s: u64, l: u64| if s == 0 { 0.0 } else { l as f64 / s as f64 };
+        let per_key = |value: u64, dropped: usize| {
+            if dropped == 0 {
+                0.0
+            } else {
+                value as f64 / dropped as f64
+            }
+        };
+        println!(
+            "\n  ONE delete_drop ROUND, IN ORDER -- counts either side of the whole call, and the\n  \
+               shard-table write guard's hold split by phase\n\
+             \n                                    {SMALL:>10} objects {LARGE:>10} objects      ratio\n\
+               keys the round dropped          {:>10} {:>18}   {:>8.2}x\n\
+               WAL appends UNDER the guard     {:>10} {:>18}   {:>8.2}x\n\
+               WAL records written (OUTER)     {:>10} {:>18}   {:>8.2}x\n\
+               .. residual, outer minus rows   {:>10} {:>18}\n\
+               WAL bytes written               {:>10} {:>18}   {:>8.2}x\n\
+               .. bytes per dropped key        {:>10.1} {:>18.1}\n\
+               fsync / fdatasync barriers      {:>10} {:>18}\n\
+               append-path full log rescans    {:>10} {:>18}\n\
+               stats() full log rescans        {:>10} {:>18}\n\
+             \n  THE HOLD, SPLIT (printed, not asserted -- a time on this box is a fact about the box)\n\
+             \n                                    {SMALL:>10} objects {LARGE:>10} objects\n\
+               guard held, total us            {:>10.0} {:>18.0}\n\
+               collect live block entries      {:>9.1}% {:>17.1}%\n\
+               delete_record (NEEDS the guard) {:>9.1}% {:>17.1}%\n\
+               invalidate_record_all (cache)   {:>9.1}% {:>17.1}%\n\
+               WAL tombstone loop              {:>9.1}% {:>17.1}%\n\
+               anchor applied_wal_sequence     {:>9.1}% {:>17.1}%\n\
+               shard.clone() snapshot          {:>9.1}% {:>17.1}%\n\
+               unattributed (independent)      {:>9.1}% {:>17.1}%\n",
+            small.dropped,
+            large.dropped,
+            ratio(small.dropped as u64, large.dropped as u64),
+            small.appends,
+            large.appends,
+            ratio(small.appends, large.appends),
+            small.wal_writes,
+            large.wal_writes,
+            ratio(small.wal_writes, large.wal_writes),
+            small.wal_residual(),
+            large.wal_residual(),
+            small.wal_bytes,
+            large.wal_bytes,
+            ratio(small.wal_bytes, large.wal_bytes),
+            per_key(small.wal_bytes, small.dropped),
+            per_key(large.wal_bytes, large.dropped),
+            small.wal_syncs,
+            large.wal_syncs,
+            small.append_scans,
+            large.append_scans,
+            small.stats_scans,
+            large.stats_scans,
+            small.hold_ns as f64 / 1000.0,
+            large.hold_ns as f64 / 1000.0,
+            small.pct(small.collect_ns),
+            large.pct(large.collect_ns),
+            small.pct(small.delete_ns),
+            large.pct(large.delete_ns),
+            small.pct(small.invalidate_ns),
+            large.pct(large.invalidate_ns),
+            small.pct(small.wal_ns),
+            large.pct(large.wal_ns),
+            small.pct(small.anchor_ns),
+            large.pct(large.anchor_ns),
+            small.pct(small.snapshot_ns),
+            large.pct(large.snapshot_ns),
+            small.pct(small.unattributed_ns),
+            large.pct(large.unattributed_ns),
+        );
+
+        // VACUITY FLOOR, on the measured denominator. A round that dropped nothing appended
+        // nothing and held the guard for a branch it did not take.
+        assert!(
+            small.dropped > 0 && large.dropped > 0,
+            "the round must have dropped keys at both sizes; dropped {} and {}",
+            small.dropped,
+            large.dropped,
+        );
+        assert!(
+            large.dropped > small.dropped,
+            "the two corpora must differ in dropped keys, got {} and {}",
+            small.dropped,
+            large.dropped,
+        );
+        assert!(
+            small.hold_ns > 0 && large.hold_ns > 0,
+            "a hold of zero at either size means the phase clocks never ran: {small:?} {large:?}",
+        );
+
+        // THE APPARATUS HAS TO ACCOUNT FOR THE HOLD IT SPLITS. Each row is a sub-interval of the
+        // hold measured on the same thread, so the rows summing to nearly all of it is a
+        // STRUCTURAL fact, not a timing one: the box's load stretches the rows and the total
+        // together and cancels out of the ratio. Ten percent is twenty times the half-percent
+        // measured, and a row that stopped accumulating would take its whole share into the
+        // residual -- which is how a split table quietly stops splitting anything.
+        for (label, round) in [("500", &small), ("4000", &large)] {
+            assert!(
+                round.unattributed_ns.saturating_mul(10) <= round.hold_ns,
+                "the phase rows must account for the hold they split; at {label} objects \
+                 {} ns of {} ns landed in no row",
+                round.unattributed_ns,
+                round.hold_ns,
+            );
+        }
+
+        // THE INDEPENDENT RESIDUAL, asserted ACROSS THE SIZES rather than against a constant.
+        // Equal at both sizes means the records this round appends beyond the tombstone loop are
+        // fixed per-round overhead. Unequal means a per-key WAL path exists that the tombstone
+        // counter does not see -- which is precisely the drift an assertion against a constant
+        // would have let through.
+        assert_eq!(
+            small.wal_residual(),
+            large.wal_residual(),
+            "WAL records this round appended outside the counted tombstone loop must be fixed \
+             per-round overhead, not per-key: {} at {SMALL} objects and {} at {LARGE}",
+            small.wal_residual(),
+            large.wal_residual(),
+        );
+
+        // The tombstones are appended with sync=false, so the round takes NO durable barrier of
+        // its own. Stated as an equality at both sizes: "few" would also pass on a barrier per
+        // key, which is the shape this is here to rule out.
+        assert_eq!(
+            (small.wal_syncs, large.wal_syncs),
+            (0, 0),
+            "a delete_drop round's tombstones are unsynced by construction, so the round must \
+             take no fsync of its own",
+        );
+
+        // BYTES PER DROPPED KEY, identical at both sizes. The record is one key's tombstone and
+        // nothing that tracks the store, so the per-key figure is the whole of what the WAL grows
+        // by -- and a per-key figure that moved between the sizes would say the record carries
+        // something it should not.
+        let small_bytes_per_key = per_key(small.wal_bytes, small.dropped);
+        let large_bytes_per_key = per_key(large.wal_bytes, large.dropped);
+        assert!(
+            (small_bytes_per_key - large_bytes_per_key).abs() < 1.0,
+            "a tombstone's size must not track the store: {small_bytes_per_key:.1} B/key at \
+             {SMALL} objects and {large_bytes_per_key:.1} B/key at {LARGE}",
+        );
+
+        // THE ANCHOR TAKES NO FULL-LOG RESCAN UNDER THE GUARD. It used to: the round anchored
+        // through `stats()`, which walks every sealed piece and then rescans the active log
+        // end-to-end, and it did that inside this write guard after its own appends. Under flat
+        // append the anchor now reads the O(1) cached sequence, exactly as the write path does.
+        //
+        // Asserted at BOTH sizes, because the cost it replaced was a fixed one -- about 6 ms a
+        // round here -- and a bound of "few" would pass on a scan that came back.
+        assert_eq!(
+            (small.stats_scans, large.stats_scans),
+            (0, 0),
+            "the round must anchor without a full-log rescan under the guard",
+        );
+    }
+
+    /// THE CONTROL for the anchor above, and it is a control in the strict sense: it drives the
+    /// SAME round through the SAME probe and differs only in the one condition the narrowing is
+    /// allowed to depend on.
+    ///
+    /// Without flat append the log's cached sequence is not authoritative, so the anchor must
+    /// still take the exact `stats()` value -- rescan and all. A narrowing that dropped the scan
+    /// unconditionally would satisfy the assertion above while being wrong here, and a probe that
+    /// only ever ran the flat arm could not tell the two apart.
+    #[test]
+    fn without_flat_append_the_delete_drop_anchor_still_takes_the_exact_sequence() {
+        let (_dir, engine) = engine_with(200);
+        engine.use_sampled_eviction_for_test();
+        engine.wal_store.rescan_on_every_append_for_test();
+
+        let before = engine.wal_store.raw_stats(1);
+        let report = engine.apply_storage_eviction(1, 0, 0, false, true);
+        let after = engine.wal_store.raw_stats(1);
+        let stats_scans = after.stats_full_scans.saturating_sub(before.stats_full_scans);
+
+        assert!(
+            report.pressure_gate_open && report.dropped_object_count > 0,
+            "the control must have dropped keys, or it constrains nothing: {report:?}",
+        );
+        assert_eq!(
+            stats_scans, 1,
+            "with the log's length cache refused, the anchor must fall back to the exact \
+             scanning stats() read; took {stats_scans} scans for {} dropped keys",
+            report.dropped_object_count,
+        );
+        // And the anchor must actually name this round's own tombstones, in either arm. A
+        // narrowing that reads a cheaper number is only equivalent if it is the SAME number.
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let anchored = shards
+            .get(&1)
+            .and_then(|shard| shard.applied_wal_sequence)
+            .expect("the round must have anchored");
+        drop(shards);
+        assert_eq!(
+            anchored,
+            engine.wal_store.stats(1).last_sequence,
+            "the anchor must equal the log's own last sequence",
+        );
+    }
+
+    /// THE SECOND COPY. `delete_drop` is not the only logged deletion: the expiry sweep in
+    /// `recovery_sweep_compact.rs` writes the same per-key `CommonDelete` tombstones under the
+    /// same write guard and anchored through the same scanning `stats()` read. A guard that
+    /// covered only the round above would leave the sweep holding the cost it was written to
+    /// remove, which is how one of two live copies keeps a defect.
+    #[test]
+    fn the_expiry_sweeps_anchor_takes_no_full_log_rescan_either() {
+        let (_dir, engine) = engine_with(400);
+        // Expire everything, so the sweep has keys to tombstone.
+        for index in 0..400 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonExpire {
+                    key: format!("evict-scale-key-{index}"),
+                    ttl_ms: 1,
+                },
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // The SWEEP itself, not the storage-manager cycle that wraps it. A cycle runs eight other
+        // stages that each read `stats()` for their own reasons, and measuring the sweep through
+        // one would put this claim's denominator in other stages' hands.
+        let before = engine.wal_store.raw_stats(1);
+        let report = engine
+            .sweep_expired_records(1)
+            .expect("the sweep must run on a loaded shard");
+        let after = engine.wal_store.raw_stats(1);
+        let stats_scans = after.stats_full_scans.saturating_sub(before.stats_full_scans);
+        let expired = report.expired_records_removed;
+
+        println!(
+            "\n  THE EXPIRY SWEEP, the other logged deletion\n    \
+               keys the sweep expired        {expired:>8}\n    \
+               stats() full log rescans      {stats_scans:>8}\n",
+        );
+
+        // VACUITY FLOOR. A sweep that expired nothing takes no anchor at all, and a zero scan
+        // count would then mean the probe never reached the code it is about.
+        assert!(
+            expired > 0,
+            "the sweep must have expired keys to have anchored anything: {report:?}",
+        );
+        assert_eq!(
+            stats_scans, 0,
+            "the expiry sweep must anchor without a full-log rescan under the guard; took \
+             {stats_scans} scans for {expired} expired keys",
+        );
+    }
+
+    /// THE CONTROL FOR THE SECOND COPY, and it exists because its absence was found by a mutant
+    /// rather than by reading. `delete_drop` had a non-flat control from the start; the expiry
+    /// sweep did not, so a mutation that dropped the sweep's `stats()` fallback entirely -- making
+    /// it read a sequence the log does not vouch for when the length cache is refused -- passed
+    /// the whole selection. One of two copies guarded is how the other copy keeps the defect.
+    #[test]
+    fn without_flat_append_the_expiry_sweeps_anchor_still_takes_the_exact_sequence() {
+        let (_dir, engine) = engine_with(200);
+        for index in 0..200 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonExpire {
+                    key: format!("evict-scale-key-{index}"),
+                    ttl_ms: 1,
+                },
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        engine.wal_store.rescan_on_every_append_for_test();
+
+        let before = engine.wal_store.raw_stats(1);
+        let report = engine
+            .sweep_expired_records(1)
+            .expect("the sweep must run on a loaded shard");
+        let after = engine.wal_store.raw_stats(1);
+        let stats_scans = after.stats_full_scans.saturating_sub(before.stats_full_scans);
+
+        assert!(
+            report.expired_records_removed > 0,
+            "the control must have expired keys, or it constrains nothing: {report:?}",
+        );
+        assert_eq!(
+            stats_scans, 1,
+            "with the log's length cache refused, the sweep's anchor must fall back to the exact \
+             scanning stats() read; took {stats_scans} scans for {} expired keys",
+            report.expired_records_removed,
+        );
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let anchored = shards
+            .get(&1)
+            .and_then(|shard| shard.applied_wal_sequence)
+            .expect("the sweep must have anchored");
+        drop(shards);
+        assert_eq!(
+            anchored,
+            engine.wal_store.stats(1).last_sequence,
+            "the anchor must equal the log's own last sequence",
         );
     }
 }
