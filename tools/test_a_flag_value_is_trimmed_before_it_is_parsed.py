@@ -49,6 +49,13 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
 SRC = os.path.join(REPO, "crates", "temporalstore-rust", "src")
 
+#: `examples/` is in scope for the same reason `src/` is: an example is a thing somebody
+#: RUNS with the variable set, so an untrimmed read there discards their value just as
+#: quietly. Two of them sat untrimmed while this file reported the crate clean, because it
+#: only ever walked `src`. A scan is only as wide as the directory it is pointed at.
+EXAMPLES = os.path.join(REPO, "crates", "temporalstore-rust", "examples")
+ROOTS = (SRC, EXAMPLES)
+
 #: `env::var("NAME") ... .parse()`, with whatever the chain does in between. The window is
 #: bounded by `;` and `}` so it cannot run past the end of the statement -- or out of the
 #: function -- into an unrelated parse, a doc comment included.
@@ -72,11 +79,12 @@ EXPECTED_INFERRED_FLOOR = 25
 
 
 def _sources():
-    for base, dirs, files in os.walk(SRC):
-        dirs[:] = [d for d in dirs if d != "target"]
-        for name in sorted(files):
-            if name.endswith(".rs"):
-                yield os.path.join(base, name)
+    for root in ROOTS:
+      for base, dirs, files in os.walk(root):
+          dirs[:] = [d for d in dirs if d != "target"]
+          for name in sorted(files):
+              if name.endswith(".rs"):
+                  yield os.path.join(base, name)
 
 
 def _read(path):

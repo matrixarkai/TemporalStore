@@ -242,12 +242,12 @@ fn test_engine(root: &std::path::Path, role: &str) -> TemporalEngine {
 async fn main() {
     let entry_count = std::env::var("TEMPORALSTORE_APPEND_BLOB_PARITY_ENTRIES")
         .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_ENTRY_COUNT)
         .max(1);
     let value_bytes = std::env::var("TEMPORALSTORE_APPEND_BLOB_PARITY_VALUE_BYTES")
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or(DEFAULT_VALUE_BYTES)
         .max(1);
 
