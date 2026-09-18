@@ -4444,7 +4444,13 @@ fn execute_record_log_request(
             let count_key = required_option(request.count_key.clone(), "count_key")?;
             let record_hash_key =
                 required_option(request.record_hash_key.clone(), "record_hash_key")?;
-            let shard_size = request.shard_size.unwrap_or(1024).max(1);
+            // The writer's size, not a larger guess. Assuming too LARGE enumerates too few
+            // shards and silently leaves matching records behind while still reporting
+            // "forgotten" -- the asymmetry that makes a forget the worst place to guess high.
+            let shard_size = request
+                .shard_size
+                .unwrap_or(DEFAULT_RECORD_LOG_SHARD_SIZE)
+                .max(1);
             let scope = request
                 .scope
                 .clone()
@@ -4492,7 +4498,12 @@ fn execute_record_log_request(
             let count_key = required_option(request.count_key.clone(), "count_key")?;
             let record_hash_key =
                 required_option(request.record_hash_key.clone(), "record_hash_key")?;
-            let shard_size = request.shard_size.unwrap_or(1024).max(1);
+            // Same as forget: this size only decides the walk, and the walk is the fallback
+            // taken whenever the locator cannot vouch for covering the whole store.
+            let shard_size = request
+                .shard_size
+                .unwrap_or(DEFAULT_RECORD_LOG_SHARD_SIZE)
+                .max(1);
             let ids = request.record_ids.clone().unwrap_or_default();
             let stats =
                 delete_records_by_ids(&engine, &record_hash_key, &count_key, shard_size, &ids)?;
@@ -11468,6 +11479,234 @@ mod tests {
     fn shard_fields(engine: &RecordStore, hash_key: &str) -> BTreeMap<String, String> {
         clear_native_caches();
         hgetall_map(engine, format!("{hash_key}:000000")).expect("hgetall shard 0")
+    }
+
+    /// Seed one record in the shard a 256-record writer puts record 1024 in, and say the store
+    /// holds 1025 records. At 256 per shard that is shards 0..=4; at 1024 it is 0..=1.
+    fn seed_a_record_beyond_the_first_thousand(
+        engine: &RecordStore,
+        hash_key: &str,
+        count_key: &str,
+        field: &str,
+        record: Value,
+    ) {
+        execute_empty_batch_runtime(
+            engine,
+            vec![
+                Command::StringSet {
+                    key: count_key.to_string(),
+                    value: b"1025".to_vec(),
+                },
+                Command::HashSet {
+                    key: format!("{hash_key}:000004"),
+                    field: field.to_string(),
+                    value: record.to_string().into_bytes(),
+                },
+            ],
+            true,
+        )
+        .expect("seed a record in shard 4");
+    }
+
+    /// A forget that names no shard size still walks the shards the WRITER used.
+    ///
+    /// The walk is `max_shard = (count - 1) / shard_size`, so a reader assuming a size LARGER
+    /// than the writer's enumerates too FEW shards. The direction matters: guessing small costs
+    /// empty reads, guessing large silently skips records -- and this op answers "forgotten"
+    /// either way, so a caller cannot tell a complete erasure from a fifth of one.
+    #[test]
+    fn a_forget_without_a_shard_size_reaches_the_shards_the_writer_wrote() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let engine = forget_engine(dir.path(), "wide-forget");
+        let hash_key = "matrixark:mcp:wide_forget:records";
+        let count_key = "matrixark:mcp:wide_forget:record_count";
+        seed_a_record_beyond_the_first_thousand(
+            &engine,
+            hash_key,
+            count_key,
+            "alice-late",
+            memory_record("alice", "written after the first thousand"),
+        );
+
+        let mut forget = request("matrixark_forget_scope");
+        forget.count_key = Some(count_key.to_string());
+        forget.record_hash_key = Some(hash_key.to_string());
+        forget.scope = Some(subject_scope("alice"));
+        assert!(
+            forget.shard_size.is_none(),
+            "this test is about the DEFAULT; naming a size would test nothing"
+        );
+
+        clear_native_caches();
+        let output = execute_record_log_request(&engine, forget, dir.path().to_path_buf())
+            .expect("forget alice");
+
+        assert_eq!(
+            output.extra.get("matrixark_forget_shards_scanned"),
+            Some(&json!(5)),
+            "shards 0..=4, the ones a writer at {DEFAULT_RECORD_LOG_SHARD_SIZE} per shard fills"
+        );
+        assert_eq!(
+            output.extra.get("matrixark_forget_records_removed"),
+            Some(&json!(1)),
+            "the record in shard 4 is actually removed"
+        );
+        assert_eq!(output.status, "forgotten");
+    }
+
+    /// The control, and the behaviour this change ends: told a size larger than the writer used,
+    /// the same request answers "forgotten", removes nothing, and reports how little it looked at.
+    ///
+    /// Kept as a test rather than a comment because it is what makes the one above a statement
+    /// about the shard size rather than about the fixture.
+    #[test]
+    fn a_forget_told_too_large_a_shard_size_reports_success_and_removes_nothing() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let engine = forget_engine(dir.path(), "wrong-size");
+        let hash_key = "matrixark:mcp:wrong_size:records";
+        let count_key = "matrixark:mcp:wrong_size:record_count";
+        seed_a_record_beyond_the_first_thousand(
+            &engine,
+            hash_key,
+            count_key,
+            "alice-late",
+            memory_record("alice", "written after the first thousand"),
+        );
+
+        let mut forget = request("matrixark_forget_scope");
+        forget.count_key = Some(count_key.to_string());
+        forget.record_hash_key = Some(hash_key.to_string());
+        forget.scope = Some(subject_scope("alice"));
+        forget.shard_size = Some(1024);
+
+        clear_native_caches();
+        let output = execute_record_log_request(&engine, forget, dir.path().to_path_buf())
+            .expect("forget alice");
+
+        assert_eq!(
+            output.extra.get("matrixark_forget_shards_scanned"),
+            Some(&json!(2)),
+            "1025 records at 1024 per shard is shards 0..=1, so shard 4 is never opened"
+        );
+        assert_eq!(
+            output.extra.get("matrixark_forget_records_removed"),
+            Some(&json!(0)),
+            "nothing removed"
+        );
+        assert_eq!(
+            output.status, "forgotten",
+            "and it says forgotten anyway -- which is why the default may not guess high"
+        );
+    }
+
+    /// The same default on the delete path, reached the same way.
+    ///
+    /// This walk is the FALLBACK: when the locator can vouch for covering the whole store,
+    /// delete visits located fields and the shard size never enters. A store with no locator
+    /// coverage -- no `provenance_from_start` marker -- takes the walk, which is the case here
+    /// and the case for any store the locator did not see from its first record.
+    #[test]
+    fn a_delete_without_a_shard_size_reaches_the_shards_the_writer_wrote() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let engine = forget_engine(dir.path(), "wide-delete");
+        let hash_key = "matrixark:mcp:wide_delete:records";
+        let count_key = "matrixark:mcp:wide_delete:record_count";
+        seed_a_record_beyond_the_first_thousand(
+            &engine,
+            hash_key,
+            count_key,
+            "late-event",
+            json!({
+                "record_type": "memory",
+                "text": "written after the first thousand",
+                "event_id_hash": "late-event-1",
+                "access_scope": { "user_id": "alice" },
+            }),
+        );
+
+        let mut delete = request("matrixark_delete_records");
+        delete.count_key = Some(count_key.to_string());
+        delete.record_hash_key = Some(hash_key.to_string());
+        delete.record_ids = Some(vec!["late-event-1".to_string()]);
+        assert!(delete.shard_size.is_none(), "the DEFAULT is what is under test");
+
+        clear_native_caches();
+        let output = execute_record_log_request(&engine, delete, dir.path().to_path_buf())
+            .expect("delete the late record");
+
+        assert_eq!(
+            output.extra.get("matrixark_delete_records_removed"),
+            Some(&json!(1)),
+            "the record in shard 4 is removed, not reported deleted and left in place"
+        );
+        assert_eq!(output.status, "deleted");
+    }
+
+    /// No op may default this size to a bare number again.
+    ///
+    /// Two of the four sites were fixed once and two were not, which is how a default that the
+    /// file's own doc comment warns about survived in the two places that erase data. A scan
+    /// rather than a comment, because the next site will be added the same way.
+    #[test]
+    fn every_record_shard_size_default_names_the_writers_constant() {
+        let source = include_str!("matrixark_rust_proxy_impl.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("the file has a test module to stop at")
+            .0;
+        // Whitespace collapsed, not scanned by line: the fix below spans four lines, and a
+        // line-based scan could not see the very shape it exists to keep.
+        let dense: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+        let marker = "shard_size.unwrap_or(";
+        let mut defaults: Vec<(String, String)> = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(found) = dense[cursor..].find(marker) {
+            let at = cursor + found;
+            let after = at + marker.len();
+            let end = dense[after..]
+                .find(')')
+                .map(|offset| after + offset)
+                .unwrap_or(dense.len());
+            let before = dense[at.saturating_sub(40)..at].to_string();
+            defaults.push((dense[after..end].to_string(), before));
+            cursor = end;
+        }
+        assert!(
+            defaults.len() >= 4,
+            "found {} shard_size defaults; the scan has stopped seeing them",
+            defaults.len()
+        );
+        // The one exemption, justified rather than merely listed: this op reuses the
+        // `shard_size` field to carry a dump budget, which is not a shard size at all. Asserted
+        // to be exactly one, so the exemption cannot quietly grow.
+        let budget: Vec<&(String, String)> = defaults
+            .iter()
+            .filter(|(_value, before)| before.contains("budget"))
+            .collect();
+        assert_eq!(
+            1,
+            budget.len(),
+            "expected exactly one non-shard use of the field, found {}: {:?}",
+            budget.len(),
+            budget
+        );
+        let bare: Vec<&String> = defaults
+            .iter()
+            .filter(|(_value, before)| !before.contains("budget"))
+            .filter(|(value, _before)| value != "DEFAULT_RECORD_LOG_SHARD_SIZE")
+            .map(|(value, _before)| value)
+            .collect();
+        assert!(
+            bare.is_empty(),
+            "these default the record shard size to a literal instead of the writer's constant, \
+             which enumerates the wrong number of shards and reports success either way: {bare:?}"
+        );
     }
 
     #[test]
