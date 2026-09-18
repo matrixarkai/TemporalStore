@@ -1480,12 +1480,14 @@ impl BlockStore {
     /// durability barrier, a latency outlier unrelated to the size of the write that
     /// triggered it.
     ///
-    /// The reference implementation keeps this off the write path: its background
-    /// storage-manager cycle runs a prepare step that no-ops while the active zone is under
-    /// target and otherwise rolls to a fresh one, so a client append finds space already
-    /// waiting. The inline roll in `append` stays as the fallback for a write that arrives
-    /// before the background cycle got here -- the same role the reference's forced-roll path
-    /// plays.
+    /// So the roll is kept off the write path: the background storage-manager cycle runs a
+    /// prepare step that no-ops while the active slab is under target and otherwise rolls to a
+    /// fresh one, so a client append finds space already waiting. The inline roll in `append`
+    /// stays as the fallback for a write that arrives before the background cycle got here.
+    ///
+    /// WHAT THE ROLL COSTS GROWS WITH THE SHARD. `the_roll_at_scale` measures it: the directory
+    /// scan and the whole-manifest rewrite are both linear in the slab count, so the prepare step
+    /// this method exists to serve gets more valuable, not less, as a shard ages.
     pub fn prepare_next_slab(&self) -> Result<Option<BlockStoreRollReport>, BlockStoreError> {
         self.prepare_next_slab_with_target(effective_block_slab_target_bytes())
     }
@@ -6446,6 +6448,210 @@ const RETIRED_NAMES: &[&str] = &[
             "slab ids are monotonic: {} then {}",
             report.new_block_slab_id,
             second.new_block_slab_id
+        );
+    }
+
+    /// Build `slabs` sealed slab files directly, then open a store over them.
+    ///
+    /// Installing them through the append path would measure the harness: every append summarises
+    /// the slab set and periodically rewrites the manifest, so the install would cost far more
+    /// than the one roll that is the subject. What is wanted is a store whose DIRECTORY and whose
+    /// MANIFEST both already hold `slabs` entries, which is the state a long-running shard is in.
+    ///
+    /// The files are empty, so each descriptor carries a zero where a live one carries a real byte
+    /// count. That makes the manifest bytes below a FLOOR rather than a live figure -- a live
+    /// descriptor's numbers are wider -- and leaves the growth RATE, which is what the two sizes
+    /// are being compared for, unchanged.
+    fn rolled_store_fixture(root: &std::path::Path, slabs: u64) -> BlockStore {
+        fs::create_dir_all(root).unwrap();
+        let mut block_slab_id = 0u64;
+        while block_slab_id < slabs {
+            File::create(slab_path(root, block_slab_id)).unwrap();
+            block_slab_id += 1;
+        }
+        BlockStore::new(root)
+    }
+
+    /// One roll against a store that already holds `slabs` slabs, timed and counted. Prints;
+    /// returns nothing. The body of the two scale tests below.
+    ///
+    /// MEASURED, debug profile, both arms back to back at load 13.6 falling to 9.8:
+    ///
+    ///                          8,000 slabs   80,000 slabs      ratio
+    ///     one roll              1,188.10 ms    11,979.76 ms    10.08x
+    ///       directory scan         10.31 ms       105.68 ms    10.25x
+    ///       the rest            1,177.79 ms    11,874.08 ms    10.08x
+    ///     manifest bytes          2,813,816      28,297,816    10.06x
+    ///     directory fsyncs                2               2     FLAT
+    ///
+    /// So the BARRIER COUNT is flat and the BYTES and the WALL TIME are linear, and the linear
+    /// half is almost entirely the manifest: the directory scan is 0.9% of the roll. A roll holds
+    /// the block-store mutex for all of it, so at 80,000 slabs every append and every read that
+    /// touches the store waits twelve seconds behind one roll. The wall times are a debug build
+    /// and a loaded box; the RATIO is the part that carries.
+    ///
+    /// Split so each size is a test of its own and can be RUN on its own: the 80,000 arm writes
+    /// eighty thousand files, and on a box short of disk the 8,000 arm alone is still a real
+    /// measurement, whereas scaling one arm up to the other is not a measurement at all.
+    fn roll_at_scale_arm(slabs: u64) {
+        let dir = tempfile::tempdir().unwrap();
+
+        let started = std::time::Instant::now();
+        let store = rolled_store_fixture(dir.path(), slabs);
+        let open_ms = started.elapsed().as_secs_f64() * 1e3;
+
+        // DENOMINATORS, both halves separately: the DIRECTORY really holds that many slabs, and
+        // so does the MANIFEST. A roll scans the first and rewrites the second, so a measurement
+        // taken with either one short is measuring a smaller store than it claims.
+        assert_eq!(
+            store.slab_ids().unwrap().len() as u64,
+            slabs,
+            "every slab must really be on disk before the roll is timed"
+        );
+        let summary_before = store.slab_summary();
+        assert_eq!(
+            summary_before.active_slabs + summary_before.sealed_slabs,
+            slabs,
+            "and every slab must really carry a descriptor in the manifest"
+        );
+
+        let manifest_path = slab_manifest_path(dir.path());
+        let manifest_bytes_before = fs::metadata(&manifest_path).unwrap().len();
+        assert!(
+            manifest_bytes_before > 0,
+            "the manifest must be on disk before the roll, or the rewrite below is not a rewrite"
+        );
+
+        // WHICH OF THE TWO HALVES THE TIME GOES TO. A roll does two things that both grow with the
+        // slab count: it rescans the slab directory to derive the next id, and it rewrites the
+        // whole manifest. `slab_ids()` is exactly the scan the roll performs, so timing it alone
+        // splits the total and says which half a fix would have to address -- without which the
+        // number below is a cost with no address.
+        let started = std::time::Instant::now();
+        let scanned = store.slab_ids().unwrap().len() as u64;
+        let directory_scan_ms = started.elapsed().as_secs_f64() * 1e3;
+        assert_eq!(
+            scanned, slabs,
+            "the timed scan really walked every slab, or it is not the roll's scan"
+        );
+
+        // THE MEASUREMENT. One roll, with the store lock held for all of it.
+        let fsyncs_before = super::paths::directory_fsyncs();
+        let started = std::time::Instant::now();
+        let report = store.roll_slab().unwrap();
+        let roll_ms = started.elapsed().as_secs_f64() * 1e3;
+        let directory_fsyncs_per_roll = super::paths::directory_fsyncs() - fsyncs_before;
+
+        let manifest_bytes_after = fs::metadata(&manifest_path).unwrap().len();
+
+        assert!(
+            report.new_block_slab_id >= slabs,
+            "the roll must mint an id above every slab file on disk, not {}",
+            report.new_block_slab_id
+        );
+
+        println!(
+            "  {slabs:>6} slabs: open {open_ms:>9.1} ms   ROLL {roll_ms:>8.2} ms   \
+             (directory scan {directory_scan_ms:>7.2} ms, rest {:>8.2} ms)   \
+             manifest {manifest_bytes_before:>10} -> {manifest_bytes_after:>10} bytes \
+             ({:>5} bytes/slab)   directory fsyncs {directory_fsyncs_per_roll}",
+            roll_ms - directory_scan_ms,
+            manifest_bytes_before / slabs.max(1),
+        );
+    }
+
+    /// What ONE roll costs on a shard already holding 8,000 slabs. Prints.
+    ///
+    ///   cargo test -p temporalstore-rust --lib the_roll_at_scale \
+    ///       -- --ignored --nocapture --test-threads=1
+    ///
+    /// Ignored because it creates eight thousand files; the correctness guards run in CI, and this
+    /// answers the question correctness cannot -- what a roll costs while it holds the store lock,
+    /// on a directory and a manifest that have been accumulating for the life of the shard.
+    #[test]
+    #[ignore]
+    fn the_roll_at_scale() {
+        roll_at_scale_arm(8_000);
+    }
+
+    /// The same measurement at 80,000 slabs, the size at which the purge round was 58.7 s.
+    ///
+    ///   cargo test -p temporalstore-rust --lib the_roll_at_eighty_thousand_slabs \
+    ///       -- --ignored --nocapture --test-threads=1
+    ///
+    /// SEPARATE FROM THE 8,000 ARM BECAUSE IT IS THE EXPENSIVE ONE, and on a box that cannot spare
+    /// the disk it should be reported as not run rather than scaled up from the other.
+    #[test]
+    #[ignore]
+    fn the_roll_at_eighty_thousand_slabs() {
+        roll_at_scale_arm(80_000);
+    }
+
+    /// A roll issues the same number of directory fsyncs whatever the shard has accumulated.
+    ///
+    /// THIS PINS THE HALF OF THE ROLL THAT IS FLAT, and it is worth pinning precisely because the
+    /// other half is not: a roll rescans the whole slab directory and rewrites the whole manifest,
+    /// so its BYTES and its WALL TIME both grow with the slab count. The barrier COUNT does not,
+    /// and the reason is structural -- `roll_slab_inner` fsyncs the outgoing slab, the incoming
+    /// slab and the store root once each, and `persist_slab_manifest` fsyncs one temp file and one
+    /// directory, none of them per slab.
+    ///
+    /// That is exactly the property a per-slab fsync destroys, and the quarantine side of this
+    /// file has already had one: a single-slab rename-and-fsync helper handed to a loop re-synced
+    /// the same two directories once per iteration, which is how 2 fsyncs per round became 2 per
+    /// slab. A roll has no loop today, so the way this regresses is someone adding one -- and the
+    /// count is what notices, at any size, without writing eighty thousand files.
+    ///
+    /// TEN TIMES THE SLABS, chosen to match the ratio the two ignored arms above are compared at,
+    /// at a size a CI run can afford.
+    #[test]
+    fn a_roll_costs_the_same_directory_fsyncs_at_any_slab_count() {
+        let small_dir = tempfile::tempdir().unwrap();
+        let small = rolled_store_fixture(small_dir.path(), 4);
+        let large_dir = tempfile::tempdir().unwrap();
+        let large = rolled_store_fixture(large_dir.path(), 40);
+
+        // DENOMINATOR: the two fixtures really do differ by the factor the claim rests on. Without
+        // this the test passes on two stores of the same size, which compares nothing.
+        let small_slabs = small.slab_ids().unwrap().len();
+        let large_slabs = large.slab_ids().unwrap().len();
+        assert_eq!(small_slabs, 4, "the small fixture really holds four slabs");
+        assert_eq!(large_slabs, 40, "the large fixture really holds forty");
+
+        let before = super::paths::directory_fsyncs();
+        small.roll_slab().unwrap();
+        let small_fsyncs = super::paths::directory_fsyncs() - before;
+
+        let before = super::paths::directory_fsyncs();
+        large.roll_slab().unwrap();
+        let large_fsyncs = super::paths::directory_fsyncs() - before;
+
+        // A VACUITY FLOOR. A roll that issued no directory fsync at all would satisfy the equality
+        // below while making the slab and the manifest rename both non-durable, which is the
+        // opposite of the property being pinned.
+        assert!(
+            small_fsyncs >= 2,
+            "a roll must fsync at least the store root for the new slab and for the manifest \
+             rename, not {small_fsyncs}"
+        );
+        assert_eq!(
+            small_fsyncs, large_fsyncs,
+            "ten times the slabs must not cost more directory fsyncs: {small_fsyncs} at \
+             {small_slabs} slabs against {large_fsyncs} at {large_slabs}"
+        );
+
+        // And the other half of the shape, asserted rather than left implied: the manifest the
+        // roll rewrote IS larger on the larger store, so the two rolls were not doing equal work.
+        let small_manifest = fs::metadata(slab_manifest_path(small_dir.path()))
+            .unwrap()
+            .len();
+        let large_manifest = fs::metadata(slab_manifest_path(large_dir.path()))
+            .unwrap()
+            .len();
+        assert!(
+            large_manifest > small_manifest * 5,
+            "the larger store's manifest must be the larger write: {small_manifest} against \
+             {large_manifest}"
         );
     }
 
