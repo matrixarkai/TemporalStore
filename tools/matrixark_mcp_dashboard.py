@@ -92,36 +92,30 @@ def dashboard_message_rows(records: list[Json], scope: Json) -> list[Json]:
     return rows
 
 
+try:
+    from tools.matrixark_mcp_async_readiness import (
+        latest_async_pipeline_rows as _readiness_latest_async_pipeline_rows,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_async_readiness import (
+        latest_async_pipeline_rows as _readiness_latest_async_pipeline_rows,
+    )
+
+
 def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
-    # Identical to `matrixark_mcp_async_readiness.latest_async_pipeline_rows`, and
-    # `test_the_two_pipeline_row_rankings_agree` asserts that rather than trusting this comment.
-    # This copy used to rank three statuses, so every `idle_commit_*` was unknown to it and ranked
-    # -1 -- including the terminal ones, which therefore lost to the `idle_commit_scheduled` they
-    # complete whenever their record carried the earlier stamp. The task read as still scheduled.
-    status_rank = {
-        "pending": 0,
-        "idle_commit_scheduled": 0,
-        "idle_commit_failed": 1,
-        "idle_commit_attempted": 1,
-        "idle_commit_committed": 1,
-        "idle_commit_skipped": 1,
-        "extraction_committed": 2,
-        "summary_completed": 3,
-    }
-    latest_by_task: dict[int, Json] = {}
-    for row in rows:
-        try:
-            task_hash = int(row.get("task_hash") or row.get("event_id_hash"))
-        except (TypeError, ValueError):
-            continue
-        current = latest_by_task.get(task_hash)
-        current_rank = status_rank.get(str(current.get("status") or ""), -1) if current else -1
-        row_rank = status_rank.get(str(row.get("status") or ""), -1)
-        current_time = int(current.get("updated_at_ms") or current.get("created_at_ms") or 0) if current else -1
-        row_time = int(row.get("updated_at_ms") or row.get("created_at_ms") or 0)
-        if current is None or (row_rank, row_time) >= (current_rank, current_time):
-            latest_by_task[task_hash] = row
-    return list(latest_by_task.values())
+    """The most advanced row per task, delegated to the module that owns the ranking.
+
+    This module used to carry its own copy of the body, and its status map knew three statuses
+    where the owner's knows eight -- so every `idle_commit_*` ranked -1, terminal outcomes tied
+    with the `idle_commit_scheduled` they complete, and a task whose terminal record carried the
+    earlier stamp read as still scheduled here while readiness reported it finished.
+
+    A delegation rather than an import so this module still DEFINES the name, which
+    `test_matrixark_a_docstring_is_not_an_import` records and checks; and rather than a second
+    copy of the body, which is what `test_there_is_one_copy_of_each_helper` exists to stop. One
+    ranking, reachable under both names.
+    """
+    return _readiness_latest_async_pipeline_rows(rows)
 
 
 def dashboard_rows_for_table(records: list[Json], table: str, scope: Json) -> list[Json]:
