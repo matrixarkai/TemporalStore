@@ -407,11 +407,22 @@ class _TemporalDirectReadMixin:
         is the point -- two hardcoded copies of a ranking policy diverge silently, and the symptom
         is worse answers rather than an error.
         """
-        try:
-            from matrixark_mcp_core import onebox_embedding_first
-        except ImportError:  # pragma: no cover - import shape differs when run as a package
+        # `matrixark_local_adapter_retrieval`, which DEFINES this flag. It was imported from
+        # `matrixark_mcp_core`, which does not define or re-export it -- and `from X import name`
+        # where the module loads but the name is absent raises ImportError, not AttributeError,
+        # so the handler below swallowed it and this function returned None on every retrieve.
+        # The engine was never sent any weights at all, and fell back to its own copy of the
+        # policy: the exact divergence the docstring above says this exists to prevent.
+        #
+        # Deferred, not module-level: `matrixark_local_adapter_retrieval` and
+        # `matrixark_mcp_local_adapter` import each other, so importing it at module scope from
+        # here raises on a partially initialised module. By call time both are loaded. This is
+        # the same shape `matrixark_local_adapter_retrieve` uses to read the same flag.
+        try:  # package path
+            from tools.matrixark_local_adapter_retrieval import onebox_embedding_first
+        except ImportError:  # top-level path (direct tools/ execution)
             try:
-                from tools.matrixark_mcp_core import onebox_embedding_first
+                from matrixark_local_adapter_retrieval import onebox_embedding_first
             except ImportError:
                 return None
         try:
