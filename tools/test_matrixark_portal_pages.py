@@ -11,7 +11,9 @@ Run in a copy of the directory so the test never rewrites the tree it is checkin
 from __future__ import annotations
 
 import filecmp
+import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,13 +22,40 @@ import unittest
 
 PORTAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal")
 GENERATOR = "build_portal_pages.py"
-GENERATED = ("overview_portal.html", "api_portal.html", "explore_portal.html",
-             "setup_portal.html", "catalog_portal.html")
+def _written_by(call: str) -> tuple:
+    """The pages `main()` names, read out of the generator instead of copied beside it.
+
+    These were two tuples, and both were two pages behind: the one-box and mem0 pages were added to
+    `main()` and not here, so the check that nobody hand-edits a generated page had stopped
+    covering the two newest generated pages. A list that has to be kept in step by hand is a
+    denominator that goes stale quietly, because nothing fails when it does.
+    """
+    with io.open(os.path.join(PORTAL, GENERATOR), encoding="utf-8") as handle:
+        text = handle.read()
+    body = text[text.index("def main() -> None:"):]
+    return tuple(sorted(set(re.findall(r'%s\(\s*"([a-z0-9_]+_portal\.html)"' % call, body))))
+
+
+GENERATED = _written_by("emit")
 # Hand-maintained; the generator only refreshes the nav block inside them.
-HAND_WRITTEN = ("api_key_portal.html", "ingestion_portal.html")
+HAND_WRITTEN = _written_by("inject")
 
 
 class GeneratedPagesTest(unittest.TestCase):
+    def test_the_two_lists_account_for_every_shipped_page(self) -> None:
+        """The floor, on the DENOMINATOR, which is what was wrong here.
+
+        Reading the generator cannot notice a page it stopped writing, and the check below passes
+        perfectly over a short list. Every page on disk has to be in one list or the other.
+        """
+        shipped = {name for name in os.listdir(PORTAL) if name.endswith("_portal.html")}
+        self.assertGreaterEqual(len(shipped), 9, "only %d pages on disk" % len(shipped))
+        self.assertEqual(shipped, set(GENERATED) | set(HAND_WRITTEN),
+                         "generated=%s injected=%s shipped=%s"
+                         % (GENERATED, HAND_WRITTEN, sorted(shipped)))
+        self.assertEqual(set(), set(GENERATED) & set(HAND_WRITTEN),
+                         "a page cannot be both written and only injected into")
+
     def test_the_committed_pages_match_what_the_generator_emits(self) -> None:
         with tempfile.TemporaryDirectory() as work:
             copy = os.path.join(work, "portal")
@@ -93,7 +122,8 @@ class GeneratedPagesTest(unittest.TestCase):
         # It resolves its output from __file__, so a copy of the directory is a complete sandbox.
         # If that ever became an absolute path again, the test above would silently be checking the
         # real tree against itself and could never fail.
-        source = open(os.path.join(PORTAL, GENERATOR), encoding="utf-8").read()
+        with io.open(os.path.join(PORTAL, GENERATOR), encoding="utf-8") as handle:
+            source = handle.read()
         self.assertIn("PORTAL = os.path.dirname(os.path.abspath(__file__))", source)
         self.assertNotIn("/root/", source)
 

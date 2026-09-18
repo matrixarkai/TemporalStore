@@ -29,10 +29,15 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 PORTAL = os.path.join(TOOLS, "portal")
 HARNESS = os.path.join(PORTAL, "when_harness.js")
 
-#: Every page, including the two that are hand-maintained and only have the nav injected.
-PAGES = ("setup_portal.html", "overview_portal.html", "catalog_portal.html",
-         "explore_portal.html", "api_portal.html", "ingestion_portal.html",
-         "api_key_portal.html")
+def pages() -> list:
+    """Every shipped page, read off disk rather than typed here.
+
+    This was a tuple, and its comment said "every page" while naming seven of nine: the one-box and
+    mem0 pages were added afterwards and nothing made the list move. The helper lives in the shared
+    nav, which every page gets, so a hand-written list is a denominator that silently stops being
+    every page the moment somebody adds one.
+    """
+    return sorted(name for name in os.listdir(PORTAL) if name.endswith("_portal.html"))
 
 AN_INSTANT = 1760000000000
 
@@ -98,7 +103,11 @@ class EveryPageHasItTest(unittest.TestCase):
     """It lives in the shared nav, so the two hand-maintained pages get it too."""
 
     def test_every_page_carries_the_helper(self) -> None:
-        for page in PAGES:
+        found = pages()
+        # The floor, on the SCAN: a renamed directory makes the loop below run zero times and
+        # every assertion in it pass over nothing.
+        self.assertGreaterEqual(len(found), 9, "only %d pages were found: %s" % (len(found), found))
+        for page in found:
             with self.subTest(page=page):
                 self.assertIn("window.__matrixarkWhen = function", source(page))
 
@@ -114,11 +123,19 @@ class EveryPageHasItTest(unittest.TestCase):
     def test_no_timestamp_site_formats_its_own(self) -> None:
         """The point of one helper. A `new Date(x).toLocaleString()` anywhere is a fifth site that
         does not name its zone -- number formatting, which is the same method on a Number, is not
-        matched by this."""
-        builder = source("build_portal_pages.py")
-        offenders = [line.strip() for line in builder.splitlines()
-                     if "toLocaleString()" in line and "new Date(" in line]
-        self.assertEqual([], offenders, offenders)
+        matched by this.
+
+        "Anywhere" used to mean the builder, and the builder does not write two of the nine pages:
+        `ingestion_portal.html` and `api_key_portal.html` are hand-maintained and only have their
+        nav injected. Those are the two where a hand-written `new Date(...)` is most likely to
+        appear, and they were the two this could not see.
+        """
+        offenders = []
+        for name in ["build_portal_pages.py"] + pages():
+            for line in source(name).splitlines():
+                if "toLocaleString()" in line and "new Date(" in line:
+                    offenders.append("%s: %s" % (name, line.strip()[:90]))
+        self.assertEqual([], offenders, "\n".join(offenders))
 
 
 if __name__ == "__main__":
