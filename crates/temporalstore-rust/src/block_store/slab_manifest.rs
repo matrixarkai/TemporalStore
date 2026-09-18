@@ -405,9 +405,19 @@ pub(super) fn reconcile_slab_manifest_with_disk(
 /// against 8,000,021 for the same document written straight at the file.
 const MANIFEST_WRITE_BUFFER_BYTES: usize = 256 * 1024;
 
+/// Write the whole slab manifest out, and COUNT that it happened.
+///
+/// THE COUNTER IS A PARAMETER, NOT THE CALLER'S RESPONSIBILITY. `slab_manifest_writes` used to be
+/// bumped by hand at the call sites, and exactly ONE of the twelve did it -- the periodic write in
+/// `install_slab`. Every other route here, the slab roll included, wrote a whole manifest the
+/// counter never saw, so a rolling round reported zero manifest writes while its roll barriers
+/// fired. Taking `stats` makes counting a condition of calling at all, the way
+/// `manifest_file_writes` counts inside the writer it wraps: a new call site cannot compile
+/// without handing over somewhere to count.
 pub(super) fn persist_slab_manifest(
     root: &Path,
     slabs: &BTreeMap<u64, BlockStoreSlabDescriptor>,
+    stats: &mut BlockStoreStats,
 ) -> Result<(), BlockStoreError> {
     fs::create_dir_all(root)?;
     let path = slab_manifest_path(root);
@@ -463,6 +473,9 @@ pub(super) fn persist_slab_manifest(
     }
     fs::rename(&temp_path, &path)?;
     sync_parent_dir(&path)?;
+    // Counted where the manifest LANDS. Any `?` above means the document never replaced the live
+    // one, and a count taken on entry would report a write that did not happen.
+    stats.slab_manifest_writes = stats.slab_manifest_writes.saturating_add(1);
     Ok(())
 }
 

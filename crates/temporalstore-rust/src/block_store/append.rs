@@ -18,7 +18,7 @@ impl BlockStore {
         if let Ok(file) = OpenOptions::new().append(true).open(&path) {
             file.sync_data()?;
         }
-        persist_slab_manifest(&inner.root, &inner.slabs)?;
+        inner.persist_slab_manifest_counted()?;
         inner.relaxed_dirty = false;
         Ok(())
     }
@@ -111,7 +111,7 @@ impl BlockStore {
         if defer_manifest {
             inner.relaxed_dirty = true;
         } else {
-            persist_slab_manifest(&inner.root, &inner.slabs)?;
+            inner.persist_slab_manifest_counted()?;
         }
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
@@ -203,7 +203,7 @@ impl BlockStore {
         if defer_manifest {
             inner.relaxed_dirty = true;
         } else {
-            persist_slab_manifest(&inner.root, &inner.slabs)?;
+            inner.persist_slab_manifest_counted()?;
         }
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);

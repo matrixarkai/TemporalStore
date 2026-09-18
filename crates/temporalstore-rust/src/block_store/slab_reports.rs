@@ -143,8 +143,7 @@ impl BlockStore {
             }
         }
         if changed {
-            let root = inner.root.clone();
-            persist_slab_manifest(&root, &inner.slabs)?;
+            inner.persist_slab_manifest_counted()?;
         }
         Ok(changed)
     }

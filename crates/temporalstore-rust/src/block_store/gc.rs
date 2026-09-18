@@ -594,7 +594,7 @@ impl BlockStore {
             sync_delayed_destroy_dirs(&inner.root)?;
         }
         if !removed.is_empty() {
-            persist_slab_manifest(&inner.root, &inner.slabs)?;
+            inner.persist_slab_manifest_counted()?;
         }
         Ok(BlockStoreGcReport {
             retain_from_block_slab_id,

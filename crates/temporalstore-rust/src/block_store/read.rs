@@ -176,8 +176,7 @@ impl BlockStore {
         inner.slabs_unwritten = inner.slabs_unwritten.saturating_add(1);
         if inner.slabs_unwritten >= SLABS_UNWRITTEN_BEFORE_PERSIST {
             inner.slabs_unwritten = 0;
-            inner.stats.slab_manifest_writes = inner.stats.slab_manifest_writes.saturating_add(1);
-            persist_slab_manifest(&inner.root, &inner.slabs)?;
+            inner.persist_slab_manifest_counted()?;
         }
         Ok(())
     }

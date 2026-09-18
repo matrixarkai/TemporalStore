@@ -376,6 +376,12 @@ pub struct BlockStoreStats {
     /// Writing it costs the whole manifest, so one write per slab install made installing n slabs
     /// cost n manifests -- and each install cost time proportional to how many slabs already
     /// existed. Counted rather than timed, because a count says the same thing on a busy machine.
+    ///
+    /// COUNTED INSIDE `persist_slab_manifest`, which is the only thing that writes the file. It
+    /// was counted at the CALL SITES instead, and one of the twelve routes did it while eleven did
+    /// not: a store that rolled slabs read zero here while every roll wrote a whole manifest. This
+    /// field is `pub` on a crate other people build on, so the wrong number was theirs too, not
+    /// only our own guards'.
     #[serde(default)]
     #[serde(alias = "band_manifest_writes")]
     pub slab_manifest_writes: u64,
@@ -1273,8 +1279,12 @@ impl BlockStore {
                 }
             }
         }
+        // The open path has no store to count against yet, so it counts into the stats this open
+        // is about to install. A rebuild-on-open IS a whole manifest write and belongs in the
+        // number the caller reads afterwards.
+        let mut stats = BlockStoreStats::default();
         if manifest_rebuilt {
-            let _ = persist_slab_manifest(&root, &slabs);
+            let _ = persist_slab_manifest(&root, &slabs, &mut stats);
         }
         Self {
             inner: Arc::new(Mutex::new(BlockStoreInner {
@@ -1289,7 +1299,7 @@ impl BlockStore {
                 slab_manifest_reconciled_on_open,
                 slabs_skipped_reinspection_on_open,
                 live_block_bytes: None,
-                stats: BlockStoreStats::default(),
+                stats,
                 shared_slab_source: None,
                 scratch: None,
             })),
@@ -1376,7 +1386,7 @@ impl BlockStore {
                 first_error: None,
             },
         );
-        persist_slab_manifest(&inner.root, &inner.slabs)?;
+        inner.persist_slab_manifest_counted()?;
         Ok(())
     }
 
@@ -1434,7 +1444,7 @@ impl BlockStore {
             }
         }
         if changed {
-            persist_slab_manifest(&inner.root, &inner.slabs)?;
+            inner.persist_slab_manifest_counted()?;
         }
         Ok(())
     }
@@ -1847,7 +1857,7 @@ impl BlockStore {
         // directory fsyncs plus a full manifest rewrite per round, for no durable change.
         if !purged.is_empty() || !restored.is_empty() {
             sync_delayed_destroy_dirs(&root)?;
-            persist_slab_manifest(&inner.root, &inner.slabs)?;
+            inner.persist_slab_manifest_counted()?;
         }
         retained_too_young.sort_unstable();
         Ok(BlockStorePurgeDelayedDestroyReport {
@@ -1893,7 +1903,7 @@ impl BlockStore {
                 moved += 1;
             }
         }
-        persist_slab_manifest(&root, &inner.slabs)?;
+        inner.persist_slab_manifest_counted()?;
         Ok(moved)
     }
 
@@ -2017,6 +2027,16 @@ pub(crate) fn block_wal_single_barrier() -> bool {
 /// `TS_WAL_LEGACY_RECOVERY` on, or anything else that stops deferring that fdatasync). Then this
 /// path starts paying per barrier for a file that grows per write, and both are worth revisiting
 /// together -- with the group-size table above as the guide to how much is there.
+impl BlockStoreInner {
+    /// Write the slab manifest out and count it against THIS store's stats.
+    ///
+    /// Every route that persists from a locked store goes through here, so the count cannot drift
+    /// from the writes the way a per-call-site increment did.
+    pub(crate) fn persist_slab_manifest_counted(&mut self) -> Result<(), BlockStoreError> {
+        persist_slab_manifest(&self.root, &self.slabs, &mut self.stats)
+    }
+}
+
 fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
@@ -2067,7 +2087,7 @@ fn roll_slab_inner(
     };
     let block_slab_id = inner.block_slab_id;
     inner.slabs.insert(block_slab_id, new_slab);
-    persist_slab_manifest(&inner.root, &inner.slabs)?;
+    inner.persist_slab_manifest_counted()?;
     Ok(BlockStoreRollReport {
         previous_block_slab_id,
         new_block_slab_id: inner.block_slab_id,
@@ -6275,6 +6295,70 @@ const RETIRED_NAMES: &[&str] = &[
                 install / slabs as f64,
             );
         }
+    }
+
+    /// A slab roll writes the whole slab manifest, and the counter must SAY SO.
+    ///
+    /// `slab_manifest_writes` is `pub` on this crate and documented "times the whole slab manifest
+    /// was written out". It was incremented at ONE of the twelve places that write it -- the
+    /// periodic write inside `install_slab` -- so a store that only rolled reported zero while
+    /// every roll wrote a whole manifest. Downstream forks read the same field.
+    ///
+    /// A DELTA ACROSS A REAL ROLL, not an absolute. An apparatus wired to nothing reads zero
+    /// before and zero after and would pass an absolute of zero; the delta is what says the roll
+    /// is the thing being counted. The roll report is asserted FIRST so a roll that never happened
+    /// cannot pass as a roll that wrote nothing.
+    #[test]
+    fn a_slab_roll_is_counted_as_a_manifest_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        store.append(b"before-the-roll").unwrap();
+
+        let before = store.stats().slab_manifest_writes;
+        let report = store.roll_slab().unwrap();
+        let after = store.stats().slab_manifest_writes;
+
+        assert_ne!(
+            report.new_block_slab_id, report.previous_block_slab_id,
+            "the roll must actually have rolled, or the delta below is measuring nothing"
+        );
+        assert!(
+            after >= before + 1,
+            "a roll wrote the whole slab manifest but slab_manifest_writes moved {before} -> \
+             {after}; this field is pub on a crate other people build on"
+        );
+    }
+
+    /// And it counts ONE PER WRITE, not "at least once ever".
+    ///
+    /// The second direction on the same field. A counter bumped once at the first roll and never
+    /// again satisfies the delta above; it does not satisfy this. `roll_slab` persists the
+    /// manifest exactly once, so five rolls must move the number by exactly five -- an equality,
+    /// which is what a mutant that moves the increment somewhere cheaper has to break.
+    #[test]
+    fn five_slab_rolls_are_counted_five_times() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        store.append(b"before-the-rolls").unwrap();
+
+        let before = store.stats().slab_manifest_writes;
+        let mut rolled = 0u64;
+        for _ in 0..5 {
+            let report = store.roll_slab().unwrap();
+            assert_ne!(
+                report.new_block_slab_id, report.previous_block_slab_id,
+                "every one of these must be a real roll"
+            );
+            rolled += 1;
+        }
+        let after = store.stats().slab_manifest_writes;
+
+        assert_eq!(rolled, 5, "the denominator: five rolls were attempted and five happened");
+        assert_eq!(
+            after - before,
+            5,
+            "five rolls wrote five whole manifests; slab_manifest_writes moved {before} -> {after}"
+        );
     }
 
     /// Installing slabs must not cost more as the store fills up.
