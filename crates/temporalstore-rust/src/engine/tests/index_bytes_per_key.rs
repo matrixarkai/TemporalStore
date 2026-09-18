@@ -696,6 +696,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
     let mut per_key: Vec<(&'static str, f64)> = Vec::new();
     let mut per_address: Vec<(&'static str, f64)> = Vec::new();
     let mut structure_rows: Vec<(&'static str, Vec<(String, f64)>)> = Vec::new();
+    let mut allocs_per_write: Vec<(&'static str, f64, f64)> = Vec::new();
 
     for (label, strings_n, series_keys, series_points) in [
         ("8,000 records", 4_000usize, 4usize, 1_000usize),
@@ -900,6 +901,56 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
              and as a BTreeSet per bucket it measured 277.6, so this has regressed to the set"
         );
 
+        // --- IS ANY OF THIS CLONED PER OPERATION? ---
+        //
+        // A structure copied whole on every write is the scale hazard that a footprint figure
+        // cannot see: the index is the same size either way, and the cost only appears as
+        // allocations that grow with the corpus. So it is measured the way a growth question has
+        // to be -- the SAME operation on two shards ten times apart. Allocations per write that
+        // are flat mean nothing shard-sized is being copied; allocations that track the corpus
+        // mean something is.
+        //
+        // Counted, not timed, and on a WARM shard so the first-write reconcile is not in the span.
+        drop(shards);
+        const PROBE_WRITES: usize = 200;
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "probe-warm".to_string(),
+                value: vec![b'w'; 32],
+            },
+        });
+        assert!(warm.status.ok, "the warm-up write must ack: {:?}", warm.status);
+        let probe = Probe::start();
+        let mut acked = 0usize;
+        for i in 0..PROBE_WRITES {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("probe-{i}"),
+                    value: vec![b'p'; 32],
+                },
+            });
+            if response.status.ok {
+                acked += 1;
+            }
+        }
+        let write_counts = probe.stop();
+        assert_eq!(
+            PROBE_WRITES, acked,
+            "denominator: every probe write must have been accepted, or the per-write figure is \
+             divided by writes that did not happen"
+        );
+        let per_write = write_counts.allocs as f64 / PROBE_WRITES as f64;
+        let bytes_per_write = write_counts.alloc_bytes as f64 / PROBE_WRITES as f64;
+        println!(
+            "  per write on a warm shard of {live_keys} keys: {per_write:.1} allocations, \
+             {bytes_per_write:.0} B allocated, {:.0} B still outstanding",
+            (write_counts.alloc_bytes as i64 - write_counts.free_bytes as i64) as f64
+                / PROBE_WRITES as f64
+        );
+        allocs_per_write.push((label, per_write, bytes_per_write));
+
         per_key.push((label, total as f64 / live_keys as f64));
         per_address.push((label, total as f64 / live_addresses as f64));
         structure_rows.push((label, breakdown));
@@ -926,6 +977,34 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
     assert!(
         small > 0.0 && large > 0.0,
         "neither corpus may price a live key at nothing: {small:.1} and {large:.1} B/key"
+    );
+
+    // --- PER-OPERATION ALLOCATION, across the same ten-times step. ---
+    assert_eq!(2, allocs_per_write.len(), "both corpus sizes must have been probed for writes");
+    let (_, small_allocs, small_wbytes) = allocs_per_write[0];
+    let (_, large_allocs, large_wbytes) = allocs_per_write[1];
+    println!("=== allocations per write, {small_label} vs {large_label} ===");
+    println!(
+        "  allocations: {small_allocs:.1} -> {large_allocs:.1}, ratio {:.3}",
+        large_allocs / small_allocs
+    );
+    println!(
+        "  bytes:       {small_wbytes:.0} -> {large_wbytes:.0}, ratio {:.3}",
+        large_wbytes / small_wbytes
+    );
+    assert!(
+        small_allocs > 1.0,
+        "a write that allocates {small_allocs:.1} times has not been measured -- the probe span \
+         is empty and the flatness below would be the flatness of nothing"
+    );
+    // The corpus is ten times larger. A structure copied whole per write would show that here; a
+    // write that touches only its own key will not. Generous, because this is a shape claim and
+    // not a budget: anything under 2x rules out shard-sized copying, and the measured figure is
+    // printed above for anyone who wants the number rather than the verdict.
+    assert!(
+        large_allocs < 2.0 * small_allocs,
+        "allocations per write went {small_allocs:.1} -> {large_allocs:.1} across a ten-fold \
+         corpus; something shard-sized is being copied on the write path"
     );
 }
 
