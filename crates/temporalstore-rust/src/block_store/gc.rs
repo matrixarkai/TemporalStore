@@ -613,3 +613,7 @@ impl BlockStore {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "gc_scale.rs"]
+mod gc_scale;
