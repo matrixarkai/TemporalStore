@@ -168,7 +168,7 @@ fn drop_if_expired(
     key: &str,
 ) -> bool {
     if remove_if_expired(shard, key) {
-        invalidate_record_all(cache, shard_id, key);
+        invalidate_record_all(cache, shard_id, key, &CACHE_SWEEP_COUNTS);
         true
     } else {
         false
@@ -220,7 +220,7 @@ pub(crate) fn execute_on_shard(
                 true,
             );
             mutated = delete_record(shard, &key);
-            invalidate_record_all(cache, shard_id, &key);
+            invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
             CommandResponse::Empty
         }
         Command::CommonExpire { key, ttl_ms } => {
@@ -249,7 +249,7 @@ pub(crate) fn execute_on_shard(
                 Some(expires_at),
                 false,
             );
-            invalidate_record_all(cache, shard_id, &key);
+            invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
             CommandResponse::Empty
         }
         Command::CommonPersist { key } => {
@@ -277,7 +277,7 @@ pub(crate) fn execute_on_shard(
                     None,
                     true,
                 );
-                invalidate_record_all(cache, shard_id, &key);
+                invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
                 CommandResponse::Integer { value: 0 }
             } else {
                 let mut removed = false;
@@ -300,7 +300,7 @@ pub(crate) fn execute_on_shard(
                         None,
                         false,
                     );
-                    invalidate_record_all(cache, shard_id, &key);
+                    invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
                 }
                 CommandResponse::Integer {
                     value: i64::from(removed),
@@ -330,7 +330,7 @@ pub(crate) fn execute_on_shard(
         Command::CommonExists { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                invalidate_record_all(cache, shard_id, &key);
+                invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
                     mutated,

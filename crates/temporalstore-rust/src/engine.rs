@@ -4590,15 +4590,121 @@ fn invalidate_context_record(cache: &MultiLayerCache, shard_id: ShardId, key: &s
     let _ = cache.invalidate(&CacheKey::string(shard_id, key));
 }
 
-fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
+/// What one `invalidate_record_all` costs, counted where the cost LANDS.
+///
+/// The price of a sweep is not a constant. `MultiLayerCache::invalidate_record` chains the key
+/// sets of all three tiers -- memory, pmem, disk index -- and filters, so one call steps over the
+/// WHOLE CACHE, and `invalidate_record_all` makes two of them. A fixture that writes a corpus and
+/// never reads it back leaves those tiers nearly empty, which measures the sweep at its floor
+/// rather than at what a serving store pays.
+///
+/// So the quantity that matters is not the call count -- that is one per key and has never been
+/// in doubt -- but ENTRIES WALKED, and that is a property of the cache at the moment of the call.
+/// It is read from the three tier lengths, which are exactly the key sets the walk chains.
+///
+/// HANDED IN rather than read off a free static: a new call site has to name where its
+/// sweeps are counted before it compiles.
+///
+/// `entries_walked` costs three uncontended tier-length reads per sweep, so it sits behind
+/// `armed` and is off unless a probe turns it on. `arming_the_sweep_counter_does_not_move_the_hold`
+/// is the control for that, and it is what makes the timings below readable next to the counts.
+#[derive(Debug)]
+pub(crate) struct CacheSweepCounts {
+    armed: std::sync::atomic::AtomicBool,
+    /// `invalidate_record_all` calls.
+    pub calls: std::sync::atomic::AtomicU64,
+    /// `MultiLayerCache::invalidate_record` calls -- the walks, two per call.
+    pub sweeps: std::sync::atomic::AtomicU64,
+    /// Cache entries those walks stepped over, summed over the sweeps. Zero unless armed.
+    pub entries_walked: std::sync::atomic::AtomicU64,
+    /// Named-key invalidations: one `CacheKey`, no walk. What a sweep is narrowed TO.
+    pub named: std::sync::atomic::AtomicU64,
+}
+
+impl CacheSweepCounts {
+    const fn zeroed() -> Self {
+        Self {
+            armed: std::sync::atomic::AtomicBool::new(false),
+            calls: std::sync::atomic::AtomicU64::new(0),
+            sweeps: std::sync::atomic::AtomicU64::new(0),
+            entries_walked: std::sync::atomic::AtomicU64::new(0),
+            named: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Process-wide, so a reader resets immediately before the round it measures and the suite it
+    /// runs in is single-threaded.
+    pub(crate) fn reset(&self) {
+        for cell in [&self.calls, &self.sweeps, &self.entries_walked, &self.named] {
+            cell.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn set_armed(&self, armed: bool) {
+        self.armed
+            .store(armed, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `(calls, sweeps, entries_walked, named)`.
+    pub(crate) fn read(&self) -> (u64, u64, u64, u64) {
+        let load = |cell: &std::sync::atomic::AtomicU64| {
+            cell.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        (
+            load(&self.calls),
+            load(&self.sweeps),
+            load(&self.entries_walked),
+            load(&self.named),
+        )
+    }
+
+    fn note_call(&self) {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn note_named(&self) {
+        self.named
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Counted immediately BEFORE the walk it describes, so the tier lengths it reads are the
+    /// ones that walk will chain -- not the ones left after it has removed entries.
+    fn note_sweep(&self, cache: &MultiLayerCache) {
+        self.sweeps
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.armed.load(std::sync::atomic::Ordering::Relaxed) {
+            let walked = cache
+                .item_count_for_tier(matrixcache::CacheTier::Memory)
+                .saturating_add(cache.item_count_for_tier(matrixcache::CacheTier::Pmem))
+                .saturating_add(cache.item_count_for_tier(matrixcache::CacheTier::Ssd));
+            self.entries_walked
+                .fetch_add(walked as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+pub(crate) static CACHE_SWEEP_COUNTS: CacheSweepCounts = CacheSweepCounts::zeroed();
+
+fn invalidate_record_all(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    key: &str,
+    counts: &CacheSweepCounts,
+) {
+    counts.note_call();
+    counts.note_named();
     let _ = cache.invalidate(&CacheKey::string(shard_id, key));
+    counts.note_sweep(cache);
     let _ = cache.invalidate_record(shard_id, "hash", key);
     // A set has exactly ONE cacheable entry -- `CacheKey::set_members` fixes the selector at
     // "members" -- so naming it is equivalent to sweeping for it, and a sweep is
     // `invalidate_record`, which walks every key in all three cache tiers.
+    counts.note_named();
     let _ = cache.invalidate(&CacheKey::set_members(shard_id, key));
     // `hash` and `feature` keep their sweeps: a hash caches one entry per FIELD and a feature
     // one per query window, so neither has a single key to name.
+    counts.note_sweep(cache);
     let _ = cache.invalidate_record(shard_id, "feature", key);
 }
 

@@ -2041,7 +2041,7 @@ impl TemporalEngine {
                     if removed {
                         dropped_object_count = dropped_object_count.saturating_add(1);
                         let phase = std::time::Instant::now();
-                        invalidate_record_all(&self.cache, shard_id, &key);
+                        invalidate_record_all(&self.cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
                         DELETE_DROP_GUARD_NANOS
                             .add_since(&DELETE_DROP_GUARD_NANOS.invalidate, phase);
                         deleted_keys.push(key);
@@ -2164,8 +2164,9 @@ impl TemporalEngine {
 #[cfg(test)]
 mod eviction_round_scale {
     use super::EVICTION_RECENCY_ENTRIES_CLONED;
+    use crate::engine::collect_live_block_entries;
     use crate::engine::TemporalEngine;
-    use crate::{Command, ExecuteRequest};
+    use crate::{Command, CommandResponse, ExecuteRequest};
     use std::sync::atomic::Ordering;
 
     fn engine_with(objects: usize) -> (tempfile::TempDir, TemporalEngine) {
@@ -3060,5 +3061,696 @@ mod eviction_round_scale {
             engine.wal_store.stats(1).last_sequence,
             "the anchor must equal the log's own last sequence",
         );
+    }
+
+    /// The same corpus, READ BACK.
+    ///
+    /// A read is what populates the record caches -- `the_cache_namespaces_a_record_can_actually_use`
+    /// (engine/tests/part4.rs) establishes that, and says it in as many words: "a read is what
+    /// populates the record caches, so writing alone would leave every namespace empty". So
+    /// `engine_with` on its own is a COLD-cache fixture, and the one knob between the two arms
+    /// below is this loop.
+    fn engine_with_warm_cache(objects: usize) -> (tempfile::TempDir, TemporalEngine) {
+        let (dir, engine) = engine_with(objects);
+        for index in 0..objects {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("evict-scale-key-{index}"),
+                },
+            });
+            assert!(out.status.ok, "a warming read failed: {:?}", out.status);
+        }
+        (dir, engine)
+    }
+
+    /// One `delete_drop` round, measured for what its per-key cache sweep WALKS.
+    #[derive(Debug)]
+    struct SweepRound {
+        objects: usize,
+        warm: bool,
+        dropped: usize,
+        /// Counted INSIDE `invalidate_record_all`.
+        calls: u64,
+        sweeps: u64,
+        entries_walked: u64,
+        named: u64,
+        /// Counted OUTSIDE, off the cache itself, either side of the whole call.
+        cache_entries_before: usize,
+        cache_entries_after: usize,
+        hold_ns: u64,
+        delete_ns: u64,
+        invalidate_ns: u64,
+        wal_ns: u64,
+        unattributed_ns: u64,
+    }
+
+    impl SweepRound {
+        /// Sweeping calls this round made that its own dropped-key count does not explain.
+        ///
+        /// INDEPENDENT: `calls` is kept inside `invalidate_record_all`, the primitive that does
+        /// the sweeping, and `dropped` is the number `apply_storage_eviction` RETURNS to its
+        /// caller. Neither is derived from the other, so this is not an identity -- a second
+        /// sweeping path inside the round would show up here.
+        fn sweep_residual(&self) -> u64 {
+            self.calls.saturating_sub(self.dropped as u64)
+        }
+
+        fn pct(&self, part: u64) -> f64 {
+            if self.hold_ns == 0 {
+                0.0
+            } else {
+                part as f64 * 100.0 / self.hold_ns as f64
+            }
+        }
+
+        fn walked_per_key(&self) -> f64 {
+            if self.dropped == 0 {
+                0.0
+            } else {
+                self.entries_walked as f64 / self.dropped as f64
+            }
+        }
+
+        fn label(&self) -> String {
+            format!(
+                "{} objects, {}",
+                self.objects,
+                if self.warm { "WARM" } else { "cold" }
+            )
+        }
+    }
+
+    /// `armed` turns on the per-sweep tier-length read that produces `entries_walked`. Every arm
+    /// is run BOTH ways: the counts are read from the armed run and the timings from the
+    /// disarmed one, so the apparatus that explains the hold is never inside the hold it explains.
+    fn sweep_round(objects: usize, warm: bool, armed: bool) -> SweepRound {
+        use super::CACHE_SWEEP_COUNTS as SWEEP;
+        use super::DELETE_DROP_GUARD_NANOS as NANOS;
+
+        let (_dir, engine) = if warm {
+            engine_with_warm_cache(objects)
+        } else {
+            engine_with(objects)
+        };
+        engine.use_sampled_eviction_for_test();
+        let cache_entries_before = engine.cache.entries_for_shard(1).len();
+        SWEEP.reset();
+        SWEEP.set_armed(armed);
+        NANOS.reset();
+        let report = engine.apply_storage_eviction(1, 0, 0, false, true);
+        SWEEP.set_armed(false);
+        let cache_entries_after = engine.cache.entries_for_shard(1).len();
+        assert!(
+            report.pressure_gate_open,
+            "the round must have got past the pressure gate, or nothing was measured"
+        );
+        let (calls, sweeps, entries_walked, named) = SWEEP.read();
+        let (hold_ns, _collect_ns, delete_ns, invalidate_ns, wal_ns, _anchor_ns, _snapshot_ns) =
+            NANOS.read();
+        SweepRound {
+            objects,
+            warm,
+            dropped: report.dropped_object_count,
+            calls,
+            sweeps,
+            entries_walked,
+            named,
+            cache_entries_before,
+            cache_entries_after,
+            hold_ns,
+            delete_ns,
+            invalidate_ns,
+            wal_ns,
+            unattributed_ns: NANOS.unattributed(),
+        }
+    }
+
+    /// WHAT THE PER-KEY CACHE SWEEP WALKS, COLD AND WARM.
+    ///
+    /// `where_a_delete_drop_rounds_shard_guard_hold_actually_goes` puts `invalidate_record_all` at
+    /// the top of the hold. That measurement was taken on a fixture that writes a corpus and never
+    /// reads it back, and a cache is populated by READS -- so the share it reported is a FLOOR,
+    /// not the value. This establishes the value.
+    ///
+    /// WHY THIS IS A COUNT AND NOT A TIME. One `invalidate_record_all` makes two
+    /// `MultiLayerCache::invalidate_record` calls, and each of those chains the key sets of all
+    /// three cache tiers and filters:
+    ///
+    ///     inner.memory.keys().chain(inner.pmem.keys()).chain(inner.disk_index.keys())
+    ///         .filter(|key| key.shard_id == shard_id && key.namespace == namespace && ...)
+    ///
+    /// So the work is ENTRIES WALKED, it is exactly the sum of the three tier lengths, and it is
+    /// countable. `entries_walked` is taken immediately before each walk, from those same three
+    /// lengths, inside the primitive -- so a new call site cannot compile without saying where its
+    /// sweeps are counted, and a walk cannot happen without being sized.
+    ///
+    /// The nanosecond rows are PRINTED, not asserted, for the reason the probe above gives: a
+    /// time on this box is a fact about the box. What is asserted is counts.
+    #[test]
+    fn what_a_delete_drop_rounds_cache_sweep_walks_cold_and_warm() {
+        const SMALL: usize = 500;
+        const LARGE: usize = 4000;
+
+        // COUNTS from the armed runs; TIMINGS from the disarmed ones. Same fixture, same round.
+        let cold_small = sweep_round(SMALL, false, true);
+        let warm_small = sweep_round(SMALL, true, true);
+        let cold_large = sweep_round(LARGE, false, true);
+        let warm_large = sweep_round(LARGE, true, true);
+        let t_cold_small = sweep_round(SMALL, false, false);
+        let t_warm_small = sweep_round(SMALL, true, false);
+        let t_cold_large = sweep_round(LARGE, false, false);
+        let t_warm_large = sweep_round(LARGE, true, false);
+
+        let ratio = |cold: f64, warm: f64| if cold == 0.0 { 0.0 } else { warm / cold };
+        println!(
+            "\n  THE PER-KEY CACHE SWEEP of one delete_drop round, COLD cache vs WARM cache\n  \
+               (cold = the corpus written and never read; warm = the same corpus READ BACK)\n\
+             \n                                  {:>12} {:>12} {:>12} {:>12}\n\
+               corpus objects              {:>12} {:>12} {:>12} {:>12}\n\
+               cache entries BEFORE (outer){:>12} {:>12} {:>12} {:>12}\n\
+               cache entries AFTER  (outer){:>12} {:>12} {:>12} {:>12}\n\
+               keys the round dropped      {:>12} {:>12} {:>12} {:>12}\n\
+               invalidate_record_all calls {:>12} {:>12} {:>12} {:>12}\n\
+               .. residual, calls - dropped{:>12} {:>12} {:>12} {:>12}\n\
+               invalidate_record SWEEPS    {:>12} {:>12} {:>12} {:>12}\n\
+               named-key invalidations     {:>12} {:>12} {:>12} {:>12}\n\
+               CACHE ENTRIES WALKED        {:>12} {:>12} {:>12} {:>12}\n\
+               .. walked per dropped key   {:>12.0} {:>12.0} {:>12.0} {:>12.0}\n",
+            "cold 500", "WARM 500", "cold 4000", "WARM 4000",
+            cold_small.objects, warm_small.objects, cold_large.objects, warm_large.objects,
+            cold_small.cache_entries_before, warm_small.cache_entries_before,
+            cold_large.cache_entries_before, warm_large.cache_entries_before,
+            cold_small.cache_entries_after, warm_small.cache_entries_after,
+            cold_large.cache_entries_after, warm_large.cache_entries_after,
+            cold_small.dropped, warm_small.dropped, cold_large.dropped, warm_large.dropped,
+            cold_small.calls, warm_small.calls, cold_large.calls, warm_large.calls,
+            cold_small.sweep_residual(), warm_small.sweep_residual(),
+            cold_large.sweep_residual(), warm_large.sweep_residual(),
+            cold_small.sweeps, warm_small.sweeps, cold_large.sweeps, warm_large.sweeps,
+            cold_small.named, warm_small.named, cold_large.named, warm_large.named,
+            cold_small.entries_walked, warm_small.entries_walked,
+            cold_large.entries_walked, warm_large.entries_walked,
+            cold_small.walked_per_key(), warm_small.walked_per_key(),
+            cold_large.walked_per_key(), warm_large.walked_per_key(),
+        );
+
+        println!(
+            "  THE HOLD, SPLIT, from the DISARMED runs (printed -- a time here is a fact about \
+             the box)\n\
+             \n                                  {:>12} {:>12} {:>12} {:>12}\n\
+               guard held, total us        {:>12.0} {:>12.0} {:>12.0} {:>12.0}\n\
+               delete_record (NEEDS guard) {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
+               invalidate_record_all       {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
+               WAL tombstone loop          {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
+               unattributed (independent)  {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
+             \n  WARM / COLD on the sweep's share of the hold:  {:>5.2}x at {SMALL}, \
+             {:>5.2}x at {LARGE}\n\
+               entries walked at {SMALL:>4}, cold -> WARM  {:>9} -> {:<10}\n\
+               entries walked at {LARGE:>4}, cold -> WARM  {:>9} -> {:<10}\n\
+               (no ratio is printed: the cold arm walks NONE, and that is the finding)\n",
+            "cold 500", "WARM 500", "cold 4000", "WARM 4000",
+            t_cold_small.hold_ns as f64 / 1000.0, t_warm_small.hold_ns as f64 / 1000.0,
+            t_cold_large.hold_ns as f64 / 1000.0, t_warm_large.hold_ns as f64 / 1000.0,
+            t_cold_small.pct(t_cold_small.delete_ns), t_warm_small.pct(t_warm_small.delete_ns),
+            t_cold_large.pct(t_cold_large.delete_ns), t_warm_large.pct(t_warm_large.delete_ns),
+            t_cold_small.pct(t_cold_small.invalidate_ns),
+            t_warm_small.pct(t_warm_small.invalidate_ns),
+            t_cold_large.pct(t_cold_large.invalidate_ns),
+            t_warm_large.pct(t_warm_large.invalidate_ns),
+            t_cold_small.pct(t_cold_small.wal_ns), t_warm_small.pct(t_warm_small.wal_ns),
+            t_cold_large.pct(t_cold_large.wal_ns), t_warm_large.pct(t_warm_large.wal_ns),
+            t_cold_small.pct(t_cold_small.unattributed_ns),
+            t_warm_small.pct(t_warm_small.unattributed_ns),
+            t_cold_large.pct(t_cold_large.unattributed_ns),
+            t_warm_large.pct(t_warm_large.unattributed_ns),
+            ratio(
+                t_cold_small.pct(t_cold_small.invalidate_ns),
+                t_warm_small.pct(t_warm_small.invalidate_ns)
+            ),
+            ratio(
+                t_cold_large.pct(t_cold_large.invalidate_ns),
+                t_warm_large.pct(t_warm_large.invalidate_ns)
+            ),
+            cold_small.entries_walked,
+            warm_small.entries_walked,
+            cold_large.entries_walked,
+            warm_large.entries_walked,
+        );
+
+        let armed = [&cold_small, &warm_small, &cold_large, &warm_large];
+
+        // VACUITY FLOOR, on the measured denominator, at every arm. A round that dropped nothing
+        // swept nothing, and every ratio below would then be a ratio of zeroes.
+        for round in armed {
+            assert!(
+                round.dropped > 0,
+                "{} dropped no keys, so nothing was swept: {round:?}",
+                round.label(),
+            );
+        }
+        assert!(
+            cold_large.dropped > cold_small.dropped && warm_large.dropped > warm_small.dropped,
+            "the two corpora must differ in dropped keys at both temperatures: \
+             cold {} vs {}, warm {} vs {}",
+            cold_small.dropped,
+            cold_large.dropped,
+            warm_small.dropped,
+            warm_large.dropped,
+        );
+
+        // THE POSITIVE CONTROL, and everything below depends on it: the WARM arm has to actually
+        // be warmer. `cache_entries_before` is read off the cache itself, outside the round, so
+        // it is not the counter vouching for its own fixture. Without this a reading loop that
+        // cached nothing would make both arms identical and every ratio below a flat 1.00x --
+        // which reads exactly like a refutation.
+        for (cold, warm) in [(&cold_small, &warm_small), (&cold_large, &warm_large)] {
+            assert!(
+                warm.cache_entries_before > cold.cache_entries_before,
+                "the warm arm must hold more cache entries than the cold one at {} objects, \
+                 or the two arms are the same experiment: cold {} vs warm {}",
+                cold.objects,
+                cold.cache_entries_before,
+                warm.cache_entries_before,
+            );
+        }
+
+        // THE COUNTER COUNTS WHERE THE WORK IS ASKED FOR. One call per dropped key, two sweeps
+        // and two named invalidations per call. Equalities, not bounds: "at least one sweep"
+        // would also pass on a function that had stopped making the second one.
+        for round in armed {
+            assert_eq!(
+                round.calls, round.dropped as u64,
+                "{}: the drop loop must sweep once per dropped key; {} calls for {} keys",
+                round.label(),
+                round.calls,
+                round.dropped,
+            );
+            assert_eq!(
+                round.sweeps,
+                round.calls.saturating_mul(2),
+                "{}: each call makes two full-cache sweeps (hash, feature); {} sweeps for {} calls",
+                round.label(),
+                round.sweeps,
+                round.calls,
+            );
+            assert_eq!(
+                round.named,
+                round.calls.saturating_mul(2),
+                "{}: each call makes two named invalidations (string, set/members); {} for {} calls",
+                round.label(),
+                round.named,
+                round.calls,
+            );
+        }
+
+        // THE INDEPENDENT RESIDUAL, asserted ACROSS THE SIZES rather than against a constant.
+        // `calls` comes from inside `invalidate_record_all`; `dropped` is what
+        // `apply_storage_eviction` returns. Equal across the sizes means whatever sweeping the
+        // round does beyond its drop loop is fixed per round. A residual that GREW with the
+        // corpus would be a second per-key sweeping path in no row of this table, which is
+        // exactly the drift an assertion against a constant would have absorbed.
+        assert_eq!(
+            cold_small.sweep_residual(),
+            cold_large.sweep_residual(),
+            "cold: sweeping calls beyond the drop loop must be fixed per round, not per key: \
+             {} at {SMALL} and {} at {LARGE}",
+            cold_small.sweep_residual(),
+            cold_large.sweep_residual(),
+        );
+        assert_eq!(
+            warm_small.sweep_residual(),
+            warm_large.sweep_residual(),
+            "warm: sweeping calls beyond the drop loop must be fixed per round, not per key: \
+             {} at {SMALL} and {} at {LARGE}",
+            warm_small.sweep_residual(),
+            warm_large.sweep_residual(),
+        );
+
+        // THE CLAIM. A sweep walks the cache, so a warm cache is walked and a cold one is not.
+        // The cold arm is the FLOOR the earlier split reported; the warm arm is what a serving
+        // store pays. Asserted as a strict inequality on a COUNT at both sizes -- the timings
+        // above only illustrate it.
+        for (cold, warm) in [(&cold_small, &warm_small), (&cold_large, &warm_large)] {
+            assert!(
+                warm.entries_walked > cold.entries_walked,
+                "the sweep must walk more of a warm cache than of a cold one at {} objects: \
+                 cold walked {} entries, warm walked {}",
+                cold.objects,
+                cold.entries_walked,
+                warm.entries_walked,
+            );
+        }
+
+        // AND THE WALK IS THE CACHE, TWICE. Entries walked per dropped key must be two cache
+        // lengths, which is what makes this cost a property of the STORE rather than of the
+        // round. Bounded by the cache size read from outside: the round removes entries as it
+        // goes, so the per-key figure lands between two tier-length readings taken either side.
+        for round in armed {
+            let after_bound = 2.0 * round.cache_entries_after as f64;
+            let before_bound = 2.0 * round.cache_entries_before as f64;
+            assert!(
+                round.walked_per_key() >= after_bound && round.walked_per_key() <= before_bound,
+                "{}: entries walked per key ({:.0}) must lie between twice the cache size after \
+                 ({after_bound:.0}) and twice the cache size before ({before_bound:.0})",
+                round.label(),
+                round.walked_per_key(),
+            );
+        }
+    }
+
+    /// THE CONTROL FOR THE APPARATUS, and it can fail in both directions.
+    ///
+    /// `entries_walked` is the only figure above that costs anything to collect -- three
+    /// uncontended tier-length reads per sweep -- so it sits behind a flag, and the timings in the
+    /// probe above are read from rounds with the flag OFF. That split is only honest if the flag
+    /// actually gates the work: armed must produce a size and disarmed must produce none, on the
+    /// same round, with the sweep count identical either way.
+    ///
+    /// A one-directional check would not do. "Armed produces a size" passes on a counter that is
+    /// always on, and the timings would then be measuring their own apparatus.
+    #[test]
+    fn the_sweep_size_counter_is_off_unless_it_is_armed() {
+        let armed = sweep_round(300, true, true);
+        let disarmed = sweep_round(300, true, false);
+
+        assert!(
+            armed.sweeps > 0 && disarmed.sweeps > 0,
+            "both arms must have swept, or the flag is being tested on nothing: {armed:?} \
+             {disarmed:?}",
+        );
+        assert_eq!(
+            armed.sweeps, disarmed.sweeps,
+            "arming must not change how many sweeps happen, only whether they are sized: \
+             {} armed vs {} disarmed",
+            armed.sweeps, disarmed.sweeps,
+        );
+        assert!(
+            armed.entries_walked > 0,
+            "the armed arm must size its walks; walked {}",
+            armed.entries_walked,
+        );
+        assert_eq!(
+            disarmed.entries_walked, 0,
+            "the disarmed arm must do no sizing at all, or the timings it is used for include \
+             the apparatus that explains them; walked {}",
+            disarmed.entries_walked,
+        );
+    }
+
+    /// THE READ-VISIBILITY ARGUMENT, as a test rather than as prose.
+    ///
+    /// `where_a_delete_drop_rounds_shard_guard_hold_actually_goes` put `invalidate_record_all` at
+    /// the top of the hold, and the probe above puts it higher still once the cache is warm. The
+    /// obvious move is to defer it: the sweep is handed `&MultiLayerCache` and a key, the compiler
+    /// says it borrows nothing from `shard` (removing each of its three parameters in turn names
+    /// four lines in `engine.rs` and no others), and hoisting the call past `drop(shards)` compiles
+    /// unchanged. Priced as a mutant it takes a 4,000-key warm round's hold from 1.67 s to 0.39 s.
+    ///
+    /// It is still wrong, and this is the interleaving that makes it wrong.
+    ///
+    /// WHICH READER, WHICH CACHE, WHICH MOMENT, SEEING WHAT. A `StringGet` is served by
+    /// `cached_response` (`engine/command_validation.rs`), which is CACHE-FIRST and consults
+    /// nothing else:
+    ///
+    ///     if let Ok(Some(bytes)) = cache.get(&key) { ... return response; }
+    ///     let response = source();     // <- the shard, reached only on a miss
+    ///
+    /// `CacheKey::string(shard_id, key)` is `{shard, "string", key, "value"}`. It carries no
+    /// generation, no sequence and no version stamp -- `page` keys have a generation selector,
+    /// record keys do not -- so there is nothing in the key or in the read path that could notice
+    /// that the shard has moved on. Nothing else closes the window either: the round's earlier
+    /// `invalidate_slot` call filters on a routing slot, and a `string` key's selector is
+    /// `"value"`, which has no slot.
+    ///
+    /// So the moment is this. With the sweep deferred, `delete_record` removes the key under the
+    /// `shards` write guard, the tombstone is appended and `applied_wal_sequence` anchored past it
+    /// -- the deletion is now durable and replicated -- and the guard is dropped. Until the
+    /// deferred sweep reaches that key, any reader that takes the `shards` lock and asks for it is
+    /// answered out of the cache with the value the shard no longer has. The window is not a few
+    /// instructions wide: it is the whole sweep, which is the quantity this change exists to
+    /// shrink, and it grows with the cache.
+    ///
+    /// IN WHICH DIRECTION IT FAILS. Deferring an invalidation can only ever leave the cache MORE
+    /// populated than the shard, never less -- it delays removals and adds nothing. So the single
+    /// observable failure is STALE-ALIVE: a read answers with a value for a key the shard has
+    /// already deleted. The opposite direction, a read reporting missing for a live key, is not
+    /// reachable this way at all. A check that only asked "is the cache eventually empty of this
+    /// key" would therefore pass under the unsafe mutant, because it is a question about the end
+    /// state and the defect is entirely in the middle. This attacks the observable direction: it
+    /// reads keys the shard has ALREADY dropped, while the round is still running.
+    ///
+    /// WHY IT NEEDS A SECOND THREAD. The window opens and closes inside one call, so a
+    /// single-threaded fixture cannot be inside it -- which is why the suite had nothing that
+    /// could see this. The reader takes the `shards` lock to decide a key is gone, so under the
+    /// shipped code it cannot observe that until the guarded section that both deletes and sweeps
+    /// has completed; under the mutant it observes it the moment the guard drops.
+    ///
+    /// NO FALSE POSITIVE IS POSSIBLE. A key absent from the live block entries stays absent -- the
+    /// round only removes -- so a candidate chosen from one snapshot is still a valid candidate
+    /// when it is read. And under the shipped code the delete and the sweep for a given key are in
+    /// the same `shards.write()` section, so no `shards` reader can stand between them.
+    #[test]
+    fn a_key_the_shard_has_dropped_is_never_still_answered_out_of_the_cache() {
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+        use std::sync::Arc;
+
+        const OBJECTS: usize = 800;
+
+        // WARM, because a cold cache holds nothing to serve stale: the probe above measures the
+        // `engine_with` fixture at ZERO cache entries. On a cold cache this test would be looking
+        // for a stale answer that could not exist, and would pass against any mutant at all.
+        let (_dir, engine) = engine_with_warm_cache(OBJECTS);
+        engine.use_sampled_eviction_for_test();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stale_answers = Arc::new(AtomicU64::new(0));
+        let dropped_keys_read = Arc::new(AtomicU64::new(0));
+
+        let reader = {
+            let engine = engine.clone();
+            let stop = Arc::clone(&stop);
+            let stale_answers = Arc::clone(&stale_answers);
+            let dropped_keys_read = Arc::clone(&dropped_keys_read);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    // Which keys the SHARD has already let go of, read under the shard lock.
+                    let live = {
+                        let shards = engine.shards.read().expect("engine lock poisoned");
+                        match shards.get(&1) {
+                            Some(shard) => collect_live_block_entries(shard)
+                                .into_iter()
+                                .map(|entry| entry.object_key)
+                                .collect::<std::collections::BTreeSet<_>>(),
+                            None => break,
+                        }
+                    };
+                    for index in 0..OBJECTS {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let key = format!("evict-scale-key-{index}");
+                        if live.contains(key.as_str()) {
+                            continue;
+                        }
+                        // The shard has dropped this key. Ask for it anyway.
+                        dropped_keys_read.fetch_add(1, Ordering::Relaxed);
+                        let out = engine.execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet { key },
+                        });
+                        if let CommandResponse::Bytes { value: Some(_) } = out.response {
+                            stale_answers.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            })
+        };
+
+        let report = engine.apply_storage_eviction(1, 0, 0, false, true);
+        // One more full pass after the round, so the reader is guaranteed to have seen the final
+        // state as well as the middle of it.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        stop.store(true, Ordering::Relaxed);
+        reader.join().expect("the reader thread must not panic");
+
+        let stale = stale_answers.load(Ordering::Relaxed);
+        let read = dropped_keys_read.load(Ordering::Relaxed);
+        println!(
+            "\n  READS OF KEYS THE SHARD HAD ALREADY DROPPED, during a delete_drop round\n    \
+               keys the round dropped          {:>8}\n    \
+               reads issued for dropped keys   {read:>8}\n    \
+               ANSWERED WITH A VALUE ANYWAY    {stale:>8}\n",
+            report.dropped_object_count,
+        );
+
+        // VACUITY FLOOR. A round that dropped nothing, or a reader that never caught a key in the
+        // dropped state, makes the claim below an assertion about an empty set.
+        assert!(
+            report.pressure_gate_open && report.dropped_object_count > 0,
+            "the round must have dropped keys, or there was nothing to read stale: {report:?}",
+        );
+        assert!(
+            read > 0,
+            "the reader never found a key the shard had dropped, so it never entered the window \
+             this test exists to watch; it issued {read} reads",
+        );
+
+        // THE CLAIM, in the one direction a deferred invalidation can fail.
+        assert_eq!(
+            stale, 0,
+            "{stale} of {read} reads of already-dropped keys were answered out of the cache with \
+             a value the shard no longer holds; the sweep that drops those entries has to stay in \
+             the same shards.write() section as the delete that makes them stale",
+        );
+    }
+
+    /// THE TWO MOST EXPENSIVE LINES IN THE HOLD WERE THE TWO NOTHING WAS WATCHING.
+    ///
+    /// `invalidate_record_all` sweeps `hash` and `feature`, and those two sweeps are the whole of
+    /// what makes it O(cache) per key -- the probe above measures them walking 3,999 entries per
+    /// dropped key on a warm 4,000-object store. Mutating each one to sweep for a key that cannot
+    /// exist leaves them doing nothing, and BOTH mutants passed the entire 107-test
+    /// eviction/invalidation/cache selection. So the lines that cost the most were also the lines
+    /// no test could tell were working.
+    ///
+    /// This kills both, and it is the equivalence check any future narrowing of those sweeps has
+    /// to pass: whatever it does instead, a key the round drops must keep no cached entry in any
+    /// namespace the sweep covers.
+    ///
+    /// THE POSITIVE CONTROL RUNS FIRST AND IS NOT OPTIONAL. Everything asserted after the round is
+    /// an emptiness claim, and an empty cache satisfies every emptiness claim at once. Writing a
+    /// hash field or a feature point is not enough to populate its cache entry either -- a READ is
+    /// what does that (`the_cache_namespaces_a_record_can_actually_use`) -- so the control has to
+    /// assert the entries are really there before the round, per namespace, not in aggregate.
+    #[test]
+    fn a_delete_drop_round_clears_every_swept_namespace_of_the_keys_it_drops() {
+        const OBJECTS: usize = 300;
+        const MARKED: [usize; 3] = [3, 17, 42];
+
+        let (_dir, engine) = engine_with(OBJECTS);
+        let marked_keys: Vec<String> = MARKED
+            .iter()
+            .map(|index| format!("evict-scale-key-{index}"))
+            .collect();
+
+        for key in &marked_keys {
+            // Write, then READ, in each namespace the sweep covers plus the two it names.
+            for command in [
+                Command::HashSet {
+                    key: key.clone(),
+                    field: "sweep-field".to_string(),
+                    value: b"hash-value".to_vec(),
+                },
+                Command::HashGet {
+                    key: key.clone(),
+                    field: "sweep-field".to_string(),
+                },
+                Command::SetAdd {
+                    key: key.clone(),
+                    member: b"sweep-member".to_vec(),
+                },
+                Command::SetMembers { key: key.clone() },
+                Command::FeatureAppend {
+                    key: key.clone(),
+                    points: vec![crate::types::FeaturePoint {
+                        timestamp_ms: 1_000,
+                        value: b"feature-value".to_vec(),
+                    }],
+                },
+                Command::FeatureQuery {
+                    key: key.clone(),
+                    start_ms: 0,
+                    end_ms: 10_000,
+                    count: None,
+                },
+                Command::StringGet { key: key.clone() },
+            ] {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command,
+                });
+                assert!(out.status.ok, "fixture command failed: {:?}", out.status);
+            }
+        }
+        engine.use_sampled_eviction_for_test();
+
+        let occupied = |entries: &[matrixcache::CacheEntryInfo], namespace: &str| -> Vec<String> {
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry.namespace == namespace
+                        && marked_keys.iter().any(|key| key == &entry.record_key)
+                })
+                .map(|entry| format!("{}/{}", entry.record_key, entry.selector))
+                .collect()
+        };
+
+        let before = engine.cache.entries_for_shard(1);
+        let swept = ["hash", "feature"];
+        let named = ["string", "set"];
+        println!(
+            "\n  CACHE ENTRIES FOR THE MARKED KEYS, BEFORE THE ROUND\n    \
+               hash    {:>4}\n    feature {:>4}\n    string  {:>4}\n    set     {:>4}\n",
+            occupied(&before, "hash").len(),
+            occupied(&before, "feature").len(),
+            occupied(&before, "string").len(),
+            occupied(&before, "set").len(),
+        );
+
+        // THE POSITIVE CONTROL, per namespace.
+        for namespace in swept.iter().chain(named.iter()) {
+            assert!(
+                !occupied(&before, namespace).is_empty(),
+                "no `{namespace}` entry was cached for the marked keys, so the emptiness claim \
+                 below would hold whatever the sweep did",
+            );
+        }
+
+        let report = engine.apply_storage_eviction(1, 0, 0, false, true);
+        assert!(
+            report.pressure_gate_open && report.dropped_object_count > 0,
+            "the round must have dropped keys: {report:?}",
+        );
+
+        let after = engine.cache.entries_for_shard(1);
+        let live_after = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("the shard must still be loaded");
+            collect_live_block_entries(shard)
+                .into_iter()
+                .map(|entry| entry.object_key)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        // Only keys the round actually dropped are covered by the claim. A marked key the round
+        // left alone must KEEP its cache entries, and asserting emptiness for it would be
+        // asserting the wrong thing.
+        let dropped_marked: Vec<&String> = marked_keys
+            .iter()
+            .filter(|key| !live_after.contains(key.as_str()))
+            .collect();
+        assert!(
+            !dropped_marked.is_empty(),
+            "the round dropped none of the marked keys, so it swept none of their namespaces; \
+             it dropped {} keys in total",
+            report.dropped_object_count,
+        );
+
+        for namespace in swept.iter().chain(named.iter()) {
+            let left = after
+                .iter()
+                .filter(|entry| {
+                    entry.namespace == *namespace
+                        && dropped_marked.iter().any(|key| *key == &entry.record_key)
+                })
+                .map(|entry| format!("{}/{}", entry.record_key, entry.selector))
+                .collect::<Vec<_>>();
+            assert!(
+                left.is_empty(),
+                "the round dropped {dropped_marked:?} but left {} `{namespace}` entries cached \
+                 for them: {left:?}",
+                left.len(),
+            );
+        }
     }
 }

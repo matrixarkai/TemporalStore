@@ -896,7 +896,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
                 if delete_record(shard, key) {
-                    invalidate_record_all(&self.cache, request.shard_id, key);
+                    invalidate_record_all(&self.cache, request.shard_id, key, &CACHE_SWEEP_COUNTS);
                     expired_records_removed += 1;
                     expired_keys.push(key.clone());
                 }
@@ -909,7 +909,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 if request.load_cold_buckets {
                     loaded_for_expire = loaded_for_expire.saturating_add(1);
                     if delete_record(shard, key) {
-                        invalidate_record_all(&self.cache, request.shard_id, key);
+                        invalidate_record_all(&self.cache, request.shard_id, key, &CACHE_SWEEP_COUNTS);
                         expired_records_removed += 1;
                         expired_keys.push(key.clone());
                     } else {
