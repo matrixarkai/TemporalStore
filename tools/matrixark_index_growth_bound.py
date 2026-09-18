@@ -85,11 +85,6 @@ _LAST_EVICTION_SIGNATURE: tuple | None = None
 MEMORY_TOMBSTONE_RECORD_TYPE = "matrixark_memory_tombstone"
 INDEX_COMPACT_TOMBSTONE_KIND = "index_compact"
 
-# Small and ON: the index must not grow linearly with turns. See the docstring for the recall
-# trade-off and the eviction priority that limits it. 0 disables either layer.
-DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE = 128
-DEFAULT_INDEX_HARD_CEILING = 1024
-
 # Lower evicts first. summary postings are the surviving recall path for content lever 1 compacted,
 # so they are the last thing given up; entities outrank raw events because they are the distilled,
 # longer-lived form of the same fact.
@@ -421,12 +416,12 @@ def clip_messages_for_ingest(messages: list, limit: int) -> tuple[list, int]:
 
 
 def max_index_records_per_scope(scope: Any = None) -> int:
-    """Lever 2 cap for `scope`'s tenant (default 256); ``0`` disables it."""
+    """Lever 2 cap for `scope`'s tenant (default 128); ``0`` disables it."""
     return int(resolve_tenant_policy("max_secondary_index_records_per_session", scope))
 
 
 def index_hard_ceiling(scope: Any = None) -> int:
-    """Lever 3 ceiling for `scope`'s tenant (default 2048); ``0`` disables it.
+    """Lever 3 ceiling for `scope`'s tenant (default 1024); ``0`` disables it.
 
     Enforced PER TENANT, not store-wide: a store-wide ceiling in a multi-tenant process lets a busy
     tenant's postings evict a quiet tenant's index, which is a cross-tenant isolation break, not a

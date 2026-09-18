@@ -33,6 +33,12 @@ import matrixark_index_growth_bound as gates  # noqa: E402
 import matrixark_tenant_policy as policy  # noqa: E402
 
 DEFAULT_PHRASE = re.compile(r"\(default\s+(ON|OFF|True|False)\)", re.I)
+NUMERIC_DEFAULT = re.compile(r"\(default\s+(\d+)\)", re.I)
+
+#: An int accessor cannot be found by its NAME. `index_hard_ceiling` resolves
+#: `max_secondary_index_records_per_tenant`, which the name does not contain, so the knob is
+#: read out of the accessor's own `resolve_tenant_policy("...")` call instead of a list here.
+_RESOLVES = re.compile(r'resolve_tenant_policy\(\s*["\']([a-z0-9_]+)["\']')
 
 
 def _bool_accessors():
@@ -49,6 +55,41 @@ def _bool_accessors():
     return sorted(out)
 
 
+def _int_accessors():
+    """(knob name, function) for every accessor that resolves exactly one INT knob.
+
+    Derived from the call, not the name, and an accessor that resolves more than one knob is
+    skipped rather than guessed at: the pair it should be compared against is ambiguous.
+    """
+    out = []
+    for name, func in vars(gates).items():
+        if name.startswith("_") or not callable(func):
+            continue
+        if getattr(func, "__module__", None) != gates.__name__:
+            continue
+        try:
+            source = inspect.getsource(func)
+        except (OSError, TypeError):
+            continue
+        resolved = set(_RESOLVES.findall(source))
+        if len(resolved) != 1:
+            continue
+        knob_name = resolved.pop()
+        knob = policy.KNOBS.get(knob_name)
+        if knob is None or getattr(knob, "kind", "") != "int":
+            continue
+        # An accessor that REQUIRES a caller-supplied default has no registry-resolved default to
+        # compare against -- `max_summary_text_chars(*, default)` is one. Skipped on the signature
+        # rather than by name, so a second one is skipped for the same stated reason.
+        required = [p for p in inspect.signature(func).parameters.values()
+                    if p.default is inspect.Parameter.empty
+                    and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+        if required:
+            continue
+        out.append((knob_name, func))
+    return sorted(out, key=lambda pair: (pair[0], pair[1].__name__))
+
+
 class AccessorsAgreeWithTheRegistryTest(unittest.TestCase):
 
     def setUp(self) -> None:
@@ -62,6 +103,12 @@ class AccessorsAgreeWithTheRegistryTest(unittest.TestCase):
         self.accessors = _bool_accessors()
         self.assertGreater(len(self.accessors), 5,
                            "found almost no bool accessors, so these comparisons prove nothing")
+        self.int_accessors = _int_accessors()
+        self.assertGreater(
+            len(self.int_accessors), 1,
+            "found almost no int accessors, so the numeric comparisons below prove nothing. They "
+            "are collected from each accessor's own resolve_tenant_policy call, so this drops to "
+            "zero if that call is renamed or wrapped rather than if the accessors disappear.")
 
     def _restore_environ(self) -> None:
         os.environ.clear()
@@ -100,6 +147,46 @@ class AccessorsAgreeWithTheRegistryTest(unittest.TestCase):
                     % (knob_name, match.group(1), policy.KNOBS[knob_name].default))
         self.assertGreater(checked, 0,
                            "no accessor docstring names a default, so this test checked nothing")
+
+    def test_an_int_accessor_resolves_the_registry_default(self) -> None:
+        for knob_name, func in self.int_accessors:
+            with self.subTest(knob=knob_name, accessor=func.__name__):
+                knob = policy.KNOBS[knob_name]
+                os.environ.pop(getattr(knob, "env", "") or "_none_", None)
+                for alias in getattr(knob, "env_aliases", ()) or ():
+                    os.environ.pop(alias, None)
+                try:
+                    got = func({"tenant_id": "registry_check_%s" % func.__name__})
+                except TypeError:
+                    got = func()
+                self.assertEqual(
+                    int(knob.default), int(got),
+                    "%s resolves to %r for an unconfigured tenant while the registry default for "
+                    "%s is %r." % (func.__name__, got, knob_name, knob.default))
+
+    def test_an_int_accessor_states_the_registry_default(self) -> None:
+        """The half that was missing. `index_hard_ceiling` said "(default 2048)" and returned 1024,
+        because the regex above only ever matched ON/OFF/True/False and the collector only ever took
+        names ending `_enabled`. A stated default is what the next person reads instead of checking,
+        and a memory-bounding lever stated at twice its value sizes an operator's expectations
+        wrong."""
+        checked = 0
+        for knob_name, func in self.int_accessors:
+            match = NUMERIC_DEFAULT.search(inspect.getdoc(func) or "")
+            if not match:
+                continue
+            checked += 1
+            with self.subTest(knob=knob_name, accessor=func.__name__):
+                self.assertEqual(
+                    int(policy.KNOBS[knob_name].default), int(match.group(1)),
+                    "%s's docstring says (default %s) and the registry default for %s is %r."
+                    % (func.__name__, match.group(1), knob_name,
+                       policy.KNOBS[knob_name].default))
+        self.assertGreater(
+            checked, 0,
+            "no int accessor docstring names a default, so this checked nothing. It is allowed for "
+            "an accessor to say nothing; it is not allowed for ALL of them to, because that is "
+            "also what a broken NUMERIC_DEFAULT looks like.")
 
 
 if __name__ == "__main__":
