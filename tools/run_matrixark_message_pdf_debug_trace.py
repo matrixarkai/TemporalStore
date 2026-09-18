@@ -1279,8 +1279,8 @@ def main() -> int:
         write_pdf(pdf_path, str(fixture["title"]), list(fixture["lines"]))
         trace["resources"].append(
             {
-                "raw_uri": str(resource_path),
-                "resource_type": resource_type,
+                "raw_uri": str(pdf_path),
+                "resource_type": "pdf",
                 "title": fixture["title"],
                 "line_count": len(fixture["lines"]),
             }
@@ -1290,9 +1290,9 @@ def main() -> int:
             "matrixark_ingest",
             {
                 "kind": "resource",
-                "raw_uri": str(resource_path),
-                "resource_type": resource_type,
-                "messages": [{"role": "tool", "content": import_message}],
+                "raw_uri": str(pdf_path),
+                "resource_type": "pdf",
+                "messages": [{"role": "tool", "content": "Import PDF resource for MatrixArk parsing: " + str(fixture["title"])}],
                 "scope": scope,
                 "metadata": {
                     "node_path": resource_node_path,

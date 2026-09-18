@@ -57,17 +57,20 @@ _BUILTINS = set(dir(builtins)) | {
 #: `idle_commit_scheduled_task_record`, takes different arguments, so binding it would be inventing
 #: behaviour rather than restoring it. Its module is unreachable from production.
 #:
-#: The five in the debug trace are a rename that did not finish, and the finish is a guess:
-#: `resource_path` sits beside a `pdf_path` bound two lines above, `resource_type` beside fixtures
-#: that carry their own, and `import_message` and `extracted_resource_fact_events` have no
-#: candidate at all. Guessing them would put invented values into a trace whose whole purpose is to
-#: report what happened.
+#: `extracted_resource_fact_events` in the debug trace has no candidate. It feeds a markdown table
+#: of event_type/summary_text/source_ref/event_id_hash/context_event_key and nothing in the file
+#: builds that list, so supplying one would ADD a report section rather than restore it.
+#:
+#: Its three siblings -- `resource_path`, `resource_type`, `import_message` -- were recorded here
+#: for the same reason and have since been finished, because the file turned out to state all three
+#: itself. The PDF loop's own `trace["calls"]` entry, two statements after the read, records that
+#: same resource as `str(pdf_path)` and `"pdf"`; the markdown loop below it spells out the import
+#: message and differs only in the word. That is the code stating the values, not a nearby name
+#: resembling them, so finishing the rename restored behaviour instead of inventing it -- and the
+#: loop raised NameError on its first iteration until it was.
 RECORDED_UNBOUND = {
     ("matrixark_mcp_local_ingest", "idle_commit_schedule"),
     ("run_matrixark_message_pdf_debug_trace", "extracted_resource_fact_events"),
-    ("run_matrixark_message_pdf_debug_trace", "import_message"),
-    ("run_matrixark_message_pdf_debug_trace", "resource_path"),
-    ("run_matrixark_message_pdf_debug_trace", "resource_type"),
 }
 
 _PROBE = """
