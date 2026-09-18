@@ -3429,7 +3429,15 @@ impl Default for RaftConfig {
             reorder_window_size: 128,
             max_inflights_apply_task: 5,
             max_inflights_replicate: 128,
-            enable_pre_vote: false,
+            // On by default: every env-driven entry point in this crate -- the metaserver
+            // meta raft, the datanode data raft and the standalone raft node -- builds its
+            // config from this default and never names this field, so the default is what
+            // they all run. Without pre-vote a node that was partitioned and rejoins bumps
+            // its term and forces an election, unseating a leader that was serving fine; a
+            // pre-vote candidate first checks it COULD win, and a candidate that could not
+            // is rejected without its term ever moving. The check is in-process, not an
+            // extra network round. Set it to false explicitly to opt back out.
+            enable_pre_vote: true,
             prohibits_election: false,
             ignore_witness: false,
             // A stall budget, not a transfer budget: the clock resets on every chunk, so
