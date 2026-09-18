@@ -29,17 +29,6 @@ except ImportError:  # Direct script execution from tools/.
 WORD_RE = re.compile(r"[A-Za-z0-9]+")
 
 
-OSS_READER_SYSTEM_PROMPT = (
-    "You are an extractive long-memory benchmark reader. Answer only from the supplied context. "
-    "Return a short direct answer to the question. If the question asks for a date, year, "
-    "or when something happened, resolve relative phrases against the context timestamp and "
-    "return the explicit date or year. If the question asks for a fact such as a degree, "
-    "owner, place, or duration, copy the exact answer span from the context. "
-    "For `degree in X`, return X, not the credential level. Do not substitute an unrelated date. "
-    "If the context is insufficient, say not enough context."
-)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="/root/matrixark_benchmarks/data/locomo_tiny_1conv.json")
