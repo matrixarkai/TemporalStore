@@ -927,6 +927,21 @@ struct WriteAheadLogInner {
     /// saturates to zero, so the threshold never fires again. Counting growth is immune to that,
     /// and growth is what the threshold is about.
     undumped_bytes_by_shard: HashMap<ShardId, u64>,
+    /// OBJECT MUTATIONS in the undumped log suffix, beside the bytes above.
+    ///
+    /// Neither quantity the dump budget compares today survives a change in how the writer groups
+    /// its objects. The same 2,000 objects of 128 bytes read as 2,000 log records in batches of 1
+    /// and 4 in batches of 500 -- a batch is one log record however many objects it carries -- and
+    /// as 377,652 undumped bytes against 30,223, because per-record framing dominates a small
+    /// write. Measured, at four batch shapes, in
+    /// `the_dump_budget_moves_with_batching_in_records_and_not_in_bytes`.
+    ///
+    /// This one does survive it. A record made of outcomes carries one per object it mutated, and
+    /// a record that carries none mutated one object -- so the sum is the number of mutations a
+    /// restart must re-apply and the number reclaim cannot drop until a dump covers them. That is
+    /// what delaying a dump actually costs, and it is the same number whichever way the writer
+    /// grouped the writes.
+    undumped_objects_by_shard: HashMap<ShardId, u64>,
     /// Per shard: how far the ACTIVE segment has actually been made durable, and the highest
     /// sequence covered by that barrier.
     ///
@@ -990,6 +1005,7 @@ impl LocalWriteAheadLogStore {
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 undumped_bytes_by_shard: HashMap::new(),
+                undumped_objects_by_shard: HashMap::new(),
                 durable_active_bytes_by_shard: HashMap::new(),
                 block_last_record_by_shard: HashMap::new(),
                 block_mode_by_shard: HashMap::new(),
@@ -2274,6 +2290,17 @@ impl LocalWriteAheadLogStore {
             .unwrap_or(0)
     }
 
+    /// Object mutations appended since this shard's last dump. See
+    /// `undumped_objects_by_shard`.
+    pub fn undumped_objects_since_dump(&self, shard_id: ShardId) -> u64 {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner
+            .undumped_objects_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Record that a dump captured this shard's log, resetting its undumped growth to 0.
     ///
     /// Called only once the dump manifest is durably written, so the counter never clears past
@@ -2281,6 +2308,7 @@ impl LocalWriteAheadLogStore {
     pub fn mark_dumped(&self, shard_id: ShardId) {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         inner.undumped_bytes_by_shard.insert(shard_id, 0);
+        inner.undumped_objects_by_shard.insert(shard_id, 0);
     }
 
     pub fn stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
@@ -3534,6 +3562,15 @@ fn append_record_locked_on(
         .undumped_bytes_by_shard
         .entry(record.shard_id)
         .or_default() += size;
+    // The same funnel, in the quantity the writer's batching cannot move. A record built from
+    // outcomes carries one per object it mutated (`append_batch_as_one_record` is the whole batch
+    // in one record); a record that carries none is one command, so one mutation. `max(1)` is not
+    // a floor against an empty batch -- a batch with nothing staged takes the command path and
+    // arrives here one record per command -- it is the count for exactly that shape.
+    *inner
+        .undumped_objects_by_shard
+        .entry(record.shard_id)
+        .or_default() += record.outcomes.len().max(1) as u64;
     // Give the buffer back with its capacity, which is the whole reason it was borrowed. An early
     // return above simply drops it and the next append allocates once -- correct either way, just
     // not free that once.

@@ -174,7 +174,8 @@ impl TemporalEngine {
             checksum: String::new(),
         };
         manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
-        manifest.checksum = bucket_dump_manifest_checksum(&manifest)?;
+        let manifest_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)?;
+        manifest.checksum = manifest_checksum;
         self.persist_bucket_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         // The manifest is durable from here, so this shard's log is dumped up to its current
@@ -297,6 +298,7 @@ impl TemporalEngine {
         Ok(manifest)
     }
 
+    #[track_caller]
     pub fn list_bucket_dump_manifests(&self, shard_id: ShardId) -> Vec<BucketDumpManifest> {
         list_bucket_dump_manifests_at(&self.index_dir, shard_id).unwrap_or_default()
     }
@@ -515,7 +517,8 @@ impl TemporalEngine {
                     }
                     manifest.parent_manifest_id = None;
                     manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
-                    if let Ok(checksum) = bucket_dump_manifest_checksum(&manifest) {
+                    let detached_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest);
+                    if let Ok(checksum) = detached_checksum {
                         manifest.checksum = checksum;
                         let _ = self.persist_bucket_dump_manifest(&manifest);
                     }

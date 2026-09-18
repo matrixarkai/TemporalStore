@@ -1004,6 +1004,16 @@ pub struct StorageLifecyclePlan {
     pub selected_dump_buckets: Vec<u32>,
     #[serde(rename = "undumped_wal_records", default)]
     pub undumped_wal_records: u64,
+    /// The same suffix, counted in OBJECT MUTATIONS rather than in log records.
+    ///
+    /// Reported beside `undumped_wal_records` and NOT compared against any threshold. The two
+    /// disagree by whatever factor the writer batches -- 2,000 against 4 on the same 2,000
+    /// objects -- and only this one is the work a restart redoes. Switching
+    /// `min_undumped_wal_records` to compare against it is a one-line change that needs a default
+    /// expressed in the new unit; it can only ever make the gate fire EARLIER, because a record
+    /// carries at least one mutation, so it cannot lengthen the window a restart must replay.
+    #[serde(default)]
+    pub undumped_wal_objects: u64,
     #[serde(default)]
     pub dump_delayed: bool,
     /// Every bucket's storage summary, or `None` when this round did not look.

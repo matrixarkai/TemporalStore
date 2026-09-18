@@ -35,6 +35,10 @@ mod stream_batch_methods;
 mod recovery_sweep_compact;
 mod persistence;
 mod bucket_dump_io;
+pub use self::bucket_dump_io::{
+    bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
+    reset_bucket_dump_manifest_io_counts, BucketDumpManifestIoCounts,
+};
 mod command_validation;
 pub mod resource_blobs;
 pub mod quota;
@@ -2409,6 +2413,12 @@ pub mod shard_write_guard {
     /// Whether this thread is inside a marked shard-table region of EITHER kind.
     fn held_any() -> bool {
         held() || READ_DEPTH.with(|depth| depth.get() > 0)
+    }
+
+    /// The same, for counters outside this module. A manifest file read or write taken while
+    /// this is true blocks every write on the shard for the duration of the syscall.
+    pub(crate) fn any_shard_guard_held() -> bool {
+        held_any()
     }
 
     /// Page-store reads the maintenance paths performed, and how many of them were performed

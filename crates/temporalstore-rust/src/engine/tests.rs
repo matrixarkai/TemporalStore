@@ -99,6 +99,7 @@ mod prune_crash_window;
 mod install_on_load_anchor;
 mod round_scale;
 mod index_bytes_per_key;
+mod dump_scale;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,

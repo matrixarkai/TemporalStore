@@ -50,6 +50,7 @@ impl TemporalEngine {
         // parses this one, which is why this needs no version gate.
         let bytes = serde_json::to_vec(manifest)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        note_manifest_file_write(bytes.len());
         // The manifest is the durable reclaim watermark (wal_sequence) + recovery
         // index; WAL reclaim durably truncates the WAL based on it. It MUST be written
         // durably and atomically -- a bare fs::write left it in the page cache, so a

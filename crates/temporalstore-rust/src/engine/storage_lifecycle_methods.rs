@@ -155,6 +155,8 @@ impl TemporalEngine {
         // threshold on every round: a shard that had written one record since its last dump
         // earned another whole-index serialize, which is the cost this cadence exists to avoid.
         let undumped_wal_bytes = self.wal_store.undumped_len_since_dump(request.shard_id);
+        // Reported, not compared. See `StorageLifecyclePlan::undumped_wal_objects`.
+        let undumped_wal_objects = self.wal_store.undumped_objects_since_dump(request.shard_id);
         // Each threshold can only RELEASE the dump, never hold it: a delay needs both to agree
         // there is not enough yet. Requiring both to be CROSSED instead would let the byte
         // threshold suppress a dump the record count had already earned, which is the opposite
@@ -349,6 +351,7 @@ impl TemporalEngine {
             dirty_buckets,
             selected_dump_buckets,
             undumped_wal_records,
+            undumped_wal_objects,
             dump_delayed,
             bucket_summaries,
             live_block_slab_ids,

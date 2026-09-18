@@ -4,6 +4,116 @@
 //! Bucket-dump manifest/install-marker file I/O helpers, split from engine.rs.
 use super::*;
 
+/// How much of the manifest DIRECTORY one operation read off disk, counted rather than timed.
+///
+/// Every manifest embeds a whole-shard index image (`index_bytes`, see
+/// `create_bucket_dump_manifest`), and `list_bucket_dump_manifests_at` reads each file WHOLE,
+/// parses it WHOLE, and re-serialises it WHOLE to verify its checksum -- for callers that go on to
+/// read one `u64` off one of them. So the cost of asking "which dump is newest" is proportional to
+/// the corpus times the number of manifests on disk, and nothing in the question is.
+///
+/// THREAD-LOCAL, for the reason `shard_write_guard`'s tallies are: every test in this crate shares
+/// a process, and a process-global counter would attribute another test's round to this one.
+thread_local! {
+    static MANIFEST_DIR_LISTINGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_FILE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_BYTES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_READS_UNDER_GUARD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_CHECKSUM_SERIALIZES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_CHECKSUM_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_CHECKSUM_CLONES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_FILE_WRITES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_BYTES_WRITTEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_WRITES_UNDER_GUARD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Listings attributed to the source location that asked for one. 27 listings in a round is
+    /// a number; 27 listings across eleven call sites is something someone can act on.
+    static MANIFEST_LISTING_SITES: std::cell::RefCell<BTreeMap<String, u64>> =
+        std::cell::RefCell::new(BTreeMap::new());
+}
+
+/// Every manifest-path counter at once.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BucketDumpManifestIoCounts {
+    pub dir_listings: u64,
+    pub file_reads: u64,
+    pub bytes_read: u64,
+    pub reads_under_guard: u64,
+    pub checksum_serializes: u64,
+    pub checksum_bytes: u64,
+    pub checksum_clones: u64,
+    pub file_writes: u64,
+    pub bytes_written: u64,
+    pub writes_under_guard: u64,
+}
+
+/// Read the manifest-path counters for THIS thread.
+pub fn bucket_dump_manifest_io_counts() -> BucketDumpManifestIoCounts {
+    BucketDumpManifestIoCounts {
+        dir_listings: MANIFEST_DIR_LISTINGS.with(|cell| cell.get()),
+        file_reads: MANIFEST_FILE_READS.with(|cell| cell.get()),
+        bytes_read: MANIFEST_BYTES_READ.with(|cell| cell.get()),
+        reads_under_guard: MANIFEST_READS_UNDER_GUARD.with(|cell| cell.get()),
+        checksum_serializes: MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.get()),
+        checksum_bytes: MANIFEST_CHECKSUM_BYTES.with(|cell| cell.get()),
+        checksum_clones: MANIFEST_CHECKSUM_CLONES.with(|cell| cell.get()),
+        file_writes: MANIFEST_FILE_WRITES.with(|cell| cell.get()),
+        bytes_written: MANIFEST_BYTES_WRITTEN.with(|cell| cell.get()),
+        writes_under_guard: MANIFEST_WRITES_UNDER_GUARD.with(|cell| cell.get()),
+    }
+}
+
+/// Which source locations asked for a manifest-directory listing, and how many each took.
+pub fn bucket_dump_manifest_listing_sites() -> BTreeMap<String, u64> {
+    MANIFEST_LISTING_SITES.with(|sites| sites.borrow().clone())
+}
+
+/// Zero them, so a probe measures one operation rather than a process.
+pub fn reset_bucket_dump_manifest_io_counts() {
+    MANIFEST_DIR_LISTINGS.with(|cell| cell.set(0));
+    MANIFEST_FILE_READS.with(|cell| cell.set(0));
+    MANIFEST_BYTES_READ.with(|cell| cell.set(0));
+    MANIFEST_READS_UNDER_GUARD.with(|cell| cell.set(0));
+    MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(0));
+    MANIFEST_CHECKSUM_BYTES.with(|cell| cell.set(0));
+    MANIFEST_CHECKSUM_CLONES.with(|cell| cell.set(0));
+    MANIFEST_FILE_WRITES.with(|cell| cell.set(0));
+    MANIFEST_BYTES_WRITTEN.with(|cell| cell.set(0));
+    MANIFEST_WRITES_UNDER_GUARD.with(|cell| cell.set(0));
+    MANIFEST_LISTING_SITES.with(|sites| sites.borrow_mut().clear());
+}
+
+pub(super) fn note_manifest_file_write(bytes: usize) {
+    MANIFEST_FILE_WRITES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    MANIFEST_BYTES_WRITTEN.with(|cell| cell.set(cell.get().saturating_add(bytes as u64)));
+    if crate::engine::shard_write_guard::any_shard_guard_held() {
+        MANIFEST_WRITES_UNDER_GUARD.with(|cell| cell.set(cell.get().saturating_add(1)));
+    }
+}
+
+/// Keep the CLONE in `bucket_dump_manifest_checksum`, as the code did before the in-place
+/// version. The control arm: an assertion that the clone is gone is satisfied just as well by a
+/// path that stopped computing a checksum, or did not run, so an arm in the same process on the
+/// same fixture has to be able to produce a non-zero clone count.
+#[cfg(test)]
+thread_local! {
+    static CHECKSUM_CLONES_MANIFEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn checksum_clones_manifest_for_test(clone: bool) {
+    CHECKSUM_CLONES_MANIFEST.with(|cell| cell.set(clone));
+}
+
+#[cfg(test)]
+fn checksum_should_clone() -> bool {
+    CHECKSUM_CLONES_MANIFEST.with(|cell| cell.get())
+}
+
+#[cfg(not(test))]
+fn checksum_should_clone() -> bool {
+    false
+}
+
 pub(super) fn bucket_dump_manifest_dir(index_dir: &std::path::Path, shard_id: ShardId) -> PathBuf {
     index_dir
         .join("slot-dumps")
@@ -239,6 +349,7 @@ pub(super) const FOLLOWER_PRECEDES_EVERY_MANIFEST: &str = "follower_cursor_prece
 /// The same for a raft snapshot reference.
 pub(super) const RAFT_SNAPSHOT_PRECEDES_EVERY_MANIFEST: &str = "raft_snapshot_precedes_every_manifest";
 
+#[track_caller]
 pub(super) fn bucket_dump_manifest_prune_plan_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
@@ -404,10 +515,19 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
     })
 }
 
+#[track_caller]
 pub(super) fn list_bucket_dump_manifests_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
 ) -> Result<Vec<BucketDumpManifest>, std::io::Error> {
+    MANIFEST_DIR_LISTINGS.with(|cell| cell.set(cell.get().saturating_add(1)));
+    {
+        let caller = std::panic::Location::caller();
+        let site = format!("{}:{}", caller.file(), caller.line());
+        MANIFEST_LISTING_SITES.with(|sites| {
+            *sites.borrow_mut().entry(site).or_insert(0) += 1;
+        });
+    }
     let dir = bucket_dump_manifest_dir(index_dir, shard_id);
     let mut manifests = Vec::new();
     if !dir.exists() {
@@ -432,11 +552,21 @@ pub(super) fn list_bucket_dump_manifests_at(
             Ok(bytes) => bytes,
             Err(_) => continue,
         };
-        let Ok(manifest) = serde_json::from_slice::<BucketDumpManifest>(&bytes) else {
+        MANIFEST_FILE_READS.with(|cell| cell.set(cell.get().saturating_add(1)));
+        MANIFEST_BYTES_READ
+            .with(|cell| cell.set(cell.get().saturating_add(bytes.len() as u64)));
+        if crate::engine::shard_write_guard::any_shard_guard_held() {
+            MANIFEST_READS_UNDER_GUARD.with(|cell| cell.set(cell.get().saturating_add(1)));
+        }
+        let Ok(mut manifest) = serde_json::from_slice::<BucketDumpManifest>(&bytes) else {
             continue;
         };
         if !manifest.checksum.is_empty() {
-            match bucket_dump_manifest_checksum(&manifest) {
+            // IN PLACE. The value is owned here, so the checksum payload can be produced by
+            // borrowing it with the field emptied and putting the field back -- byte-identical
+            // to what the clone produced, without copying the whole-shard index image and every
+            // bucket summary once per manifest per listing.
+            match bucket_dump_manifest_checksum_in_place(&mut manifest) {
                 Ok(expected) if expected == manifest.checksum => {}
                 _ => continue,
             }
@@ -453,6 +583,7 @@ pub(super) fn list_bucket_dump_manifests_at(
 /// one descends from, which slabs are still named, how far behind the dump cadence has fallen.
 /// It is NOT the right answer to "which durable checkpoint should a load recover from": see
 /// `durable_recovery_bucket_dump_manifest_at` below, and do not substitute one for the other.
+#[track_caller]
 pub(super) fn latest_bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
@@ -501,6 +632,7 @@ pub(super) fn latest_bucket_dump_manifest_at(
 ///
 /// `wal_reclaim_never_frees_what_the_default_load_path_replays` (engine/tests/expiry_scale.rs)
 /// drives the divergent state above and fails if this goes back to reading the index-log order.
+#[track_caller]
 pub(super) fn durable_recovery_bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
@@ -520,11 +652,52 @@ pub(super) fn durable_recovery_bucket_dump_manifest_at(
         })
 }
 
+/// The manifest's checksum, over its own JSON with the checksum field emptied.
+///
+/// THE PAYLOAD IS THE SAME BYTES either way; what differs is whether producing them copies the
+/// manifest first. A manifest carries the whole-shard index image and one summary per bucket, so
+/// the copy is proportional to the STORE -- and this is called once per manifest per directory
+/// listing, of which one maintenance round takes many. Callers holding an owned manifest should
+/// use `bucket_dump_manifest_checksum_in_place`; this borrow-only entry point keeps the copy
+/// because there is nothing else it can do with a shared reference.
 pub(super) fn bucket_dump_manifest_checksum(manifest: &BucketDumpManifest) -> Result<String, Status> {
     let mut payload = manifest.clone();
-    payload.checksum.clear();
-    serde_json::to_vec(&payload)
-        .map(|bytes| sha256_hex_bytes(&bytes))
+    MANIFEST_CHECKSUM_CLONES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    bucket_dump_manifest_checksum_in_place(&mut payload)
+}
+
+/// The same checksum, without the copy.
+///
+/// Empties the checksum field, serialises by reference, and PUTS IT BACK -- including on the
+/// error path, because a manifest left with its checksum cleared would be dropped by the very
+/// listing filter this feeds, which reads as "the file was corrupt" rather than as "serialising
+/// it failed".
+pub(super) fn bucket_dump_manifest_checksum_in_place(
+    manifest: &mut BucketDumpManifest,
+) -> Result<String, Status> {
+    if checksum_should_clone() {
+        // Control arm only: reproduce the copy the in-place version removed.
+        let mut payload = manifest.clone();
+        MANIFEST_CHECKSUM_CLONES.with(|cell| cell.set(cell.get().saturating_add(1)));
+        payload.checksum.clear();
+        return finish_bucket_dump_manifest_checksum(&payload);
+    }
+    let saved = std::mem::take(&mut manifest.checksum);
+    let result = finish_bucket_dump_manifest_checksum(manifest);
+    manifest.checksum = saved;
+    result
+}
+
+fn finish_bucket_dump_manifest_checksum(
+    payload: &BucketDumpManifest,
+) -> Result<String, Status> {
+    MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    serde_json::to_vec(payload)
+        .map(|bytes| {
+            MANIFEST_CHECKSUM_BYTES
+                .with(|cell| cell.set(cell.get().saturating_add(bytes.len() as u64)));
+            sha256_hex_bytes(&bytes)
+        })
         .map_err(|err| Status::error("slot_dump_checksum_failed", err.to_string()))
 }
 
