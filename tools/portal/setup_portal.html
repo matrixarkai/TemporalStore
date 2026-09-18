@@ -2869,7 +2869,10 @@ function liveStream(options) {
           "<div class='hint' style='margin:2px 0 0'>" +
           (a.kind === "rules" ? "Prometheus rules" : "Grafana dashboard") + "</div></td>" +
           "<td>" + esc(a.covers) + "</td>" +
-          "<td>" + esc(target.label || a.scrape) + "<div class='hint mono' style='margin:2px 0 0'>" +
+          /* `scraped_from` is for an asset that belongs to no single target: rules on
+             `up` apply to every job at once, and giving them a target of their own
+             would put a job that scrapes nothing into the config copied out below. */
+          "<td>" + esc(a.scraped_from || target.label || a.scrape) + "<div class='hint mono' style='margin:2px 0 0'>" +
           esc(target.metrics_path || "") + "</div></td></tr>";
       }).join("") + "</tbody></table>";
   }

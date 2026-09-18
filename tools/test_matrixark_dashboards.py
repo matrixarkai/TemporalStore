@@ -278,20 +278,49 @@ class CataloguedAssetsTest(unittest.TestCase):
         import matrixark_v1_gateway as gateway
         self.gw = gateway
 
+    # The one rule file the stack loads and the portal deliberately does not offer, with the
+    # reason, because an exclusion with no reason beside it is where the next omission hides.
+    #
+    # `tools/temporalstore-prometheus/temporalstore-alerts.yml` is the local one-box validation
+    # stack's own rules. Its README says its series are written by
+    # `tools/run_queue_ingestion_replay_ubuntu22.sh`, `run_cache_fallback_metrics_ubuntu22.sh`,
+    # `run_follower_read_sla_ubuntu22.sh` and `run_raft_stress_suite_ubuntu22.sh` -- none of which
+    # are in this repository. Handing a customer 31 rules that fire on harness runs they cannot
+    # start is worse than not offering them, and unlike the files beside it that is a judgement
+    # about who the file is for rather than an oversight.
+    HARNESS_ONLY = {"temporalstore-alerts.yml": "tools/temporalstore-prometheus"}
+
     def test_every_monitoring_asset_in_the_tree_is_served(self) -> None:
+        """Both directories this time.
+
+        Listing `docs/ops` alone was the same shape this file exists to catch, one level up: the
+        registry already serves `matrixark-gateway-alerts.yml` out of the monitoring stack
+        directory, so the check's denominator was narrower than the registry's own reach -- and a
+        rule file added there reached the stack without reaching the portal a customer sets
+        monitoring up from.
+        """
         served = set()
         for relative, _ct in self.gw._GRAFANA_ASSETS.values():
             served.add(os.path.basename(relative))
         ops = os.path.join(REPO, "docs", "ops")
+        stack = os.path.join(TOOLS, "temporalstore-prometheus")
         on_disk = {
             name for name in os.listdir(ops)
             if name.endswith(".json") or (name.endswith(".yml") and "alert" in name)
         }
+        on_disk |= {name for name in os.listdir(stack)
+                    if name.endswith(".yml") and "alert" in name
+                    and self.HARNESS_ONLY.get(name) != "tools/temporalstore-prometheus"}
         missing = sorted(on_disk - served)
         self.assertEqual(
             [], missing,
-            "monitoring assets exist in docs/ops that the portal offers no way to get: %s. An "
+            "monitoring assets exist in the tree that the portal offers no way to get: %s. An "
             "asset nobody serves is one a customer never learns exists." % missing)
+        # The floor, on the SCAN: a renamed directory empties the set above and every assertion
+        # in it passes over nothing.
+        self.assertGreaterEqual(len(on_disk), 6, "only %d assets were found on disk" % len(on_disk))
+        self.assertTrue(any(name.endswith(".yml") for name in on_disk),
+                        "no rule file was found at all; the scan is looking in the wrong place")
 
     def test_the_catalogue_and_the_registry_agree(self) -> None:
         catalogue = self.gw.monitoring_catalogue("http://127.0.0.1:17002")
@@ -304,8 +333,22 @@ class CataloguedAssetsTest(unittest.TestCase):
             with self.subTest(asset=entry["asset"]):
                 relative, _ct = self.gw._GRAFANA_ASSETS[entry["asset"]]
                 self.assertEqual(os.path.basename(relative), entry["filename"])
-                self.assertIn(entry["scrape"], catalogue["targets"])
                 self.assertTrue(entry["covers"].strip())
+                # Every asset says where its series come from. Usually that is one of the scrape
+                # targets, and naming the wrong one is the failure this column exists to prevent
+                # -- the engine dashboard against the gateway is twelve blank panels.
+                #
+                # Rules on `up` belong to no single target: Prometheus writes that series for
+                # every job already scraped, so giving them a target of their own would put a job
+                # into the copied scrape config that scrapes nothing. Those say so in prose
+                # instead -- and the escape is only open to an asset that actually fills it in, so
+                # it cannot be taken by an entry that simply forgot to name a target.
+                if entry["scrape"]:
+                    self.assertIn(entry["scrape"], catalogue["targets"])
+                else:
+                    self.assertTrue(str(entry.get("scraped_from") or "").strip(),
+                                    "%s names no target and does not say what it reads instead"
+                                    % entry["asset"])
 
     def test_the_engine_target_is_taken_from_the_configured_datanode(self) -> None:
         # A placeholder host would make the copied scrape config something to hand-edit, and the
@@ -445,6 +488,20 @@ class MonitoringTableRendersTest(unittest.TestCase):
         # The gateway job takes the browser's host; the engine job takes the datanode this
         # deployment is configured to dial, so neither is a placeholder to be edited by hand.
         self.assertIn("gw.example:8080", scrape)
+
+    def test_the_target_liveness_row_names_no_single_target(self) -> None:
+        """The row renders, and the config it sits above does not grow a job that scrapes nothing.
+
+        The second half is the whole reason these rules are described in prose instead of being
+        given a scrape target: `scrapeConfig()` is built by walking `targets`, so an entry added
+        there to satisfy the "every asset names a target" rule would be copied out by a customer
+        as a real job pointing at nothing.
+        """
+        result = self._run()
+        self.assertIn("Target liveness alert rules", result["table"])
+        self.assertIn("every target in this config", result["table"])
+        self.assertEqual(2, result["scrape"].count("job_name:"),
+                         "the copied scrape config gained a job: %s" % result["scrape"])
 
     def test_clicking_the_engine_row_downloads_the_engine_dashboard(self) -> None:
         result = self._run()

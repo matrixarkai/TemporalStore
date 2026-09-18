@@ -70,13 +70,25 @@ class TheMonitoringAssetsLineUpTest(unittest.TestCase):
                 wrong.append("%s says %r, serves %r" % (name, filename, path))
         self.assertEqual([], wrong, "; ".join(wrong))
 
-    def test_every_description_names_a_scrape_target(self) -> None:
+    def test_every_description_says_where_its_series_come_from(self) -> None:
         """Importing a dashboard against the wrong process yields blank panels, which reads as a
-        quiet system rather than as a query aimed at the wrong place."""
+        quiet system rather than as a query aimed at the wrong place.
+
+        Almost always that means naming one of the scrape targets. Rules on `up` are the exception
+        and not an oversight: Prometheus writes that series for every job already scraped, so an
+        asset about target liveness belongs to all of them at once, and giving it a target of its
+        own would put a job that scrapes nothing into the config the portal offers to copy. Those
+        say it in prose, in `scraped_from` -- and the escape is only open to an entry that fills
+        that in, so it cannot be taken by one that simply forgot.
+
+        The check in `test_matrixark_dashboards` makes the same demand of the same registry. Both
+        read `monitoring_catalogue`, so neither can be relaxed alone without the other failing.
+        """
         for name, entry in sorted(self.described.items()):
             with self.subTest(asset=name):
-                self.assertTrue(entry.get("scrape"),
-                                "%s does not say which process exports the series it queries" % name)
+                self.assertTrue(
+                    entry.get("scrape") or str(entry.get("scraped_from") or "").strip(),
+                    "%s does not say which process exports the series it queries" % name)
                 self.assertTrue(entry.get("covers"),
                                 "%s does not say what it covers" % name)
 

@@ -3018,6 +3018,12 @@ _GRAFANA_ASSETS = {
     "gateway": ("../docs/ops/matrixark-gateway-dashboard.json", "application/json"),
     "ingestion": ("../docs/ops/matrixark-ingestion-dashboard.json", "application/json"),
     "alerts": ("temporalstore-prometheus/matrixark-gateway-alerts.yml", "text/yaml; charset=utf-8"),
+    # `up`, per scrape job. Every other rule file here is written against metrics a process
+    # emits, so every rule in them needs that process to be answering; this is what is left
+    # when it is not, and it was reaching the stack in this tree without reaching the portal
+    # a customer actually sets monitoring up from.
+    "scrape-alerts": ("temporalstore-prometheus/scrape-target-alerts.yml",
+                      "text/yaml; charset=utf-8"),
     # Everything that is not the edge. Both files have been in docs/ops all along and were served
     # by nothing, so a customer monitoring from the portal watched the gateway and the importer and
     # had no way to find out the engine was monitorable at all.
@@ -3066,6 +3072,18 @@ _MONITORING_ASSETS: tuple = (
      "filename": "temporalstore-alerts.yml", "scrape": "engine",
      "covers": "Raft majority loss and stalled applies, scheduler backlog, proxy quarantine, "
                "cache miss pressure, replay failures and dead letters."},
+    # No `targets` entry, and deliberately: `up` is written by Prometheus itself for every job
+    # already scraped, so this needs no job of its own -- and the copyable scrape config is built
+    # by walking `targets`, so inventing one would put a job in it that scrapes nothing.
+    # `scraped_from` says so in the column instead.
+    {"asset": "scrape-alerts", "kind": "rules", "label": "Target liveness alert rules",
+     "filename": "scrape-target-alerts.yml", "scrape": "",
+     "scraped_from": "every target in this config",
+     "covers": "Whether each target is still answering at all. Every other rule offered here is "
+               "written against a metric some process emits, so all of them go quiet when that "
+               "process stops being scraped -- and quiet is what healthy looks like. These fire "
+               "on `up`, which Prometheus writes itself, and cover both a failed scrape and a "
+               "job left with no targets."},
 )
 
 
