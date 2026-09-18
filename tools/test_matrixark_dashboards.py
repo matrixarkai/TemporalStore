@@ -144,6 +144,35 @@ class DashboardMetricsTest(unittest.TestCase):
                     self.assertTrue(panel.get("description", "").strip(),
                                     "%s panel has no description" % panel["title"])
 
+    def test_every_panel_has_a_query(self) -> None:
+        # A panel with no target renders blank, and blank reads as "no traffic" -- the operator
+        # concludes the system is idle rather than that the chart is broken.
+        #
+        # Nothing above catches this on its own. test_no_panel_queries_a_series_nobody_emits
+        # passes vacuously: with no targets there is no series to object to. The description and
+        # overlap checks pass too, because the panel keeps its title and its place on the grid.
+        # test_every_emitted_series_is_charted_or_alerted catches it only when that panel was the
+        # LAST place its series appeared -- which, measured by emptying each panel in turn, is 11
+        # of 31. The other 20 go green. That check protects the SERIES; this one protects the
+        # PANEL.
+        checked = 0
+        for label, path in (("gateway", GATEWAY_DASHBOARD), ("ingestion", INGESTION_DASHBOARD)):
+            doc = _read_json(path)
+            for panel in doc["panels"]:
+                if panel.get("type") in ("row", "text"):
+                    continue
+                checked += 1
+                with self.subTest(dashboard=label, panel=panel.get("title")):
+                    targets = panel.get("targets") or []
+                    self.assertTrue(targets,
+                                    "%r has no query and will draw nothing" % panel.get("title"))
+                    self.assertTrue(
+                        any(str(target.get("expr") or "").strip() for target in targets),
+                        "%r has targets but every expression is empty" % panel.get("title"))
+        # Every assertion above passes perfectly over zero panels, and a renamed file or a
+        # restructured "rows hold their own panels" layout is what produces zero.
+        self.assertGreaterEqual(checked, 25, "only %d panels were examined" % checked)
+
     def test_panels_do_not_overlap(self) -> None:
         # Grafana will render overlapping panels; it just looks broken.
         for label, path in (("gateway", GATEWAY_DASHBOARD), ("ingestion", INGESTION_DASHBOARD)):
