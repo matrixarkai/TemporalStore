@@ -438,11 +438,30 @@ impl TemporalEngine {
         let slab_summary = self.block_store.slab_summary();
         let block_slab_reports = self.block_store.slab_reports().unwrap_or_default();
         let shards = self.shards_read_marked();
-        let addresses = shards
-            .get(&shard_id)
-            .map(collect_live_block_addresses)
-            .unwrap_or_default();
-        let total_block_refs = addresses.len();
+        // ONE walk, three consumers, under the guard that is already held.
+        //
+        // This function walked the whole live-page set THREE times: here for the addresses it
+        // probes, again inside `validate_shard_block_ownership`, again inside
+        // `storage_object_lifecycle_report`. `a_round_walks_the_live_page_set_a_constant_number_of_times`
+        // counts all three, and they are three of the fourteen whole-store passes one periodic
+        // round makes.
+        //
+        // Safe for the same reason the hoist in `storage_object_lifecycle_snapshot` above is, and
+        // NOT for the reason a round-scoped memo would need: the `shards` read guard taken on the
+        // line above is held across all three, so `&ShardState` cannot change between them and a
+        // second walk could only rebuild what the first one already holds. Nothing here is cached
+        // past the guard, so there is no invalidation question to get wrong.
+        //
+        // The addresses vector is GONE rather than moved: the probe loop below reads
+        // `entry.address` straight out of the entries it now has, so the second `Vec` this
+        // function used to keep alive beside them is not allocated at all.
+        // Called directly rather than through `.map`, so `#[track_caller]` attributes the walk
+        // to this file and `live_block_scan_sites_snapshot` keeps naming a real site.
+        let live_entries = match shards.get(&shard_id) {
+            Some(shard) => collect_live_block_entries(shard),
+            None => Vec::new(),
+        };
+        let total_block_refs = live_entries.len();
         // WHERE this call reads, not just how much.
         //
         // A bounded call used to read `addresses[0 .. limit]` and nothing else, every round. The
@@ -515,7 +534,8 @@ impl TemporalEngine {
             .collect::<BTreeMap<_, _>>();
         let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
         let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
-        for (position, address) in addresses.iter().enumerate() {
+        for (position, live_entry) in live_entries.iter().enumerate() {
+            let address = &live_entry.address;
             let slab_report = block_slab_live_reports
                 .entry(address.block_slab_id)
                 .or_insert(StorageRecoverySlabLiveReport {
@@ -577,11 +597,43 @@ impl TemporalEngine {
                 }
             }
         }
+        // Derived BEFORE the report below consumes the entries. Same set, same order, same
+        // answer as the address vector this used to be built from.
+        let mut live_block_slab_ids = live_entries
+            .iter()
+            .map(|entry| entry.address.block_slab_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        live_block_slab_ids.sort_unstable();
         if let Some(shard) = shards.get(&shard_id) {
-            let ownership = self.validate_shard_block_ownership(shard_id, shard);
+            // `validate_shard_block_ownership` reads the routing range and then walks; the range
+            // is read here and the walk it would have made is the one already in hand.
+            let (start_routing_bucket, end_routing_bucket) = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+                .unwrap_or((0, u32::MAX));
+            let ownership = validate_bucket_ownership_index_from_entries(
+                shard_id,
+                shard,
+                &live_entries,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
             owner_mismatch_block_refs = ownership.mismatches;
             missing_owner_block_refs = ownership.missing_owner_block_refs;
-            object_lifecycle = storage_object_lifecycle_report(shard_id, shard);
+            // `storage_object_lifecycle_report` is this call with an empty bucket selection and a
+            // routing function it never reaches -- see `storage_object_lifecycle_report_for_buckets`.
+            object_lifecycle = object_lifecycle_report_from_entries(
+                shard_id,
+                shard,
+                live_entries,
+                &BTreeSet::new(),
+                |_| 0,
+            );
             object_lifecycle.owner_mismatch_block_refs = owner_mismatch_block_refs.len() as u64;
             object_lifecycle.missing_owner_block_refs = missing_owner_block_refs as u64;
             feature_block_layout = storage_feature_block_layout_report(&self.block_store, shard);
@@ -603,13 +655,7 @@ impl TemporalEngine {
             .iter()
             .map(|report| report.stale_block_estimate)
             .sum();
-        let mut live_block_slab_ids = addresses
-            .iter()
-            .map(|address| address.block_slab_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        live_block_slab_ids.sort_unstable();
+
         // Hand the next round the position after this window, wrapping at the end.
         //
         // Advanced by the window LENGTH rather than by `probed_page_refs` so a round that found

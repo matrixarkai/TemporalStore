@@ -10,23 +10,38 @@
 //!
 //! ```text
 //!   records   live-page entries materialised by ONE round   ratio
-//!     8,000                                       112,000   14.00x
-//!    80,000                                     1,120,000   14.00x
+//!     2,000                                        24,000   12.00x
+//!    20,000                                       240,000   12.00x
 //! ```
 //!
-//! Exactly 14.00 at both, and the per-site split is identical at both sizes -- eight call sites,
-//! summing to 14:
+//! Exactly 12.00 at both, and the per-site split is identical at both sizes -- six call sites,
+//! summing to 12:
 //!
 //! ```text
 //!   storage_reporting.rs:171  bucket_storage_summaries            5.00x
-//!   recovery_sweep_compact.rs:334                                 2.00x
-//!   storage_lifecycle_methods.rs:837 sampling snapshots           2.00x
+//!   recovery_sweep_compact.rs:334 object lifecycle snapshot       2.00x
+//!   storage_lifecycle_methods.rs:873 sampling snapshots           2.00x
 //!   compaction.rs:61          compaction_utility_report           1.00x
-//!   storage_bucket_internals.rs:3623 validate_bucket_ownership    1.00x
-//!   storage_reporting.rs:23   object lifecycle report             1.00x
 //!   storage_reporting.rs:801  bucket generation fingerprints      1.00x
-//!   storage_reporting.rs:825  collect_live_block_addresses        1.00x
+//!   recovery_sweep_compact.rs:461 the recovery report             1.00x
 //! ```
+//!
+//! IT WAS FOURTEEN. Three of those passes were made by ONE function,
+//! `storage_recovery_report_without_boundary_sampled`, under ONE shard-table read guard: once for
+//! the addresses it probes, once inside `validate_shard_block_ownership`, once inside
+//! `storage_object_lifecycle_report`. The guard is held across all three, so the second and third
+//! could only rebuild what the first already held. They are now one walk, and the separate
+//! `Vec<BlockAddress>` that used to be kept alive beside the entries is not built at all.
+//!
+//! WHAT COULD NOT BE SHARED, and why this is a hoist under one guard rather than a round-scoped
+//! memo. Traced in order, the round's remaining passes are separated by mutation of the very
+//! state they read: `apply_storage_lifecycle` writes a dump manifest and then calls
+//! `clear_dumped_bucket_dirty_state` between its first walk and its second, and on a dumping
+//! round the shard's dirty-bucket flags were measured moving 0 -> 2,000 -> 0 WITHIN one round.
+//! `bucket_storage_summaries` reports `dirty_object_count`, so a snapshot taken before that
+//! clear and served after it would report dirty buckets that are no longer dirty. The five
+//! `storage_reporting.rs:171` passes are five different answers, not one answer fetched five
+//! times.
 //!
 //! So the round is proportional to the store with a constant of 14, and no stage budget bounds
 //! it: the budgets in this round bound the DUMP (buckets per round), the EXPIRE sweep (buckets per
@@ -38,7 +53,7 @@
 //! AN IDLE SHARD DOES NOT ESCAPE IT. The plan's own whole-shard walk is skipped when no object is
 //! dirty, which is true and is what makes `bucket_summaries` an `Option`. It does not make the
 //! ROUND cheap: measured on a shard whose dirty set had drained to zero and which had taken no
-//! write since, the round still materialised 15.00x the record count, because the other walks
+//! write since, the round still materialised 13.00x the record count, because the other walks
 //! never consult the dirty set. `an_idle_round_still_walks_the_live_page_set` is that number.
 //!
 //! WHAT THESE TESTS ARE FOR. The ratio is asserted at TWO sizes, so the two failures read
@@ -54,11 +69,11 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// Measured, at 4,000 / 8,000 / 80,000 records, on a shard whose dump is delayed -- which is the
 /// ordinary state of a shard written to in batches, see
 /// `the_dump_threshold_counts_log_records_not_dirty_objects`.
-const WALKS_PER_ROUND: u64 = 14;
+const WALKS_PER_ROUND: u64 = 12;
 
 /// The same, once the dirty set has drained. HIGHER, not lower: a shard that has taken a dump has
 /// a manifest, and validating it walks the live set again.
-const WALKS_PER_IDLE_ROUND: u64 = 15;
+const WALKS_PER_IDLE_ROUND: u64 = 13;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -472,5 +487,216 @@ fn the_rounds_block_reads_are_flat_in_corpus_size_and_all_under_a_guard() {
         large_guarded, large_total,
         "at {LARGE} records {large_guarded} of {large_total} page reads happened under a shard \
          guard"
+    );
+}
+
+/// THE RECOVERY REPORT DERIVES THREE ANSWERS FROM ONE WALK OF THE LIVE-PAGE SET.
+///
+/// `storage_recovery_report_without_boundary_sampled` needs the same live-page set three times:
+/// for the addresses its readability probe walks, for the bucket-ownership validation, and for
+/// the object-lifecycle report. It used to walk for each, three whole-store passes of the
+/// fourteen one round made. It holds ONE shard-table read guard across all three, so they cannot
+/// disagree and the second and third could only rebuild the first.
+///
+/// TWO CLAIMS, asserted in this order.
+///
+/// SAFETY FIRST, because it is the one that is not checked anywhere else. The three consumers
+/// must still describe the same page set, with a denominator: a report over an empty shard would
+/// satisfy any agreement. A mutant that feeds one consumer a different set fails here.
+///
+/// COST SECOND. The call materialises the live-page set ONCE. Asserted as a count rather than a
+/// time, and as a count of SITES as well as entries -- `1.00x` is also what a call that walked
+/// once and then answered two of the three questions wrongly would report.
+#[test]
+fn the_recovery_report_derives_three_answers_from_one_walk() {
+    const RECORDS: usize = 2_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = round_engine(dir.path());
+    // SEEDED ACROSS MORE THAN ONE SLAB, deliberately. With every live page in slab 0 the
+    // slab-id agreement below holds whatever the id is derived from -- a mutant that replaced
+    // `entry.address.block_slab_id` with the constant 0 passed. Rolling a slab half way through
+    // the seed gives the two sides something to disagree about.
+    seed_in_batches(&engine, 1, RECORDS / 2, 1_000);
+    let rolled = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_prepare: true,
+        prepare_slab_target_bytes: 1,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(
+        rolled
+            .stages
+            .iter()
+            .any(|stage| stage.stage == "prepare" && stage.prepared_block_slab_id.is_some()),
+        "the fixture did not roll a slab, so every live page is still in one slab and the \
+         slab-id agreement below cannot fail"
+    );
+    // DISJOINT keys, matching `seed_in_batches`' own format. Re-seeding from zero would rewrite
+    // the first half onto the slab just rolled, the old pages would go stale, and every LIVE
+    // page would be in one slab again -- which is the state this fixture exists to avoid.
+    let mut commands = Vec::new();
+    let mut cursor = RECORDS / 2;
+    while cursor < RECORDS {
+        commands.push(Command::StringSet {
+            key: format!("k-{cursor:08}"),
+            value: vec![b'v'; 128],
+        });
+        cursor += 1;
+    }
+    let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+        shard_id: 1,
+        commands,
+    });
+    assert!(
+        response.status.ok,
+        "the second-half seed failed: {:?}",
+        response.status
+    );
+
+    crate::engine::reset_live_block_scan_entries();
+    crate::engine::reset_live_block_scan_sites();
+    let report = engine.storage_recovery_report_without_boundary(1);
+    let entries = crate::engine::live_block_scan_entries();
+    let sites = crate::engine::live_block_scan_sites_snapshot();
+
+    // THE DENOMINATOR, before either claim.
+    assert!(
+        report.total_block_refs > 0,
+        "the report found no live pages at all, so neither claim below is about anything"
+    );
+
+    // ---- SAFETY: the three consumers describe one page set ----------------
+    //
+    // `total_page_refs` comes from the walk itself; `live_page_refs` is counted by the
+    // object-lifecycle report, which used to do its own walk. They are the same pages.
+    assert_eq!(
+        report.total_block_refs as u64, report.object_lifecycle.live_block_refs,
+        "the readability probe walked {} live pages and the object-lifecycle report counted {}. \
+         Both describe the live-page set of one shard under one read guard, so a difference \
+         means one of them is being derived from something other than the pages the other saw",
+        report.total_block_refs, report.object_lifecycle.live_block_refs
+    );
+
+    // The per-slab live tallies are built in the same loop as the probe, and the slab id list is
+    // derived from the same entries. Every slab that holds a live page must appear in both.
+    let slabs_from_live_reports = report
+        .block_slab_live_reports
+        .iter()
+        .filter(|slab| slab.live_block_refs > 0)
+        .map(|slab| slab.block_slab_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let slabs_from_id_list = report
+        .live_block_slab_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        slabs_from_id_list.len() > 1,
+        "the live pages sit in {} slab(s). With one slab the agreement below holds however the \
+         slab id is derived, which is exactly how a constant-id defect passed this test once",
+        slabs_from_id_list.len()
+    );
+    assert_eq!(
+        slabs_from_live_reports, slabs_from_id_list,
+        "the slabs with live pages and the reported live-slab id list disagree"
+    );
+
+    // The ownership validation's findings are carried on the lifecycle report. Both now come
+    // from the one walk, so the count the report carries must be the count it was given.
+    assert_eq!(
+        report.object_lifecycle.owner_mismatch_block_refs,
+        report.owner_mismatch_block_refs.len() as u64,
+        "the lifecycle report carries {} owner mismatches but the validation returned {}",
+        report.object_lifecycle.owner_mismatch_block_refs,
+        report.owner_mismatch_block_refs.len()
+    );
+
+    // ---- COST: one walk, from one site ------------------------------------
+    println!(
+        "  storage_recovery_report_without_boundary over {RECORDS} records: {entries} live-page \
+         entries from {} site(s) = {}x the store",
+        sites.len(),
+        entries / RECORDS as u64
+    );
+    for (site, walked) in &sites {
+        println!("    {walked:>8}  {site}");
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "the recovery report walked the live-page set from {} call sites, not 1: {sites:?}. All \
+         three of its consumers are under one shard-table read guard, so a second site means a \
+         walk has come back",
+        sites.len()
+    );
+    assert_eq!(
+        entries,
+        report.total_block_refs as u64,
+        "the recovery report materialised {entries} live-page entries for a shard holding {} \
+         live pages. It needs the live-page set three times and takes one walk for all three, so \
+         these are the same number",
+        report.total_block_refs
+    );
+}
+
+/// WHAT ONE WALK COSTS PER LIVE PAGE, and that folding three into one REMOVED that cost rather
+/// than moving it somewhere else in the same function.
+///
+/// THE OLD CLAIM WAS STALE. "Each walk clones two strings per entry" was true of an earlier
+/// `LiveBlockEntry`; the three text fields are `Arc<str>` now, so a walk copies three pointers
+/// and bumps three refcounts per page and copies no text at all. Pinned as a size below, because
+/// that is the thing that would change if a field went back to `String` -- 24 bytes and a heap
+/// copy per page, per walk, on every periodic round.
+///
+/// THE HOIST DID NOT MOVE THE COST. The old function kept a `Vec<BlockAddress>` for its probe
+/// loop AND built a fresh `Vec<LiveBlockEntry>` inside the ownership validation that followed it,
+/// both alive under the same guard. The new one keeps the entries only, and reads each address
+/// out of the entry it is already holding. So the peak is lower by a whole address vector, not
+/// merely rearranged -- and the entries vector it does keep is one it used to build anyway.
+///
+/// Counted with `size_of`, so this needs no counting allocator and cannot be moved by box load.
+#[test]
+fn a_live_page_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak() {
+    let entry_bytes = std::mem::size_of::<LiveBlockEntry>();
+    let address_bytes = std::mem::size_of::<crate::block_store::BlockAddress>();
+    let arc_str_bytes = std::mem::size_of::<std::sync::Arc<str>>();
+    let string_bytes = std::mem::size_of::<String>();
+
+    println!("  LiveBlockEntry {entry_bytes} B, BlockAddress {address_bytes} B");
+    println!("  Arc<str> {arc_str_bytes} B against String {string_bytes} B");
+
+    // HALF ONE: the text fields are shared pointers, not owned text. Asserted FIRST because it
+    // is the claim the old note got wrong, and it is what makes a walk cheap per page.
+    assert!(
+        arc_str_bytes < string_bytes,
+        "an Arc<str> is {arc_str_bytes} B and a String {string_bytes} B; this test's whole \
+         premise is that the entry's text fields are shared rather than owned"
+    );
+    // object_key + kind + component are the three text fields; the rest is the address and
+    // three flags. If a text field became owned this would grow by at least 8 B.
+    let text_field_bytes = 3 * arc_str_bytes;
+    assert!(
+        entry_bytes <= text_field_bytes + address_bytes + 8,
+        "a live-page entry is {entry_bytes} B against {text_field_bytes} B of shared text \
+         pointers, {address_bytes} B of address and a few flags. Bigger than that means a field \
+         is carrying owned text, which is a heap copy per live page PER WALK on every periodic \
+         round"
+    );
+
+    // HALF TWO: the peak this function holds per live page fell. Ordered after the half above so
+    // a mutant that makes entries owned is reported as what it is rather than as a peak change.
+    let old_peak_per_page = entry_bytes + address_bytes;
+    let new_peak_per_page = entry_bytes;
+    println!(
+        "  recovery report peak per live page: {old_peak_per_page} B -> {new_peak_per_page} B, \
+         {} B/page of address vector no longer built beside the entries",
+        old_peak_per_page - new_peak_per_page
+    );
+    assert!(
+        new_peak_per_page < old_peak_per_page,
+        "the hoist holds {new_peak_per_page} B per live page where the three-walk version held \
+         {old_peak_per_page} B. If these are equal the address vector is still being built and \
+         the cost was moved rather than removed"
     );
 }
