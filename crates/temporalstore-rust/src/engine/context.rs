@@ -1028,6 +1028,19 @@ pub(super) fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
     dot / (left_norm.sqrt() * right_norm.sqrt())
 }
 
+/// What a traversal found, and what it never looked at.
+///
+/// The second number is the point: a caller that only sees nodes cannot tell a
+/// short result caused by a thin tree from one caused by the per-parent cap, and
+/// the two call for opposite responses.
+pub(super) struct ContextTraversalOutcome {
+    pub nodes: Vec<ContextTraversedNode>,
+    /// Children the per-parent cap skipped before any scoring. Non-zero means the
+    /// result is bounded by the cap rather than by relevance, so a query cannot
+    /// reach what was dropped however well it matches.
+    pub children_dropped_before_scoring: usize,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn traverse_context_tree(
     cache: &MultiLayerCache,
@@ -1042,7 +1055,7 @@ pub(super) fn traverse_context_tree(
     max_children_scored_per_parent: Option<usize>,
     max_candidate_nodes: Option<usize>,
     leaf_only: bool,
-) -> Vec<ContextTraversedNode> {
+) -> ContextTraversalOutcome {
     let max_depth = max_depth.unwrap_or(6).min(CONTEXT_MAX_TRAVERSAL_DEPTH);
     let top_k = top_k_per_depth
         .unwrap_or_else(default_traversal_top_k)
@@ -1062,6 +1075,9 @@ pub(super) fn traverse_context_tree(
         score: 1.0,
     }];
     let mut results = Vec::new();
+    // Per call, unlike the process-wide counter below: a caller needs to know
+    // whether ITS result was cut, which a global total cannot tell it.
+    let mut children_dropped_before_scoring = 0usize;
     for depth in 1..=max_depth {
         let mut scored_layer = Vec::new();
         for parent in &frontier {
@@ -1088,6 +1104,7 @@ pub(super) fn traverse_context_tree(
             let considered = children.len();
             children.truncate(child_limit);
             if considered > child_limit {
+                children_dropped_before_scoring += considered - child_limit;
                 // Say it, because the failure is otherwise invisible: retrieval still returns
                 // plausible results from whatever survived, so a structural limit reads as
                 // ordinary imperfect recall.
@@ -1138,7 +1155,10 @@ pub(super) fn traverse_context_tree(
             if !leaf_only || is_leaf {
                 results.push(node);
                 if results.len() >= candidate_limit {
-                    return results;
+                    return ContextTraversalOutcome {
+                        nodes: results,
+                        children_dropped_before_scoring,
+                    };
                 }
             }
         }
@@ -1147,7 +1167,10 @@ pub(super) fn traverse_context_tree(
         }
         frontier = next_frontier;
     }
-    results
+    ContextTraversalOutcome {
+        nodes: results,
+        children_dropped_before_scoring,
+    }
 }
 
 pub(super) fn build_context_compression_event(

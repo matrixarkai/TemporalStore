@@ -1182,7 +1182,7 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
     });
     assert!(matches!(
         traversal.response,
-        CommandResponse::ContextTraversedNodes { ref nodes }
+        CommandResponse::ContextTraversedNodes { ref nodes, .. }
             if nodes.len() == 1 && nodes[0].node_hash == GPU && nodes[0].score > 0.99
     ));
 
@@ -3529,7 +3529,7 @@ fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
     assert!(
         matches!(
             traversal.response,
-            CommandResponse::ContextTraversedNodes { ref nodes }
+            CommandResponse::ContextTraversedNodes { ref nodes, .. }
                 if nodes.len() == 1 && nodes[0].node_hash == NEAR && nodes[0].score > 0.99
         ),
         "a child whose only vector lives on the node must be scored"

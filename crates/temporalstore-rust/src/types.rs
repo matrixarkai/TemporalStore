@@ -2502,6 +2502,11 @@ pub enum CommandResponse {
     },
     ContextTraversedNodes {
         nodes: Vec<ContextTraversedNode>,
+        /// Children skipped by the per-parent cap before any scoring. Non-zero
+        /// means this result is bounded by the cap and not by relevance, which a
+        /// caller cannot otherwise tell from a genuinely thin tree.
+        #[serde(default)]
+        children_dropped_before_scoring: usize,
     },
     ContextSummaries {
         object_key: String,

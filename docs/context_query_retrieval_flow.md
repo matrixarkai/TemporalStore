@@ -265,7 +265,10 @@ these commands back explicit index-driven retrieval:
   and sorted by `(primary_event_time_ms, event_id_hash, primary_node_hash)`.
 - `ContextTraverseTree` → `traverse_context_tree()` — cosine-scored beam-search BFS down the
   node hierarchy (`top_k_per_depth`, `max_children_scored_per_parent`, `leaf_only`); not
-  currently on the `retrieve_context` path.
+  currently on the `retrieve_context` path. The response carries
+  `children_dropped_before_scoring`: how many of a parent's children the per-parent cap cut
+  before anything was scored. Non-zero means the result is bounded by that cap rather than by
+  relevance, which a caller cannot otherwise tell from a genuinely thin tree.
 
 ---
 

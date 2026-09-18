@@ -15986,10 +15986,68 @@ fn a_wide_parent_keeps_its_newest_children_for_scoring() {
             Some(CHILDREN as usize),
             false,
         )
+        .nodes
         .into_iter()
         .map(|node| node.node_hash)
         .collect()
     };
+
+    // The per-call count, which is what a caller gets back. The process-wide
+    // counter below cannot answer "was MY result cut" once two queries overlap.
+    let outcome_dropped = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        crate::engine::context::traverse_context_tree(
+            &engine.cache,
+            &engine.block_store,
+            1,
+            shard,
+            TENANT,
+            PARENT,
+            &axis(newest - 1),
+            Some(1),
+            Some(CHILDREN as usize),
+            Some(CAP),
+            Some(CHILDREN as usize),
+            false,
+        )
+        .children_dropped_before_scoring
+    };
+    assert_eq!(
+        outcome_dropped,
+        (CHILDREN as usize) - CAP,
+        "a parent with {CHILDREN} children under a cap of {CAP} skipped \
+         {outcome_dropped} before scoring; the caller is told that number so it can \
+         tell a capped result from a thin tree"
+    );
+
+    // And it reaches a caller going through the command, which is the only route
+    // an SDK user has.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextTraverseTree {
+            tenant_hash: TENANT,
+            start_node_hash: PARENT,
+            query_vector: axis(newest - 1),
+            max_depth: Some(1),
+            top_k_per_depth: Some(CHILDREN as usize),
+            max_children_scored_per_parent: Some(CAP),
+            max_candidate_nodes: Some(CHILDREN as usize),
+            leaf_only: false,
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    match response.response {
+        crate::types::CommandResponse::ContextTraversedNodes {
+            children_dropped_before_scoring,
+            ..
+        } => assert_eq!(
+            children_dropped_before_scoring,
+            (CHILDREN as usize) - CAP,
+            "the traversal response must carry what the cap skipped"
+        ),
+        other => panic!("unexpected response: {other:?}"),
+    }
 
     crate::engine::context::reset_context_children_dropped_before_scoring();
     let found_newest = traverse(newest);

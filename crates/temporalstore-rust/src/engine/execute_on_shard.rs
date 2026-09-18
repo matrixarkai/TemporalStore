@@ -3596,7 +3596,7 @@ pub(crate) fn execute_on_shard(
             let start_child_key = context_child_key(tenant_hash, start_node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &start_node_key);
             mutated |= drop_if_expired(cache, shard_id, shard, &start_child_key);
-            let nodes = traverse_context_tree(
+            let outcome = traverse_context_tree(
                 cache,
                 block_store,
                 shard_id,
@@ -3610,7 +3610,10 @@ pub(crate) fn execute_on_shard(
                 max_candidate_nodes,
                 leaf_only,
             );
-            CommandResponse::ContextTraversedNodes { nodes }
+            CommandResponse::ContextTraversedNodes {
+                nodes: outcome.nodes,
+                children_dropped_before_scoring: outcome.children_dropped_before_scoring,
+            }
         }
         Command::ContextUpsertSummary {
             tenant_hash,
