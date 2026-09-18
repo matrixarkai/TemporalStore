@@ -5911,6 +5911,22 @@ EXPLORE_JS = r"""
     rust_proxy_native_context_pack: "the native Rust pack"
   };
 
+  /* Whether the deployment declined to retrieve rather than finding nothing.
+
+     Under load the gateway sheds: it answers with an empty pack in about 100 ms and says so in
+     `warnings`. That is a third cause of "nothing matched", and it is the one that must not be
+     answered with "check your embedding provider" -- the provider is fine, and the reader who
+     goes to look will find it fine and be no wiser.
+
+     Read off the warning text, which is how this page already tells its other cases apart. The
+     served/empty/shed rule lives in the gateway, where it is measured; this only asks whether the
+     answer said why it was empty. */
+  function wasShed(d) {
+    return ((d && d.warnings) || []).some(function (w) {
+      return /backpressure/i.test(String(w));
+    });
+  }
+
   function renderAskWarnings(d) {
     var conflicts = d.embedding_conflicts || {};
     var blocks = [];
@@ -5961,9 +5977,38 @@ EXPLORE_JS = r"""
       if (/embedded by a different model|different width from this query/.test(String(w))) {
         return;
       }
+      /* Said in full below, in words a reader can act on. `service_backpressure` on its own is
+         the backend's vocabulary, not a sentence. */
+      if (/backpressure/i.test(String(w))) {
+        return;
+      }
       blocks.push('<div class="note">' + esc(w) + "</div>");
     });
     $("askWarnings").innerHTML = blocks.join("");
+  }
+
+  /* Why the pack came back with nothing in it.
+
+     Three causes look identical from here, and naming the wrong one sends the reader to check a
+     setting that is already right -- which is worse than saying nothing, because they will find
+     it right and conclude the page is broken.
+
+     Shedding goes first because it is the only one of the three that is not about this store at
+     all: nothing was searched, so nothing about the encoder or the vectors explains it. It is
+     also the only one the answer states outright, in `warnings`. */
+  function emptyPackMessage(d) {
+    if (wasShed(d)) {
+      return "<b>This deployment did not run the search.</b> It is shedding retrieves under load "
+        + "and answered immediately with an empty result. Nothing is wrong with the query, the "
+        + "store or the embedding model. It clears when the load does.";
+    }
+    var conflicts = (d && d.embedding_conflicts) || {};
+    if (conflicts.encoder_change) {
+      return "Nothing matched. The stored vectors were made by a different embedding model than "
+        + "the one in use now, so they cannot be compared with this query \u2014 see above.";
+    }
+    return "Nothing matched. If the store is not empty, the usual cause is an embedding provider "
+      + "that is still deterministic \u2014 hash vectors do not match on meaning.";
   }
 
   function ask() {
@@ -5989,14 +6034,7 @@ EXPLORE_JS = r"""
           (d.tokens ? " · " + d.tokens + " tokens" : "") + " · " + ms + " ms";
         renderAskWarnings(d);
         if (!items.length) {
-          /* Two causes look identical from here, and naming only one sends the reader to check a
-             setting that is already right. The backend says which it was when it knows. */
-          var conflicts = d.embedding_conflicts || {};
-          $("pack").innerHTML = '<div class="empty">Nothing matched. ' + (conflicts.encoder_change
-            ? "The stored vectors were made by a different embedding model than the one in use " +
-              "now, so they cannot be compared with this query — see above."
-            : "If the store is not empty, the usual cause is an embedding provider that is still " +
-              "deterministic — hash vectors do not match on meaning.") + "</div>";
+          $("pack").innerHTML = '<div class="empty">' + emptyPackMessage(d) + "</div>";
           return;
         }
         $("pack").innerHTML = items.map(function (it) {
