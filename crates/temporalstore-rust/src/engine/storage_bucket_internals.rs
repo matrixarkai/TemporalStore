@@ -1192,40 +1192,138 @@ pub(super) fn rebuild_bucket_block_ownership(
     shard.bucket_index.block_slab_live.mark_ready();
 }
 
+/// What the promotion check decided, since the last reset.
+///
+/// #1888 reported that on a restore the answer is always "the index already names everything",
+/// so the whole walk is spent returning `false`. That was MEASURED in its configurations, which
+/// is not the same as the positive arm being unreachable -- and a precondition whose positive arm
+/// nobody can construct is a precondition nobody has tested. These make the question answerable
+/// from a guard rather than from a reading of the four call sites.
+///
+/// `PAGES` is what the walk actually offered the test. A guard asserting the check is cheap needs
+/// it: a walk that visited nothing is cheap for the wrong reason, and would pass the same guard.
+///
+/// COUNTED, not timed, and independent of the counting allocator. Process-wide and monotonic, so
+/// a reader resets immediately before the call it is measuring and reads it in a single-threaded
+/// suite -- the same contract as [`bucket_scoped_model_entries`] above.
+static PROMOTE_MODEL_MAP_CHECKS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static PROMOTE_MODEL_MAP_REBUILDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static PROMOTE_MODEL_MAP_PAGES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Promotion checks run, promotions that REBUILT, and model-map pages the checks walked.
+pub(super) fn promote_model_map_check_counts() -> (u64, u64, u64) {
+    (
+        PROMOTE_MODEL_MAP_CHECKS.load(std::sync::atomic::Ordering::Relaxed),
+        PROMOTE_MODEL_MAP_REBUILDS.load(std::sync::atomic::Ordering::Relaxed),
+        PROMOTE_MODEL_MAP_PAGES.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Reset the promotion-check counters. Pairs with [`promote_model_map_check_counts`].
+pub(super) fn reset_promote_model_map_check_counts() {
+    PROMOTE_MODEL_MAP_CHECKS.store(0, std::sync::atomic::Ordering::Relaxed);
+    PROMOTE_MODEL_MAP_REBUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
+    PROMOTE_MODEL_MAP_PAGES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Make the bucket index name every live model-map page, if it does not already.
+///
+/// A PRECONDITION, and preconditions on this path have teeth: #1822 was the default recovery arm
+/// calling `rebuild_bucket_block_ownership` without one of these in front of it, and a restart
+/// served 0 of 6 hash fields against 6 of 6 strings. So WHAT THIS DECIDES is fixed, and the note
+/// below about cost changes none of it.
+///
+/// The decision, in three parts:
+///
+///   1. no live model-map page at all -> `false`, having established nothing. (The per-execute
+///      caller in `engine.rs` reads exactly this to know not to latch its fast-skip flag.)
+///   2. otherwise: is `bucket_map` empty, OR is there a live page the index does not name at the
+///      same address? A page routing to a RELEASED bucket is absent on purpose and is not one.
+///   3. only if so, rebuild ownership over the routing range, refresh the runtime flags, `true`.
+///
+/// WHAT IS NOT MATERIALISED, and why that changes nothing above. This opened with
+/// `collect_model_live_block_entries(shard)`, which walks the same pages this walks and turns
+/// every one of them into an owned `LiveBlockEntry` -- an owned key and an owned kind, each built
+/// as a `String` and then copied into an `Arc<str>`, plus the vector holding them -- to ask an
+/// `any()` a question answerable from the borrowed fields the walk is already holding. Since
+/// step 2's answer is normally "no", the vector was built in full to return `false`: 4.0
+/// allocations per record the shard holds, 22% of a restore's index fold and 10% of the whole
+/// restore, and again on the per-execute path in `engine.rs` whenever its fast-skip is not
+/// latched.
+///
+/// `visit_model_live_blocks` offers `emit` the kind, key, component and address as borrows, and
+/// those are exactly the four arguments `contains_object_block_address` takes -- the same values
+/// the old `any()` tested, in the same order, page for page. The walk IS the check and stays
+/// whole; only the vector goes.
+///
+/// It does not stop the WALK at the first missing page. `any()` stopped there, and the visitor
+/// four callers share has no way to be told to stop; what it does stop is the LOOKUP, which is
+/// the part that costs more than a field read. On the path this was measured on nothing is ever
+/// missing, so the early exit was never reached and removing it costs nothing measured.
 pub(super) fn promote_model_maps_to_bucket_index_authority(
     shard_id: ShardId,
     shard: &mut ShardState,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> bool {
-    let model_entries = collect_model_live_block_entries(shard);
-    if model_entries.is_empty() {
+    PROMOTE_MODEL_MAP_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (saw_model_entry, bucket_index_missing_entry) = {
+        let shard: &ShardState = shard;
+        // Read once, ahead of the walk, because the old form was
+        // `bucket_map.is_empty() || entries.iter().any(..)` and the left arm short-circuited the
+        // right one. An empty index names nothing, so every page would test missing anyway --
+        // asking per page would be an index lookup per page for an answer already in hand.
+        let bucket_map_empty = shard.bucket_index.bucket_map.is_empty();
+        let mut saw_model_entry = false;
+        let mut missing_entry = false;
+        let mut pages = 0u64;
+        visit_model_live_blocks(
+            shard,
+            |_| true,
+            |kind, object_key, component, address| {
+                saw_model_entry = true;
+                pages += 1;
+                // Placed AFTER the two counters above, deliberately: an early return that skipped
+                // them would make a walk over a large shard read as a walk over a small one, and
+                // the guard that reads `pages` would then pass because the check looked cheap.
+                if bucket_map_empty || missing_entry {
+                    return;
+                }
+                // A RELEASED bucket is absent on purpose. Without this the first command after a
+                // release would find every released page "missing" from the index and rebuild the
+                // whole shard -- which is a correct index and a release that never survives one
+                // execute.
+                let released = address
+                    .routing_bucket()
+                    .map(|routing_bucket| {
+                        shard.bucket_index.released_buckets.contains(&routing_bucket)
+                    })
+                    .unwrap_or(false);
+                if !released
+                    && !shard.bucket_index.contains_object_block_address(
+                        kind,
+                        object_key,
+                        component,
+                        address,
+                    )
+                {
+                    missing_entry = true;
+                }
+            },
+        );
+        PROMOTE_MODEL_MAP_PAGES.fetch_add(pages, std::sync::atomic::Ordering::Relaxed);
+        (saw_model_entry, bucket_map_empty || missing_entry)
+    };
+    if !saw_model_entry {
         return false;
     }
-    let bucket_index_missing_entry = shard.bucket_index.bucket_map.is_empty()
-        || model_entries.iter().any(|entry| {
-            // A RELEASED bucket is absent on purpose. Without this the first command after a
-            // release would find every released page "missing" from the index and rebuild the
-            // whole shard -- which is a correct index and a release that never survives one
-            // execute.
-            let released = entry
-                .address
-                .routing_bucket()
-                .map(|routing_bucket| {
-                    shard.bucket_index.released_buckets.contains(&routing_bucket)
-                })
-                .unwrap_or(false);
-            !released
-                && !shard.bucket_index.contains_object_block_address(
-                    &entry.kind,
-                    &entry.object_key,
-                    entry.component.as_deref(),
-                    &entry.address,
-                )
-        });
     if !bucket_index_missing_entry {
         return false;
     }
+    PROMOTE_MODEL_MAP_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
     refresh_bucket_runtime_flags(shard);
     true

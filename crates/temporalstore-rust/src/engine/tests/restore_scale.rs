@@ -20,22 +20,41 @@
 //! ```text
 //!   phase                       allocations             file+desc syscalls          bytes read
 //!                            2,000    20,000  ratio    2,000  20,000  ratio    2,000     20,000
-//!   manifest_and_base_index 17,591   174,656   9.93x      12      12   1.00x  164,318  1,875,686
-//!   publish_and_seed        10,256   102,146   9.96x      28     173   6.18x   79,439    803,005
-//!   wal_replay              17,532   153,184   8.74x     173   1,829  10.57x  950,528 12,484,864
-//!   index_fold              36,788   367,186   9.98x      30      31   1.03x      337        367
+//!   manifest_and_base_index 17,595   174,654   9.93x      12      12   1.00x  164,318  1,875,686
+//!   publish_and_seed         6,247    62,133   9.95x      28     173   6.18x   79,439    803,005
+//!   wal_replay              17,525   153,198   8.74x     173   1,829  10.57x  950,528 12,484,864
+//!   index_fold              28,783   287,135   9.98x      30      31   1.03x      337        367
 //!   open_for_serving             2         2   1.00x       0       0      --        0          0
-//!   TOTAL                   82,169   797,174   9.70x     243   2,045   8.42x 1,194,622 15,163,922
-//!   residual                     0         0                  0       0                      0
+//!   TOTAL                   70,152   677,122   9.65x     243   2,045   8.42x 1,194,622 15,163,922
+//!   residual                     5         5                  0       0                      0
 //! ```
 //!
-//! 127 ms and 1,316 ms untraced, on a box at load 2.8. The count is the claim; the durations are
+//! 105 ms and 1,224 ms untraced, on a box at load 1.8. The count is the claim; the durations are
 //! there for scale.
 //!
-//! A RESTORE IS NOT AN I/O PROBLEM. The large arm spends 1,316 ms and issues 2,045 file and
+//! THE RESIDUAL ROW IS NOW MEASURED, AND IT IS 5 AND NOT 0. The allocation column of it used to
+//! read 0 "by construction", which is a claim about where the probe sits and not a reading: the
+//! only thing checked was the rows against their own sum, because `RestoreCost::allocs()` IS that
+//! sum, so a phase boundary moved one statement too far would leave allocations in no row at all
+//! and the table would still add up to itself. It is now the counter read either side of the
+//! whole `load_shard_with` call, minus the rows, and it is asserted.
+//!
+//! It is 5 at 2,000 records and 5 at 20,000, and 5 on every other corpus in this file -- a FIXED
+//! cost at the edges of the probe span, not a phase nobody wrote down. That is the shape the
+//! assertion holds it to: the two sizes must agree with each other, because a boundary that had
+//! drifted past real work would put a number there that grew with the store. Pinning 5 exactly
+//! would fail on an unrelated allocation moving one statement across the first marker, which is
+//! not what this is watching for.
+//!
+//! The syscall and bytes columns are #1889's and were not re-taken here; what stands in for that
+//! is the counted I/O this file already reports, which did not move -- log window walks 1 and 6,
+//! log bytes read 305,833 and 3,056,590, one manifest listing and one manifest file read at each
+//! size, and one index write, after the engine lock and not under it, at each size.
+//!
+//! A RESTORE IS NOT AN I/O PROBLEM. The large arm spends 1,224 ms and issues 2,045 file and
 //! descriptor syscalls. Two thousand syscalls cannot cost a second. What it does instead is
-//! allocate 797,174 times and 178 MB to bring back 20,000 records of 128 bytes: 39.9 allocations
-//! and 8,940 allocated bytes per record recovered, against 2.56 MB of payload. Nothing here is
+//! allocate 677,122 times and 171 MB to bring back 20,000 records of 128 bytes: 33.9 allocations
+//! and 8,567 allocated bytes per record recovered, against 2.56 MB of payload. Nothing here is
 //! waiting on a disk.
 //!
 //! WHICH QUANTITY EACH PHASE TRACKS, held one at a time. Three arms: 2,000 x 128 B, then the SAME
@@ -44,10 +63,10 @@
 //!
 //! ```text
 //!   allocations in           BASE    +5x bytes, =records    +10x records, =bytes
-//!   manifest_and_base_index 17,587                 1.00x                   9.93x
-//!   publish_and_seed        10,256                 1.00x                   9.94x
-//!   wal_replay              17,521                 0.90x                   9.67x
-//!   index_fold              36,784                 1.00x                   9.98x
+//!   manifest_and_base_index 17,594                 1.00x                   9.93x
+//!   publish_and_seed         6,247                 1.00x                   9.92x
+//!   wal_replay              17,522                 0.90x                   9.67x
+//!   index_fold              28,783                 1.00x                   9.98x
 //! ```
 //!
 //! EVERY PHASE TRACKS RECORDS AND NONE OF THEM TRACKS LOG BYTES. Five times the log at a fixed
@@ -89,20 +108,41 @@
 //!
 //! About 5.0 MB of whole-shard index documents through serde to recover 2.56 MB of payload.
 //!
-//! AND 22% OF THE FOLD IS A WHOLE-SHARD SCAN THAT DECIDES TO DO NOTHING.
-//! `promote_model_maps_to_bucket_index_authority` opens with
+//! 22% OF THE FOLD WAS A WHOLE-SHARD SCAN THAT DECIDED TO DO NOTHING -- TAKEN, and the table
+//! above is the bill after it. `promote_model_maps_to_bucket_index_authority` opened with
 //! `collect_model_live_block_entries(shard)`, which materialises a vector of every live block
-//! entry in the shard, and then tests whether any of them is missing from the bucket index. On
-//! this path none ever is -- the replay above has already put them there -- so it returns false
-//! and neither the ownership rebuild nor the secondary-view reconcile behind it runs at all.
-//! Measured by removing the call: the fold drops from 36,788 to 28,783 allocations at 2,000
-//! records and 367,186 to 287,167 at 20,000. Exactly 4.0 allocations per record the shard holds,
-//! 22% of the fold and 10% of the whole restore, to answer a question whose answer is no.
+//! entry in the shard, and then tested whether any of them was missing from the bucket index. On
+//! this path none ever is -- the replay above has already put them there -- so it returned false
+//! and neither the ownership rebuild nor the secondary-view reconcile behind it ran at all.
 //!
-//! It is a precondition and not dead code -- when the index and the model maps HAVE diverged,
-//! which is the #1822 shape, this is the check that notices. What is avoidable is the VECTOR: the
-//! test is an `any()`, so the entries could be walked without being collected first. That call
-//! lives in `engine/storage_bucket_internals.rs` and is reported rather than changed here.
+//! It is a precondition and not dead code: when the index and the model maps HAVE diverged, which
+//! is the #1822 shape, this is the check that notices, and the rebuild behind it is the repair.
+//! So the check stays and the walk stays -- the walk IS the check. What went is the VECTOR. The
+//! test is an `any()`, and `visit_model_live_blocks` already offers the kind, key, component and
+//! address as borrows, which are exactly the four arguments the test takes, so it now runs on the
+//! same values in the same order without an owned entry being built for any of them.
+//!
+//! ```text
+//!   allocations                2,000 records     20,000 records
+//!   publish_and_seed          10,256 -> 6,247  102,146 -> 62,133    -39.1% / -39.2%
+//!   index_fold                36,787 -> 28,783 367,188 -> 287,135   -21.8% / -21.8%
+//!   WHOLE RESTORE             82,172 -> 70,152 797,196 -> 677,122   -14.6% / -15.1%
+//! ```
+//!
+//! 6.0 allocations per record the shard holds, at both sizes, because the fold is not the only
+//! caller inside the measured span. The rate is the same 4.0 per live model-map page at each: the
+//! fold sees all 2,000 and 20,000, and the publish sees the 1,000 and 10,000 the checkpoint
+//! carried, before replay has put the tail back. The fold falls from 18.4 to 14.4 allocations per
+//! stored record, which is the rate
+//! `what_bringing_a_shard_back_costs_at_two_corpus_sizes` holds to a band.
+//!
+//! What was NOT taken is stopping the walk at the first page found missing. The old `any()` did;
+//! `visit_model_live_blocks` is shared by four callers and has no way to be told to stop, and on
+//! every path measured here nothing is ever missing, so the early exit was never reached and
+//! removing it costs nothing that can be measured. The lookup still stops.
+//!
+//! What the check decides, and the four arms of it -- including the one where a page IS missing,
+//! which no corpus here reaches -- are in `engine/tests/promote_precondition.rs`.
 //!
 //! TWO THINGS THE PHASE NAMES DO NOT PREDICT, both in
 //! `the_fold_tracks_the_store_and_the_replay_decodes_what_the_checkpoint_already_covers`:
@@ -112,7 +152,7 @@
 //!     1.01x. It rebuilds every bucket over the whole routing range whether one record was
 //!     replayed or all of them;
 //!   * and dumping more often made the restart MORE expensive. The same 2,000-record store came
-//!     back in 94,826 allocations having dumped 1,800 of its records and 69,465 having dumped
+//!     back in 79,609 allocations having dumped 1,800 of its records and 60,647 having dumped
 //!     200. A record costs 17.5 allocations to recover from a checkpoint and 5.5 to replay from
 //!     the log, so a dump moves records from the cheap side of a restart to the expensive one.
 //!
@@ -298,6 +338,27 @@ struct RestoreMeasurement {
     replayed_from: u64,
     readable_after: usize,
     wall_ms: u64,
+    /// Allocations across the WHOLE `load_shard_with` call, and `None` when nothing was counting.
+    ///
+    /// The phase rows are cut inside that call, so `span - sum(rows)` is the part of a restore no
+    /// phase claims -- the residual. It used to be 0 "by construction", which is a statement about
+    /// where the probe sits rather than a reading: move one boundary a statement too far and the
+    /// allocations in between belong to no row while the table still sums to itself, because
+    /// `RestoreCost::allocs()` IS the sum of the rows. Measured here, so the table is checked
+    /// against the span it claims to divide.
+    ///
+    /// `counted_now()` rather than the counters direct, so "nothing was counting" is
+    /// representable and a build without `alloc-probe` cannot report a residual of 0 that means
+    /// the opposite.
+    span_allocs: Option<u64>,
+}
+
+impl RestoreMeasurement {
+    /// Allocations inside the restore that no phase row accounts for.
+    fn residual_allocs(&self) -> Option<i64> {
+        self.span_allocs
+            .map(|span| span as i64 - self.cost.allocs() as i64)
+    }
 }
 
 impl RestoreMeasurement {
@@ -317,6 +378,7 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> RestoreMeasurement {
     );
     crate::engine::reset_bucket_dump_manifest_io_counts();
     let started = std::time::Instant::now();
+    let span_before = crate::alloc_probe::counted_now();
     let response = engine.load_shard_with(LoadShardRequest {
         shard_id: 1,
         load_version: 1,
@@ -327,6 +389,8 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> RestoreMeasurement {
         readonly: false,
         table_name: "t".to_string(),
     });
+    // Read BEFORE `finish()`, which allocates a report the restore did not.
+    let span_after = crate::alloc_probe::counted_now();
     let cost = restore_phase_probe::finish();
     let wall_ms = started.elapsed().as_millis() as u64;
     assert!(
@@ -374,6 +438,9 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> RestoreMeasurement {
             .load(std::sync::atomic::Ordering::SeqCst),
         readable_after: readable,
         wall_ms,
+        span_allocs: span_before
+            .zip(span_after)
+            .map(|(before, after)| after.0 - before.0),
     }
 }
 
@@ -433,8 +500,12 @@ fn report(label: &str, measurement: &RestoreMeasurement) {
         measurement.cost.alloc_bytes(),
         measurement.cost.nanos() as f64 / 1e6
     );
-    if !cfg!(feature = "alloc-probe") {
-        println!("  (the two allocation columns read zero: built without `alloc-probe`)");
+    match measurement.residual_allocs() {
+        Some(residual) => println!(
+            "  {:<24} {:>10}                           <- the span, minus every row above",
+            "residual", residual
+        ),
+        None => println!("  (the two allocation columns read zero: built without `alloc-probe`)"),
     }
     println!(
         "  WAL      window walks {} bytes_read {}",
@@ -535,6 +606,24 @@ fn what_bringing_a_shard_back_costs_at_two_corpus_sizes() {
         small.cost.allocs(),
         "the phase rows must sum to the whole restore"
     );
+    // THE RESIDUAL, measured rather than assumed: the counter either side of the whole
+    // `load_shard_with` call, minus the rows. The assertion above cannot find a phase boundary
+    // that drifted, because it compares the rows against their own sum. This can.
+    let (small_residual, large_residual) = (
+        small.residual_allocs().expect("counted"),
+        large.residual_allocs().expect("counted"),
+    );
+    assert_eq!(
+        small_residual, large_residual,
+        "the part of a restore that no phase row accounts for must be a FIXED edge cost: it is \
+         {small_residual} at {SMALL} records and {large_residual} at {LARGE}, and a residual that \
+         grows with the store is a phase boundary sitting past work nobody wrote a row for"
+    );
+    assert!(
+        (0..=16).contains(&small_residual),
+        "the residual is {small_residual} allocations; it has been 5, and a number big enough to \
+         hide a phase in makes the table above a selection rather than a bill"
+    );
 
     // HALF ONE: the fold at the end is the largest phase, at BOTH sizes. It is also the phase
     // with almost no syscalls in it -- 30 and 31 -- so a restore that feels slow is not waiting
@@ -576,8 +665,8 @@ fn what_bringing_a_shard_back_costs_at_two_corpus_sizes() {
         fold_rate(&large, LARGE),
     );
     assert!(
-        (16.5..=20.5).contains(&fold_rate(&small, SMALL))
-            && (16.5..=20.5).contains(&fold_rate(&large, LARGE)),
+        (12.5..=16.5).contains(&fold_rate(&small, SMALL))
+            && (12.5..=16.5).contains(&fold_rate(&large, LARGE)),
         "the fold must cost the same per stored record at both sizes: {:.1} at {SMALL} records \
          and {:.1} at {LARGE}",
         fold_rate(&small, SMALL),
@@ -755,8 +844,8 @@ fn which_quantity_each_restore_phase_tracks() {
 ///
 /// ```text
 ///                        checkpoint   replay    fold    TOTAL
-///   1,800 records dumped     31,557   13,143  36,666   94,826 allocations, 148 ms
-///     200 records dumped      3,615   21,890  36,906   69,465 allocations,  84 ms
+///   1,800 records dumped     31,558   13,142  28,659   79,609 allocations, 138 ms
+///     200 records dumped      3,615   21,888  28,897   60,647 allocations,  79 ms
 /// ```
 ///
 /// 17.5 allocations per record recovered from the checkpoint against 5.5 per record replayed

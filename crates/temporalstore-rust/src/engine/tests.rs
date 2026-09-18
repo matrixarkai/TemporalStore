@@ -101,6 +101,7 @@ mod round_scale;
 mod index_bytes_per_key;
 mod dump_scale;
 mod restore_scale;
+mod promote_precondition;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,
