@@ -1677,6 +1677,12 @@ class _LocalAdapterIngestMixin:
                 "node_hash": node_hash,
                 "node_path": node_path,
                 "text": text,
+                # Computed 140 lines above and, until now, thrown away -- so the SAME event
+                # ingested synchronously carried no `summary_text` while the async path's
+                # `pending_event_record` carried `summarize_text(text)`. Two readers do not fall
+                # back to `text`: the index-term builder is handed both and produces fewer terms
+                # without it, and the context pack writes `summary_text: ""` outright.
+                "summary_text": summary_text,
                 "classification": extraction.get("classification", ""),
                 "event_type": hot_event_type,
                 "entity_type": extraction.get("entity_type", ""),
