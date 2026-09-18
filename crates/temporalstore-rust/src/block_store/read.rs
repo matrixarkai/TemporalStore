@@ -11,11 +11,15 @@ impl BlockStore {
         // metadata-only restore, fetch + cache it before serving the read.
         self.ensure_slab_present(address.block_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let bytes = LocalSlabBackend::new(&inner.root).read_range(
+        let read = LocalSlabBackend::new(&inner.root).read_range(
             address.block_slab_id,
             address.offset,
             address.length,
         )?;
+        // Charged before the decode, not after. A read that reached the disk cost the disk
+        // whether or not the record on it decodes, and the old order left a failed decode
+        // looking like a read that never happened.
+        let bytes = read.charge(&mut inner.stats);
         let decoded = decode_block_record(&bytes, address)?;
         // `decode_block_record` just verified this payload against the CRC32C stored in the
         // record envelope, and cross-checked the record header's page id against this address.
@@ -26,8 +30,6 @@ impl BlockStore {
         // the stored-length check, not the CRC, that stand against an entry pointing at the wrong
         // page.
         let bytes = decoded.payload;
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += address.length;
         inner.stats.logical_bytes_read += decoded.logical_len as u64;
         if decoded.compression == BlockRecordCompression::Zstd {
             inner.stats.compressed_records_read += 1;
@@ -45,15 +47,12 @@ impl BlockStore {
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let path = slab_path(&inner.root, block_slab_id);
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![0; size as usize];
-        let read = file.read(&mut bytes)?;
-        bytes.truncate(read);
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += read as u64;
-        Ok(bytes)
+        let read = LocalSlabBackend::new(&inner.root).read_range_at_most(
+            block_slab_id,
+            offset,
+            size,
+        )?;
+        Ok(read.charge(&mut inner.stats))
     }
 
     pub fn read_logical_range(
@@ -66,16 +65,29 @@ impl BlockStore {
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let slab = LocalSlabBackend::new(&inner.root).read_all(block_slab_id)?;
+        // `bytes_read` is charged the WHOLE slab, which is what this read pulls off disk to
+        // answer a logical range. It used to be charged the length of the slice handed back --
+        // the same number `logical_bytes_read` gets, which is the field that means that.
+        let read = LocalSlabBackend::new(&inner.root).read_all(block_slab_id)?;
+        let slab = read.charge(&mut inner.stats);
         let range = logical_range_from_slab(&slab, block_slab_id, offset, size)?;
         let bytes = range.bytes;
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += bytes.len() as u64;
         inner.stats.logical_bytes_read += bytes.len() as u64;
         inner.stats.compressed_records_read += range.compressed_records_read;
         Ok(bytes)
     }
 
+    /// A whole slab, by id.
+    ///
+    /// COUNTED, which it was not. This read the slab file straight off disk and charged the store
+    /// nothing, so the dump manifest, the cluster snapshot and the two shared-storage paths that
+    /// use it were invisible in `BlockStoreStats::reads` and `bytes_read` -- the other three read
+    /// entry points beside it all charged. Going through the backend makes that impossible to
+    /// repeat: `CountedSlabRead` does not give up its bytes without a `&mut BlockStoreStats`.
+    ///
+    /// The store lock is still NOT held across the file read -- the root is cloned for the read
+    /// and the lock is taken again only to charge -- because a whole-slab read under the lock
+    /// would block every writer for the length of a slab.
     pub fn read_slab(&self, block_slab_id: u64) -> Result<Vec<u8>, BlockStoreError> {
         self.ensure_slab_present(block_slab_id)?;
         let root = self
@@ -84,7 +96,8 @@ impl BlockStore {
             .expect("block store lock poisoned")
             .root
             .clone();
-        Ok(fs::read(slab_path(&root, block_slab_id))?)
+        let read = LocalSlabBackend::new(&root).read_all(block_slab_id)?;
+        Ok(read.charge(&mut self.inner.lock().expect("block store lock poisoned").stats))
     }
 
     /// Install one slab, and rewrite the whole slab manifest.
@@ -179,5 +192,85 @@ impl BlockStore {
             inner.persist_slab_manifest_counted()?;
         }
         Ok(())
+    }
+}
+
+/// Every way into the block store that reads slab bytes, and whether the store counts it.
+///
+/// `BlockStoreStats::reads` and `bytes_read` are `pub` on a crate other people build on, so a
+/// read the store performs and does not count is a wrong number for them as well as for our own
+/// guards. The table below is the DENOMINATOR: it names each entry point once and asserts the
+/// list is complete, so an entry point added without a row here is a failing count rather than a
+/// silent omission.
+#[cfg(test)]
+mod read_entry_point_counting {
+    use super::super::BlockStore;
+
+    type Exercise = Box<dyn Fn(&BlockStore)>;
+
+    #[test]
+    fn every_read_entry_point_charges_one_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let address = store.append(b"counted-payload").unwrap();
+        let slab = address.block_slab_id;
+
+        let entry_points: Vec<(&str, Exercise)> = vec![
+            (
+                "read",
+                Box::new(move |store: &BlockStore| {
+                    store.read(&address).unwrap();
+                }),
+            ),
+            (
+                "read_range",
+                Box::new(move |store: &BlockStore| {
+                    store.read_range(slab, 0, 4).unwrap();
+                }),
+            ),
+            (
+                "read_logical_range",
+                Box::new(move |store: &BlockStore| {
+                    store.read_logical_range(slab, 0, 4).unwrap();
+                }),
+            ),
+            (
+                "read_slab",
+                Box::new(move |store: &BlockStore| {
+                    store.read_slab(slab).unwrap();
+                }),
+            ),
+        ];
+
+        // VACUITY FLOOR. A table that lost its rows would pass every assertion below.
+        assert_eq!(
+            entry_points.len(),
+            4,
+            "the store has four read entry points; the table must name every one",
+        );
+
+        let mut exercised = 0usize;
+        let mut uncounted: Vec<&str> = Vec::new();
+        for (name, run) in &entry_points {
+            let before = store.stats();
+            run(&store);
+            let after = store.stats();
+            exercised += 1;
+            if after.reads != before.reads + 1 || after.bytes_read <= before.bytes_read {
+                uncounted.push(name);
+            }
+        }
+
+        assert_eq!(
+            exercised,
+            entry_points.len(),
+            "every named entry point must actually have run",
+        );
+        assert!(
+            uncounted.is_empty(),
+            "{} of {exercised} read entry points performed a read the store did not count: {:?}",
+            uncounted.len(),
+            uncounted,
+        );
     }
 }

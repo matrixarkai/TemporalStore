@@ -27,13 +27,54 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::BlockStoreStats;
+
+/// Bytes read off a slab, and the charge for having read them.
+///
+/// The bytes are PRIVATE and [`CountedSlabRead::charge`] is the only way to them, so a read path
+/// that forgets to count does not compile. That is not hypothetical tidiness: of the block
+/// store's four read entry points, `read_slab` charged nothing at all -- it read whole slabs off
+/// disk for the dump manifest, the cluster snapshot and two shared-storage paths, and
+/// `BlockStoreStats::reads` and `bytes_read` never moved. Those fields are `pub` on a crate other
+/// people build on, so the number was wrong for them too, not only for our own guards.
+///
+/// Charging is deliberately a SEPARATE step from reading rather than something the backend does
+/// itself: `read_slab` clones the root and reads outside the store lock on purpose, and a backend
+/// that took `&mut BlockStoreStats` would have forced that read back under the lock.
+#[must_use = "a slab read has to be charged to the store's stats"]
+pub(crate) struct CountedSlabRead {
+    bytes: Vec<u8>,
+    physical_bytes: u64,
+}
+
+impl CountedSlabRead {
+    fn of(bytes: Vec<u8>) -> Self {
+        let physical_bytes = bytes.len() as u64;
+        Self {
+            bytes,
+            physical_bytes,
+        }
+    }
+
+    /// The bytes, once the read is on the store's books.
+    ///
+    /// `bytes_read` is charged the PHYSICAL bytes this read pulled off disk, which is what it
+    /// means beside `logical_bytes_read`.
+    pub(crate) fn charge(self, stats: &mut BlockStoreStats) -> Vec<u8> {
+        stats.reads = stats.reads.saturating_add(1);
+        stats.bytes_read = stats.bytes_read.saturating_add(self.physical_bytes);
+        self.bytes
+    }
+}
+
 /// One slab's worth of storage, addressed by the id the block store already uses.
 ///
-/// WHICH OF THESE RUN. Only `read_range` and `read_all` have a production caller, both in
-/// `read.rs`. The other seven are reached only by this file's own tests. They are not dead
-/// code and not a contract held open for a remote backend (see the module note above): the
-/// block store still performs every one of those operations, inline, on its own handles. This
-/// trait was extracted and then only `read.rs` was moved onto it.
+/// WHICH OF THESE RUN. Only `read_range`, `read_range_at_most` and `read_all` have a production
+/// caller, all three in `read.rs`, and between them they are every read the block store makes.
+/// The other seven are reached only by this file's own tests. They are not dead code and not a
+/// contract held open for a remote backend (see the module note above): the block store still
+/// performs every one of those operations, inline, on its own handles. This trait was extracted
+/// and then only `read.rs` was moved onto it.
 ///
 /// The work left is to move the remaining call sites here, so each of the seven is a target,
 /// not a leftover. Anyone doing that must carry the call site's behaviour across rather than
@@ -57,10 +98,27 @@ pub(crate) trait SlabBackend: Send + Sync {
     fn append(&self, slab_id: u64, bytes: &[u8]) -> io::Result<u64>;
 
     /// Read one record's bytes back, given where the address says they are.
-    fn read_range(&self, slab_id: u64, offset: u64, length: u64) -> io::Result<Vec<u8>>;
+    ///
+    /// EXACT: a slab too short for the range is an error, because an address that points past
+    /// the end of its own slab is a broken address and not a short answer.
+    fn read_range(&self, slab_id: u64, offset: u64, length: u64) -> io::Result<CountedSlabRead>;
+
+    /// The same range, TOLERATING a short slab: what is there is returned, and nothing is an
+    /// error.
+    ///
+    /// The block store's streaming and slab-report reads have always behaved this way, and the
+    /// difference is not cosmetic -- routing them through `read_range` above would turn a
+    /// truncated tail from an empty answer into a failed read. Named separately so the choice is
+    /// made by whoever knows which one they want.
+    fn read_range_at_most(
+        &self,
+        slab_id: u64,
+        offset: u64,
+        length: u64,
+    ) -> io::Result<CountedSlabRead>;
 
     /// The whole slab, for the walks that summarise or inspect one.
-    fn read_all(&self, slab_id: u64) -> io::Result<Vec<u8>>;
+    fn read_all(&self, slab_id: u64) -> io::Result<CountedSlabRead>;
 
     /// How long the slab is, without reading it.
     fn len(&self, slab_id: u64) -> io::Result<u64>;
@@ -129,17 +187,32 @@ impl SlabBackend for LocalSlabBackend<'_> {
         Ok(offset)
     }
 
-    fn read_range(&self, slab_id: u64, offset: u64, length: u64) -> io::Result<Vec<u8>> {
+    fn read_range(&self, slab_id: u64, offset: u64, length: u64) -> io::Result<CountedSlabRead> {
         use std::io::{Read as _, Seek as _, SeekFrom};
         let mut file = std::fs::File::open(self.path(slab_id))?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0_u8; length as usize];
         file.read_exact(&mut bytes)?;
-        Ok(bytes)
+        Ok(CountedSlabRead::of(bytes))
     }
 
-    fn read_all(&self, slab_id: u64) -> io::Result<Vec<u8>> {
-        std::fs::read(self.path(slab_id))
+    fn read_range_at_most(
+        &self,
+        slab_id: u64,
+        offset: u64,
+        length: u64,
+    ) -> io::Result<CountedSlabRead> {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        let mut file = std::fs::File::open(self.path(slab_id))?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0_u8; length as usize];
+        let read = file.read(&mut bytes)?;
+        bytes.truncate(read);
+        Ok(CountedSlabRead::of(bytes))
+    }
+
+    fn read_all(&self, slab_id: u64) -> io::Result<CountedSlabRead> {
+        Ok(CountedSlabRead::of(std::fs::read(self.path(slab_id))?))
     }
 
     fn len(&self, slab_id: u64) -> io::Result<u64> {
@@ -194,7 +267,8 @@ mod tests {
         assert_eq!(
             backend
                 .read_range(0, second, b"second-record".len() as u64)
-                .expect("read"),
+                .expect("read")
+                .charge(&mut BlockStoreStats::default()),
             b"second-record",
         );
         assert_eq!(
@@ -212,7 +286,13 @@ mod tests {
         backend.append(1, b"lose").expect("append");
         backend.truncate(1, 4).expect("truncate");
         assert_eq!(backend.len(1).expect("len"), 4);
-        assert_eq!(backend.read_all(1).expect("read"), b"keep");
+        assert_eq!(
+            backend
+                .read_all(1)
+                .expect("read")
+                .charge(&mut BlockStoreStats::default()),
+            b"keep",
+        );
     }
 
     /// Slabs are found by id, and a removed one is gone.

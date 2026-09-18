@@ -8126,7 +8126,15 @@ fn what_apply_storage_lifecycle_walks() {
 /// Measured at 4,000 objects, one round walked 9.0x the shard when each report walked for itself.
 /// Sharing one walk across the three took it to 7.0x; giving `object_manager_runtime_report` the
 /// same slice -- and stopping its tail from walking again purely to COUNT eight kinds of entry --
-/// took it to 4.0x. The bound below sits between 4 and 7, so losing any of that sharing fails.
+/// took it to 4.0x.
+///
+/// THOSE THREE NUMBERS WERE ALL TWO LOW. They were taken with a counter charged only in
+/// `collect_live_block_entries`, and this round makes two whole-shard passes that go around it:
+/// `rebuild_bucket_block_ownership` and `rebuild_bucket_first_index` both call
+/// `collect_model_live_block_entries` directly. The sharing work was real and the progression is
+/// real; the absolute numbers were 11.0x, 9.0x and 6.0x. The bound below now sits between 6 and
+/// 9, so losing any of that sharing still fails it. The per-site split is PRINTED above the
+/// assertion, so the next person reading a moved bound sees which site moved it.
 ///
 /// It is a BOUND and not an equality, unlike `the_object_lifecycle_snapshot_walks_the_shard_once`.
 /// That one owns every walk in its function and can name the exact number; this round also walks
@@ -8163,9 +8171,15 @@ fn a_compaction_round_shares_one_walk_across_its_live_block_consumers() {
     assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
 
     crate::engine::reset_live_block_scan_entries();
+    crate::engine::reset_live_block_scan_sites();
     let report = engine.compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX);
     let walked = crate::engine::live_block_scan_entries();
+    let sites = crate::engine::live_block_scan_sites_snapshot();
     assert!(report.is_ok(), "compaction failed: {report:?}");
+    eprintln!("  [compaction] {walked} entries for {live_blocks} live pages, {} site(s)", sites.len());
+    for (site, entries) in &sites {
+        eprintln!("    {:>5.1}x  {site}", *entries as f64 / live_blocks as f64);
+    }
 
     // Denominator: a round that did no walking at all would satisfy any upper bound.
     assert!(
@@ -8175,12 +8189,15 @@ fn a_compaction_round_shares_one_walk_across_its_live_block_consumers() {
 
     let multiple = walked as f64 / live_blocks as f64;
     assert!(
-        multiple <= 5.0,
+        multiple <= 7.0,
         "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_blocks} \
-live pages). Its ownership validation, utility report, object lifecycle report and object-manager \
-report all share ONE `collect_live_page_entries`: 9.0x when each walked for itself, 7.0x with \
-three sharing, 4.0x with all four. If a new preamble report needs the live-page set, pass it the \
-existing slice rather than calling `collect_live_page_entries` again.",
+live pages) from {} site(s). Its ownership validation, utility report, object lifecycle report \
+and object-manager report all share ONE `collect_live_page_entries`: 11.0x when each walked for \
+itself, 9.0x with three sharing, 6.0x with all four, the last two of the six being the bucket \
+ownership and first-index rebuilds. If a new preamble report needs the live-page set, pass it \
+the existing slice rather than calling `collect_live_page_entries` again -- the split printed \
+above names whichever site moved this.",
+        sites.len(),
     );
 }
 

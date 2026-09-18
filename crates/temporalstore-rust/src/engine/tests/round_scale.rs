@@ -10,12 +10,13 @@
 //!
 //! ```text
 //!   records   live-page entries materialised by ONE round   ratio
-//!     2,000                                        24,000   12.00x
-//!    20,000                                       240,000   12.00x
+//!     2,000                                        26,000   13.00x
+//!    20,000                                       260,000   13.00x
 //! ```
 //!
-//! Exactly 12.00 at both, and the per-site split is identical at both sizes -- six call sites,
-//! summing to 12:
+//! Exactly 13.00 at both, and the per-site split is identical at both sizes -- seven call sites,
+//! summing to 13. The split is PRINTED by `steady_walks_per_record` rather than maintained here
+//! by hand, because a table beside a total is a list that goes stale without anything failing:
 //!
 //! ```text
 //!   storage_reporting.rs:171  bucket_storage_summaries            5.00x
@@ -24,7 +25,15 @@
 //!   compaction.rs:61          compaction_utility_report           1.00x
 //!   storage_reporting.rs:801  bucket generation fingerprints      1.00x
 //!   recovery_sweep_compact.rs:461 the recovery report             1.00x
+//!   storage_reporting.rs:1029 feature block layout report         1.00x
 //! ```
+//!
+//! IT READ TWELVE, AND IT WAS ALWAYS THIRTEEN. The last row is not a pass that was added; it is
+//! one that could not be counted. `LIVE_BLOCK_SCAN_ENTRIES` was charged in
+//! `collect_live_block_entries` and nowhere else, and `storage_feature_block_layout_report`
+//! calls `collect_bucket_index_live_block_entries` directly -- so a whole-store pass made on
+//! every periodic round was charged to nothing, and the guard here that exists to notice a walk
+//! being added could not see it. The charge now happens inside the walks themselves.
 //!
 //! IT WAS FOURTEEN. Three of those passes were made by ONE function,
 //! `storage_recovery_report_without_boundary_sampled`, under ONE shard-table read guard: once for
@@ -43,7 +52,7 @@
 //! `storage_reporting.rs:171` passes are five different answers, not one answer fetched five
 //! times.
 //!
-//! So the round is proportional to the store with a constant of 14, and no stage budget bounds
+//! So the round is proportional to the store with a constant of 13, and no stage budget bounds
 //! it: the budgets in this round bound the DUMP (buckets per round), the EXPIRE sweep (buckets per
 //! round) and the readability probe (512 pages), none of which is the walk above. The wall clock
 //! corroborates -- a steady round took 1,352-1,625 ms at 8,000 and 8,117-9,657 ms at 80,000, at
@@ -53,7 +62,7 @@
 //! AN IDLE SHARD DOES NOT ESCAPE IT. The plan's own whole-shard walk is skipped when no object is
 //! dirty, which is true and is what makes `bucket_summaries` an `Option`. It does not make the
 //! ROUND cheap: measured on a shard whose dirty set had drained to zero and which had taken no
-//! write since, the round still materialised 13.00x the record count, because the other walks
+//! write since, the round still materialised 14.00x the record count, because the other walks
 //! never consult the dirty set. `an_idle_round_still_walks_the_live_page_set` is that number.
 //!
 //! WHAT THESE TESTS ARE FOR. The ratio is asserted at TWO sizes, so the two failures read
@@ -69,11 +78,11 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// Measured, at 4,000 / 8,000 / 80,000 records, on a shard whose dump is delayed -- which is the
 /// ordinary state of a shard written to in batches, see
 /// `the_dump_threshold_counts_log_records_not_dirty_objects`.
-const WALKS_PER_ROUND: u64 = 12;
+const WALKS_PER_ROUND: u64 = 13;
 
 /// The same, once the dirty set has drained. HIGHER, not lower: a shard that has taken a dump has
 /// a manifest, and validating it walks the live set again.
-const WALKS_PER_IDLE_ROUND: u64 = 13;
+const WALKS_PER_IDLE_ROUND: u64 = 14;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -136,9 +145,23 @@ fn round_request() -> StorageManagerCycleRequest {
 fn walk_volume_of_one_round(
     engine: &TemporalEngine,
 ) -> (u64, crate::engine::reports::StorageManagerCycleReport) {
+    walk_volume_and_sites_of_one_round(engine).0
+}
+
+/// The same, plus WHICH call sites walked. The split in the module note above is this, printed,
+/// rather than a list maintained by hand beside a total that would not notice it going stale.
+fn walk_volume_and_sites_of_one_round(
+    engine: &TemporalEngine,
+) -> (
+    (u64, crate::engine::reports::StorageManagerCycleReport),
+    std::collections::BTreeMap<String, u64>,
+) {
     crate::engine::reset_live_block_scan_entries();
+    crate::engine::reset_live_block_scan_sites();
     let report = engine.run_storage_manager_cycle(round_request());
-    (crate::engine::live_block_scan_entries(), report)
+    let entries = crate::engine::live_block_scan_entries();
+    let sites = crate::engine::live_block_scan_sites_snapshot();
+    ((entries, report), sites)
 }
 
 /// One STEADY round's walk volume per record, at `records` records written in `batch`-sized
@@ -148,7 +171,7 @@ fn steady_walks_per_record(records: usize, batch: usize) -> u64 {
     let engine = round_engine(dir.path());
     seed_in_batches(&engine, 1, records, batch);
     let _ = walk_volume_of_one_round(&engine);
-    let (entries, report) = walk_volume_of_one_round(&engine);
+    let ((entries, report), sites) = walk_volume_and_sites_of_one_round(&engine);
 
     // THE DENOMINATOR. A round that walked nothing satisfies any ceiling, and so does one that
     // errored out before its first walk.
@@ -171,9 +194,13 @@ fn steady_walks_per_record(records: usize, batch: usize) -> u64 {
     );
     println!(
         "  {records:>6} records in batches of {batch:<4} -> ONE round materialised {entries:>9} \
-         live-page entries = {}x the store",
-        entries / records as u64
+         live-page entries = {}x the store, from {} call site(s)",
+        entries / records as u64,
+        sites.len()
     );
+    for (site, walked) in &sites {
+        println!("    {:>6.2}x  {site}", *walked as f64 / records as f64);
+    }
     entries / records as u64
 }
 
@@ -495,7 +522,7 @@ fn the_rounds_block_reads_are_flat_in_corpus_size_and_all_under_a_guard() {
 /// `storage_recovery_report_without_boundary_sampled` needs the same live-page set three times:
 /// for the addresses its readability probe walks, for the bucket-ownership validation, and for
 /// the object-lifecycle report. It used to walk for each, three whole-store passes of the
-/// fourteen one round made. It holds ONE shard-table read guard across all three, so they cannot
+/// thirteen one round makes. It holds ONE shard-table read guard across all three, so they cannot
 /// disagree and the second and third could only rebuild the first.
 ///
 /// TWO CLAIMS, asserted in this order.
@@ -508,7 +535,7 @@ fn the_rounds_block_reads_are_flat_in_corpus_size_and_all_under_a_guard() {
 /// time, and as a count of SITES as well as entries -- `1.00x` is also what a call that walked
 /// once and then answered two of the three questions wrongly would report.
 #[test]
-fn the_recovery_report_derives_three_answers_from_one_walk() {
+fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_for_layout() {
     const RECORDS: usize = 2_000;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -612,7 +639,23 @@ fn the_recovery_report_derives_three_answers_from_one_walk() {
         report.owner_mismatch_block_refs.len()
     );
 
-    // ---- COST: one walk, from one site ------------------------------------
+    // ---- COST: two walks, from two sites ----------------------------------
+    //
+    // IT SAID ONE, AND IT WAS NEVER ONE. The hoist above really did fold three passes into one,
+    // and this guard really did watch it -- but it watched through a counter that was charged in
+    // `collect_live_block_entries` and nowhere else. `storage_feature_block_layout_report` calls
+    // `collect_bucket_index_live_block_entries` directly, so its whole-store pass was charged to
+    // nothing and this assertion read 1 while the report took 2.
+    //
+    // Now that both walks are charged, the number is written down. It is two, it is asserted
+    // EXACTLY, and both sites are named below, so a third still fails here -- which is what this
+    // guard was for.
+    //
+    // NOT FOLDED INTO ONE HERE, and the reason is not effort. The two walks do not always read
+    // the same set: `collect_live_block_entries` takes the model-map arm when `bucket_map` is
+    // empty, while the layout report always takes the bucket-index one. Handing the first walk's
+    // entries to the second would be a silent answer change on an empty index, so removing the
+    // second pass is its own change with its own measurement.
     println!(
         "  storage_recovery_report_without_boundary over {RECORDS} records: {entries} live-page \
          entries from {} site(s) = {}x the store",
@@ -624,19 +667,92 @@ fn the_recovery_report_derives_three_answers_from_one_walk() {
     }
     assert_eq!(
         sites.len(),
-        1,
-        "the recovery report walked the live-page set from {} call sites, not 1: {sites:?}. All \
-         three of its consumers are under one shard-table read guard, so a second site means a \
-         walk has come back",
+        2,
+        "the recovery report walked the live-page set from {} call sites, not 2: {sites:?}. The \
+         two are the hoisted probe/ownership/lifecycle walk and the feature-block layout \
+         report's own walk; a third means a pass has come back",
         sites.len()
+    );
+    let mut walked_sites = sites.keys().map(String::as_str).collect::<Vec<_>>();
+    walked_sites.sort_unstable();
+    assert!(
+        walked_sites
+            .iter()
+            .any(|site| site.contains("recovery_sweep_compact.rs")),
+        "the hoisted walk must still be one of the two sites: {walked_sites:?}"
+    );
+    assert!(
+        walked_sites
+            .iter()
+            .any(|site| site.contains("storage_reporting.rs")),
+        "the feature-block layout report's walk must be the other: {walked_sites:?}"
+    );
+    // ---- WHAT ONE WALK OF THESE TWO COSTS --------------------------------
+    //
+    // More than the page set it hands back, and the difference is not small. A round leaves
+    // buckets RELEASED -- 16 of them on this fixture, which is an ordinary storage round and not
+    // a contrived state -- and a released bucket's index holds no pages. So
+    // `collect_bucket_index_live_block_entries` walks the index, then walks the WHOLE model-map
+    // page set a second time to supplement the released buckets' pages back in. It materialises
+    // `indexed + every live page` to return `indexed + released`.
+    //
+    // Charging the RETURN value, as this counter used to, therefore could not see the second
+    // walk at all: it read 2,000 for a call that built 3,984 entries. Both terms are derived
+    // from the shard below rather than written down, so a fixture that stops releasing anything
+    // fails the denominator instead of quietly measuring the easy case.
+    let (indexed_pages, released_buckets) = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 is loaded");
+        (
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| bucket.block_index.len())
+                .sum::<usize>() as u64,
+            shard.bucket_index.released_buckets.len(),
+        )
+    };
+
+    // THE DENOMINATOR for everything below. With nothing released the supplement walk never
+    // runs, one walk costs exactly the page set, and this guard would be measuring a case that
+    // cannot show the cost it exists to name.
+    assert!(
+        released_buckets > 0,
+        "the fixture released no buckets, so the supplement walk never ran and the charge below \
+         is not the one this guard is about"
+    );
+    assert!(
+        indexed_pages < report.total_block_refs as u64,
+        "the released buckets must be missing from the index ({indexed_pages} indexed against \
+         {} returned), or there was nothing to supplement",
+        report.total_block_refs
+    );
+
+    let charges = sites.values().copied().collect::<Vec<_>>();
+    println!(
+        "    one walk charged {} to return {} ({indexed_pages} indexed + a whole {}-page \
+         re-walk), {released_buckets} bucket(s) released",
+        charges[0], report.total_block_refs, report.total_block_refs
+    );
+    assert_eq!(
+        charges[0], charges[1],
+        "the two sites walk the same shard under the same guard, so they must materialise the \
+         same number of entries: {sites:?}"
+    );
+    assert_eq!(
+        charges[0],
+        indexed_pages + report.total_block_refs as u64,
+        "one walk materialised {} entries; with {released_buckets} bucket(s) released it should \
+         build the {indexed_pages} indexed pages and then the whole {}-page set again",
+        charges[0],
+        report.total_block_refs
     );
     assert_eq!(
         entries,
-        report.total_block_refs as u64,
-        "the recovery report materialised {entries} live-page entries for a shard holding {} \
-         live pages. It needs the live-page set three times and takes one walk for all three, so \
-         these are the same number",
-        report.total_block_refs
+        2 * charges[0],
+        "the report charged {entries} across its two sites, which must be exactly twice what one \
+         of them costs"
     );
 }
 

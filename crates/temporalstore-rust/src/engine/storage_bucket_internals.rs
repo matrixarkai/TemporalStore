@@ -980,6 +980,41 @@ pub fn reset_bucket_block_index_visits() {
     BUCKET_BLOCK_INDEX_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Which tally a model-map walk is charged to.
+///
+/// Named by the caller, applied by [`visit_model_live_blocks`] itself. The charge happens where
+/// the pages are EMITTED, not at the call site, because a call site that counts is a call site
+/// the next caller forgets: [`LIVE_BLOCK_SCAN_ENTRIES`] was charged in exactly one place --
+/// `collect_live_block_entries` -- while seven production call sites reached the same two walks
+/// directly and were charged nothing at all.
+///
+/// There is deliberately NO uncounted variant. Every way of walking the model maps names one of
+/// these three, so a walk added later cannot compile without saying where it is counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ModelWalkTally {
+    /// Materializing every live page in the shard: [`LIVE_BLOCK_SCAN_ENTRIES`].
+    WholeShardEntries,
+    /// Materializing the pages of NAMED routing buckets: [`BUCKET_SCOPED_MODEL_ENTRIES`].
+    BucketScopedEntries,
+    /// The promotion check's borrow-only pass: `PROMOTE_MODEL_MAP_PAGES`.
+    PromotionCheckPages,
+}
+
+/// Charge live-page entries to the scan counter AND to the caller that asked for them.
+///
+/// `#[track_caller]` all the way down from the public walks, so a charge moved inward still
+/// attributes to the same source line it did when the wrapper counted.
+#[track_caller]
+fn note_live_block_scan(count: usize) {
+    LIVE_BLOCK_SCAN_ENTRIES.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+    let caller = std::panic::Location::caller();
+    if let Ok(mut sites) = live_block_scan_sites().lock() {
+        *sites
+            .entry(format!("{}:{}", caller.file(), caller.line()))
+            .or_insert(0) += count as u64;
+    }
+}
+
 fn note_bucket_block_visits(count: usize) {
     BUCKET_BLOCK_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
 }
@@ -1050,21 +1085,15 @@ pub fn reset_live_block_scan_sites() {
     }
 }
 
+/// Both arms charge themselves, so this wrapper is no longer the only counted way in. It stays
+/// `#[track_caller]` so a charge made further down still attributes to ITS caller.
 #[track_caller]
 pub(super) fn collect_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
-    let entries = if !shard.bucket_index.bucket_map.is_empty() {
+    if !shard.bucket_index.bucket_map.is_empty() {
         collect_bucket_index_live_block_entries(shard)
     } else {
         collect_model_live_block_entries(shard)
-    };
-    LIVE_BLOCK_SCAN_ENTRIES.fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
-    let caller = std::panic::Location::caller();
-    if let Ok(mut sites) = live_block_scan_sites().lock() {
-        *sites
-            .entry(format!("{}:{}", caller.file(), caller.line()))
-            .or_insert(0) += entries.len() as u64;
     }
-    entries
 }
 
 pub(super) fn mark_async_dirty_object(
@@ -1279,16 +1308,16 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
         let bucket_map_empty = shard.bucket_index.bucket_map.is_empty();
         let mut saw_model_entry = false;
         let mut missing_entry = false;
-        let mut pages = 0u64;
         visit_model_live_blocks(
             shard,
+            ModelWalkTally::PromotionCheckPages,
             |_| true,
             |kind, object_key, component, address| {
                 saw_model_entry = true;
-                pages += 1;
-                // Placed AFTER the two counters above, deliberately: an early return that skipped
-                // them would make a walk over a large shard read as a walk over a small one, and
-                // the guard that reads `pages` would then pass because the check looked cheap.
+                // The early return below bypasses the LOOKUP, not the count. `visit_model_live_blocks`
+                // charges every page it emits before this body runs at all, so a walk over a large
+                // shard can no longer read as a walk over a small one by returning early -- and the
+                // guard that reads the page count can no longer pass because the check looked cheap.
                 if bucket_map_empty || missing_entry {
                     return;
                 }
@@ -1314,7 +1343,6 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                 }
             },
         );
-        PROMOTE_MODEL_MAP_PAGES.fetch_add(pages, std::sync::atomic::Ordering::Relaxed);
         (saw_model_entry, bucket_map_empty || missing_entry)
     };
     if !saw_model_entry {
@@ -1389,10 +1417,17 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     }
 }
 
+#[track_caller]
 pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
+    // Charged here rather than by whoever called: three production callers reach this walk
+    // without going through `collect_live_block_entries`, and the wrapper's charge could not see
+    // the supplement walk below either -- it charged what was RETURNED, while the walk
+    // materializes the indexed pages and then, whenever anything is released, the whole shard.
+    let mut from_index = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
+            from_index += 1;
             entries.push(LiveBlockEntry {
                 object_key: page.object_key.clone(),
                 kind: page.model_id.clone(),
@@ -1406,6 +1441,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             });
         }
     }
+    note_live_block_scan(from_index);
     // A RELEASED bucket holds no page entries, and every caller of this walk -- the dump
     // manifest, WAL reclaim, compaction, the GC snapshot -- reads "no entries" as "no live
     // pages". Left alone that is not a cheaper index, it is a page whose backing record may be
@@ -2304,81 +2340,115 @@ pub(super) fn sync_context_blocks_for_object(
 /// The timestamped-series kinds dedup and sort their addresses, and that helper allocates, so the
 /// series is first asked -- without allocating -- whether ANY of its addresses is accepted. The
 /// addresses emitted, and their order within a series, are unchanged.
+/// Walk every live model-map page, and CHARGE what the walk materializes.
+///
+/// The charge is here, not at the call sites, and `tally` has no uncounted variant -- so a new
+/// way of walking the model maps cannot compile without saying which counter it belongs to.
+/// That is the whole point: [`LIVE_BLOCK_SCAN_ENTRIES`] was charged by one wrapper while seven
+/// production call sites reached the same walks around it, and nothing failed.
+#[track_caller]
 fn visit_model_live_blocks(
     shard: &ShardState,
+    tally: ModelWalkTally,
     accept: impl Fn(&BlockAddress) -> bool,
     mut emit: impl FnMut(&'static str, &str, Option<&str>, &BlockAddress),
 ) {
-    for (key, address) in &shard.strings {
-        if accept(address) {
-            emit("string", key, None, address);
-        }
-    }
-    for (key, fields) in &shard.hashes {
-        for (field, address) in fields.iter() {
+    // THE ARM LIST. Nested so that `visit_model_live_blocks` is the only thing in the tree that
+    // can reach it, and so the count wraps all fourteen arms at once instead of being repeated
+    // in each -- an arm added below is charged without being told to be.
+    fn arms(
+        shard: &ShardState,
+        accept: impl Fn(&BlockAddress) -> bool,
+        mut emit: impl FnMut(&'static str, &str, Option<&str>, &BlockAddress),
+    ) {
+        for (key, address) in &shard.strings {
             if accept(address) {
-                emit("hash", key, Some(field.as_str()), address);
+                emit("string", key, None, address);
             }
         }
-    }
-    for (key, members) in &shard.zsets {
-        for (member, (biased, address)) in members.iter() {
-            if accept(address) {
-                let component = format!("{biased:016x}{}", hex::encode(member));
-                emit("zset", key, Some(component.as_str()), address);
+        for (key, fields) in &shard.hashes {
+            for (field, address) in fields.iter() {
+                if accept(address) {
+                    emit("hash", key, Some(field.as_str()), address);
+                }
             }
         }
-    }
-    for (key, elements) in &shard.lists {
-        for (seq, address) in elements.iter() {
-            if accept(address) {
-                let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
-                emit("list", key, Some(component.as_str()), address);
+        for (key, members) in &shard.zsets {
+            for (member, (biased, address)) in members.iter() {
+                if accept(address) {
+                    let component = format!("{biased:016x}{}", hex::encode(member));
+                    emit("zset", key, Some(component.as_str()), address);
+                }
             }
         }
-    }
-    for (key, members) in &shard.sets {
-        for (member, address) in members.iter() {
-            if accept(address) {
-                let component = hex::encode(member);
-                emit("set", key, Some(component.as_str()), address);
+        for (key, elements) in &shard.lists {
+            for (seq, address) in elements.iter() {
+                if accept(address) {
+                    let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                    emit("list", key, Some(component.as_str()), address);
+                }
             }
         }
-    }
-    visit_timestamped_series(&shard.features, "feature", &accept, &mut emit);
-    for (key, address) in &shard.control_state_blocks {
-        if accept(address) {
-            emit("control_state", key, None, address);
-        }
-    }
-    for (key, address) in &shard.context_nodes {
-        if accept(address) {
-            emit("context_node", key, None, address);
-        }
-    }
-    visit_timestamped_series(&shard.context_events, "context_event", &accept, &mut emit);
-    visit_timestamped_series(&shard.context_indexes, "context_index", &accept, &mut emit);
-    visit_timestamped_series(&shard.context_audits, "context_audit", &accept, &mut emit);
-    // Entities live grouped by node in memory but persist one entry per entity, under the same
-    // `ctx:entity:{tenant}:{node}:{entity_hash}` key as before the fold -- the collection key
-    // plus the BTree key reproduce it exactly. Keeping the on-disk key per entity is what makes
-    // this change format-compatible in both directions.
-    for (collection_key, series) in &shard.context_entities {
-        for (entity_hash, address) in series.iter() {
-            if accept(address) {
-                let composed = format!("{collection_key}:{entity_hash}");
-                emit("context_entity", composed.as_str(), None, address);
+        for (key, members) in &shard.sets {
+            for (member, address) in members.iter() {
+                if accept(address) {
+                    let component = hex::encode(member);
+                    emit("set", key, Some(component.as_str()), address);
+                }
             }
         }
+        visit_timestamped_series(&shard.features, "feature", &accept, &mut emit);
+        for (key, address) in &shard.control_state_blocks {
+            if accept(address) {
+                emit("control_state", key, None, address);
+            }
+        }
+        for (key, address) in &shard.context_nodes {
+            if accept(address) {
+                emit("context_node", key, None, address);
+            }
+        }
+        visit_timestamped_series(&shard.context_events, "context_event", &accept, &mut emit);
+        visit_timestamped_series(&shard.context_indexes, "context_index", &accept, &mut emit);
+        visit_timestamped_series(&shard.context_audits, "context_audit", &accept, &mut emit);
+        // Entities live grouped by node in memory but persist one entry per entity, under the same
+        // `ctx:entity:{tenant}:{node}:{entity_hash}` key as before the fold -- the collection key
+        // plus the BTree key reproduce it exactly. Keeping the on-disk key per entity is what makes
+        // this change format-compatible in both directions.
+        for (collection_key, series) in &shard.context_entities {
+            for (entity_hash, address) in series.iter() {
+                if accept(address) {
+                    let composed = format!("{collection_key}:{entity_hash}");
+                    emit("context_entity", composed.as_str(), None, address);
+                }
+            }
+        }
+        visit_timestamped_series(&shard.context_children, "context_child", &accept, &mut emit);
+        visit_timestamped_series(&shard.context_summaries, "context_summary", &accept, &mut emit);
+        visit_timestamped_series(
+            &shard.context_compressions,
+            "context_compression",
+            &accept,
+            &mut emit,
+        );
     }
-    visit_timestamped_series(&shard.context_children, "context_child", &accept, &mut emit);
-    visit_timestamped_series(&shard.context_summaries, "context_summary", &accept, &mut emit);
-    visit_timestamped_series(
-        &shard.context_compressions,
-        "context_compression",
-        &accept,
-        &mut emit,
-    );
+
+    let mut emitted = 0usize;
+    arms(shard, accept, |kind, object_key, component, address| {
+        emitted += 1;
+        emit(kind, object_key, component, address);
+    });
+    match tally {
+        ModelWalkTally::WholeShardEntries => note_live_block_scan(emitted),
+        ModelWalkTally::BucketScopedEntries => {
+            BUCKET_SCOPED_MODEL_ENTRIES
+                .fetch_add(emitted as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        ModelWalkTally::PromotionCheckPages => {
+            PROMOTE_MODEL_MAP_PAGES
+                .fetch_add(emitted as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 /// One timestamped-series map's arm of [`visit_model_live_blocks`].
@@ -2405,10 +2475,12 @@ fn visit_timestamped_series(
     }
 }
 
+#[track_caller]
 pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
     visit_model_live_blocks(
         shard,
+        ModelWalkTally::WholeShardEntries,
         |_| true,
         |kind, object_key, component, address| {
             entries.push(live_block_entry(
@@ -2435,6 +2507,7 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
     let mut entries = Vec::new();
     visit_model_live_blocks(
         shard,
+        ModelWalkTally::BucketScopedEntries,
         |address| address.routing_bucket() == Some(routing_bucket),
         |kind, object_key, component, address| {
             entries.push(live_block_entry(
@@ -2445,8 +2518,6 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
             ));
         },
     );
-    BUCKET_SCOPED_MODEL_ENTRIES
-        .fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
     entries
 }
 
@@ -2472,9 +2543,9 @@ fn derive_released_block_identities(
     wanted: &BTreeSet<u32>,
 ) -> BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>> {
     let mut derived: BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>> = BTreeMap::new();
-    let mut materialized = 0u64;
     visit_model_live_blocks(
         shard,
+        ModelWalkTally::BucketScopedEntries,
         |address| {
             address
                 .routing_bucket()
@@ -2484,7 +2555,6 @@ fn derive_released_block_identities(
             let routing_bucket = address
                 .routing_bucket()
                 .expect("accepted only with a routing bucket");
-            materialized += 1;
             derived
                 .entry(routing_bucket)
                 .or_default()
@@ -2496,7 +2566,6 @@ fn derive_released_block_identities(
                 ));
         },
     );
-    BUCKET_SCOPED_MODEL_ENTRIES.fetch_add(materialized, std::sync::atomic::Ordering::Relaxed);
     derived
 }
 
@@ -4439,6 +4508,220 @@ mod release_walk_scale {
             small, large,
             "reloading one bucket materialized {small} entries out of {small_live} live pages and \
              {large} out of {large_live}; a reload must cost the bucket, not the store",
+        );
+    }
+}
+
+
+/// Which live-page walks the scan counter can see.
+///
+/// [`LIVE_BLOCK_SCAN_ENTRIES`] is charged where the ENTRIES ARE BUILT, not where a wrapper
+/// happens to be called, so a walk that materializes the shard is visible however it was
+/// reached. These guards name each way in and assert it is charged; before the counting moved
+/// down, the wrapper was the only charged route and every direct call to the two walks read
+/// zero.
+///
+/// Process-wide counters: each guard resets immediately before the call it measures, and the
+/// suite is read single-threaded -- the same contract as [`bucket_scoped_model_entries`].
+#[cfg(test)]
+mod live_block_scan_coverage {
+    use super::release_refusal_guards::releasable_bucket;
+    use super::{
+        collect_bucket_index_live_block_entries, collect_live_block_entries,
+        collect_model_live_block_entries, live_block_scan_entries, release_bucket_blocks,
+        reset_live_block_scan_entries,
+    };
+    use crate::engine::state::ShardState;
+
+    const BUCKETS: u32 = 64;
+
+    /// `BUCKETS` buckets, one live `string` page each, numbered from 1.
+    fn shard_with(buckets: u32) -> ShardState {
+        let mut shard = ShardState::default();
+        let mut routing_bucket = 1u32;
+        while routing_bucket <= buckets {
+            releasable_bucket(
+                &mut shard,
+                routing_bucket,
+                &format!("scan-coverage-key-{routing_bucket}"),
+            );
+            routing_bucket += 1;
+        }
+        shard
+    }
+
+    /// THE FIXTURE'S OWN DENOMINATOR, as its own test so a failure here cannot stop the claims
+    /// below being made. A shard whose pages all sat in one bucket could not tell a whole-shard
+    /// walk from a bucket-scoped one.
+    #[test]
+    fn the_fixture_spreads_its_pages_over_many_buckets() {
+        let shard = shard_with(BUCKETS);
+
+        assert_eq!(
+            shard.strings.len(),
+            BUCKETS as usize,
+            "one live page per bucket",
+        );
+        assert_eq!(
+            shard.bucket_index.bucket_map.len(),
+            BUCKETS as usize,
+            "the pages must occupy more than one bucket, or a bucket-scoped walk and a \
+             whole-shard walk would materialize the same thing",
+        );
+        assert!(BUCKETS > 1, "a single-bucket fixture cannot express the defect");
+    }
+
+    /// A whole-shard model-map walk reached DIRECTLY, as five production callers reach it.
+    #[test]
+    fn a_direct_whole_shard_model_walk_is_counted() {
+        let shard = shard_with(BUCKETS);
+
+        reset_live_block_scan_entries();
+        let entries = collect_model_live_block_entries(&shard);
+        let counted = live_block_scan_entries();
+
+        assert_eq!(
+            entries.len(),
+            BUCKETS as usize,
+            "the walk must materialize the whole store, or there is nothing to charge for",
+        );
+        assert_eq!(
+            counted,
+            entries.len() as u64,
+            "a direct whole-shard model walk materialized {} entries and the counter saw \
+             {counted}",
+            entries.len(),
+        );
+    }
+
+    /// A bucket-index walk reached DIRECTLY, as three production callers reach it.
+    #[test]
+    fn a_direct_bucket_index_walk_is_counted() {
+        let shard = shard_with(BUCKETS);
+
+        reset_live_block_scan_entries();
+        let entries = collect_bucket_index_live_block_entries(&shard);
+        let counted = live_block_scan_entries();
+
+        assert_eq!(
+            entries.len(),
+            BUCKETS as usize,
+            "the walk must materialize every indexed page, or there is nothing to charge for",
+        );
+        assert_eq!(
+            counted,
+            entries.len() as u64,
+            "a direct bucket-index walk materialized {} entries and the counter saw {counted}",
+            entries.len(),
+        );
+    }
+
+    /// The supplement a released bucket forces, on the WRAPPER's own path.
+    ///
+    /// `collect_bucket_index_live_block_entries` walks the whole shard a SECOND time whenever any
+    /// bucket is released, to supplement the pages the emptied index no longer names. Charging
+    /// the wrapper's return value could not see that second walk: it reports the pages returned,
+    /// while the walk built the indexed pages AND the whole shard. The two diverge by one page
+    /// per page in the store, so the miss grows with the store rather than being a fixed offset.
+    #[test]
+    fn the_released_bucket_supplement_is_counted() {
+        let mut shard = shard_with(BUCKETS);
+        let outcome = release_bucket_blocks(&mut shard, &[1]);
+        assert_eq!(outcome.released_buckets, vec![1], "{outcome:?}");
+
+        let live_pages = shard.strings.len();
+        let indexed_pages = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.block_index.len())
+            .sum::<usize>();
+
+        // DENOMINATOR: the release must have emptied exactly one bucket's index, or the second
+        // walk below never runs and this guard measures nothing.
+        assert_eq!(live_pages, BUCKETS as usize, "the model maps keep every page");
+        assert_eq!(
+            indexed_pages,
+            live_pages - 1,
+            "exactly one bucket's index must have been emptied by the release",
+        );
+        assert_eq!(
+            shard.bucket_index.released_buckets.len(),
+            1,
+            "a released bucket is what triggers the supplement walk",
+        );
+
+        reset_live_block_scan_entries();
+        let entries = collect_live_block_entries(&shard);
+        let counted = live_block_scan_entries();
+
+        assert_eq!(
+            entries.len(),
+            live_pages,
+            "the supplement must put the released page back into the answer",
+        );
+        assert_eq!(
+            counted,
+            (indexed_pages + live_pages) as u64,
+            "with one bucket released the wrapper materialized {indexed_pages} indexed pages \
+             and then the whole {live_pages}-page shard again, and the counter saw {counted}",
+        );
+    }
+
+    /// HOW MUCH the old charge missed, as a number that grows with the store.
+    ///
+    /// Charging the wrapper's RETURN value cost exactly the supplement walk: with one bucket
+    /// released the walk materializes `2n - 1` entries for a store of `n` live pages and returns
+    /// `n` of them, so what a return-value charge could not see was `n - 1` -- 499 entries at 500
+    /// pages and 3,999 at 4,000. Not a fixed offset to be lived with: it is the store.
+    #[test]
+    fn what_a_return_value_charge_could_not_see_grows_with_the_store() {
+        fn charged_and_returned(buckets: u32) -> (u64, usize) {
+            let mut shard = shard_with(buckets);
+            let outcome = release_bucket_blocks(&mut shard, &[1]);
+            assert_eq!(outcome.released_buckets, vec![1], "{outcome:?}");
+
+            reset_live_block_scan_entries();
+            let entries = collect_live_block_entries(&shard);
+            (live_block_scan_entries(), entries.len())
+        }
+
+        const SMALL: u32 = 500;
+        const LARGE: u32 = 4_000;
+        let (small_charged, small_returned) = charged_and_returned(SMALL);
+        let (large_charged, large_returned) = charged_and_returned(LARGE);
+
+        // VACUITY FLOOR on the measured denominator, not on the constants.
+        assert!(
+            large_returned > small_returned,
+            "the two stores must differ in pages returned, got {small_returned} and \
+             {large_returned}",
+        );
+        assert!(
+            small_charged > 0 && large_charged > 0,
+            "a walk charged nothing at either size measured nothing",
+        );
+
+        assert_eq!(
+            small_charged,
+            (2 * small_returned - 1) as u64,
+            "at {small_returned} live pages the walk materializes the indexed pages and the \
+             whole shard; it charged {small_charged}",
+        );
+        assert_eq!(
+            large_charged,
+            (2 * large_returned - 1) as u64,
+            "at {large_returned} live pages the walk materializes the indexed pages and the \
+             whole shard; it charged {large_charged}",
+        );
+
+        let small_unseen = small_charged - small_returned as u64;
+        let large_unseen = large_charged - large_returned as u64;
+        assert!(
+            large_unseen > small_unseen * 4,
+            "what a return-value charge misses must grow with the store, not sit at a fixed \
+             offset: {small_unseen} unseen at {small_returned} pages and {large_unseen} at \
+             {large_returned}",
         );
     }
 }
