@@ -2892,6 +2892,8 @@ fn wal_all_segment_bytes(root: &Path, shard_id: ShardId) -> u64 {
 }
 
 fn wal_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
+    #[cfg(test)]
+    WAL_SEGMENT_LISTINGS.with(|listings| listings.set(listings.get() + 1));
     let mut sealed = fs::read_dir(root)
         .into_iter()
         .flatten()
@@ -3274,6 +3276,23 @@ thread_local! {
     pub(crate) static WAL_FILE_STATS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// How many times a walk LISTS the log's directory, and how many pieces it reads a HEADER from.
+///
+/// The read side's analogue of `WAL_FILE_OPENS`, and counted for the same reason: a replay is a
+/// loop of bounded windows, and what a window costs beyond the records it returns is metadata --
+/// a directory listing, and a header read per piece it walks past to find where the window starts.
+/// Neither shows up in the record count, in the bytes returned, or in a wall clock this machine
+/// can resolve, so neither is measurable except by counting it here.
+///
+/// Thread-local and test-only for the same reason the two above are: every test that touches a log
+/// lists a directory, and a process-global counter reads their work as this one's.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static WAL_SEGMENT_LISTINGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static WAL_SEGMENT_HEADER_READS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
 fn append_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
@@ -3650,6 +3669,8 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     // scan failure as data loss, so a piece legitimately reclaimed mid-scan would stop a shard
     // coming up. If this ever has to report absence distinctly, `scan` needs to skip on it
     // explicitly at the same time.
+    #[cfg(test)]
+    WAL_SEGMENT_HEADER_READS.with(|reads| reads.set(reads.get() + 1));
     if !path.exists() {
         return Ok((0, 0));
     }

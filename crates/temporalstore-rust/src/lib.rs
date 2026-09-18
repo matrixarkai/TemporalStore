@@ -56,6 +56,9 @@ pub mod telemetry;
 pub mod types;
 pub mod fault;
 pub mod wal;
+/// What an append costs per record and what a replay costs per log -- tests only.
+#[cfg(test)]
+mod wal_scale;
 mod wal_proto;
 pub mod record_framing;
 pub mod index_log_record;
