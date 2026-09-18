@@ -98,6 +98,7 @@ mod manifest_restore_model_maps;
 mod prune_crash_window;
 mod install_on_load_anchor;
 mod round_scale;
+mod index_bytes_per_key;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,

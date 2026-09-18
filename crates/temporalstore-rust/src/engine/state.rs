@@ -1625,7 +1625,132 @@ pub(super) struct BlockLookupRef {
 #[derive(Debug, Default, Clone)]
 pub(super) struct DirtyObjectIndex {
     by_key: BTreeMap<Arc<str>, u32>,
-    by_bucket: BTreeMap<u32, BTreeSet<Arc<str>>>,
+    by_bucket: BTreeMap<u32, DirtyKeySet>,
+}
+
+/// The dirty object keys of ONE bucket.
+///
+/// Almost always exactly one, for the same reason `ObjectIndex` holds one object id: keys route
+/// one to a bucket. MEASURED, not assumed -- `what_a_live_key_costs_in_the_index_at_two_corpus_sizes`
+/// walks the shard and reports the distribution, and it was 40,040 of 40,040 buckets holding
+/// exactly one key at 80,000 records and 4,004 of 4,004 at 8,000.
+///
+/// A `BTreeSet<Arc<str>>` holding a single key costs 192 live bytes of node -- a leaf sized for
+/// eleven 16-byte pointers -- to carry one of them, once per dirty object. At 40,040 dirty objects
+/// that was 7.7 MB of an index whose whole live heap is 42.3 MB, and it made `dirty_objects` the
+/// second largest structure in the shard, larger than the `strings` map holding the addresses the
+/// reads actually resolve through.
+///
+/// The shape `ObjectIndex`, `BlockIndexMap`, `ComponentList` and `BlockRefs` already use, for the
+/// same reason. `Many` is boxed on the same grounds `ObjectIndex` boxes its own: an enum is as wide
+/// as its widest arm, the set arm is the rare one, and this value sits in eleven slots of every
+/// node of the map above.
+///
+/// NO FORMAT CHANGE IS POSSIBLE HERE. `DirtyObjectIndex` is `#[serde(skip)]` on `ShardState` -- a
+/// load clears every dirty flag, so this is rebuilt from live writes and never read back off disk.
+#[derive(Debug, Default, Clone)]
+pub(super) enum DirtyKeySet {
+    #[default]
+    Empty,
+    One(Arc<str>),
+    Many(Box<BTreeSet<Arc<str>>>),
+}
+
+impl DirtyKeySet {
+    pub(super) fn len(&self) -> usize {
+        match self {
+            DirtyKeySet::Empty => 0,
+            DirtyKeySet::One(_) => 1,
+            DirtyKeySet::Many(set) => set.len(),
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        matches!(self, DirtyKeySet::Empty)
+    }
+
+    pub(super) fn insert(&mut self, key: Arc<str>) -> bool {
+        match self {
+            DirtyKeySet::Empty => {
+                *self = DirtyKeySet::One(key);
+                true
+            }
+            DirtyKeySet::One(held) => {
+                if **held == *key {
+                    return false;
+                }
+                let first = match std::mem::replace(self, DirtyKeySet::Empty) {
+                    DirtyKeySet::One(first) => first,
+                    _ => unreachable!("just matched One"),
+                };
+                let mut set = BTreeSet::new();
+                set.insert(first);
+                set.insert(key);
+                *self = DirtyKeySet::Many(Box::new(set));
+                true
+            }
+            DirtyKeySet::Many(set) => set.insert(key),
+        }
+    }
+
+    /// Drop `key` and hand back the `Arc` that held it, so a key MOVING between buckets keeps its
+    /// one allocation instead of taking a second. This is what `DirtyObjectIndex::insert` needs,
+    /// and it is why removal is spelled `take` rather than returning a bool.
+    pub(super) fn take(&mut self, key: &str) -> Option<Arc<str>> {
+        match self {
+            DirtyKeySet::Empty => None,
+            DirtyKeySet::One(held) => {
+                if &**held != key {
+                    return None;
+                }
+                match std::mem::replace(self, DirtyKeySet::Empty) {
+                    DirtyKeySet::One(held) => Some(held),
+                    _ => unreachable!("just matched One"),
+                }
+            }
+            DirtyKeySet::Many(set) => {
+                let taken = set.take(key);
+                self.shrink();
+                taken
+            }
+        }
+    }
+
+    pub(super) fn remove(&mut self, key: &str) -> bool {
+        self.take(key).is_some()
+    }
+
+    /// Give up the set once it no longer earns one, so a bucket that briefly held two dirty keys
+    /// does not keep a node for the rest of the round.
+    fn shrink(&mut self) {
+        let len = match self {
+            DirtyKeySet::Many(set) => set.len(),
+            _ => return,
+        };
+        match len {
+            0 => *self = DirtyKeySet::Empty,
+            1 => {
+                let set = match std::mem::replace(self, DirtyKeySet::Empty) {
+                    DirtyKeySet::Many(set) => set,
+                    _ => unreachable!("just matched Many"),
+                };
+                *self = DirtyKeySet::One((*set).into_iter().next().expect("length is one"));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl IntoIterator for DirtyKeySet {
+    type Item = Arc<str>;
+    type IntoIter = std::vec::IntoIter<Arc<str>>;
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            DirtyKeySet::Empty => Vec::new().into_iter(),
+            DirtyKeySet::One(key) => vec![key].into_iter(),
+            DirtyKeySet::Many(set) => (*set).into_iter().collect::<Vec<_>>().into_iter(),
+        }
+    }
 }
 
 impl DirtyObjectIndex {
@@ -1733,6 +1858,27 @@ impl DirtyObjectIndex {
     /// The routing buckets holding at least one dirty object.
     pub(super) fn bucket_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.by_bucket.keys().copied()
+    }
+
+    /// How many buckets sit in each arm of `DirtyKeySet`: (Empty, One, Many).
+    ///
+    /// The arm is the footprint -- `One` holds a pointer, `Many` holds a B-tree node sized for
+    /// eleven of them -- so this is what a guard on the cost of this index has to read. It cannot
+    /// be derived from `len()`: a bucket holding one key reports 1 from either arm, which is
+    /// exactly the regression worth catching.
+    ///
+    /// `Empty` should never be observed: a set that empties is dropped from the map by the caller.
+    /// It is reported rather than asserted away so a guard can say so.
+    pub(super) fn bucket_arms(&self) -> (usize, usize, usize) {
+        let mut arms = (0usize, 0usize, 0usize);
+        for keys in self.by_bucket.values() {
+            match keys {
+                DirtyKeySet::Empty => arms.0 += 1,
+                DirtyKeySet::One(_) => arms.1 += 1,
+                DirtyKeySet::Many(_) => arms.2 += 1,
+            }
+        }
+        arms
     }
 }
 
