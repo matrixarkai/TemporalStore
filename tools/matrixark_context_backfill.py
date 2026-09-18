@@ -45,9 +45,12 @@ from matrixark_raw_message_storage_contract import (  # noqa: E402
 
 Json = dict[str, Any]
 SourceRef = tuple[int, str | None] | tuple[int, str | None, str | None]
-# 256, matching the serving modules. This said 4096: the backfill wrote 4096 records per shard
-# while serving read 256 per shard, so the two disagreed about where a record lives.
-DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "").strip() or "256")
+# Imported, not re-derived. This said 4096 once: the backfill wrote 4096 records per shard while
+# serving read 256 per shard, so the two disagreed about where a record lives. Two copies of the
+# same expression cannot disagree today and can tomorrow, and this number is part of the on-disk
+# contract -- a reader assuming a larger size than the writer used enumerates too few shards and
+# silently sees part of the store.
+from matrixark_mcp_runtime_config import DIRECT_RECORD_LOG_SHARD_SIZE  # noqa: E402
 
 VOLATILE_SERVING_FINGERPRINT_FIELDS = {
     'context_event_key',

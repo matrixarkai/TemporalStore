@@ -31,7 +31,17 @@ SURFACES = (
     "matrixark_mcp_core.py",
     "matrixark_mcp_runtime_config.py",
     "matrixark_context_backfill.py",
+    # Added after it was found holding its own `DEFAULT_SHARD_SIZE = 256`: right by value and
+    # unreachable by the environment variable, so a deployment that set the variable would have
+    # had this tool read a different shard for every sequence and report the wrong record.
+    "inspect_matrixark_codex_hook_records.py",
 )
+
+#: A name may hold a shard size that is deliberately NOT the writer's, if it says so. The only
+#: one today is the retired codex-hook layout kept as a read fallback. Checked by name rather
+#: than by a list of files, because a maintainer has to choose the name and cannot add it by
+#: accident, where a line in an exemption list is one edit away.
+DELIBERATELY_NOT_THE_WRITERS = "LEGACY"
 
 CONSTANT = "DIRECT_RECORD_LOG_SHARD_SIZE"
 VARIABLE = "MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE"
@@ -103,11 +113,105 @@ def python_defaults():
     return {name: _resolve(name)[0] for name in SURFACES}
 
 
-def rust_default():
+def _module_level_shard_sizes():
+    """Every top-level `*SHARD_SIZE* = <int>` under tools/, and how many files were read.
+
+    The count is returned with the findings on purpose: a sweep that walked nothing reports
+    exactly what a clean directory reports.
+
+    No exclusion for this file is needed and none is written: the names bound here are
+    `CONSTANT` and `VARIABLE`, and the scan reads assignment TARGETS, so the constant's name
+    appearing in a string cannot match.
+    """
+    found = []
+    scanned = 0
+    for filename in sorted(os.listdir(HERE)):
+        if not filename.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(_body(filename))
+        except SyntaxError:
+            continue
+        scanned += 1
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            if not isinstance(node.value, ast.Constant):
+                continue
+            if not isinstance(node.value.value, int) or isinstance(node.value.value, bool):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and "SHARD_SIZE" in target.id.upper():
+                    found.append((filename, target.id, node.value.value))
+    return scanned, found
+
+
+def no_module_holds_its_own_copy_of_the_shard_size():
+    """The list above cannot be the whole guard, because the list is what goes stale.
+
+    Two copies lived outside it: `DEFAULT_SHARD_SIZE = 256` in the record inspector and
+    `_CODEX_HOOK_SHARD_SIZE = 10000` in the HTTP facade, the second of which made the codex-hook
+    query able to see the first shard of a store and nothing after it. Neither was a surface this
+    file named, so naming surfaces could not have caught either. A sweep can.
+    """
+    scanned, found = _module_level_shard_sizes()
+    check(
+        scanned > 100,
+        "the sweep parsed only %d files under tools/, so it is not looking at the directory any "
+        "more and its silence means nothing" % scanned,
+    )
+    check(
+        len(found) >= 1,
+        "no module-level shard size was found at all; the sweep has stopped recognising the "
+        "shape it looks for and would report a new copy as clean",
+    )
+    offenders = [
+        "%s:%s = %d" % (filename, name, value)
+        for filename, name, value in found
+        if DELIBERATELY_NOT_THE_WRITERS not in name.upper()
+    ]
+    check(
+        not offenders,
+        "these bind a shard size to a literal, so the environment variable cannot reach them and "
+        "they drift the moment the canonical definition moves: %s. Import "
+        "%s instead, or say in the name that the value is deliberately not the writer's"
+        % (", ".join(offenders), CONSTANT),
+    )
+
+
+#: The engine spells the same contract twice, under two names and two types. Both are read: a
+#: guard that follows one of two constants is how the OTHER one goes unwatched.
+RUST_CONSTANTS = (
+    ("DEFAULT_RECORD_LOG_SHARD_SIZE", "u64"),
+    ("DIRECT_RECORD_LOG_SHARD_SIZE", "usize"),
+)
+
+
+def rust_defaults():
     path = os.path.join(ROOT, "crates", "temporalstore-rust", "src", "matrixark_rust_proxy_impl.rs")
     body = open(path, encoding="utf-8").read()
-    match = re.search(r"const DEFAULT_RECORD_LOG_SHARD_SIZE: u64 = (\d+);", body)
-    return int(match.group(1)) if match else None
+    values = {}
+    for name, rust_type in RUST_CONSTANTS:
+        match = re.search(r"const %s: %s = (\d+);" % (name, rust_type), body)
+        values[name] = int(match.group(1)) if match else None
+    return values
+
+
+def rust_default():
+    return rust_defaults()["DEFAULT_RECORD_LOG_SHARD_SIZE"]
+
+
+def the_engines_two_names_for_the_shard_size_agree():
+    """One number, two constants, one file. They have to hold the same value or one of them is
+    addressing a store the other did not write."""
+    values = rust_defaults()
+    for name, value in sorted(values.items()):
+        check(value is not None, "the engine no longer declares %s the expected way" % name)
+    distinct = {value for value in values.values() if value is not None}
+    check(
+        len(distinct) == 1,
+        "the engine's two names for the record shard size disagree: %s" % (values,),
+    )
 
 
 def every_surface_agrees_on_the_shard_size():
@@ -171,6 +275,8 @@ for test in (
     every_surface_agrees_on_the_shard_size,
     every_surface_honours_the_environment_variable,
     the_engine_does_not_guess_a_larger_size,
+    the_engines_two_names_for_the_shard_size_agree,
+    no_module_holds_its_own_copy_of_the_shard_size,
 ):
     test()
     print("  ran %s" % test.__name__)

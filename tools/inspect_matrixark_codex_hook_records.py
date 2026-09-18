@@ -14,7 +14,15 @@ from typing import Any
 
 
 Json = dict[str, Any]
-DEFAULT_SHARD_SIZE = 256
+
+# The writer's size, read from the same place the writer reads it. A literal here was correct
+# only while nothing set MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE: under a deployment that does,
+# this tool would compute a different shard for every sequence and report the wrong record
+# without anything looking wrong.
+try:  # package path
+    from tools.matrixark_mcp_runtime_config import DIRECT_RECORD_LOG_SHARD_SIZE
+except ModuleNotFoundError:  # direct execution from tools/
+    from matrixark_mcp_runtime_config import DIRECT_RECORD_LOG_SHARD_SIZE
 
 
 def repo_root() -> Path:
@@ -34,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--table", default=(os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "").strip() or "deploy_table"))
     parser.add_argument("--storage-prefix", action="append", default=[])
     parser.add_argument("--limit", type=int, default=20)
-    parser.add_argument("--shard-size", type=int, default=DEFAULT_SHARD_SIZE)
+    parser.add_argument("--shard-size", type=int, default=DIRECT_RECORD_LOG_SHARD_SIZE)
     parser.add_argument("--library-path", default=os.environ.get("TEMPORALSTORE_LIB", ""))
     parser.add_argument("--include-serving", action="store_true")
     return parser.parse_args()
