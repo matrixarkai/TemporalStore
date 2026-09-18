@@ -316,7 +316,7 @@ fn a_purge_round_inside_the_quarantine_window_is_not_bounded_by_its_budget() {
 fn probe_slabs() -> u64 {
     std::env::var("RECLAIM_SCALE_SLABS")
         .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(8_000)
 }
 
