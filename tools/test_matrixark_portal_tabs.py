@@ -19,7 +19,9 @@ Two properties beyond "it switches":
 """
 from __future__ import annotations
 
+import io
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -28,8 +30,47 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 PORTAL = os.path.join(TOOLS, "portal")
 HARNESS = os.path.join(PORTAL, "tabs_harness.js")
 
-TABBED = ["setup_portal.html", "explore_portal.html", "api_key_portal.html",
-          "catalog_portal.html"]
+def page(name: str) -> str:
+    with io.open(os.path.join(PORTAL, name), encoding="utf-8") as handle:
+        return handle.read()
+
+
+#: A tab button as it appears in a page's static body. The harness reads the shipped HTML, so a
+#: page whose tabs are built after a fetch has none of these at rest however many it shows later.
+A_TAB = re.compile(r"<button[^>]*role=\"tab\"")
+A_TABLIST = re.compile(r"<[^>]*role=\"tablist\"[^>]*>")
+
+
+def _pages() -> list:
+    return sorted(name for name in os.listdir(PORTAL) if name.endswith("_portal.html"))
+
+
+def _static_tabs(name: str) -> int:
+    """How many tab buttons are in the shipped markup, ignoring the page's own script.
+
+    The API page builds its strip from a template literal inside its script, and that literal
+    contains `role="tab"` -- so counting the raw file credits it with one tab it does not have at
+    rest, which is what made the harness crash on `tabs[1]` rather than say the page has no tabs.
+    """
+    text = page(name)
+    body = text.split("<script>")[0]
+    return len(A_TAB.findall(body))
+
+
+def tabbed_pages() -> list:
+    """The pages whose tabs are in the markup, derived rather than typed.
+
+    This was a list of four. A fifth page declares a tablist -- the API page -- and nothing here
+    said whether it was left out on purpose or forgotten; I could not tell by reading, and had to
+    measure. Its `#routeTabs` is empty in the static body and filled after the catalogue arrives,
+    so a harness that reads shipped HTML has nothing to drive. That is now decided by the markup
+    instead of by a name, so a page that starts shipping its tabs is picked up without an edit
+    here, and one that stops is dropped for a reason anyone can check.
+    """
+    return [name for name in _pages() if _static_tabs(name) >= 2]
+
+
+TABBED = tabbed_pages()
 
 # Every heading the setup page carried before it was grouped into panes.
 SETUP_HEADINGS = [
@@ -39,9 +80,37 @@ SETUP_HEADINGS = [
 ]
 
 
-def page(name: str) -> str:
-    with open(os.path.join(PORTAL, name), encoding="utf-8") as handle:
-        return handle.read()
+
+
+class TheListCoversTheRightPagesTest(unittest.TestCase):
+    """Two floors and a rule, because a derivation can quietly return nothing."""
+
+    def test_it_found_the_tabbed_pages(self) -> None:
+        self.assertGreaterEqual(len(TABBED), 4,
+                                "only %d pages were found to have static tabs: %s"
+                                % (len(TABBED), TABBED))
+        self.assertGreaterEqual(len(_pages()), 9, "only %d portal pages on disk" % len(_pages()))
+
+    def test_a_page_left_out_declares_no_tabs_at_rest(self) -> None:
+        """The exclusion is decided by the markup, not by a name.
+
+        A page that declares a tablist and ships no tab buttons builds them after a fetch; a page
+        that ships one button is a tab strip nobody can arrow through, and neither the harness nor
+        a person could tell those apart from a list of four names.
+        """
+        for name in _pages():
+            if name in TABBED:
+                continue
+            with self.subTest(page=name):
+                count = _static_tabs(name)
+                self.assertEqual(
+                    0, count,
+                    "%s ships %d tab button(s) in its markup and is not checked; a strip with one "
+                    "tab is not a strip, and two or more belong in TABBED" % (name, count))
+                if A_TABLIST.search(page(name).split("<script>")[0]):
+                    self.assertIn('id="routeTabs"></div>', page(name),
+                                  "%s declares a tablist with no tabs and no empty container the "
+                                  "page fills in; that is a strip that never appears" % name)
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed; the page JS cannot be run")
