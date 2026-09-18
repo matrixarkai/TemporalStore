@@ -13,6 +13,21 @@ use super::*;
 pub(crate) static DIRTY_DRAIN_VISITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// Bucket-recency entries COPIED on the way into an eviction round, across every call.
+///
+/// The round used to clone the whole `bucket_recency` map before looking at which selection path
+/// was going to run, and only the EXHAUSTIVE path ever read it. Under the shipped default -- the
+/// sampled path -- every round copied one entry per bucket the shard had ever touched and dropped
+/// the copy unread. That is a cost that tracks the store sitting in front of a selection path
+/// whose whole purpose is to cost the batch instead.
+///
+/// COUNTED, not timed, and counted in ENTRIES rather than bytes: the question is whether the
+/// round touches a per-bucket structure at all, and an entry count answers that identically on an
+/// idle box and a loaded one. Process-wide, so a reader must reset it immediately before the call
+/// it is measuring, and the suite it is read in runs single-threaded.
+pub(crate) static EVICTION_RECENCY_ENTRIES_CLONED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// How many O(shard) plans one round builds, counted rather than timed.
 ///
 /// A round builds these in several stages and each walks the shard. Whether that is duplicated
@@ -1746,19 +1761,28 @@ impl TemporalEngine {
             .iter()
             .map(|summary| (summary.routing_bucket, summary.clone()))
             .collect::<BTreeMap<_, _>>();
-        let recency_by_bucket = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            shards
-                .get(&shard_id)
-                .map(|shard| shard.bucket_recency.clone())
-                .unwrap_or_default()
-        };
         let victims = if self
             .evict_sampled_lru
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             self.sampled_eviction_victims(shard_id, batch_limit, &cache_by_bucket)
         } else {
+            // BUILT IN THE ARM THAT READS IT. This clone used to be taken before the branch, and
+            // the sampled arm never touched it: a whole-store copy on the way into the one
+            // selection path written to avoid whole-store work. `EVICTION_RECENCY_ENTRIES_CLONED`
+            // is what says which arm pays it.
+            let recency_by_bucket = {
+                let shards = self.shards.read().expect("engine lock poisoned");
+                let recency = shards
+                    .get(&shard_id)
+                    .map(|shard| shard.bucket_recency.clone())
+                    .unwrap_or_default();
+                EVICTION_RECENCY_ENTRIES_CLONED.fetch_add(
+                    recency.len() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                recency
+            };
             let mut victims = self
                 .bucket_storage_summaries(shard_id)
                 .into_iter()
@@ -1967,5 +1991,319 @@ impl TemporalEngine {
             cooldown: pressure_after >= pressure_before,
             skipped_reason: String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod eviction_round_scale {
+    use super::EVICTION_RECENCY_ENTRIES_CLONED;
+    use crate::engine::TemporalEngine;
+    use crate::{Command, ExecuteRequest};
+    use std::sync::atomic::Ordering;
+
+    fn engine_with(objects: usize) -> (tempfile::TempDir, TemporalEngine) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..objects {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("evict-scale-key-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        (dir, engine)
+    }
+
+    /// THE CONTROL, and it runs first as its own test so a failure here cannot stop the claim
+    /// below from being made. The exhaustive arm READS the recency map, so it must still copy it:
+    /// a counter that reads zero everywhere would satisfy the claim below while measuring nothing.
+    ///
+    /// The counter is process-wide and this reads a delta around one call, which is why the gate
+    /// runs `--test-threads=1`.
+    #[test]
+    fn the_exhaustive_eviction_arm_still_copies_the_recency_map() {
+        let (_dir, engine) = engine_with(400);
+        engine.use_full_scan_eviction_for_test();
+
+        EVICTION_RECENCY_ENTRIES_CLONED.store(0, Ordering::Relaxed);
+        // Threshold 0 so the pressure gate admits and selection actually runs.
+        let report = engine.apply_storage_eviction(1, 0, 4, false, false);
+        let copied = EVICTION_RECENCY_ENTRIES_CLONED.load(Ordering::Relaxed);
+
+        assert!(
+            report.pressure_gate_open,
+            "the round must have got past the pressure gate, or nothing was measured"
+        );
+        assert!(
+            copied > 0,
+            "the arm that reads the recency map must still copy it; copied {copied} entries"
+        );
+    }
+
+    /// A sampled round must not copy the recency map at all.
+    ///
+    /// The sampler reads recency straight off the shard inside its own bounded scan. The copy the
+    /// round used to take before choosing an arm was read only by the exhaustive arm, so under the
+    /// shipped default it was one entry per bucket, every round, dropped unread.
+    ///
+    /// ZERO is asserted rather than "fewer", because there is no reason for this arm to touch a
+    /// per-bucket structure at all, and a bound like "less than the bucket count" would pass on a
+    /// copy that had merely got smaller.
+    #[test]
+    fn a_sampled_eviction_round_copies_no_recency_entries() {
+        let (_dir, engine) = engine_with(400);
+        engine.use_sampled_eviction_for_test();
+
+        EVICTION_RECENCY_ENTRIES_CLONED.store(0, Ordering::Relaxed);
+        let report = engine.apply_storage_eviction(1, 0, 4, false, false);
+        let copied = EVICTION_RECENCY_ENTRIES_CLONED.load(Ordering::Relaxed);
+
+        assert!(
+            report.pressure_gate_open,
+            "the round must have got past the pressure gate, or nothing was measured"
+        );
+        assert!(
+            !report.selected_victims.is_empty(),
+            "the round must have selected victims, or it did no choosing to measure"
+        );
+        assert_eq!(
+            copied, 0,
+            "a sampled round copied {copied} recency entries; the sampler exists so that choosing \
+             costs the batch rather than the store"
+        );
+    }
+
+    /// WHAT ONE EVICTION ROUND COSTS AS THE STORE GROWS, if eviction were turned on.
+    ///
+    /// Eviction is dark in production -- `enable_evict` defaults to false -- so this is
+    /// conditional by construction and says so. It measures allocation CALLS and BYTES across one round at two
+    /// corpus sizes and prints the ratio beside the corpus ratio, so a cost that tracks the store
+    /// and a cost that does not are told apart by a number rather than by reading the code.
+    ///
+    /// Allocations rather than a clock: this box sits between load 4 and 30 for hours, and a wall
+    /// time taken on it says more about the box than about the round.
+    ///
+    /// Only compiled with `alloc-probe`: without the counting allocator every count reads zero,
+    /// and a ratio of zeroes would print a reassuring 1.00x while measuring nothing. The canary
+    /// asserts the allocator is installed before any number is believed.
+    #[cfg(feature = "alloc-probe")]
+    #[test]
+    fn what_a_sampled_eviction_round_costs_as_the_store_grows() {
+        let canary = crate::alloc_probe::Probe::start();
+        let sink: Vec<u8> = Vec::with_capacity(8192);
+        assert!(
+            canary.stop().allocs > 0,
+            "counting allocator not installed despite the feature being on"
+        );
+        drop(sink);
+
+        fn round_cost(
+            objects: usize,
+        ) -> (u64, u64, u64, u64, usize, usize, u64, u64, u64, u64) {
+            let (_dir, engine) = engine_with(objects);
+            engine.use_sampled_eviction_for_test();
+            let buckets = engine.bucket_storage_summaries(1).len();
+
+            // A round that is BELOW the threshold and returns early. This is the ordinary shape
+            // of a loop that is running and finding nothing to do.
+            let idle = crate::alloc_probe::Probe::start();
+            let skipped = engine.apply_storage_eviction(1, u64::MAX, 4, false, false);
+            let idle = idle.stop();
+            assert!(
+                !skipped.skipped_reason.is_empty(),
+                "the idle arm must actually have been skipped"
+            );
+
+            crate::engine::reset_live_block_scan_entries();
+            let probe = crate::alloc_probe::Probe::start();
+            let report = engine.apply_storage_eviction(1, 0, 4, false, false);
+            let counts = probe.stop();
+            let scanned = crate::engine::live_block_scan_entries();
+            assert!(
+                report.pressure_gate_open,
+                "the working arm must have got past the pressure gate"
+            );
+
+            // ATTRIBUTION. Each phase probed on its own, and a RESIDUAL row so the table has to
+            // add up: a phase that is linear and not named here shows as a growing residual
+            // rather than as nothing.
+            let inspect = crate::alloc_probe::Probe::start();
+            let cache_report = engine.storage_cache_inspection_report(1);
+            let inspect = inspect.stop().allocs;
+
+            let resident = crate::alloc_probe::Probe::start();
+            let _ = engine.bucket_index_resident_bytes(1);
+            let resident = resident.stop().allocs;
+
+            let map_build = crate::alloc_probe::Probe::start();
+            let cache_by_bucket = cache_report
+                .bucket_summaries
+                .iter()
+                .map(|summary| (summary.routing_bucket, summary.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let map_build = map_build.stop().allocs;
+
+            let select = crate::alloc_probe::Probe::start();
+            let picked = engine.sampled_eviction_victims(1, 4, &cache_by_bucket);
+            let select = select.stop().allocs;
+            assert!(
+                !picked.is_empty(),
+                "the selection phase must still pick victims when probed on its own"
+            );
+
+            (
+                counts.allocs,
+                counts.alloc_bytes,
+                idle.allocs,
+                scanned,
+                buckets,
+                report.selected_victims.len(),
+                inspect,
+                resident,
+                map_build,
+                select,
+            )
+        }
+
+        // The two ACTUATOR phases, on a fresh store each time so neither has already run.
+        fn actuator_cost(objects: usize) -> (u64, u64, usize) {
+            let (_dir, engine) = engine_with(objects);
+            engine.use_sampled_eviction_for_test();
+            let cache_report = engine.storage_cache_inspection_report(1);
+            let cache_by_bucket = cache_report
+                .bucket_summaries
+                .iter()
+                .map(|summary| (summary.routing_bucket, summary.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let victims = engine.sampled_eviction_victims(1, 4, &cache_by_bucket);
+            let candidates = victims
+                .iter()
+                .map(|victim| victim.routing_bucket)
+                .collect::<Vec<_>>();
+            assert!(!candidates.is_empty(), "nothing to actuate on");
+
+            let invalidate = crate::alloc_probe::Probe::start();
+            for routing_bucket in &candidates {
+                let _ = engine.cache.invalidate_slot(1, *routing_bucket);
+            }
+            let invalidate = invalidate.stop().allocs;
+
+            let release = crate::alloc_probe::Probe::start();
+            {
+                let mut shards = engine.shards.write().expect("shards lock poisoned");
+                if let Some(shard) = shards.get_mut(&1) {
+                    let _ = crate::engine::storage_bucket_internals::release_bucket_blocks(
+                        shard,
+                        &candidates,
+                    );
+                }
+            }
+            let release = release.stop().allocs;
+            (invalidate, release, candidates.len())
+        }
+
+        const SMALL: usize = 500;
+        const LARGE: usize = 4000;
+        let (
+            small_allocs,
+            small_bytes,
+            small_idle,
+            small_scanned,
+            small_buckets,
+            small_victims,
+            small_inspect,
+            small_resident,
+            small_map,
+            small_select,
+        ) = round_cost(SMALL);
+        let (
+            large_allocs,
+            large_bytes,
+            large_idle,
+            large_scanned,
+            large_buckets,
+            large_victims,
+            large_inspect,
+            large_resident,
+            large_map,
+            large_select,
+        ) = round_cost(LARGE);
+        let (small_invalidate, small_release, small_candidates) = actuator_cost(SMALL);
+        let (large_invalidate, large_release, large_candidates) = actuator_cost(LARGE);
+        assert_eq!(
+            small_candidates, large_candidates,
+            "both actuator probes must act on the same number of victims"
+        );
+        let small_named = small_inspect
+            + small_resident
+            + small_map
+            + small_select
+            + small_invalidate
+            + small_release;
+        let large_named = large_inspect
+            + large_resident
+            + large_map
+            + large_select
+            + large_invalidate
+            + large_release;
+        let small_residual = small_allocs as i64 - small_named as i64;
+        let large_residual = large_allocs as i64 - large_named as i64;
+
+        let ratio = |small: u64, large: u64| {
+            if small == 0 {
+                0.0
+            } else {
+                large as f64 / small as f64
+            }
+        };
+        println!(
+            "\n  ONE SAMPLED EVICTION ROUND, at two corpus sizes (eviction defaults OFF; this is what \
+             it WOULD cost)\n\
+             \n                                {SMALL:>10} objects {LARGE:>10} objects      ratio\n\
+               buckets                     {small_buckets:>10} {large_buckets:>18}   {:>8.2}x\n\
+               victims chosen              {small_victims:>10} {large_victims:>18}\n\
+               live-page entries scanned   {small_scanned:>10} {large_scanned:>18}   {:>8.2}x\n\
+               allocations, working round  {small_allocs:>10} {large_allocs:>18}   {:>8.2}x\n\
+               alloc bytes, working round  {small_bytes:>10} {large_bytes:>18}   {:>8.2}x\n\
+               allocations, IDLE round     {small_idle:>10} {large_idle:>18}   {:>8.2}x\n\
+             \n  where the working round's allocations go\n\
+               cache inspection report     {small_inspect:>10} {large_inspect:>18}   {:>8.2}x\n\
+               bucket index resident bytes {small_resident:>10} {large_resident:>18}   {:>8.2}x\n\
+               cache_by_bucket map build   {small_map:>10} {large_map:>18}   {:>8.2}x\n\
+               sampled victim selection    {small_select:>10} {large_select:>18}   {:>8.2}x\n\
+               cache invalidate, 4 victims {small_invalidate:>10} {large_invalidate:>18}   {:>8.2}x\n\
+               bucket release, 4 victims   {small_release:>10} {large_release:>18}   {:>8.2}x\n\
+               RESIDUAL (unattributed)     {small_residual:>10} {large_residual:>18}\n",
+            ratio(small_buckets as u64, large_buckets as u64),
+            ratio(small_scanned, large_scanned),
+            ratio(small_allocs, large_allocs),
+            ratio(small_bytes, large_bytes),
+            ratio(small_idle, large_idle),
+            ratio(small_inspect, large_inspect),
+            ratio(small_resident, large_resident),
+            ratio(small_map, large_map),
+            ratio(small_select, large_select),
+            ratio(small_invalidate, large_invalidate),
+            ratio(small_release, large_release),
+        );
+
+        // VACUITY FLOOR. Two corpus sizes that produced the same number of buckets would make
+        // every ratio above a comparison of a store with itself.
+        assert!(
+            large_buckets > small_buckets,
+            "the two corpora must differ in bucket count, got {small_buckets} and {large_buckets}"
+        );
+        assert!(
+            small_allocs > 0 && large_allocs > 0,
+            "a round that allocates nothing at either size means the probe measured nothing"
+        );
     }
 }
