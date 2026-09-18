@@ -23,8 +23,16 @@ from test_matrixark_v1_gateway import _FakeServer, _cfg, drive  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORTAL = os.path.join(HERE, "portal")
 
-PAGES = ("/v1/admin", "/v1/admin/setup", "/v1/admin/catalog", "/v1/admin/explore",
-         "/v1/admin/ingestion", "/v1/admin/portal", "/v1/admin/api")
+def portal_routes() -> list:
+    """Every route the gateway itself calls a portal page.
+
+    This was a tuple of seven, and the catalogue lists ten: the one-box and mem0 pages were added
+    afterwards and nothing made the tuple move, so the check below stopped asking about two of the
+    pages it says it covers. Reading the catalogue instead means a page cannot be added to the
+    portal without being asked the question.
+    """
+    return sorted(str(row["path"]) for row in gw.documented_routes()
+                  if row.get("group") == "Portal pages" and row.get("method") == "GET")
 
 
 def _read(name: str) -> str:
@@ -41,14 +49,40 @@ class StripOnEveryPageTest(unittest.TestCase):
         self.app = gw.make_v1_app(_FakeServer(), _cfg())
 
     def test_every_served_page_carries_the_strip(self) -> None:
-        # Including the two hand-maintained pages, which get it through the same nav injection as
-        # the links -- otherwise the pages that predate the generator quietly lack it.
-        for path in PAGES:
+        """Including the two hand-maintained pages, which get it through the same nav injection as
+        the links -- otherwise the pages that predate the generator quietly lack it.
+
+        Which routes are HTML is decided by asking each one, not by naming them here. One member
+        of the group is not a page at all: `/v1/admin/routes` serves this very catalogue as JSON,
+        and a list of names would have had to carve it out by hand -- which is the kind of entry
+        that goes stale silently, since nothing fails when a tenth page is added beside it.
+        """
+        found = portal_routes()
+        self.assertGreaterEqual(len(found), 10,
+                                "only %d portal routes in the catalogue: %s" % (len(found), found))
+        pages = 0
+        for path in found:
             with self.subTest(path=path):
-                _st, _h, body = drive(self.app, method="GET", path=path)
-                text = body.decode("utf-8")
+                _st, headers, body = drive(self.app, method="GET", path=path)
+                kind = str(headers.get("content-type") or "")
+                text = body.decode("utf-8", "replace")
+                if "text/html" not in kind.lower():
+                    # Not a page. It has to say so where a customer reads it, or the group is
+                    # telling them something the route does not do.
+                    summary = " ".join(str(row.get("summary") or "")
+                                       for row in gw.documented_routes()
+                                       if row.get("path") == path).lower()
+                    self.assertIn("json", summary,
+                                  "%s is grouped with the portal pages, serves %r, and its "
+                                  "summary does not say it is not a page" % (path, kind))
+                    continue
+                pages += 1
                 self.assertIn('id="liveStrip"', text)
                 self.assertIn("The shared live strip", text)
+        # The floor, on the SCAN: every assertion above passes over a group whose HTML members
+        # have all stopped being served as HTML.
+        self.assertGreaterEqual(pages, 9, "only %d of %d portal routes served HTML"
+                                % (pages, len(found)))
 
     def test_the_strip_appears_exactly_once_per_page(self) -> None:
         # The builder runs repeatedly over the hand-maintained pages. A script appended rather than
