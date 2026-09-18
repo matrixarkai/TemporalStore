@@ -287,7 +287,21 @@ def _agent_hook_call(server: Any, body: Json) -> Json:
     return result
 
 
-_CODEX_HOOK_SHARD_SIZE = 10000
+# The record log's own addressing: a record at `sequence` lives in shard
+# `sequence // shard_size` under field `sequence % shard_size`, zero-padded. Both halves come
+# from the writer, so both have to be read from the same constant -- reading the right shard
+# with the wrong field finds nothing, exactly like reading the wrong shard.
+try:
+    from tools.matrixark_mcp_runtime_config import DIRECT_RECORD_LOG_SHARD_SIZE as _RECORD_LOG_SHARD_SIZE
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_runtime_config import DIRECT_RECORD_LOG_SHARD_SIZE as _RECORD_LOG_SHARD_SIZE
+
+#: An older layout this reader used to assume was the only one: `sequence // 10000` for the
+#: shard and the absolute sequence for the field. Kept as a FALLBACK rather than deleted --
+#: it costs one miss on a store that does not use it, and dropping it would strand any store
+#: that does. It cannot be the primary: the two layouts agree only for sequences 0..255, so a
+#: reader that knows only this one sees the first shard of a store and nothing after it.
+_CODEX_HOOK_LEGACY_SHARD_SIZE = 10000
 _CODEX_HOOK_SYNTHETIC_MARKERS = {
     "matrixark synthetic",
     "synthetic probe",
@@ -636,12 +650,17 @@ def _hook_collect(reader: _HookStoreReader, prefix: str, args: Json) -> Json:
         return {"backend": reader.name, "prefix": prefix, "count_key": count_key, "record_count": record_count, "rows": rows, "status": "empty"}
     first = max(1, record_count - scan_limit + 1)
     for sequence in range(record_count, first - 1, -1):
+        shard = sequence // _RECORD_LOG_SHARD_SIZE
+        offset = sequence % _RECORD_LOG_SHARD_SIZE
+        legacy_shard = sequence // _CODEX_HOOK_LEGACY_SHARD_SIZE
         candidate_keys = []
         if count_key and ":raw_ingestion:" in count_key:
-            candidate_keys.append((f"{prefix}:raw_ingestion:records:{sequence // _CODEX_HOOK_SHARD_SIZE:06d}", f"{sequence:020d}", "raw_ingestion"))
+            candidate_keys.append((f"{prefix}:raw_ingestion:records:{shard:06d}", f"{offset:020d}", "raw_ingestion"))
+            candidate_keys.append((f"{prefix}:raw_ingestion:records:{legacy_shard:06d}", f"{sequence:020d}", "raw_ingestion-legacy"))
         candidate_keys.extend(
             [
-                (f"{prefix}:records:{sequence // _CODEX_HOOK_SHARD_SIZE:06d}", f"{sequence:020d}", "records"),
+                (f"{prefix}:records:{shard:06d}", f"{offset:020d}", "records"),
+                (f"{prefix}:records:{legacy_shard:06d}", f"{sequence:020d}", "records-legacy"),
                 (f"{prefix}:records", f"{sequence:020d}", "records-unsharded"),
             ]
         )
