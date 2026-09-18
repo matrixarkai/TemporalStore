@@ -6,6 +6,10 @@ global:
 rule_files:
   - /etc/prometheus/temporalstore-alerts.yml
   - /etc/prometheus/matrixark-gateway-alerts.yml
+  # `up`, per scrape job. Every other file here is written against metrics a process emits,
+  # so every rule in them needs that process to be answering; this one is what is left when
+  # it is not.
+  - /etc/prometheus/scrape-target-alerts.yml
   # Raft, the metaserver, the proxy, the stores and replication. These pair with
   # docs/ops/temporalstore-dashboard.json and query the engine job below; without that job every
   # rule here evaluates against nothing, and a rule with no series never fires.

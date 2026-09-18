@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+#
+# Every other rule this stack loads is written against a metric some process emits. That makes all
+# of them conditional on the same thing, and none of them says so: the target has to be answering
+# for the rule to have anything to evaluate. Prometheus evaluates an expression over a vector that
+# is not there to an empty result, and an empty result is not a firing alert -- so when a process
+# stops being scraped, every rule about it goes quiet, and quiet is what healthy looks like.
+#
+# `MatrixArkGatewayNoTraffic` is the sharpest case. It exists to catch "clients are not reaching
+# the edge", and it reads `sum by (instance) (rate(matrixark_gateway_requests_total[15m])) == 0`.
+# Five minutes after the gateway dies that series goes stale, the vector empties, and the alert
+# whose whole job is to notice silence goes silent.
+#
+# `up` is the one series Prometheus writes itself, per target, per scrape. It is the only thing
+# left to alert on once a target is gone, and it is why these rules are in a file of their own
+# rather than filed under any one service: the subject is the scrape, not the service.
+#
+# Each rule covers both ways a target stops answering:
+#   up{job="x"} == 0      the target is configured and the scrape failed
+#   absent(up{job="x"})   the job has no targets at all -- someone edited it out of prometheus.yml
+# The second cannot be caught by the first, because a job with no targets produces no `up` to
+# compare against zero.
+#
+# One rule per job in prometheus.yml. Adding a job there without adding a rule here is what
+# tools/test_matrixark_nothing_pages_when_a_target_stops_answering.py is for.
+
+groups:
+  - name: temporalstore_scrape_targets
+    rules:
+      - alert: MatrixArkGatewayNotAnswering
+        expr: up{job="matrixark_gateway"} == 0 or absent(up{job="matrixark_gateway"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The gateway is not being scraped ({{ $labels.job }})"
+          description: >-
+            The customer-facing edge stopped answering its metrics endpoint, or its scrape job has
+            no targets. Every other MatrixArk rule is written against matrixark_gateway_* series,
+            so while this is true none of them can fire -- including MatrixArkGatewayNoTraffic,
+            which exists to notice exactly this kind of silence and cannot, because the series it
+            compares against zero is no longer there. Treat a quiet alert channel during this
+            alert as no information at all.
+
+      - alert: TemporalStoreEngineNotAnswering
+        expr: up{job="temporalstore_engine"} == 0 or absent(up{job="temporalstore_engine"})
+        for: 5m
+        labels:
+          severity: critical
+        # `absent()` carries only the labels in its own selector, so the instance is named when
+        # a configured target failed and empty when the job itself is gone. Both labels are in the
+        # summary rather than one, because which of the two it is changes what you go and look at.
+        annotations:
+          summary: "An engine target is not being scraped ({{ $labels.job }} {{ $labels.instance }})"
+          description: >-
+            A proxy, metaserver or datanode stopped serving /metrics on its service port, or the
+            job has no targets. Each engine process serves metrics on the same listener it serves
+            its service routes on, so this usually means the process is down rather than that
+            monitoring is misconfigured -- and every raft, storage and readiness rule about it
+            goes quiet at the same moment, for the same reason.
+
+      - alert: TemporalStoreHostMetricsNotAnswering
+        expr: up{job="temporalstore_node_exporter"} == 0 or absent(up{job="temporalstore_node_exporter"})
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host metrics are not being collected ({{ $labels.job }})"
+          description: >-
+            The node exporter is not answering. No service is degraded by this on its own, which
+            is why it is a warning and not a page -- but host-level context is gone for as long as
+            it lasts, and that is the context an engine incident is usually read against.

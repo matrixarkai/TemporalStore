@@ -66,6 +66,7 @@ services:
       # and they are the ones covering retrieval on hash vectors and extraction making no call.
       - ./temporalstore-alerts.yml:/etc/prometheus/temporalstore-alerts.yml:ro
       - ./matrixark-gateway-alerts.yml:/etc/prometheus/matrixark-gateway-alerts.yml:ro
+      - ./scrape-target-alerts.yml:/etc/prometheus/scrape-target-alerts.yml:ro
       # Mounted under a distinct name: this is the engine rule set from docs/ops, which shares a
       # basename with the local readiness rules above but is a different file covering different
       # series.
